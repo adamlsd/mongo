@@ -76,29 +76,43 @@ std::vector<std::string> getHostFQDNs(std::string hostName, HostnameCanonicaliza
         return results;
     }
 
-    shim_addrinfo hints = {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = 0;
-    hints.ai_protocol = 0;
-    if (mode == HostnameCanonicalizationMode::kForward) {
-        hints.ai_flags = AI_CANONNAME;
-    }
 
-    int err;
-    shim_addrinfo* info;
-    auto nativeHostName = shim_toNativeString(hostName.c_str());
-    if ((err = shim_getaddrinfo(nativeHostName.c_str(), nullptr, &hints, &info)) != 0) {
-        LOG(3) << "Failed to obtain address information for hostname " << hostName << ": "
-               << getAddrInfoStrError(err);
+    auto constructShim = [&]() {
+        auto nativeHostName = shim_toNativeString(hostName.c_str());
+        shim_addrinfo hints = {};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = 0;
+        hints.ai_protocol = 0;
+        if (mode == HostnameCanonicalizationMode::kForward) {
+            hints.ai_flags = AI_CANONNAME;
+        }
+
+        shim_addrinfo* rv;
+        const int err = shim_getaddrinfo(nativeHostName.c_str(), nullptr, &hints, &rv);
+
+        if (err != 0) {
+            LOG(3) << "Failed to obtain address information for hostname " << hostName << ": "
+                   << getAddrInfoStrError(err);
+            rv = nullptr;
+        }
+
+        return rv;
+    };
+    auto destroyShim = [&shim_freeaddrinfo](shim_addrinfo* const info) {
+        if (info)
+            shim_freeaddrinfo(info);
+    };
+    ming::AutoRAII<shim_addrinfo*> info(constructShim, destroyShim);
+    if (!info) {
         return results;
     }
-    const auto guard = MakeGuard([&shim_freeaddrinfo, &info] { shim_freeaddrinfo(info); });
 
     if (mode == HostnameCanonicalizationMode::kForward) {
         results.emplace_back(shim_fromNativeString(info->ai_canonname));
         return results;
     }
 
+    int err;
     bool encounteredErrors = false;
     std::stringstream getNameInfoErrors;
     getNameInfoErrors << "Failed to obtain name info for: [ ";

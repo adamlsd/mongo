@@ -200,11 +200,12 @@ public:
         const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(txn);
         result.append("numIndexesBefore", numIndexesBefore);
 
-        auto client = txn->getClient();
-        ScopeGuard lastOpSetterGuard =
-            MakeObjGuard(repl::ReplClientInfo::forClient(client),
-                         &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
-                         txn);
+        ming::AutoRAII<> lastOpSetterGuard{
+            [] {},
+            [&] {
+                auto client = txn->getClient();
+                repl::ReplClientInfo::forClient(client).setLastOpToSystemLastOpTime(txn);
+            }};
 
         MultiIndexBlock indexer(txn, collection);
         indexer.allowBackgroundBuilding();
@@ -313,7 +314,7 @@ public:
 
         result.append("numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(txn));
 
-        lastOpSetterGuard.Dismiss();
+        lastOpSetterGuard.dismiss();
 
         return true;
     }

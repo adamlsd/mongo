@@ -845,15 +845,18 @@ Status OptionsParser::addDefaultValues(const OptionSection& options, Environment
  * simple and works for the current use case of config files which should be limited in size.
  */
 Status OptionsParser::readConfigFile(const std::string& filename, std::string* contents) {
-    FILE* config;
-    config = fopen(filename.c_str(), "r");
-    if (config == NULL) {
+    ming::AutoRAII<FILE*> config{[&] { return fopen(filename.c_str(), "r"); },
+                                 [](FILE* const config) {
+                                     if (config == NULL) {
+                                         fclose(config);
+                                     }
+                                 }};
+    if (!config) {
         const int current_errno = errno;
         StringBuilder sb;
         sb << "Error reading config file: " << strerror(current_errno);
         return Status(ErrorCodes::InternalError, sb.str());
     }
-    ON_BLOCK_EXIT(fclose, config);
 
     // Get length of config file by seeking to the end and getting the cursor position
     if (fseek(config, 0L, SEEK_END) != 0) {

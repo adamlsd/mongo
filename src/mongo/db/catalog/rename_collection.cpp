@@ -194,7 +194,8 @@ Status renameCollection(OperationContext* txn,
     }
 
     // Dismissed on success
-    ScopeGuard targetCollectionDropper = MakeGuard(dropCollection, txn, targetDB, target.ns());
+    ming::AutoRAII<> targetCollectionDropper{[] {},
+                                             [&] { dropCollection(txn, targetDB, target.ns()); }};
 
     MultiIndexBlock indexer(txn, targetColl);
     indexer.allowInterruption();
@@ -208,7 +209,8 @@ Status renameCollection(OperationContext* txn,
         while (sourceIndIt.more()) {
             const BSONObj currIndex = sourceIndIt.next()->infoObj();
 
-            // Process the source index, adding fields in the same order as they were originally.
+            // Process the source index, adding fields in the same order as they were
+            // originally.
             BSONObjBuilder newIndex;
             for (auto&& elem : currIndex) {
                 if (elem.fieldNameStringData() == "ns") {
@@ -266,7 +268,7 @@ Status renameCollection(OperationContext* txn,
         wunit.commit();
     }
 
-    targetCollectionDropper.Dismiss();
+    targetCollectionDropper.dismiss();
     return Status::OK();
 }
 

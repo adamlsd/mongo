@@ -434,8 +434,7 @@ void ConnectionPool::SpecificPool::fulfillRequests(stdx::unique_lock<stdx::mutex
     if (_inFulfillRequests)
         return;
 
-    _inFulfillRequests = true;
-    auto guard = MakeGuard([&] { _inFulfillRequests = false; });
+    ming::AutoRAII<> inFulfillRequests{ [&]{_inFulfillRequests = true;}, [&] { _inFulfillRequests = false; } };
 
     while (_requests.size()) {
         auto iter = _readyPool.begin();

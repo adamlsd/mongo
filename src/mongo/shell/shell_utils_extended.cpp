@@ -172,9 +172,12 @@ BSONObj cat(const BSONObj& args, void* data) {
 BSONObj md5sumFile(const BSONObj& args, void* data) {
     BSONElement e = singleArg(args);
     stringstream ss;
-    FILE* f = fopen(e.valuestrsafe(), "rb");
-    uassert(CANT_OPEN_FILE, "couldn't open file", f);
-    ON_BLOCK_EXIT(fclose, f);
+    ming::AutoRAII<FILE*> f{[&] {
+                                FILE* rv = fopen(e.valuestrsafe(), "rb");
+                                uassert(CANT_OPEN_FILE, "couldn't open file", rv);
+                                return rv;
+                            },
+                            fclose};
 
     md5digest d;
     md5_state_t st;

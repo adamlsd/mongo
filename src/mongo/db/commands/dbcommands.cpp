@@ -278,9 +278,13 @@ public:
         bool backupOriginalFiles = e.isBoolean() && e.boolean();
 
         StorageEngine* engine = getGlobalServiceContext()->getGlobalStorageEngine();
-        bool shouldReplicateWrites = txn->writesAreReplicated();
-        txn->setReplicatedWrites(false);
-        ON_BLOCK_EXIT(&OperationContext::setReplicatedWrites, txn, shouldReplicateWrites);
+        ming::AutoRAII<bool> disableReplicatedWrites{
+            [&] {
+                const bool rv = txn->writesAreReplicated();
+                txn->setReplicatedWrites(false);
+                return rv;
+            },
+            [&](const bool oldState) { txn->setReplicatedWrites(oldState); }};
         Status status =
             repairDatabase(txn, engine, dbname, preserveClonedFilesOnFailure, backupOriginalFiles);
 

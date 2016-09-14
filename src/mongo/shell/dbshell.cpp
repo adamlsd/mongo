@@ -711,7 +711,7 @@ int _main(int argc, char* argv[], char** envp) {
     mongo::globalScriptEngine->enableJIT(!shellGlobalParams.nojit);
     mongo::globalScriptEngine->enableJavaScriptProtection(shellGlobalParams.javascriptProtection);
 
-    auto poolGuard = MakeGuard([] { ScriptEngine::dropScopeCache(); });
+    mongo::ming::AutoRAII<> poolGuard { [] {}, [] { ScriptEngine::dropScopeCache(); } };
 
     unique_ptr<mongo::Scope> scope(mongo::globalScriptEngine->newScope());
     shellMainScope = scope.get();

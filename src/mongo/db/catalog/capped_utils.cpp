@@ -271,9 +271,16 @@ Status convertToCapped(OperationContext* txn, const NamespaceString& collectionN
     }
 
 
-    const bool shouldReplicateWrites = txn->writesAreReplicated();
-    txn->setReplicatedWrites(false);
-    ON_BLOCK_EXIT(&OperationContext::setReplicatedWrites, txn, shouldReplicateWrites);
+    ming::AutoRAII<bool> disableReplicatedWrites{
+        [&] {
+            const bool rv = txn->writesAreReplicated();
+            txn->setReplicatedWrites(false);
+            return rv;
+        },
+        [&](const bool oldState) { txn->setReplicatedWrites(oldState); }};
+    // Gather old state.  TODO: Make a DisableReplicatedWrites RAII object
+    const bool shouldReplicateWrites = disableReplicatedWrites;
+
     Status status =
         cloneCollectionAsCapped(txn, db, shortSource.toString(), shortTmpName, size, true);
 

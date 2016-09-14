@@ -15,10 +15,12 @@
 #ifndef LOKI_SCOPEGUARD_H_
 #define LOKI_SCOPEGUARD_H_
 
-#include "mongo/platform/compiler.h"
+#include "mongo/base/ming/autoraii.h"
+
 
 namespace mongo {
 
+#ifdef MONGO_USE_LEGACY_SCOPE_GUARD
 ////////////////////////////////////////////////////////////////////////////////
 ///  \class RefToValue
 ///
@@ -373,16 +375,15 @@ inline ObjScopeGuardImpl2<Obj1, Ret (Obj2::*)(P1a, P2a), P1b, P2b> MakeGuard(
     return ObjScopeGuardImpl2<Obj1, Ret (Obj2::*)(P1a, P2a), P1b, P2b>::MakeObjGuard(
         *obj, memFun, p1, p2);
 }
+#endif
 
-}  // namespace Loki
+}  // namespace mongo
 
 #define LOKI_CONCATENATE_DIRECT(s1, s2) s1##s2
 #define LOKI_CONCATENATE(s1, s2) LOKI_CONCATENATE_DIRECT(s1, s2)
 #define LOKI_ANONYMOUS_VARIABLE(str) LOKI_CONCATENATE(str, __LINE__)
 
-#define ON_BLOCK_EXIT \
-    MONGO_COMPILER_VARIABLE_UNUSED ScopeGuard LOKI_ANONYMOUS_VARIABLE(scopeGuard) = MakeGuard
-#define ON_BLOCK_EXIT_OBJ \
-    MONGO_COMPILER_VARIABLE_UNUSED ScopeGuard LOKI_ANONYMOUS_VARIABLE(scopeGuard) = MakeObjGuard
+#define ON_BLOCK_EXIT(c)\
+    mongo::ming::AutoRAII<> LOKI_ANONYMOUS_VARIABLE(scopeGuard){ []{}, c }
 
 #endif  // LOKI_SCOPEGUARD_H_

@@ -291,7 +291,7 @@ public:
         }
 
         // On early return, get rid of the cursor.
-        ScopeGuard cursorFreer = MakeGuard(&GetMoreCmd::cleanupCursor, txn, &ccPin, request);
+        ming::AutoRAII<> cursorFreer{[] {}, [&] { cleanupCursor(txn, &ccPin, request); }};
 
         if (cursor->isReadCommitted())
             uassertStatusOK(txn->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
@@ -456,7 +456,7 @@ public:
         curOp->debug().nreturned = numResults;
 
         if (respondWithId) {
-            cursorFreer.Dismiss();
+            cursorFreer.dismiss();
 
             // If we are operating on an aggregation cursor, then we dropped our collection lock
             // earlier and need to reacquire it in order to clean up our ClientCursorPin.

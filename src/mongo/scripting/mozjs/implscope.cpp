@@ -208,8 +208,9 @@ bool MozJSImplScope::isJavaScriptProtectionEnabled() const {
 bool MozJSImplScope::_interruptCallback(JSContext* cx) {
     auto scope = getScope(cx);
 
-    JS_SetInterruptCallback(scope->_runtime, nullptr);
-    auto guard = MakeGuard([&]() { JS_SetInterruptCallback(scope->_runtime, _interruptCallback); });
+    ming::AutoRAII<> suspendInterruptCallback{
+        [&] { JS_SetInterruptCallback(scope->_runtime, nullptr); },
+        [&] { JS_SetInterruptCallback(scope->_runtime, _interruptCallback); }};
 
     if (scope->_pendingGC.load() || closeToMaxMemory()) {
         scope->_pendingGC.store(false);

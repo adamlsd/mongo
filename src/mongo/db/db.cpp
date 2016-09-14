@@ -204,9 +204,14 @@ void logStartup(OperationContext* txn) {
     WriteUnitOfWork wunit(txn);
     if (!collection) {
         BSONObj options = BSON("capped" << true << "size" << 10 * 1024 * 1024);
-        bool shouldReplicateWrites = txn->writesAreReplicated();
-        txn->setReplicatedWrites(false);
-        ON_BLOCK_EXIT(&OperationContext::setReplicatedWrites, txn, shouldReplicateWrites);
+        // TODO Make a DisableReplicatedWrites guard object
+        ming::AutoRAII<bool> disableReplicatedWrites{
+            [&] {
+                const bool rv = txn->writesAreReplicated();
+                txn->setReplicatedWrites(false);
+                return rv;
+            },
+            [&](const bool oldState) { txn->setReplicatedWrites(oldState); }};
         uassertStatusOK(userCreateNS(txn, db, startupLogCollectionName.ns(), options));
         collection = db->getCollection(startupLogCollectionName);
     }

@@ -117,10 +117,9 @@ public:
 
         auto client = txn->getClient();
         auto lastOpAtOperationStart = repl::ReplClientInfo::forClient(client).getLastOp();
-        ScopeGuard lastOpSetterGuard =
-            MakeObjGuard(repl::ReplClientInfo::forClient(client),
-                         &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
-                         txn);
+        ming::AutoRAII<> lastOpSetterGuard{
+            [] {},
+            [&] { repl::ReplClientInfo::forClient(client).setLastOpToSystemLastOpTime(txn); }};
 
         auto applyOpsStatus = appendCommandStatus(result, applyOps(txn, dbname, cmdObj, &result));
 
@@ -128,7 +127,7 @@ public:
             // If this operation has already generated a new lastOp, don't bother setting it
             // here. No-op applyOps will not generate a new lastOp, so we still need the guard to
             // fire in that case.
-            lastOpSetterGuard.Dismiss();
+            lastOpSetterGuard.dismiss();
         }
 
         return applyOpsStatus;

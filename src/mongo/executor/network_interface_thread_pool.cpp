@@ -142,8 +142,7 @@ void NetworkInterfaceThreadPool::consumeTasks(stdx::unique_lock<stdx::mutex> lk)
         return;
     }
 
-    _consumingTasks = true;
-    const auto consumingTasksGuard = MakeGuard([&] { _consumingTasks = false; });
+	ming::AutoRAII<> inFunc{ [&]{ _consumingTasks = true; }, [&] { _consumingTasks = false; } };
 
     decltype(_tasks) tasks;
 
@@ -151,8 +150,7 @@ void NetworkInterfaceThreadPool::consumeTasks(stdx::unique_lock<stdx::mutex> lk)
         using std::swap;
         swap(tasks, _tasks);
 
-        lk.unlock();
-        const auto lkGuard = MakeGuard([&] { lk.lock(); });
+		ming::AutoRAII<> unlock{ [&]{ lk.unlock(); }, [&] { lk.lock(); } };
 
         for (auto&& task : tasks) {
             try {

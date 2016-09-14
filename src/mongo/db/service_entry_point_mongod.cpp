@@ -94,8 +94,8 @@ ServiceEntryPointMongod::ServiceEntryPointMongod(TransportLayer* tl) : _tl(tl) {
 
 void ServiceEntryPointMongod::startSession(Session&& session) {
     launchWrappedServiceEntryWorkerThread(std::move(session), [this](Session* session) {
-        _nWorkers.fetchAndAdd(1);
-        auto guard = MakeGuard([&] { _nWorkers.fetchAndSubtract(1); });
+        ming::AutoRAII<> reservation{[&] { _nWorkers.fetchAndAdd(1); },
+                                     [&] { _nWorkers.fetchAndSubtract(1); }};
 
         _sessionLoop(session);
     });

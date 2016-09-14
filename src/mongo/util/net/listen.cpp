@@ -180,7 +180,8 @@ bool Listener::setupSockets() {
         }
 
         SOCKET sock = ::socket(me.getType(), SOCK_STREAM, 0);
-        ScopeGuard socketGuard = MakeGuard(&closesocket, sock);
+        // TODO: Eliminate this ScopeGuard like usage.
+        ming::AutoRAII<> socketGuard{[] {}, [&] { closesocket(sock); }};
         massert(15863,
                 str::stream() << "listen(): invalid socket? " << errnoWithDescription(),
                 sock >= 0);
@@ -231,7 +232,7 @@ bool Listener::setupSockets() {
 #endif
 
         _socks.push_back(sock);
-        socketGuard.Dismiss();
+        socketGuard.dismiss();
     }
 
     _setupSocketsSuccessful = true;

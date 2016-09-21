@@ -71,15 +71,16 @@ namespace mongo
 				std::function< void () > dtor;
 
 			public:
-				template< typename Ctor, typename Dtor >
-				explicit
-				AutoRAII( Ctor c, Dtor d ) : dtor( d ) { c(); }
-
 				~AutoRAII() noexcept
 				{
 					if( this->dtor ) this->dtor();
 				}
 
+				template< typename Ctor, typename Dtor >
+				explicit
+				AutoRAII( Ctor c, Dtor d ) : dtor( d ) { c(); }
+
+				// TODO: Deprecate, and introduce Transaction concept.
 				void dismiss() { this->dtor= nullptr; }
 		};
 	}//namespace ming

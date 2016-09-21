@@ -1,5 +1,13 @@
 #pragma once
 
+#include <functional>
+#include <type_traits>
+#include <tuple>
+#include <array>
+
+#include <boost/optional.hpp>
+#include <boost/noncopyable.hpp>
+
 namespace mongo
 {
 	namespace ming

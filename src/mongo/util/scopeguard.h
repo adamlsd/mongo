@@ -1,19 +1,76 @@
-////////////////////////////////////////////////////////////////////////////////
-// The Loki Library
-// Copyright (c) 2000 Andrei Alexandrescu
-// Copyright (c) 2000 Petru Marginean
-// Copyright (c) 2005 Joshua Lehrer
-//
-// Permission to use, copy, modify, distribute and sell this software for any
-//     purpose is hereby granted without fee, provided that the above copyright
-//     notice appear in all copies and that both that copyright notice and this
-//     permission notice appear in supporting documentation.
-// The author makes no representations about the
-//     suitability of this software for any purpose. It is provided "as is"
-//     without express or implied warranty.
-////////////////////////////////////////////////////////////////////////////////
-#ifndef LOKI_SCOPEGUARD_H_
-#define LOKI_SCOPEGUARD_H_
+#pragma once
+
+#define DISABLE_CLASSIC_SCOPE_GUARD
+#ifdef DISABLE_CLASSIC_SCOPE_GUARD
+
+#include <functional>
+
+#include "mongo/base/ming/autoraii.h"
+
+namespace mongo
+{
+	using ScopeGuard= const ming::detail::UniqueRAIIBase &;
+
+	namespace detail
+	{
+		template< typename F, typename ... Args > struct MakeGuardImpl;
+
+		template< typename Obj, typename ObjP, typename ... Args >
+		struct MakeGuardImpl< void (Obj::*)( Args ... ), ObjP *, Args ... >
+		{
+			static auto
+			create( void (Obj::*fun)( Args ... ), ObjP *obj, Args ... args )
+					-> decltype( ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::function< void ( const mongo::ming::detail::StatefulNa & ) >{} ) )
+			{
+				std::function< void ( const ming::detail::StatefulNa & ) > dtor= [=]( const ming::detail::StatefulNa & ){ (obj->*fun)( args... ); };
+				return ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::move( dtor ) );
+			}
+		};
+
+		template< typename F >
+		struct MakeGuardImpl< F >
+		{
+			static auto
+			create( F fun )
+					-> decltype( ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::function< void ( const mongo::ming::detail::StatefulNa & ) >{} ) )
+			{
+				std::function< void ( const ming::detail::StatefulNa & ) > dtor= [=]( const ming::detail::StatefulNa & ){ fun(); };
+				return ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::move( dtor ) );
+			}
+		};
+
+		template< typename F, typename ... Args >
+		struct MakeGuardImpl
+		{
+			static auto
+			create( F fun, Args ... args )
+					-> decltype( ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::function< void ( const mongo::ming::detail::StatefulNa & ) >{} ) )
+			{
+				std::function< void ( const ming::detail::StatefulNa & ) > dtor= [=]( const ming::detail::StatefulNa & ){ fun( args... ); };
+				return ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::move( dtor ) );
+			}
+		};
+	}
+
+	template< typename F, typename ... Args >
+	auto 
+	MakeGuard( F fun, Args ... args )
+			-> decltype( ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::function< void ( const mongo::ming::detail::StatefulNa & ) >{} ) )
+	{
+		return detail::MakeGuardImpl< F, Args... >::create( fun, args... );
+	}
+
+	template< typename F, typename Obj, typename ... Args >
+	auto 
+	MakeObjGuard( Obj &obj, F fun, Args ... args )
+			-> decltype( ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::function< void ( const mongo::ming::detail::StatefulNa & ) >{} ) )
+	{
+		std::function< void ( const ming::detail::StatefulNa & ) > dtor= [=, &obj]( const ming::detail::StatefulNa & ){ (obj.*fun)( args... ); };
+		return ming::makeUniqueRAII( ming::detail::StatefulNa::giveMeAStatefulNa, std::move( dtor ) );
+	}
+}
+
+#else
 
 #include "mongo/platform/compiler.h"
 
@@ -375,6 +432,7 @@ inline ObjScopeGuardImpl2<Obj1, Ret (Obj2::*)(P1a, P2a), P1b, P2b> MakeGuard(
 }
 
 }  // namespace Loki
+#endif
 
 #define LOKI_CONCATENATE_DIRECT(s1, s2) s1##s2
 #define LOKI_CONCATENATE(s1, s2) LOKI_CONCATENATE_DIRECT(s1, s2)
@@ -385,4 +443,3 @@ inline ObjScopeGuardImpl2<Obj1, Ret (Obj2::*)(P1a, P2a), P1b, P2b> MakeGuard(
 #define ON_BLOCK_EXIT_OBJ \
     MONGO_COMPILER_VARIABLE_UNUSED ScopeGuard LOKI_ANONYMOUS_VARIABLE(scopeGuard) = MakeObjGuard
 
-#endif  // LOKI_SCOPEGUARD_H_

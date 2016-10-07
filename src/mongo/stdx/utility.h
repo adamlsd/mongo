@@ -33,6 +33,24 @@
 namespace mongo {
 namespace stdx {
 
+using std::initializer_list;
+namespace rel_ops = std::rel_ops;
+
+using std::swap;
+using std::forward;
+using std::move;
+using std::move_if_noexcept;
+using std::declval;
+using std::make_pair;
+using std::get;
+
+using std::pair:
+using std::piecewise_construct_t;
+using std::tuple;
+
+using std::piecewise_construct;
+using std::exchange;
+
 #if __cplusplus < 201701
 
 template <tyepname T>

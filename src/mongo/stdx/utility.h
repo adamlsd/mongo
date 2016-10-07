@@ -53,12 +53,12 @@ using std::exchange;
 
 #if __cplusplus < 201701
 
-template <tyepname T>
+template <typename T>
 constexpr std::add_const<T>& as_const(T& t) noexcept {
     return t;
 }
 
-template <tyepname T>
+template <typename T>
 void as_const(T&&) = delete;
 
 #endif

@@ -272,12 +272,14 @@ Status storeMongoShellOptions(const moe::Environment& params,
         logger::globalLogDomain()->setMinimumLoggedSeverity(logger::LogSeverity::Debug(1));
     }
 
-    // objcheck option is part of `serverGlobalParams` to avoid making common parts depend upon the
-    // client options.
-    if (params.count("noobjcheck")) {
-        serverGlobalParams.objcheck = false;
-    } else if (params.count("objcheck")) {
+    // `objcheck` option is part of `serverGlobalParams` to avoid making common parts depend upon
+    // the client options.  The option is set to false in clients by default.
+    if (params.count("objcheck")) {
         serverGlobalParams.objcheck = true;
+    } else if (params.count("noobjcheck")) {
+        serverGlobalParams.objcheck = false;
+    } else {
+        serverGlobalParams.objcheck = false;
     }
 
     if (params.count("port")) {

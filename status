@@ -1,0 +1,3 @@
+#!/bin/sh
+ls *core*
+cat resmoke.logs/A020161019171823 | grep JSTest | grep finished | wc -l

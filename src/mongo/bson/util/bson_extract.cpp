@@ -43,14 +43,36 @@ namespace
 			static constexpr size_t kSize = 16384;
 
 		private:
-			const std::size_t offloadChecksum;
-			std::unique_ptr< std::uint8_t [] > offload;
+			static volatile std::uint8_t *
+			cloneBlock( volatile std::uint8_t *const p ) noexcept
+			{
+				auto rv= new std::uint8_t [ kSize ]();
+				std::copy_n( p, kSize, rv );
+				invariant( std::accumulate( rv, rv + kSize, std::size_t{} ) == std::accumulate( p, p + kSize, std::size_t{} ) );
+				return rv;
+			}
 
-			const volatile unsigned char* const t;
+			const volatile std::size_t offloadChecksum1;
+			const volatile std::uint8_t *const volatile offload1;
+
+			const volatile std::size_t offloadChecksum2;
+			const volatile std::uint8_t *const volatile offload2;
+
+			const volatile std::size_t offloadChecksum3;
+			const volatile std::uint8_t *const volatile offload3;
+
+			const volatile std::size_t offloadChecksum4;
+			const volatile std::uint8_t *const volatile offload4;
+
+			volatile std::size_t offloadChecksumPost;
+			const volatile std::uint8_t *volatile offloadPost;
+
+			const volatile unsigned char* const volatile t;
 
 			static constexpr uint8_t kBits= 0xCD;
 			static constexpr size_t kChecksum= kSize * size_t( kBits );
 
+			__attribute__(( __noinline__ ))
 			void
 			_verify() const noexcept
 			{
@@ -61,17 +83,78 @@ namespace
 		public:
 			explicit
 			Canary( volatile unsigned char *const i_t ) noexcept
-					: offloadChecksum( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload( new std::uint8_t [ kSize ] ), t( i_t )
+					: offloadChecksum1( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload1( cloneBlock( i_t ) ),
+					  offloadChecksum2( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload2( cloneBlock( i_t ) ),
+					  offloadChecksum3( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload3( cloneBlock( i_t ) ),
+					  offloadChecksum4( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload4( cloneBlock( i_t ) ),
+					  t( i_t )
 			{
-				std::copy_n( t, kSize, offload.get() );
 				::memset( const_cast< unsigned char * >( t ), kBits, kSize );
+				_verify();
+				offloadChecksumPost= ( std::accumulate( i_t, i_t + kSize, std::size_t{} ) );
+				offloadPost= cloneBlock( i_t );
+
+				invariant( offloadChecksumPost == kChecksum );
+				_verify();
 				_verify();
 			}
 
-			~Canary()
+			~Canary() noexcept
 			{
 				_verify();
-				invariant( std::accumulate( offload.get(), offload.get() + kSize, std::size_t{} ) == offloadChecksum );
+				_verify();
+				const volatile bool ck1= std::accumulate( offload1, offload1 + kSize, std::size_t{} ) == offloadChecksum1;
+				const volatile bool ck2= std::accumulate( offload2, offload2 + kSize, std::size_t{} ) == offloadChecksum2;
+				const volatile bool ck3= std::accumulate( offload3, offload3 + kSize, std::size_t{} ) == offloadChecksum3;
+				const volatile bool ck4= std::accumulate( offload4, offload4 + kSize, std::size_t{} ) == offloadChecksum4;
+				const volatile bool ck1a= std::accumulate( offload1, offload1 + kSize, std::size_t{} ) == offloadChecksum1;
+				const volatile bool ck2a= std::accumulate( offload2, offload2 + kSize, std::size_t{} ) == offloadChecksum2;
+				const volatile bool ck3a= std::accumulate( offload3, offload3 + kSize, std::size_t{} ) == offloadChecksum3;
+				const volatile bool ck4a= std::accumulate( offload4, offload4 + kSize, std::size_t{} ) == offloadChecksum4;
+
+				const volatile bool ck1_2= offloadChecksum1 == offloadChecksum2;
+				const volatile bool ck1_3= offloadChecksum1 == offloadChecksum3;
+				const volatile bool ck1_4= offloadChecksum1 == offloadChecksum4;
+
+				const volatile bool ck2_3= offloadChecksum2 == offloadChecksum3;
+				const volatile bool ck2_4= offloadChecksum2 == offloadChecksum4;
+
+				const volatile bool ck3_4= offloadChecksum3 == offloadChecksum4;
+
+
+				invariant( ck1 );
+				invariant( ck2 );
+				invariant( ck3 );
+				invariant( ck4 );
+				invariant( ck1a );
+				invariant( ck2a );
+				invariant( ck3a );
+				invariant( ck4a );
+
+				invariant( ck1_2 );
+				invariant( ck1_3 );
+				invariant( ck1_4 );
+
+				invariant( ck2_3 );
+				invariant( ck2_4 );
+
+				invariant( ck3_4 );
+
+				delete offload4; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete offload3; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete offload2; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete offload1; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+
+				_verify();
+
+				invariant( offloadChecksumPost == kChecksum );
+
+				invariant( std::accumulate( offloadPost, offloadPost + kSize, std::size_t{} ) == offloadChecksumPost );
+				invariant( std::accumulate( offloadPost, offloadPost + kSize, std::size_t{} ) == kChecksum );
+
+				delete offloadPost;
+
+				_verify();
 			}
 
 	};

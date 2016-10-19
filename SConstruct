@@ -2343,7 +2343,7 @@ def doConfigure(myenv):
     if myenv.ToolchainIs('gcc', 'clang'):
         # This tells clang/gcc to use the gold linker if it is available - we prefer the gold linker
         # because it is much faster.
-        AddToLINKFLAGSIfSupported(myenv, '-fuse-ld=gold')
+        # AddToLINKFLAGSIfSupported(myenv, '-fuse-ld=gold')
 
         # Explicitly enable GNU build id's if the linker supports it.
         AddToLINKFLAGSIfSupported(myenv, '-Wl,--build-id')

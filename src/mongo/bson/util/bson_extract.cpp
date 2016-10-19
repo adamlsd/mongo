@@ -27,12 +27,61 @@
 
 #include "mongo/bson/util/bson_extract.h"
 
+#include <numeric>
+#include <memory>
+
 #include "mongo/db/jsobj.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
+namespace
+{
+	class Canary
+	{
+		public:
+			static constexpr size_t kSize = 16384;
+
+		private:
+			const std::size_t offloadChecksum;
+			std::unique_ptr< std::uint8_t [] > offload;
+
+			const volatile unsigned char* const t;
+
+			static constexpr uint8_t kBits= 0xCD;
+			static constexpr size_t kChecksum= kSize * size_t( kBits );
+
+			void
+			_verify() const noexcept
+			{
+				invariant( std::accumulate( &t[ 0 ], &t[ kSize ], size_t{} ) == kChecksum );
+			}
+
+
+		public:
+			explicit
+			Canary( volatile unsigned char *const i_t ) noexcept
+					: offloadChecksum( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload( new std::uint8_t [ kSize ] ), t( i_t )
+			{
+				std::copy_n( t, kSize, offload.get() );
+				::memset( const_cast< unsigned char * >( t ), kBits, kSize );
+				_verify();
+			}
+
+			~Canary()
+			{
+				_verify();
+				invariant( std::accumulate( offload.get(), offload.get() + kSize, std::size_t{} ) == offloadChecksum );
+			}
+
+	};
+}  // namespace
+
 Status bsonExtractField(const BSONObj& object, StringData fieldName, BSONElement* outElement) {
+
+    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
+    const Canary c(cookie);
+
     BSONElement element = object.getField(fieldName);
     if (element.eoo())
         return Status(ErrorCodes::NoSuchKey,
@@ -47,6 +96,10 @@ Status bsonExtractTypedField(const BSONObj& object,
                              StringData fieldName,
                              BSONType type,
                              BSONElement* outElement) {
+
+    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
+    const Canary c(cookie);
+
     Status status = bsonExtractField(object, fieldName, outElement);
     if (!status.isOK())
         return status;
@@ -94,8 +147,14 @@ Status bsonExtractBooleanFieldWithDefault(const BSONObj& object,
 }
 
 Status bsonExtractStringField(const BSONObj& object, StringData fieldName, std::string* out) {
+
+    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
+    const Canary c(cookie);
+
+    const BSONObj* volatile vobj = &object;
+
     BSONElement element;
-    Status status = bsonExtractTypedField(object, fieldName, String, &element);
+    Status status = bsonExtractTypedField(*vobj, fieldName, String, &element);
     if (!status.isOK())
         return status;
     *out = element.str();

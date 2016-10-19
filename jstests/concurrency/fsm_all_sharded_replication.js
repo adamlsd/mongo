@@ -95,7 +95,22 @@ var blacklist = [
     return dir + '/' + file;
 });
 
+var whitelist = [
+    'update_rename_noindex.js',
+    'update_rename_noindex.js',
+    'update_rename.js',
+    'indexed_insert_compound.js',
+    'explain_aggregate.js',
+    'create_index_background.js',
+    'findAndModify_inc.js',
+    'indexed_insert_compound.js',
+    'indexed_insert_upsert.js',
+].map(function(file) {
+    return dir + '/' + file;
+});
+
+
 runWorkloadsSerially(ls(dir).filter(function(file) {
-    return !Array.contains(blacklist, file);
+    return Array.contains(whitelist, file);
 }),
                      {sharded: true, replication: true});

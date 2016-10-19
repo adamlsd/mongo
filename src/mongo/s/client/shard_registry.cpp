@@ -77,7 +77,7 @@ using CallbackHandle = TaskExecutor::CallbackHandle;
 
 
 namespace {
-const Seconds kRefreshPeriod(30);
+const Milliseconds kRefreshPeriod(250);
 }  // namespace
 
 ShardRegistry::ShardRegistry(std::unique_ptr<ShardFactory> shardFactory,
@@ -275,14 +275,14 @@ bool ShardRegistry::reload(OperationContext* txn) {
     }
 
     _reloadState = ReloadState::Reloading;
-    reloadLock.unlock();
+    // reloadLock.unlock();
 
     auto nextReloadState = ReloadState::Failed;
 
     auto failGuard = MakeGuard([&] {
-        if (!reloadLock.owns_lock()) {
-            reloadLock.lock();
-        }
+        // if (!reloadLock.owns_lock()) {
+        //     reloadLock.lock();
+        // }
         _reloadState = nextReloadState;
         _inReloadCV.notify_all();
     });

@@ -37,6 +37,12 @@ namespace mongo {
 
 namespace
 {
+	void
+	fast_assert( const bool b )
+	{
+		if( !b ) abort();
+	}
+
 	class Canary
 	{
 		public:
@@ -46,9 +52,12 @@ namespace
 			static volatile std::uint8_t *
 			cloneBlock( volatile std::uint8_t *const p ) noexcept
 			{
+				auto *const precopyChecksum= (std::size_t *) alloca( sizeof( std::size_t ) );
+				*precopyChecksum= std::accumulate( p, p + kSize, std::size_t{} );
 				auto rv= new std::uint8_t [ kSize ]();
 				std::copy_n( p, kSize, rv );
-				invariant( std::accumulate( rv, rv + kSize, std::size_t{} ) == std::accumulate( p, p + kSize, std::size_t{} ) );
+				fast_assert( std::accumulate( rv, rv + kSize, std::size_t{} ) == std::accumulate( p, p + kSize, std::size_t{} ) );
+				fast_assert( std::accumulate( rv, rv + kSize, std::size_t{} ) == *precopyChecksum );
 				return rv;
 			}
 
@@ -97,6 +106,10 @@ namespace
 				invariant( offloadChecksumPost == kChecksum );
 				_verify();
 				_verify();
+
+				invariant( offloadChecksum1 == offloadChecksum2 );
+				invariant( offloadChecksum2 == offloadChecksum3 );
+				invariant( offloadChecksum3 == offloadChecksum4 );
 			}
 
 			~Canary() noexcept

@@ -81,10 +81,8 @@ Status addMongoShellOptions(moe::OptionSection* options) {
     options->addOptionChaining("eval", "eval", moe::String, "evaluate javascript");
 
     options
-        ->addOptionChaining("objcheck",
-                            "objcheck",
-                            moe::Switch,
-                            "inspect client data for validity on receipt")
+        ->addOptionChaining(
+            "objcheck", "objcheck", moe::Switch, "inspect client data for validity on receipt")
         .hidden()
         .setSources(moe::SourceAllLegacy)
         .incompatibleWith("noobjcheck");

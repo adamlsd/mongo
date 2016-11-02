@@ -35,6 +35,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -50,6 +51,7 @@ const BSONField<BSONObj> TagsType::max("max");
 
 
 StatusWith<TagsType> TagsType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     TagsType tags;
 
     {

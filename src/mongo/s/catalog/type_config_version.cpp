@@ -34,6 +34,7 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/s/catalog/config_server_version.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -114,6 +115,7 @@ BSONObj VersionType::toBSON() const {
 }
 
 StatusWith<VersionType> VersionType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     VersionType version;
 
     {

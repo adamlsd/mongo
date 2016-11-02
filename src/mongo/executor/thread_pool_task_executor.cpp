@@ -58,6 +58,7 @@ class ThreadPoolTaskExecutor::CallbackState : public TaskExecutor::CallbackState
 
 public:
     static std::shared_ptr<CallbackState> make(CallbackFn&& cb, Date_t readyDate) {
+		INJECT_CANARY;
         return std::make_shared<CallbackState>(std::move(cb), readyDate);
     }
 
@@ -65,11 +66,15 @@ public:
      * Do not call directly. Use make.
      */
     CallbackState(CallbackFn&& cb, Date_t theReadyDate)
-        : callback(std::move(cb)), readyDate(theReadyDate) {}
+        : callback(std::move(cb)), readyDate(theReadyDate)
+	{
+		INJECT_CANARY;
+	}
 
     virtual ~CallbackState() = default;
 
     bool isCanceled() const override {
+		INJECT_CANARY;
         return canceled.load() > 0;
     }
 
@@ -99,6 +104,7 @@ class ThreadPoolTaskExecutor::EventState : public TaskExecutor::EventState {
 
 public:
     static std::shared_ptr<EventState> make() {
+		INJECT_CANARY;
         return std::make_shared<EventState>();
     }
 
@@ -124,11 +130,15 @@ public:
 
 ThreadPoolTaskExecutor::ThreadPoolTaskExecutor(std::unique_ptr<ThreadPoolInterface> pool,
                                                std::unique_ptr<NetworkInterface> net)
-    : _net(std::move(net)), _pool(std::move(pool)) {}
+    : _net(std::move(net)), _pool(std::move(pool))
+{
+	INJECT_CANARY;
+}
 
 ThreadPoolTaskExecutor::~ThreadPoolTaskExecutor() {}
 
 void ThreadPoolTaskExecutor::startup() {
+	INJECT_CANARY;
     _net->startup();
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     if (_inShutdown) {
@@ -138,6 +148,7 @@ void ThreadPoolTaskExecutor::startup() {
 }
 
 void ThreadPoolTaskExecutor::shutdown() {
+	INJECT_CANARY;
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     _inShutdown = true;
     WorkQueue pending;
@@ -188,6 +199,7 @@ void ThreadPoolTaskExecutor::join() {
 }
 
 BSONObj ThreadPoolTaskExecutor::_getDiagnosticBSON() const {
+	INJECT_CANARY;
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     BSONObjBuilder builder;
 
@@ -218,6 +230,7 @@ Date_t ThreadPoolTaskExecutor::now() {
 }
 
 StatusWith<TaskExecutor::EventHandle> ThreadPoolTaskExecutor::makeEvent() {
+	INJECT_CANARY;
     auto el = makeSingletonEventList();
     EventHandle event;
     setEventForHandle(&event, el.front());
@@ -230,12 +243,14 @@ StatusWith<TaskExecutor::EventHandle> ThreadPoolTaskExecutor::makeEvent() {
 }
 
 void ThreadPoolTaskExecutor::signalEvent(const EventHandle& event) {
+	INJECT_CANARY;
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     signalEvent_inlock(event, std::move(lk));
 }
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::onEvent(const EventHandle& event,
                                                                          const CallbackFn& work) {
+	INJECT_CANARY;
     if (!event.isValid()) {
         return {ErrorCodes::BadValue, "Passed invalid event handle to onEvent"};
     }
@@ -253,6 +268,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::onEvent(const E
 }
 
 void ThreadPoolTaskExecutor::waitForEvent(const EventHandle& event) {
+	INJECT_CANARY;
     invariant(event.isValid());
     auto eventState = checked_cast<EventState*>(getEventFromHandle(event));
     stdx::unique_lock<stdx::mutex> lk(_mutex);
@@ -263,6 +279,7 @@ void ThreadPoolTaskExecutor::waitForEvent(const EventHandle& event) {
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWork(
     const CallbackFn& work) {
+	INJECT_CANARY;
     auto wq = makeSingletonWorkQueue(work);
     WorkQueue temp;
     stdx::unique_lock<stdx::mutex> lk(_mutex);
@@ -276,6 +293,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWork(
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
     Date_t when, const CallbackFn& work) {
+	INJECT_CANARY;
     if (when <= now()) {
         return scheduleWork(work);
     }
@@ -287,6 +305,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
     }
     lk.unlock();
     _net->setAlarm(when, [this, when, cbHandle] {
+		INJECT_CANARY;
         auto cbState = checked_cast<CallbackState*>(getCallbackFromHandle(cbHandle.getValue()));
         if (cbState->canceled.load()) {
             return;
@@ -314,6 +333,7 @@ void remoteCommandFinished(const TaskExecutor::CallbackArgs& cbData,
                            const TaskExecutor::RemoteCommandCallbackFn& cb,
                            const RemoteCommandRequest& request,
                            const ResponseStatus& rs) {
+	INJECT_CANARY;
     cb(TaskExecutor::RemoteCommandCallbackArgs(cbData.executor, cbData.myHandle, request, rs));
 }
 
@@ -324,6 +344,7 @@ void remoteCommandFinished(const TaskExecutor::CallbackArgs& cbData,
 void remoteCommandFailedEarly(const TaskExecutor::CallbackArgs& cbData,
                               const TaskExecutor::RemoteCommandCallbackFn& cb,
                               const RemoteCommandRequest& request) {
+	INJECT_CANARY;
     invariant(!cbData.status.isOK());
     cb(TaskExecutor::RemoteCommandCallbackArgs(
         cbData.executor, cbData.myHandle, request, {cbData.status}));
@@ -332,6 +353,7 @@ void remoteCommandFailedEarly(const TaskExecutor::CallbackArgs& cbData,
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleRemoteCommand(
     const RemoteCommandRequest& request, const RemoteCommandCallbackFn& cb) {
+	INJECT_CANARY;
     RemoteCommandRequest scheduledRequest = request;
     if (request.timeout == RemoteCommandRequest::kNoTimeout) {
         scheduledRequest.expirationDate = RemoteCommandRequest::kNoExpirationDate;
@@ -356,6 +378,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleRemoteC
         cbHandle.getValue(),
         scheduledRequest,
         [this, scheduledRequest, cbState, cb](const ResponseStatus& response) {
+			INJECT_CANARY;
             using std::swap;
             CallbackFn newCb = [cb, scheduledRequest, response](const CallbackArgs& cbData) {
                 remoteCommandFinished(cbData, cb, scheduledRequest, response);
@@ -373,6 +396,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleRemoteC
 }
 
 void ThreadPoolTaskExecutor::cancel(const CallbackHandle& cbHandle) {
+	INJECT_CANARY;
     invariant(cbHandle.isValid());
     auto cbState = checked_cast<CallbackState*>(getCallbackFromHandle(cbHandle));
     stdx::unique_lock<stdx::mutex> lk(_mutex);
@@ -398,6 +422,7 @@ void ThreadPoolTaskExecutor::cancel(const CallbackHandle& cbHandle) {
 }
 
 void ThreadPoolTaskExecutor::wait(const CallbackHandle& cbHandle) {
+	INJECT_CANARY;
     invariant(cbHandle.isValid());
     auto cbState = checked_cast<CallbackState*>(getCallbackFromHandle(cbHandle));
     if (cbState->isFinished.load()) {
@@ -408,6 +433,7 @@ void ThreadPoolTaskExecutor::wait(const CallbackHandle& cbHandle) {
         cbState->finishedCondition.emplace();
     }
     while (!cbState->isFinished.load()) {
+		INJECT_CANARY;
         cbState->finishedCondition->wait(lk);
     }
 }
@@ -422,6 +448,7 @@ void ThreadPoolTaskExecutor::cancelAllCommands() {
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::enqueueCallbackState_inlock(
     WorkQueue* queue, WorkQueue* wq) {
+	INJECT_CANARY;
     if (_inShutdown) {
         return {ErrorCodes::ShutdownInProgress, "Shutdown in progress"};
     }
@@ -450,6 +477,7 @@ ThreadPoolTaskExecutor::EventList ThreadPoolTaskExecutor::makeSingletonEventList
 
 void ThreadPoolTaskExecutor::signalEvent_inlock(const EventHandle& event,
                                                 stdx::unique_lock<stdx::mutex> lk) {
+	INJECT_CANARY;
     invariant(event.isValid());
     auto eventState = checked_cast<EventState*>(getEventFromHandle(event));
     invariant(!eventState->isSignaledFlag);
@@ -474,6 +502,7 @@ void ThreadPoolTaskExecutor::scheduleIntoPool_inlock(WorkQueue* fromQueue,
                                                      const WorkQueue::iterator& begin,
                                                      const WorkQueue::iterator& end,
                                                      stdx::unique_lock<stdx::mutex> lk) {
+	INJECT_CANARY;
     dassert(fromQueue != &_poolInProgressQueue);
     std::vector<std::shared_ptr<CallbackState>> todo(begin, end);
     _poolInProgressQueue.splice(_poolInProgressQueue.end(), *fromQueue, begin, end);
@@ -497,6 +526,7 @@ void ThreadPoolTaskExecutor::scheduleIntoPool_inlock(WorkQueue* fromQueue,
 }
 
 void ThreadPoolTaskExecutor::runCallback(std::shared_ptr<CallbackState> cbStateArg) {
+	INJECT_CANARY;
     CallbackHandle cbHandle;
     setCallbackForHandle(&cbHandle, cbStateArg);
     CallbackArgs args(this,

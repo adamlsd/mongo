@@ -51,6 +51,7 @@ ValueReader::ValueReader(JSContext* cx, JS::MutableHandleValue value)
     : _context(cx), _value(value) {}
 
 void ValueReader::fromBSONElement(const BSONElement& elem, const BSONObj& parent, bool readOnly) {
+	INJECT_CANARY;
     auto scope = getScope(_context);
 
     switch (elem.type()) {
@@ -204,6 +205,7 @@ void ValueReader::fromBSONElement(const BSONElement& elem, const BSONObj& parent
 }
 
 void ValueReader::fromBSON(const BSONObj& obj, const BSONObj* parent, bool readOnly) {
+	INJECT_CANARY;
     if (obj.firstElementType() == String && str::equals(obj.firstElementFieldName(), "$ref")) {
         BSONObjIterator it(obj);
         const BSONElement ref = it.next();
@@ -241,6 +243,7 @@ void ValueReader::fromBSON(const BSONObj& obj, const BSONObj* parent, bool readO
 }
 
 void ValueReader::fromBSONArray(const BSONObj& obj, const BSONObj* parent, bool readOnly) {
+	INJECT_CANARY;
     JS::AutoValueVector avv(_context);
 
     BSONForEach(elem, obj) {

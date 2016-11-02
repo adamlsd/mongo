@@ -66,6 +66,7 @@ ChunkRange::ChunkRange(BSONObj minKey, BSONObj maxKey)
 }
 
 StatusWith<ChunkRange> ChunkRange::fromBSON(const BSONObj& obj) {
+	INJECT_CANARY;
     BSONElement minKey;
     {
         Status minKeyStatus = bsonExtractTypedField(obj, kMinKey, Object, &minKey);
@@ -123,6 +124,7 @@ bool ChunkRange::operator!=(const ChunkRange& other) const {
 }
 
 StatusWith<ChunkType> ChunkType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     ChunkType chunk;
 
     {

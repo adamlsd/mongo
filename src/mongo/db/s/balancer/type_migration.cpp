@@ -54,6 +54,7 @@ MigrationType::MigrationType(MigrateInfo info)
       _toShard(info.to) {}
 
 StatusWith<MigrationType> MigrationType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     MigrationType migrationType;
 
     {

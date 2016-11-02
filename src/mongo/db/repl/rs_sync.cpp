@@ -53,7 +53,7 @@ RSDataSync::~RSDataSync() {
 
 void RSDataSync::startup() {
     invariant(!_runThread.joinable());
-    _runThread = stdx::thread(&RSDataSync::_run, this);
+    _runThread = stdx::thread(std::bind(&RSDataSync::_run, this));
 }
 
 void RSDataSync::join() {

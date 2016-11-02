@@ -35,6 +35,7 @@
 #include "mongo/s/write_ops/batched_update_document.h"
 #include "mongo/s/write_ops/batched_update_request.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 
@@ -45,6 +46,7 @@ const BSONField<std::string> ShardIdentityType::shardName("shardName");
 const BSONField<OID> ShardIdentityType::clusterId("clusterId");
 
 StatusWith<ShardIdentityType> ShardIdentityType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     if (!source.hasField("_id")) {
         return {ErrorCodes::NoSuchKey,
                 str::stream() << "missing _id field for shardIdentity document"};

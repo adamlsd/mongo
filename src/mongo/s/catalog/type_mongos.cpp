@@ -32,6 +32,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -45,6 +46,7 @@ const BSONField<std::string> MongosType::mongoVersion("mongoVersion");
 const BSONField<long long> MongosType::configVersion("configVersion");
 
 StatusWith<MongosType> MongosType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     MongosType mt;
 
     {

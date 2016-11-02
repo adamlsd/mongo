@@ -84,6 +84,7 @@ public:
     enum ChangeType : int8_t { Increment = 1, Decrement = -1, Clear = 0 };
 
     static StatusWith<RecoveryDocument> fromBSON(const BSONObj& obj) {
+		INJECT_CANARY;
         RecoveryDocument recDoc;
 
         {

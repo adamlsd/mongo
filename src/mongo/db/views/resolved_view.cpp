@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/pipeline/aggregation_request.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 
@@ -42,6 +43,7 @@ bool ResolvedView::isResolvedViewErrorResponse(BSONObj commandResponseObj) {
 }
 
 ResolvedView ResolvedView::fromBSON(BSONObj commandResponseObj) {
+	INJECT_CANARY;
     uassert(40248,
             "command response expected to have a 'resolvedView' field",
             commandResponseObj.hasField("resolvedView"));

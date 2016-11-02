@@ -76,7 +76,7 @@ public:
         // of this instance must be initialized before the thread is created.  As a result, we
         // should not create the thread in the initializer list.  Creating it there leaves us
         // vulnerable to errors introduced by rearranging the order of fields in the class.
-        _monitorThread = stdx::thread(&mongo::DeadlineMonitor<_Task>::deadlineMonitorThread, this);
+        _monitorThread = stdx::thread(std::bind(&mongo::DeadlineMonitor<_Task>::deadlineMonitorThread, this));
     }
 
     ~DeadlineMonitor() {

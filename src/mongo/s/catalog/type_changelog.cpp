@@ -35,6 +35,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -48,6 +49,7 @@ const BSONField<std::string> ChangeLogType::ns("ns");
 const BSONField<BSONObj> ChangeLogType::details("details");
 
 StatusWith<ChangeLogType> ChangeLogType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     ChangeLogType changeLog;
 
     {

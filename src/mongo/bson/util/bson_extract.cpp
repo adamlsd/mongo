@@ -29,154 +29,17 @@
 
 #include <numeric>
 #include <memory>
+#include <atomic>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 
-namespace
+Status bsonExtractField(const BSONObj& object, StringData fieldName, BSONElement* outElement)
 {
-	void
-	fast_assert( const bool b )
-	{
-		if( !b ) abort();
-	}
-
-	class Canary
-	{
-		public:
-			static constexpr size_t kSize = 16384;
-
-		private:
-			static volatile std::uint8_t *
-			cloneBlock( volatile std::uint8_t *const p ) noexcept
-			{
-				auto *const precopyChecksum= (std::size_t *) alloca( sizeof( std::size_t ) );
-				*precopyChecksum= std::accumulate( p, p + kSize, std::size_t{} );
-				auto rv= new std::uint8_t [ kSize ]();
-				std::copy_n( p, kSize, rv );
-				fast_assert( std::accumulate( rv, rv + kSize, std::size_t{} ) == std::accumulate( p, p + kSize, std::size_t{} ) );
-				fast_assert( std::accumulate( rv, rv + kSize, std::size_t{} ) == *precopyChecksum );
-				return rv;
-			}
-
-			const volatile std::size_t offloadChecksum1;
-			const volatile std::uint8_t *const volatile offload1;
-
-			const volatile std::size_t offloadChecksum2;
-			const volatile std::uint8_t *const volatile offload2;
-
-			const volatile std::size_t offloadChecksum3;
-			const volatile std::uint8_t *const volatile offload3;
-
-			const volatile std::size_t offloadChecksum4;
-			const volatile std::uint8_t *const volatile offload4;
-
-			volatile std::size_t offloadChecksumPost;
-			const volatile std::uint8_t *volatile offloadPost;
-
-			const volatile unsigned char* const volatile t;
-
-			static constexpr uint8_t kBits= 0xCD;
-			static constexpr size_t kChecksum= kSize * size_t( kBits );
-
-			__attribute__(( __noinline__ ))
-			void
-			_verify() const noexcept
-			{
-				invariant( std::accumulate( &t[ 0 ], &t[ kSize ], size_t{} ) == kChecksum );
-			}
-
-
-		public:
-			explicit
-			Canary( volatile unsigned char *const i_t ) noexcept
-					: offloadChecksum1( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload1( cloneBlock( i_t ) ),
-					  offloadChecksum2( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload2( cloneBlock( i_t ) ),
-					  offloadChecksum3( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload3( cloneBlock( i_t ) ),
-					  offloadChecksum4( std::accumulate( i_t, i_t + kSize, std::size_t{} ) ), offload4( cloneBlock( i_t ) ),
-					  t( i_t )
-			{
-				::memset( const_cast< unsigned char * >( t ), kBits, kSize );
-				_verify();
-				offloadChecksumPost= ( std::accumulate( i_t, i_t + kSize, std::size_t{} ) );
-				offloadPost= cloneBlock( i_t );
-
-				invariant( offloadChecksumPost == kChecksum );
-				_verify();
-				_verify();
-
-				invariant( offloadChecksum1 == offloadChecksum2 );
-				invariant( offloadChecksum2 == offloadChecksum3 );
-				invariant( offloadChecksum3 == offloadChecksum4 );
-			}
-
-			~Canary() noexcept
-			{
-				_verify();
-				_verify();
-				const volatile bool ck1= std::accumulate( offload1, offload1 + kSize, std::size_t{} ) == offloadChecksum1;
-				const volatile bool ck2= std::accumulate( offload2, offload2 + kSize, std::size_t{} ) == offloadChecksum2;
-				const volatile bool ck3= std::accumulate( offload3, offload3 + kSize, std::size_t{} ) == offloadChecksum3;
-				const volatile bool ck4= std::accumulate( offload4, offload4 + kSize, std::size_t{} ) == offloadChecksum4;
-				const volatile bool ck1a= std::accumulate( offload1, offload1 + kSize, std::size_t{} ) == offloadChecksum1;
-				const volatile bool ck2a= std::accumulate( offload2, offload2 + kSize, std::size_t{} ) == offloadChecksum2;
-				const volatile bool ck3a= std::accumulate( offload3, offload3 + kSize, std::size_t{} ) == offloadChecksum3;
-				const volatile bool ck4a= std::accumulate( offload4, offload4 + kSize, std::size_t{} ) == offloadChecksum4;
-
-				const volatile bool ck1_2= offloadChecksum1 == offloadChecksum2;
-				const volatile bool ck1_3= offloadChecksum1 == offloadChecksum3;
-				const volatile bool ck1_4= offloadChecksum1 == offloadChecksum4;
-
-				const volatile bool ck2_3= offloadChecksum2 == offloadChecksum3;
-				const volatile bool ck2_4= offloadChecksum2 == offloadChecksum4;
-
-				const volatile bool ck3_4= offloadChecksum3 == offloadChecksum4;
-
-
-				invariant( ck1 );
-				invariant( ck2 );
-				invariant( ck3 );
-				invariant( ck4 );
-				invariant( ck1a );
-				invariant( ck2a );
-				invariant( ck3a );
-				invariant( ck4a );
-
-				invariant( ck1_2 );
-				invariant( ck1_3 );
-				invariant( ck1_4 );
-
-				invariant( ck2_3 );
-				invariant( ck2_4 );
-
-				invariant( ck3_4 );
-
-				delete offload4; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload3; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload2; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload1; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-
-				_verify();
-
-				invariant( offloadChecksumPost == kChecksum );
-
-				invariant( std::accumulate( offloadPost, offloadPost + kSize, std::size_t{} ) == offloadChecksumPost );
-				invariant( std::accumulate( offloadPost, offloadPost + kSize, std::size_t{} ) == kChecksum );
-
-				delete offloadPost;
-
-				_verify();
-			}
-
-	};
-}  // namespace
-
-Status bsonExtractField(const BSONObj& object, StringData fieldName, BSONElement* outElement) {
-
-    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
-    const Canary c(cookie);
+	INJECT_CANARY;
 
     BSONElement element = object.getField(fieldName);
     if (element.eoo())
@@ -193,8 +56,7 @@ Status bsonExtractTypedField(const BSONObj& object,
                              BSONType type,
                              BSONElement* outElement) {
 
-    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
-    const Canary c(cookie);
+	INJECT_CANARY;
 
     Status status = bsonExtractField(object, fieldName, outElement);
     if (!status.isOK())
@@ -211,6 +73,8 @@ Status bsonExtractTypedField(const BSONObj& object,
 }
 
 Status bsonExtractBooleanField(const BSONObj& object, StringData fieldName, bool* out) {
+	INJECT_CANARY;
+
     BSONElement element;
     Status status = bsonExtractTypedField(object, fieldName, Bool, &element);
     if (!status.isOK())
@@ -223,6 +87,11 @@ Status bsonExtractBooleanFieldWithDefault(const BSONObj& object,
                                           StringData fieldName,
                                           bool defaultValue,
                                           bool* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     BSONElement value;
     Status status = bsonExtractField(object, fieldName, &value);
     if (status == ErrorCodes::NoSuchKey) {
@@ -244,8 +113,7 @@ Status bsonExtractBooleanFieldWithDefault(const BSONObj& object,
 
 Status bsonExtractStringField(const BSONObj& object, StringData fieldName, std::string* out) {
 
-    volatile unsigned char* const cookie = static_cast<unsigned char *>(alloca(Canary::kSize));
-    const Canary c(cookie);
+	INJECT_CANARY;
 
     const BSONObj* volatile vobj = &object;
 
@@ -258,6 +126,11 @@ Status bsonExtractStringField(const BSONObj& object, StringData fieldName, std::
 }
 
 Status bsonExtractTimestampField(const BSONObj& object, StringData fieldName, Timestamp* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     BSONElement element;
     Status status = bsonExtractTypedField(object, fieldName, bsonTimestamp, &element);
     if (!status.isOK())
@@ -267,6 +140,11 @@ Status bsonExtractTimestampField(const BSONObj& object, StringData fieldName, Ti
 }
 
 Status bsonExtractOIDField(const BSONObj& object, StringData fieldName, OID* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     BSONElement element;
     Status status = bsonExtractTypedField(object, fieldName, jstOID, &element);
     if (!status.isOK())
@@ -279,6 +157,11 @@ Status bsonExtractOIDFieldWithDefault(const BSONObj& object,
                                       StringData fieldName,
                                       const OID& defaultValue,
                                       OID* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     Status status = bsonExtractOIDField(object, fieldName, out);
     if (status == ErrorCodes::NoSuchKey) {
         *out = defaultValue;
@@ -292,6 +175,11 @@ Status bsonExtractStringFieldWithDefault(const BSONObj& object,
                                          StringData fieldName,
                                          StringData defaultValue,
                                          std::string* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     Status status = bsonExtractStringField(object, fieldName, out);
     if (status == ErrorCodes::NoSuchKey) {
         *out = defaultValue.toString();
@@ -302,6 +190,11 @@ Status bsonExtractStringFieldWithDefault(const BSONObj& object,
 }
 
 Status bsonExtractIntegerField(const BSONObj& object, StringData fieldName, long long* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     BSONElement value;
     Status status = bsonExtractField(object, fieldName, &value);
     if (!status.isOK())
@@ -329,6 +222,11 @@ Status bsonExtractIntegerFieldWithDefault(const BSONObj& object,
                                           StringData fieldName,
                                           long long defaultValue,
                                           long long* out) {
+	INJECT_CANARY;
+
+    const BSONObj* volatile vobj = &object;
+	(void) vobj;
+
     Status status = bsonExtractIntegerField(object, fieldName, out);
     if (status == ErrorCodes::NoSuchKey) {
         *out = defaultValue;
@@ -343,6 +241,7 @@ Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
                                             stdx::function<bool(long long)> pred,
                                             const std::string& predDescription,
                                             long long* out) {
+	INJECT_CANARY;
     auto status = bsonExtractIntegerFieldWithDefault(object, fieldName, defaultValue, out);
     if (!status.isOK()) {
         return status;
@@ -362,6 +261,7 @@ Status bsonExtractIntegerFieldWithDefaultIf(const BSONObj& object,
                                             long long defaultValue,
                                             stdx::function<bool(long long)> pred,
                                             long long* out) {
+	INJECT_CANARY;
     return bsonExtractIntegerFieldWithDefaultIf(
         object, fieldName, defaultValue, pred, "constraint failed", out);
 }

@@ -36,6 +36,7 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -50,6 +51,7 @@ const BSONField<BSONArray> ShardType::tags("tags");
 const BSONField<ShardType::ShardState> ShardType::state("state");
 
 StatusWith<ShardType> ShardType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     ShardType shard;
 
     {

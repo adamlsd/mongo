@@ -29,6 +29,7 @@
 #pragma once
 
 #include "mongo/db/jsobj.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 
@@ -252,6 +253,7 @@ public:
     //
 
     static ChunkVersion fromBSON(const BSONElement& el, const std::string& prefix, bool* canParse) {
+		INJECT_CANARY;
         *canParse = true;
 
         int type = el.type();
@@ -278,11 +280,13 @@ public:
     //
 
     static ChunkVersion fromBSON(const BSONObj& obj, const std::string& prefix = "") {
+		INJECT_CANARY;
         bool canParse;
         return fromBSON(obj, prefix, &canParse);
     }
 
     static ChunkVersion fromBSON(const BSONObj& obj, const std::string& prefixIn, bool* canParse) {
+		INJECT_CANARY;
         *canParse = true;
 
         std::string prefix = prefixIn;
@@ -312,6 +316,7 @@ public:
     //
 
     static ChunkVersion fromBSON(const BSONArray& arr, bool* canParse) {
+		INJECT_CANARY;
         *canParse = false;
 
         ChunkVersion version;

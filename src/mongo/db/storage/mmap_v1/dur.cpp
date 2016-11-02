@@ -617,7 +617,7 @@ void DurableImpl::commitAndStopDurThread() {
 
 void DurableImpl::start(ClockSource* cs, int64_t serverStartMs) {
     // Start the durability thread
-    stdx::thread t(durThread, cs, serverStartMs);
+    stdx::thread t(std::bind(durThread, cs, serverStartMs));
     _durThreadHandle.swap(t);
 }
 

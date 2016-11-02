@@ -35,6 +35,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 
@@ -48,6 +49,7 @@ const BSONField<bool> DatabaseType::sharded("partitioned");
 
 
 StatusWith<DatabaseType> DatabaseType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     DatabaseType dbt;
 
     {

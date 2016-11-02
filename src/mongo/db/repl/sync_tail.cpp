@@ -194,7 +194,7 @@ class ApplyBatchFinalizerForJournal : public ApplyBatchFinalizer {
 public:
     ApplyBatchFinalizerForJournal(ReplicationCoordinator* replCoord)
         : ApplyBatchFinalizer(replCoord),
-          _waiterThread{&ApplyBatchFinalizerForJournal::_run, this} {};
+          _waiterThread{std::bind(&ApplyBatchFinalizerForJournal::_run, this)} {};
     ~ApplyBatchFinalizerForJournal();
 
     void record(const OpTime& newOpTime) override;

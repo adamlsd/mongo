@@ -41,6 +41,7 @@
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/log.h"
+#include "mongo/util/paranoid_canary.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
@@ -242,6 +243,7 @@ BalancerSettingsType BalancerSettingsType::createDefault() {
 }
 
 StatusWith<BalancerSettingsType> BalancerSettingsType::fromBSON(const BSONObj& obj) {
+	INJECT_CANARY;
     BalancerSettingsType settings;
 
     {
@@ -363,6 +365,7 @@ ChunkSizeSettingsType ChunkSizeSettingsType::createDefault() {
 }
 
 StatusWith<ChunkSizeSettingsType> ChunkSizeSettingsType::fromBSON(const BSONObj& obj) {
+	INJECT_CANARY;
     long long maxChunkSizeMB;
     Status status = bsonExtractIntegerField(obj, kValue, &maxChunkSizeMB);
     if (!status.isOK())
@@ -396,6 +399,7 @@ AutoSplitSettingsType AutoSplitSettingsType::createDefault() {
 }
 
 StatusWith<AutoSplitSettingsType> AutoSplitSettingsType::fromBSON(const BSONObj& obj) {
+	INJECT_CANARY;
     bool shouldAutoSplit;
     Status status = bsonExtractBooleanField(obj, kEnabled, &shouldAutoSplit);
     if (!status.isOK())

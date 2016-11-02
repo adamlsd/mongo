@@ -35,6 +35,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/paranoid_canary.h"
 
 namespace mongo {
 namespace {
@@ -54,6 +55,7 @@ const BSONField<BSONObj> CollectionType::defaultCollation("defaultCollation");
 const BSONField<bool> CollectionType::unique("unique");
 
 StatusWith<CollectionType> CollectionType::fromBSON(const BSONObj& source) {
+	INJECT_CANARY;
     CollectionType coll;
 
     {

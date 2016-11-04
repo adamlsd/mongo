@@ -2289,6 +2289,10 @@ def doConfigure(myenv):
         else:
             myenv.ConfError('Failed to enable sanitizers with flag: {0}', sanitizer_option )
 
+        if using_asan:
+            if AddToCCFLAGSIfSupported(myenv, "-fsanitize-address-use-after-scope"):
+                myenv.Append(LINKFLAGS=["-fsanitize-address-use-after-scope"])
+
         blackfiles_map = {
             "address" : myenv.File("#etc/asan.blacklist"),
             "leak" : myenv.File("#etc/asan.blacklist"),

@@ -59,6 +59,7 @@ namespace stdx {
  */
 class thread : private ::std::thread {  // NOLINT
 private:
+#if 0
 	template< typename F, typename ... Args >
 	static void
 	thread_launch( F &&f, Args &&... args )
@@ -85,9 +86,9 @@ private:
 
 	template< typename F >
 	static std::function< void () >
-	thread_launcher( F &&f )
+	thread_launcher( F f )
 	{
-		return [=] () mutable { thread::thread_launch( std::forward< F >( f ) ); };
+		return [f] () mutable { thread::thread_launch( f ); };
 	}
 
 	static std::function< void () >
@@ -95,6 +96,7 @@ private:
 	{
 		return [&] () mutable { thread::thread_launch( f ); };
 	}
+#endif
 	
 public:
     using ::std::thread::native_handle_type;  // NOLINT
@@ -119,14 +121,14 @@ public:
         typename std::enable_if<!std::is_same<thread, typename std::decay<Function>::type>::value,
                                 int>::type = 0>
     explicit thread(Function&& f, Args&&... args) try:
-        ::std::thread::thread(thread_launcher(std::forward<Function>(f), std::forward<Args>(args)...)) {}  // NOLINT
+        ::std::thread::thread(std::forward<Function>(f), std::forward<Args>(args)...) {}  // NOLINT
     catch (...) {
         std::terminate();
     }
 
     template< class Function >
     explicit thread(Function&& f) try:
-        ::std::thread::thread(thread_launcher(std::forward<Function>(f))) {}  // NOLINT
+        ::std::thread::thread(std::forward<Function>(f)) {}  // NOLINT
     catch (...) {
         std::terminate();
     }

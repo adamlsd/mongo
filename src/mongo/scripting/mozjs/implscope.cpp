@@ -291,10 +291,10 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
                 .setAsyncStack(false)
                 .setNativeRegExp(true);
         }
-
-        const StackLocator locator;
-        const auto available = locator.available();
-        if (available) {
+#if 0
+        //const StackLocator locator;
+        //const auto available = locator.available();
+        if (false) //available) {
             // We fudge by 64k for a two reasons. First, it appears
             // that the internal recursion checks that SM performs can
             // have stack usage between checks of more than 32k in
@@ -320,7 +320,7 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
 
             JS_SetNativeStackQuota(_runtime, available_stack_space - reserve_stack_space);
         }
-
+#endif
         // The memory limit is in megabytes
         JS_SetGCParametersBasedOnAvailableMemory(_runtime, engine->getJSHeapLimitMB());
     }

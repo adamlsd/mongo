@@ -342,10 +342,10 @@ namespace mongo_paranoid
 
 				fast_assert( ck3_4 );
 
-				delete offload4; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload3; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload2; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
-				delete offload1; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete [] offload4; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete [] offload3; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete [] offload2; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
+				delete [] offload1; // Doing a manual deletion here, because unique_ptr is too annoying to figure out how to get at the raw pointer during debug.
 
 				_verify();
 
@@ -354,7 +354,7 @@ namespace mongo_paranoid
 				fast_assert_eq( cksum_memory( offloadPost, kSize ), offloadChecksumPost );
 				fast_assert_eq( cksum_memory( offloadPost, kSize ), kChecksum );
 
-				delete offloadPost;
+				delete [] offloadPost;
 
 				_verify();
 			}
@@ -395,4 +395,4 @@ namespace mongo_paranoid
     volatile std::uint8_t canary_cookie[canary_amount]; \
     const mongo_paranoid::SpearCanary canary_c(&canary_cookie, canary_amount); do {} while( 0 )
 
-#define INJECT_CANARY MPROTECT_INJECT_CANARY
+#define INJECT_CANARY struct hack_nocanary;

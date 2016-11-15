@@ -30,6 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 
 #include "mongo/transport/transport_layer_legacy.h"
@@ -48,10 +50,12 @@
 namespace mongo {
 namespace transport {
 namespace {
-template <typename T>
-std::shared_ptr<T> lock_weak(const std::weak_ptr<T>& p) {
-    return p.lock();
-}
+struct lock_weak {
+    template <typename T>
+    std::shared_ptr<T> operator()(const std::weak_ptr<T>& p) const {
+        return p.lock();
+    }
+};
 }  // namespace
 
 TransportLayerLegacy::ListenerLegacy::ListenerLegacy(const TransportLayerLegacy::Options& opts,
@@ -229,12 +233,12 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
 
 // Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
 // locking context.  This function requires proof of locking, by passing the lock guard.
-std::vector<std::shared_ptr<LegacySession>> TransportLayerLegacy::lockAllSessions(
-    const stdx::lock_guard<stdx::mutex>&) const {
+auto TransportLayerLegacy::lockAllSessions(const stdx::unique_lock<stdx::mutex>&) const
+    -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
-    std::vector<std::shared_ptr<TransportLegacySession>> rv;
-    std::transform(begin(_sessions), end(_sessions), back_inserter(rv), lock_weak);
+    std::vector<std::shared_ptr<LegacySession>> rv;
+    std::transform(begin(_sessions), end(_sessions), back_inserter(rv), lock_weak());
     // Skip expired weak pointers.
     rv.erase(std::remove(begin(rv), end(rv), nullptr), end(rv));
     return rv;
@@ -243,9 +247,9 @@ std::vector<std::shared_ptr<LegacySession>> TransportLayerLegacy::lockAllSession
 void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
     log() << "legacy transport layer closing all connections";
     {
-        stdx::lock_guard<stdx::mutex> lk(_sessionsMutex);
-		// We want to capture the shared_ptrs to our sessions in a way which lets us destroy them
-		// outside of the lock.
+        stdx::unique_lock<stdx::mutex> lk(_sessionsMutex);
+        // We want to capture the shared_ptrs to our sessions in a way which lets us destroy them
+        // outside of the lock.
         const auto sessions = lockAllSessions(lk);
 
         for (auto&& session : sessions) {

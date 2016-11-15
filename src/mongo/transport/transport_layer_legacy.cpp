@@ -47,6 +47,12 @@
 
 namespace mongo {
 namespace transport {
+namespace {
+template <typename T>
+std::shared_ptr<T> lock_weak(const std::weak_ptr<T>& p) {
+    return p.lock();
+}
+}  // namespace
 
 TransportLayerLegacy::ListenerLegacy::ListenerLegacy(const TransportLayerLegacy::Options& opts,
                                                      NewConnectionCb callback)
@@ -221,23 +227,38 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
     Listener::globalTicketHolder.release();
 }
 
+// Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
+// locking context.  This function requires proof of locking, by passing the lock guard.
+std::vector<std::shared_ptr<LegacySession>> TransportLayerLegacy::lockAllSessions(
+    const stdx::lock_guard<stdx::mutex>&) const {
+    using std::begin;
+    using std::end;
+    std::vector<std::shared_ptr<TransportLegacySession>> rv;
+    std::transform(begin(_sessions), end(_sessions), back_inserter(rv), lock_weak);
+    // Skip expired weak pointers.
+    rv.erase(std::remove(begin(rv), end(rv), nullptr), end(rv));
+    return rv;
+}
+
 void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
     log() << "legacy transport layer closing all connections";
     {
         stdx::lock_guard<stdx::mutex> lk(_sessionsMutex);
-        for (auto&& it : _sessions) {
+		// We want to capture the shared_ptrs to our sessions in a way which lets us destroy them
+		// outside of the lock.
+        const auto sessions = lockAllSessions(lk);
 
-            // Attempt to make our weak_ptr into a shared_ptr
-            auto session = it.lock();
-            if (session) {
-                if (session->getTags() & tags) {
-                    log() << "Skip closing connection for connection # "
-                          << session->conn()->connectionId;
-                } else {
-                    _closeConnection(session->conn());
-                }
+        for (auto&& session : sessions) {
+            if (session->getTags() & tags) {
+                log() << "Skip closing connection for connection # "
+                      << session->conn()->connectionId;
+            } else {
+                _closeConnection(session->conn());
             }
         }
+        // TODO(ADAM): Revamp this lock to not cover the loop.  This unlock was put here
+        // specifically to minimize risk, just before the release of 3.4.
+        lk.unlock();
     }
 }
 

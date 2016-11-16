@@ -232,16 +232,16 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
 }
 
 // Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
-// locking context.  This function requires proof of locking, by passing the lock guard.
+// locking context. This function requires proof of locking, by passing the lock guard.
 auto TransportLayerLegacy::lockAllSessions(const stdx::unique_lock<stdx::mutex>&) const
     -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
-    std::vector<std::shared_ptr<LegacySession>> rv;
-    std::transform(begin(_sessions), end(_sessions), back_inserter(rv), lock_weak());
+    std::vector<std::shared_ptr<LegacySession>> result;
+    std::transform(begin(_sessions), end(_sessions), std::back_inserter(result), lock_weak());
     // Skip expired weak pointers.
-    rv.erase(std::remove(begin(rv), end(rv), nullptr), end(rv));
-    return rv;
+    result.erase(std::remove(begin(result), end(result), nullptr), end(result));
+    return result;
 }
 
 void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
@@ -260,8 +260,10 @@ void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
                 _closeConnection(session->conn());
             }
         }
-        // TODO(ADAM): Revamp this lock to not cover the loop.  This unlock was put here
-        // specifically to minimize risk, just before the release of 3.4.
+        // TODO(SERVER-27069): Revamp this lock to not cover the loop. This unlock was put here
+        // specifically to minimize risk, just before the release of 3.4. The risk is that we would
+        // be in the loop without the lock, which most of our testing didn't do. We must unlock
+        // manually here, because the `sessions` vector must be destroyed *outside* of the lock.
         lk.unlock();
     }
 }

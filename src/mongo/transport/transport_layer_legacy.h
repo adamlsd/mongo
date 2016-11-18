@@ -101,7 +101,9 @@ private:
     using NewConnectionCb = stdx::function<void(std::unique_ptr<AbstractMessagingPort>)>;
     using WorkHandle = stdx::function<Status(AbstractMessagingPort*)>;
 
-    std::vector<LegacySessionHandle> lockAllSessions(const stdx::unique_lock<stdx::mutex>&) const;
+    std::vector<LegacySessionHandle> lockAllSessions() const;
+    std::vector<LegacySessionHandle> lockAllActiveSessions() const;
+    std::vector<LegacySessionHandle> lockAllActiveSessions(Session::TagMask tags) const;
 
     /**
      * Connection object, to associate Sessions with AbstractMessagingPorts.

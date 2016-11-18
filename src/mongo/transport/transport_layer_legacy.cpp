@@ -235,39 +235,48 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
 }
 
 // Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
-// locking context. This function requires proof of locking, by passing the lock guard.
-auto TransportLayerLegacy::lockAllSessions(const stdx::unique_lock<stdx::mutex>&) const
-    -> std::vector<LegacySessionHandle> {
+// locking context.
+auto TransportLayerLegacy::lockAllSessions() const -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
     std::vector<std::shared_ptr<LegacySession>> result;
-    std::transform(begin(_sessions), end(_sessions), std::back_inserter(result), lock_weak());
+    {
+        std::lock_guard<std::mutex> lk(_sessionsMutex);
+        result.reserve(_sessions.size());
+        std::copy(begin(_sessions), end(_sessions), std::back_inserter(result));
+    }
+    return result;
+}
+
+// Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
+// locking context. Omit the expired sessions (nullptr)
+auto TransportLayerLegacy::lockAllActiveSessions() const -> std::vector<LegacySessionHandle> {
+    using std::begin;
+    using std::end;
     // Skip expired weak pointers.
+    auto result = lockAllSessions();
     result.erase(std::remove(begin(result), end(result), nullptr), end(result));
     return result;
 }
 
-void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
-    log() << "legacy transport layer closing all connections";
-    {
-        stdx::unique_lock<stdx::mutex> lk(_sessionsMutex);
-        // We want to capture the shared_ptrs to our sessions in a way which lets us destroy them
-        // outside of the lock.
-        const auto sessions = lockAllSessions(lk);
+auto TransportLayerLegacy::lockAllActiveSessions(Session::TagMask tags) const
+    -> std::vector<LegacySessionHandle> {
+    using std::begin;
+    using std::end;
+    auto result = lockAllActiveSessions();
+    auto removeTags = [tags](const LegacySessionHandle& session) {
+        log() << "Skip closing connection for connection # " << session->conn()->connectionId;
+        return session->getTags() & tags;
+    };
+    result.erase(std::remove_if(begin(result), end(result), removeTags), end(result));
+    return result;
+}
 
-        for (auto&& session : sessions) {
-            if (session->getTags() & tags) {
-                log() << "Skip closing connection for connection # "
-                      << session->conn()->connectionId;
-            } else {
-                _closeConnection(session->conn());
-            }
-        }
-        // TODO(SERVER-27069): Revamp this lock to not cover the loop. This unlock was put here
-        // specifically to minimize risk, just before the release of 3.4. The risk is that we would
-        // be in the loop without the lock, which most of our testing didn't do. We must unlock
-        // manually here, because the `sessions` vector must be destroyed *outside* of the lock.
-        lk.unlock();
+void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
+    std::cerr << "legacy transport layer closing all connections";
+
+    for (auto&& session : lockAllActiveSessions(tags)) {
+        _closeConnection(session->conn());
     }
 }
 

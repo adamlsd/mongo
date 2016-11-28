@@ -51,14 +51,6 @@
 
 namespace mongo {
 namespace transport {
-namespace {
-struct lock_weak {
-    template <typename T>
-    std::shared_ptr<T> operator()(const std::weak_ptr<T>& p) const {
-        return p.lock();
-    }
-};
-}  // namespace
 
 TransportLayerLegacy::ListenerLegacy::ListenerLegacy(const TransportLayerLegacy::Options& opts,
                                                      NewConnectionCb callback)
@@ -169,11 +161,7 @@ Ticket TransportLayerLegacy::sourceMessage(const SessionHandle& session,
 
 TransportLayer::Stats TransportLayerLegacy::sessionStats() {
     Stats stats;
-    {
-        stdx::lock_guard<stdx::mutex> lk(_sessionsMutex);
-        stats.numOpenSessions = _sessions.size();
-    }
-
+    stats.numOpenSessions = _sessions.size();
     stats.numAvailableSessions = Listener::globalTicketHolder.available();
     stats.numCreatedSessions = Listener::globalConnectionNumber.load();
 
@@ -234,36 +222,31 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
     Listener::globalTicketHolder.release();
 }
 
-// Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
-// locking context.
-auto TransportLayerLegacy::lockAllSessions() const -> std::vector<LegacySessionHandle> {
+// Promote all of the weak pointers in our registrar, to delay their expiry until we finish
+// processing them.
+auto TransportLayerLegacy::viewAllSessions() const -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
-    std::vector<std::shared_ptr<LegacySession>> result;
-    {
-        std::lock_guard<std::mutex> lk(_sessionsMutex);
-        result.reserve(_sessions.size());
-        std::copy(begin(_sessions), end(_sessions), std::back_inserter(result));
-    }
-    return result;
+    auto snapshot = _sessions.snapshot();
+    return {begin(snapshot), end(snapshot)};
 }
 
-// Capture all of the weak pointers behind the lock, to delay their expiry until we leave the
-// locking context. Omit the expired sessions (nullptr)
-auto TransportLayerLegacy::lockAllActiveSessions() const -> std::vector<LegacySessionHandle> {
+// Promote all of the weak pointers in our registrar, to delay their expiry until we finish
+// processing them.  Omit the expired sessions (nullptr)
+auto TransportLayerLegacy::viewAllActiveSessions() const -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
     // Skip expired weak pointers.
-    auto result = lockAllSessions();
+    auto result = viewAllSessions();
     result.erase(std::remove(begin(result), end(result), nullptr), end(result));
     return result;
 }
 
-auto TransportLayerLegacy::lockAllActiveSessions(Session::TagMask tags) const
+auto TransportLayerLegacy::viewAllActiveSessions(Session::TagMask tags) const
     -> std::vector<LegacySessionHandle> {
     using std::begin;
     using std::end;
-    auto result = lockAllActiveSessions();
+    auto result = viewAllActiveSessions();
     auto removeTags = [tags](const LegacySessionHandle& session) {
         log() << "Skip closing connection for connection # " << session->conn()->connectionId;
         return session->getTags() & tags;
@@ -275,7 +258,7 @@ auto TransportLayerLegacy::lockAllActiveSessions(Session::TagMask tags) const
 void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
     std::cerr << "legacy transport layer closing all connections";
 
-    for (auto&& session : lockAllActiveSessions(tags)) {
+    for (auto&& session : viewAllActiveSessions(tags)) {
         _closeConnection(session->conn());
     }
 }
@@ -292,8 +275,7 @@ void TransportLayerLegacy::_destroy(LegacySession& session) {
         _closeConnection(session.conn());
     }
 
-    stdx::lock_guard<stdx::mutex> lk(_sessionsMutex);
-    _sessions.erase(session.getIter());
+    _sessions.retire(session.getSessionTicket());
 }
 
 Status TransportLayerLegacy::_runTicket(Ticket ticket) {
@@ -350,15 +332,8 @@ void TransportLayerLegacy::_handleNewConnection(std::unique_ptr<AbstractMessagin
     amp->setLogLevel(logger::LogSeverity::Debug(1));
     auto session = LegacySession::create(std::move(amp), this);
 
-    stdx::list<std::weak_ptr<LegacySession>> list;
-    auto it = list.emplace(list.begin(), session);
-
-    {
-        // Add the new session to our list
-        stdx::lock_guard<stdx::mutex> lk(_sessionsMutex);
-        session->setIter(it);
-        _sessions.splice(_sessions.begin(), list, it);
-    }
+    // Add the new session to our registrar and track the registration ticket.
+    session->setSessionTicket(_sessions.enroll(session));
 
     invariant(_sep);
     _sep->startSession(std::move(session));

@@ -30,12 +30,11 @@
 
 #include <vector>
 
-#include "mongo/stdx/list.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/ticket_impl.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/util/concurrency/atomic_registrar.h"
 #include "mongo/util/net/listen.h"
 #include "mongo/util/net/sock.h"
 
@@ -90,7 +89,7 @@ private:
     class LegacySession;
     using LegacySessionHandle = std::shared_ptr<LegacySession>;
     using ConstLegacySessionHandle = std::shared_ptr<const LegacySession>;
-    using SessionEntry = std::list<std::weak_ptr<LegacySession>>::iterator;
+    using SessionEntry = AtomicRegistrar<std::weak_ptr<LegacySession>>::Ticket;
 
     void _destroy(LegacySession& session);
 
@@ -101,9 +100,9 @@ private:
     using NewConnectionCb = stdx::function<void(std::unique_ptr<AbstractMessagingPort>)>;
     using WorkHandle = stdx::function<Status(AbstractMessagingPort*)>;
 
-    std::vector<LegacySessionHandle> lockAllSessions() const;
-    std::vector<LegacySessionHandle> lockAllActiveSessions() const;
-    std::vector<LegacySessionHandle> lockAllActiveSessions(Session::TagMask tags) const;
+    std::vector<LegacySessionHandle> viewAllSessions() const;
+    std::vector<LegacySessionHandle> viewAllActiveSessions() const;
+    std::vector<LegacySessionHandle> viewAllActiveSessions(Session::TagMask tags) const;
 
     /**
      * Connection object, to associate Sessions with AbstractMessagingPorts.
@@ -152,12 +151,12 @@ private:
             return _connection.get();
         }
 
-        void setIter(SessionEntry it) {
-            _entry = std::move(it);
+        void setSessionTicket(SessionEntry ticket) {
+            _ticket = std::move(ticket);
         }
 
-        SessionEntry getIter() const {
-            return _entry;
+        SessionEntry getSessionTicket() const {
+            return _ticket;
         }
 
     private:
@@ -173,8 +172,8 @@ private:
 
         std::unique_ptr<Connection> _connection;
 
-        // A handle to this session's entry in the TL's session list
-        SessionEntry _entry;
+        // A ticket to this session's entry in the TL's Session Registrar
+        SessionEntry _ticket;
     };
 
     /**
@@ -237,9 +236,8 @@ private:
     std::unique_ptr<Listener> _listener;
     stdx::thread _listenerThread;
 
-    // TransportLayerLegacy holds non-owning pointers to all of its sessions.
-    mutable stdx::mutex _sessionsMutex;
-    stdx::list<std::weak_ptr<LegacySession>> _sessions;
+    // TransportLayerLegacy maintains a registry of non-owning pointers to all of its sessions.
+    AtomicRegistrar<std::weak_ptr<LegacySession>> _sessions;
 
     AtomicWord<bool> _running;
 

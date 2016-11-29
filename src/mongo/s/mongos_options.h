@@ -33,6 +33,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/util/options_parser/environment.h"
 #include "mongo/util/options_parser/option_section.h"
+#include "mongo/s/is_mongos.h"
 
 namespace mongo {
 
@@ -78,8 +79,4 @@ Status validateMongosOptions(const moe::Environment& params);
 Status canonicalizeMongosOptions(moe::Environment* params);
 
 Status storeMongosOptions(const moe::Environment& params);
-
-// This function should eventually go away, but needs to be here now because the sorter and
-// the version manager must know at runtime which binary it is in.
-bool isMongos();
 }

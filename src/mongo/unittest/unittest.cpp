@@ -238,14 +238,14 @@ void Suite::add(const std::string& name, const TestFunction& testFn) {
     _tests.push_back(std::shared_ptr<TestHolder>(new TestHolder(name, testFn)));
 }
 
-Result* Suite::run(const std::string& filter, int runsPerTest) {
+std::unique_ptr<Result> Suite::run(const std::string& filter, int runsPerTest) {
     LOG(1) << "\t about to setupTests" << std::endl;
     setupTests();
     LOG(1) << "\t done setupTests" << std::endl;
 
     Timer timer;
-    Result* r = new Result(_name);
-    Result::cur = r;
+    auto r = stdx::make_unique< Result>(_name);
+    Result::cur = r.get();
 
     for (std::vector<std::shared_ptr<TestHolder>>::iterator i = _tests.begin(); i != _tests.end();
          i++) {
@@ -317,7 +317,7 @@ int Suite::run(const std::vector<std::string>& suites, const std::string& filter
         }
     }
 
-    std::vector<Result*> results;
+    std::vector<std::unique_ptr<Result>> results;
 
     for (std::vector<std::string>::iterator i = torun.begin(); i != torun.end(); i++) {
         std::string name = *i;
@@ -340,8 +340,7 @@ int Suite::run(const std::vector<std::string>& suites, const std::string& filter
     std::vector<std::string> failedSuites;
 
     Result::cur = NULL;
-    for (std::vector<Result*>::iterator i = results.begin(); i != results.end(); i++) {
-        Result* r = *i;
+    for (auto &r: results) {
         log() << r->toString();
         if (abs(r->rc()) > abs(rc))
             rc = r->rc();
@@ -358,8 +357,6 @@ int Suite::run(const std::vector<std::string>& suites, const std::string& filter
         }
         asserts += r->_asserts;
         millis += r->_millis;
-
-        delete r;
     }
 
     totals._tests = tests;

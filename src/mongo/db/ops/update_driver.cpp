@@ -85,7 +85,7 @@ Status UpdateDriver::parse(const BSONObj& updateExpr, const bool multi) {
             return status;
         }
 
-        _mods.push_back(mod.release());
+        _mods.push_back(std::move(mod));
 
         // Register the fact that this driver will only do full object replacements.
         _replacementMode = true;
@@ -168,7 +168,7 @@ inline Status UpdateDriver::addAndParse(const modifiertable::ModifierType type,
     // _positional flag to true.
     _positional = _positional || positional;
 
-    _mods.push_back(mod.release());
+    _mods.push_back(std::move(mod));
 
     return Status::OK();
 }
@@ -249,7 +249,7 @@ Status UpdateDriver::update(StringData matchedField,
 
     // Ask each of the mods to type check whether they can operate over the current document
     // and, if so, to change that document accordingly.
-    for (vector<ModifierInterface*>::iterator it = _mods.begin(); it != _mods.end(); ++it) {
+    for (auto it = _mods.begin(); it != _mods.end(); ++it) {
         ModifierInterface::ExecInfo execInfo;
         Status status = (*it)->prepare(doc->root(), matchedField, &execInfo);
         if (!status.isOK()) {
@@ -393,9 +393,6 @@ BSONObj UpdateDriver::makeOplogEntryQuery(const BSONObj& doc, bool multi) const 
     }
 }
 void UpdateDriver::clear() {
-    for (vector<ModifierInterface*>::iterator it = _mods.begin(); it != _mods.end(); ++it) {
-        delete *it;
-    }
     _mods.clear();
     _indexedFields = NULL;
     _replacementMode = false;

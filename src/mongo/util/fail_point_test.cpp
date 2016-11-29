@@ -279,20 +279,20 @@ static int64_t runParallelFailPointTest(FailPoint::Mode fpMode,
     ASSERT_GT(numEncountersPerThread, 0);
     FailPoint failPoint;
     failPoint.setMode(fpMode, fpVal);
-    std::vector<stdx::thread*> tasks;
+    std::vector<std::unique_ptr<stdx::thread>> tasks;
     std::vector<int64_t> counts(numThreads, 0);
     ASSERT_EQUALS(static_cast<uint32_t>(numThreads), counts.size());
     for (int32_t i = 0; i < numThreads; ++i) {
-        tasks.push_back(new stdx::thread(parallelFailPointTestThread,
-                                         &failPoint,
-                                         numEncountersPerThread,
-                                         i,  // hardcoded seed, different for each thread.
-                                         &counts[i]));
+        tasks.push_back(
+            stdx::make_unique<stdx::thread>(parallelFailPointTestThread,
+                                            &failPoint,
+                                            numEncountersPerThread,
+                                            i,  // hardcoded seed, different for each thread.
+                                            &counts[i]));
     }
     int64_t totalActivations = 0;
     for (int32_t i = 0; i < numThreads; ++i) {
         tasks[i]->join();
-        delete tasks[i];
         totalActivations += counts[i];
     }
     return totalActivations;

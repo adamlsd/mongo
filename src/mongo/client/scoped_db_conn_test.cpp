@@ -31,6 +31,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/client/connpool.h"
 #include "mongo/client/global_conn_pool.h"
@@ -264,28 +265,25 @@ protected:
     void checkNewConns(void (*checkFunc)(uint64_t, uint64_t),
                        uint64_t arg2,
                        size_t newConnsToCreate) {
-        vector<ScopedDbConnection*> newConnList;
+        vector<std::unique_ptr<ScopedDbConnection>> newConnList;
 
         for (size_t x = 0; x < newConnsToCreate; x++) {
-            ScopedDbConnection* newConn = new ScopedDbConnection(TARGET_HOST);
+            auto newConn = stdx::make_unique<ScopedDbConnection>(TARGET_HOST);
             checkFunc(newConn->get()->getSockCreationMicroSec(), arg2);
-            newConnList.push_back(newConn);
+            newConnList.push_back(std::move(newConn));
         }
 
         const uint64_t oldCreationTime = curTimeMicros64();
 
         uint64_t validConnCount = 0;
-        for (vector<ScopedDbConnection*>::iterator iter = newConnList.begin();
-             iter != newConnList.end();
-             ++iter) {
+		for (auto &conn: newConnList) {
 
-            if ((*iter)->get()->isStillConnected()) {
+            if (conn->get()->isStillConnected()) {
                 validConnCount++;
             }
             // Connection(s) could still go bad after this point and cause the test to fail.
 
-            (*iter)->done();
-            delete *iter;
+            conn->done();
         }
 
         newConnList.clear();
@@ -293,19 +291,16 @@ protected:
         uint64_t reusedConnCount = 0;
         // Check that valid connections created after the purge were put back to the pool.
         for (size_t x = 0; x < newConnsToCreate; x++) {
-            ScopedDbConnection* newConn = new ScopedDbConnection(TARGET_HOST);
+            auto newConn = stdx::make_unique<ScopedDbConnection>(TARGET_HOST);
             if (newConn->get()->getSockCreationMicroSec() < oldCreationTime) {
                 reusedConnCount++;
             }
-            newConnList.push_back(newConn);
+            newConnList.push_back(std::move(newConn));
         }
         ASSERT_EQ(validConnCount, reusedConnCount);
 
-        for (vector<ScopedDbConnection*>::iterator iter = newConnList.begin();
-             iter != newConnList.end();
-             ++iter) {
-            (*iter)->done();
-            delete *iter;
+        for (auto &conn: newConnList) {
+            conn->done();
         }
     }
 

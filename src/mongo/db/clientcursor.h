@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/query/plan_executor.h"
@@ -331,7 +333,7 @@ public:
     ClientCursor* c() const;
 
 private:
-    ClientCursor* _cursor;
+    ClientCursor *_cursor;
 };
 
 void startClientCursorMonitor();

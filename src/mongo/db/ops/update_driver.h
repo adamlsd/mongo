@@ -158,7 +158,7 @@ private:
     bool _replacementMode;
 
     // Collection of update mod instances. Owned here.
-    std::vector<ModifierInterface*> _mods;
+    std::vector<std::unique_ptr<ModifierInterface>> _mods;
 
     // What are the list of fields in the collection over which the update is going to be
     // applied that participate in indices?

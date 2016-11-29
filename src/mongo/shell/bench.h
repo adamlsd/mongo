@@ -110,7 +110,7 @@ public:
      *
      * Caller owns the returned object, and is responsible for its deletion.
      */
-    static BenchRunConfig* createFromBson(const BSONObj& args);
+    static std::unique_ptr<BenchRunConfig> createFromBson(const BSONObj& args);
 
     BenchRunConfig();
 
@@ -471,7 +471,7 @@ public:
      *
      * TODO: Same todo as for "createWithConfig".
      */
-    static BenchRunner* get(OID oid);
+    static std::unique_ptr<BenchRunner>& get(OID oid);
 
     /**
      * Stop a running "runner", and return a BSON representation of its resultant
@@ -479,14 +479,19 @@ public:
      *
      * TODO: Same as for "createWithConfig".
      */
-    static BSONObj finish(BenchRunner* runner);
+    static BSONObj finish(std::unique_ptr<BenchRunner> runner);
 
     /**
      * Create a new bench runner, to perform the activity described by "*config."
      *
      * Takes ownership of "config", and will delete it.
      */
-    explicit BenchRunner(BenchRunConfig* config);
+    static BenchRunner* create(std::unique_ptr<BenchRunConfig> config);
+
+private:
+    explicit BenchRunner(std::unique_ptr<BenchRunConfig> config);
+
+public:
     ~BenchRunner();
 
     /**
@@ -522,14 +527,14 @@ public:
 private:
     // TODO: Same as for createWithConfig.
     static stdx::mutex _staticMutex;
-    static std::map<OID, BenchRunner*> _activeRuns;
+    static std::map<OID, std::unique_ptr<BenchRunner>> _activeRuns;
 
     OID _oid;
     BenchRunState _brState;
     Timer* _brTimer;
     unsigned long long _microsElapsed;
     std::unique_ptr<BenchRunConfig> _config;
-    std::vector<BenchRunWorker*> _workers;
+    std::vector<std::unique_ptr<BenchRunWorker>> _workers;
 };
 
 }  // namespace mongo

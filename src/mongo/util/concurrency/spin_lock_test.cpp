@@ -29,6 +29,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/spin_lock.h"
@@ -45,12 +46,11 @@ class LockTester {
 public:
     LockTester(SpinLock* spin, int* counter) : _spin(spin), _counter(counter), _requests(0) {}
 
-    ~LockTester() {
-        delete _t;
-    }
+    ~LockTester() = default;
 
     void start(int increments) {
-        _t = new stdx::thread(mongo::stdx::bind(&LockTester::test, this, increments));
+        _t =
+            stdx::make_unique<stdx::thread>(mongo::stdx::bind(&LockTester::test, this, increments));
     }
 
     void join() {
@@ -66,7 +66,7 @@ private:
     SpinLock* _spin;  // not owned here
     int* _counter;    // not owned here
     int _requests;
-    stdx::thread* _t;
+    std::unique_ptr<stdx::thread> _t;
 
     void test(int increments) {
         while (increments-- > 0) {
@@ -77,8 +77,8 @@ private:
         }
     }
 
-    LockTester(LockTester&);
-    LockTester& operator=(LockTester&);
+    LockTester(LockTester&) = delete;
+    LockTester& operator=(LockTester&) = delete;
 };
 
 
@@ -88,20 +88,20 @@ TEST(Concurrency, ConcurrentIncs) {
 
     const int threads = 64;
     const int incs = 50000;
-    LockTester* testers[threads];
+    std::vector<std::unique_ptr<LockTester>> testers;
 
     Timer timer;
 
-    for (int i = 0; i < threads; i++) {
-        testers[i] = new LockTester(&spin, &counter);
-    }
-    for (int i = 0; i < threads; i++) {
-        testers[i]->start(incs);
+    std::generate_n(std::back_inserter(testers), threads, [&spin, &counter] {
+        return stdx::make_unique<LockTester>(&spin, &counter);
+    });
+
+    for (const auto& tester : testers) {
+        tester->start(incs);
     }
     for (int i = 0; i < threads; i++) {
         testers[i]->join();
         ASSERT_EQUALS(testers[i]->requests(), incs);
-        delete testers[i];
     }
 
     int ms = timer.millis();

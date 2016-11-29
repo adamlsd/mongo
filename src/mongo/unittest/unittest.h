@@ -39,6 +39,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <memory>
 
 #include <boost/config.hpp>
 
@@ -404,7 +405,7 @@ public:
 
     void add(const std::string& name, const TestFunction& testFn);
 
-    Result* run(const std::string& filter, int runsPerTest);
+    std::unique_ptr<Result> run(const std::string& filter, int runsPerTest);
 
     static int run(const std::vector<std::string>& suites,
                    const std::string& filter,

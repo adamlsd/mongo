@@ -28,43 +28,10 @@
 
 #pragma once
 
-namespace mongo
-{
+namespace mongo {
+/// Returns true when the running process is `mongos` and false otherwise.
+bool isMongos();
 
-	bool isMongos();
-	void setMongos( const bool state= true );
-}
-
-#if 0
-namespace mongo
-{
-
-	// TODO(adam.martin): Move to the InlineVariable idiom, if it gets committed.
-	namespace mongos_boolean_variable_detail
-	{
-		template< typename= void >
-		struct inline_variable_hack
-		{
-			static bool mongosState;
-		};
-
-		template< typename T > bool inline_variable_hack< T >::mongosState= false;
-	}
-}
-
-// This function should eventually go away, but needs to be here now because the sorter and
-// the version manager must know at runtime which binary it is in.
-inline bool
-mongo::isMongos()
-{
-	return mongos_boolean_variable_detail::inline_variable_hack<>::mongosState;
-}
-
-// This function should eventually go away, but needs to be here now because the mongos binary and various test drivers must be able to set the mongos state.
-// the version manager must know at runtime which binary it is in.
-inline void
-mongo::setMongos( const bool state= true )
-{
-	mongos_boolean_variable_detail::inline_variable_hack<>::mongosState= state;
-}
-#endif
+/// Set the global state flag indicating whether the running process is `mongos` or not.
+void setMongos(const bool state = true);
+}  // namespace mongo

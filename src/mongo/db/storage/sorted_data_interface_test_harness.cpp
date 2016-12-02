@@ -36,9 +36,30 @@
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/unittest/unittest.h"
 
-namespace mongo {
-std::unique_ptr<SortedDataInterface> HarnessHelper::newSortedDataInterface(
-    bool unique, std::initializer_list<IndexKeyEntry> toInsert) {
+
+void mongo::insertToIndex(unowned_ptr<OperationContext> txn,
+                          unowned_ptr<SortedDataInterface> index,
+                          std::initializer_list<IndexKeyEntry> toInsert) {
+    WriteUnitOfWork wuow(txn);
+    for (auto&& entry : toInsert) {
+        ASSERT_OK(index->insert(txn, entry.key, entry.loc, true));
+    }
+    wuow.commit();
+}
+
+void mongo::removeFromIndex(unowned_ptr<OperationContext> txn,
+                            unowned_ptr<SortedDataInterface> index,
+                            std::initializer_list<IndexKeyEntry> toRemove) {
+    WriteUnitOfWork wuow(txn);
+    for (auto&& entry : toRemove) {
+        index->unindex(txn, entry.key, entry.loc, true);
+    }
+    wuow.commit();
+}
+
+auto mongo::SortedDataInterfaceHarnessHelper::newSortedDataInterface(
+    bool unique, std::initializer_list<IndexKeyEntry> toInsert)
+    -> std::unique_ptr<SortedDataInterface> {
     invariant(std::is_sorted(
         toInsert.begin(), toInsert.end(), IndexEntryComparison(Ordering::make(BSONObj()))));
 
@@ -47,28 +68,11 @@ std::unique_ptr<SortedDataInterface> HarnessHelper::newSortedDataInterface(
     return index;
 }
 
-void insertToIndex(unowned_ptr<OperationContext> txn,
-                   unowned_ptr<SortedDataInterface> index,
-                   std::initializer_list<IndexKeyEntry> toInsert) {
-    WriteUnitOfWork wuow(txn);
-    for (auto&& entry : toInsert) {
-        ASSERT_OK(index->insert(txn, entry.key, entry.loc, true));
-    }
-    wuow.commit();
-}
-
-void removeFromIndex(unowned_ptr<OperationContext> txn,
-                     unowned_ptr<SortedDataInterface> index,
-                     std::initializer_list<IndexKeyEntry> toRemove) {
-    WriteUnitOfWork wuow(txn);
-    for (auto&& entry : toRemove) {
-        index->unindex(txn, entry.key, entry.loc, true);
-    }
-    wuow.commit();
-}
+namespace mongo {
+namespace {
 
 TEST(SortedDataInterface, InsertWithDups1) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -100,7 +104,7 @@ TEST(SortedDataInterface, InsertWithDups1) {
 }
 
 TEST(SortedDataInterface, InsertWithDups2) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -128,7 +132,7 @@ TEST(SortedDataInterface, InsertWithDups2) {
 }
 
 TEST(SortedDataInterface, InsertWithDups3AndRollback) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -156,7 +160,7 @@ TEST(SortedDataInterface, InsertWithDups3AndRollback) {
 }
 
 TEST(SortedDataInterface, InsertNoDups1) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(true));
 
     {
@@ -184,7 +188,7 @@ TEST(SortedDataInterface, InsertNoDups1) {
 }
 
 TEST(SortedDataInterface, InsertNoDups2) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(true));
 
     {
@@ -212,7 +216,7 @@ TEST(SortedDataInterface, InsertNoDups2) {
 }
 
 TEST(SortedDataInterface, Unindex1) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -277,7 +281,7 @@ TEST(SortedDataInterface, Unindex1) {
 }
 
 TEST(SortedDataInterface, Unindex2Rollback) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -312,7 +316,7 @@ TEST(SortedDataInterface, Unindex2Rollback) {
 
 
 TEST(SortedDataInterface, CursorIterate1) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     int N = 5;
@@ -338,7 +342,7 @@ TEST(SortedDataInterface, CursorIterate1) {
 }
 
 TEST(SortedDataInterface, CursorIterate1WithSaveRestore) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     int N = 5;
@@ -367,7 +371,7 @@ TEST(SortedDataInterface, CursorIterate1WithSaveRestore) {
 
 
 TEST(SortedDataInterface, CursorIterateAllDupKeysWithSaveRestore) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     int N = 5;
@@ -396,7 +400,7 @@ TEST(SortedDataInterface, CursorIterateAllDupKeysWithSaveRestore) {
 
 
 TEST(SortedDataInterface, Locate1) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     BSONObj key = BSON("" << 1);
@@ -426,7 +430,7 @@ TEST(SortedDataInterface, Locate1) {
 }
 
 TEST(SortedDataInterface, Locate2) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -452,7 +456,7 @@ TEST(SortedDataInterface, Locate2) {
 }
 
 TEST(SortedDataInterface, Locate2Empty) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -483,7 +487,7 @@ TEST(SortedDataInterface, Locate2Empty) {
 
 
 TEST(SortedDataInterface, Locate3Descending) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     auto buildEntry = [](int i) { return IndexKeyEntry(BSON("" << i), RecordId(1, i * 2)); };
@@ -526,7 +530,7 @@ TEST(SortedDataInterface, Locate3Descending) {
 }
 
 TEST(SortedDataInterface, Locate4) {
-    auto harnessHelper = newHarnessHelper();
+    const auto harnessHelper = newSortedDataInterfaceHarnessHelper();
     auto sorted = harnessHelper->newSortedDataInterface(false,
                                                         {
                                                             {BSON("" << 1), RecordId(1, 2)},
@@ -557,4 +561,5 @@ TEST(SortedDataInterface, Locate4) {
     }
 }
 
+}  // namespace
 }  // namespace mongo

@@ -37,7 +37,6 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
-namespace {
 
 class ValidateAdaptorSpy : public ValidateAdaptor {
 public:
@@ -115,5 +114,4 @@ private:
     std::set<std::string> _remain;
 };
 
-}  // namespace
 }  // namespace mongo

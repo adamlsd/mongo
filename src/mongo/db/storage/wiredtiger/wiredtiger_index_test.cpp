@@ -47,6 +47,7 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
 using std::string;
 
@@ -98,8 +99,12 @@ private:
     WiredTigerSessionCache* _sessionCache;
 };
 
-std::unique_ptr<HarnessHelper> newHarnessHelper() {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<MyHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
 }
 
 TEST(WiredTigerIndexTest, GenerateCreateStringEmptyDocument) {
@@ -142,4 +147,5 @@ TEST(WiredTigerIndexTest, GenerateCreateStringValidConfigStringOption) {
     ASSERT_EQ(WiredTigerIndex::parseIndexOptions(spec), std::string("prefix_compression=true,"));
 }
 
+}  // namespace
 }  // namespace mongo

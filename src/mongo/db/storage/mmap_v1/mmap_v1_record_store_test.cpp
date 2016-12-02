@@ -42,6 +42,7 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
 class MyHarnessHelper : public HarnessHelper {
 public:
@@ -81,7 +82,12 @@ private:
     DummyExtentManager _em;
 };
 
-std::unique_ptr<HarnessHelper> newHarnessHelper() {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<MyHarnessHelper>();
 }
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
 }
+}  // namespace
+}  // namespace mongo

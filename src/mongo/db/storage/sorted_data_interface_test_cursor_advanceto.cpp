@@ -43,7 +43,7 @@ namespace mongo {
 // positioned at the first occurrence of that key in ascending
 // order by RecordId.
 TEST(SortedDataInterface, AdvanceTo) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -98,7 +98,7 @@ TEST(SortedDataInterface, AdvanceTo) {
 // positioned at the first occurrence of that key in descending
 // order by RecordId (last occurrence in index order).
 TEST(SortedDataInterface, AdvanceToReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -152,7 +152,7 @@ TEST(SortedDataInterface, AdvanceToReversed) {
 // the smaller one.  Ending position is on the smaller one since a seek describes where to go
 // and should not be effected by current position.
 TEST(SortedDataInterface, AdvanceToKeyBeforeCursorPosition) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -196,7 +196,7 @@ TEST(SortedDataInterface, AdvanceToKeyBeforeCursorPosition) {
 // the larger one.  Ending position is on the larger one since a seek describes where to go
 // and should not be effected by current position.
 TEST(SortedDataInterface, AdvanceToKeyAfterCursorPositionReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -243,7 +243,7 @@ TEST(SortedDataInterface, AdvanceToKeyAfterCursorPositionReversed) {
 // the cursor should remain at its current position. An exclusive seek will
 // position the cursor on the next position, which may be EOF.
 TEST(SortedDataInterface, AdvanceToKeyAtCursorPosition) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -288,7 +288,7 @@ TEST(SortedDataInterface, AdvanceToKeyAtCursorPosition) {
 // the cursor should remain at its current position. An exclusive seek will
 // position the cursor on the next position, which may be EOF.
 TEST(SortedDataInterface, AdvanceToKeyAtCursorPositionReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -333,7 +333,7 @@ TEST(SortedDataInterface, AdvanceToKeyAtCursorPositionReversed) {
 // When advanceTo() is called in non-inclusive mode, the cursor is
 // positioned at the key that comes after the one specified.
 TEST(SortedDataInterface, AdvanceToExclusive) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -387,7 +387,7 @@ TEST(SortedDataInterface, AdvanceToExclusive) {
 // When advanceTo() is called in non-inclusive mode, the cursor is
 // positioned at the key that comes before the one specified.
 TEST(SortedDataInterface, AdvanceToExclusiveReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     {
@@ -441,7 +441,7 @@ TEST(SortedDataInterface, AdvanceToExclusiveReversed) {
 // each of them using a forward cursor by specifying a key between their
 // exact key and the current position of the cursor.
 TEST(SortedDataInterface, AdvanceToIndirect) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     BSONObj unusedKey = key6;  // larger than any inserted key
@@ -491,7 +491,7 @@ TEST(SortedDataInterface, AdvanceToIndirect) {
 // each of them using a reverse cursor by specifying a key between their
 // exact key and the current position of the cursor.
 TEST(SortedDataInterface, AdvanceToIndirectReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     BSONObj unusedKey = key0;  // smaller than any inserted key
@@ -544,7 +544,7 @@ TEST(SortedDataInterface, AdvanceToIndirectReversed) {
 // is called in non-inclusive mode, the cursor is positioned at the key
 // that comes after the one specified.
 TEST(SortedDataInterface, AdvanceToIndirectExclusive) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     BSONObj unusedKey = key6;  // larger than any inserted key
@@ -601,7 +601,7 @@ TEST(SortedDataInterface, AdvanceToIndirectExclusive) {
 // is called in non-inclusive mode, the cursor is positioned at the key
 // that comes before the one specified.
 TEST(SortedDataInterface, AdvanceToIndirectExclusiveReversed) {
-    const std::unique_ptr<HarnessHelper> harnessHelper(newHarnessHelper());
+    const auto harnessHelper(newSortedDataInterfaceHarnessHelper());
     const std::unique_ptr<SortedDataInterface> sorted(harnessHelper->newSortedDataInterface(false));
 
     BSONObj unusedKey = key0;  // smaller than any inserted key

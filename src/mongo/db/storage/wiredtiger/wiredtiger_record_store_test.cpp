@@ -52,6 +52,7 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+namespace {
 
 using std::unique_ptr;
 using std::string;
@@ -162,8 +163,12 @@ private:
     WiredTigerSessionCache* _sessionCache;
 };
 
-std::unique_ptr<HarnessHelper> newHarnessHelper() {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<WiredTigerHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
 }
 
 TEST(WiredTigerRecordStoreTest, GenerateCreateStringEmptyDocument) {
@@ -1554,4 +1559,5 @@ TEST(WiredTigerRecordStoreTest, OplogStones_AscendingOrder) {
     }
 }
 
+}  // namespace
 }  // namespace mongo

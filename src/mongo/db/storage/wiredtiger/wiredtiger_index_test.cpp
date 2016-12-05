@@ -30,7 +30,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 
+#include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/index_descriptor.h"
@@ -47,21 +49,21 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
 using std::string;
 
-class MyHarnessHelper final : public HarnessHelper {
+class MyHarnessHelper final : public SortedDataInterfaceHarnessHelper {
 public:
     MyHarnessHelper() : _dbpath("wt_test"), _conn(NULL) {
         const char* config = "create,cache_size=1G,";
         int ret = wiredtiger_open(_dbpath.path().c_str(), NULL, config, &_conn);
         invariantWTOK(ret);
 
-        _sessionCache = new WiredTigerSessionCache(_conn);
+        _sessionCache = stdx::make_unique<WiredTigerSessionCache>(_conn);
     }
 
     ~MyHarnessHelper() final {
-        delete _sessionCache;
         _conn->close(_conn, NULL);
     }
 
@@ -89,17 +91,22 @@ public:
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache);
+        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache.get());
     }
 
 private:
     unittest::TempDir _dbpath;
     WT_CONNECTION* _conn;
-    WiredTigerSessionCache* _sessionCache;
+    std::unique_ptr<WiredTigerSessionCache> _sessionCache;
 };
 
-std::unique_ptr<HarnessHelper> newHarnessHelper() {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<MyHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
 }
 
 TEST(WiredTigerIndexTest, GenerateCreateStringEmptyDocument) {
@@ -142,4 +149,5 @@ TEST(WiredTigerIndexTest, GenerateCreateStringValidConfigStringOption) {
     ASSERT_EQ(WiredTigerIndex::parseIndexOptions(spec), std::string("prefix_compression=true,"));
 }
 
+}  // namespace
 }  // namespace mongo

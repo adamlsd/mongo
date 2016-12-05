@@ -28,17 +28,19 @@
  *    it in the license file.
  */
 
+#include "mongo/base/init.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/storage/mmap_v1/btree/btree_interface.h"
 #include "mongo/db/storage/mmap_v1/btree/btree_test_help.h"
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace {
 using std::unique_ptr;
 
-class MyHarnessHelper final : public HarnessHelper {
+class MyHarnessHelper final : public SortedDataInterfaceHarnessHelper {
 public:
     MyHarnessHelper() : _recordStore("a.b"), _order(Ordering::make(BSONObj())) {}
 
@@ -73,6 +75,7 @@ std::unique_ptr<HarnessHelper> makeHarnessHelper() {
 
 MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
     mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
 }
 }  // namespace
 }  // namespace mongo

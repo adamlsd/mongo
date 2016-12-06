@@ -151,12 +151,12 @@ private:
             return _connection.get();
         }
 
-        void setSessionTicket(SessionEntry ticket) {
-            _ticket = std::move(ticket);
+        void setSessionID(SessionEntry id) {
+            _sessionID = std::move(id);
         }
 
-        SessionEntry getSessionTicket() const {
-            return _ticket;
+        SessionEntry getSessionID() const {
+            return _sessionID;
         }
 
     private:
@@ -173,7 +173,7 @@ private:
         std::unique_ptr<Connection> _connection;
 
         // A ticket to this session's entry in the TL's Session Registrar
-        SessionEntry _ticket;
+        SessionEntry _sessionID;
     };
 
     /**

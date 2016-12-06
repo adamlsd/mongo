@@ -32,8 +32,8 @@
 #include <vector>
 
 namespace mongo {
-/*!
- * @brief The AtomicRegistrar provides a threadsafe touchpoint for tracking registrations and
+/**
+ * The AtomicRegistrar provides a threadsafe touchpoint for tracking registrations and
  * deregistrations of elements from a tracking set.  Its usecases can include connection tracking,
  * user-session tracking, limited resource tracking, and child-thread tracking.
  *
@@ -116,20 +116,14 @@ namespace mongo {
 template <typename T>
 class AtomicRegistrar {
 private:
-    mutable stdx::mutex access;
-    stdx::list<T> list;
-
-    AtomicRegistrar(const AtomicRegistrar&) = delete;
-    AtomicRegistrar& operator=(const AtomicRegistrar&) = delete;
-    AtomicRegistrar(AtomicRegistrar&&) = delete;
-    AtomicRegistrar& operator=(AtomicRegistrar&&) = delete;
+    using StorageType = stdx::list<T>;
 
 public:
     using RegistrationList = std::vector<T>;
 
     struct Ticket {
     private:
-        using Data = typename decltype(list)::const_iterator;
+        using Data = typename StorageType::const_iterator;
         Data it;
         friend AtomicRegistrar;
 
@@ -141,7 +135,7 @@ public:
 
     AtomicRegistrar() = default;
 
-    /*!
+    /**
      * Return the number of items presently managed by this registrar.
      * NOTE: The results may be invalid as soon as this function returns.  It should be used for
      * debugging and tuning purposes only.
@@ -151,7 +145,7 @@ public:
         return list.size();
     }
 
-    /*!
+    /**
      * Register the specified object for tracking by this registrar and return a ticket representing
      * that registration.
      * PARAM: item Object to register
@@ -163,7 +157,7 @@ public:
         return Ticket{list.begin()};
     }
 
-    /*!
+    /**
      * Retire the specified object from tracking by this registrar as specified by its management
      * ticket.
      * PARAM: ticket The ticket for the item to be deregistered.
@@ -174,7 +168,7 @@ public:
         list.erase(ticket.it);
     }
 
-    /*!
+    /**
      * Retrieve a container of copies of `T` representing a snapshot of all elements under
      * management by this AtomicRegistrar at the time of call.
      */
@@ -182,5 +176,14 @@ public:
         stdx::lock_guard<stdx::mutex> lock(access);
         return RegistrationList{begin(list), end(list)};
     }
+
+private:
+    mutable stdx::mutex access;
+    StorageType list;
+
+    AtomicRegistrar(const AtomicRegistrar&) = delete;
+    AtomicRegistrar& operator=(const AtomicRegistrar&) = delete;
+    AtomicRegistrar(AtomicRegistrar&&) = delete;
+    AtomicRegistrar& operator=(AtomicRegistrar&&) = delete;
 };
 }  // namespace mongo

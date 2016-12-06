@@ -248,16 +248,17 @@ auto TransportLayerLegacy::viewAllActiveSessions(Session::TagMask tags) const
     using std::end;
     auto result = viewAllActiveSessions();
     auto removeTags = [tags](const LegacySessionHandle& session) {
-        log() << "Skip closing connection for connection # " << session->conn()->connectionId;
-        return session->getTags() & tags;
+        const bool ret = session->getTags() & tags;
+        if (ret) {
+            log() << "Skip closing connection for connection # " << session->conn()->connectionId;
+        }
+        return ret;
     };
     result.erase(std::remove_if(begin(result), end(result), removeTags), end(result));
     return result;
 }
 
 void TransportLayerLegacy::endAllSessions(Session::TagMask tags) {
-    std::cerr << "legacy transport layer closing all connections";
-
     for (auto&& session : viewAllActiveSessions(tags)) {
         _closeConnection(session->conn());
     }
@@ -275,7 +276,7 @@ void TransportLayerLegacy::_destroy(LegacySession& session) {
         _closeConnection(session.conn());
     }
 
-    _sessions.retire(session.getSessionTicket());
+    _sessions.retire(session.getSessionID());
 }
 
 Status TransportLayerLegacy::_runTicket(Ticket ticket) {
@@ -333,7 +334,7 @@ void TransportLayerLegacy::_handleNewConnection(std::unique_ptr<AbstractMessagin
     auto session = LegacySession::create(std::move(amp), this);
 
     // Add the new session to our registrar and track the registration ticket.
-    session->setSessionTicket(_sessions.enroll(session));
+    session->setSessionID(_sessions.enroll(session));
 
     invariant(_sep);
     _sep->startSession(std::move(session));

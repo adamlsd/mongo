@@ -38,6 +38,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/db/storage/sorted_data_interface.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/unowned_ptr.h"
 
@@ -84,7 +85,7 @@ std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current> p) {
     return std::unique_ptr<Target>(ck);
 }
 
-extern void registerHarnessHelperFactory(std::function<std::unique_ptr<HarnessHelper>()> factory);
+extern void registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessHelper>()> factory);
 
 extern std::unique_ptr<HarnessHelper> newHarnessHelper();
 }  // namespace mongo

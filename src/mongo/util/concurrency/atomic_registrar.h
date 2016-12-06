@@ -27,9 +27,10 @@
 
 #pragma once
 
+#include <vector>
+
 #include "mongo/stdx/list.h"
 #include "mongo/stdx/mutex.h"
-#include <vector>
 
 namespace mongo {
 /**
@@ -183,6 +184,7 @@ private:
 
     AtomicRegistrar(const AtomicRegistrar&) = delete;
     AtomicRegistrar& operator=(const AtomicRegistrar&) = delete;
+
     AtomicRegistrar(AtomicRegistrar&&) = delete;
     AtomicRegistrar& operator=(AtomicRegistrar&&) = delete;
 };

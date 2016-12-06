@@ -26,13 +26,17 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
-
 #include "mongo/db/storage/kv/kv_database_catalog_entry.h"
+
+#include <list>
+#include <string>
+
+#include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/devnull/devnull_kv_engine.h"
+#include "mongo/db/storage/kv/kv_database_catalog_entry_mock.h"
 #include "mongo/db/storage/kv/kv_storage_engine.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
@@ -44,7 +48,7 @@ using namespace mongo;
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionValidNamespace) {
     KVStorageEngine storageEngine(new DevNullKVEngine());
     storageEngine.finishInit();
-    KVDatabaseCatalogEntry dbEntry("mydb", &storageEngine);
+    KVDatabaseCatalogEntryMock dbEntry("mydb", &storageEngine);
     OperationContextNoop ctx;
     ASSERT_OK(dbEntry.createCollection(&ctx, "mydb.mycoll", CollectionOptions(), true));
     std::list<std::string> collectionNamespaces;
@@ -55,7 +59,7 @@ TEST(KVDatabaseCatalogEntryTest, CreateCollectionValidNamespace) {
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionEmptyNamespace) {
     KVStorageEngine storageEngine(new DevNullKVEngine());
     storageEngine.finishInit();
-    KVDatabaseCatalogEntry dbEntry("mydb", &storageEngine);
+    KVDatabaseCatalogEntryMock dbEntry("mydb", &storageEngine);
     OperationContextNoop ctx;
     ASSERT_NOT_OK(dbEntry.createCollection(&ctx, "", CollectionOptions(), true));
     std::list<std::string> collectionNamespaces;
@@ -84,7 +88,7 @@ public:
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionInvalidRecordStore) {
     KVStorageEngine storageEngine(new InvalidRecordStoreKVEngine());
     storageEngine.finishInit();
-    KVDatabaseCatalogEntry dbEntry("fail", &storageEngine);
+    KVDatabaseCatalogEntryMock dbEntry("fail", &storageEngine);
     OperationContextNoop ctx;
     ASSERT_NOT_OK(dbEntry.createCollection(&ctx, "fail.me", CollectionOptions(), true));
     std::list<std::string> collectionNamespaces;

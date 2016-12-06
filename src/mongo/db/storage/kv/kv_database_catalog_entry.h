@@ -1,5 +1,3 @@
-// kv_database_catalog_entry.h
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -99,4 +97,4 @@ private:
     KVStorageEngine* const _engine;  // not owned here
     CollectionMap _collections;
 };
-}
+}  // namespace mongo

@@ -44,7 +44,7 @@
 namespace mongo {
 class HarnessHelper {
 public:
-    virtual ~HarnessHelper() noexcept = 0;
+    virtual ~HarnessHelper() = 0;
 
     explicit HarnessHelper() = default;
 
@@ -77,14 +77,24 @@ private:
     ServiceContext::UniqueClient _client = _serviceContext.makeClient("hh");
 };
 
+namespace harness_helper_detail {
 template <typename Target, typename Current>
-std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current> p) {
-    Target* const ck = dynamic_cast<Target*>(p.get());
+std::unique_ptr<Target> noexcept_ptr_conversion(std::unique_ptr<Current>&& p, Target& t) noexcept {
     p.release();
-    return std::unique_ptr<Target>(ck);
+    return std::unique_ptr<Target>(std::addressof(t));
+}
+}  // namespace harness_helper_detail
+
+template <typename Target, typename Current>
+std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {
+    if (!p) {
+        throw std::runtime_error( "Must not be null." );
+    }
+    Target& target = dynamic_cast<Target&>(*p);
+    return harness_helper_detail::noexcept_ptr_conversion(std::move(p), target);
 }
 
-extern void registerHarnessHelperFactory(std::function<std::unique_ptr<HarnessHelper>()> factory);
+void registerHarnessHelperFactory(std::function<std::unique_ptr<HarnessHelper>()> factory);
 
-extern std::unique_ptr<HarnessHelper> newHarnessHelper();
+std::unique_ptr<HarnessHelper> newHarnessHelper();
 }  // namespace mongo

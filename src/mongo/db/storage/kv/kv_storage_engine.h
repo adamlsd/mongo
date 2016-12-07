@@ -34,7 +34,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/kv/kv_catalog.h"
-#include "mongo/db/storage/kv/kv_database_catalog_entry.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry_base.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/storage_engine.h"
@@ -60,7 +59,7 @@ struct KVStorageEngineOptions {
  * main implementations should pass the `default...` factory which is linked in with the main
  * `KVDatabaseCatalogEntry` code.
  */
-extern std::unique_ptr<KVDatabaseCatalogEntryBase> defaultDatabaseCatalogEntryFactory(
+std::unique_ptr<KVDatabaseCatalogEntryBase> defaultDatabaseCatalogEntryFactory(
     const StringData name, KVStorageEngine* const engine);
 
 using KVDatabaseCatalogEntryFactory = decltype(defaultDatabaseCatalogEntryFactory);

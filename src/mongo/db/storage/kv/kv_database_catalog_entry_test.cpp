@@ -41,8 +41,8 @@
 namespace mongo {
 namespace {
 
-std::unique_ptr<KVDatabaseCatalogEntryMock> databaseCatalogEntryFactory(const StringData name,
-                                                                    KVStorageEngine* const engine) {
+std::unique_ptr<KVDatabaseCatalogEntryMock> databaseCatalogEntryFactory(
+    const StringData name, KVStorageEngine* const engine) {
     return stdx::make_unique<KVDatabaseCatalogEntryMock>(name, engine);
 }
 

@@ -41,7 +41,7 @@ stdx::function<std::unique_ptr<HarnessHelper>()> basicHarnessFactory =
 }  // namespace mongo
 
 
-mongo::HarnessHelper::~HarnessHelper() noexcept = default;
+mongo::HarnessHelper::~HarnessHelper() = default;
 
 void mongo::registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessHelper>()> factory) {
     basicHarnessFactory = std::move(factory);

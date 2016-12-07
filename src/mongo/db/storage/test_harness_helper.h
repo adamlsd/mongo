@@ -91,7 +91,7 @@ extern void registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessH
 template <typename Target, typename Current>
 std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {
     if (!p) {
-        throw std::runtime_error( "Must not be null." );
+        throw std::runtime_error("Must not be null.");
     }
     Target& target = dynamic_cast<Target&>(*p);
     return harness_helper_detail::noexcept_ptr_conversion(std::move(p), target);

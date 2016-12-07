@@ -1,5 +1,3 @@
-// wiredtiger_record_store_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -89,6 +87,7 @@ public:
           _sessionCache(new WiredTigerSessionCache(_conn)) {}
 
     ~WiredTigerHarnessHelper() {
+        delete _sessionCache;
         _conn->close(_conn, NULL);
     }
 
@@ -96,7 +95,7 @@ public:
         return newNonCappedRecordStore("a.b");
     }
     std::unique_ptr<RecordStore> newNonCappedRecordStore(const std::string& ns) {
-        WiredTigerRecoveryUnit* ru = new WiredTigerRecoveryUnit(_sessionCache.get());
+        WiredTigerRecoveryUnit* ru = new WiredTigerRecoveryUnit(_sessionCache);
         OperationContextNoop txn(ru);
         string uri = "table:" + ns;
 
@@ -124,7 +123,7 @@ public:
     std::unique_ptr<RecordStore> newCappedRecordStore(const std::string& ns,
                                                       int64_t cappedMaxSize,
                                                       int64_t cappedMaxDocs) {
-        WiredTigerRecoveryUnit* ru = new WiredTigerRecoveryUnit(_sessionCache.get());
+        WiredTigerRecoveryUnit* ru = new WiredTigerRecoveryUnit(_sessionCache);
         OperationContextNoop txn(ru);
         string uri = "table:a.b";
 
@@ -148,7 +147,7 @@ public:
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache.get());
+        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache);
     }
 
     bool supportsDocLocking() final {
@@ -162,7 +161,7 @@ public:
 private:
     unittest::TempDir _dbpath;
     WT_CONNECTION* _conn;
-    std::unique_ptr<WiredTigerSessionCache> _sessionCache;
+    WiredTigerSessionCache* _sessionCache;
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {

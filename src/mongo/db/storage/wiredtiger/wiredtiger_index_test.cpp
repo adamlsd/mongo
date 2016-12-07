@@ -60,10 +60,11 @@ public:
         int ret = wiredtiger_open(_dbpath.path().c_str(), NULL, config, &_conn);
         invariantWTOK(ret);
 
-        _sessionCache = stdx::make_unique<WiredTigerSessionCache>(_conn);
+        _sessionCache = new WiredTigerSessionCache(_conn);
     }
 
     ~MyHarnessHelper() final {
+        delete _sessionCache;
         _conn->close(_conn, NULL);
     }
 
@@ -91,13 +92,13 @@ public:
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
-        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache.get());
+        return stdx::make_unique<WiredTigerRecoveryUnit>(_sessionCache);
     }
 
 private:
     unittest::TempDir _dbpath;
     WT_CONNECTION* _conn;
-    std::unique_ptr<WiredTigerSessionCache> _sessionCache;
+    WiredTigerSessionCache* _sessionCache;
 };
 
 std::unique_ptr<HarnessHelper> makeHarnessHelper() {

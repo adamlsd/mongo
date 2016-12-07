@@ -26,18 +26,16 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/db/storage/kv/kv_database_catalog_entry_mock.h"
 
-#include "mongo/db/storage/kv/kv_database_catalog_entry_base.h"
+#include "mongo/util/assert_util.h"
 
 namespace mongo {
 
-class KVDatabaseCatalogEntry : public KVDatabaseCatalogEntryBase {
-public:
-    using KVDatabaseCatalogEntryBase::KVDatabaseCatalogEntryBase;
-
-    IndexAccessMethod* getIndex(OperationContext* txn,
-                                const CollectionCatalogEntry* collection,
-                                IndexCatalogEntry* index) final;
-};
+// Used to satisfy link dependencies in unit test - not invoked.
+IndexAccessMethod* KVDatabaseCatalogEntryMock::getIndex(OperationContext* txn,
+                                                        const CollectionCatalogEntry* collection,
+                                                        IndexCatalogEntry* index) {
+    invariant(false);
+}
 }  // namespace mongo

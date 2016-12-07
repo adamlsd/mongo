@@ -65,8 +65,7 @@ void PoolForHost::clear() {
     _pool = decltype(_pool){};
 }
 
-void PoolForHost::done(DBConnectionPool* pool, DBClientBase* c_raw) {
-    std::unique_ptr<DBClientBase> c{c_raw};
+void PoolForHost::done(DBConnectionPool* pool, std::unique_ptr<DBClientBase> c) {
     const bool isFailed = c->isFailed();
 
     --_checkedOut;
@@ -132,8 +131,8 @@ void PoolForHost::flush() {
     clear();
 }
 
-void PoolForHost::getStaleConnections(vector<DBClientBase*>& stale) {
-    vector<StoredConnection> all;
+void PoolForHost::getStaleConnections(std::vector<std::unique_ptr<DBClientBase>>& stale) {
+    std::vector<StoredConnection> all;
     while (!_pool.empty()) {
         StoredConnection c = std::move(_pool.top());
         _pool.pop();
@@ -142,7 +141,7 @@ void PoolForHost::getStaleConnections(vector<DBClientBase*>& stale) {
             all.push_back(std::move(c));
         } else {
             _badConns++;
-            stale.emplace_back(c.conn.release());
+            stale.emplace_back(std::move(c.conn));
         }
     }
 
@@ -284,7 +283,7 @@ void DBConnectionPool::release(const string& host, DBClientBase* c) {
     onRelease(c);
 
     stdx::lock_guard<stdx::mutex> L(_mutex);
-    _pools[PoolKey(host, c->getSoTimeout())].done(this, c);
+    _pools[PoolKey(host, c->getSoTimeout())].done(this, std::unique_ptr<DBClientBase>(c));
 }
 
 
@@ -432,7 +431,7 @@ bool DBConnectionPool::isConnectionGood(const string& hostName, DBClientBase* co
 }
 
 void DBConnectionPool::taskDoWork() {
-    vector<DBClientBase*> toDelete;
+    std::vector<std::unique_ptr<DBClientBase>> toDelete;
 
     {
         // we need to get the connections inside the lock
@@ -445,8 +444,7 @@ void DBConnectionPool::taskDoWork() {
 
     for (size_t i = 0; i < toDelete.size(); i++) {
         try {
-            onDestroy(toDelete[i]);
-            delete toDelete[i];
+            onDestroy(toDelete[i].get());
         } catch (...) {
             // we don't care if there was a socket error
         }

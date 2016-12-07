@@ -114,11 +114,11 @@ public:
     // Deletes all connections in the pool
     void clear();
 
-    void done(DBConnectionPool* pool, DBClientBase* c);
+    void done(DBConnectionPool* pool, std::unique_ptr<DBClientBase> c);
 
     void flush();
 
-    void getStaleConnections(std::vector<DBClientBase*>& stale);
+    void getStaleConnections(std::vector<std::unique_ptr<DBClientBase>>& stale);
 
     /**
      * Sets the lower bound for creation times that can be considered as

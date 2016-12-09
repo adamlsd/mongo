@@ -36,7 +36,7 @@
 namespace mongo {
 namespace {
 stdx::function<std::unique_ptr<HarnessHelper>()> basicHarnessFactory =
-    []() -> std::unique_ptr<HarnessHelper> { fassertFailed(40354); };
+    []() -> std::unique_ptr<HarnessHelper> { fassertFailed(40357); };
 }  // namespace
 }  // namespace mongo
 

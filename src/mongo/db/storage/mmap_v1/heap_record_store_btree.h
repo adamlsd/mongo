@@ -32,6 +32,7 @@
 
 #include <boost/shared_array.hpp>
 #include <map>
+#include <memory>
 
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/recovery_unit.h"
@@ -196,9 +197,8 @@ public:
 
     virtual void abandonSnapshot() {}
 
-    virtual void registerChange(Change* change) {
+    void registerChange(std::unique_ptr<Change> change) override {
         change->commit();
-        delete change;
     }
 
     virtual void* writingPtr(void* data, size_t len);

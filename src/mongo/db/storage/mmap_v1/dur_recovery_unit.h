@@ -55,7 +55,7 @@ public:
     virtual void abandonSnapshot();
 
     //  The recovery unit takes ownership of change.
-    virtual void registerChange(Change* change);
+    void registerChange(std::unique_ptr<Change> change) override;
 
     virtual void* writingPtr(void* addr, size_t len);
 
@@ -99,7 +99,7 @@ private:
     void resetChanges();
 
     // Changes are ordered from oldest to newest.
-    typedef OwnedPointerVector<Change> Changes;
+    typedef std::vector<std::unique_ptr<<Change>> Changes;
     Changes _changes;
 
 

@@ -214,7 +214,7 @@ void MMAPV1DatabaseCatalogEntry::_removeFromCache(RecoveryUnit* ru, StringData n
 
     //  If there is an operation context, register a rollback to restore the cache entry
     if (ru) {
-        ru->registerChange(new EntryRemoval(ns, this, i->second));
+        ru->registerChange(stdx::make_unique<EntryRemoval>(ns, this, i->second));
     } else {
         delete i->second;
     }

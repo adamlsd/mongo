@@ -40,6 +40,7 @@
 #include "mongo/db/storage/mmap_v1/diskloc.h"
 #include "mongo/db/storage/mmap_v1/record_store_v1_base.h"
 #include "mongo/db/storage/record_store.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -141,7 +142,8 @@ Status BtreeLogic<BtreeLayout>::Builder::addKey(const BSONObj& keyObj, const Dis
     BucketType* rightLeaf = _getModifiableBucket(_rightLeafLoc);
     if (!_logic->pushBack(rightLeaf, loc, *key, DiskLoc())) {
         // bucket was full, so split and try with the new node.
-        _txn->recoveryUnit()->registerChange(new SetRightLeafLocChange(this, _rightLeafLoc));
+        _txn->recoveryUnit()->registerChange(
+            stdx::make_unique<SetRightLeafLocChange>(this, _rightLeafLoc));
         _rightLeafLoc = newBucket(rightLeaf, _rightLeafLoc);
         rightLeaf = _getModifiableBucket(_rightLeafLoc);
         invariant(_logic->pushBack(rightLeaf, loc, *key, DiskLoc()));

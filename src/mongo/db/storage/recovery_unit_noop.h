@@ -67,8 +67,8 @@ public:
         return true;
     }
 
-    virtual void registerChange(Change* change) {
-        _changes.push_back(std::unique_ptr<Change>(change));
+    void registerChange(std::unique_ptr<Change> change) override {
+        _changes.push_back(std::move(change));
     }
 
     virtual void* writingPtr(void* data, size_t len) {

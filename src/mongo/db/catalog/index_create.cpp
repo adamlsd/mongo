@@ -48,6 +48,7 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_parameters.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/fail_point_service.h"
@@ -182,7 +183,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
     WriteUnitOfWork wunit(_txn);
 
     invariant(_indexes.empty());
-    _txn->recoveryUnit()->registerChange(new CleanupIndexesVectorOnRollback(this));
+    _txn->recoveryUnit()->registerChange(stdx::make_unique<CleanupIndexesVectorOnRollback>(this));
 
     const string& ns = _collection->ns().ns();
 
@@ -448,7 +449,7 @@ void MultiIndexBlock::commit() {
         _indexes[i].block->success();
     }
 
-    _txn->recoveryUnit()->registerChange(new SetNeedToCleanupOnRollback(this));
+    _txn->recoveryUnit()->registerChange(stdx::make_unique<SetNeedToCleanupOnRollback>(this));
     _needToCleanup = false;
 }
 

@@ -35,6 +35,7 @@
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -239,7 +240,7 @@ Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
 
     {
         stdx::lock_guard<stdx::mutex> lk(_dbsLock);
-        txn->recoveryUnit()->registerChange(new RemoveDBChange(this, db, entry));
+        txn->recoveryUnit()->registerChange(stdx::make_unique<RemoveDBChange>(this, db, entry));
         _dbs.erase(db.toString());
     }
 

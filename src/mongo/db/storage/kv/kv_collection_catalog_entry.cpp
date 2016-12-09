@@ -36,6 +36,7 @@
 #include "mongo/db/storage/kv/kv_catalog.h"
 #include "mongo/db/storage/kv/kv_catalog_feature_tracker.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -172,7 +173,7 @@ Status KVCollectionCatalogEntry::removeIndex(OperationContext* txn, StringData i
     _catalog->putMetaData(txn, ns().toString(), md);
 
     // Lazily remove to isolate underlying engine from rollback.
-    txn->recoveryUnit()->registerChange(new RemoveIndexChange(txn, this, ident));
+    txn->recoveryUnit()->registerChange(stdx::make_unique<RemoveIndexChange>(txn, this, ident));
     return Status::OK();
 }
 
@@ -204,7 +205,7 @@ Status KVCollectionCatalogEntry::prepareForIndexBuild(OperationContext* txn,
 
     const Status status = _engine->createSortedDataInterface(txn, ident, spec);
     if (status.isOK()) {
-        txn->recoveryUnit()->registerChange(new AddIndexChange(txn, this, ident));
+        txn->recoveryUnit()->registerChange(stdx::make_unique<AddIndexChange>(txn, this, ident));
     }
 
     return status;

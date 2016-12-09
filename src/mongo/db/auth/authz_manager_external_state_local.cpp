@@ -37,6 +37,7 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/user_document_parser.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -504,7 +505,8 @@ void AuthzManagerExternalStateLocal::logOp(
     OperationContext* txn, const char* op, const char* ns, const BSONObj& o, const BSONObj* o2) {
     if (ns == AuthorizationManager::rolesCollectionNamespace.ns() ||
         ns == AuthorizationManager::adminCommandNamespace.ns()) {
-        txn->recoveryUnit()->registerChange(new AuthzManagerLogOpHandler(txn, this, op, ns, o, o2));
+        txn->recoveryUnit()->registerChange(
+            stdx::make_unique<AuthzManagerLogOpHandler>(txn, this, op, ns, o, o2));
     }
 }
 

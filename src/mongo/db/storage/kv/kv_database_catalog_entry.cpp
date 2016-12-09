@@ -30,9 +30,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/storage/kv/kv_database_catalog_entry.h"
+
 #include <memory>
 
-#include "mongo/db/storage/kv/kv_database_catalog_entry.h"
 
 #include "mongo/db/operation_context.h"
 #include "mongo/db/storage/kv/kv_catalog_feature_tracker.h"
@@ -40,6 +41,7 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/kv/kv_storage_engine.h"
 #include "mongo/db/storage/recovery_unit.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -228,7 +230,8 @@ Status KVDatabaseCatalogEntry::createCollection(OperationContext* txn,
         }
     }
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns, ident, true));
+    txn->recoveryUnit()->registerChange(
+        stdx::make_unique<AddCollectionChange>(txn, this, ns, ident, true));
 
     auto rs = _engine->getEngine()->getRecordStore(txn, ns, ident, options);
     invariant(rs);
@@ -312,11 +315,12 @@ Status KVDatabaseCatalogEntry::renameCollection(OperationContext* txn,
 
     const CollectionMap::iterator itFrom = _collections.find(fromNS.toString());
     invariant(itFrom != _collections.end());
-    txn->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(txn, this, fromNS, identFrom, itFrom->second, false));
+    txn->recoveryUnit()->registerChange(stdx::make_unique<RemoveCollectionChange>(
+        txn, this, fromNS, identFrom, itFrom->second, false));
     _collections.erase(itFrom);
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, toNS, identTo, false));
+    txn->recoveryUnit()->registerChange(
+        stdx::make_unique<AddCollectionChange>(txn, this, toNS, identTo, false));
 
     auto rs = _engine->getEngine()->getRecordStore(txn, toNS, identTo, md.options);
 
@@ -358,7 +362,7 @@ Status KVDatabaseCatalogEntry::dropCollection(OperationContext* opCtx, StringDat
     // This will lazily delete the KVCollectionCatalogEntry and notify the storageEngine to
     // drop the collection only on WUOW::commit().
     opCtx->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(opCtx, this, ns, ident, it->second, true));
+        stdx::make_unique<RemoveCollectionChange>(opCtx, this, ns, ident, it->second, true));
 
     _collections.erase(ns.toString());
 

@@ -47,6 +47,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/service_context.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
@@ -173,7 +174,7 @@ public:
 void IndexCatalogEntry::setHead(OperationContext* txn, RecordId newHead) {
     _collection->setIndexHead(txn, _descriptor->indexName(), newHead);
 
-    txn->recoveryUnit()->registerChange(new SetHeadChange(this, _head));
+    txn->recoveryUnit()->registerChange(stdx::make_unique<SetHeadChange>(this, _head));
     _head = newHead;
 }
 

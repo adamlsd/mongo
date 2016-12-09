@@ -65,6 +65,7 @@
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view_catalog.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
@@ -421,7 +422,8 @@ void Database::_clearCollectionCache(OperationContext* txn,
         return;
 
     // Takes ownership of the collection
-    txn->recoveryUnit()->registerChange(new RemoveCollectionChange(this, it->second));
+    txn->recoveryUnit()->registerChange(
+        stdx::make_unique<RemoveCollectionChange>(this, it->second));
 
     it->second->_cursorManager.invalidateAll(false, reason);
     _collections.erase(it);
@@ -465,7 +467,7 @@ Status Database::renameCollection(OperationContext* txn,
         Top::get(txn->getClient()->getServiceContext()).collectionDropped(fromNS.toString());
     }
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, toNS));
+    txn->recoveryUnit()->registerChange(stdx::make_unique<AddCollectionChange>(txn, this, toNS));
     Status s = _dbEntry->renameCollection(txn, fromNS, toNS, stayTemp);
     _collections[toNS] = _getOrCreateCollectionInstance(txn, toNS);
     return s;
@@ -534,7 +536,7 @@ Collection* Database::createCollection(OperationContext* txn,
     Status status = _dbEntry->createCollection(txn, ns, options, true /*allocateDefaultSpace*/);
     massertNoTraceStatusOK(status);
 
-    txn->recoveryUnit()->registerChange(new AddCollectionChange(txn, this, ns));
+    txn->recoveryUnit()->registerChange(stdx::make_unique<AddCollectionChange>(txn, this, ns));
     Collection* collection = _getOrCreateCollectionInstance(txn, ns);
     invariant(collection);
     _collections[ns] = collection;

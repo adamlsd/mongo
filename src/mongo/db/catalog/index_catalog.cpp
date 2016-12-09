@@ -65,6 +65,7 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -964,7 +965,8 @@ Status IndexCatalog::_dropIndex(OperationContext* txn, IndexCatalogEntry* entry)
     audit::logDropIndex(&cc(), indexName, _collection->ns().ns());
 
     invariant(_entries.release(entry->descriptor()) == entry);
-    txn->recoveryUnit()->registerChange(new IndexRemoveChange(txn, _collection, &_entries, entry));
+    txn->recoveryUnit()->registerChange(
+        stdx::make_unique<IndexRemoveChange>(txn, _collection, &_entries, entry));
     entry = NULL;
     _deleteIndexFromDisk(txn, indexName, indexNamespace);
 
@@ -1230,7 +1232,7 @@ const IndexDescriptor* IndexCatalog::refreshEntry(OperationContext* txn,
     // invalid and should not be dereferenced.
     IndexCatalogEntry* oldEntry = _entries.release(oldDesc);
     txn->recoveryUnit()->registerChange(
-        new IndexRemoveChange(txn, _collection, &_entries, oldEntry));
+        stdx::make_unique<IndexRemoveChange>(txn, _collection, &_entries, oldEntry));
 
     // Ask the CollectionCatalogEntry for the new index spec.
     BSONObj spec = _collection->getCatalogEntry()->getIndexSpec(txn, indexName).getOwned();

@@ -53,6 +53,7 @@
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -238,7 +239,7 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
                 auto shardIdentityDoc = uassertStatusOK(ShardIdentityType::fromBSON(insertedDoc));
                 uassertStatusOK(shardIdentityDoc.validate());
                 txn->recoveryUnit()->registerChange(
-                    new ShardIdentityLogOpHandler(txn, std::move(shardIdentityDoc)));
+                    stdx::make_unique<ShardIdentityLogOpHandler>(txn, std::move(shardIdentityDoc)));
             }
         }
     }
@@ -255,7 +256,7 @@ void CollectionShardingState::onInsertOp(OperationContext* txn, const BSONObj& i
             insertedDoc[ShardType::state.name()].eoo()) {
             const auto shardType = uassertStatusOK(ShardType::fromBSON(insertedDoc));
             txn->recoveryUnit()->registerChange(
-                new LegacyAddShardLogOpHandler(txn, std::move(shardType)));
+                stdx::make_unique<LegacyAddShardLogOpHandler>(txn, std::move(shardType)));
         }
     }
 
@@ -310,7 +311,7 @@ void CollectionShardingState::onDeleteOp(OperationContext* txn,
             // should cancel a pending addShard task (if one exists for this shardId) even while
             // non-primary, since it guarantees we cleanup any pending tasks on stepdown.
             txn->recoveryUnit()->registerChange(
-                new RemoveShardLogOpHandler(txn, ShardId(std::move(shardIdStr))));
+                stdx::make_unique<RemoveShardLogOpHandler>(txn, ShardId(std::move(shardIdStr))));
         } else if (_nss == VersionType::ConfigNS) {
             if (!repl::ReplicationCoordinator::get(txn)->getMemberState().rollback()) {
                 uasserted(40302, "cannot delete config.version document while in --configsvr mode");

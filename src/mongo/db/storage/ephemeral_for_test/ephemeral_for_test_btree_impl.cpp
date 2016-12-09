@@ -167,7 +167,7 @@ public:
         IndexKeyEntry entry(key.getOwned(), loc);
         if (_data->insert(entry).second) {
             _currentKeySize += key.objsize();
-            txn->recoveryUnit()->registerChange(new IndexChange(_data, entry, true));
+            txn->recoveryUnit()->registerChange(stdx::make_unique<IndexChange>(_data, entry, true));
         }
         return Status::OK();
     }
@@ -184,7 +184,8 @@ public:
         invariant(numDeleted <= 1);
         if (numDeleted == 1) {
             _currentKeySize -= key.objsize();
-            txn->recoveryUnit()->registerChange(new IndexChange(_data, entry, false));
+            txn->recoveryUnit()->registerChange(
+                stdx::make_unique<IndexChange>(_data, entry, false));
         }
     }
 

@@ -41,14 +41,9 @@
 namespace mongo {
 namespace {
 
-std::unique_ptr<KVDatabaseCatalogEntryMock> databaseCatalogEntryFactory(
-    const StringData name, KVStorageEngine* const engine) {
-    return stdx::make_unique<KVDatabaseCatalogEntryMock>(name, engine);
-}
-
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionValidNamespace) {
     KVStorageEngine storageEngine(
-        new DevNullKVEngine(), KVStorageEngineOptions{}, databaseCatalogEntryFactory);
+        new DevNullKVEngine(), KVStorageEngineOptions{}, kvDatabaseCatalogEntryMockFactory);
     storageEngine.finishInit();
     KVDatabaseCatalogEntryMock dbEntry("mydb", &storageEngine);
     OperationContextNoop ctx;
@@ -60,7 +55,7 @@ TEST(KVDatabaseCatalogEntryTest, CreateCollectionValidNamespace) {
 
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionEmptyNamespace) {
     KVStorageEngine storageEngine(
-        new DevNullKVEngine(), KVStorageEngineOptions{}, databaseCatalogEntryFactory);
+        new DevNullKVEngine(), KVStorageEngineOptions{}, kvDatabaseCatalogEntryMockFactory);
     storageEngine.finishInit();
     KVDatabaseCatalogEntryMock dbEntry("mydb", &storageEngine);
     OperationContextNoop ctx;
@@ -89,8 +84,9 @@ public:
 
 // After createCollection fails, collection namespaces should remain empty.
 TEST(KVDatabaseCatalogEntryTest, CreateCollectionInvalidRecordStore) {
-    KVStorageEngine storageEngine(
-        new InvalidRecordStoreKVEngine(), KVStorageEngineOptions{}, databaseCatalogEntryFactory);
+    KVStorageEngine storageEngine(new InvalidRecordStoreKVEngine(),
+                                  KVStorageEngineOptions{},
+                                  kvDatabaseCatalogEntryMockFactory);
     storageEngine.finishInit();
     KVDatabaseCatalogEntryMock dbEntry("fail", &storageEngine);
     OperationContextNoop ctx;

@@ -51,11 +51,8 @@ class KVCollectionCatalogEntryTest : public unittest::Test {
 public:
     KVCollectionCatalogEntryTest()
         : _nss("unittests.kv_collection_catalog_entry"),
-          _storageEngine(new DevNullKVEngine(),
-                         KVStorageEngineOptions(),
-                         [](const StringData name, KVStorageEngine * const engine) {
-                             return stdx::make_unique<KVDatabaseCatalogEntryMock>(name, engine);
-                         }) {
+          _storageEngine(
+              new DevNullKVEngine(), KVStorageEngineOptions(), kvDatabaseCatalogEntryMockFactory) {
         _storageEngine.finishInit();
     }
 

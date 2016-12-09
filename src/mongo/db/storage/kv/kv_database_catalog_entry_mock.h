@@ -28,6 +28,9 @@
 
 #pragma once
 
+#include <memory>
+
+#include "mongo/base/string_data.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry_base.h"
 
 namespace mongo {
@@ -40,4 +43,7 @@ public:
                                 const CollectionCatalogEntry* collection,
                                 IndexCatalogEntry* index) final;
 };
+
+std::unique_ptr<KVDatabaseCatalogEntryMock> kvDatabaseCatalogEntryMockFactory(
+    StringData name, KVStorageEngine* engine);
 }  // namespace mongo

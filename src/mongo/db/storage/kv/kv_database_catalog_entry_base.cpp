@@ -118,8 +118,8 @@ KVDatabaseCatalogEntryBase::KVDatabaseCatalogEntryBase(StringData db, KVStorageE
     : DatabaseCatalogEntry(db), _engine(engine) {}
 
 KVDatabaseCatalogEntryBase::~KVDatabaseCatalogEntryBase() {
-    for (auto&& collection : _collections) {
-        delete collection.second;
+    for (CollectionMap::const_iterator it = _collections.begin(); it != _collections.end(); ++it) {
+        delete it->second;
     }
     _collections.clear();
 }

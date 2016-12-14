@@ -1222,6 +1222,23 @@ tasks:
 
           ${python|python} ./buildscripts/scons.py ${compile_flags|} --stack-size=1024 lint
 
+## check for multiply defined symbols ##
+- name: multiply_defined_symbol_check
+  depends_on:
+  - name: compile
+  commands:
+    - command: manifest.load
+    - command: git.get_project
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        script: |
+          set -o errexit
+          set -o verbose
+
+          ${python|python} ./buildscripts/multdef_symbol_check.py ${install_directory|/data/mongo-install-directory}
+
 - <<: *task_template
   name: burn_in_tests
   depends_on:
@@ -8467,6 +8484,7 @@ buildvariants:
   - name: compile
     distros:
     - ubuntu1604-build
+  - name: multiply_defined_symbol_check
 
 - name: enterprise-debug-rhel-62-cxx14
   display_name: ~ Enterprise RHEL 6.2 C++14 DEBUG

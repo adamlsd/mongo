@@ -51,11 +51,10 @@ namespace mongo {
  *
  * Sample Usecase
  * --------------
- * @code
+ * ~~~
  * class Networking {
  * private:
- *     using ConnectionRegistrar= AtomicRegistrar< std::shared_ptr< std::iostream > >;
- *     ConnectionRegistrar connections;
+ *     using ConnectionRegistrar = AtomicRegistrar<std::shared_ptr<std::iostream>>;
  *
  * public:
  *     struct Socket {
@@ -64,11 +63,11 @@ namespace mongo {
  *     }
  *
  *     // Acquire a connection -- the Networking class owns the connections.
- *     Socket startSession(const ServerAddress& target) {
+ *     Socket
+ *     startSession(const ServerAddress& target) {
  *         std::unique_ptr<std::iostream> socket = openConnection(target);
- *         auto socket_ptr = socket.get()
- *         auto ticket = connections.enroll(std::move(socket));
- *         return Socket{ ticket, socket_ptr };
+ *         auto socket_ptr = socket.get() auto ticket = connections.enroll(std::move(socket));
+ *         return Socket{ticket, socket_ptr};
  *     }
  *
  *     // Manually close a connection.
@@ -78,10 +77,13 @@ namespace mongo {
  *
  *     // Print statistics about presently opened connections.
  *     void printStatistics() const {
- *         for (const auto &connection : connections.snapshot()) {
+ *         for (const auto& connection : connections.snapshot()) {
  *             std::cerr << statistics(connection) << std::endl;
  *         }
  *     }
+ *
+ * private:
+ *     ConnectionRegistrar connections;
  * };
  *
  * // ...
@@ -90,10 +92,10 @@ namespace mongo {
  *     Networking network;
  *
  *     while (true) {
- *         Socket s = network.startSession({ "someserver.com", 4242 });
+ *         Socket s = network.startSession({"someserver.com", 4242});
  *
  *         // Start session thread
- *         std::thread([s]{
+ *         std::thread([s] {
  *             while (true) {
  *                 // ...
  *
@@ -112,80 +114,81 @@ namespace mongo {
  *
  *     return EXIT_SUCCESS;
  * }
- * @endcode
+ *
+ * ~~~
  */
 template <typename T>
 class AtomicRegistrar {
 private:
     using StorageType = stdx::list<T>;
 
-public:
-    using RegistrationList = std::vector<T>;
-
-    struct Ticket {
-    private:
-        using Data = typename StorageType::const_iterator;
-        Data it;
-        friend AtomicRegistrar;
-
-        explicit Ticket(Data d) : it(std::move(d)) {}
-
-    public:
-        Ticket() = default;
-    };
-
-    AtomicRegistrar() = default;
-
-    /**
-     * Return the number of items presently managed by this registrar.
-     * NOTE: The results may be invalid as soon as this function returns.  It should be used for
-     * debugging and tuning purposes only.
-     */
-    std::size_t size() const {
-        stdx::lock_guard<stdx::mutex> lock(access);
-        return list.size();
-    }
-
-    /**
-     * Register the specified object for tracking by this registrar and return a ticket representing
-     * that registration.
-     * PARAM: item Object to register
-     * RETURN: A ticket for later use in manual retirement.
-     */
-    Ticket enroll(T item) {
-        stdx::lock_guard<stdx::mutex> lock(access);
-        list.push_front(std::move(item));
-        return Ticket{list.begin()};
-    }
-
-    /**
-     * Retire the specified object from tracking by this registrar as specified by its management
-     * ticket.
-     * PARAM: ticket The ticket for the item to be deregistered.
-     * RETURN: A ticket for later use in manual retirement.
-     */
-    void retire(Ticket ticket) {
-        stdx::lock_guard<stdx::mutex> lock(access);
-        list.erase(ticket.it);
-    }
-
-    /**
-     * Retrieve a container of copies of `T` representing a snapshot of all elements under
-     * management by this AtomicRegistrar at the time of call.
-     */
-    RegistrationList snapshot() const {
-        stdx::lock_guard<stdx::mutex> lock(access);
-        return RegistrationList{begin(list), end(list)};
-    }
-
-private:
-    mutable stdx::mutex access;
-    StorageType list;
-
     AtomicRegistrar(const AtomicRegistrar&) = delete;
     AtomicRegistrar& operator=(const AtomicRegistrar&) = delete;
 
     AtomicRegistrar(AtomicRegistrar&&) = delete;
     AtomicRegistrar& operator=(AtomicRegistrar&&) = delete;
+
+public:
+    using RegistrationList = std::vector<T>;
+
+    struct Ticket {
+    public:
+        Ticket() = default;
+
+    private:
+        using Data = typename StorageType::const_iterator;
+        Data _it;
+        friend AtomicRegistrar;
+
+        explicit Ticket(Data d) : _it(std::move(d)) {}
+    };
+
+    AtomicRegistrar() = default;
+
+    /**
+     * Returns the number of items presently managed by this registrar.
+     * NOTE: The results may be invalid as soon as this function returns.  It should be used for
+     * debugging and tuning purposes only.
+     */
+    std::size_t size() const {
+        const stdx::lock_guard<stdx::mutex> lock(this->_access);
+        return this->_list.size();
+    }
+
+    /**
+     * Registers the specified object for tracking by this registrar and return a ticket
+     * representing that registration.
+     * `item`: Object to register
+     * RETURNS: A ticket for later use in manual retirement.
+     */
+    Ticket enroll(T item) {
+        const stdx::lock_guard<stdx::mutex> lock(this->_access);
+        this->_list.push_front(std::move(item));
+        using std::begin;
+        return Ticket{begin(this->_list)};
+    }
+
+    /**
+     * Retires the specified object from tracking by this registrar as specified by its management
+     * ticket.
+     * `ticket`: The ticket for the item to be deregistered.
+     */
+    void retire(Ticket ticket) {
+        const stdx::lock_guard<stdx::mutex> lock(this->_access);
+        this->_list.erase(this->_ticket.it);
+    }
+
+    /**
+     * Retrieves a container of copies of `T` representing a snapshot of all elements under
+     * management by this AtomicRegistrar at the time of call.
+     */
+    RegistrationList snapshot() const {
+        const stdx::lock_guard<stdx::mutex> lock(this->_access);
+        return RegistrationList{begin(this->_list), end(this->_list)};
+    }
+
+private:
+    mutable stdx::mutex _access;
+    StorageType _list;
 };
 }  // namespace mongo

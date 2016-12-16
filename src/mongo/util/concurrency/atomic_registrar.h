@@ -35,19 +35,19 @@
 namespace mongo {
 /**
  * The AtomicRegistrar provides a threadsafe touchpoint for tracking registrations and
- * deregistrations of elements from a tracking set.  Its usecases can include connection tracking,
+ * deregistrations of elements from a tracking set. Its usecases can include connection tracking,
  * user-session tracking, limited resource tracking, and child-thread tracking.
  *
  * The `AtomicRegistrar` stores multiple objects in a threadsafe manner and returns a lightweight
- * "ticket" to allow for tracking and management.  These tickets are somewhat like pointers or
+ * "ticket" to allow for tracking and management. These tickets are somewhat like pointers or
  * iterators; they do not expire before the Registrar expires, nor do they get invalidated by any
  * mutating operations on the Registrar.
  *
- * In some sense the `AtomicRegistrar` can be thought of like a coat-check with claim-tickets.  A
+ * In some sense the `AtomicRegistrar` can be thought of like a coat-check with claim-tickets. A
  * coat is given at the checkin desk, and a claim ticket is presented, representing the coat in the
- * coat check.  At the end of an event, when a coat check is closed, all coats are divested.  During
+ * coat check. At the end of an event, when a coat check is closed, all coats are divested. During
  * the event, coat owners may present claim-tickets to retrieve their coats when they wish to
- * depart.  This registrar interface tracks elements in much the same way, and it is threadsafe.
+ * depart. This registrar interface tracks elements in much the same way, and it is threadsafe.
  *
  * Sample Usecase
  * --------------
@@ -72,18 +72,18 @@ namespace mongo {
  *
  *     // Manually close a connection.
  *     void closeSession(const Socket& socket) {
- *         connections.retire(socket.ticket);
+ *         _connections.retire(socket.ticket);
  *     }
  *
  *     // Print statistics about presently opened connections.
  *     void printStatistics() const {
- *         for (const auto& connection : connections.snapshot()) {
- *             std::cerr << statistics(connection) << std::endl;
+ *         for (const auto& connection : _connections.snapshot()) {
+ *             std::cerr << statistics(_connection) << std::endl;
  *         }
  *     }
  *
  * private:
- *     ConnectionRegistrar connections;
+ *     ConnectionRegistrar _connections;
  * };
  *
  * // ...
@@ -95,7 +95,7 @@ namespace mongo {
  *         Socket s = network.startSession({"someserver.com", 4242});
  *
  *         // Start session thread
- *         std::thread([s] {
+ *         std::thread t{[s] {
  *             while (true) {
  *                 // ...
  *
@@ -105,7 +105,9 @@ namespace mongo {
  *                     break;
  *                 }
  *             }
- *         });
+ *         }};
+ *
+ *         registerBackgroundThread(std::move(t));
  *
  *         network.printStatistics();
  *     }
@@ -122,11 +124,8 @@ class AtomicRegistrar {
 private:
     using StorageType = stdx::list<T>;
 
-    AtomicRegistrar(const AtomicRegistrar&) = delete;
-    AtomicRegistrar& operator=(const AtomicRegistrar&) = delete;
-
-    AtomicRegistrar(AtomicRegistrar&&) = delete;
-    AtomicRegistrar& operator=(AtomicRegistrar&&) = delete;
+    // TODO: Modernize to C++11 lifecycle declarations.
+	MONGO_DISALLOW_COPY_AND_ASSIGN(AtomicRegistrar);
 
 public:
     using RegistrationList = std::vector<T>;
@@ -136,11 +135,13 @@ public:
         Ticket() = default;
 
     private:
-        using Data = typename StorageType::const_iterator;
-        Data _it;
         friend AtomicRegistrar;
 
+        using Data = typename StorageType::const_iterator;
+
         explicit Ticket(Data d) : _it(std::move(d)) {}
+
+        Data _it;
     };
 
     AtomicRegistrar() = default;
@@ -156,7 +157,7 @@ public:
     }
 
     /**
-     * Registers the specified object for tracking by this registrar and return a ticket
+     * Registers the specified object for tracking by this registrar and returns a ticket
      * representing that registration.
      * `item`: Object to register
      * RETURNS: A ticket for later use in manual retirement.

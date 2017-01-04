@@ -47,7 +47,7 @@ typedef std::string PlanCacheKey;
 
 struct PlanRankingDecision;
 struct QuerySolution;
-struct QuerySolutionNode;
+class QuerySolutionNode;
 
 /**
  * When the CachedPlanStage runs a cached query, it can provide feedback to the cache.  This

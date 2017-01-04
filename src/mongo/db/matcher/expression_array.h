@@ -70,14 +70,14 @@ private:
 class ElemMatchObjectMatchExpression : public ArrayMatchingMatchExpression {
 public:
     ElemMatchObjectMatchExpression() : ArrayMatchingMatchExpression(ELEM_MATCH_OBJECT) {}
-    Status init(StringData path, MatchExpression* sub);
+    Status init(StringData path, std::unique_ptr<MatchExpression> sub);
 
     bool matchesArray(const BSONObj& anArray, MatchDetails* details) const;
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<ElemMatchObjectMatchExpression> e =
             stdx::make_unique<ElemMatchObjectMatchExpression>();
-        e->init(path(), _sub->shallowClone().release());
+        e->init(path(), _sub->shallowClone());
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
@@ -96,6 +96,20 @@ public:
         return _sub.get();
     }
 
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        std::vector<std::unique_ptr<MatchExpression>> rv;
+        rv.push_back(std::move(_sub));
+        return rv;
+    }
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> newChildren) override {
+        invariant(newChildren.size() <= 1);
+        _sub.reset();
+        if (!newChildren.empty()) {
+            _sub = std::move(newChildren.front());
+        }
+    }
+
 private:
     std::unique_ptr<MatchExpression> _sub;
 };
@@ -103,11 +117,18 @@ private:
 class ElemMatchValueMatchExpression : public ArrayMatchingMatchExpression {
 public:
     ElemMatchValueMatchExpression() : ArrayMatchingMatchExpression(ELEM_MATCH_VALUE) {}
-    virtual ~ElemMatchValueMatchExpression();
+    virtual ~ElemMatchValueMatchExpression() override;
 
     Status init(StringData path);
-    Status init(StringData path, MatchExpression* sub);
-    void add(MatchExpression* sub);
+    Status init(StringData path, std::unique_ptr<MatchExpression> sub);
+    void add(std::unique_ptr<MatchExpression> sub);
+
+    /**
+     * Returns the vector of owned `MatchExpressions` for someone else to take ownership.
+     */
+    std::vector<std::unique_ptr<MatchExpression>> release() {
+        return releaseChildren();
+    }
 
     bool matchesArray(const BSONObj& anArray, MatchDetails* details) const;
 
@@ -116,7 +137,7 @@ public:
             stdx::make_unique<ElemMatchValueMatchExpression>();
         e->init(path());
         for (size_t i = 0; i < _subs.size(); ++i) {
-            e->add(_subs[i]->shallowClone().release());
+            e->add(_subs[i]->shallowClone());
         }
         if (getTag()) {
             e->setTag(getTag()->clone());
@@ -124,26 +145,42 @@ public:
         return std::move(e);
     }
 
-    virtual void debugString(StringBuilder& debug, int level) const;
+    void debugString(StringBuilder& debug, int level) const override;
 
-    virtual void serialize(BSONObjBuilder* out) const;
+    void serialize(BSONObjBuilder* out) const override;
 
-    virtual std::vector<MatchExpression*>* getChildVector() {
-        return &_subs;
+    std::vector<MatchExpression*> getChildVector() override {
+        std::vector<MatchExpression*> retval;
+        using std::begin;
+        using std::end;
+        std::transform(
+            begin(_subs),
+            end(_subs),
+            back_inserter(retval),
+            [](const std::unique_ptr<MatchExpression>& element) { return element.get(); });
+        return retval;
     }
 
-    virtual size_t numChildren() const {
+    size_t numChildren() const override {
         return _subs.size();
     }
 
-    virtual MatchExpression* getChild(size_t i) const {
-        return _subs[i];
+    MatchExpression* getChild(size_t i) const override {
+        return _subs[i].get();
+    }
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> newChildren) override {
+        _subs = std::move(newChildren);
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return std::move(_subs);
     }
 
 private:
     bool _arrayElementMatchesAll(const BSONElement& e) const;
 
-    std::vector<MatchExpression*> _subs;
+    std::vector<std::unique_ptr<MatchExpression>> _subs;
 };
 
 class SizeMatchExpression : public ArrayMatchingMatchExpression {
@@ -151,7 +188,7 @@ public:
     SizeMatchExpression() : ArrayMatchingMatchExpression(SIZE) {}
     Status init(StringData path, int size);
 
-    virtual std::unique_ptr<MatchExpression> shallowClone() const {
+    std::unique_ptr<MatchExpression> shallowClone() const override {
         std::unique_ptr<SizeMatchExpression> e = stdx::make_unique<SizeMatchExpression>();
         e->init(path(), _size);
         if (getTag()) {
@@ -160,16 +197,24 @@ public:
         return std::move(e);
     }
 
-    virtual bool matchesArray(const BSONObj& anArray, MatchDetails* details) const;
+    bool matchesArray(const BSONObj& anArray, MatchDetails* details) const override;
 
-    virtual void debugString(StringBuilder& debug, int level) const;
+    void debugString(StringBuilder& debug, int level) const override;
 
-    virtual void serialize(BSONObjBuilder* out) const;
+    void serialize(BSONObjBuilder* out) const override;
 
-    virtual bool equivalent(const MatchExpression* other) const;
+    bool equivalent(const MatchExpression* other) const override;
 
     int getData() const {
         return _size;
+    }
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 
 private:

@@ -36,15 +36,11 @@
 
 namespace mongo {
 
-ListOfMatchExpression::~ListOfMatchExpression() {
-    for (unsigned i = 0; i < _expressions.size(); i++)
-        delete _expressions[i];
-    _expressions.clear();
-}
+ListOfMatchExpression::~ListOfMatchExpression() = default;
 
-void ListOfMatchExpression::add(MatchExpression* e) {
-    verify(e);
-    _expressions.push_back(e);
+void ListOfMatchExpression::add(std::unique_ptr<MatchExpression> e) {
+    verify(e.get());
+    _expressions.push_back(std::move(e));
 }
 
 
@@ -72,7 +68,7 @@ bool ListOfMatchExpression::equivalent(const MatchExpression* other) const {
 
     // TOOD: order doesn't matter
     for (unsigned i = 0; i < _expressions.size(); i++)
-        if (!_expressions[i]->equivalent(realOther->_expressions[i]))
+        if (!_expressions[i]->equivalent(realOther->_expressions[i].get()))
             return false;
 
     return true;

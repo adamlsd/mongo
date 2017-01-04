@@ -29,9 +29,11 @@
  */
 
 #include "mongo/db/matcher/path.h"
+
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/path_internal.h"
 #include "mongo/platform/basic.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -267,9 +269,13 @@ bool BSONElementIterator::more() {
                     _subCursorPath->init(_arrayIterationState.restOfPath.substr(
                         _arrayIterationState.nextPieceOfPath.size() + 1));
                     _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
-                    BSONElementIterator* real = new BSONElementIterator(
-                        _subCursorPath.get(), _arrayIterationState._current.Obj());
-                    _subCursor.reset(real);
+                    BSONElementIterator* real;
+                    {
+                        auto tmp_real = stdx::make_unique<BSONElementIterator>(
+                            _subCursorPath.get(), _arrayIterationState._current.Obj());
+                        real = tmp_real.get();
+                        _subCursor = std::move(tmp_real);
+                    }
                     real->_arrayIterationState.reset(_subCursorPath->fieldRef(), 0);
                     real->_arrayIterationState.startIterator(eltInArray);
                     real->_state = IN_ARRAY;

@@ -146,7 +146,7 @@ protected:
 class EqualityMatchExpression : public ComparisonMatchExpression {
 public:
     EqualityMatchExpression() : ComparisonMatchExpression(EQ) {}
-    virtual std::unique_ptr<MatchExpression> shallowClone() const {
+    std::unique_ptr<MatchExpression> shallowClone() const override {
         std::unique_ptr<ComparisonMatchExpression> e = stdx::make_unique<EqualityMatchExpression>();
         e->init(path(), _rhs);
         if (getTag()) {
@@ -154,6 +154,12 @@ public:
         }
         e->setCollator(_collator);
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 };
 
@@ -169,6 +175,12 @@ public:
         e->setCollator(_collator);
         return std::move(e);
     }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 };
 
 class LTMatchExpression : public ComparisonMatchExpression {
@@ -182,6 +194,12 @@ public:
         }
         e->setCollator(_collator);
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 };
 
@@ -197,6 +215,12 @@ public:
         e->setCollator(_collator);
         return std::move(e);
     }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 };
 
 class GTEMatchExpression : public ComparisonMatchExpression {
@@ -210,6 +234,12 @@ public:
         }
         e->setCollator(_collator);
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 };
 
@@ -239,6 +269,12 @@ public:
             e->setTag(getTag()->clone());
         }
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 
     virtual bool matchesSingleElement(const BSONElement& e) const;
@@ -281,6 +317,12 @@ public:
         return std::move(m);
     }
 
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
+
     virtual bool matchesSingleElement(const BSONElement& e) const;
 
     virtual void debugString(StringBuilder& debug, int level) const;
@@ -314,6 +356,12 @@ public:
             e->setTag(getTag()->clone());
         }
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 
     virtual bool matchesSingleElement(const BSONElement& e) const;
@@ -433,6 +481,12 @@ public:
             e->setTag(getTag()->clone());
         }
         return std::move(e);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 
     virtual bool matchesSingleElement(const BSONElement& e) const;
@@ -559,6 +613,12 @@ public:
         initClone(bitTestMatchExpression.get());
         return std::move(bitTestMatchExpression);
     }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 };
 
 class BitsAllClearMatchExpression : public BitTestMatchExpression {
@@ -569,6 +629,12 @@ public:
             stdx::make_unique<BitsAllClearMatchExpression>();
         initClone(bitTestMatchExpression.get());
         return std::move(bitTestMatchExpression);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 };
 
@@ -581,6 +647,12 @@ public:
         initClone(bitTestMatchExpression.get());
         return std::move(bitTestMatchExpression);
     }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 };
 
 class BitsAnyClearMatchExpression : public BitTestMatchExpression {
@@ -591,6 +663,12 @@ public:
             stdx::make_unique<BitsAnyClearMatchExpression>();
         initClone(bitTestMatchExpression.get());
         return std::move(bitTestMatchExpression);
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
     }
 };
 

@@ -128,10 +128,20 @@ public:
     }
 
     /**
-     * Get all the children of a node
+     * Returns the vector of owned `MatchExpressions` for someone else to take ownership.
      */
-    virtual std::vector<MatchExpression*>* getChildVector() {
-        return NULL;
+    virtual std::vector<std::unique_ptr<MatchExpression>> releaseChildren() = 0;
+
+    /**
+     * Reset the vector of owned `MatchExpressions` to the specified `children`.
+     */
+    virtual void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) = 0;
+
+    /**
+     * Get all the children of a node.  The ownership of these children stays with this node.
+     */
+    virtual std::vector<MatchExpression*> getChildVector() {
+        return {};
     }
 
     /**
@@ -211,14 +221,17 @@ public:
     public:
         virtual ~TagData() {}
         virtual void debugString(StringBuilder* builder) const = 0;
-        virtual TagData* clone() const = 0;
+        std::unique_ptr<TagData> clone() const {
+            return std::unique_ptr<TagData>{this->clone_impl()};
+        }
+        virtual TagData* clone_impl() const = 0;
     };
 
     /**
      * Takes ownership
      */
-    void setTag(TagData* data) {
-        _tagData.reset(data);
+    void setTag(std::unique_ptr<TagData> data) {
+        _tagData = std::move(data);
     }
     TagData* getTag() const {
         return _tagData.get();
@@ -281,6 +294,12 @@ public:
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         return stdx::make_unique<FalseMatchExpression>(_path);
     }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
 
     virtual void debugString(StringBuilder& debug, int level = 0) const;
 

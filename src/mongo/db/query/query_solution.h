@@ -46,13 +46,10 @@ class GeoNearExpression;
  * This is an abstract representation of a query plan.  It can be transcribed into a tree of
  * PlanStages, which can then be handed to a PlanRunner for execution.
  */
-struct QuerySolutionNode {
+class QuerySolutionNode {
+  public:
     QuerySolutionNode() {}
-    virtual ~QuerySolutionNode() {
-        for (size_t i = 0; i < children.size(); ++i) {
-            delete children[i];
-        }
-    }
+    virtual ~QuerySolutionNode() = default;
 
     /**
      * Return a std::string representation of this node and any children.
@@ -130,7 +127,9 @@ struct QuerySolutionNode {
     /**
      * Make a deep copy.
      */
-    virtual QuerySolutionNode* clone() const = 0;
+    virtual QuerySolutionNode* clone_impl() const = 0;
+
+    std::unique_ptr<QuerySolutionNode> clone() const { return std::unique_ptr<QuerySolutionNode>{ this->clone_impl() }; }
 
     /**
      * Copy base query solution data from 'this' to 'other'.
@@ -145,7 +144,7 @@ struct QuerySolutionNode {
     }
 
     // These are owned here.
-    std::vector<QuerySolutionNode*> children;
+    std::vector<std::unique_ptr<QuerySolutionNode>> children;
 
     // If a stage has a non-NULL filter all values outputted from that stage must pass that
     // filter.
@@ -243,7 +242,7 @@ struct TextNode : public QuerySolutionNode {
         return _sort;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sort;
 
@@ -279,7 +278,7 @@ struct CollectionScanNode : public QuerySolutionNode {
         return _sort;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sort;
 
@@ -314,7 +313,7 @@ struct AndHashNode : public QuerySolutionNode {
         return children.back()->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sort;
 };
@@ -338,7 +337,7 @@ struct AndSortedNode : public QuerySolutionNode {
         return _sort;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sort;
 };
@@ -364,7 +363,7 @@ struct OrNode : public QuerySolutionNode {
         return _sort;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sort;
 
@@ -391,7 +390,7 @@ struct MergeSortNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     virtual void computeProperties() {
         for (size_t i = 0; i < children.size(); ++i) {
@@ -430,7 +429,7 @@ struct FetchNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sorts;
 };
@@ -456,7 +455,7 @@ struct IndexScanNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     bool operator==(const IndexScanNode& other) const;
 
@@ -549,7 +548,7 @@ struct ProjectionNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sorts;
 
@@ -593,7 +592,7 @@ struct SortKeyGeneratorNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const final;
+    QuerySolutionNode* clone_impl() const final;
 
     void appendToString(mongoutils::str::stream* ss, int indent) const final;
 
@@ -630,7 +629,7 @@ struct SortNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     virtual void computeProperties() {
         for (size_t i = 0; i < children.size(); ++i) {
@@ -671,7 +670,7 @@ struct LimitNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     long long limit;
 };
@@ -698,7 +697,7 @@ struct SkipNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     long long skip;
 };
@@ -731,7 +730,7 @@ struct GeoNear2DNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sorts;
 
@@ -772,7 +771,7 @@ struct GeoNear2DSphereNode : public QuerySolutionNode {
         return _sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet _sorts;
 
@@ -817,7 +816,7 @@ struct ShardingFilterNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 };
 
 /**
@@ -852,7 +851,7 @@ struct KeepMutationsNode : public QuerySolutionNode {
         return sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     // Since we merge in flagged results we have no sort order.
     BSONObjSet sorts;
@@ -888,7 +887,7 @@ struct DistinctNode : public QuerySolutionNode {
         return sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet sorts;
 
@@ -927,7 +926,7 @@ struct CountScanNode : public QuerySolutionNode {
         return sorts;
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     BSONObjSet sorts;
 
@@ -966,7 +965,7 @@ struct EnsureSortedNode : public QuerySolutionNode {
         return children[0]->getSort();
     }
 
-    QuerySolutionNode* clone() const;
+    QuerySolutionNode* clone_impl() const;
 
     // The pattern that the results should be sorted by.
     BSONObj pattern;

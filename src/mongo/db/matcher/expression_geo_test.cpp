@@ -48,7 +48,7 @@ TEST(ExpressionGeoTest, Geo1) {
     ASSERT_OK(gq->parseFrom(query["loc"].Obj()));
 
     GeoMatchExpression ge;
-    ASSERT(ge.init("a", gq.release(), query).isOK());
+    ASSERT(ge.init("a", std::move(gq), query).isOK());
 
     ASSERT(!ge.matchesBSON(fromjson("{a: [3,4]}")));
     ASSERT(ge.matchesBSON(fromjson("{a: [4,4]}")));
@@ -65,7 +65,7 @@ TEST(ExpressionGeoTest, GeoNear1) {
     ASSERT_OK(nq->parseFrom(query["loc"].Obj()));
 
     GeoNearMatchExpression gne;
-    ASSERT(gne.init("a", nq.release(), query).isOK());
+    ASSERT(gne.init("a", std::move(nq), query).isOK());
 
     // We can't match the data but we can make sure it was parsed OK.
     ASSERT_EQUALS(gne.getData().centroid->crs, SPHERE);
@@ -78,7 +78,7 @@ std::unique_ptr<GeoMatchExpression> makeGeoMatchExpression(const BSONObj& locQue
     ASSERT_OK(gq->parseFrom(locQuery));
 
     std::unique_ptr<GeoMatchExpression> ge = stdx::make_unique<GeoMatchExpression>();
-    ASSERT_OK(ge->init("a", gq.release(), locQuery));
+    ASSERT_OK(ge->init("a", std::move(gq), locQuery));
 
     return ge;
 }
@@ -88,7 +88,7 @@ std::unique_ptr<GeoNearMatchExpression> makeGeoNearMatchExpression(const BSONObj
     ASSERT_OK(nq->parseFrom(locQuery));
 
     std::unique_ptr<GeoNearMatchExpression> gne = stdx::make_unique<GeoNearMatchExpression>();
-    ASSERT_OK(gne->init("a", nq.release(), locQuery));
+    ASSERT_OK(gne->init("a", std::move(nq), locQuery));
 
     return gne;
 }

@@ -45,7 +45,7 @@ TEST(NotMatchExpression, MatchesScalar) {
     unique_ptr<ComparisonMatchExpression> lt(new LTMatchExpression());
     ASSERT(lt->init("a", baseOperand["$lt"]).isOK());
     NotMatchExpression notOp;
-    ASSERT(notOp.init(lt.release()).isOK());
+    ASSERT(notOp.init(std::move(lt)).isOK());
     ASSERT(notOp.matchesBSON(BSON("a" << 6), NULL));
     ASSERT(!notOp.matchesBSON(BSON("a" << 4), NULL));
 }
@@ -55,7 +55,7 @@ TEST(NotMatchExpression, MatchesArray) {
     unique_ptr<ComparisonMatchExpression> lt(new LTMatchExpression());
     ASSERT(lt->init("a", baseOperand["$lt"]).isOK());
     NotMatchExpression notOp;
-    ASSERT(notOp.init(lt.release()).isOK());
+    ASSERT(notOp.init(std::move(lt)).isOK());
     ASSERT(notOp.matchesBSON(BSON("a" << BSON_ARRAY(6)), NULL));
     ASSERT(!notOp.matchesBSON(BSON("a" << BSON_ARRAY(4)), NULL));
     // All array elements must match.
@@ -67,7 +67,7 @@ TEST(NotMatchExpression, ElemMatchKey) {
     unique_ptr<ComparisonMatchExpression> lt(new LTMatchExpression());
     ASSERT(lt->init("a", baseOperand["$lt"]).isOK());
     NotMatchExpression notOp;
-    ASSERT(notOp.init(lt.release()).isOK());
+    ASSERT(notOp.init(std::move(lt)).isOK());
     MatchDetails details;
     details.requestElemMatchKey();
     ASSERT(!notOp.matchesBSON(BSON("a" << BSON_ARRAY(1)), &details));
@@ -135,9 +135,9 @@ TEST(AndOp, MatchesElementThreeClauses) {
     ASSERT(sub3->init("a", "1", "").isOK());
 
     AndMatchExpression andOp;
-    andOp.add(sub1.release());
-    andOp.add(sub2.release());
-    andOp.add(sub3.release());
+    andOp.add(std::move(sub1));
+    andOp.add(std::move(sub2));
+    andOp.add(std::move(sub3));
 
     ASSERT(andOp.matchesBSON(match));
     ASSERT(!andOp.matchesBSON(notMatch1));
@@ -150,10 +150,10 @@ TEST(AndOp, MatchesSingleClause) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("a", baseOperand["$ne"]).isOK());
     unique_ptr<NotMatchExpression> ne(new NotMatchExpression());
-    ASSERT(ne->init(eq.release()).isOK());
+    ASSERT(ne->init(std::move(eq)).isOK());
 
     AndMatchExpression andOp;
-    andOp.add(ne.release());
+    andOp.add(std::move(ne));
 
     ASSERT(andOp.matchesBSON(BSON("a" << 4), NULL));
     ASSERT(andOp.matchesBSON(BSON("a" << BSON_ARRAY(4 << 6)), NULL));
@@ -176,9 +176,9 @@ TEST(AndOp, MatchesThreeClauses) {
     ASSERT(sub3->init("b", baseOperand3["$lt"]).isOK());
 
     AndMatchExpression andOp;
-    andOp.add(sub1.release());
-    andOp.add(sub2.release());
-    andOp.add(sub3.release());
+    andOp.add(std::move(sub1));
+    andOp.add(std::move(sub2));
+    andOp.add(std::move(sub3));
 
     ASSERT(andOp.matchesBSON(BSON("a" << 5 << "b" << 6), NULL));
     ASSERT(!andOp.matchesBSON(BSON("a" << 5), NULL));
@@ -198,8 +198,8 @@ TEST(AndOp, ElemMatchKey) {
     ASSERT(sub2->init("b", baseOperand2["b"]).isOK());
 
     AndMatchExpression andOp;
-    andOp.add(sub1.release());
-    andOp.add(sub2.release());
+    andOp.add(std::move(sub1));
+    andOp.add(std::move(sub2));
 
     MatchDetails details;
     details.requestElemMatchKey();
@@ -314,10 +314,10 @@ TEST(OrOp, MatchesSingleClause) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("a", baseOperand["$ne"]).isOK());
     unique_ptr<NotMatchExpression> ne(new NotMatchExpression());
-    ASSERT(ne->init(eq.release()).isOK());
+    ASSERT(ne->init(std::move(eq)).isOK());
 
     OrMatchExpression orOp;
-    orOp.add(ne.release());
+    orOp.add(std::move(ne));
 
     ASSERT(orOp.matchesBSON(BSON("a" << 4), NULL));
     ASSERT(orOp.matchesBSON(BSON("a" << BSON_ARRAY(4 << 6)), NULL));
@@ -337,9 +337,9 @@ TEST(OrOp, MatchesThreeClauses) {
     ASSERT(sub3->init("b", baseOperand3["b"]).isOK());
 
     OrMatchExpression orOp;
-    orOp.add(sub1.release());
-    orOp.add(sub2.release());
-    orOp.add(sub3.release());
+    orOp.add(std::move(sub1));
+    orOp.add(std::move(sub2));
+    orOp.add(std::move(sub3));
 
     ASSERT(orOp.matchesBSON(BSON("a" << -1), NULL));
     ASSERT(orOp.matchesBSON(BSON("a" << 11), NULL));
@@ -359,8 +359,8 @@ TEST(OrOp, ElemMatchKey) {
     ASSERT(sub2->init("b", baseOperand2["b"]).isOK());
 
     OrMatchExpression orOp;
-    orOp.add(sub1.release());
-    orOp.add(sub2.release());
+    orOp.add(std::move(sub1));
+    orOp.add(std::move(sub2));
 
     MatchDetails details;
     details.requestElemMatchKey();
@@ -475,10 +475,10 @@ TEST(NorOp, MatchesSingleClause) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("a", baseOperand["$ne"]).isOK());
     unique_ptr<NotMatchExpression> ne(new NotMatchExpression());
-    ASSERT(ne->init(eq.release()).isOK());
+    ASSERT(ne->init(std::move(eq)).isOK());
 
     NorMatchExpression norOp;
-    norOp.add(ne.release());
+    norOp.add(std::move(ne));
 
     ASSERT(!norOp.matchesBSON(BSON("a" << 4), NULL));
     ASSERT(!norOp.matchesBSON(BSON("a" << BSON_ARRAY(4 << 6)), NULL));
@@ -499,9 +499,9 @@ TEST(NorOp, MatchesThreeClauses) {
     ASSERT(sub3->init("b", baseOperand3["b"]).isOK());
 
     NorMatchExpression norOp;
-    norOp.add(sub1.release());
-    norOp.add(sub2.release());
-    norOp.add(sub3.release());
+    norOp.add(std::move(sub1));
+    norOp.add(std::move(sub2));
+    norOp.add(std::move(sub3));
 
     ASSERT(!norOp.matchesBSON(BSON("a" << -1), NULL));
     ASSERT(!norOp.matchesBSON(BSON("a" << 11), NULL));
@@ -521,8 +521,8 @@ TEST(NorOp, ElemMatchKey) {
     ASSERT(sub2->init("b", baseOperand2["b"]).isOK());
 
     NorMatchExpression norOp;
-    norOp.add(sub1.release());
-    norOp.add(sub2.release());
+    norOp.add(std::move(sub1));
+    norOp.add(std::move(sub2));
 
     MatchDetails details;
     details.requestElemMatchKey();
@@ -545,11 +545,11 @@ TEST(NorOp, Equivalent) {
     ASSERT(sub2.init("b", baseOperand2["b"]).isOK());
 
     NorMatchExpression e1;
-    e1.add(sub1.shallowClone().release());
-    e1.add(sub2.shallowClone().release());
+    e1.add(sub1.shallowClone());
+    e1.add(sub2.shallowClone());
 
     NorMatchExpression e2;
-    e2.add(sub1.shallowClone().release());
+    e2.add(sub1.shallowClone());
 
     ASSERT(e1.equivalent(&e1));
     ASSERT(!e1.equivalent(&e2));

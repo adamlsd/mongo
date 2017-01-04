@@ -93,8 +93,8 @@ bool ArrayMatchingMatchExpression::equivalent(const MatchExpression* other) cons
 
 // -------
 
-Status ElemMatchObjectMatchExpression::init(StringData path, MatchExpression* sub) {
-    _sub.reset(sub);
+Status ElemMatchObjectMatchExpression::init(StringData path, std::unique_ptr<MatchExpression> sub) {
+    _sub = std::move(sub);
     return setPath(path);
 }
 
@@ -137,15 +137,11 @@ void ElemMatchObjectMatchExpression::serialize(BSONObjBuilder* out) const {
 
 // -------
 
-ElemMatchValueMatchExpression::~ElemMatchValueMatchExpression() {
-    for (unsigned i = 0; i < _subs.size(); i++)
-        delete _subs[i];
-    _subs.clear();
-}
+ElemMatchValueMatchExpression::~ElemMatchValueMatchExpression() = default;
 
-Status ElemMatchValueMatchExpression::init(StringData path, MatchExpression* sub) {
+Status ElemMatchValueMatchExpression::init(StringData path, std::unique_ptr<MatchExpression> sub) {
     init(path);
-    add(sub);
+    add(std::move(sub));
     return Status::OK();
 }
 
@@ -154,9 +150,9 @@ Status ElemMatchValueMatchExpression::init(StringData path) {
 }
 
 
-void ElemMatchValueMatchExpression::add(MatchExpression* sub) {
-    verify(sub);
-    _subs.push_back(sub);
+void ElemMatchValueMatchExpression::add(std::unique_ptr<MatchExpression> sub) {
+    verify(sub.get());
+    _subs.push_back(std::move(sub));
 }
 
 bool ElemMatchValueMatchExpression::matchesArray(const BSONObj& anArray,

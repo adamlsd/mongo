@@ -145,13 +145,13 @@ public:
      *
      * Takes ownership of 'root'.
      */
-    static MatchExpression* normalizeTree(MatchExpression* root);
+    static std::unique_ptr<MatchExpression> normalizeTree(std::unique_ptr<MatchExpression> root);
 
     /**
      * Traverses expression tree post-order.
      * Sorts children at each non-leaf node by (MatchType, path(), children, number of children)
      */
-    static void sortTree(MatchExpression* tree);
+    static void sortTree(ListOfMatchExpression* tree);
 
     /**
      * Returns a count of 'type' nodes in expression tree.
@@ -183,7 +183,7 @@ private:
 
     Status init(std::unique_ptr<QueryRequest> qr,
                 const ExtensionsCallback& extensionsCallback,
-                MatchExpression* root,
+                std::unique_ptr<MatchExpression> root,
                 std::unique_ptr<CollatorInterface> collator);
 
     std::unique_ptr<QueryRequest> _qr;

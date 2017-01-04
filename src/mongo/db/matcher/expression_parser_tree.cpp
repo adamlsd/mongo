@@ -61,7 +61,7 @@ Status MatchExpressionParser::_parseTreeList(const BSONObj& arr,
         if (!sub.isOK())
             return sub.getStatus();
 
-        out->add(sub.getValue().release());
+        out->add(std::move(sub.getValue()));
     }
     return Status::OK();
 }
@@ -75,7 +75,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseNot(const char* name,
         if (!s.isOK())
             return s;
         std::unique_ptr<NotMatchExpression> n = stdx::make_unique<NotMatchExpression>();
-        Status s2 = n->init(s.getValue().release());
+        Status s2 = n->init(std::move(s.getValue()));
         if (!s2.isOK())
             return StatusWithMatchExpression(s2);
         return {std::move(n)};
@@ -100,7 +100,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseNot(const char* name,
             return StatusWithMatchExpression(ErrorCodes::BadValue, "$not cannot have a regex");
 
     std::unique_ptr<NotMatchExpression> theNot = stdx::make_unique<NotMatchExpression>();
-    s = theNot->init(theAnd.release());
+    s = theNot->init(std::move(theAnd));
     if (!s.isOK())
         return StatusWithMatchExpression(s);
 

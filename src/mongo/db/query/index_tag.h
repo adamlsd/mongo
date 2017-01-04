@@ -60,7 +60,7 @@ public:
                  << canCombineBounds;
     }
 
-    virtual MatchExpression::TagData* clone() const {
+    virtual IndexTag* clone_impl() const {
         return new IndexTag(index, pos, canCombineBounds);
     }
 
@@ -124,12 +124,13 @@ public:
         *builder << "full path: " << path;
     }
 
-    virtual MatchExpression::TagData* clone() const {
-        RelevantTag* ret = new RelevantTag();
-        ret->first = first;
-        ret->notFirst = notFirst;
-        return ret;
+    virtual RelevantTag* clone_impl() const {
+        return new RelevantTag(first, notFirst);
     }
+
+private:
+    explicit RelevantTag(const std::vector<size_t>& f, const std::vector<size_t>& nf)
+        : first(f), notFirst(nf), elemMatchExpr(NULL), pathPrefix("") {}
 };
 
 /**

@@ -47,14 +47,21 @@ public:
     /**
      * @param e - I take ownership
      */
-    void add(MatchExpression* e);
+    void add(std::unique_ptr<MatchExpression> e);
 
     /**
-     * clears all the thingsd we own, and does NOT delete
-     * someone else has taken ownership
+     * Returns the vector of owned `MatchExpressions` for someone else to take ownership.
      */
-    void clearAndRelease() {
-        _expressions.clear();
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return std::move(_expressions);
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> release() {
+        return releaseChildren();
+    }
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> expressions) override {
+        _expressions = std::move(expressions);
     }
 
     virtual size_t numChildren() const {
@@ -62,17 +69,23 @@ public:
     }
 
     virtual MatchExpression* getChild(size_t i) const {
-        return _expressions[i];
+        return _expressions[i].get();
     }
 
     virtual std::unique_ptr<MatchExpression> releaseChild(size_t i) {
-        auto child = std::unique_ptr<MatchExpression>(_expressions[i]);
-        _expressions[i] = nullptr;
-        return child;
+        return std::move(_expressions[i]);
     }
 
-    virtual std::vector<MatchExpression*>* getChildVector() {
-        return &_expressions;
+    virtual std::vector<MatchExpression*> getChildVector() {
+        std::vector<MatchExpression*> retval;
+        using std::begin;
+        using std::end;
+        std::transform(
+            begin(_expressions),
+            end(_expressions),
+            back_inserter(retval),
+            [](const std::unique_ptr<MatchExpression>& element) { return element.get(); });
+        return retval;
     }
 
     bool equivalent(const MatchExpression* other) const;
@@ -83,7 +96,7 @@ protected:
     void _listToBSON(BSONArrayBuilder* out) const;
 
 private:
-    std::vector<MatchExpression*> _expressions;
+    std::vector<std::unique_ptr<MatchExpression>> _expressions;
 };
 
 class AndMatchExpression : public ListOfMatchExpression {
@@ -97,7 +110,7 @@ public:
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<AndMatchExpression> self = stdx::make_unique<AndMatchExpression>();
         for (size_t i = 0; i < numChildren(); ++i) {
-            self->add(getChild(i)->shallowClone().release());
+            self->add(getChild(i)->shallowClone());
         }
         if (getTag()) {
             self->setTag(getTag()->clone());
@@ -121,7 +134,7 @@ public:
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<OrMatchExpression> self = stdx::make_unique<OrMatchExpression>();
         for (size_t i = 0; i < numChildren(); ++i) {
-            self->add(getChild(i)->shallowClone().release());
+            self->add(getChild(i)->shallowClone());
         }
         if (getTag()) {
             self->setTag(getTag()->clone());
@@ -145,7 +158,7 @@ public:
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<NorMatchExpression> self = stdx::make_unique<NorMatchExpression>();
         for (size_t i = 0; i < numChildren(); ++i) {
-            self->add(getChild(i)->shallowClone().release());
+            self->add(getChild(i)->shallowClone());
         }
         if (getTag()) {
             self->setTag(getTag()->clone());
@@ -165,14 +178,14 @@ public:
     /**
      * @param exp - I own it, and will delete
      */
-    virtual Status init(MatchExpression* exp) {
-        _exp.reset(exp);
+    virtual Status init(std::unique_ptr<MatchExpression> exp) {
+        _exp = std::move(exp);
         return Status::OK();
     }
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<NotMatchExpression> self = stdx::make_unique<NotMatchExpression>();
-        self->init(_exp->shallowClone().release());
+        self->init(_exp->shallowClone());
         if (getTag()) {
             self->setTag(getTag()->clone());
         }
@@ -201,12 +214,26 @@ public:
         return _exp.get();
     }
 
-    MatchExpression* releaseChild(void) {
-        return _exp.release();
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        std::vector<std::unique_ptr<MatchExpression>> rv;
+        rv.push_back(std::move(_exp));
+        return rv;
     }
 
-    void resetChild(MatchExpression* newChild) {
-        _exp.reset(newChild);
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> newChildren) override {
+        invariant(newChildren.size() <= 1);
+        _exp.reset();
+        if (!newChildren.empty()) {
+            _exp = std::move(newChildren.front());
+        }
+    }
+
+    std::unique_ptr<MatchExpression> releaseChild() {
+        return std::move(_exp);
+    }
+
+    void resetChild(std::unique_ptr<MatchExpression> newChild) {
+        _exp = std::move(newChild);
     }
 
 private:

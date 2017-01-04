@@ -85,7 +85,7 @@ public:
     /**
      * Takes ownership of the passed-in GeoExpression.
      */
-    Status init(StringData path, const GeoExpression* query, const BSONObj& rawObj);
+    Status init(StringData path, std::unique_ptr<const GeoExpression> query, const BSONObj& rawObj);
 
     virtual bool matchesSingleElement(const BSONElement& e) const;
 
@@ -167,7 +167,9 @@ public:
     GeoNearMatchExpression() : LeafMatchExpression(GEO_NEAR) {}
     virtual ~GeoNearMatchExpression() {}
 
-    Status init(StringData path, const GeoNearExpression* query, const BSONObj& rawObj);
+    Status init(StringData path,
+                std::unique_ptr<const GeoNearExpression> query,
+                const BSONObj& rawObj);
 
     // This shouldn't be called and as such will crash.  GeoNear always requires an index.
     virtual bool matchesSingleElement(const BSONElement& e) const;

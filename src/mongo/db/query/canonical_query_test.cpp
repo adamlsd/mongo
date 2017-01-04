@@ -53,7 +53,7 @@ static const NamespaceString nss("testdb.testcoll");
  * Helper function to parse the given BSON object as a MatchExpression, checks the status,
  * and return the MatchExpression*.
  */
-MatchExpression* parseMatchExpression(const BSONObj& obj) {
+std::unique_ptr<MatchExpression> parseMatchExpression(const BSONObj& obj) {
     const CollatorInterface* collator = nullptr;
     StatusWithMatchExpression status =
         MatchExpressionParser::parse(obj, ExtensionsCallbackNoop(), collator);
@@ -64,7 +64,7 @@ MatchExpression* parseMatchExpression(const BSONObj& obj) {
         FAIL(ss);
     }
 
-    return status.getValue().release();
+    return std::move(status.getValue());
 }
 
 /**
@@ -525,9 +525,9 @@ TEST(CanonicalQueryTest, NormalizeQueryTree) {
 
 TEST(CanonicalQueryTest, NormalizeWithInPreservesTags) {
     BSONObj obj = fromjson("{x: {$in: [1]}}");
-    unique_ptr<MatchExpression> matchExpression(parseMatchExpression(obj));
+    auto matchExpression = parseMatchExpression(obj);
     matchExpression->setTag(new IndexTag(2U, 1U, false));
-    matchExpression.reset(CanonicalQuery::normalizeTree(matchExpression.release()));
+	matchExpression = CanonicalQuery::normalizeTree(std::move(matchExpression));
     IndexTag* tag = dynamic_cast<IndexTag*>(matchExpression->getTag());
     ASSERT(tag);
     ASSERT_EQ(2U, tag->index);
@@ -537,7 +537,7 @@ TEST(CanonicalQueryTest, NormalizeWithInAndRegexPreservesTags) {
     BSONObj obj = fromjson("{x: {$in: [/a.b/]}}");
     unique_ptr<MatchExpression> matchExpression(parseMatchExpression(obj));
     matchExpression->setTag(new IndexTag(2U, 1U, false));
-    matchExpression.reset(CanonicalQuery::normalizeTree(matchExpression.release()));
+    matchExpression = CanonicalQuery::normalizeTree(std::move(matchExpression));
     IndexTag* tag = dynamic_cast<IndexTag*>(matchExpression->getTag());
     ASSERT(tag);
     ASSERT_EQ(2U, tag->index);
@@ -549,8 +549,7 @@ TEST(CanonicalQueryTest, NormalizeWithInPreservesCollator) {
     auto inMatchExpression = stdx::make_unique<InMatchExpression>();
     inMatchExpression->setCollator(&collator);
     inMatchExpression->addEquality(obj.firstElement());
-    unique_ptr<MatchExpression> matchExpression(
-        CanonicalQuery::normalizeTree(inMatchExpression.release()));
+    auto matchExpression = CanonicalQuery::normalizeTree(std::move(inMatchExpression));
     ASSERT(matchExpression->matchType() == MatchExpression::MatchType::EQ);
     EqualityMatchExpression* eqMatchExpression =
         static_cast<EqualityMatchExpression*>(matchExpression.get());

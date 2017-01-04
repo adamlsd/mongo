@@ -134,7 +134,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
             if (!s.isOK())
                 return s;
             std::unique_ptr<NotMatchExpression> n = stdx::make_unique<NotMatchExpression>();
-            Status s2 = n->init(s.getValue().release());
+            Status s2 = n->init(std::move(s.getValue()));
             if (!s2.isOK())
                 return s2;
             return {std::move(n)};
@@ -167,7 +167,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
                 return s;
 
             std::unique_ptr<NotMatchExpression> temp2 = stdx::make_unique<NotMatchExpression>();
-            s = temp2->init(temp.release());
+            s = temp2->init(std::move(temp));
             if (!s.isOK())
                 return s;
 
@@ -216,7 +216,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
             if (e.trueValue())
                 return {std::move(temp)};
             std::unique_ptr<NotMatchExpression> temp2 = stdx::make_unique<NotMatchExpression>();
-            s = temp2->init(temp.release());
+            s = temp2->init(std::move(temp));
             if (!s.isOK())
                 return s;
             return {std::move(temp2)};
@@ -312,7 +312,7 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 Status s = _parseTreeList(e.Obj(), temp.get(), collator, level);
                 if (!s.isOK())
                     return s;
-                root->add(temp.release());
+                root->add(std::move(temp));
             } else if (mongoutils::str::equals("and", rest)) {
                 if (e.type() != Array)
                     return {Status(ErrorCodes::BadValue, "$and must be an array")};
@@ -320,7 +320,7 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 Status s = _parseTreeList(e.Obj(), temp.get(), collator, level);
                 if (!s.isOK())
                     return s;
-                root->add(temp.release());
+                root->add(std::move(temp));
             } else if (mongoutils::str::equals("nor", rest)) {
                 if (e.type() != Array)
                     return {Status(ErrorCodes::BadValue, "$nor must be an array")};
@@ -328,7 +328,7 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 Status s = _parseTreeList(e.Obj(), temp.get(), collator, level);
                 if (!s.isOK())
                     return s;
-                root->add(temp.release());
+                root->add(std::move(temp));
             } else if (mongoutils::str::equals("atomic", rest) ||
                        mongoutils::str::equals("isolated", rest)) {
                 if (!topLevel)
@@ -340,13 +340,13 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 StatusWithMatchExpression s = _extensionsCallback->parseWhere(e);
                 if (!s.isOK())
                     return s;
-                root->add(s.getValue().release());
+                root->add(std::move(s.getValue()));
             } else if (mongoutils::str::equals("text", rest)) {
                 StatusWithMatchExpression s = _extensionsCallback->parseText(e);
                 if (!s.isOK()) {
                     return s;
                 }
-                root->add(s.getValue().release());
+                root->add(std::move(s.getValue()));
             } else if (mongoutils::str::equals("comment", rest)) {
             } else if (mongoutils::str::equals("ref", rest) ||
                        mongoutils::str::equals("id", rest) || mongoutils::str::equals("db", rest)) {
@@ -359,7 +359,7 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 // 'id' is collation-aware. 'ref' and 'db' are compared using binary comparison.
                 eq->setCollator(str::equals("id", rest) ? collator : nullptr);
 
-                root->add(eq.release());
+                root->add(std::move(eq));
             } else {
                 return {Status(ErrorCodes::BadValue,
                                mongoutils::str::stream() << "unknown top level operator: "
@@ -380,7 +380,7 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
             StatusWithMatchExpression result = _parseRegexElement(e.fieldName(), e);
             if (!result.isOK())
                 return result;
-            root->add(result.getValue().release());
+            root->add(std::move(result.getValue()));
             continue;
         }
 
@@ -391,13 +391,11 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
             return s;
         eq->setCollator(collator);
 
-        root->add(eq.release());
+        root->add(std::move(eq));
     }
 
     if (root->numChildren() == 1) {
-        std::unique_ptr<MatchExpression> real(root->getChild(0));
-        root->clearAndRelease();
-        return {std::move(real)};
+        return std::move(root->release().front());
     }
 
     return {std::move(root)};
@@ -439,7 +437,7 @@ Status MatchExpressionParser::_parseSub(const char* name,
                 StatusWithMatchExpression s =
                     expressionParserGeoCallback(name, firstElt.getGtLtOp(), sub);
                 if (s.isOK()) {
-                    root->add(s.getValue().release());
+                    root->add(std::move(s.getValue()));
                 }
 
                 // Propagate geo parsing result to caller.
@@ -457,7 +455,7 @@ Status MatchExpressionParser::_parseSub(const char* name,
             return s.getStatus();
 
         if (s.getValue())
-            root->add(s.getValue().release());
+            root->add(std::move(s.getValue()));
     }
 
     return Status::OK();
@@ -722,10 +720,9 @@ StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* nam
         if (!s.isOK())
             return s;
 
-        for (size_t i = 0; i < theAnd.numChildren(); i++) {
-            temp->add(theAnd.getChild(i));
+        for (auto&& element : theAnd.release()) {
+            temp->add(std::move(element));
         }
-        theAnd.clearAndRelease();
 
         return {std::move(temp)};
     }
@@ -749,7 +746,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* nam
 
     std::unique_ptr<ElemMatchObjectMatchExpression> temp =
         stdx::make_unique<ElemMatchObjectMatchExpression>();
-    Status status = temp->init(name, sub.release());
+    Status status = temp->init(name, std::move(sub));
     if (!status.isOK())
         return status;
 
@@ -791,7 +788,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
                 _parseElemMatch(name, hopefullyElemMatchObj.firstElement(), collator, level);
             if (!inner.isOK())
                 return inner;
-            myAnd->add(inner.getValue().release());
+            myAnd->add(std::move(inner.getValue()));
         }
 
         return {std::move(myAnd)};
@@ -805,7 +802,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
             Status s = r->init(name, e);
             if (!s.isOK())
                 return s;
-            myAnd->add(r.release());
+            myAnd->add(std::move(r));
         } else if (e.type() == Object && e.Obj().firstElement().getGtLtOp(-1) != -1) {
             return {Status(ErrorCodes::BadValue, "no $ expressions in $all")};
         } else {
@@ -815,7 +812,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
             if (!s.isOK())
                 return s;
             x->setCollator(collator);
-            myAnd->add(x.release());
+            myAnd->add(std::move(x));
         }
     }
 

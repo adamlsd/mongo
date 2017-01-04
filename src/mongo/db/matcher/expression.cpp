@@ -56,11 +56,8 @@ bool MatchExpression::matchesBSON(const BSONObj& doc, MatchDetails* details) con
 }
 
 void MatchExpression::setCollator(const CollatorInterface* collator) {
-    auto children = getChildVector();
-    if (children) {
-        for (auto child : *children) {
-            child->setCollator(collator);
-        }
+    for (auto child : getChildVector()) {
+        child->setCollator(collator);
     }
 
     _doSetCollator(collator);

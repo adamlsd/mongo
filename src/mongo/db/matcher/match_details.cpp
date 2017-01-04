@@ -32,6 +32,7 @@
 
 #include <sstream>
 
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -58,7 +59,7 @@ std::string MatchDetails::elemMatchKey() const {
 
 void MatchDetails::setElemMatchKey(const std::string& elemMatchKey) {
     if (_elemMatchKeyRequested) {
-        _elemMatchKey.reset(new std::string(elemMatchKey));
+        _elemMatchKey = stdx::make_unique<std::string>(elemMatchKey);
     }
 }
 

@@ -47,7 +47,7 @@ TEST(ElemMatchObjectMatchExpression, MatchesElementSingle) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("b", baseOperand["b"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", eq.release()).isOK());
+    ASSERT(op.init("a", std::move(eq)).isOK());
     ASSERT(op.matchesSingleElement(match["a"]));
     ASSERT(!op.matchesSingleElement(notMatch["a"]));
 }
@@ -59,7 +59,7 @@ TEST(ElemMatchObjectMatchExpression, MatchesElementArray) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("1", baseOperand["1"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", eq.release()).isOK());
+    ASSERT(op.init("a", std::move(eq)).isOK());
     ASSERT(op.matchesSingleElement(match["a"]));
     ASSERT(!op.matchesSingleElement(notMatch["a"]));
 }
@@ -80,12 +80,12 @@ TEST(ElemMatchObjectMatchExpression, MatchesElementMultiple) {
     ASSERT(eq3->init("c", baseOperand3["c"]).isOK());
 
     unique_ptr<AndMatchExpression> andOp(new AndMatchExpression());
-    andOp->add(eq1.release());
-    andOp->add(eq2.release());
-    andOp->add(eq3.release());
+    andOp->add(std::move(eq1));
+    andOp->add(std::move(eq2));
+    andOp->add(std::move(eq3));
 
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", andOp.release()).isOK());
+    ASSERT(op.init("a", std::move(andOp)).isOK());
     ASSERT(!op.matchesSingleElement(notMatch1["a"]));
     ASSERT(!op.matchesSingleElement(notMatch2["a"]));
     ASSERT(!op.matchesSingleElement(notMatch3["a"]));
@@ -97,7 +97,7 @@ TEST(ElemMatchObjectMatchExpression, MatchesNonArray) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("b", baseOperand["b"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", eq.release()).isOK());
+    ASSERT(op.init("a", std::move(eq)).isOK());
     // Directly nested objects are not matched with $elemMatch.  An intervening array is
     // required.
     ASSERT(!op.matchesBSON(BSON("a" << BSON("b" << 5)), NULL));
@@ -110,7 +110,7 @@ TEST(ElemMatchObjectMatchExpression, MatchesArrayObject) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("b", baseOperand["b"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", eq.release()).isOK());
+    ASSERT(op.init("a", std::move(eq)).isOK());
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSON("b" << 5))), NULL));
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(4 << BSON("b" << 5))), NULL));
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSONObj() << BSON("b" << 5))), NULL));
@@ -122,7 +122,7 @@ TEST(ElemMatchObjectMatchExpression, MatchesMultipleNamedValues) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("c", baseOperand["c"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a.b", eq.release()).isOK());
+    ASSERT(op.init("a.b", std::move(eq)).isOK());
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSON("b" << BSON_ARRAY(BSON("c" << 5))))), NULL));
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSON("b" << BSON_ARRAY(BSON("c" << 1)))
                                                  << BSON("b" << BSON_ARRAY(BSON("c" << 5))))),
@@ -134,7 +134,7 @@ TEST(ElemMatchObjectMatchExpression, ElemMatchKey) {
     unique_ptr<ComparisonMatchExpression> eq(new EqualityMatchExpression());
     ASSERT(eq->init("c", baseOperand["c"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a.b", eq.release()).isOK());
+    ASSERT(op.init("a.b", std::move(eq)).isOK());
     MatchDetails details;
     details.requestElemMatchKey();
     ASSERT(!op.matchesBSON(BSONObj(), &details));
@@ -174,7 +174,7 @@ TEST(ElemMatchValueMatchExpression, MatchesElementSingle) {
     unique_ptr<ComparisonMatchExpression> gt(new GTMatchExpression());
     ASSERT(gt->init("", baseOperand["$gt"]).isOK());
     ElemMatchValueMatchExpression op;
-    ASSERT(op.init("a", gt.release()).isOK());
+    ASSERT(op.init("a", std::move(gt)).isOK());
     ASSERT(op.matchesSingleElement(match["a"]));
     ASSERT(!op.matchesSingleElement(notMatch["a"]));
 }
@@ -192,8 +192,8 @@ TEST(ElemMatchValueMatchExpression, MatchesElementMultiple) {
 
     ElemMatchValueMatchExpression op;
     ASSERT(op.init("a").isOK());
-    op.add(gt.release());
-    op.add(lt.release());
+    op.add(std::move(gt));
+    op.add(std::move(lt));
 
     ASSERT(!op.matchesSingleElement(notMatch1["a"]));
     ASSERT(!op.matchesSingleElement(notMatch2["a"]));
@@ -205,7 +205,7 @@ TEST(ElemMatchValueMatchExpression, MatchesNonArray) {
     unique_ptr<ComparisonMatchExpression> gt(new GTMatchExpression());
     ASSERT(gt->init("", baseOperand["$gt"]).isOK());
     ElemMatchObjectMatchExpression op;
-    ASSERT(op.init("a", gt.release()).isOK());
+    ASSERT(op.init("a", std::move(gt)).isOK());
     // Directly nested objects are not matched with $elemMatch.  An intervening array is
     // required.
     ASSERT(!op.matchesBSON(BSON("a" << 6), NULL));
@@ -217,7 +217,7 @@ TEST(ElemMatchValueMatchExpression, MatchesArrayScalar) {
     unique_ptr<ComparisonMatchExpression> gt(new GTMatchExpression());
     ASSERT(gt->init("", baseOperand["$gt"]).isOK());
     ElemMatchValueMatchExpression op;
-    ASSERT(op.init("a", gt.release()).isOK());
+    ASSERT(op.init("a", std::move(gt)).isOK());
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(6)), NULL));
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(4 << 6)), NULL));
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSONObj() << 7)), NULL));
@@ -228,7 +228,7 @@ TEST(ElemMatchValueMatchExpression, MatchesMultipleNamedValues) {
     unique_ptr<ComparisonMatchExpression> gt(new GTMatchExpression());
     ASSERT(gt->init("", baseOperand["$gt"]).isOK());
     ElemMatchValueMatchExpression op;
-    ASSERT(op.init("a.b", gt.release()).isOK());
+    ASSERT(op.init("a.b", std::move(gt)).isOK());
     ASSERT(op.matchesBSON(BSON("a" << BSON_ARRAY(BSON("b" << BSON_ARRAY(6)))), NULL));
     ASSERT(op.matchesBSON(
         BSON("a" << BSON_ARRAY(BSON("b" << BSON_ARRAY(4)) << BSON("b" << BSON_ARRAY(4 << 6)))),
@@ -240,7 +240,7 @@ TEST(ElemMatchValueMatchExpression, ElemMatchKey) {
     unique_ptr<ComparisonMatchExpression> gt(new GTMatchExpression());
     ASSERT(gt->init("", baseOperand["$gt"]).isOK());
     ElemMatchValueMatchExpression op;
-    ASSERT(op.init("a.b", gt.release()).isOK());
+    ASSERT(op.init("a.b", std::move(gt)).isOK());
     MatchDetails details;
     details.requestElemMatchKey();
     ASSERT(!op.matchesBSON(BSONObj(), &details));
@@ -282,12 +282,12 @@ TEST(AndOfElemMatch, MatchesElement) {
     ASSERT(eqb1->init("b", baseOperandb1["b"]).isOK());
 
     unique_ptr<AndMatchExpression> and1(new AndMatchExpression());
-    and1->add(eqa1.release());
-    and1->add(eqb1.release());
+    and1->add(std::move(eqa1));
+    and1->add(std::move(eqb1));
     // and1 = { a : 1, b : 1 }
 
     unique_ptr<ElemMatchObjectMatchExpression> elemMatch1(new ElemMatchObjectMatchExpression());
-    elemMatch1->init("x", and1.release());
+    elemMatch1->init("x", std::move(and1));
     // elemMatch1 = { x : { $elemMatch : { a : 1, b : 1 } } }
 
     BSONObj baseOperanda2 = BSON("a" << 2);
@@ -299,17 +299,17 @@ TEST(AndOfElemMatch, MatchesElement) {
     ASSERT(eqb2->init("b", baseOperandb2["b"]).isOK());
 
     unique_ptr<AndMatchExpression> and2(new AndMatchExpression());
-    and2->add(eqa2.release());
-    and2->add(eqb2.release());
+    and2->add(std::move(eqa2));
+    and2->add(std::move(eqb2));
     // and2 = { a : 2, b : 2 }
 
     unique_ptr<ElemMatchObjectMatchExpression> elemMatch2(new ElemMatchObjectMatchExpression());
-    elemMatch2->init("x", and2.release());
+    elemMatch2->init("x", std::move(and2));
     // elemMatch2 = { x : { $elemMatch : { a : 2, b : 2 } } }
 
     unique_ptr<AndMatchExpression> andOfEM(new AndMatchExpression());
-    andOfEM->add(elemMatch1.release());
-    andOfEM->add(elemMatch2.release());
+    andOfEM->add(std::move(elemMatch1));
+    andOfEM->add(std::move(elemMatch2));
 
     BSONObj nonArray = BSON("x" << 4);
     ASSERT(!andOfEM->matchesSingleElement(nonArray["x"]));
@@ -340,8 +340,8 @@ TEST(AndOfElemMatch, Matches) {
 
     unique_ptr<ElemMatchValueMatchExpression> elemMatch1(new ElemMatchValueMatchExpression());
     elemMatch1->init("x");
-    elemMatch1->add(gt1.release());
-    elemMatch1->add(lt1.release());
+    elemMatch1->add(std::move(gt1));
+    elemMatch1->add(std::move(lt1));
     // elemMatch1 = { x : { $elemMatch : { $gt : 1 , $lt : 10 } } }
 
     BSONObj baseOperandgt2 = BSON("$gt" << 101);
@@ -354,13 +354,13 @@ TEST(AndOfElemMatch, Matches) {
 
     unique_ptr<ElemMatchValueMatchExpression> elemMatch2(new ElemMatchValueMatchExpression());
     elemMatch2->init("x");
-    elemMatch2->add(gt2.release());
-    elemMatch2->add(lt2.release());
+    elemMatch2->add(std::move(gt2));
+    elemMatch2->add(std::move(lt2));
     // elemMatch2 = { x : { $elemMatch : { $gt : 101 , $lt : 110 } } }
 
     unique_ptr<AndMatchExpression> andOfEM(new AndMatchExpression());
-    andOfEM->add(elemMatch1.release());
-    andOfEM->add(elemMatch2.release());
+    andOfEM->add(std::move(elemMatch1));
+    andOfEM->add(std::move(elemMatch2));
 
     BSONObj nonArray = BSON("x" << 4);
     ASSERT(!andOfEM->matchesBSON(nonArray, NULL));

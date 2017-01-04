@@ -30,9 +30,9 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
-#include "mongo/db/matcher/expression_geo.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/geo/geoparser.h"
+#include "mongo/db/matcher/expression_geo.h"
 #include "mongo/platform/basic.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -328,9 +328,9 @@ Status GeoNearExpression::parseFrom(const BSONObj& obj) {
 //
 
 Status GeoMatchExpression::init(StringData path,
-                                const GeoExpression* query,
+                                std::unique_ptr<const GeoExpression> query,
                                 const BSONObj& rawObj) {
-    _query.reset(query);
+    _query = std::move(query);
     _rawObj = rawObj;
     return setPath(path);
 }
@@ -405,9 +405,9 @@ std::unique_ptr<MatchExpression> GeoMatchExpression::shallowClone() const {
 //
 
 Status GeoNearMatchExpression::init(StringData path,
-                                    const GeoNearExpression* query,
+                                    std::unique_ptr<const GeoNearExpression> query,
                                     const BSONObj& rawObj) {
-    _query.reset(query);
+    _query = std::move(query);
     _rawObj = rawObj;
     return setPath(path);
 }

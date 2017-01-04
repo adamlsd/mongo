@@ -58,7 +58,7 @@ StatusWithMatchExpression expressionParserGeoCallbackReal(const char* name,
         // layer.
         BSONObjBuilder bob;
         bob.append(name, section);
-        Status s = e->init(name, gq.release(), bob.obj());
+        Status s = e->init(name, std::move(gq), bob.obj());
         if (!s.isOK())
             return StatusWithMatchExpression(s);
         return {std::move(e)};
@@ -75,7 +75,7 @@ StatusWithMatchExpression expressionParserGeoCallbackReal(const char* name,
         // layer.
         BSONObjBuilder bob;
         bob.append(name, section);
-        s = e->init(name, nq.release(), bob.obj());
+        s = e->init(name, std::move(nq), bob.obj());
         if (!s.isOK())
             return StatusWithMatchExpression(s);
         return {std::move(e)};

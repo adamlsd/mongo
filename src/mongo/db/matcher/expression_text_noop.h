@@ -43,6 +43,14 @@ public:
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
+
 private:
     fts::FTSQueryNoop _ftsQuery;
 };

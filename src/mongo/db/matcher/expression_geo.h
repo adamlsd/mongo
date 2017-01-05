@@ -87,15 +87,23 @@ public:
      */
     Status init(StringData path, std::unique_ptr<const GeoExpression> query, const BSONObj& rawObj);
 
-    virtual bool matchesSingleElement(const BSONElement& e) const;
+    bool matchesSingleElement(const BSONElement& e) const override;
 
-    virtual void debugString(StringBuilder& debug, int level = 0) const;
+    void debugString(StringBuilder& debug, int level = 0) const override;
 
-    virtual void serialize(BSONObjBuilder* out) const;
+    void serialize(BSONObjBuilder* out) const override;
 
-    virtual bool equivalent(const MatchExpression* other) const;
+    bool equivalent(const MatchExpression* other) const override;
 
-    virtual std::unique_ptr<MatchExpression> shallowClone() const;
+    std::unique_ptr<MatchExpression> shallowClone() const override;
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 
     void setCanSkipValidation(bool val) {
         _canSkipValidation = val;
@@ -172,15 +180,23 @@ public:
                 const BSONObj& rawObj);
 
     // This shouldn't be called and as such will crash.  GeoNear always requires an index.
-    virtual bool matchesSingleElement(const BSONElement& e) const;
+    bool matchesSingleElement(const BSONElement& e) const override;
 
-    virtual void debugString(StringBuilder& debug, int level = 0) const;
+    void debugString(StringBuilder& debug, int level = 0) const override;
 
-    virtual void serialize(BSONObjBuilder* out) const;
+    void serialize(BSONObjBuilder* out) const override;
 
-    virtual bool equivalent(const MatchExpression* other) const;
+    bool equivalent(const MatchExpression* other) const override;
 
-    virtual std::unique_ptr<MatchExpression> shallowClone() const;
+    std::unique_ptr<MatchExpression> shallowClone() const override;
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 
     const GeoNearExpression& getData() const {
         return *_query;

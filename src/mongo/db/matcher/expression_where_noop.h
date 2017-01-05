@@ -45,6 +45,14 @@ public:
     bool matches(const MatchableDocument* doc, MatchDetails* details = nullptr) const final;
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 };
 
 }  // namespace mongo

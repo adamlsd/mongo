@@ -382,15 +382,24 @@ public:
 
     Status init(StringData path);
 
-    virtual std::unique_ptr<MatchExpression> shallowClone() const;
+    std::unique_ptr<MatchExpression> shallowClone() const override;
 
-    virtual bool matchesSingleElement(const BSONElement& e) const;
+    bool matchesSingleElement(const BSONElement& e) const override;
 
-    virtual void debugString(StringBuilder& debug, int level) const;
+    void debugString(StringBuilder& debug, int level) const override;
 
-    virtual void serialize(BSONObjBuilder* out) const;
+    void serialize(BSONObjBuilder* out) const override;
 
-    virtual bool equivalent(const MatchExpression* other) const;
+    bool equivalent(const MatchExpression* other) const override;
+
+
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
+        return {};
+    }
 
     /**
      * 'collator' must outlive the InMatchExpression and any clones made of it.
@@ -483,7 +492,9 @@ public:
         return std::move(e);
     }
 
-    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>>) override {}
+    void resetChildren(const std::vector<std::unique_ptr<MatchExpression>> children) override {
+        invariant(children.empty());
+    }
 
     std::vector<std::unique_ptr<MatchExpression>> releaseChildren() override {
         return {};

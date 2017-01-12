@@ -56,7 +56,7 @@ env.Library(
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-06): See `CYCLE` tags above
-        'has_cycles',
+        'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
     ],
 )
 

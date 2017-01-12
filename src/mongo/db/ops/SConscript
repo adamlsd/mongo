@@ -289,6 +289,6 @@ env.Library(
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-10): See `CYCLE` tags above.
         # The only undefined symbol is `mongo::Command::run` from `dcommands`.
-        'has_cycles'
+        'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
     ],
 )

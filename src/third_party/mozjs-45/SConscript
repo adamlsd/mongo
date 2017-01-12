@@ -129,6 +129,6 @@ env.Library(
     source=sources,
     LIBDEPS_TAGS=[
         # Depends on allocation symbols defined elsewhere
-        'incomplete'
+        'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
     ],
 )

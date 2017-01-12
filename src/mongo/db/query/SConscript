@@ -86,7 +86,7 @@ env.Library(
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-09): See `CYCLE` tags above.
-        'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
+        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )
 
@@ -207,7 +207,7 @@ env.Library(
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-09): See `CYCLE` tags above
-        'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
+        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )
 

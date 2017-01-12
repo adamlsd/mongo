@@ -257,6 +257,6 @@ if has_option('use-cpu-profiler'):
         LIBDEPS=[
         ],
         LIBDEPS_TAGS=[
-            'malformed_library_with_illegal_cyclic_or_unresolved_dependencies_exemption_granted_by_platforms',
+            'illegal_cyclic_or_unresolved_dependencies_whitelisted',
         ],
     )

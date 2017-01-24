@@ -66,9 +66,15 @@ void getLeafNodes(QuerySolutionNode* root, vector<QuerySolutionNode*>* leafNodes
         leafNodes->push_back(root);
     } else {
         for (size_t i = 0; i < root->children.size(); ++i) {
-            getLeafNodes(root->children[i], leafNodes);
+            getLeafNodes(root->children[i].get(), leafNodes);
         }
     }
+}
+
+std::vector<QuerySolutionNode*> getLeafNodes(QuerySolutionNode* root) {
+    vector<QuerySolutionNode*> leafNodes;
+    getLeafNodes(root, &leafNodes);
+    return leafNodes;
 }
 
 /**
@@ -341,14 +347,13 @@ BSONObj QueryPlannerAnalysis::getSortPattern(const BSONObj& indexKeyPattern) {
 bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
                                           const QueryPlannerParams& params,
                                           QuerySolutionNode** solnRoot) {
-    vector<QuerySolutionNode*> leafNodes;
 
     QuerySolutionNode* toReplace;
     if (!structureOKForExplode(*solnRoot, &toReplace)) {
         return false;
     }
 
-    getLeafNodes(*solnRoot, &leafNodes);
+    std::vector<QuerySolutionNode*> leafNodes = getLeafNodes(*solnRoot);
 
     const BSONObj& desiredSort = query.getQueryRequest().getSort();
 

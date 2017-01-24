@@ -377,8 +377,9 @@ void QueryPlannerIXSelect::rateIndices(MatchExpression* node,
         }
 
         verify(NULL == node->getTag());
-        RelevantTag* rt = new RelevantTag();
-        node->setTag(rt);
+        RelevantTag rt_init = stdx::make_unique<RelevantTag>();
+        RelevantTag* rt = rt_init.get();
+        node->setTag(std::move(rt_init));
         rt->path = fullPath;
 
         // TODO: This is slow, with all the string compares.

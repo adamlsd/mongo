@@ -374,14 +374,15 @@ std::unique_ptr<MatchExpression> CanonicalQuery::normalizeTree(
 }
 
 // static
-void CanonicalQuery::sortTree(ListOfMatchExpression* tree) {
+void CanonicalQuery::sortTree(MatchExpression* tree) {
     for (size_t i = 0; i < tree->numChildren(); ++i) {
         sortTree(tree->getChild(i));
     }
-    std::vector<MatchExpression*>* children = tree->getChildVector();
+    std::vector<std::unique_ptr<MatchExpression>> children = tree->releaseChildren();
     if (NULL != children) {
-        std::sort(children->begin(), children->end(), matchExpressionLessThan);
+        std::sort(children.begin(), children.end(), matchExpressionLessThan);
     }
+	tree->resetChildren(std::move(children));
 }
 
 // static

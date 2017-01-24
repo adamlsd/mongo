@@ -1449,7 +1449,7 @@ void PlanEnumerator::tagMemo(size_t id) {
         PredicateAssignment* pa = assign->pred.get();
         verify(NULL == pa->expr->getTag());
         verify(pa->indexToAssign < pa->first.size());
-        pa->expr->setTag(new IndexTag(pa->first[pa->indexToAssign]));
+        pa->expr->setTag(stdx::make_unique<IndexTag>(pa->first[pa->indexToAssign]));
     } else if (NULL != assign->orAssignment) {
         OrAssignment* oa = assign->orAssignment.get();
         for (size_t i = 0; i < oa->subnodes.size(); ++i) {
@@ -1474,8 +1474,8 @@ void PlanEnumerator::tagMemo(size_t id) {
             for (size_t j = 0; j < assign.preds.size(); ++j) {
                 MatchExpression* pred = assign.preds[j];
                 verify(NULL == pred->getTag());
-                pred->setTag(
-                    new IndexTag(assign.index, assign.positions[j], assign.canCombineBounds));
+                pred->setTag(stdx::make_unique<IndexTag>(
+                    assign.index, assign.positions[j], assign.canCombineBounds));
             }
         }
     } else {

@@ -29,6 +29,7 @@
 #include "mongo/db/query/index_tag.h"
 
 #include "mongo/db/query/indexability.h"
+#include "mongo/stdx/memory.h"
 
 #include <algorithm>
 #include <limits>
@@ -51,7 +52,7 @@ void tagForSort(MatchExpression* tree) {
             }
         }
         if (myTagValue != IndexTag::kNoIndex) {
-            tree->setTag(new IndexTag(myTagValue));
+            tree->setTag(stdx::make_unique<IndexTag>(myTagValue));
         }
     }
 }
@@ -102,12 +103,11 @@ bool TagComparison(const MatchExpression* lhs, const MatchExpression* rhs) {
 
 void sortUsingTags(MatchExpression* tree) {
     for (size_t i = 0; i < tree->numChildren(); ++i) {
-        sortUsingTags(tree->getChild(i));
+        sortUsingTags(tree->getChild(i).get());
     }
-    std::vector<MatchExpression*>* children = tree->getChildVector();
-    if (NULL != children) {
-        std::sort(children->begin(), children->end(), TagComparison);
-    }
+    std::vector<std::unique_ptr<MatchExpression>> children = tree->releaseChildren();
+	std::sort(children.begin(), children.end(), TagComparison);
+    tree->resetChildren(std::move(children));
 }
 
 }  // namespace mongo

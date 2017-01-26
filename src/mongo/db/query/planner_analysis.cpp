@@ -96,6 +96,7 @@ bool isUnionOfPoints(const OrderedIntervalList& oil) {
     return true;
 }
 
+#if 1
 /**
  * Should we try to expand the index scan(s) in 'solnRoot' to pull out an indexed sort?
  *
@@ -112,7 +113,7 @@ bool structureOKForExplode(QuerySolutionNode* solnRoot, QuerySolutionNode** toRe
 
     // Skip over a sharding filter stage.
     if (STAGE_SHARDING_FILTER == solnRoot->getType()) {
-        solnRoot = solnRoot->children[0];
+        solnRoot = solnRoot->children[0].get();
     }
 
     if (STAGE_IXSCAN == solnRoot->getType()) {
@@ -122,7 +123,7 @@ bool structureOKForExplode(QuerySolutionNode* solnRoot, QuerySolutionNode** toRe
 
     if (STAGE_FETCH == solnRoot->getType()) {
         if (STAGE_IXSCAN == solnRoot->children[0]->getType()) {
-            *toReplace = solnRoot->children[0];
+            *toReplace = solnRoot->children[0].get();
             return true;
         }
     }
@@ -139,6 +140,7 @@ bool structureOKForExplode(QuerySolutionNode* solnRoot, QuerySolutionNode** toRe
 
     return false;
 }
+#endif
 
 // vectors of vectors can be > > annoying.
 typedef vector<Interval> PointPrefix;
@@ -244,6 +246,7 @@ void explodeScan(const IndexScanNode* isn,
     }
 }
 
+#if 0
 /**
  * In the tree '*root', replace 'oldNode' with 'newNode'.
  */
@@ -258,6 +261,7 @@ void replaceNodeInTree(QuerySolutionNode** root,
         }
     }
 }
+#endif
 
 bool hasNode(QuerySolutionNode* root, StageType type) {
     if (type == root->getType()) {
@@ -265,7 +269,7 @@ bool hasNode(QuerySolutionNode* root, StageType type) {
     }
 
     for (size_t i = 0; i < root->children.size(); ++i) {
-        if (hasNode(root->children[i], type)) {
+        if (hasNode(root->children[i].get(), type)) {
             return true;
         }
     }
@@ -291,8 +295,8 @@ void geoSkipValidationOn(const std::set<StringData>& twoDSphereFields,
         }
     }
 
-    for (QuerySolutionNode* child : solnRoot->children) {
-        geoSkipValidationOn(twoDSphereFields, child);
+    for (const auto& child : solnRoot->children) {
+        geoSkipValidationOn(twoDSphereFields, child.get());
     }
 }
 
@@ -346,7 +350,7 @@ BSONObj QueryPlannerAnalysis::getSortPattern(const BSONObj& indexKeyPattern) {
 // static
 bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
                                           const QueryPlannerParams& params,
-                                          QuerySolutionNode** solnRoot) {
+                                          std::unique_ptr<QuerySolutionNode>* solnRoot) {
 
     QuerySolutionNode* toReplace;
     if (!structureOKForExplode(*solnRoot, &toReplace)) {
@@ -463,10 +467,11 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
 }
 
 // static
-QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query,
-                                                     const QueryPlannerParams& params,
-                                                     QuerySolutionNode* solnRoot,
-                                                     bool* blockingSortOut) {
+std::unique_ptr<QuerySolutionNode> QueryPlannerAnalysis::analyzeSort(
+    const CanonicalQuery& query,
+    const QueryPlannerParams& params,
+    std::unique_ptr<QuerySolutionNode> solnRoot,
+    bool* blockingSortOut) {
     *blockingSortOut = false;
 
     const QueryRequest& qr = query.getQueryRequest();
@@ -498,7 +503,7 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
     // If so, we can reverse the scan direction(s).
     BSONObj reverseSort = QueryPlannerCommon::reverseSortObj(sortObj);
     if (sorts.end() != sorts.find(reverseSort)) {
-        QueryPlannerCommon::reverseScans(solnRoot);
+        QueryPlannerCommon::reverseScans(solnRoot.get());
         LOG(5) << "Reversing ixscan to provide sort. Result: " << redact(solnRoot->toString());
         return solnRoot;
     }
@@ -514,31 +519,34 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
 
     // If we're not allowed to put a blocking sort in, bail out.
     if (params.options & QueryPlannerParams::NO_BLOCKING_SORT) {
-        delete solnRoot;
-        return NULL;
+        return nullptr;
     }
 
     // Add a fetch stage so we have the full object when we hit the sort stage.  TODO: Can we
     // pull the values that we sort by out of the key and if so in what cases?  Perhaps we can
     // avoid a fetch.
     if (!solnRoot->fetched()) {
-        FetchNode* fetch = new FetchNode();
-        fetch->children.push_back(solnRoot);
-        solnRoot = fetch;
+        auto fetch = stdx::make_unique<FetchNode>();
+        fetch->children.push_back(std::move(solnRoot));
+        solnRoot = std::move(fetch);
     }
 
     // And build the full sort stage. The sort stage has to have a sort key generating stage
     // as its child, supplying it with the appropriate sort keys.
-    SortKeyGeneratorNode* keyGenNode = new SortKeyGeneratorNode();
+    auto keyGenNode = stdx::make_unique<SortKeyGeneratorNode>();
     keyGenNode->queryObj = qr.getFilter();
     keyGenNode->sortSpec = sortObj;
-    keyGenNode->children.push_back(solnRoot);
-    solnRoot = keyGenNode;
+    keyGenNode->children.push_back(std::move(solnRoot));
+    solnRoot = std::move(keyGenNode);
 
-    SortNode* sort = new SortNode();
-    sort->pattern = sortObj;
-    sort->children.push_back(solnRoot);
-    solnRoot = sort;
+    SortNode* sort;
+    {
+        auto sort_owned = stdx::make_unique<SortNode>();
+        sort = sort_owned.get();
+        sort->pattern = sortObj;
+        sort->children.push_back(std::move(solnRoot));
+        solnRoot = std::move(sort_owned);
+    }
     // When setting the limit on the sort, we need to consider both
     // the limit N and skip count M. The sort should return an ordered list
     // N + M items so that the skip stage can discard the first M results.
@@ -588,17 +596,18 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
             //
             // Not allowed for geo or text, because we assume elsewhere that those
             // stages appear just once.
-            OrNode* orn = new OrNode();
-            orn->children.push_back(sort);
-            SortNode* sortClone = static_cast<SortNode*>(sort->clone());
+            auto orn = stdx::make_unique<OrNode>();
+            invariant(solnRoot.get() == sort);
+            orn->children.push_back(std::move(solnRoot));
+            auto sortClone = sort->clone();
             sortClone->limit = 0;
-            orn->children.push_back(sortClone);
+            orn->children.push_back(std::move(sortClone));
 
             // Add ENSURE_SORTED above the OR.
-            EnsureSortedNode* esn = new EnsureSortedNode();
+            auto esn = stdx::make_unique<EnsureSortedNode>();
             esn->pattern = sort->pattern;
-            esn->children.push_back(orn);
-            solnRoot = esn;
+            esn->children.push_back(std::move(orn));
+            solnRoot = std::move(esn);
         }
     } else {
         sort->limit = 0;
@@ -610,16 +619,17 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
 }
 
 // static
-QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& query,
-                                                       const QueryPlannerParams& params,
-                                                       QuerySolutionNode* solnRoot) {
-    unique_ptr<QuerySolution> soln(new QuerySolution());
+std::unique_ptr<QuerySolution> QueryPlannerAnalysis::analyzeDataAccess(
+    const CanonicalQuery& query,
+    const QueryPlannerParams& params,
+    std::unique_ptr<QuerySolutionNode> solnRoot) {
+    auto soln = stdx::make_unique<QuerySolution>();
     soln->filterData = query.getQueryObj();
     soln->indexFilterApplied = params.indexFiltersApplied;
 
     solnRoot->computeProperties();
 
-    analyzeGeo(params, solnRoot);
+    analyzeGeo(params, solnRoot.get());
 
     // solnRoot finds all our results.  Let's see what transformations we must perform to the
     // data.
@@ -642,28 +652,28 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
             }
 
             if (fetch) {
-                FetchNode* fetch = new FetchNode();
-                fetch->children.push_back(solnRoot);
-                solnRoot = fetch;
+                auto fetch = stdx::make_unique<FetchNode>();
+                fetch->children.push_back(std::move(solnRoot));
+                solnRoot = std::move(fetch);
             }
         }
 
-        ShardingFilterNode* sfn = new ShardingFilterNode();
-        sfn->children.push_back(solnRoot);
-        solnRoot = sfn;
+        auto sfn = stdx::make_unique<ShardingFilterNode>();
+        sfn->children.push_back(std::move(solnRoot));
+        solnRoot = std::move(sfn);
     }
 
     bool hasSortStage = false;
-    solnRoot = analyzeSort(query, params, solnRoot, &hasSortStage);
+    solnRoot = analyzeSort(query, params, std::move(solnRoot), &hasSortStage);
 
     // This can happen if we need to create a blocking sort stage and we're not allowed to.
-    if (NULL == solnRoot) {
-        return NULL;
+    if (nullptr == solnRoot) {
+        return nullptr;
     }
 
     // A solution can be blocking if it has a blocking sort stage or
     // a hashed AND stage.
-    bool hasAndHashStage = hasNode(solnRoot, STAGE_AND_HASH);
+    bool hasAndHashStage = hasNode(solnRoot.get(), STAGE_AND_HASH);
     soln->hasBlockingStage = hasSortStage || hasAndHashStage;
 
     const QueryRequest& qr = query.getQueryRequest();
@@ -689,17 +699,18 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
     // shallow in terms of query nodes.
     const bool hasNotRootSort = hasSortStage && STAGE_SORT != solnRoot->getType();
 
-    const bool cannotKeepFlagged = hasNode(solnRoot, STAGE_TEXT) ||
-        hasNode(solnRoot, STAGE_GEO_NEAR_2D) || hasNode(solnRoot, STAGE_GEO_NEAR_2DSPHERE) ||
+    const bool cannotKeepFlagged = hasNode(solnRoot.get(), STAGE_TEXT) ||
+        hasNode(solnRoot.get(), STAGE_GEO_NEAR_2D) ||
+        hasNode(solnRoot.get(), STAGE_GEO_NEAR_2DSPHERE) ||
         (!qr.getSort().isEmpty() && !hasSortStage) || hasNotRootSort;
 
     // Only index intersection stages ever produce flagged results.
-    const bool couldProduceFlagged = hasAndHashStage || hasNode(solnRoot, STAGE_AND_SORTED);
+    const bool couldProduceFlagged = hasAndHashStage || hasNode(solnRoot.get(), STAGE_AND_SORTED);
 
     const bool shouldAddMutation = !cannotKeepFlagged && couldProduceFlagged;
 
     if (shouldAddMutation && (params.options & QueryPlannerParams::KEEP_MUTATIONS)) {
-        KeepMutationsNode* keep = new KeepMutationsNode();
+        auto keep = std::make_unique<KeepMutationsNode>();
 
         // We must run the entire expression tree to make sure the document is still valid.
         keep->filter = query.root()->shallowClone();
@@ -707,11 +718,11 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
         if (STAGE_SORT == solnRoot->getType()) {
             // We want to insert the invalidated results before the sort stage, if there is one.
             verify(1 == solnRoot->children.size());
-            keep->children.push_back(solnRoot->children[0]);
-            solnRoot->children[0] = keep;
+            keep->children.push_back(std::move(solnRoot->children[0]));
+            solnRoot->children[0] = std::move(keep);
         } else {
-            keep->children.push_back(solnRoot);
-            solnRoot = keep;
+            keep->children.push_back(std::move(solnRoot));
+            solnRoot = std::move(keep);
         }
     }
 
@@ -727,9 +738,9 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
             LOG(5) << "PROJECTION: claims to require doc adding fetch.";
             // If the projection requires the entire document, somebody must fetch.
             if (!solnRoot->fetched()) {
-                FetchNode* fetch = new FetchNode();
-                fetch->children.push_back(solnRoot);
-                solnRoot = fetch;
+                auto fetch = stdx::make_unique<FetchNode>();
+                fetch->children.push_back(std::move(solnRoot));
+                solnRoot = std::move(fetch);
             }
         } else if (!query.getProj()->wantIndexKey()) {
             // The only way we're here is if it's a simple projection.  That is, we can pick out
@@ -751,9 +762,9 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
             // If any field is missing from the list of fields the projection wants,
             // a fetch is required.
             if (!covered) {
-                FetchNode* fetch = new FetchNode();
-                fetch->children.push_back(solnRoot);
-                solnRoot = fetch;
+                auto fetch = stdx::make_unique<FetchNode>();
+                fetch->children.push_back(std::move(solnRoot));
+                solnRoot = std::move(fetch);
 
                 // It's simple but we'll have the full document and we should just iterate
                 // over that.
@@ -769,8 +780,7 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
                     // get out of using the default projType.  If there's only one leaf
                     // underneath and it's giving us index data we can use the faster covered
                     // impl.
-                    vector<QuerySolutionNode*> leafNodes;
-                    getLeafNodes(solnRoot, &leafNodes);
+                    std::vector<QuerySolutionNode*> leafNodes = getLeafNodes(solnRoot.get());
 
                     if (1 == leafNodes.size()) {
                         // Both the IXSCAN and DISTINCT stages provide covered key data.
@@ -800,42 +810,41 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
         // bail out.
         if (solnRoot->fetched() &&
             (params.options & QueryPlannerParams::NO_UNCOVERED_PROJECTIONS)) {
-            delete solnRoot;
             return nullptr;
         }
 
         // If there's no sort stage but we have a sortKey meta-projection, we need to add a stage to
         // generate the sort key computed data.
         if (!hasSortStage && query.getProj()->wantSortKey()) {
-            SortKeyGeneratorNode* keyGenNode = new SortKeyGeneratorNode();
+            auto keyGenNode = stdx::make_unique<SortKeyGeneratorNode>();
             keyGenNode->queryObj = qr.getFilter();
             keyGenNode->sortSpec = qr.getSort();
-            keyGenNode->children.push_back(solnRoot);
-            solnRoot = keyGenNode;
+            keyGenNode->children.push_back(std::move(solnRoot));
+            solnRoot = std::move(keyGenNode);
         }
 
         // We now know we have whatever data is required for the projection.
-        ProjectionNode* projNode = new ProjectionNode(*query.getProj());
-        projNode->children.push_back(solnRoot);
+        auto projNode = stdx::make_unique<ProjectionNode>(*query.getProj());
+        projNode->children.push_back(std::move(solnRoot));
         projNode->fullExpression = query.root();
         projNode->projection = qr.getProj();
         projNode->projType = projType;
         projNode->coveredKeyObj = coveredKeyObj;
-        solnRoot = projNode;
+        solnRoot = std::move(projNode);
     } else {
         // If there's no projection, we must fetch, as the user wants the entire doc.
         if (!solnRoot->fetched()) {
-            FetchNode* fetch = new FetchNode();
-            fetch->children.push_back(solnRoot);
-            solnRoot = fetch;
+            auto fetch = stdx::make_unique<FetchNode>();
+            fetch->children.push_back(std::move(solnRoot));
+            solnRoot = std::move(fetch);
         }
     }
 
     if (qr.getSkip()) {
-        SkipNode* skip = new SkipNode();
+        auto skip = stdx::make_unique<SkipNode>();
         skip->skip = *qr.getSkip();
-        skip->children.push_back(solnRoot);
-        solnRoot = skip;
+        skip->children.push_back(std::move(solnRoot));
+        solnRoot = std::move(skip);
     }
 
     // When there is both a blocking sort and a limit, the limit will
@@ -846,22 +855,22 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(const CanonicalQuery& que
         // We don't have a sort stage. This means that, if there is a limit, we will have
         // to enforce it ourselves since it's not handled inside SORT.
         if (qr.getLimit()) {
-            LimitNode* limit = new LimitNode();
+            auto limit = stdx::make_unique<LimitNode>();
             limit->limit = *qr.getLimit();
-            limit->children.push_back(solnRoot);
-            solnRoot = limit;
+            limit->children.push_back(std::move(solnRoot));
+            solnRoot = std::move(limit);
         } else if (qr.getNToReturn() && !qr.wantMore()) {
             // We have a "legacy limit", i.e. a negative ntoreturn value from an OP_QUERY style
             // find.
-            LimitNode* limit = new LimitNode();
+            auto limit = stdx::make_unique<LimitNode>();
             limit->limit = *qr.getNToReturn();
-            limit->children.push_back(solnRoot);
-            solnRoot = limit;
+            limit->children.push_back(std::move(solnRoot));
+            solnRoot = std::move(limit);
         }
     }
 
-    soln->root.reset(solnRoot);
-    return soln.release();
+    soln->root = std::move(solnRoot);
+    return soln;
 }
 
 }  // namespace mongo

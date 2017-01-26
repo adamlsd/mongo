@@ -185,26 +185,26 @@ public:
     /**
      * Return a CollectionScanNode that scans as requested in 'query'.
      */
-    static QuerySolutionNode* makeCollectionScan(const CanonicalQuery& query,
-                                                 bool tailable,
-                                                 const QueryPlannerParams& params);
+    static std::unique_ptr<QuerySolutionNode> makeCollectionScan(const CanonicalQuery& query,
+                                                                 bool tailable,
+                                                                 const QueryPlannerParams& params);
 
     /**
      * Return a plan that uses the provided index as a proxy for a collection scan.
      */
-    static QuerySolutionNode* scanWholeIndex(const IndexEntry& index,
-                                             const CanonicalQuery& query,
-                                             const QueryPlannerParams& params,
-                                             int direction = 1);
+    static std::unique_ptr<QuerySolutionNode> scanWholeIndex(const IndexEntry& index,
+                                                             const CanonicalQuery& query,
+                                                             const QueryPlannerParams& params,
+                                                             int direction = 1);
 
     /**
      * Return a plan that scans the provided index from [startKey to endKey).
      */
-    static QuerySolutionNode* makeIndexScan(const IndexEntry& index,
-                                            const CanonicalQuery& query,
-                                            const QueryPlannerParams& params,
-                                            const BSONObj& startKey,
-                                            const BSONObj& endKey);
+    static std::unique_ptr<QuerySolutionNode> makeIndexScan(const IndexEntry& index,
+                                                            const CanonicalQuery& query,
+                                                            const QueryPlannerParams& params,
+                                                            const BSONObj& startKey,
+                                                            const BSONObj& endKey);
 
     //
     // Indexed Data Access methods.
@@ -225,29 +225,31 @@ public:
     /**
      * If 'inArrayOperator' is false, takes ownership of 'root'.
      */
-    static QuerySolutionNode* buildIndexedDataAccess(const CanonicalQuery& query,
-                                                     MatchExpression* root,
-                                                     bool inArrayOperator,
-                                                     const std::vector<IndexEntry>& indices,
-                                                     const QueryPlannerParams& params);
+    static std::unique_ptr<QuerySolutionNode> buildIndexedDataAccess(
+        const CanonicalQuery& query,
+        MatchExpression* root,
+        bool inArrayOperator,
+        const std::vector<IndexEntry>& indices,
+        const QueryPlannerParams& params);
 
     /**
      * Takes ownership of 'root'.
      */
-    static QuerySolutionNode* buildIndexedAnd(const CanonicalQuery& query,
-                                              MatchExpression* root,
-                                              bool inArrayOperator,
-                                              const std::vector<IndexEntry>& indices,
-                                              const QueryPlannerParams& params);
+    static std::unique_ptr<QuerySolutionNode> buildIndexedAnd(
+        const CanonicalQuery& query,
+        std::unique_ptr<MatchExpression> root,
+        bool inArrayOperator,
+        const std::vector<IndexEntry>& indices,
+        const QueryPlannerParams& params);
 
     /**
      * Takes ownership of 'root'.
      */
-    static QuerySolutionNode* buildIndexedOr(const CanonicalQuery& query,
-                                             MatchExpression* root,
-                                             bool inArrayOperator,
-                                             const std::vector<IndexEntry>& indices,
-                                             const QueryPlannerParams& params);
+    static std::unique_ptr<QuerySolutionNode> buildIndexedOr(const CanonicalQuery& query,
+                                                             std::unique_ptr<MatchExpression> root,
+                                                             bool inArrayOperator,
+                                                             const std::vector<IndexEntry>& indices,
+                                                             const QueryPlannerParams& params);
 
     /**
      * Traverses the tree rooted at the $elemMatch expression 'node',
@@ -283,8 +285,8 @@ public:
      * Takes ownership of 'scans'. The caller assumes ownership of the pointers in the returned
      * list of QuerySolutionNode*.
      */
-    static std::vector<QuerySolutionNode*> collapseEquivalentScans(
-        const std::vector<QuerySolutionNode*> scans);
+    static std::vector<std::unique_ptr<QuerySolutionNode>> collapseEquivalentScans(
+        const std::vector<std::unique_ptr<QuerySolutionNode>> scans);
 
     /**
      * Helper used by buildIndexedAnd and buildIndexedOr.
@@ -304,7 +306,7 @@ public:
                                   bool inArrayOperator,
                                   const std::vector<IndexEntry>& indices,
                                   const QueryPlannerParams& params,
-                                  std::vector<QuerySolutionNode*>* out);
+                                  std::vector<std::unique_ptr<QuerySolutionNode>>* out);
 
     /**
      * Used by processIndexScans(...) in order to recursively build a data access
@@ -316,7 +318,7 @@ public:
     static bool processIndexScansSubnode(const CanonicalQuery& query,
                                          ScanBuildingState* scanState,
                                          const QueryPlannerParams& params,
-                                         std::vector<QuerySolutionNode*>* out);
+                                         std::vector<std::unique_ptr<QuerySolutionNode>>* out);
 
     /**
      * Used by processIndexScansSubnode(...) to build the leaves of the solution tree for an
@@ -327,7 +329,7 @@ public:
     static bool processIndexScansElemMatch(const CanonicalQuery& query,
                                            ScanBuildingState* scanState,
                                            const QueryPlannerParams& params,
-                                           std::vector<QuerySolutionNode*>* out);
+                                           std::vector<std::unique_ptr<QuerySolutionNode>>* out);
 
     //
     // Helpers for creating an index scan.
@@ -342,11 +344,12 @@ public:
      * If the node is a geo node, grab the geo data from 'expr' and stuff it into the
      * geo solution node of the appropriate type.
      */
-    static QuerySolutionNode* makeLeafNode(const CanonicalQuery& query,
-                                           const IndexEntry& index,
-                                           size_t pos,
-                                           MatchExpression* expr,
-                                           IndexBoundsBuilder::BoundsTightness* tightnessOut);
+    static std::unique_ptr<QuerySolutionNode> makeLeafNode(
+        const CanonicalQuery& query,
+        const IndexEntry& index,
+        size_t pos,
+        MatchExpression* expr,
+        IndexBoundsBuilder::BoundsTightness* tightnessOut);
 
     /**
      * Merge the predicate 'expr' with the leaf node 'node'.
@@ -380,7 +383,7 @@ public:
      * may be affixed to the scan as necessary.
      */
     static void finishAndOutputLeaf(ScanBuildingState* scanState,
-                                    std::vector<QuerySolutionNode*>* out);
+                                    std::vector<std::unique_ptr<QuerySolutionNode>>* out);
 
     /**
      * Returns true if the current scan in 'scanState' requires a FetchNode.
@@ -397,7 +400,7 @@ public:
      * AND or an OR match expression.
      */
     static void addFilterToSolutionNode(QuerySolutionNode* node,
-                                        MatchExpression* match,
+                                        std::unique_ptr<MatchExpression> match,
                                         MatchExpression::MatchType type);
 
     /**

@@ -208,7 +208,7 @@ static bool childrenMatch(const BSONObj& testSoln, const QuerySolutionNode* true
                 // Do not match a child of the QuerySolutionNode more than once.
                 continue;
             }
-            if (QueryPlannerTestLib::solutionMatches(child.Obj(), trueSoln->children[j])) {
+            if (QueryPlannerTestLib::solutionMatches(child.Obj(), trueSoln->children[j].get())) {
                 found = true;
                 matchedNodeIndexes.insert(j);
                 break;

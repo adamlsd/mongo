@@ -127,6 +127,10 @@ public:
         return NULL;
     }
 
+    virtual std::unique_ptr<MatchExpression> releaseChild(std::size_t i) {
+        return nullptr;
+    }
+
     /**
      * Returns the vector of owned `MatchExpressions` for someone else to take ownership.
      */

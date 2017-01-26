@@ -72,7 +72,7 @@ public:
         return _expressions[i].get();
     }
 
-    virtual std::unique_ptr<MatchExpression> releaseChild(size_t i) {
+    std::unique_ptr<MatchExpression> releaseChild(std::size_t i) override {
         return std::move(_expressions[i]);
     }
 
@@ -228,6 +228,7 @@ public:
         }
     }
 
+	using MatchExpression::releaseChild;
     std::unique_ptr<MatchExpression> releaseChild() {
         return std::move(_exp);
     }

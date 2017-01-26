@@ -94,8 +94,9 @@ int matchExpressionComparator(const MatchExpression* lhs, const MatchExpression*
     return 0;
 }
 
-bool matchExpressionLessThan(const MatchExpression* lhs, const MatchExpression* rhs) {
-    return matchExpressionComparator(lhs, rhs) < 0;
+bool matchExpressionLessThan(const std::unique_ptr<MatchExpression>& lhs,
+                             const std::unique_ptr<MatchExpression>& rhs) {
+    return matchExpressionComparator(lhs.get(), rhs.get()) < 0;
 }
 
 }  // namespace
@@ -141,7 +142,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     std::unique_ptr<MatchExpression> me = std::move(statusWithMatcher.getValue());
 
     // Make the CQ we'll hopefully return.
-    auto cq = stdx::make_unique<CanonicalQuery>();
+    std::unique_ptr<CanonicalQuery> cq{new CanonicalQuery};
 
     Status initStatus =
         cq->init(std::move(qr), extensionsCallback, std::move(me), std::move(collator));
@@ -177,7 +178,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     }
 
     // Make the CQ we'll hopefully return.
-    auto cq = stdx::make_unique<CanonicalQuery>();
+    std::unique_ptr<CanonicalQuery> cq{new CanonicalQuery};
     Status initStatus =
         cq->init(std::move(qr), extensionsCallback, root->shallowClone(), std::move(collator));
 
@@ -379,10 +380,8 @@ void CanonicalQuery::sortTree(MatchExpression* tree) {
         sortTree(tree->getChild(i));
     }
     std::vector<std::unique_ptr<MatchExpression>> children = tree->releaseChildren();
-    if (NULL != children) {
-        std::sort(children.begin(), children.end(), matchExpressionLessThan);
-    }
-	tree->resetChildren(std::move(children));
+    std::sort(children.begin(), children.end(), matchExpressionLessThan);
+    tree->resetChildren(std::move(children));
 }
 
 // static

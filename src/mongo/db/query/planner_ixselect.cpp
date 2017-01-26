@@ -377,7 +377,7 @@ void QueryPlannerIXSelect::rateIndices(MatchExpression* node,
         }
 
         verify(NULL == node->getTag());
-        RelevantTag rt_init = stdx::make_unique<RelevantTag>();
+        auto rt_init = stdx::make_unique<RelevantTag>();
         RelevantTag* rt = rt_init.get();
         node->setTag(std::move(rt_init));
         rt->path = fullPath;
@@ -400,9 +400,9 @@ void QueryPlannerIXSelect::rateIndices(MatchExpression* node,
         // If this is a NOT, we have to clone the tag and attach
         // it to the NOT's child.
         if (MatchExpression::NOT == node->matchType()) {
-            RelevantTag* childRt = static_cast<RelevantTag*>(rt->clone());
+            auto childRt = rt->clone();
             childRt->path = rt->path;
-            node->getChild(0)->setTag(childRt);
+            node->getChild(0)->setTag(std::move(childRt));
         }
     } else if (Indexability::arrayUsesIndexOnChildren(node)) {
         // See comment in getFields about all/elemMatch and paths.

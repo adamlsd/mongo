@@ -205,7 +205,7 @@ void TextNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     addCommon(ss, indent);
 }
 
-QuerySolutionNode* TextNode::clone() const {
+QuerySolutionNode* TextNode::clone_impl() const {
     TextNode* copy = new TextNode(this->index);
     cloneBaseData(copy);
 
@@ -238,7 +238,7 @@ void CollectionScanNode::appendToString(mongoutils::str::stream* ss, int indent)
     addCommon(ss, indent);
 }
 
-QuerySolutionNode* CollectionScanNode::clone() const {
+CollectionScanNode* CollectionScanNode::clone_impl() const {
     CollectionScanNode* copy = new CollectionScanNode();
     cloneBaseData(copy);
 
@@ -296,7 +296,7 @@ bool AndHashNode::hasField(const string& field) const {
     return false;
 }
 
-QuerySolutionNode* AndHashNode::clone() const {
+AndHashNode* AndHashNode::clone_impl() const {
     AndHashNode* copy = new AndHashNode();
     cloneBaseData(copy);
 
@@ -346,7 +346,7 @@ bool AndSortedNode::hasField(const string& field) const {
     return false;
 }
 
-QuerySolutionNode* AndSortedNode::clone() const {
+AndSortedNode* AndSortedNode::clone_impl() const {
     AndSortedNode* copy = new AndSortedNode();
     cloneBaseData(copy);
 
@@ -405,7 +405,7 @@ bool OrNode::hasField(const string& field) const {
     return true;
 }
 
-QuerySolutionNode* OrNode::clone() const {
+OrNode* OrNode::clone_impl() const {
     OrNode* copy = new OrNode();
     cloneBaseData(copy);
 
@@ -466,7 +466,7 @@ bool MergeSortNode::hasField(const string& field) const {
     return true;
 }
 
-QuerySolutionNode* MergeSortNode::clone() const {
+MergeSortNode* MergeSortNode::clone_impl() const {
     MergeSortNode* copy = new MergeSortNode();
     cloneBaseData(copy);
 
@@ -499,7 +499,7 @@ void FetchNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* FetchNode::clone() const {
+FetchNode* FetchNode::clone_impl() const {
     FetchNode* copy = new FetchNode();
     cloneBaseData(copy);
 
@@ -734,7 +734,7 @@ void IndexScanNode::computeProperties() {
     }
 }
 
-QuerySolutionNode* IndexScanNode::clone() const {
+IndexScanNode* IndexScanNode::clone_impl() const {
     IndexScanNode* copy = new IndexScanNode(this->index);
     cloneBaseData(copy);
 
@@ -816,7 +816,7 @@ void ProjectionNode::computeProperties() {
     }
 }
 
-QuerySolutionNode* ProjectionNode::clone() const {
+ProjectionNode* ProjectionNode::clone_impl() const {
     ProjectionNode* copy = new ProjectionNode(parsed);
     cloneBaseData(copy);
 
@@ -848,7 +848,7 @@ void SortKeyGeneratorNode::appendToString(mongoutils::str::stream* ss, int inden
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* SortKeyGeneratorNode::clone() const {
+SortKeyGeneratorNode* SortKeyGeneratorNode::clone_impl() const {
     SortKeyGeneratorNode* copy = new SortKeyGeneratorNode();
     cloneBaseData(copy);
     copy->queryObj = this->queryObj;
@@ -873,7 +873,7 @@ void SortNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* SortNode::clone() const {
+SortNode* SortNode::clone_impl() const {
     SortNode* copy = new SortNode();
     cloneBaseData(copy);
 
@@ -901,7 +901,7 @@ void LimitNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* LimitNode::clone() const {
+LimitNode* LimitNode::clone_impl() const {
     LimitNode* copy = new LimitNode();
     cloneBaseData(copy);
 
@@ -925,7 +925,7 @@ void SkipNode::appendToString(mongoutils::str::stream* ss, int indent) const {
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* SkipNode::clone() const {
+SkipNode* SkipNode::clone_impl() const {
     SkipNode* copy = new SkipNode();
     cloneBaseData(copy);
 
@@ -953,7 +953,7 @@ void GeoNear2DNode::appendToString(mongoutils::str::stream* ss, int indent) cons
     }
 }
 
-QuerySolutionNode* GeoNear2DNode::clone() const {
+GeoNear2DNode* GeoNear2DNode::clone_impl() const {
     GeoNear2DNode* copy = new GeoNear2DNode(this->index);
     cloneBaseData(copy);
 
@@ -987,7 +987,7 @@ void GeoNear2DSphereNode::appendToString(mongoutils::str::stream* ss, int indent
     }
 }
 
-QuerySolutionNode* GeoNear2DSphereNode::clone() const {
+GeoNear2DSphereNode* GeoNear2DSphereNode::clone_impl() const {
     GeoNear2DSphereNode* copy = new GeoNear2DSphereNode(this->index);
     cloneBaseData(copy);
 
@@ -1020,7 +1020,7 @@ void ShardingFilterNode::appendToString(mongoutils::str::stream* ss, int indent)
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* ShardingFilterNode::clone() const {
+ShardingFilterNode* ShardingFilterNode::clone_impl() const {
     ShardingFilterNode* copy = new ShardingFilterNode();
     cloneBaseData(copy);
     return copy;
@@ -1046,7 +1046,7 @@ void KeepMutationsNode::appendToString(mongoutils::str::stream* ss, int indent) 
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* KeepMutationsNode::clone() const {
+KeepMutationsNode* KeepMutationsNode::clone_impl() const {
     KeepMutationsNode* copy = new KeepMutationsNode();
     cloneBaseData(copy);
 
@@ -1072,7 +1072,7 @@ void DistinctNode::appendToString(mongoutils::str::stream* ss, int indent) const
     *ss << "bounds = " << bounds.toString() << '\n';
 }
 
-QuerySolutionNode* DistinctNode::clone() const {
+DistinctNode* DistinctNode::clone_impl() const {
     DistinctNode* copy = new DistinctNode(this->index);
     cloneBaseData(copy);
 
@@ -1101,7 +1101,7 @@ void CountScanNode::appendToString(mongoutils::str::stream* ss, int indent) cons
     *ss << "endKey = " << endKey << '\n';
 }
 
-QuerySolutionNode* CountScanNode::clone() const {
+CountScanNode* CountScanNode::clone_impl() const {
     CountScanNode* copy = new CountScanNode(this->index);
     cloneBaseData(copy);
 
@@ -1129,7 +1129,7 @@ void EnsureSortedNode::appendToString(mongoutils::str::stream* ss, int indent) c
     children[0]->appendToString(ss, indent + 2);
 }
 
-QuerySolutionNode* EnsureSortedNode::clone() const {
+EnsureSortedNode* EnsureSortedNode::clone_impl() const {
     EnsureSortedNode* copy = new EnsureSortedNode();
     cloneBaseData(copy);
 

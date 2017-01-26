@@ -237,20 +237,19 @@ static BSONObj finishMaxObj(const IndexEntry& indexEntry,
     }
 }
 
-QuerySolution* buildCollscanSoln(const CanonicalQuery& query,
-                                 bool tailable,
-                                 const QueryPlannerParams& params) {
-    QuerySolutionNode* solnRoot = QueryPlannerAccess::makeCollectionScan(query, tailable, params);
-    return QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+std::unique_ptr<QuerySolution> buildCollscanSoln(const CanonicalQuery& query,
+                                                 bool tailable,
+                                                 const QueryPlannerParams& params) {
+    auto solnRoot = QueryPlannerAccess::makeCollectionScan(query, tailable, params);
+    return QueryPlannerAnalysis::analyzeDataAccess(query, params, std::move(solnRoot));
 }
 
-QuerySolution* buildWholeIXSoln(const IndexEntry& index,
-                                const CanonicalQuery& query,
-                                const QueryPlannerParams& params,
-                                int direction = 1) {
-    QuerySolutionNode* solnRoot =
-        QueryPlannerAccess::scanWholeIndex(index, query, params, direction);
-    return QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+std::unique_ptr<QuerySolution> buildWholeIXSoln(const IndexEntry& index,
+                                                const CanonicalQuery& query,
+                                                const QueryPlannerParams& params,
+                                                int direction = 1) {
+    auto solnRoot = QueryPlannerAccess::scanWholeIndex(index, query, params, direction);
+    return QueryPlannerAnalysis::analyzeDataAccess(query, params, std::move(solnRoot));
 }
 
 bool providesSort(const CanonicalQuery& query, const BSONObj& kp) {
@@ -349,8 +348,8 @@ Status QueryPlanner::tagAccordingToCache(MatchExpression* filter,
             ss << "Did not find index with name: " << indexTree->entry->name;
             return Status(ErrorCodes::BadValue, ss);
         }
-        filter->setTag(
-            new IndexTag(got->second, indexTree->index_pos, indexTree->canCombineBounds));
+        filter->setTag(stdx::make_unique<IndexTag>(
+            got->second, indexTree->index_pos, indexTree->canCombineBounds));
     }
 
     return Status::OK();
@@ -372,23 +371,23 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
 
     if (SolutionCacheData::WHOLE_IXSCAN_SOLN == winnerCacheData.solnType) {
         // The solution can be constructed by a scan over the entire index.
-        QuerySolution* soln = buildWholeIXSoln(
+        auto soln = buildWholeIXSoln(
             *winnerCacheData.tree->entry, query, params, winnerCacheData.wholeIXSolnDir);
-        if (soln == NULL) {
+        if (soln == nullptr) {
             return Status(ErrorCodes::BadValue,
                           "plan cache error: soln that uses index to provide sort");
         } else {
-            *out = soln;
+            *out = soln.release();
             return Status::OK();
         }
     } else if (SolutionCacheData::COLLSCAN_SOLN == winnerCacheData.solnType) {
         // The cached solution is a collection scan. We don't cache collscans
         // with tailable==true, hence the false below.
-        QuerySolution* soln = buildCollscanSoln(query, false, params);
-        if (soln == NULL) {
+        auto soln = buildCollscanSoln(query, false, params);
+        if (soln == nullptr) {
             return Status(ErrorCodes::BadValue, "plan cache error: collection scan soln");
         } else {
-            *out = soln;
+            *out = soln.release();
             return Status::OK();
         }
     }
@@ -426,7 +425,7 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
     LOG(5) << "Tagged tree:" << endl << redact(clone->toString());
 
     // Use the cached index assignments to build solnRoot.
-    QuerySolutionNode* solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
+    std::unique_ptr<QuerySolutionNode> solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
         query, clone.release(), false, params.indices, params);
 
     if (!solnRoot) {
@@ -436,7 +435,7 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
     }
 
     // Takes ownership of 'solnRoot'.
-    QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+    auto soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, std::move(solnRoot));
     if (!soln) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "Failed to analyze plan from cache. Query: "
@@ -444,7 +443,7 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
     }
 
     LOG(5) << "Planner: solution constructed from the cache:\n" << redact(soln->toString());
-    *out = soln;
+    *out = soln.release();
     return Status::OK();
 }
 
@@ -471,9 +470,9 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     // can't provide one.  Is this what we want?
     if (isTailable) {
         if (!QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR) && canTableScan) {
-            QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
-            if (NULL != soln) {
-                out->push_back(soln);
+            auto soln = buildCollscanSoln(query, isTailable, params);
+            if (nullptr != soln) {
+                out->push_back(soln.release());
             }
         }
         return Status::OK();
@@ -496,9 +495,9 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
             // min/max are incompatible with $natural.
             if (canTableScan && query.getQueryRequest().getMin().isEmpty() &&
                 query.getQueryRequest().getMax().isEmpty()) {
-                QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
-                if (NULL != soln) {
-                    out->push_back(soln);
+                auto soln = buildCollscanSoln(query, isTailable, params);
+                if (nullptr != soln) {
+                    out->push_back(soln.release());
                 }
             }
             return Status::OK();
@@ -537,9 +536,9 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         const bool useIXScan = params.options & QueryPlannerParams::SNAPSHOT_USE_ID;
 
         if (!useIXScan) {
-            QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
+            auto soln = buildCollscanSoln(query, isTailable, params);
             if (soln) {
-                out->push_back(soln);
+                out->push_back(soln.release());
             }
             return Status::OK();
         } else {
@@ -680,12 +679,12 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         LOG(5) << "Max/min query using index " << params.indices[idxNo].toString();
 
         // Make our scan and output.
-        QuerySolutionNode* solnRoot = QueryPlannerAccess::makeIndexScan(
+        auto solnRoot = QueryPlannerAccess::makeIndexScan(
             params.indices[idxNo], query, params, finishedMinObj, finishedMaxObj);
 
-        QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
-        if (NULL != soln) {
-            out->push_back(soln);
+        auto soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, std::move(solnRoot));
+        if (nullptr != soln) {
+            out->push_back(soln.release());
         }
 
         return Status::OK();
@@ -798,22 +797,22 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
             sortUsingTags(rawTree);
 
             // This can fail if enumeration makes a mistake.
-            QuerySolutionNode* solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
+            auto solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
                 query, rawTree, false, relevantIndices, params);
 
-            if (NULL == solnRoot) {
+            if (nullptr == solnRoot) {
                 continue;
             }
 
-            QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+            auto soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, std::move(solnRoot));
             if (NULL != soln) {
                 LOG(5) << "Planner: adding solution:" << endl << redact(soln->toString());
                 if (indexTreeStatus.isOK()) {
-                    SolutionCacheData* scd = new SolutionCacheData();
-                    scd->tree.reset(autoData.release());
-                    soln->cacheData.reset(scd);
+                    auto scd = stdx::make_unique<SolutionCacheData>();
+                    scd->tree = std::move(autoData);
+                    soln->cacheData = std::move(scd);
                 }
-                out->push_back(soln);
+                out->push_back(soln.release());
             }
         }
     }
@@ -841,10 +840,10 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     // desired behavior when an index is hinted that is not relevant to the query.
     if (!hintIndex.isEmpty()) {
         if (0 == out->size()) {
-            QuerySolution* soln = buildWholeIXSoln(params.indices[*hintIndexNumber], query, params);
+            auto soln = buildWholeIXSoln(params.indices[*hintIndexNumber], query, params);
             verify(NULL != soln);
             LOG(5) << "Planner: outputting soln that uses hinted index as scan.";
-            out->push_back(soln);
+            out->push_back(soln.release());
         }
         return Status::OK();
     }
@@ -905,34 +904,34 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
                 const BSONObj kp = QueryPlannerAnalysis::getSortPattern(index.keyPattern);
                 if (providesSort(query, kp)) {
                     LOG(5) << "Planner: outputting soln that uses index to provide sort.";
-                    QuerySolution* soln = buildWholeIXSoln(params.indices[i], query, params);
-                    if (NULL != soln) {
-                        PlanCacheIndexTree* indexTree = new PlanCacheIndexTree();
+                    auto soln = buildWholeIXSoln(params.indices[i], query, params);
+                    if (nullptr != soln) {
+                        auto indexTree = stdx::make_unique<PlanCacheIndexTree>();
                         indexTree->setIndexEntry(params.indices[i]);
-                        SolutionCacheData* scd = new SolutionCacheData();
-                        scd->tree.reset(indexTree);
+                        auto scd = stdx::make_unique<SolutionCacheData>();
+                        scd->tree = std::move(indexTree);
                         scd->solnType = SolutionCacheData::WHOLE_IXSCAN_SOLN;
                         scd->wholeIXSolnDir = 1;
 
-                        soln->cacheData.reset(scd);
-                        out->push_back(soln);
+                        soln->cacheData = std::move(scd);
+                        out->push_back(soln.release());
                         break;
                     }
                 }
                 if (providesSort(query, QueryPlannerCommon::reverseSortObj(kp))) {
                     LOG(5) << "Planner: outputting soln that uses (reverse) index "
                            << "to provide sort.";
-                    QuerySolution* soln = buildWholeIXSoln(params.indices[i], query, params, -1);
-                    if (NULL != soln) {
-                        PlanCacheIndexTree* indexTree = new PlanCacheIndexTree();
+                    auto soln = buildWholeIXSoln(params.indices[i], query, params, -1);
+                    if (nullptr != soln) {
+                        auto indexTree = stdx::make_unique<PlanCacheIndexTree>();
                         indexTree->setIndexEntry(params.indices[i]);
-                        SolutionCacheData* scd = new SolutionCacheData();
-                        scd->tree.reset(indexTree);
+                        auto scd = stdx::make_unique<SolutionCacheData>();
+                        scd->tree = std::move(indexTree);
                         scd->solnType = SolutionCacheData::WHOLE_IXSCAN_SOLN;
                         scd->wholeIXSolnDir = -1;
 
-                        soln->cacheData.reset(scd);
-                        out->push_back(soln);
+                        soln->cacheData = std::move(scd);
+                        out->push_back(soln.release());
                         break;
                     }
                 }
@@ -953,12 +952,12 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     bool collscanNeeded = (0 == out->size() && canTableScan);
 
     if (possibleToCollscan && (collscanRequested || collscanNeeded)) {
-        QuerySolution* collscan = buildCollscanSoln(query, isTailable, params);
-        if (NULL != collscan) {
-            SolutionCacheData* scd = new SolutionCacheData();
+        auto collscan = buildCollscanSoln(query, isTailable, params);
+        if (nullptr != collscan) {
+            auto scd = stdx::make_unique<SolutionCacheData>();
             scd->solnType = SolutionCacheData::COLLSCAN_SOLN;
-            collscan->cacheData.reset(scd);
-            out->push_back(collscan);
+            collscan->cacheData = std::move(scd);
+            out->push_back(collscan.release());
             LOG(5) << "Planner: outputting a collscan:" << endl << redact(collscan->toString());
         }
     }

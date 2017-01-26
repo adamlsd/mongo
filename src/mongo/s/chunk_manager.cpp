@@ -691,7 +691,7 @@ IndexBounds ChunkManager::collapseQuerySolution(const QuerySolutionNode* node) {
 
     if (node->children.size() == 1) {
         // e.g. FETCH -> IXSCAN
-        return collapseQuerySolution(node->children.front());
+        return collapseQuerySolution(node->children.front().get());
     }
 
     // children.size() > 1, assert it's OR / SORT_MERGE.

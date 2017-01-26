@@ -124,6 +124,10 @@ public:
         *builder << "full path: " << path;
     }
 
+    std::unique_ptr<RelevantTag> clone() const {
+        return std::unique_ptr<RelevantTag>{this->clone_impl()};
+    }
+
     virtual RelevantTag* clone_impl() const {
         return new RelevantTag(first, notFirst);
     }

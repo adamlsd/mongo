@@ -57,7 +57,9 @@ void tagForSort(MatchExpression* tree) {
     }
 }
 
-bool TagComparison(const MatchExpression* lhs, const MatchExpression* rhs) {
+namespace {
+bool TagComparison(const std::unique_ptr<MatchExpression>& lhs,
+                   const std::unique_ptr<MatchExpression>& rhs) {
     IndexTag* lhsTag = static_cast<IndexTag*>(lhs->getTag());
     size_t lhsValue = (NULL == lhsTag) ? IndexTag::kNoIndex : lhsTag->index;
     size_t lhsPos = (NULL == lhsTag) ? IndexTag::kNoIndex : lhsTag->pos;
@@ -100,13 +102,14 @@ bool TagComparison(const MatchExpression* lhs, const MatchExpression* rhs) {
     // Finally, order on expression type.
     return lhs->matchType() < rhs->matchType();
 }
+}  // namespace
 
 void sortUsingTags(MatchExpression* tree) {
     for (size_t i = 0; i < tree->numChildren(); ++i) {
-        sortUsingTags(tree->getChild(i).get());
+        sortUsingTags(tree->getChild(i));
     }
     std::vector<std::unique_ptr<MatchExpression>> children = tree->releaseChildren();
-	std::sort(children.begin(), children.end(), TagComparison);
+    std::sort(children.begin(), children.end(), TagComparison);
     tree->resetChildren(std::move(children));
 }
 

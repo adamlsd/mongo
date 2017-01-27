@@ -274,7 +274,7 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
                 // No bounds.
                 return;
             }
-            ixScan = static_cast<IndexScanNode*>(fetchNode->children[0]);
+            ixScan = static_cast<IndexScanNode*>(fetchNode->children[0].get());
         } else if (rootNode->getType() == STAGE_IXSCAN) {
             ixScan = static_cast<IndexScanNode*>(rootNode);
         }
@@ -297,7 +297,7 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
 const char* SortKeyGeneratorStage::kStageType = "SORT_KEY_GENERATOR";
 
 SortKeyGeneratorStage::SortKeyGeneratorStage(OperationContext* opCtx,
-                                             PlanStage* child,
+                                             std::unique_ptr<PlanStage> child,
                                              WorkingSet* ws,
                                              const BSONObj& sortSpecObj,
                                              const BSONObj& queryObj,
@@ -307,7 +307,7 @@ SortKeyGeneratorStage::SortKeyGeneratorStage(OperationContext* opCtx,
       _sortSpec(sortSpecObj),
       _query(queryObj),
       _collator(collator) {
-    _children.emplace_back(child);
+    _children.push_back(std::move(child));
 }
 
 bool SortKeyGeneratorStage::isEOF() {

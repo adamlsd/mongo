@@ -475,7 +475,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
         if (child.eoo() || !child.isABSONObj()) {
             return false;
         }
-        return solutionMatches(child.Obj(), fn->children[0]);
+        return solutionMatches(child.Obj(), fn->children[0].get());
     } else if (STAGE_OR == trueSoln->getType()) {
         const OrNode* orn = static_cast<const OrNode*>(trueSoln);
         BSONElement el = testSoln["or"];
@@ -574,7 +574,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
         }
 
         return SimpleBSONObjComparator::kInstance.evaluate(spec.Obj() == pn->projection) &&
-            solutionMatches(child.Obj(), pn->children[0]);
+            solutionMatches(child.Obj(), pn->children[0].get());
     } else if (STAGE_SORT == trueSoln->getType()) {
         const SortNode* sn = static_cast<const SortNode*>(trueSoln);
         BSONElement el = testSoln["sort"];
@@ -598,7 +598,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
 
         size_t expectedLimit = limitEl.numberInt();
         return SimpleBSONObjComparator::kInstance.evaluate(patternEl.Obj() == sn->pattern) &&
-            (expectedLimit == sn->limit) && solutionMatches(child.Obj(), sn->children[0]);
+            (expectedLimit == sn->limit) && solutionMatches(child.Obj(), sn->children[0].get());
     } else if (STAGE_SORT_KEY_GENERATOR == trueSoln->getType()) {
         const SortKeyGeneratorNode* keyGenNode = static_cast<const SortKeyGeneratorNode*>(trueSoln);
         BSONElement el = testSoln["sortKeyGen"];
@@ -612,7 +612,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
             return false;
         }
 
-        return solutionMatches(child.Obj(), keyGenNode->children[0]);
+        return solutionMatches(child.Obj(), keyGenNode->children[0].get());
     } else if (STAGE_SORT_MERGE == trueSoln->getType()) {
         const MergeSortNode* msn = static_cast<const MergeSortNode*>(trueSoln);
         BSONElement el = testSoln["mergeSort"];
@@ -638,7 +638,8 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
             return false;
         }
 
-        return (skipEl.numberInt() == sn->skip) && solutionMatches(child.Obj(), sn->children[0]);
+        return (skipEl.numberInt() == sn->skip) &&
+            solutionMatches(child.Obj(), sn->children[0].get());
     } else if (STAGE_LIMIT == trueSoln->getType()) {
         const LimitNode* ln = static_cast<const LimitNode*>(trueSoln);
         BSONElement el = testSoln["limit"];
@@ -656,7 +657,8 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
             return false;
         }
 
-        return (limitEl.numberInt() == ln->limit) && solutionMatches(child.Obj(), ln->children[0]);
+        return (limitEl.numberInt() == ln->limit) &&
+            solutionMatches(child.Obj(), ln->children[0].get());
     } else if (STAGE_KEEP_MUTATIONS == trueSoln->getType()) {
         const KeepMutationsNode* kn = static_cast<const KeepMutationsNode*>(trueSoln);
 
@@ -672,7 +674,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
             return false;
         }
 
-        return solutionMatches(child.Obj(), kn->children[0]);
+        return solutionMatches(child.Obj(), kn->children[0].get());
     } else if (STAGE_SHARDING_FILTER == trueSoln->getType()) {
         const ShardingFilterNode* fn = static_cast<const ShardingFilterNode*>(trueSoln);
 
@@ -687,7 +689,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
             return false;
         }
 
-        return solutionMatches(child.Obj(), fn->children[0]);
+        return solutionMatches(child.Obj(), fn->children[0].get());
     } else if (STAGE_ENSURE_SORTED == trueSoln->getType()) {
         const EnsureSortedNode* esn = static_cast<const EnsureSortedNode*>(trueSoln);
 
@@ -707,7 +709,7 @@ bool QueryPlannerTestLib::solutionMatches(const BSONObj& testSoln,
         }
 
         return SimpleBSONObjComparator::kInstance.evaluate(patternEl.Obj() == esn->pattern) &&
-            solutionMatches(child.Obj(), esn->children[0]);
+            solutionMatches(child.Obj(), esn->children[0].get());
     }
 
     return false;

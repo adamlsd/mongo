@@ -4238,7 +4238,7 @@ TEST_F(QueryPlannerTest, CacheDataFromTaggedTreeFailsOnBadInput) {
         CanonicalQuery::canonicalize(txn(), std::move(qr), ExtensionsCallbackDisallowExtensions());
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> scopedCq = std::move(statusWithCQ.getValue());
-    scopedCq->root()->setTag(new IndexTag(1));
+    scopedCq->root()->setTag(stdx::make_unique<IndexTag>(1));
 
     s = QueryPlanner::cacheDataFromTaggedTree(scopedCq->root(), relevantIndices, &indexTree);
     ASSERT_NOT_OK(s);

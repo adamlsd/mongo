@@ -80,7 +80,7 @@ public:
         BSONObj pattern = fromjson(patternStr);
         auto sortKeyGen = stdx::make_unique<SortKeyGeneratorStage>(
             txn.get(), queuedDataStage.release(), &ws, pattern, BSONObj(), collator);
-        EnsureSortedStage ess(txn.get(), pattern, &ws, sortKeyGen.release());
+        EnsureSortedStage ess(txn.get(), pattern, &ws, std::move(sortKeyGen));
         WorkingSetID id = WorkingSet::INVALID_ID;
         PlanStage::StageState state = PlanStage::NEED_TIME;
 

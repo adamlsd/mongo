@@ -195,7 +195,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -203,7 +203,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // ah reads the first child into its hash table.
         // ah should read foo=20, foo=19, ..., foo=0 in that order.

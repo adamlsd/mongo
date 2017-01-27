@@ -49,6 +49,14 @@ public:
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() final {
+        return {};
+    }
+
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) final {
+        invariant(children.empty());
+    }
+
 private:
     fts::FTSQueryImpl _ftsQuery;
 };

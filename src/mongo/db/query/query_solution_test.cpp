@@ -713,7 +713,7 @@ TEST(QuerySolutionTest, InclusionProjectionPreservesSort) {
     auto parsedProjection = createParsedProjection(match, projection);
 
     ProjectionNode proj{*parsedProjection};
-    proj.children.push_back(node.release());
+    proj.children.push_back(std::move(node));
     proj.computeProperties();
 
     ASSERT_EQ(proj.getSort().size(), 1U);
@@ -730,7 +730,7 @@ TEST(QuerySolutionTest, ExclusionProjectionDoesNotPreserveSort) {
     auto parsedProjection = createParsedProjection(match, projection);
 
     ProjectionNode proj{*parsedProjection};
-    proj.children.push_back(node.release());
+    proj.children.push_back(std::move(node));
     proj.computeProperties();
 
     ASSERT_EQ(proj.getSort().size(), 0U);
@@ -745,7 +745,7 @@ TEST(QuerySolutionTest, InclusionProjectionTruncatesSort) {
     auto parsedProjection = createParsedProjection(match, projection);
 
     ProjectionNode proj{*parsedProjection};
-    proj.children.push_back(node.release());
+    proj.children.push_back(std::move(node));
     proj.computeProperties();
 
     ASSERT_EQ(proj.getSort().size(), 1U);
@@ -761,7 +761,7 @@ TEST(QuerySolutionTest, ExclusionProjectionTruncatesSort) {
     auto parsedProjection = createParsedProjection(match, projection);
 
     ProjectionNode proj{*parsedProjection};
-    proj.children.push_back(node.release());
+    proj.children.push_back(std::move(node));
     proj.computeProperties();
 
     ASSERT_EQ(proj.getSort().size(), 1U);

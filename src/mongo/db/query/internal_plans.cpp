@@ -80,7 +80,7 @@ std::unique_ptr<PlanExecutor> InternalPlanner::deleteWithCollectionScan(
 
     auto root = _collectionScan(txn, ws.get(), collection, direction, startLoc);
 
-    root = stdx::make_unique<DeleteStage>(txn, params, ws.get(), collection, root.release());
+    root = stdx::make_unique<DeleteStage>(txn, params, ws.get(), collection, std::move(root));
 
     auto executor =
         PlanExecutor::make(txn, std::move(ws), std::move(root), collection, yieldPolicy);
@@ -138,7 +138,7 @@ std::unique_ptr<PlanExecutor> InternalPlanner::deleteWithIndexScan(
                                                  direction,
                                                  InternalPlanner::IXSCAN_FETCH);
 
-    root = stdx::make_unique<DeleteStage>(txn, params, ws.get(), collection, root.release());
+    root = stdx::make_unique<DeleteStage>(txn, params, ws.get(), collection, std::move(root));
 
     auto executor =
         PlanExecutor::make(txn, std::move(ws), std::move(root), collection, yieldPolicy);
@@ -189,7 +189,7 @@ std::unique_ptr<PlanStage> InternalPlanner::_indexScan(OperationContext* txn,
     std::unique_ptr<PlanStage> root = stdx::make_unique<IndexScan>(txn, params, ws, nullptr);
 
     if (InternalPlanner::IXSCAN_FETCH & options) {
-        root = stdx::make_unique<FetchStage>(txn, ws, root.release(), nullptr, collection);
+        root = stdx::make_unique<FetchStage>(txn, ws, std::move(root), nullptr, collection);
     }
 
     return root;

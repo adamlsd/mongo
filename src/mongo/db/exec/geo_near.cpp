@@ -491,6 +491,7 @@ GeoNear2DStage::GeoNear2DStage(const GeoNearParams& nearParams,
     _specificStats.indexVersion = static_cast<int>(twoDIndex->version());
 }
 
+GeoNear2DStage::~GeoNear2DStage() = default;
 
 namespace {
 
@@ -539,6 +540,14 @@ public:
         return NULL;
     }
 
+    void resetChildren(std::vector<std::unique_ptr<MatchExpression>> children) final {
+        invariant(children.empty());
+    }
+
+    std::vector<std::unique_ptr<MatchExpression>> releaseChildren() final {
+        return {};
+    }
+
 private:
     R2Annulus _annulus;
 };
@@ -548,10 +557,11 @@ class FetchStageWithMatch final : public FetchStage {
 public:
     FetchStageWithMatch(OperationContext* txn,
                         WorkingSet* ws,
-                        PlanStage* child,
-                        MatchExpression* filter,
+                        std::unique_ptr<PlanStage> child,
+                        std::unique_ptr<MatchExpression> filter,
                         const Collection* collection)
-        : FetchStage(txn, ws, child, filter, collection), _matcher(filter) {}
+        : FetchStage(txn, ws, std::move(child), filter.get(), collection),
+          _matcher(std::move(filter)) {}
 
 private:
     // Owns matcher
@@ -726,18 +736,19 @@ StatusWith<NearStage::CoveredInterval*>  //
     GeoHashConverter::parseParameters(_twoDIndex->infoObj(), &hashParams);
 
     // 2D indexes support covered search over additional fields they contain
-    IndexScan* scan = new IndexScan(txn, scanParams, workingSet, _nearParams.filter);
+    auto scan = stdx::make_unique<IndexScan>(txn, scanParams, workingSet, _nearParams.filter);
 
-    MatchExpression* docMatcher = nullptr;
+    std::unique_ptr<MatchExpression> docMatcher = nullptr;
 
     // FLAT searches need to add an additional annulus $within matcher, see above
     // TODO: Find out if this matcher is actually needed
     if (FLAT == queryCRS) {
-        docMatcher = new TwoDPtInAnnulusExpression(_fullBounds, twoDFieldName);
+        docMatcher = stdx::make_unique<TwoDPtInAnnulusExpression>(_fullBounds, twoDFieldName);
     }
 
     // FetchStage owns index scan
-    _children.emplace_back(new FetchStageWithMatch(txn, workingSet, scan, docMatcher, collection));
+    _children.push_back(stdx::make_unique<FetchStageWithMatch>(
+        txn, workingSet, std::move(scan), std::move(docMatcher), collection));
 
     return StatusWith<CoveredInterval*>(new CoveredInterval(_children.back().get(),
                                                             true,
@@ -1093,10 +1104,11 @@ StatusWith<NearStage::CoveredInterval*>  //
     OrderedIntervalList* coveredIntervals = &scanParams.bounds.fields[s2FieldPosition];
     ExpressionMapping::S2CellIdsToIntervalsWithParents(cover, _indexParams, coveredIntervals);
 
-    IndexScan* scan = new IndexScan(txn, scanParams, workingSet, nullptr);
+    auto scan = stdx::make_unique<IndexScan>(txn, scanParams, workingSet, nullptr);
 
     // FetchStage owns index scan
-    _children.emplace_back(new FetchStage(txn, workingSet, scan, _nearParams.filter, collection));
+    _children.push_back(stdx::make_unique<FetchStage>(
+        txn, workingSet, std::move(scan), _nearParams.filter, collection));
 
     return StatusWith<CoveredInterval*>(new CoveredInterval(_children.back().get(),
                                                             true,

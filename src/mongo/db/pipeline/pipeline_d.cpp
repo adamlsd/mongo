@@ -264,7 +264,7 @@ StatusWith<unique_ptr<PlanExecutor>> createRandomCursorExecutor(Collection* coll
                                                                  indexDescriptor->keyPattern(),
                                                                  std::move(idxRandCursor));
         stage = stdx::make_unique<FetchStage>(
-            txn, ws.get(), idxIterator.release(), nullptr, collection);
+            txn, ws.get(), std::move(idxIterator), nullptr, collection);
     }
 
     {
@@ -276,7 +276,7 @@ StatusWith<unique_ptr<PlanExecutor>> createRandomCursorExecutor(Collection* coll
                 txn,
                 CollectionShardingState::get(txn, collection->ns())->getMetadata(),
                 ws.get(),
-                stage.release());
+                std::move(stage));
             return PlanExecutor::make(txn,
                                       std::move(ws),
                                       std::move(shardFilterStage),

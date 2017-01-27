@@ -132,32 +132,37 @@ std::unique_ptr<MatchExpression> SubplanStage::rewriteToRootedOr(
     dassert(isContainedOr(root.get()));
 
     // Detach the OR from the root.
-    std::vector<MatchExpression*>& rootChildren = *root->getChildVector();
     std::unique_ptr<MatchExpression> orChild;
-    for (size_t i = 0; i < rootChildren.size(); ++i) {
-        if (MatchExpression::OR == rootChildren[i]->matchType()) {
-            orChild.reset(rootChildren[i]);
-            rootChildren.erase(rootChildren.begin() + i);
-            break;
+    {
+        auto rootChildren = root->releaseChildren();
+        for (size_t i = 0; i < rootChildren.size(); ++i) {
+            if (MatchExpression::OR == rootChildren[i]->matchType()) {
+                orChild = std::move(rootChildren[i]);
+                rootChildren.erase(rootChildren.begin() + i);
+                break;
+            }
         }
+        root->resetChildren(std::move(rootChildren));
     }
 
     // We should have found an OR, and the OR should have at least 2 children.
     invariant(orChild);
-    invariant(orChild->getChildVector());
-    invariant(orChild->getChildVector()->size() > 1U);
+    invariant(orChild->numChildren() > 0);
 
     // AND the existing root with each OR child.
-    std::vector<MatchExpression*>& orChildren = *orChild->getChildVector();
-    for (size_t i = 0; i < orChildren.size(); ++i) {
-        std::unique_ptr<AndMatchExpression> ama = stdx::make_unique<AndMatchExpression>();
-        ama->add(orChildren[i]);
-        ama->add(root->shallowClone().release());
-        orChildren[i] = ama.release();
+    {
+        auto orChildren = orChild->releaseChildren();
+        for (size_t i = 0; i < orChildren.size(); ++i) {
+            std::unique_ptr<AndMatchExpression> ama = stdx::make_unique<AndMatchExpression>();
+            ama->add(std::move(orChildren[i]));
+            ama->add(root->shallowClone());
+            orChildren[i] = std::move(ama);
+        }
+        orChild->resetChildren(std::move(orChildren));
     }
 
     // Normalize and sort the resulting match expression.
-    orChild = std::unique_ptr<MatchExpression>(CanonicalQuery::normalizeTree(orChild.release()));
+    orChild = CanonicalQuery::normalizeTree(std::move(orChild));
     CanonicalQuery::sortTree(orChild.get());
 
     return orChild;
@@ -391,10 +396,10 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
     sortUsingTags(_orExpression.get());
 
     // Use the cached index assignments to build solnRoot. Takes ownership of '_orExpression'.
-    QuerySolutionNode* solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
+    auto solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
         *_query, _orExpression.release(), false, _plannerParams.indices, _plannerParams);
 
-    if (NULL == solnRoot) {
+    if (nullptr == solnRoot) {
         mongoutils::str::stream ss;
         ss << "Failed to build indexed data path for subplanned query\n";
         return Status(ErrorCodes::BadValue, ss);
@@ -403,8 +408,8 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
     LOG(5) << "Subplanner: fully tagged tree is " << redact(solnRoot->toString());
 
     // Takes ownership of 'solnRoot'
-    _compositeSolution.reset(
-        QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, solnRoot));
+    _compositeSolution =
+        QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, std::move(solnRoot));
 
     if (NULL == _compositeSolution.get()) {
         mongoutils::str::stream ss;

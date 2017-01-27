@@ -71,6 +71,8 @@ public:
                    Collection* collection,
                    IndexDescriptor* twoDIndex);
 
+	~GeoNear2DStage();
+
 protected:
     StatusWith<CoveredInterval*> nextInterval(OperationContext* txn,
                                               WorkingSet* workingSet,

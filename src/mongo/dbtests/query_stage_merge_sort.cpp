@@ -156,11 +156,11 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
@@ -172,9 +172,9 @@ public:
 
         for (int i = 0; i < N; ++i) {
             BSONObj first, second;
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, nullptr));
             first = first.getOwned();
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, nullptr));
             ASSERT_EQUALS(first["c"].numberInt(), second["c"].numberInt());
             ASSERT_EQUALS(i, first["c"].numberInt());
             ASSERT((first.hasField("a") && second.hasField("b")) ||
@@ -227,11 +227,11 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
 
@@ -242,9 +242,9 @@ public:
 
         for (int i = 0; i < N; ++i) {
             BSONObj first, second;
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, nullptr));
             first = first.getOwned();
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, nullptr));
             ASSERT_EQUALS(first["c"].numberInt(), second["c"].numberInt());
             ASSERT_EQUALS(i, first["c"].numberInt());
             ASSERT((first.hasField("a") && second.hasField("b")) ||
@@ -297,11 +297,11 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
 
@@ -313,9 +313,9 @@ public:
         for (int i = 0; i < N; ++i) {
             BSONObj first, second;
             // We inserted N objects but we get 2 * N from the runner because of dups.
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, nullptr));
             first = first.getOwned();
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, nullptr));
             ASSERT_EQUALS(first["c"].numberInt(), second["c"].numberInt());
             ASSERT_EQUALS(i, first["c"].numberInt());
             ASSERT((first.hasField("a") && second.hasField("b")) ||
@@ -370,11 +370,11 @@ public:
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         // This is the direction along the index.
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
 
@@ -385,9 +385,9 @@ public:
 
         for (int i = 0; i < N; ++i) {
             BSONObj first, second;
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&first, nullptr));
             first = first.getOwned();
-            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, NULL));
+            ASSERT_EQUALS(PlanExecutor::ADVANCED, exec->getNext(&second, nullptr));
             ASSERT_EQUALS(first["c"].numberInt(), second["c"].numberInt());
             ASSERT_EQUALS(N - i - 1, first["c"].numberInt());
             ASSERT((first.hasField("a") && second.hasField("b")) ||

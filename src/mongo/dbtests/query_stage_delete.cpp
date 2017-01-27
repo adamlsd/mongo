@@ -151,11 +151,12 @@ public:
         deleteStageParams.isMulti = true;
 
         WorkingSet ws;
-        DeleteStage deleteStage(&_txn,
-                                deleteStageParams,
-                                &ws,
-                                coll,
-                                new CollectionScan(&_txn, collScanParams, &ws, NULL));
+        DeleteStage deleteStage(
+            &_txn,
+            deleteStageParams,
+            &ws,
+            coll,
+            stdx::make_unique<CollectionScan>(&_txn, collScanParams, &ws, NULL));
 
         const DeleteStats* stats = static_cast<const DeleteStats*>(deleteStage.getSpecificStats());
 
@@ -226,7 +227,7 @@ public:
         deleteParams.canonicalQuery = cq.get();
 
         const auto deleteStage =
-            make_unique<DeleteStage>(&_txn, deleteParams, ws.get(), coll, qds.release());
+            make_unique<DeleteStage>(&_txn, deleteParams, ws.get(), coll, std::move(qds));
 
         const DeleteStats* stats = static_cast<const DeleteStats*>(deleteStage->getSpecificStats());
 

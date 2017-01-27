@@ -282,7 +282,7 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
                 opCtx,
                 CollectionShardingState::get(opCtx, canonicalQuery->nss())->getMetadata(),
                 ws,
-                root.release());
+                std::move(root));
         }
 
         // There might be a projection. The idhack stage will always fetch the full
@@ -297,7 +297,7 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
             if (canonicalQuery->getProj()->wantSortKey()) {
                 root = make_unique<SortKeyGeneratorStage>(
                     opCtx,
-                    root.release(),
+                    std::move(root),
                     ws,
                     canonicalQuery->getQueryRequest().getSort(),
                     canonicalQuery->getQueryRequest().getFilter(),
@@ -314,7 +314,7 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
                 params.projImpl = ProjectionStageParams::SIMPLE_DOC;
             }
 
-            root = make_unique<ProjectionStage>(opCtx, params, ws, root.release());
+            root = make_unique<ProjectionStage>(opCtx, params, ws, std::move(root));
         }
 
         return PrepareExecutionResult(
@@ -673,7 +673,7 @@ StatusWith<unique_ptr<PlanStage>> applyProjection(OperationContext* txn,
     params.projObj = proj;
     params.collator = cq->getCollator();
     params.fullExpression = cq->root();
-    return {make_unique<ProjectionStage>(txn, params, ws, root.release())};
+    return {make_unique<ProjectionStage>(txn, params, ws, std::move(root))};
 }
 
 }  // namespace
@@ -735,7 +735,7 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDelete(OperationContext* txn,
             LOG(2) << "Collection " << nss.ns() << " does not exist."
                    << " Using EOF stage: " << redact(unparsedQuery);
             auto deleteStage = make_unique<DeleteStage>(
-                txn, deleteStageParams, ws.get(), nullptr, new EOFStage(txn));
+                txn, deleteStageParams, ws.get(), nullptr, stdx::make_unique<EOFStage>(txn));
             return PlanExecutor::make(txn, std::move(ws), std::move(deleteStage), nss.ns(), policy);
         }
 
@@ -758,10 +758,10 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDelete(OperationContext* txn,
             request->getProj().isEmpty() && hasCollectionDefaultCollation) {
             LOG(2) << "Using idhack: " << redact(unparsedQuery);
 
-            PlanStage* idHackStage =
-                new IDHackStage(txn, collection, unparsedQuery["_id"].wrap(), ws.get(), descriptor);
-            unique_ptr<DeleteStage> root =
-                make_unique<DeleteStage>(txn, deleteStageParams, ws.get(), collection, idHackStage);
+            auto idHackStage = stdx::make_unique<IDHackStage>(
+                txn, collection, unparsedQuery["_id"].wrap(), ws.get(), descriptor);
+            unique_ptr<DeleteStage> root = make_unique<DeleteStage>(
+                txn, deleteStageParams, ws.get(), collection, std::move(idHackStage));
             return PlanExecutor::make(txn, std::move(ws), std::move(root), collection, policy);
         }
 
@@ -789,7 +789,7 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDelete(OperationContext* txn,
     deleteStageParams.canonicalQuery = cq.get();
 
     invariant(root);
-    root = make_unique<DeleteStage>(txn, deleteStageParams, ws.get(), collection, root.release());
+    root = make_unique<DeleteStage>(txn, deleteStageParams, ws.get(), collection, std::move(root));
 
     if (!request->getProj().isEmpty()) {
         invariant(request->shouldReturnDeleted());
@@ -1071,7 +1071,7 @@ bool turnIxscanIntoCount(QuerySolution* soln) {
         return false;
     }
 
-    IndexScanNode* isn = static_cast<IndexScanNode*>(root->children[0]);
+    IndexScanNode* isn = static_cast<IndexScanNode*>(root->children[0].get());
 
     // No filters allowed and side-stepping isSimpleRange for now.  TODO: do we ever see
     // isSimpleRange here?  because we could well use it.  I just don't think we ever do see
@@ -1093,13 +1093,13 @@ bool turnIxscanIntoCount(QuerySolution* soln) {
     }
 
     // Make the count node that we replace the fetch + ixscan with.
-    CountScanNode* csn = new CountScanNode(isn->index);
+    auto csn = stdx::make_unique<CountScanNode>(isn->index);
     csn->startKey = startKey;
     csn->startKeyInclusive = startKeyInclusive;
     csn->endKey = endKey;
     csn->endKeyInclusive = endKeyInclusive;
     // Takes ownership of 'cn' and deletes the old root.
-    soln->root.reset(csn);
+    soln->root = std::move(csn);
     return true;
 }
 
@@ -1325,9 +1325,9 @@ bool turnIxscanIntoDistinctIxscan(QuerySolution* soln, const string& field) {
     IndexScanNode* indexScanNode = nullptr;
     FetchNode* fetchNode = nullptr;
     if (STAGE_IXSCAN == root->children[0]->getType()) {
-        indexScanNode = static_cast<IndexScanNode*>(root->children[0]);
+        indexScanNode = static_cast<IndexScanNode*>(root->children[0].get());
     } else {
-        fetchNode = static_cast<FetchNode*>(root->children[0]);
+        fetchNode = static_cast<FetchNode*>(root->children[0].get());
         // If the fetch has a filter, we're out of luck. We can't skip all keys with a given value,
         // since one of them may key a document that passes the filter.
         if (fetchNode->filter) {
@@ -1338,7 +1338,7 @@ bool turnIxscanIntoDistinctIxscan(QuerySolution* soln, const string& field) {
             return false;
         }
 
-        indexScanNode = static_cast<IndexScanNode*>(fetchNode->children[0]);
+        indexScanNode = static_cast<IndexScanNode*>(fetchNode->children[0].get());
     }
 
     // An additional filter must be applied to the data in the key, so we can't just skip
@@ -1380,26 +1380,21 @@ bool turnIxscanIntoDistinctIxscan(QuerySolution* soln, const string& field) {
         invariant(STAGE_IXSCAN == root->children[0]->children[0]->getType());
 
         // Detach the fetch from its parent projection.
+        auto fetchNodeOwner = std::move(root->children[0]);
         root->children.clear();
 
         // Make the fetch the new root. This destroys the project stage.
-        soln->root.reset(fetchNode);
-
-        // Take ownership of the index scan node, detaching it from the solution tree.
-        std::unique_ptr<IndexScanNode> ownedIsn(indexScanNode);
+        soln->root = std::move(fetchNodeOwner);
 
         // Attach the distinct node in the index scan's place.
-        fetchNode->children[0] = distinctNode.release();
+        fetchNode->children[0] = std::move(distinctNode);
     } else {
         // There is no fetch node. The PROJECT=>IXSCAN tree should become PROJECT=>DISTINCT_SCAN.
         invariant(STAGE_PROJECTION == root->getType());
         invariant(STAGE_IXSCAN == root->children[0]->getType());
 
-        // Take ownership of the index scan node, detaching it from the solution tree.
-        std::unique_ptr<IndexScanNode> ownedIsn(indexScanNode);
-
         // Attach the distinct node in the index scan's place.
-        root->children[0] = distinctNode.release();
+        root->children[0] = std::move(distinctNode);
     }
 
     return true;
@@ -1504,7 +1499,7 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDistinct(OperationContext* txn,
         if (plannerParams.indices[distinctNodeIndex].collator) {
             if (!solnRoot->fetched()) {
                 auto fetch = stdx::make_unique<FetchNode>();
-                fetch->children.push_back(solnRoot.release());
+                fetch->children.push_back(std::move(solnRoot));
                 solnRoot = std::move(fetch);
             }
         }
@@ -1512,7 +1507,7 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDistinct(OperationContext* txn,
         QueryPlannerParams params;
 
         unique_ptr<QuerySolution> soln(
-            QueryPlannerAnalysis::analyzeDataAccess(*cq, params, solnRoot.release()));
+            QueryPlannerAnalysis::analyzeDataAccess(*cq, params, std::move(solnRoot)));
         invariant(soln);
 
         unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();

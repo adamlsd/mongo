@@ -61,7 +61,7 @@ namespace {
 /**
  * Walk the tree 'root' and output all leaf nodes into 'leafNodes'.
  */
-void getLeafNodes(QuerySolutionNode* root, vector<QuerySolutionNode*>* leafNodes) {
+void getLeafNodes(QuerySolutionNode* root, std::vector<QuerySolutionNode*>* leafNodes) {
     if (0 == root->children.size()) {
         leafNodes->push_back(root);
     } else {
@@ -72,7 +72,7 @@ void getLeafNodes(QuerySolutionNode* root, vector<QuerySolutionNode*>* leafNodes
 }
 
 std::vector<QuerySolutionNode*> getLeafNodes(QuerySolutionNode* root) {
-    vector<QuerySolutionNode*> leafNodes;
+    std::vector<QuerySolutionNode*> leafNodes;
     getLeafNodes(root, &leafNodes);
     return leafNodes;
 }
@@ -149,10 +149,9 @@ typedef vector<Interval> PointPrefix;
  * The first 'fieldsToExplode' fields of 'bounds' are points.  Compute the Cartesian product
  * of those fields and place it in 'prefixOut'.
  */
-void makeCartesianProduct(const IndexBounds& bounds,
-                          size_t fieldsToExplode,
-                          vector<PointPrefix>* prefixOut) {
-    vector<PointPrefix> prefixForScans;
+std::vector<PointPrefix> makeCartesianProduct(const IndexBounds& bounds,
+                                              std::size_t fieldsToExplode) {
+    std::vector<PointPrefix> prefixForScans;
 
     // We dump the Cartesian product of bounds into prefixForScans, starting w/the first
     // field's points.
@@ -169,7 +168,7 @@ void makeCartesianProduct(const IndexBounds& bounds,
 
     // For each subsequent field...
     for (size_t i = 1; i < fieldsToExplode; ++i) {
-        vector<PointPrefix> newPrefixForScans;
+        std::vector<PointPrefix> newPrefixForScans;
         const OrderedIntervalList& oil = bounds.fields[i];
         verify(oil.intervals.size() >= 1);
         // For each point interval in that field (all ivals must be points)...
@@ -184,10 +183,10 @@ void makeCartesianProduct(const IndexBounds& bounds,
             }
         }
         // And update prefixForScans.
-        newPrefixForScans.swap(prefixForScans);
+        prefixForScans = std::move(newPrefixForScans);
     }
 
-    prefixOut->swap(prefixForScans);
+    return prefixForScans;
 }
 
 /**
@@ -212,17 +211,16 @@ void makeCartesianProduct(const IndexBounds& bounds,
 void explodeScan(const IndexScanNode* isn,
                  const BSONObj& sort,
                  size_t fieldsToExplode,
-                 vector<QuerySolutionNode*>* explosionResult) {
+                 std::vector<std::unique_ptr<QuerySolutionNode>>* explosionResult) {
     // Turn the compact bounds in 'isn' into a bunch of points...
-    vector<PointPrefix> prefixForScans;
-    makeCartesianProduct(isn->bounds, fieldsToExplode, &prefixForScans);
+    std::vector<PointPrefix> prefixForScans = makeCartesianProduct(isn->bounds, fieldsToExplode);
 
     for (size_t i = 0; i < prefixForScans.size(); ++i) {
         const PointPrefix& prefix = prefixForScans[i];
         verify(prefix.size() == fieldsToExplode);
 
         // Copy boring fields into new child.
-        IndexScanNode* child = new IndexScanNode(isn->index);
+        auto child = stdx::make_unique<IndexScanNode>(isn->index);
         child->direction = isn->direction;
         child->maxScan = isn->maxScan;
         child->addKeyMetadata = isn->addKeyMetadata;
@@ -242,26 +240,24 @@ void explodeScan(const IndexScanNode* isn,
         for (size_t j = fieldsToExplode; j < isn->bounds.fields.size(); ++j) {
             child->bounds.fields[j] = isn->bounds.fields[j];
         }
-        explosionResult->push_back(child);
+        explosionResult->push_back(std::move(child));
     }
 }
 
-#if 0
 /**
  * In the tree '*root', replace 'oldNode' with 'newNode'.
  */
-void replaceNodeInTree(QuerySolutionNode** root,
+void replaceNodeInTree(std::unique_ptr<QuerySolutionNode>* root,
                        QuerySolutionNode* oldNode,
-                       QuerySolutionNode* newNode) {
-    if (*root == oldNode) {
-        *root = newNode;
+                       std::unique_ptr<QuerySolutionNode>* newNode) {
+    if (root->get() == oldNode) {
+        *root = std::move(*newNode);
     } else {
         for (size_t i = 0; i < (*root)->children.size(); ++i) {
             replaceNodeInTree(&(*root)->children[i], oldNode, newNode);
         }
     }
 }
-#endif
 
 bool hasNode(QuerySolutionNode* root, StageType type) {
     if (type == root->getType()) {
@@ -353,11 +349,11 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
                                           std::unique_ptr<QuerySolutionNode>* solnRoot) {
 
     QuerySolutionNode* toReplace;
-    if (!structureOKForExplode(*solnRoot, &toReplace)) {
+    if (!structureOKForExplode(solnRoot->get(), &toReplace)) {
         return false;
     }
 
-    std::vector<QuerySolutionNode*> leafNodes = getLeafNodes(*solnRoot);
+    std::vector<QuerySolutionNode*> leafNodes = getLeafNodes(solnRoot->get());
 
     const BSONObj& desiredSort = query.getQueryRequest().getSort();
 
@@ -449,7 +445,7 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
 
     // If we're here, we can (probably?  depends on how restrictive the structure check is)
     // get our sort order via ixscan blow-up.
-    MergeSortNode* merge = new MergeSortNode();
+    auto merge = stdx::make_unique<MergeSortNode>();
     merge->sort = desiredSort;
     for (size_t i = 0; i < leafNodes.size(); ++i) {
         IndexScanNode* isn = static_cast<IndexScanNode*>(leafNodes[i]);
@@ -459,9 +455,8 @@ bool QueryPlannerAnalysis::explodeForSort(const CanonicalQuery& query,
     merge->computeProperties();
 
     // Replace 'toReplace' with the new merge sort node.
-    replaceNodeInTree(solnRoot, toReplace, merge);
-    // And get rid of the node that got replaced.
-    delete toReplace;
+    std::unique_ptr<QuerySolutionNode> toMerge = std::move(merge);
+    replaceNodeInTree(solnRoot, toReplace, &toMerge);
 
     return true;
 }

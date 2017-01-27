@@ -26,8 +26,8 @@
 *    it in the license file.
 */
 
-#include "mongo/db/exec/skip.h"
 #include "mongo/db/exec/scoped_timer.h"
+#include "mongo/db/exec/skip.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/mongoutils/str.h"
@@ -41,9 +41,12 @@ using stdx::make_unique;
 // static
 const char* SkipStage::kStageType = "SKIP";
 
-SkipStage::SkipStage(OperationContext* opCtx, long long toSkip, WorkingSet* ws, PlanStage* child)
+SkipStage::SkipStage(OperationContext* opCtx,
+                     long long toSkip,
+                     WorkingSet* ws,
+                     std::unique_ptr<PlanStage> child)
     : PlanStage(kStageType, opCtx), _ws(ws), _toSkip(toSkip) {
-    _children.emplace_back(child);
+    _children.push_back(std::move(child));
 }
 
 SkipStage::~SkipStage() {}

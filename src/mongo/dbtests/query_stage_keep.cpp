@@ -142,12 +142,12 @@ public:
         params.direction = CollectionScanParams::FORWARD;
         params.tailable = false;
         params.start = RecordId();
-        CollectionScan* cs = new CollectionScan(&_txn, params, &ws, NULL);
+        auto cs = stdx::make_unique<CollectionScan>(&_txn, params, &ws, nullptr);
 
         // Create a KeepMutations stage to merge in the 10 flagged objects.
         // Takes ownership of 'cs'
-        MatchExpression* nullFilter = NULL;
-        auto keep = make_unique<KeepMutationsStage>(&_txn, nullFilter, &ws, cs);
+        MatchExpression* nullFilter = nullptr;
+        auto keep = make_unique<KeepMutationsStage>(&_txn, nullFilter, &ws, std::move(cs));
 
         for (size_t i = 0; i < 10; ++i) {
             WorkingSetID id = getNextResult(keep.get());

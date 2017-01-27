@@ -51,7 +51,7 @@ const char* FetchStage::kStageType = "FETCH";
 
 FetchStage::FetchStage(OperationContext* txn,
                        WorkingSet* ws,
-                       PlanStage* child,
+                       std::unique_ptr<PlanStage> child,
                        const MatchExpression* filter,
                        const Collection* collection)
     : PlanStage(kStageType, txn),
@@ -59,7 +59,7 @@ FetchStage::FetchStage(OperationContext* txn,
       _ws(ws),
       _filter(filter),
       _idRetrying(WorkingSet::INVALID_ID) {
-    _children.emplace_back(child);
+    _children.push_back(std::move(child));
 }
 
 FetchStage::~FetchStage() {}

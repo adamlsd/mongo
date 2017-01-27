@@ -75,14 +75,14 @@ DeleteStage::DeleteStage(OperationContext* txn,
                          const DeleteStageParams& params,
                          WorkingSet* ws,
                          Collection* collection,
-                         PlanStage* child)
+                         std::unique_ptr<PlanStage> child)
     : PlanStage(kStageType, txn),
       _params(params),
       _ws(ws),
       _collection(collection),
       _idRetrying(WorkingSet::INVALID_ID),
       _idReturning(WorkingSet::INVALID_ID) {
-    _children.emplace_back(child);
+    _children.push_back(std::move(child));
 }
 
 bool DeleteStage::isEOF() {

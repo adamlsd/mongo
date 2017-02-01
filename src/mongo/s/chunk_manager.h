@@ -47,7 +47,7 @@ namespace mongo {
 
 class CanonicalQuery;
 class CollectionType;
-struct QuerySolutionNode;
+class QuerySolutionNode;
 class OperationContext;
 
 // The key for the map is max for each Chunk or ChunkRange

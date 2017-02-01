@@ -195,7 +195,8 @@ public:
         // Create a KeepMutationsStage with an EOF child, and flag 50 objects.  We expect these
         // objects to be returned by the KeepMutationsStage.
         MatchExpression* nullFilter = NULL;
-        auto keep = make_unique<KeepMutationsStage>(&_txn, nullFilter, &ws, new EOFStage(&_txn));
+        auto keep = make_unique<KeepMutationsStage>(
+            &_txn, nullFilter, &ws, stdx::make_unique<EOFStage>(&_txn));
         for (size_t i = 0; i < 50; ++i) {
             WorkingSetID id = ws.allocate();
             WorkingSetMember* member = ws.get(id);

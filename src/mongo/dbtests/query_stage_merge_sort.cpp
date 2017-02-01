@@ -146,7 +146,7 @@ public:
         // Sort by c:1
         MergeSortStageParams msparams;
         msparams.pattern = BSON("c" << 1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -163,7 +163,7 @@ public:
         ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
         // Must fetch if we want to easily pull out an obj.
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -217,7 +217,7 @@ public:
         // Sort by c:1
         MergeSortStageParams msparams;
         msparams.pattern = BSON("c" << 1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -233,7 +233,7 @@ public:
         params.descriptor = getIndex(secondIndex, coll);
         ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -287,7 +287,7 @@ public:
         MergeSortStageParams msparams;
         msparams.dedup = false;
         msparams.pattern = BSON("c" << 1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -303,7 +303,7 @@ public:
         params.descriptor = getIndex(secondIndex, coll);
         ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -359,7 +359,7 @@ public:
         // Sort by c:-1
         MergeSortStageParams msparams;
         msparams.pattern = BSON("c" << -1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -376,7 +376,7 @@ public:
         params.descriptor = getIndex(secondIndex, coll);
         ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -430,7 +430,7 @@ public:
         // Sort by c:1
         MergeSortStageParams msparams;
         msparams.pattern = BSON("c" << 1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -440,15 +440,15 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
 
         // b:51 (EOF)
         params.descriptor = getIndex(secondIndex, coll);
         params.bounds.startKey = BSON("" << 51 << "" << MinKey);
         params.bounds.endKey = BSON("" << 51 << "" << MaxKey);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -486,7 +486,7 @@ public:
         // Sort by foo:1
         MergeSortStageParams msparams;
         msparams.pattern = BSON("foo" << 1);
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         IndexScanParams params;
         params.bounds.isSimpleRange = true;
@@ -504,10 +504,10 @@ public:
             BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
             addIndex(indexSpec);
             params.descriptor = getIndex(indexSpec, coll);
-            ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
         }
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -565,7 +565,7 @@ public:
             BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
             addIndex(indexSpec);
             params.descriptor = getIndex(indexSpec, coll);
-            ms->addChild(new IndexScan(&_txn, params, &ws, NULL));
+            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, NULL));
         }
 
         set<RecordId> recordIds;
@@ -684,8 +684,12 @@ public:
             params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
             params.direction = 1;
             auto fetchStage = stdx::make_unique<FetchStage>(
-                &_txn, &ws, new IndexScan(&_txn, params, &ws, nullptr), nullptr, coll);
-            ms->addChild(fetchStage.release());
+                &_txn,
+                &ws,
+                stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr),
+                nullptr,
+                coll);
+            ms->addChild(std::move(fetchStage));
         }
 
         // Second child scans [4, 10].
@@ -698,8 +702,12 @@ public:
             params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
             params.direction = 1;
             auto fetchStage = stdx::make_unique<FetchStage>(
-                &_txn, &ws, new IndexScan(&_txn, params, &ws, nullptr), nullptr, coll);
-            ms->addChild(fetchStage.release());
+                &_txn,
+                &ws,
+                stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr),
+                nullptr,
+                coll);
+            ms->addChild(std::move(fetchStage));
         }
 
         // First doc should be {a: 4}.
@@ -774,7 +782,7 @@ public:
         MergeSortStageParams msparams;
         msparams.pattern = BSON("c" << 1 << "d" << 1);
         msparams.collator = nullptr;
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -784,14 +792,14 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
 
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
         // Must fetch if we want to easily pull out an obj.
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);
@@ -848,7 +856,7 @@ public:
         msparams.pattern = BSON("c" << 1 << "d" << 1);
         CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
         msparams.collator = &collator;
-        MergeSortStage* ms = new MergeSortStage(&_txn, msparams, ws.get(), coll);
+        auto ms = stdx::make_unique<MergeSortStage>(&_txn, msparams, ws.get(), coll);
 
         // a:1
         IndexScanParams params;
@@ -858,14 +866,14 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(new IndexScan(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
 
         unique_ptr<FetchStage> fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), ms, nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
         // Must fetch if we want to easily pull out an obj.
         auto statusWithPlanExecutor = PlanExecutor::make(
             &_txn, std::move(ws), std::move(fetchStage), coll, PlanExecutor::YIELD_MANUAL);

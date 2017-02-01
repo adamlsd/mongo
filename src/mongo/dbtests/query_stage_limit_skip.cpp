@@ -55,7 +55,7 @@ using stdx::make_unique;
 static const int N = 50;
 
 /* Populate a QueuedDataStage and return it.  Caller owns it. */
-QueuedDataStage* getMS(OperationContext* opCtx, WorkingSet* ws) {
+std::unique_ptr<QueuedDataStage> getMS(OperationContext* opCtx, WorkingSet* ws) {
     auto ms = make_unique<QueuedDataStage>(opCtx, ws);
 
     // Put N ADVANCED results into the mock stage, and some other stalling results (YIELD/TIME).
@@ -71,7 +71,7 @@ QueuedDataStage* getMS(OperationContext* opCtx, WorkingSet* ws) {
         ms->pushBack(PlanStage::NEED_TIME);
     }
 
-    return ms.release();
+    return ms;
 }
 
 int countResults(PlanStage* stage) {

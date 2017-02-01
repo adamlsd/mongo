@@ -147,9 +147,10 @@ public:
 
         const Collection* coll = db->getCollection(nss.ns());
 
-        unique_ptr<WorkingSet> ws(new WorkingSet());
-        IndexScan* ix = new IndexScan(&_txn, ixparams, ws.get(), NULL);
-        unique_ptr<PlanStage> root(new FetchStage(&_txn, ws.get(), ix, NULL, coll));
+        unique_ptr<WorkingSet> ws = stdx::make_unique<WorkingSet>();
+        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, ws.get(), NULL);
+        unique_ptr<PlanStage> root =
+            stdx::make_unique<FetchStage>(&_txn, ws.get(), std::move(ix), NULL, coll);
 
         auto qr = stdx::make_unique<QueryRequest>(nss);
         auto statusWithCQ = CanonicalQuery::canonicalize(

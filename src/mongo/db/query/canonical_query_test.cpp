@@ -526,8 +526,8 @@ TEST(CanonicalQueryTest, NormalizeQueryTree) {
 TEST(CanonicalQueryTest, NormalizeWithInPreservesTags) {
     BSONObj obj = fromjson("{x: {$in: [1]}}");
     auto matchExpression = parseMatchExpression(obj);
-    matchExpression->setTag(new IndexTag(2U, 1U, false));
-	matchExpression = CanonicalQuery::normalizeTree(std::move(matchExpression));
+    matchExpression->setTag(stdx::make_unique<IndexTag>(2U, 1U, false));
+    matchExpression = CanonicalQuery::normalizeTree(std::move(matchExpression));
     IndexTag* tag = dynamic_cast<IndexTag*>(matchExpression->getTag());
     ASSERT(tag);
     ASSERT_EQ(2U, tag->index);
@@ -536,7 +536,7 @@ TEST(CanonicalQueryTest, NormalizeWithInPreservesTags) {
 TEST(CanonicalQueryTest, NormalizeWithInAndRegexPreservesTags) {
     BSONObj obj = fromjson("{x: {$in: [/a.b/]}}");
     unique_ptr<MatchExpression> matchExpression(parseMatchExpression(obj));
-    matchExpression->setTag(new IndexTag(2U, 1U, false));
+    matchExpression->setTag(stdx::make_unique<IndexTag>(2U, 1U, false));
     matchExpression = CanonicalQuery::normalizeTree(std::move(matchExpression));
     IndexTag* tag = dynamic_cast<IndexTag*>(matchExpression->getTag());
     ASSERT(tag);

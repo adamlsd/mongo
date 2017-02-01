@@ -301,12 +301,12 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar <= 19 (descending)
         params.descriptor = getIndex(BSON("bar" << 1), coll);
         params.bounds.startKey = BSON("" << 19);
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // First call to work reads the first result from the children.
         // The first result is for the first scan over foo is {foo: 20, bar: 20, baz: 20}.
@@ -389,7 +389,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -397,7 +397,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // foo == bar == baz, and foo<=20, bar>=10, so our values are:
         // foo == 10, 11, 12, 13, 14, 15. 16, 17, 18, 19, 20
@@ -444,7 +444,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -452,7 +452,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Stage execution should fail.
         ASSERT_EQUALS(-1, countResults(ah.get()));
@@ -497,7 +497,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1 << "big" << 1), coll);
@@ -505,7 +505,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // foo == bar == baz, and foo<=20, bar>=10, so our values are:
         // foo == 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20.
@@ -545,7 +545,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -553,7 +553,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // 5 <= baz <= 15
         params.descriptor = getIndex(BSON("baz" << 1), coll);
@@ -561,7 +561,7 @@ public:
         params.bounds.endKey = BSON("" << 15);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // foo == bar == baz, and foo<=20, bar>=10, 5<=baz<=15, so our values are:
         // foo == 10, 11, 12, 13, 14, 15.
@@ -612,7 +612,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1 << "big" << 1), coll);
@@ -620,7 +620,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // 5 <= baz <= 15
         params.descriptor = getIndex(BSON("baz" << 1), coll);
@@ -628,7 +628,7 @@ public:
         params.bounds.endKey = BSON("" << 15);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Stage execution should fail.
         ASSERT_EQUALS(-1, countResults(ah.get()));
@@ -666,7 +666,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar == 5.  Index scan should be eof.
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -674,7 +674,7 @@ public:
         params.bounds.endKey = BSON("" << 5);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         int count = 0;
         int works = 0;
@@ -729,7 +729,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar <= 100
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -741,7 +741,7 @@ public:
                                     << "");
         params.bounds.boundInclusion = BoundInclusion::kIncludeStartKeyOnly;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         ASSERT_EQUALS(0, countResults(ah.get()));
     }
@@ -781,12 +781,12 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        IndexScan* firstScan = new IndexScan(&_txn, params, &ws, NULL);
+        auto firstScan = stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr);
 
-        // First child of the AND_HASH stage is a Fetch. The NULL in the
+        // First child of the AND_HASH stage is a Fetch. The nullptr in the
         // constructor means there is no filter.
-        FetchStage* fetch = new FetchStage(&_txn, &ws, firstScan, NULL, coll);
-        ah->addChild(fetch);
+        auto fetch = stdx::make_unique<FetchStage>(&_txn, &ws, std::move(firstScan), nullptr, coll);
+        ah->addChild(std::move(fetch));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -794,7 +794,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Check that the AndHash stage returns docs {foo: 10, bar: 10}
         // through {foo: 20, bar: 20}.
@@ -840,7 +840,7 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = -1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar >= 10
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -848,12 +848,13 @@ public:
         params.bounds.endKey = BSONObj();
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        IndexScan* secondScan = new IndexScan(&_txn, params, &ws, NULL);
+        auto secondScan = stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr);
 
-        // Second child of the AND_HASH stage is a Fetch. The NULL in the
+        // Second child of the AND_HASH stage is a Fetch. The nullptr in the
         // constructor means there is no filter.
-        FetchStage* fetch = new FetchStage(&_txn, &ws, secondScan, NULL, coll);
-        ah->addChild(fetch);
+        auto fetch =
+            stdx::make_unique<FetchStage>(&_txn, &ws, std::move(secondScan), nullptr, coll);
+        ah->addChild(std::move(fetch));
 
         // Check that the AndHash stage returns docs {foo: 10, bar: 10}
         // through {foo: 20, bar: 20}.
@@ -901,8 +902,8 @@ public:
             childStage2->pushBack(PlanStage::NEED_TIME);
             childStage2->pushBack(PlanStage::DEAD);
 
-            andHashStage->addChild(childStage1.release());
-            andHashStage->addChild(childStage2.release());
+            andHashStage->addChild(std::move(childStage1));
+            andHashStage->addChild(std::move(childStage2));
 
             WorkingSetID id = WorkingSet::INVALID_ID;
             PlanStage::StageState state = PlanStage::NEED_TIME;
@@ -942,8 +943,8 @@ public:
                 childStage2->pushBack(id);
             }
 
-            andHashStage->addChild(childStage1.release());
-            andHashStage->addChild(childStage2.release());
+            andHashStage->addChild(std::move(childStage1));
+            andHashStage->addChild(std::move(childStage2));
 
             WorkingSetID id = WorkingSet::INVALID_ID;
             PlanStage::StageState state = PlanStage::NEED_TIME;
@@ -982,8 +983,8 @@ public:
             }
             childStage2->pushBack(PlanStage::DEAD);
 
-            andHashStage->addChild(childStage1.release());
-            andHashStage->addChild(childStage2.release());
+            andHashStage->addChild(std::move(childStage1));
+            andHashStage->addChild(std::move(childStage2));
 
             WorkingSetID id = WorkingSet::INVALID_ID;
             PlanStage::StageState state = PlanStage::NEED_TIME;
@@ -1034,11 +1035,11 @@ public:
         params.bounds.endKey = BSON("" << 1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Scan over bar == 1
         params.descriptor = getIndex(BSON("bar" << 1), coll);
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Get the set of RecordIds in our collection to use later.
         set<RecordId> data;
@@ -1167,15 +1168,15 @@ public:
         params.bounds.endKey = BSON("" << 1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // bar == 1
         params.descriptor = getIndex(BSON("bar" << 1), coll);
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // baz == 1
         params.descriptor = getIndex(BSON("baz" << 1), coll);
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         ASSERT_EQUALS(50, countResults(ah.get()));
     }
@@ -1212,7 +1213,7 @@ public:
         params.bounds.endKey = BSON("" << 7);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Bar == 20, not EOF.
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -1220,7 +1221,7 @@ public:
         params.bounds.endKey = BSON("" << 20);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         ASSERT_EQUALS(0, countResults(ah.get()));
     }
@@ -1261,7 +1262,7 @@ public:
         params.bounds.endKey = BSON("" << 7);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // bar == 20.
         params.descriptor = getIndex(BSON("bar" << 1), coll);
@@ -1269,7 +1270,7 @@ public:
         params.bounds.endKey = BSON("" << 20);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         ASSERT_EQUALS(0, countResults(ah.get()));
     }
@@ -1306,13 +1307,13 @@ public:
         params.bounds.endKey = BSON("" << 1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // Intersect with 7 <= bar < 10000
         params.descriptor = getIndex(BSON("bar" << 1), coll);
         params.bounds.startKey = BSON("" << 7);
         params.bounds.endKey = BSON("" << 10000);
-        ah->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        ah->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         WorkingSetID lastId = WorkingSet::INVALID_ID;
 
@@ -1372,16 +1373,16 @@ public:
         params.bounds.endKey = BSON("" << 1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        IndexScan* firstScan = new IndexScan(&_txn, params, &ws, NULL);
+        auto firstScan = stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr);
 
-        // First child of the AND_SORTED stage is a Fetch. The NULL in the
+        // First child of the AND_SORTED stage is a Fetch. The nullptr in the
         // constructor means there is no filter.
-        FetchStage* fetch = new FetchStage(&_txn, &ws, firstScan, NULL, coll);
-        as->addChild(fetch);
+        auto fetch = stdx::make_unique<FetchStage>(&_txn, &ws, std::move(firstScan), nullptr, coll);
+        as->addChild(std::move(fetch));
 
         // bar == 1
         params.descriptor = getIndex(BSON("bar" << 1), coll);
-        as->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        as->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         for (int i = 0; i < 50; i++) {
             BSONObj obj = getNext(as.get(), &ws);
@@ -1426,16 +1427,17 @@ public:
         params.bounds.endKey = BSON("" << 1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        as->addChild(new IndexScan(&_txn, params, &ws, NULL));
+        as->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
 
         // bar == 1
         params.descriptor = getIndex(BSON("bar" << 1), coll);
-        IndexScan* secondScan = new IndexScan(&_txn, params, &ws, NULL);
+        auto secondScan = stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr);
 
-        // Second child of the AND_SORTED stage is a Fetch. The NULL in the
+        // Second child of the AND_SORTED stage is a Fetch. The nullptr in the
         // constructor means there is no filter.
-        FetchStage* fetch = new FetchStage(&_txn, &ws, secondScan, NULL, coll);
-        as->addChild(fetch);
+        auto fetch =
+            stdx::make_unique<FetchStage>(&_txn, &ws, std::move(secondScan), nullptr, coll);
+        as->addChild(std::move(fetch));
 
         for (int i = 0; i < 50; i++) {
             BSONObj obj = getNext(as.get(), &ws);

@@ -151,9 +151,10 @@ public:
         ixparams.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         ixparams.direction = 1;
 
-        unique_ptr<WorkingSet> sharedWs(new WorkingSet());
-        IndexScan* ix = new IndexScan(&_txn, ixparams, sharedWs.get(), NULL);
-        unique_ptr<PlanStage> firstRoot(new FetchStage(&_txn, sharedWs.get(), ix, NULL, coll));
+        unique_ptr<WorkingSet> sharedWs(stdx::make_unique<WorkingSet>());
+        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, sharedWs.get(), NULL);
+        unique_ptr<PlanStage> firstRoot(
+            stdx::make_unique<FetchStage>(&_txn, sharedWs.get(), std::move(ix), NULL, coll));
 
         // Plan 1: CollScan with matcher.
         CollectionScanParams csparams;

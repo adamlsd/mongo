@@ -119,9 +119,9 @@ public:
         params.limit = limit();
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
+            &_txn, std::move(queuedDataStage), ws.get(), params.pattern, BSONObj(), nullptr);
 
-        auto ss = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
+        auto ss = make_unique<SortStage>(&_txn, params, ws.get(), std::move(keyGenStage));
 
         // The PlanExecutor will be automatically registered on construction due to the auto
         // yield policy, so it can receive invalidations when we remove documents later.
@@ -158,12 +158,12 @@ public:
         params.limit = limit();
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
+            &_txn, std::move(queuedDataStage), ws.get(), params.pattern, BSONObj(), nullptr);
 
-        auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
+        auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), std::move(keyGenStage));
 
         auto fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), sortStage.release(), nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(sortStage), nullptr, coll);
 
         // Must fetch so we can look at the doc as a BSONObj.
         auto statusWithPlanExecutor = PlanExecutor::make(
@@ -557,12 +557,12 @@ public:
         params.limit = 0;
 
         auto keyGenStage = make_unique<SortKeyGeneratorStage>(
-            &_txn, queuedDataStage.release(), ws.get(), params.pattern, BSONObj(), nullptr);
+            &_txn, std::move(queuedDataStage), ws.get(), params.pattern, BSONObj(), nullptr);
 
-        auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), keyGenStage.release());
+        auto sortStage = make_unique<SortStage>(&_txn, params, ws.get(), std::move(keyGenStage));
 
         auto fetchStage =
-            make_unique<FetchStage>(&_txn, ws.get(), sortStage.release(), nullptr, coll);
+            make_unique<FetchStage>(&_txn, ws.get(), std::move(sortStage), nullptr, coll);
 
         // We don't get results back since we're sorting some parallel arrays.
         auto statusWithPlanExecutor = PlanExecutor::make(

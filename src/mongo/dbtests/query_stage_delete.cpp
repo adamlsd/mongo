@@ -290,7 +290,7 @@ public:
         deleteParams.canonicalQuery = cq.get();
 
         const auto deleteStage =
-            make_unique<DeleteStage>(&_txn, deleteParams, ws.get(), coll, qds.release());
+            make_unique<DeleteStage>(&_txn, deleteParams, ws.get(), coll, std::move(qds));
         const DeleteStats* stats = static_cast<const DeleteStats*>(deleteStage->getSpecificStats());
 
         // Call work, passing the set up member to the delete stage.

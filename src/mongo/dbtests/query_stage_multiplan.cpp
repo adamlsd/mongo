@@ -152,9 +152,9 @@ public:
         ixparams.direction = 1;
 
         unique_ptr<WorkingSet> sharedWs(stdx::make_unique<WorkingSet>());
-        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, sharedWs.get(), NULL);
+        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, sharedWs.get(), nullptr);
         unique_ptr<PlanStage> firstRoot(
-            stdx::make_unique<FetchStage>(&_txn, sharedWs.get(), std::move(ix), NULL, coll));
+            stdx::make_unique<FetchStage>(&_txn, sharedWs.get(), std::move(ix), nullptr, coll));
 
         // Plan 1: CollScan with matcher.
         CollectionScanParams csparams;

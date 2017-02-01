@@ -135,7 +135,7 @@ public:
         }
 
         auto fetchStage =
-            stdx::make_unique<FetchStage>(&_txn, &ws, std::move(mockStage), NULL, coll);
+            stdx::make_unique<FetchStage>(&_txn, &ws, std::move(mockStage), nullptr, coll);
 
         WorkingSetID id = WorkingSet::INVALID_ID;
         PlanStage::StageState state;

@@ -148,9 +148,9 @@ public:
         const Collection* coll = db->getCollection(nss.ns());
 
         unique_ptr<WorkingSet> ws = stdx::make_unique<WorkingSet>();
-        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, ws.get(), NULL);
+        auto ix = stdx::make_unique<IndexScan>(&_txn, ixparams, ws.get(), nullptr);
         unique_ptr<PlanStage> root =
-            stdx::make_unique<FetchStage>(&_txn, ws.get(), std::move(ix), NULL, coll);
+            stdx::make_unique<FetchStage>(&_txn, ws.get(), std::move(ix), nullptr, coll);
 
         auto qr = stdx::make_unique<QueryRequest>(nss);
         auto statusWithCQ = CanonicalQuery::canonicalize(

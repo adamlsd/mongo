@@ -440,13 +440,13 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:51 (EOF)
         params.descriptor = getIndex(secondIndex, coll);
         params.bounds.startKey = BSON("" << 51 << "" << MinKey);
         params.bounds.endKey = BSON("" << 51 << "" << MaxKey);
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
 
@@ -504,7 +504,7 @@ public:
             BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
             addIndex(indexSpec);
             params.descriptor = getIndex(indexSpec, coll);
-            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
         }
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
@@ -565,7 +565,7 @@ public:
             BSONObj indexSpec = BSON(index << 1 << "foo" << 1);
             addIndex(indexSpec);
             params.descriptor = getIndex(indexSpec, coll);
-            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, NULL));
+            ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, &ws, nullptr));
         }
 
         set<RecordId> recordIds;
@@ -792,11 +792,11 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);
@@ -866,11 +866,11 @@ public:
         params.bounds.endKey = objWithMaxKey(1);
         params.bounds.boundInclusion = BoundInclusion::kIncludeBothStartAndEndKeys;
         params.direction = 1;
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         // b:1
         params.descriptor = getIndex(secondIndex, coll);
-        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), NULL));
+        ms->addChild(stdx::make_unique<IndexScan>(&_txn, params, ws.get(), nullptr));
 
         unique_ptr<FetchStage> fetchStage =
             make_unique<FetchStage>(&_txn, ws.get(), std::move(ms), nullptr, coll);

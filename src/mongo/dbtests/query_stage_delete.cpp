@@ -156,7 +156,7 @@ public:
             deleteStageParams,
             &ws,
             coll,
-            stdx::make_unique<CollectionScan>(&_txn, collScanParams, &ws, NULL));
+            stdx::make_unique<CollectionScan>(&_txn, collScanParams, &ws, nullptr));
 
         const DeleteStats* stats = static_cast<const DeleteStats*>(deleteStage.getSpecificStats());
 

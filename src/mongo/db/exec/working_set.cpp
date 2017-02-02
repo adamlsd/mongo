@@ -28,6 +28,8 @@
 
 #include "mongo/db/exec/working_set.h"
 
+#include "mongo/stdx/memory.h"
+
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/service_context.h"
@@ -39,16 +41,14 @@ using std::string;
 
 namespace dps = ::mongo::dotted_path_support;
 
-WorkingSet::MemberHolder::MemberHolder() : member(NULL) {}
-WorkingSet::MemberHolder::~MemberHolder() {}
+WorkingSet::MemberHolder::MemberHolder() = default;
+WorkingSet::MemberHolder::MemberHolder(MemberHolder&&) = default;
+WorkingSet::MemberHolder& WorkingSet::MemberHolder::operator=(MemberHolder&&) = default;
+WorkingSet::MemberHolder::~MemberHolder() = default;
 
 WorkingSet::WorkingSet() : _freeList(INVALID_ID) {}
 
-WorkingSet::~WorkingSet() {
-    for (size_t i = 0; i < _data.size(); i++) {
-        delete _data[i].member;
-    }
-}
+WorkingSet::~WorkingSet() = default;
 
 WorkingSetID WorkingSet::allocate() {
     if (_freeList == INVALID_ID) {
@@ -56,9 +56,10 @@ WorkingSetID WorkingSet::allocate() {
         // vector::resize being amortized O(1) for efficient allocation. Note that the free list
         // remains empty until something is returned by a call to free().
         WorkingSetID id = _data.size();
-        _data.resize(_data.size() + 1);
-        _data.back().nextFreeOrSelf = id;
-        _data.back().member = new WorkingSetMember();
+        MemberHolder newWSM;
+        newWSM.member = stdx::make_unique<WorkingSetMember>();
+        newWSM.nextFreeOrSelf = id;
+        _data.push_back(std::move(newWSM));
         return id;
     }
 
@@ -96,9 +97,6 @@ bool WorkingSet::isFlagged(WorkingSetID id) const {
 }
 
 void WorkingSet::clear() {
-    for (size_t i = 0; i < _data.size(); i++) {
-        delete _data[i].member;
-    }
     _data.clear();
 
     // Since working set is now empty, the free list pointer should
@@ -136,9 +134,8 @@ std::vector<WorkingSetID> WorkingSet::getAndClearYieldSensitiveIds() {
 // WorkingSetMember
 //
 
-WorkingSetMember::WorkingSetMember() {}
-
-WorkingSetMember::~WorkingSetMember() {}
+WorkingSetMember::WorkingSetMember() = default;
+WorkingSetMember::~WorkingSetMember() = default;
 
 void WorkingSetMember::clear() {
     for (size_t i = 0; i < WSM_COMPUTED_NUM_TYPES; i++) {

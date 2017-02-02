@@ -77,7 +77,7 @@ public:
     WorkingSetMember* get(WorkingSetID i) const {
         dassert(i < _data.size());              // ID has been allocated.
         dassert(_data[i].nextFreeOrSelf == i);  // ID currently in use.
-        return _data[i].member;
+        return _data[i].member.get();
     }
 
     /**
@@ -142,13 +142,14 @@ public:
 private:
     struct MemberHolder {
         MemberHolder();
+        MemberHolder(MemberHolder&&);
+        MemberHolder& operator=(MemberHolder&&);
         ~MemberHolder();
-
         // Free list link if freed. Points to self if in use.
         WorkingSetID nextFreeOrSelf;
 
         // Owning pointer
-        WorkingSetMember* member;
+        std::unique_ptr<WorkingSetMember> member;
     };
 
     // All WorkingSetIDs are indexes into this, except for INVALID_ID.

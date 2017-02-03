@@ -65,6 +65,7 @@ def list_process(items):
     """From WIL, converts lists generated from an NM command with unicode strings to lists
     with ascii strings
     """
+    print "list_process"
 
     r = []
     for l in items:
@@ -87,8 +88,18 @@ def list_process(items):
 def get_symbol_worker(object_file, task):
     """From WIL, launches a worker subprocess which collects either symbols defined
     or symbols required by an object file"""
+    print "get_symbol_worker"
 
-    platform = 'linux' if sys.platform.startswith('linux') else 'darwin'
+    print "Processing " + object_file
+
+    if len( LIB_DB ) == 0:
+        raise "symbolworker DAMNIT!"
+    if len( OBJ_DB ) == 0:
+        raise "symbolworker DAMNIT!"
+    if len( EXE_DB ) == 0:
+        raise "symbolworker DAMNIT!"
+
+    platform = 'linux' if sys.platform.startswith('linux') or sys.platform.startswith('freebsd') else 'darwin'
 
     if platform == 'linux':
         if task == 'used':
@@ -100,6 +111,8 @@ def get_symbol_worker(object_file, task):
             cmd = "nm -u " + object_file + " | c++filt"
         elif task == 'defined':
             cmd = "nm -jU " + object_file + " | c++filt"
+    else:
+        raise "symbolworker DAMNIT!"
 
     p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     uses = p.communicate()[0].decode()
@@ -110,11 +123,14 @@ def get_symbol_worker(object_file, task):
     elif platform == 'darwin':
         return list_process([use.strip() for use in uses.split('\n')
                              if use != ''])
+    else:
+        raise "symbolworker DAMNIT!"
 
 
 def emit_obj_db_entry(target, source, env):
     """Emitter for object files. We add each object file
     built into a global variable for later use"""
+    print "emit_obj_db_entry"
 
     for t in target:
         if str(t) is None:
@@ -123,6 +139,7 @@ def emit_obj_db_entry(target, source, env):
     return target, source
 
 def emit_prog_db_entry(target, source, env):
+    print "emit_prog_db_entry"
     for t in target:
         if str(t) is None:
             continue
@@ -133,6 +150,9 @@ def emit_prog_db_entry(target, source, env):
 def emit_lib_db_entry(target, source, env):
     """Emitter for libraries. We add each library
     into our global variable"""
+    print "emit_lib_db_entry"
+    if len( target ) == 0:
+        raise "emit_lib_db_entry DAMNIT!"
     for t in target:
         if str(t) is None:
             continue
@@ -145,6 +165,7 @@ def __compute_libdeps(node):
     Computes the direct library dependencies for a given SCons library node.
     the attribute that it uses is populated by the Libdeps.py script
     """
+    print "__compute_libdeps"
 
     if getattr(node.attributes, 'libdeps_exploring', False):
         raise DependencyCycleError(node)
@@ -175,6 +196,7 @@ def __compute_libdeps(node):
 def __generate_lib_rels(lib, g):
     """Generate all library to library dependencies, and determine
     for each library the object files it consists of."""
+    print "__generate_lib_rels"
 
     lib_node = g.find_node(lib.get_path(), graph_consts.NODE_LIB)
 
@@ -196,6 +218,7 @@ def __generate_lib_rels(lib, g):
 def __generate_sym_rels(obj, g):
     """Generate all to symbol dependency and definition location information
     """
+    print "__generate_sym_rels"
 
     object_path = str(obj)
     file_node = g.find_node(object_path, graph_consts.NODE_FILE)
@@ -222,6 +245,7 @@ def __generate_file_rels(obj, g):
     """Generate all file to file and by extension, file to library and library
     to file relationships
     """
+    print "__generate_file_rels"
     file_node = g.get_node(str(obj))
 
     if file_node is None:
@@ -242,6 +266,7 @@ def __generate_file_rels(obj, g):
 def __generate_exe_rels(exe, g):
     """Generates all executable to library relationships, and populates the
     contained files field in each NodeExe object"""
+    print "__generate_exe_rels"
     exe_node = g.find_node(str(exe), graph_consts.NODE_EXE)
     for lib in exe.all_children():
         lib = lib.get_path()
@@ -258,6 +283,21 @@ def write_obj_db(target, source, env):
     creates the build dependency graph. The graph is then exported to a JSON
     file for use with the separate query tool/visualizer
     """
+    print "write_obj_db"
+
+    if len( LIB_DB ) == 0:
+        print "write_obj_db LIB_DB DAMN!"
+        #raise "DAMNIT!"
+        pass
+    if len( OBJ_DB ) == 0:
+        print "write_obj_db OBJ_DB DAMN!"
+        #raise "DAMNIT!"
+        pass
+    if len( EXE_DB ) == 0:
+        print "write_obj_db EXE_DB DAMNIT!"
+        #raise "DAMNIT!"
+        pass
+
     g = graph.Graph()
 
     for lib in LIB_DB:

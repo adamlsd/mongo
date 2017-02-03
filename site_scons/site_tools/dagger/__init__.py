@@ -13,9 +13,13 @@ def generate(env, **kwargs):
     in the environment. When we generate the tool we attach our emitters
     to the native builders for object/libraries.
     """
+    print env["LIBEMITTER"]
+    print env["SHLIBEMITTER"]
+    env.Append(LIBEMITTER=[dagger.emit_lib_db_entry])
+    env.Append(SHLIBEMITTER=[dagger.emit_lib_db_entry])
+    print env["LIBEMITTER"]
+    print env["SHLIBEMITTER"]
 
-    env.Replace(LIBEMITTER=SCons.Builder.ListEmitter([env['LIBEMITTER'],
-                                                      dagger.emit_lib_db_entry]))
     running_os = os.sys.platform
 
     if not (running_os.startswith('win') or running_os.startswith('sun')):

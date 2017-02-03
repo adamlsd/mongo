@@ -1,4 +1,5 @@
 # -*- mode: python; -*-
+# vim: ft=python
 import atexit
 import copy
 import datetime
@@ -1220,9 +1221,10 @@ if link_model.startswith("dynamic"):
     # Add in the abi linking tool if the user requested and it is
     # supported on this platform.
     if env.get('ABIDW'):
-        abilink = Tool('abilink')
-        if abilink.exists(env):
-            abilink(env)
+        pass
+        #abilink = Tool('abilink')
+        #if abilink.exists(env):
+            #abilink(env)
 
     # Redirect the 'Library' target, which we always use instead of 'StaticLibrary' for things
     # that can be built in either mode, to point to SharedLibrary.
@@ -1321,9 +1323,10 @@ if get_option('build-fast-and-loose') == 'on' or \
 # If the user has requested the git decider, enable it if it is available. We want to do this after
 # we set the basic decider above, so that we 'chain' to that one.
 if get_option('git-decider') == 'on':
-    git_decider = Tool('git_decider')
-    if git_decider.exists(env):
-        git_decider(env)
+    pass
+    #git_decider = Tool('git_decider')
+    #if git_decider.exists(env):
+        #git_decider(env)
 
 # On non-windows platforms, we may need to differentiate between flags being used to target an
 # executable (like -fPIE), vs those being used to target a (shared) library (like -fPIC). To do so,
@@ -1360,7 +1363,8 @@ if env['_LIBDEPS'] == '$_LIBDEPS_OBJS':
     env['RANLIBCOM'] = noop_action
     env['RANLIBCOMSTR'] = 'Skipping ranlib for $TARGET'
 elif env['_LIBDEPS'] == '$_LIBDEPS_LIBS':
-    env.Tool('thin_archive')
+    #env.Tool('thin_archive')
+    pass
 
 
 libdeps.setup_environment(env, emitting_shared=(link_model.startswith("dynamic")))
@@ -2859,7 +2863,7 @@ env = doConfigure( env )
 
 # Load the compilation_db tool. We want to do this after configure so we don't end up with
 # compilation database entries for the configure tests, which is weird.
-env.Tool("compilation_db")
+#env.Tool("compilation_db")
 
 def checkErrorCodes():
     import buildscripts.errorcodes as x
@@ -2969,15 +2973,15 @@ def injectMongoIncludePaths(thisEnv):
     thisEnv.AppendUnique(CPPPATH=['$BUILD_DIR'])
 env.AddMethod(injectMongoIncludePaths, 'InjectMongoIncludePaths')
 
-compileCommands = env.CompilationDatabase('compile_commands.json')
-compileDb = env.Alias("compiledb", compileCommands)
+#compileCommands = env.CompilationDatabase('compile_commands.json')
+#compileDb = env.Alias("compiledb", compileCommands)
 
 # Microsoft Visual Studio Project generation for code browsing
-vcxprojFile = env.Command(
-    "mongodb.vcxproj",
-    compileCommands,
-    r"$PYTHON buildscripts\make_vcxproj.py mongodb")
-vcxproj = env.Alias("vcxproj", vcxprojFile)
+#vcxprojFile = env.Command(
+    #"mongodb.vcxproj",
+    #compileCommands,
+    #r"$PYTHON buildscripts\make_vcxproj.py mongodb")
+#vcxproj = env.Alias("vcxproj", vcxprojFile)
 
 env.Alias("distsrc-tar", env.DistSrc("mongodb-src-${MONGO_VERSION}.tar"))
 env.Alias("distsrc-tgz", env.GZip(
@@ -3002,9 +3006,10 @@ all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tes
 
 # If we can, load the dagger tool for build dependency graph introspection.
 # Dagger is only supported on Linux and OSX (not Windows or Solaris).
-if is_running_os('osx') or is_running_os('linux'):
+if is_running_os('osx') or is_running_os('linux') or is_running_os('freebsd'):
     env.Tool("dagger")
     dependencyDb = env.Alias("dagger", env.Dagger('library_dependency_graph.json'))
+    print "ADAM(SConstruct: dagger): We are going to try to run dagger"
 
     # Require everything to be built before trying to extract build dependency information
     env.Requires(dependencyDb, all)

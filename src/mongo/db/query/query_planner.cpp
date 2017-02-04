@@ -426,7 +426,7 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
 
     // Use the cached index assignments to build solnRoot.
     std::unique_ptr<QuerySolutionNode> solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
-        query, clone.release(), false, params.indices, params);
+        query, std::move(clone), false, params.indices, params);
 
     if (!solnRoot) {
         return Status(ErrorCodes::BadValue,
@@ -798,7 +798,7 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
 
             // This can fail if enumeration makes a mistake.
             auto solnRoot = QueryPlannerAccess::buildIndexedDataAccess(
-                query, rawTree, false, relevantIndices, params);
+                query, std::move(rawTree), false, relevantIndices, params);
 
             if (nullptr == solnRoot) {
                 continue;

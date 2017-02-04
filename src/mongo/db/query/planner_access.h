@@ -223,11 +223,11 @@ public:
     //
 
     /**
-     * If 'inArrayOperator' is false, takes ownership of 'root'.
+     * Takes ownership of 'root'.
      */
     static std::unique_ptr<QuerySolutionNode> buildIndexedDataAccess(
         const CanonicalQuery& query,
-        MatchExpression* root,
+        std::unique_ptr<MatchExpression> root,
         bool inArrayOperator,
         const std::vector<IndexEntry>& indices,
         const QueryPlannerParams& params);

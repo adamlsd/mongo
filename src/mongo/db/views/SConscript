@@ -13,9 +13,13 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/views/views',
-        '$BUILD_DIR/mongo/db/catalog/catalog',
         '$BUILD_DIR/mongo/db/s/sharding',
-    ]
+        #'$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
+    ],
+    LIBDEPS_TAGS=[
+        # TODO(ADAM, 2017-02-03): See `CYCLE` tags above
+        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
+    ],
 )
 
 env.Library(
@@ -32,7 +36,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/pipeline/aggregation',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
         '$BUILD_DIR/mongo/db/query/collation/collator_factory_interface',
-    ]
+    ],
 )
 
 env.CppUnitTest(

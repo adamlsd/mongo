@@ -1,4 +1,5 @@
 // collection_info_cache.cpp
+// collection_info_cache.h
 
 /**
 *    Copyright (C) 2013 10gen Inc.
@@ -28,213 +29,34 @@
 *    it in the license file.
 */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
-
-#include "mongo/platform/basic.h"
-
 #include "mongo/db/catalog/collection_info_cache.h"
 
-#include "mongo/db/catalog/collection.h"
-#include "mongo/db/concurrency/d_concurrency.h"
-#include "mongo/db/fts/fts_spec.h"
-#include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/index_legacy.h"
+#include "mongo/db/collection_index_usage_tracker.h"
 #include "mongo/db/query/plan_cache.h"
-#include "mongo/db/query/planner_ixselect.h"
-#include "mongo/db/service_context.h"
-#include "mongo/db/ttl_collection_cache.h"
-#include "mongo/util/clock_source.h"
-#include "mongo/util/debug_util.h"
-#include "mongo/util/log.h"
+#include "mongo/db/query/query_settings.h"
+#include "mongo/db/update_index_data.h"
 
-namespace mongo {
+namespace mongo
+{
+	namespace
+	{
+		std::function< std::unique_ptr< CollectionInfoCache::Impl > ( Collection *collection ) >
+				implFactory;
+	}
+	
+	auto
+	CollectionInfoCache::makeImpl( Collection *const collection )
+			-> std::unique_ptr< Impl >
+	{
+		return implFactory( collection );
+	}
 
-CollectionInfoCache::CollectionInfoCache(Collection* collection)
-    : _collection(collection),
-      _keysComputed(false),
-      _planCache(new PlanCache(collection->ns().ns())),
-      _querySettings(new QuerySettings()),
-      _indexUsageTracker(getGlobalServiceContext()->getPreciseClockSource()) {}
+	void
+	CollectionInfoCache::registerImpl(
+			std::function< std::unique_ptr< Impl > ( Collection *collection ) > factory )
+	{
+		implFactory= std::move( factory );
+	}
 
-CollectionInfoCache::~CollectionInfoCache() {
-    // Necessary because the collection cache will not explicitly get updated upon database drop.
-    if (_hasTTLIndex) {
-        TTLCollectionCache& ttlCollectionCache = TTLCollectionCache::get(getGlobalServiceContext());
-        ttlCollectionCache.unregisterCollection(_collection->ns());
-    }
-}
-
-const UpdateIndexData& CollectionInfoCache::getIndexKeys(OperationContext* txn) const {
-    // This requires "some" lock, and MODE_IS is an expression for that, for now.
-    dassert(txn->lockState()->isCollectionLockedForMode(_collection->ns().ns(), MODE_IS));
-    invariant(_keysComputed);
-    return _indexedPaths;
-}
-
-void CollectionInfoCache::computeIndexKeys(OperationContext* txn) {
-    _indexedPaths.clear();
-
-    bool hadTTLIndex = _hasTTLIndex;
-    _hasTTLIndex = false;
-
-    IndexCatalog::IndexIterator i = _collection->getIndexCatalog()->getIndexIterator(txn, true);
-    while (i.more()) {
-        IndexDescriptor* descriptor = i.next();
-
-        if (descriptor->getAccessMethodName() != IndexNames::TEXT) {
-            BSONObj key = descriptor->keyPattern();
-            const BSONObj& infoObj = descriptor->infoObj();
-            if (infoObj.hasField("expireAfterSeconds")) {
-                _hasTTLIndex = true;
-            }
-            BSONObjIterator j(key);
-            while (j.more()) {
-                BSONElement e = j.next();
-                _indexedPaths.addPath(e.fieldName());
-            }
-        } else {
-            fts::FTSSpec ftsSpec(descriptor->infoObj());
-
-            if (ftsSpec.wildcard()) {
-                _indexedPaths.allPathsIndexed();
-            } else {
-                for (size_t i = 0; i < ftsSpec.numExtraBefore(); ++i) {
-                    _indexedPaths.addPath(ftsSpec.extraBefore(i));
-                }
-                for (fts::Weights::const_iterator it = ftsSpec.weights().begin();
-                     it != ftsSpec.weights().end();
-                     ++it) {
-                    _indexedPaths.addPath(it->first);
-                }
-                for (size_t i = 0; i < ftsSpec.numExtraAfter(); ++i) {
-                    _indexedPaths.addPath(ftsSpec.extraAfter(i));
-                }
-                // Any update to a path containing "language" as a component could change the
-                // language of a subdocument.  Add the override field as a path component.
-                _indexedPaths.addPathComponent(ftsSpec.languageOverrideField());
-            }
-        }
-
-        // handle partial indexes
-        const IndexCatalogEntry* entry = i.catalogEntry(descriptor);
-        const MatchExpression* filter = entry->getFilterExpression();
-        if (filter) {
-            unordered_set<std::string> paths;
-            QueryPlannerIXSelect::getFields(filter, "", &paths);
-            for (auto it = paths.begin(); it != paths.end(); ++it) {
-                _indexedPaths.addPath(*it);
-            }
-        }
-    }
-
-    TTLCollectionCache& ttlCollectionCache = TTLCollectionCache::get(getGlobalServiceContext());
-
-    if (_hasTTLIndex != hadTTLIndex) {
-        if (_hasTTLIndex) {
-            ttlCollectionCache.registerCollection(_collection->ns());
-        } else {
-            ttlCollectionCache.unregisterCollection(_collection->ns());
-        }
-    }
-
-    _keysComputed = true;
-}
-
-void CollectionInfoCache::notifyOfQuery(OperationContext* txn,
-                                        const std::set<std::string>& indexesUsed) {
-    // Record indexes used to fulfill query.
-    for (auto it = indexesUsed.begin(); it != indexesUsed.end(); ++it) {
-        // This index should still exist, since the PlanExecutor would have been killed if the
-        // index was dropped (and we would not get here).
-        dassert(NULL != _collection->getIndexCatalog()->findIndexByName(txn, *it));
-
-        _indexUsageTracker.recordIndexAccess(*it);
-    }
-}
-
-void CollectionInfoCache::clearQueryCache() {
-    LOG(1) << _collection->ns().ns() << ": clearing plan cache - collection info cache reset";
-    if (NULL != _planCache.get()) {
-        _planCache->clear();
-    }
-}
-
-PlanCache* CollectionInfoCache::getPlanCache() const {
-    return _planCache.get();
-}
-
-QuerySettings* CollectionInfoCache::getQuerySettings() const {
-    return _querySettings.get();
-}
-
-void CollectionInfoCache::updatePlanCacheIndexEntries(OperationContext* txn) {
-    std::vector<IndexEntry> indexEntries;
-
-    // TODO We shouldn't need to include unfinished indexes, but we must here because the index
-    // catalog may be in an inconsistent state.  SERVER-18346.
-    const bool includeUnfinishedIndexes = true;
-    IndexCatalog::IndexIterator ii =
-        _collection->getIndexCatalog()->getIndexIterator(txn, includeUnfinishedIndexes);
-    while (ii.more()) {
-        const IndexDescriptor* desc = ii.next();
-        const IndexCatalogEntry* ice = ii.catalogEntry(desc);
-        indexEntries.emplace_back(desc->keyPattern(),
-                                  desc->getAccessMethodName(),
-                                  desc->isMultikey(txn),
-                                  ice->getMultikeyPaths(txn),
-                                  desc->isSparse(),
-                                  desc->unique(),
-                                  desc->indexName(),
-                                  ice->getFilterExpression(),
-                                  desc->infoObj(),
-                                  ice->getCollator());
-    }
-
-    _planCache->notifyOfIndexEntries(indexEntries);
-}
-
-void CollectionInfoCache::init(OperationContext* txn) {
-    // Requires exclusive collection lock.
-    invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().ns(), MODE_X));
-
-    const bool includeUnfinishedIndexes = false;
-    IndexCatalog::IndexIterator ii =
-        _collection->getIndexCatalog()->getIndexIterator(txn, includeUnfinishedIndexes);
-    while (ii.more()) {
-        const IndexDescriptor* desc = ii.next();
-        _indexUsageTracker.registerIndex(desc->indexName(), desc->keyPattern());
-    }
-
-    rebuildIndexData(txn);
-}
-
-void CollectionInfoCache::addedIndex(OperationContext* txn, const IndexDescriptor* desc) {
-    // Requires exclusive collection lock.
-    invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().ns(), MODE_X));
-    invariant(desc);
-
-    rebuildIndexData(txn);
-
-    _indexUsageTracker.registerIndex(desc->indexName(), desc->keyPattern());
-}
-
-void CollectionInfoCache::droppedIndex(OperationContext* txn, StringData indexName) {
-    // Requires exclusive collection lock.
-    invariant(txn->lockState()->isCollectionLockedForMode(_collection->ns().ns(), MODE_X));
-
-    rebuildIndexData(txn);
-    _indexUsageTracker.unregisterIndex(indexName);
-}
-
-void CollectionInfoCache::rebuildIndexData(OperationContext* txn) {
-    clearQueryCache();
-
-    _keysComputed = false;
-    computeIndexKeys(txn);
-    updatePlanCacheIndexEntries(txn);
-}
-
-CollectionIndexUsageMap CollectionInfoCache::getIndexUsageStats() const {
-    return _indexUsageTracker.getUsageStats();
-}
-}
+	CollectionInfoCache::Impl::~Impl()= default;
+}	// namespace mongo

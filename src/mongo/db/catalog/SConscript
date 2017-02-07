@@ -57,6 +57,15 @@ env.Library(
 )
 
 env.Library(
+    target='index_catalog_entry',
+    source=[
+        "index_catalog_entry.cpp",
+    ],
+    LIBDEPS=[
+    ],
+)
+
+env.Library(
     target='catalog',
     source=[
         "apply_ops.cpp",
@@ -73,12 +82,13 @@ env.Library(
         "drop_database.cpp",
         "drop_indexes.cpp",
         "index_catalog.cpp",
-        "index_catalog_entry.cpp",
+        "index_catalog_entry_impl.cpp",
         "index_create.cpp",
         "rename_collection.cpp",
     ],
     LIBDEPS=[
         'collection_info_cache',
+        'index_catalog_entry',
         'collection_options',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',

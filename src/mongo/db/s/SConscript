@@ -164,6 +164,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
+        '$BUILD_DIR/mongo/db/catalog/catalog',
         '$BUILD_DIR/mongo/db/commands/dcommands',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/db_raii',

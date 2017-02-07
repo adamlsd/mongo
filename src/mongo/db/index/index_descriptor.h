@@ -97,8 +97,7 @@ public:
           _isIdIndex(isIdIndexPattern(_keyPattern)),
           _sparse(infoObj[IndexDescriptor::kSparseFieldName].trueValue()),
           _unique(_isIdIndex || infoObj[kUniqueFieldName].trueValue()),
-          _partial(!infoObj[kPartialFilterExprFieldName].eoo()),
-          _cachedEntry(NULL) {
+          _partial(!infoObj[kPartialFilterExprFieldName].eoo()){
         _indexNamespace = makeIndexNamespace(_parentNS, _indexName);
 
         _version = IndexVersion::kV0;
@@ -293,12 +292,8 @@ private:
     bool _partial;
     IndexVersion _version;
 
-    // only used by IndexCatalogEntryContainer to do caching for perf
-    // users not allowed to touch, and not part of API
-    IndexCatalogEntry* _cachedEntry;
-
     friend class IndexCatalog;
-    friend class IndexCatalogEntry;
+    friend class IndexCatalogEntryImpl;
     friend class IndexCatalogEntryContainer;
 };
 

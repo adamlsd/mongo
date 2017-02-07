@@ -433,6 +433,7 @@ env.Library(
         "$BUILD_DIR/mongo/db/curop",
         '$BUILD_DIR/mongo/db/clientcursor',
         "$BUILD_DIR/mongo/db/dbdirectclient",
+        '$BUILD_DIR/mongo/db/repl/serveronly',
         '$BUILD_DIR/mongo/db/stats/fill_locker_info',
         '$BUILD_DIR/mongo/db/stats/serveronly',
         "$BUILD_DIR/mongo/util/net/miniwebserver",
@@ -593,12 +594,12 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/clientdriver',
+        #'assemble_response', # CYCLE
         'curop',
         'lasterror',
-        # 'assemble_response', # CYCLE
     ],
     LIBDEPS_TAGS=[
-        # TODO(ADAM, 2017-01-09): See `CYCLE` tags above
+        # TODO(ADAM, 2017-02-06): See `CYCLE` tags above
         'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )
@@ -830,6 +831,7 @@ env.Library(
         "assemble_response.cpp",
     ],
     LIBDEPS=[
+        #"catalog/catalog", # CYCLE
         "commands/dcommands",
         "curop",
         "curop_metrics",
@@ -840,6 +842,10 @@ env.Library(
         "ops/write_ops_parsers",
         "run_commands",
         "storage/storage_options",
+    ],
+    LIBDEPS_TAGS=[
+        # TODO(ADAM, 2017-02-06): See `CYCLE` tags above.
+        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )
 

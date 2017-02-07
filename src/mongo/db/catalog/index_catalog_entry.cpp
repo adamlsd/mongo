@@ -51,307 +51,41 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+namespace {
+std::function<std::unique_ptr<IndexCatalogEntry::Impl>(OperationContext* txn,
+                                                       StringData ns,
+                                                       CollectionCatalogEntry* collection,
+                                                       IndexDescriptor* descriptor,
+                                                       CollectionInfoCache* infoCache)>
+    factory;
 
-using std::string;
+}  // namespace
 
-class HeadManagerImpl : public HeadManager {
-public:
-    HeadManagerImpl(IndexCatalogEntry* ice) : _catalogEntry(ice) {}
-    virtual ~HeadManagerImpl() {}
+auto IndexCatalogEntry::makeImpl(OperationContext* const txn,
+                                 const StringData ns,
+                                 CollectionCatalogEntry* const collection,
+                                 IndexDescriptor* const descriptor,
+                                 CollectionInfoCache* const infoCache)
 
-    const RecordId getHead(OperationContext* txn) const {
-        return _catalogEntry->head(txn);
-    }
-
-    void setHead(OperationContext* txn, const RecordId newHead) {
-        _catalogEntry->setHead(txn, newHead);
-    }
-
-private:
-    // Not owned here.
-    IndexCatalogEntry* _catalogEntry;
-};
-
-IndexCatalogEntry::IndexCatalogEntry(OperationContext* txn,
-                                     StringData ns,
-                                     CollectionCatalogEntry* collection,
-                                     IndexDescriptor* descriptor,
-                                     CollectionInfoCache* infoCache)
-    : _ns(ns.toString()),
-      _collection(collection),
-      _descriptor(descriptor),
-      _infoCache(infoCache),
-      _headManager(new HeadManagerImpl(this)),
-      _ordering(Ordering::make(descriptor->keyPattern())),
-      _isReady(false) {
-    _descriptor->_cachedEntry = this;
-
-    _isReady = _catalogIsReady(txn);
-    _head = _catalogHead(txn);
-
-    {
-        stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
-        _isMultikey.store(_catalogIsMultikey(txn, &_indexMultikeyPaths));
-        _indexTracksPathLevelMultikeyInfo = !_indexMultikeyPaths.empty();
-    }
-
-    if (BSONElement collationElement = _descriptor->getInfoElement("collation")) {
-        invariant(collationElement.isABSONObj());
-        BSONObj collation = collationElement.Obj();
-        auto statusWithCollator =
-            CollatorFactoryInterface::get(txn->getServiceContext())->makeFromBSON(collation);
-
-        // Index spec should have already been validated.
-        invariantOK(statusWithCollator.getStatus());
-
-        _collator = std::move(statusWithCollator.getValue());
-    }
-
-    if (BSONElement filterElement = _descriptor->getInfoElement("partialFilterExpression")) {
-        invariant(filterElement.isABSONObj());
-        BSONObj filter = filterElement.Obj();
-        StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-            filter, ExtensionsCallbackDisallowExtensions(), _collator.get());
-        // this should be checked in create, so can blow up here
-        invariantOK(statusWithMatcher.getStatus());
-        _filterExpression = std::move(statusWithMatcher.getValue());
-        LOG(2) << "have filter expression for " << _ns << " " << _descriptor->indexName() << " "
-               << redact(filter);
-    }
+    -> std::unique_ptr<Impl> {
+    return factory(txn, ns, collection, descriptor, infoCache);
 }
 
-IndexCatalogEntry::~IndexCatalogEntry() {
-    _descriptor->_cachedEntry = NULL;  // defensive
-
-    delete _headManager;
-    delete _descriptor;
+void IndexCatalogEntry::registerFactory(
+    stdx::function<std::unique_ptr<Impl>(OperationContext*,
+                                         StringData,
+                                         CollectionCatalogEntry*,
+                                         IndexDescriptor*,
+                                         CollectionInfoCache* infoCache)> newFactory) {
+    factory = std::move(newFactory);
 }
 
+// Force the vtable to be emitted in this TU.
+IndexCatalogEntry::Impl::~Impl() = default;
+
+// A cyclic class member reference and inclusion structure forces this to be emitted in a last-in-TU
+// fashion
 void IndexCatalogEntry::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
-    invariant(!_accessMethod);
-    _accessMethod = std::move(accessMethod);
+    this->pimpl->init(std::move(accessMethod));
 }
-
-const RecordId& IndexCatalogEntry::head(OperationContext* txn) const {
-    DEV invariant(_head == _catalogHead(txn));
-    return _head;
-}
-
-bool IndexCatalogEntry::isReady(OperationContext* txn) const {
-    DEV invariant(_isReady == _catalogIsReady(txn));
-    return _isReady;
-}
-
-bool IndexCatalogEntry::isMultikey() const {
-    return _isMultikey.load();
-}
-
-MultikeyPaths IndexCatalogEntry::getMultikeyPaths(OperationContext* txn) const {
-    stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
-    return _indexMultikeyPaths;
-}
-
-// ---
-
-void IndexCatalogEntry::setIsReady(bool newIsReady) {
-    _isReady = newIsReady;
-}
-
-class IndexCatalogEntry::SetHeadChange : public RecoveryUnit::Change {
-public:
-    SetHeadChange(IndexCatalogEntry* ice, RecordId oldHead) : _ice(ice), _oldHead(oldHead) {}
-
-    virtual void commit() {}
-    virtual void rollback() {
-        _ice->_head = _oldHead;
-    }
-
-    IndexCatalogEntry* _ice;
-    const RecordId _oldHead;
-};
-
-void IndexCatalogEntry::setHead(OperationContext* txn, RecordId newHead) {
-    _collection->setIndexHead(txn, _descriptor->indexName(), newHead);
-
-    txn->recoveryUnit()->registerChange(new SetHeadChange(this, _head));
-    _head = newHead;
-}
-
-
-/**
- * RAII class, which associates a new RecoveryUnit with an OperationContext for the purposes
- * of simulating a side-transaction. Takes ownership of the new recovery unit and frees it at
- * destruction time.
- */
-class RecoveryUnitSwap {
-public:
-    RecoveryUnitSwap(OperationContext* txn, RecoveryUnit* newRecoveryUnit)
-        : _txn(txn),
-          _oldRecoveryUnit(_txn->releaseRecoveryUnit()),
-          _oldRecoveryUnitState(
-              _txn->setRecoveryUnit(newRecoveryUnit, OperationContext::kNotInUnitOfWork)),
-          _newRecoveryUnit(newRecoveryUnit) {}
-
-    ~RecoveryUnitSwap() {
-        _txn->releaseRecoveryUnit();
-        _txn->setRecoveryUnit(_oldRecoveryUnit, _oldRecoveryUnitState);
-    }
-
-private:
-    // Not owned
-    OperationContext* const _txn;
-
-    // Owned, but life-time is not controlled
-    RecoveryUnit* const _oldRecoveryUnit;
-    OperationContext::RecoveryUnitState const _oldRecoveryUnitState;
-
-    // Owned and life-time is controlled
-    const std::unique_ptr<RecoveryUnit> _newRecoveryUnit;
-};
-
-void IndexCatalogEntry::setMultikey(OperationContext* txn, const MultikeyPaths& multikeyPaths) {
-    if (!_indexTracksPathLevelMultikeyInfo && isMultikey()) {
-        // If the index is already set as multikey and we don't have any path-level information to
-        // update, then there's nothing more for us to do.
-        return;
-    }
-
-    if (_indexTracksPathLevelMultikeyInfo) {
-        stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
-        invariant(multikeyPaths.size() == _indexMultikeyPaths.size());
-
-        bool newPathIsMultikey = false;
-        for (size_t i = 0; i < multikeyPaths.size(); ++i) {
-            if (!std::includes(_indexMultikeyPaths[i].begin(),
-                               _indexMultikeyPaths[i].end(),
-                               multikeyPaths[i].begin(),
-                               multikeyPaths[i].end())) {
-                // If 'multikeyPaths' contains a new path component that causes this index to be
-                // multikey, then we must update the index metadata in the CollectionCatalogEntry.
-                newPathIsMultikey = true;
-                break;
-            }
-        }
-
-        if (!newPathIsMultikey) {
-            // Otherwise, if all the path components in 'multikeyPaths' are already tracked in
-            // '_indexMultikeyPaths', then there's nothing more for us to do.
-            return;
-        }
-    }
-
-    {
-        // Only one thread should set the multi-key value per collection, because the metadata for a
-        // collection is one large document.
-        Lock::ResourceLock collMDLock(txn->lockState(), ResourceId(RESOURCE_METADATA, _ns), MODE_X);
-
-        if (!_indexTracksPathLevelMultikeyInfo && isMultikey()) {
-            // It's possible that we raced with another thread when acquiring the MD lock. If the
-            // index is already set as multikey and we don't have any path-level information to
-            // update, then there's nothing more for us to do.
-            return;
-        }
-
-        // This effectively emulates a side-transaction off the main transaction, which invoked
-        // setMultikey. The reason we need is to avoid artificial WriteConflicts, which happen with
-        // snapshot isolation.
-        {
-            StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
-            RecoveryUnitSwap ruSwap(txn, storageEngine->newRecoveryUnit());
-
-            WriteUnitOfWork wuow(txn);
-
-            // It's possible that the index type (e.g. ascending/descending index) supports tracking
-            // path-level multikey information, but this particular index doesn't.
-            // CollectionCatalogEntry::setIndexIsMultikey() requires that we discard the path-level
-            // multikey information in order to avoid unintentionally setting path-level multikey
-            // information on an index created before 3.4.
-            if (_collection->setIndexIsMultikey(
-                    txn,
-                    _descriptor->indexName(),
-                    _indexTracksPathLevelMultikeyInfo ? multikeyPaths : MultikeyPaths{})) {
-                if (_infoCache) {
-                    LOG(1) << _ns << ": clearing plan cache - index " << _descriptor->keyPattern()
-                           << " set to multi key.";
-                    _infoCache->clearQueryCache();
-                }
-            }
-
-            wuow.commit();
-        }
-    }
-
-    _isMultikey.store(true);
-
-    if (_indexTracksPathLevelMultikeyInfo) {
-        stdx::lock_guard<stdx::mutex> lk(_indexMultikeyPathsMutex);
-        for (size_t i = 0; i < multikeyPaths.size(); ++i) {
-            _indexMultikeyPaths[i].insert(multikeyPaths[i].begin(), multikeyPaths[i].end());
-        }
-    }
-}
-
-// ----
-
-bool IndexCatalogEntry::_catalogIsReady(OperationContext* txn) const {
-    return _collection->isIndexReady(txn, _descriptor->indexName());
-}
-
-RecordId IndexCatalogEntry::_catalogHead(OperationContext* txn) const {
-    return _collection->getIndexHead(txn, _descriptor->indexName());
-}
-
-bool IndexCatalogEntry::_catalogIsMultikey(OperationContext* txn,
-                                           MultikeyPaths* multikeyPaths) const {
-    return _collection->isIndexMultikey(txn, _descriptor->indexName(), multikeyPaths);
-}
-
-// ------------------
-
-const IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc) const {
-    if (desc->_cachedEntry)
-        return desc->_cachedEntry;
-
-    for (const_iterator i = begin(); i != end(); ++i) {
-        const IndexCatalogEntry* e = *i;
-        if (e->descriptor() == desc)
-            return e;
-    }
-    return NULL;
-}
-
-IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc) {
-    if (desc->_cachedEntry)
-        return desc->_cachedEntry;
-
-    for (iterator i = begin(); i != end(); ++i) {
-        IndexCatalogEntry* e = *i;
-        if (e->descriptor() == desc)
-            return e;
-    }
-    return NULL;
-}
-
-IndexCatalogEntry* IndexCatalogEntryContainer::find(const string& name) {
-    for (iterator i = begin(); i != end(); ++i) {
-        IndexCatalogEntry* e = *i;
-        if (e->descriptor()->indexName() == name)
-            return e;
-    }
-    return NULL;
-}
-
-IndexCatalogEntry* IndexCatalogEntryContainer::release(const IndexDescriptor* desc) {
-    for (std::vector<IndexCatalogEntry*>::iterator i = _entries.mutableVector().begin();
-         i != _entries.mutableVector().end();
-         ++i) {
-        IndexCatalogEntry* e = *i;
-        if (e->descriptor() != desc)
-            continue;
-        _entries.mutableVector().erase(i);
-        return e;
-    }
-    return NULL;
-}
-
 }  // namespace mongo

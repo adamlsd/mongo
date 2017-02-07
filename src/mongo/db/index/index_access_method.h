@@ -33,6 +33,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
+#include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
@@ -47,6 +48,7 @@ extern AtomicBool failIndexKeyTooLong;
 class BSONObjBuilder;
 class MatchExpression;
 class UpdateTicket;
+class IndexCatalogEntry;
 struct InsertDeleteOptions;
 
 /**

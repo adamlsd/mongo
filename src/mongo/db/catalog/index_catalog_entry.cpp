@@ -83,9 +83,75 @@ void IndexCatalogEntry::registerFactory(
 // Force the vtable to be emitted in this TU.
 IndexCatalogEntry::Impl::~Impl() = default;
 
+// The clearing of cache entries needs to happen.
+IndexCatalogEntry::~IndexCatalogEntry() {
+    this->pimpl->descriptor()->_cachedEntry = nullptr;  // defensive
+}
+
+
+// Registration of ourselves into the cache needs access to a type which is incomplete
+// in the header.
+IndexCatalogEntry::IndexCatalogEntry(OperationContext* const txn,
+                                     const StringData ns,
+                                     CollectionCatalogEntry* const collection,
+                                     IndexDescriptor* const descriptor,
+                                     CollectionInfoCache* const infoCache)
+    : pimpl(makeImpl(txn, ns, collection, descriptor, infoCache)) {
+    this->pimpl->descriptor()->_cachedEntry = this;
+}
+
 // A cyclic class member reference and inclusion structure forces this to be emitted in a last-in-TU
 // fashion
 void IndexCatalogEntry::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
     this->pimpl->init(std::move(accessMethod));
 }
+
+// ------------------
+
+const IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc) const {
+    if (desc->_cachedEntry)
+        return desc->_cachedEntry;
+
+    for (const_iterator i = begin(); i != end(); ++i) {
+        const IndexCatalogEntry* e = *i;
+        if (e->descriptor() == desc)
+            return e;
+    }
+    return NULL;
+}
+
+IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc) {
+    if (desc->_cachedEntry)
+        return desc->_cachedEntry;
+
+    for (iterator i = begin(); i != end(); ++i) {
+        IndexCatalogEntry* e = *i;
+        if (e->descriptor() == desc)
+            return e;
+    }
+    return NULL;
+}
+
+IndexCatalogEntry* IndexCatalogEntryContainer::find(const std::string& name) {
+    for (iterator i = begin(); i != end(); ++i) {
+        IndexCatalogEntry* e = *i;
+        if (e->descriptor()->indexName() == name)
+            return e;
+    }
+    return NULL;
+}
+
+IndexCatalogEntry* IndexCatalogEntryContainer::release(const IndexDescriptor* desc) {
+    for (std::vector<IndexCatalogEntry*>::iterator i = _entries.mutableVector().begin();
+         i != _entries.mutableVector().end();
+         ++i) {
+        IndexCatalogEntry* e = *i;
+        if (e->descriptor() != desc)
+            continue;
+        _entries.mutableVector().erase(i);
+        return e;
+    }
+    return NULL;
+}
+
 }  // namespace mongo

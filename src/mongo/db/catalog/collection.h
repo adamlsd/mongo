@@ -535,7 +535,7 @@ private:
     boost::optional<SnapshotName> _minVisibleSnapshot;
 
     friend class Database;
-    friend class IndexCatalog;
+    friend class IndexCatalogImpl;
     friend class NamespaceDetails;
 };
-}
+}  // namespace mongo

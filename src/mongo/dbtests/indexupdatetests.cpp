@@ -706,11 +706,11 @@ protected:
 class IndexCatatalogFixIndexKey {
 public:
     void run() {
-        ASSERT_BSONOBJ_EQ(BSON("x" << 1), IndexCatalog::fixIndexKey(BSON("x" << 1)));
+        ASSERT_BSONOBJ_EQ(BSON("x" << 1), IndexCatalogImpl::fixIndexKey(BSON("x" << 1)));
 
-        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << 1)));
+        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalogImpl::fixIndexKey(BSON("_id" << 1)));
 
-        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalog::fixIndexKey(BSON("_id" << true)));
+        ASSERT_BSONOBJ_EQ(BSON("_id" << 1), IndexCatalogImpl::fixIndexKey(BSON("_id" << true)));
     }
 };
 

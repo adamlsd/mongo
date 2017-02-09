@@ -475,6 +475,6 @@ env.Library(
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-06): See `CYCLE` tags above.
-        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
+        #'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )

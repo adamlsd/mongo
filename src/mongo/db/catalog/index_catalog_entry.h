@@ -76,7 +76,6 @@ public:
 
         virtual const CollatorInterface* getCollator() const = 0;
 
-
         virtual const RecordId& head(OperationContext* txn) const = 0;
 
         virtual void setHead(OperationContext* txn, RecordId newHead) = 0;
@@ -115,14 +114,13 @@ public:
                                              IndexDescriptor*,
                                              CollectionInfoCache* infoCache)>);
 
-    IndexCatalogEntry(OperationContext* const txn,
-                      const StringData ns,
-                      CollectionCatalogEntry* const collection,  // not owned
-                      IndexDescriptor* const descriptor,         // ownership passes to me
-                      CollectionInfoCache* const infoCache)      // not owned, optional
-        : pimpl(makeImpl(txn, ns, collection, descriptor, infoCache)) {}
+    IndexCatalogEntry(OperationContext* txn,
+                      StringData ns,
+                      CollectionCatalogEntry* collection,  // not owned
+                      IndexDescriptor* descriptor,         // ownership passes to me
+                      CollectionInfoCache* infoCache);     // not owned, optional
 
-    ~IndexCatalogEntry() = default;
+    ~IndexCatalogEntry();
 
     const std::string& ns() const {
         return this->pimpl->ns();

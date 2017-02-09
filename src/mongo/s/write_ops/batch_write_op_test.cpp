@@ -150,8 +150,7 @@ TEST(WriteOpTests, SingleOp) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -190,8 +189,7 @@ TEST(WriteOpTests, SingleError) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -236,8 +234,7 @@ TEST(WriteOpTests, SingleTargetError) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(!status.isOK());
@@ -279,8 +276,7 @@ TEST(WriteOpTests, SingleWriteConcernErrorOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -327,8 +323,7 @@ TEST(WriteOpTests, SingleStaleError) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -339,14 +334,14 @@ TEST(WriteOpTests, SingleStaleError) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     // Respond again with a stale response
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     buildResponse(1, &response);
@@ -367,12 +362,13 @@ TEST(WriteOpTests, SingleStaleError) {
 //
 
 struct EndpointComp {
-    bool operator()(const TargetedWriteBatch* writeA, const TargetedWriteBatch* writeB) const {
+    bool operator()(const std::unique_ptr<TargetedWriteBatch>& writeA,
+                    const std::unique_ptr<TargetedWriteBatch>& writeB) const {
         return writeA->getEndpoint().shardName.compare(writeB->getEndpoint().shardName) < 0;
     }
 };
 
-inline void sortByEndpoint(vector<TargetedWriteBatch*>* writes) {
+inline void sortByEndpoint(vector<std::unique_ptr<TargetedWriteBatch>>* writes) {
     std::sort(writes->begin(), writes->end(), EndpointComp());
 }
 
@@ -398,8 +394,7 @@ TEST(WriteOpTests, MultiOpSameShardOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -442,8 +437,7 @@ TEST(WriteOpTests, MultiOpSameShardUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -488,8 +482,7 @@ TEST(WriteOpTests, MultiOpTwoShardsOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -505,7 +498,7 @@ TEST(WriteOpTests, MultiOpTwoShardsOrdered) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT(!batchOp.isFinished());
@@ -547,8 +540,7 @@ TEST(WriteOpTests, MultiOpTwoShardsUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -601,8 +593,7 @@ TEST(WriteOpTests, MultiOpTwoShardsEachOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -623,7 +614,7 @@ TEST(WriteOpTests, MultiOpTwoShardsEachOrdered) {
     batchOp.noteBatchResponse(*targeted.back(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT(!batchOp.isFinished());
@@ -672,8 +663,7 @@ TEST(WriteOpTests, MultiOpTwoShardsEachUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -734,8 +724,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -752,7 +741,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -773,7 +762,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
     batchOp.noteBatchResponse(*targeted.back(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -791,7 +780,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
     batchOp.noteBatchResponse(*targeted.back(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -846,8 +835,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -899,8 +887,7 @@ TEST(WriteOpTests, MultiOpSingleShardErrorUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -963,8 +950,7 @@ TEST(WriteOpTests, MultiOpTwoShardErrorsUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -1032,8 +1018,7 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorUnordered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -1099,8 +1084,7 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorOrdered) {
     batchOp.initClientRequest(&request);
     ASSERT(!batchOp.isFinished());
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     ASSERT(status.isOK());
@@ -1167,8 +1151,7 @@ TEST(WriteOpTests, MultiOpErrorAndWriteConcernErrorUnordered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1212,8 +1195,7 @@ TEST(WriteOpTests, SingleOpErrorAndWriteConcernErrorOrdered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1263,15 +1245,14 @@ TEST(WriteOpTests, MultiOpFailedTargetOrdered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     // First targeting round fails since we may be stale
     ASSERT(!status.isOK());
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, true, &targeted);
 
     // Second targeting round is ok, but should stop at first write
@@ -1287,7 +1268,7 @@ TEST(WriteOpTests, MultiOpFailedTargetOrdered) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, true, &targeted);
 
     // Second targeting round results in an error which finishes the batch
@@ -1327,15 +1308,14 @@ TEST(WriteOpTests, MultiOpFailedTargetUnordered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     // First targeting round fails since we may be stale
     ASSERT(!status.isOK());
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, true, &targeted);
 
     // Second targeting round is ok, and should record an error
@@ -1382,8 +1362,7 @@ TEST(WriteOpTests, MultiOpFailedBatchOrdered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1393,7 +1372,7 @@ TEST(WriteOpTests, MultiOpFailedBatchOrdered) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, true, &targeted);
 
     buildErrResponse(ErrorCodes::UnknownError, "mock error", &response);
@@ -1436,8 +1415,7 @@ TEST(WriteOpTests, MultiOpFailedBatchUnordered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1488,8 +1466,7 @@ TEST(WriteOpTests, MultiOpAbortOrdered) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1579,8 +1556,7 @@ TEST(WriteOpTests, MultiOpTwoWCErrors) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
 
     BatchedCommandResponse response;
@@ -1591,7 +1567,7 @@ TEST(WriteOpTests, MultiOpTwoWCErrors) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, true, &targeted);
 
     // Second shard write write concern fails.
@@ -1632,8 +1608,7 @@ TEST(WriteOpLimitTests, OneBigDoc) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1669,8 +1644,7 @@ TEST(WriteOpLimitTests, OneBigOneSmall) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1682,7 +1656,7 @@ TEST(WriteOpLimitTests, OneBigOneSmall) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1714,8 +1688,7 @@ TEST(WriteOpLimitTests, TooManyOps) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1727,7 +1700,7 @@ TEST(WriteOpLimitTests, TooManyOps) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1778,8 +1751,7 @@ TEST(WriteOpLimitTests, UpdateOverheadIncluded) {
     BatchWriteOp batchOp;
     batchOp.initClientRequest(&request);
 
-    OwnedPointerVector<TargetedWriteBatch> targetedOwned;
-    vector<TargetedWriteBatch*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWriteBatch>> targeted;
     Status status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -1795,7 +1767,7 @@ TEST(WriteOpLimitTests, UpdateOverheadIncluded) {
     batchOp.noteBatchResponse(*targeted.front(), response, NULL);
     ASSERT(!batchOp.isFinished());
 
-    targetedOwned.clear();
+    targeted.clear();
     status = batchOp.targetBatch(&txn, targeter, false, &targeted);
     ASSERT(status.isOK());
     ASSERT_EQUALS(targeted.size(), 1u);

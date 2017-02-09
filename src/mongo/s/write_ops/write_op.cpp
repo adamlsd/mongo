@@ -30,6 +30,7 @@
 
 #include "mongo/s/write_ops/write_op.h"
 
+#include "mongo/stdx/memory.h"
 #include "mongo/base/error_codes.h"
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/util/assert_util.h"
@@ -67,7 +68,7 @@ const WriteErrorDetail& WriteOp::getOpError() const {
 
 Status WriteOp::targetWrites(OperationContext* txn,
                              const NSTargeter& targeter,
-                             std::vector<TargetedWrite*>* targetedWrites) {
+                             std::vector<std::unique_ptr<TargetedWrite>>* targetedWrites) {
     bool isUpdate = _itemRef.getOpType() == BatchedCommandRequest::BatchType_Update;
     bool isDelete = _itemRef.getOpType() == BatchedCommandRequest::BatchType_Delete;
     bool isIndexInsert = _itemRef.getRequest()->isInsertIndexRequest();
@@ -125,13 +126,13 @@ Status WriteOp::targetWrites(OperationContext* txn,
 
         // For now, multiple endpoints imply no versioning - we can't retry half a multi-write
         if (endpoints.size() == 1u) {
-            targetedWrites->push_back(new TargetedWrite(*endpoint, ref));
+            targetedWrites->push_back(stdx::make_unique< TargetedWrite>(*endpoint, ref));
         } else {
             ShardEndpoint broadcastEndpoint(endpoint->shardName, ChunkVersion::IGNORED());
-            targetedWrites->push_back(new TargetedWrite(broadcastEndpoint, ref));
+            targetedWrites->push_back(stdx::make_unique< TargetedWrite>(broadcastEndpoint, ref));
         }
 
-        _childOps.back()->pendingWrite = targetedWrites->back();
+        _childOps.back()->pendingWrite = targetedWrites->back().get();
         _childOps.back()->state = WriteOpState_Pending;
     }
 

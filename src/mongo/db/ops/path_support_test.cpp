@@ -659,9 +659,9 @@ public:
     ImmutablePaths() {}
 
     void addPath(const string& path) {
-        _ownedPaths.mutableVector().push_back(new FieldRef(path));
+        _ownedPaths.push_back(stdx::make_unique<FieldRef>(path));
         FieldRef const* conflictPath = NULL;
-        ASSERT(_immutablePathSet.insert(_ownedPaths.vector().back(), &conflictPath));
+        ASSERT(_immutablePathSet.insert(_ownedPaths.back().get(), &conflictPath));
     }
 
     const FieldRefSet& getPathSet() {
@@ -670,7 +670,7 @@ public:
 
 private:
     FieldRefSet _immutablePathSet;
-    OwnedPointerVector<FieldRef> _ownedPaths;
+    std::vector<std::unique_ptr<FieldRef>> _ownedPaths;
 };
 
 TEST(ExtractEqualities, IdOnlyMulti) {

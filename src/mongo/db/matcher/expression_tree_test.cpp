@@ -99,7 +99,7 @@ TEST( AndOp, MatchesElementSingleClause ) {
     BSONObj notMatch = BSON( "a" << 5 );
     unique_ptr<ComparisonMatchExpression> lt( new ComparisonMatchExpression() );
     ASSERT( lt->init( "", baseOperand[ "$lt" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( lt.release() );
     AndOp andOp;
     ASSERT( andOp.init( &subMatchExpressions ).isOK() );
@@ -221,7 +221,7 @@ TEST( AndOp, MatchesIndexKeyWithoutUnknown ) {
     ASSERT( sub1->init( "a", baseOperand1[ "$gt" ] ).isOK() );
     unique_ptr<ComparisonMatchExpression> sub2( new ComparisonMatchExpression() );
     ASSERT( sub2->init( "a", baseOperand2[ "$lt" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     AndOp andOp;
@@ -246,7 +246,7 @@ TEST( AndOp, MatchesIndexKeyWithUnknown ) {
     ASSERT( sub2->init( "a", baseOperand2[ "$lt" ] ).isOK() );
     unique_ptr<NeOp> sub3( new NeOp() );
     ASSERT( sub3->init( "a", baseOperand3[ "$ne" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     subMatchExpressions.mutableVector().push_back( sub3.release() );
@@ -269,7 +269,7 @@ TEST( OrOp, MatchesElementSingleClause ) {
     BSONObj notMatch = BSON( "a" << 5 );
     unique_ptr<ComparisonMatchExpression> lt( new ComparisonMatchExpression() );
     ASSERT( lt->init( "a", baseOperand[ "$lt" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( lt.release() );
     OrOp orOp;
     ASSERT( orOp.init( &subMatchExpressions ).isOK() );
@@ -297,7 +297,7 @@ TEST( OrOp, MatchesElementThreeClauses ) {
     ASSERT( sub2->init( "a", baseOperand2[ "$gt" ] ).isOK() );
     unique_ptr<ComparisonMatchExpression> sub3( new ComparisonMatchExpression() );
     ASSERT( sub3->init( "a", baseOperand3[ "a" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     subMatchExpressions.mutableVector().push_back( sub3.release() );
@@ -381,7 +381,7 @@ TEST( OrOp, MatchesIndexKeyWithoutUnknown ) {
     ASSERT( sub1->init( "a", baseOperand1[ "$gt" ] ).isOK() );
     unique_ptr<ComparisonMatchExpression> sub2( new ComparisonMatchExpression() );
     ASSERT( sub2->init( "a", baseOperand2[ "$lt" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     OrOp orOp;
@@ -406,7 +406,7 @@ TEST( OrOp, MatchesIndexKeyWithUnknown ) {
     ASSERT( sub2->init( "a", baseOperand2[ "$lt" ] ).isOK() );
     unique_ptr<NeOp> sub3( new NeOp() );
     ASSERT( sub3->init( "a", baseOperand3[ "$ne" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     subMatchExpressions.mutableVector().push_back( sub3.release() );
@@ -429,7 +429,7 @@ TEST( NorOp, MatchesElementSingleClause ) {
     BSONObj notMatch = BSON( "a" << 4 );
     unique_ptr<ComparisonMatchExpression> lt( new ComparisonMatchExpression() );
     ASSERT( lt->init( "a", baseOperand[ "$lt" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( lt.release() );
     NorOp norOp;
     ASSERT( norOp.init( &subMatchExpressions ).isOK() );
@@ -457,7 +457,7 @@ TEST( NorOp, MatchesElementThreeClauses ) {
     ASSERT( sub2->init( "a", baseOperand2[ "$gt" ] ).isOK() );
     unique_ptr<ComparisonMatchExpression> sub3( new ComparisonMatchExpression() );
     ASSERT( sub3->init( "a", baseOperand3[ "a" ] ).isOK() );
-    OwnedPointerVector<MatchMatchExpression> subMatchExpressions;
+    std::vector<std::unique_ptr<MatchMatchExpression>> subMatchExpressions;
     subMatchExpressions.mutableVector().push_back( sub1.release() );
     subMatchExpressions.mutableVector().push_back( sub2.release() );
     subMatchExpressions.mutableVector().push_back( sub3.release() );

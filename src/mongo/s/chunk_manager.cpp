@@ -34,7 +34,9 @@
 
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
+#include <vector>
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
@@ -660,17 +662,19 @@ IndexBounds ChunkManager::getIndexBoundsForQuery(const BSONObj& key,
                           NULL /* collator */);
     plannerParams.indices.push_back(indexEntry);
 
-    OwnedPointerVector<QuerySolution> solutions;
-    Status status = QueryPlanner::plan(canonicalQuery, plannerParams, &solutions.mutableVector());
+    std::vector<QuerySolution*> initSolutions;
+    Status status = QueryPlanner::plan(canonicalQuery, plannerParams, &initSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    for (const auto& solution : initSolutions) {
+        solutions.push_back(std::unique_ptr<QuerySolution>(solution));
+    }
     uassert(status.code(), status.reason(), status.isOK());
 
     IndexBounds bounds;
 
-    for (vector<QuerySolution*>::const_iterator it = solutions.begin();
-         bounds.size() == 0 && it != solutions.end();
-         it++) {
+    for (auto& solution : solutions) {
         // Try next solution if we failed to generate index bounds, i.e. bounds.size() == 0
-        bounds = collapseQuerySolution((*it)->root.get());
+        bounds = collapseQuerySolution(solution->root.get());
     }
 
     if (bounds.size() == 0) {

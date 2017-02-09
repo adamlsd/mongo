@@ -125,8 +125,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
         //    exactly when the metadata changed.
         //
 
-        OwnedPointerVector<TargetedWriteBatch> childBatchesOwned;
-        vector<TargetedWriteBatch*>& childBatches = childBatchesOwned.mutableVector();
+        std::vector<std::unique_ptr<TargetedWriteBatch>> childBatches;
 
         // If we've already had a targeting error, we've refreshed the metadata once and can
         // record target errors definitively.
@@ -157,14 +156,14 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
             //
 
             // Get as many batches as we can at once
-            for (vector<TargetedWriteBatch*>::iterator it = childBatches.begin();
+            for (vector<std::unique_ptr<TargetedWriteBatch>>::iterator it = childBatches.begin();
                  it != childBatches.end();
                  ++it) {
                 //
                 // Collect the info needed to dispatch our targeted batch
                 //
 
-                TargetedWriteBatch* nextBatch = *it;
+                TargetedWriteBatch* nextBatch = it->get();
                 // If the batch is NULL, we sent it previously, so skip
                 if (nextBatch == NULL)
                     continue;
@@ -213,8 +212,7 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
 
                     // We're done with this batch
                     // Clean up when we can't resolve a host
-                    delete *it;
-                    *it = NULL;
+                    *it = nullptr;
                     --numToSend;
                     continue;
                 }
@@ -245,10 +243,10 @@ void BatchWriteExec::executeBatch(OperationContext* txn,
                 // We'll only get duplicate hostEndpoints if we have broadcast and non-broadcast
                 // endpoints for the same host, so this should be pretty efficient without
                 // moving stuff around.
-                *it = NULL;
+                // Unique pointer release sets pointer to null.
 
                 // Recv-side is responsible for cleaning up the nextBatch when used
-                pendingBatches.insert(make_pair(shardHost, nextBatch));
+                pendingBatches.insert(make_pair(shardHost, it->release()));
             }
 
             // Send them all out

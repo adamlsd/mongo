@@ -32,6 +32,8 @@
 
 #include "mongo/db/exec/update.h"
 
+#include "boost/optional.hpp"
+
 #include "mongo/bson/mutable/algorithm.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -435,14 +437,19 @@ bool shouldRestartUpdateIfNoLongerMatches(const UpdateStageParams& params) {
     return params.request->shouldReturnAnyDocs() && !params.request->getSort().isEmpty();
 };
 
-const std::vector<FieldRef*>* getImmutableFields(OperationContext* txn, const NamespaceString& ns) {
+boost::optional<std::vector<FieldRef*>> getImmutableFields(OperationContext* txn,
+                                                           const NamespaceString& ns) {
     auto metadata = CollectionShardingState::get(txn, ns)->getMetadata();
     if (metadata) {
-        const std::vector<FieldRef*>& fields = metadata->getKeyPatternFields();
+        const std::vector<std::unique_ptr<FieldRef>>& fields = metadata->getKeyPatternFields();
         // Return shard-keys as immutable for the update system.
-        return &fields;
+        std::vector<FieldRef*> rv;
+        for (const auto& field : fields) {
+            rv.push_back(field.get());
+        }
+        return rv;
     }
-    return NULL;
+    return boost::none;
 }
 
 }  // namespace
@@ -557,12 +564,12 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
         // Verify that no immutable fields were changed and data is valid for storage.
 
         if (!(!getOpCtx()->writesAreReplicated() || request->isFromMigration())) {
-            const std::vector<FieldRef*>* immutableFields = NULL;
+            boost::optional<std::vector<FieldRef*>> immutableFields;
             if (lifecycle)
                 immutableFields = getImmutableFields(getOpCtx(), request->getNamespaceString());
 
             uassertStatusOK(validate(
-                oldObj.value(), updatedFields, _doc, immutableFields, driver->modOptions()));
+                oldObj.value(), updatedFields, _doc, &*immutableFields, driver->modOptions()));
         }
 
         // Prepare to write back the modified document
@@ -665,7 +672,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
     driver->setLogOp(false);
     driver->setContext(ModifierInterface::ExecInfo::INSERT_CONTEXT);
 
-    const vector<FieldRef*>* immutablePaths = NULL;
+    boost::optional<vector<FieldRef*>> immutablePaths;
     if (!isInternalRequest)
         immutablePaths = getImmutableFields(txn, ns);
 
@@ -673,7 +680,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
     BSONObj original;
 
     if (cq) {
-        Status status = driver->populateDocumentWithQueryFields(*cq, immutablePaths, *doc);
+        Status status = driver->populateDocumentWithQueryFields(*cq, &*immutablePaths, *doc);
         if (!status.isOK()) {
             return status;
         }
@@ -711,7 +718,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
         FieldRefSet noFields;
         // This will only validate the modified fields if not a replacement.
         Status validateStatus =
-            validate(original, noFields, *doc, immutablePaths, driver->modOptions());
+            validate(original, noFields, *doc, &*immutablePaths, driver->modOptions());
         if (!validateStatus.isOK()) {
             return validateStatus;
         }

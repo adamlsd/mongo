@@ -28,8 +28,10 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include "mongo/base/disallow_copying.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/field_ref_set.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/range_arithmetic.h"
@@ -152,8 +154,8 @@ public:
         return _keyPattern;
     }
 
-    const std::vector<FieldRef*>& getKeyPatternFields() const {
-        return _keyFields.vector();
+    const std::vector<std::unique_ptr<FieldRef>>& getKeyPatternFields() const {
+        return _keyFields;
     }
 
     BSONObj getMinKey() const;
@@ -225,7 +227,7 @@ private:
     BSONObj _keyPattern;
 
     // A vector owning the FieldRefs parsed from the shard-key pattern of field names.
-    OwnedPointerVector<FieldRef> _keyFields;
+    std::vector<std::unique_ptr<FieldRef>> _keyFields;
 
     //
     // RangeMaps represent chunks by mapping the min key to the chunk's max key, allowing

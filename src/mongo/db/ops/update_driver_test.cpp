@@ -31,7 +31,6 @@
 
 #include <map>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonelement_comparator.h"
@@ -53,7 +52,6 @@ using mongo::BSONObjIterator;
 using mongo::CollatorInterfaceMock;
 using mongo::FieldRef;
 using mongo::OperationContext;
-using mongo::OwnedPointerVector;
 using mongo::QueryTestServiceContext;
 using mongo::ServiceContext;
 using mongo::SimpleStringDataComparator;
@@ -392,40 +390,44 @@ TEST_F(CreateFromQuery, ImmutableFieldsOp) {
 
 TEST_F(CreateFromQuery, ShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1}}, b:2}");
-    OwnedPointerVector<FieldRef> immutablePaths;
-    immutablePaths.push_back(new FieldRef("a"));
-    ASSERT_OK(driverRepl().populateDocumentWithQueryFields(
-        txn(), query, &immutablePaths.vector(), doc()));
+    FieldRef a("a");
+    std::vector<FieldRef*> immutablePaths;
+    immutablePaths.push_back(&a);
+    ASSERT_OK(driverRepl().populateDocumentWithQueryFields(txn(), query, &immutablePaths, doc()));
     assertSameFields(fromjson("{a:1}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NestedShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1},'b.c':2},d:2}");
-    OwnedPointerVector<FieldRef> immutablePaths;
-    immutablePaths.push_back(new FieldRef("a"));
-    immutablePaths.push_back(new FieldRef("b.c"));
-    ASSERT_OK(driverRepl().populateDocumentWithQueryFields(
-        txn(), query, &immutablePaths.vector(), doc()));
+    FieldRef a("a");
+    FieldRef b_c("b.c");
+    std::vector<FieldRef*> immutablePaths;
+    immutablePaths.push_back(&a);
+    immutablePaths.push_back(&b_c);
+    ASSERT_OK(driverRepl().populateDocumentWithQueryFields(txn(), query, &immutablePaths, doc()));
     assertSameFields(fromjson("{a:1,b:{c:2}}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NestedShardKeyOp) {
     BSONObj query = fromjson("{a:{$eq:1},'b.c':2,d:{$all:[3]}},e:2}");
-    OwnedPointerVector<FieldRef> immutablePaths;
-    immutablePaths.push_back(new FieldRef("a"));
-    immutablePaths.push_back(new FieldRef("b.c"));
-    ASSERT_OK(
-        driverOps().populateDocumentWithQueryFields(txn(), query, &immutablePaths.vector(), doc()));
+    FieldRef a("a");
+    FieldRef b_c("b.c");
+    std::vector<FieldRef*> immutablePaths;
+    immutablePaths.push_back(&a);
+    immutablePaths.push_back(&b_c);
+    ASSERT_OK(driverOps().populateDocumentWithQueryFields(txn(), query, &immutablePaths, doc()));
     assertSameFields(fromjson("{a:1,b:{c:2},d:3}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NotFullShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1}, 'b.c':2}, d:2}");
-    OwnedPointerVector<FieldRef> immutablePaths;
-    immutablePaths.push_back(new FieldRef("a"));
-    immutablePaths.push_back(new FieldRef("b"));
-    ASSERT_NOT_OK(driverRepl().populateDocumentWithQueryFields(
-        txn(), query, &immutablePaths.vector(), doc()));
+    FieldRef a("a");
+    FieldRef b("b");
+    std::vector<FieldRef*> immutablePaths;
+    immutablePaths.push_back(&a);
+    immutablePaths.push_back(&b);
+    ASSERT_NOT_OK(
+        driverRepl().populateDocumentWithQueryFields(txn(), query, &immutablePaths, doc()));
 }
 
 }  // unnamed namespace

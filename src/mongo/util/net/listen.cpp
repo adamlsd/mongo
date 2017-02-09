@@ -444,15 +444,15 @@ void Listener::initAndListen() {
         _readyCondition.notify_all();
     }
 
-    OwnedPointerVector<EventHolder> eventHolders;
+    std::vector<std::unique_ptr<EventHolder>> eventHolders;
     std::unique_ptr<WSAEVENT[]> events(new WSAEVENT[_socks.size()]);
 
 
     // Populate events array with an event for each socket we are watching
     for (size_t count = 0; count < _socks.size(); ++count) {
-        EventHolder* ev(new EventHolder);
-        eventHolders.mutableVector().push_back(ev);
+        auto ev= stdx::make_unique< EventHolder>();
         events[count] = ev->get();
+        eventHolders.push_back(std::move(ev));
     }
 
     while (!globalInShutdownDeprecated()) {

@@ -28,8 +28,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+#include <vector>
+
 #include "mongo/base/error_codes.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/s/mock_ns_targeter.h"
 #include "mongo/s/write_ops/batched_command_request.h"
@@ -103,8 +105,7 @@ TEST(WriteOpTests, TargetSingle) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());
@@ -127,12 +128,13 @@ BatchedDeleteDocument* buildDeleteDoc(const BSONObj& doc) {
 }
 
 struct EndpointComp {
-    bool operator()(const TargetedWrite* writeA, const TargetedWrite* writeB) const {
+    bool operator()(const std::unique_ptr<TargetedWrite>& writeA,
+                    const std::unique_ptr<TargetedWrite>& writeB) const {
         return writeA->endpoint.shardName.compare(writeB->endpoint.shardName) < 0;
     }
 };
 
-inline void sortByEndpoint(vector<TargetedWrite*>* writes) {
+inline void sortByEndpoint(vector<std::unique_ptr<TargetedWrite>>* writes) {
     std::sort(writes->begin(), writes->end(), EndpointComp());
 }
 
@@ -165,8 +167,7 @@ TEST(WriteOpTests, TargetMultiOneShard) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());
@@ -209,8 +210,7 @@ TEST(WriteOpTests, TargetMultiAllShards) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());
@@ -256,8 +256,7 @@ TEST(WriteOpTests, ErrorSingle) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());
@@ -302,8 +301,7 @@ TEST(WriteOpTests, CancelSingle) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());
@@ -345,8 +343,7 @@ TEST(WriteOpTests, RetrySingleOp) {
     MockNSTargeter targeter;
     targeter.init(mockRanges);
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
+    std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&txn, targeter, &targeted);
 
     ASSERT(status.isOK());

@@ -84,51 +84,6 @@ protected:
         return *_loader;
     }
 
-    void getMetadataFor(const OwnedPointerVector<ChunkType>& chunks, CollectionMetadata* metadata) {
-        // Infer namespace, shard, epoch, keypattern from first chunk
-        const ChunkType* firstChunk = *(chunks.vector().begin());
-        const string ns = firstChunk->getNS();
-        const string shardName = firstChunk->getShard().toString();
-        const OID epoch = firstChunk->getVersion().epoch();
-
-        CollectionType coll;
-        coll.setNs(NamespaceString{ns});
-        coll.setKeyPattern(BSON("a" << 1));
-        coll.setUpdatedAt(Date_t::fromMillisSinceEpoch(1));
-        coll.setEpoch(epoch);
-        ASSERT_OK(coll.validate());
-        std::vector<BSONObj> collToSend{coll.toBSON()};
-
-        ChunkVersion version(1, 0, epoch);
-        std::vector<BSONObj> chunksToSend;
-        for (const auto chunkVal : chunks.vector()) {
-            ChunkType chunk(*chunkVal);
-
-            if (!chunk.isVersionSet()) {
-                chunk.setVersion(version);
-                version.incMajor();
-            }
-
-            ASSERT(chunk.validate().isOK());
-            chunksToSend.push_back(chunk.toConfigBSON());
-        }
-
-        auto future = launchAsync([this, ns, shardName, metadata] {
-            auto status = loader().makeCollectionMetadata(operationContext(),
-                                                          catalogClient(),
-                                                          ns,
-                                                          shardName,
-                                                          NULL, /* no old metadata */
-                                                          metadata);
-            ASSERT_OK(status);
-        });
-
-        expectFindOnConfigSendBSONObjVector(collToSend);
-        expectFindOnConfigSendBSONObjVector(chunksToSend);
-
-        future.timed_get(kFutureTimeout);
-    }
-
     ChunkVersion getMaxCollVersion() const {
         return _maxCollVersion;
     }

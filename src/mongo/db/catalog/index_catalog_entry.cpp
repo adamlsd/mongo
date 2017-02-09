@@ -313,7 +313,7 @@ const IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor*
         return desc->_cachedEntry;
 
     for (const_iterator i = begin(); i != end(); ++i) {
-        const IndexCatalogEntry* e = *i;
+        const IndexCatalogEntry* e = i->get();
         if (e->descriptor() == desc)
             return e;
     }
@@ -325,7 +325,7 @@ IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc)
         return desc->_cachedEntry;
 
     for (iterator i = begin(); i != end(); ++i) {
-        IndexCatalogEntry* e = *i;
+        IndexCatalogEntry* e = i->get();
         if (e->descriptor() == desc)
             return e;
     }
@@ -334,7 +334,7 @@ IndexCatalogEntry* IndexCatalogEntryContainer::find(const IndexDescriptor* desc)
 
 IndexCatalogEntry* IndexCatalogEntryContainer::find(const string& name) {
     for (iterator i = begin(); i != end(); ++i) {
-        IndexCatalogEntry* e = *i;
+        IndexCatalogEntry* e = i->get();
         if (e->descriptor()->indexName() == name)
             return e;
     }
@@ -342,14 +342,13 @@ IndexCatalogEntry* IndexCatalogEntryContainer::find(const string& name) {
 }
 
 IndexCatalogEntry* IndexCatalogEntryContainer::release(const IndexDescriptor* desc) {
-    for (std::vector<IndexCatalogEntry*>::iterator i = _entries.mutableVector().begin();
-         i != _entries.mutableVector().end();
-         ++i) {
-        IndexCatalogEntry* e = *i;
+    for (iterator i = _entries.begin(); i != _entries.end(); ++i) {
+        std::unique_ptr<IndexCatalogEntry>& e = *i;
         if (e->descriptor() != desc)
             continue;
-        _entries.mutableVector().erase(i);
-        return e;
+        auto rv = e.release();
+        _entries.erase(i);
+        return rv;
     }
     return NULL;
 }

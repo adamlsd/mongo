@@ -129,10 +129,9 @@ static void buildTargetError(const Status& errStatus, WriteErrorDetail* details)
 }
 
 // Helper to determine whether a number of targeted writes require a new targeted batch
-static bool isNewBatchRequired(const vector<TargetedWrite*>& writes,
+static bool isNewBatchRequired(const vector<std::unique_ptr<TargetedWrite>>& writes,
                                const TargetedBatchMap& batchMap) {
-    for (vector<TargetedWrite*>::const_iterator it = writes.begin(); it != writes.end(); ++it) {
-        TargetedWrite* write = *it;
+    for (const auto& write : writes) {
         if (batchMap.find(&write->endpoint) == batchMap.end()) {
             return true;
         }
@@ -175,11 +174,10 @@ static int getWriteSizeBytes(const WriteOp& writeOp) {
 }
 
 // Helper to determine whether a number of targeted writes require a new targeted batch
-static bool wouldMakeBatchesTooBig(const vector<TargetedWrite*>& writes,
+static bool wouldMakeBatchesTooBig(const vector<std::unique_ptr<TargetedWrite>>& writes,
                                    int writeSizeBytes,
                                    const TargetedBatchSizeMap& batchSizes) {
-    for (vector<TargetedWrite*>::const_iterator it = writes.begin(); it != writes.end(); ++it) {
-        const TargetedWrite* write = *it;
+    for (const auto& write : writes) {
         TargetedBatchSizeMap::const_iterator seenIt = batchSizes.find(&write->endpoint);
 
         if (seenIt == batchSizes.end()) {
@@ -233,10 +231,11 @@ static void cancelBatches(const WriteErrorDetail& why,
     batchMap->clear();
 }
 
-Status BatchWriteOp::targetBatch(OperationContext* txn,
-                                 const NSTargeter& targeter,
-                                 bool recordTargetErrors,
-                                 vector<TargetedWriteBatch*>* targetedBatches) {
+Status BatchWriteOp::targetBatch(
+    OperationContext* txn,
+    const NSTargeter& targeter,
+    bool recordTargetErrors,
+    std::vector<std::unique_ptr<TargetedWriteBatch>>* targetedBatches) {
     //
     // Targeting of unordered batches is fairly simple - each remaining write op is targeted,
     // and each of those targeted writes are grouped into a batch for a particular shard
@@ -290,8 +289,7 @@ Status BatchWriteOp::targetBatch(OperationContext* txn,
         //
 
         // TargetedWrites need to be owned once returned
-        OwnedPointerVector<TargetedWrite> writesOwned;
-        vector<TargetedWrite*>& writes = writesOwned.mutableVector();
+        std::vector<std::unique_ptr<TargetedWrite>> writes;
 
         Status targetStatus = writeOp.targetWrites(txn, targeter, &writes);
 
@@ -354,9 +352,7 @@ Status BatchWriteOp::targetBatch(OperationContext* txn,
         // Targeting went ok, add to appropriate TargetedBatch
         //
 
-        for (vector<TargetedWrite*>::iterator it = writes.begin(); it != writes.end(); ++it) {
-            TargetedWrite* write = *it;
-
+        for (auto& write : writes) {
             TargetedBatchMap::iterator batchIt = batchMap.find(&write->endpoint);
             TargetedBatchSizeMap::iterator batchSizeIt = batchSizes.find(&write->endpoint);
 
@@ -372,11 +368,11 @@ Status BatchWriteOp::targetBatch(OperationContext* txn,
 
             ++batchSize.numOps;
             batchSize.sizeBytes += writeSizeBytes;
-            batch->addWrite(write);
+            batch->addWrite(write.release());
         }
 
-        // Relinquish ownership of TargetedWrites, now the TargetedBatches own them
-        writesOwned.mutableVector().clear();
+        // Clear the TargetedWrites, now the TargetedBatches have them.
+        writes.clear();
 
         //
         // Break if we're ordered and we have more than one endpoint - later writes cannot be
@@ -400,7 +396,7 @@ Status BatchWriteOp::targetBatch(OperationContext* txn,
         // Remember targeted batch for reporting
         _targeted.insert(batch);
         // Send the handle back to caller
-        targetedBatches->push_back(batch);
+        targetedBatches->push_back(std::unique_ptr<TargetedWriteBatch>(batch));
     }
 
     return Status::OK();
@@ -861,4 +857,4 @@ void TrackedErrors::clear() {
 TrackedErrors::~TrackedErrors() {
     clear();
 }
-}
+}  // namespace mongo

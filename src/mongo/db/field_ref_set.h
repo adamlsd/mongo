@@ -63,6 +63,7 @@ public:
 
     FieldRefSet();
 
+    FieldRefSet(const std::vector<std::unique_ptr<FieldRef>>& paths);
     FieldRefSet(const std::vector<FieldRef*>& paths);
 
     /** Returns 'true' if the set is empty */
@@ -103,6 +104,7 @@ public:
      *
      * Note that *no* conflict resolution occurs here.
      */
+    void fillFrom(const std::vector<std::unique_ptr<FieldRef>>& fields);
     void fillFrom(const std::vector<FieldRef*>& fields);
 
     /**

@@ -109,7 +109,7 @@ public:
     Status targetBatch(OperationContext* txn,
                        const NSTargeter& targeter,
                        bool recordTargetErrors,
-                       std::vector<TargetedWriteBatch*>* targetedBatches);
+                       std::vector<std::unique_ptr<TargetedWriteBatch>>* targetedBatches);
 
     /**
      * Fills a BatchCommandRequest from a TargetedWriteBatch for this BatchWriteOp.
@@ -287,4 +287,4 @@ private:
     typedef unordered_map<int, std::vector<ShardError*>> TrackedErrorMap;
     TrackedErrorMap _errorMap;
 };
-}
+}  // namespace mongo

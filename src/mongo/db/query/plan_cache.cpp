@@ -361,13 +361,17 @@ PlanCacheEntry::~PlanCacheEntry() {
 }
 
 PlanCacheEntry* PlanCacheEntry::clone() const {
-    OwnedPointerVector<QuerySolution> solutions;
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
     for (size_t i = 0; i < plannerData.size(); ++i) {
-        QuerySolution* qs = new QuerySolution();
+        auto qs = stdx::make_unique<QuerySolution>();
         qs->cacheData.reset(plannerData[i]->clone());
-        solutions.mutableVector().push_back(qs);
+        solutions.push_back(std::move(qs));
     }
-    PlanCacheEntry* entry = new PlanCacheEntry(solutions.vector(), decision->clone());
+    std::vector<QuerySolution*> solutionsRaw;
+    for (const auto& solution : solutions) {
+        solutionsRaw.push_back(solution.get());
+    }
+    PlanCacheEntry* entry = new PlanCacheEntry(solutionsRaw, decision->clone());
 
     // Copy query shape.
     entry->query = query.getOwned();

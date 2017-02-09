@@ -139,7 +139,7 @@ private:
     SnapshotName _majorityCommittedSnapshot = SnapshotName::min();
     std::unique_ptr<Timer> _timer;
 
-    typedef OwnedPointerVector<Change> Changes;
+    typedef std::vector<std::unique_ptr<Change>> Changes;
     Changes _changes;
 };
 

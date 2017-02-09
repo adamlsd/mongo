@@ -78,8 +78,6 @@ BSONObj stripFieldNames(const BSONObj& obj) {
     return bob.obj();
 }
 
-}  // namespace
-
 /**
  * A command for manually constructing a query tree and running it.
  *
@@ -181,7 +179,7 @@ public:
         BSONObj planObj = planElt.Obj();
 
         // Parse the plan into these.
-        OwnedPointerVector<MatchExpression> exprs;
+        std::vector<std::unique_ptr<MatchExpression>> exprs;
         unique_ptr<WorkingSet> ws(new WorkingSet());
 
         PlanStage* userRoot = parseQuery(txn, collection, planObj, ws.get(), &exprs);
@@ -227,7 +225,7 @@ public:
                           Collection* collection,
                           BSONObj obj,
                           WorkingSet* workingSet,
-                          OwnedPointerVector<MatchExpression>* exprs) {
+                          std::vector<std::unique_ptr<MatchExpression>>* exprs) {
         BSONElement firstElt = obj.firstElement();
         if (!firstElt.isABSONObj()) {
             return NULL;
@@ -256,10 +254,8 @@ public:
                     return NULL;
                 }
                 std::unique_ptr<MatchExpression> me = std::move(statusWithMatcher.getValue());
-                // exprs is what will wind up deleting this.
-                matcher = me.release();
-                verify(NULL != matcher);
-                exprs->mutableVector().push_back(matcher);
+                verify(nullptr != me.get());
+                exprs->push_back(std::move(me));
             } else if (argsTag == e.fieldName()) {
                 nodeArgs = argObj;
             } else {
@@ -524,5 +520,7 @@ MONGO_INITIALIZER(RegisterStageDebugCmd)(InitializerContext* context) {
     }
     return Status::OK();
 }
+
+}  // namespace
 
 }  // namespace mongo

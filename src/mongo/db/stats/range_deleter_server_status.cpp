@@ -98,4 +98,4 @@ public:
     }
 
 } rangeDeleterServerStatusSection;
-}
+}//namespace mongo

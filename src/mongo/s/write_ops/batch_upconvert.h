@@ -42,7 +42,8 @@ class Message;
 // NOTE: These functions throw on invalid message format.
 //
 
-void msgToBatchRequests(const Message& msg, std::vector<BatchedCommandRequest*>* requests);
+void msgToBatchRequests(const Message& msg,
+                        std::vector<std::unique_ptr<BatchedCommandRequest>>* requests);
 
 /**
  * Utility function for recording completed batch writes into the LastError object.

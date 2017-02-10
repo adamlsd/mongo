@@ -31,7 +31,6 @@
 #include <utility>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/platform/compiler.h"
 
@@ -99,7 +98,7 @@ private:
     void resetChanges();
 
     // Changes are ordered from oldest to newest.
-    typedef OwnedPointerVector<Change> Changes;
+    typedef std::vector<std::unique_ptr<Change>> Changes;
     Changes _changes;
 
 

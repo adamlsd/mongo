@@ -33,7 +33,6 @@
 #include "mongo/s/commands/strategy.h"
 
 #include "mongo/base/data_cursor.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/bson/util/builder.h"

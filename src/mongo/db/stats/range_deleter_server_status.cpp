@@ -26,7 +26,6 @@
  *    it in the license file.
  */
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/range_deleter_service.h"
 
@@ -66,12 +65,10 @@ public:
 
         BSONObjBuilder result;
 
-        OwnedPointerVector<DeleteJobStats> statsList;
-        deleter->getStatsHistory(&statsList.mutableVector());
+        std::vector<std::unique_ptr<DeleteJobStats>> statsList;
+        deleter->getStatsHistory(&statsList);
         BSONArrayBuilder oldStatsBuilder;
-        for (OwnedPointerVector<DeleteJobStats>::const_iterator it = statsList.begin();
-             it != statsList.end();
-             ++it) {
+        for (auto it = statsList.begin(); it != statsList.end(); ++it) {
             BSONObjBuilder entryBuilder;
             entryBuilder.append("deletedDocs", (*it)->deletedDocCount);
 
@@ -98,4 +95,4 @@ public:
     }
 
 } rangeDeleterServerStatusSection;
-}//namespace mongo
+}  // namespace mongo

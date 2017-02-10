@@ -39,7 +39,6 @@
 #include <typeinfo>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -1000,9 +999,9 @@ TEST_F(KeyStringTest, NumberOrderLots) {
 
     Ordering ordering = Ordering::make(BSON("a" << 1));
 
-    OwnedPointerVector<KeyString> keyStrings;
+    std::vector<std::unique_ptr<KeyString>> keyStrings;
     for (size_t i = 0; i < numbers.size(); i++) {
-        keyStrings.push_back(new KeyString(version, numbers[i], ordering));
+        keyStrings.push_back(stdx::make_unique<KeyString>(version, numbers[i], ordering));
     }
 
     for (size_t i = 0; i < numbers.size(); i++) {

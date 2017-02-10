@@ -28,11 +28,11 @@
 
 #pragma once
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/s/ns_targeter.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -71,11 +71,10 @@ struct MockRange {
  */
 class MockNSTargeter : public NSTargeter {
 public:
-    void init(const std::vector<MockRange*> mockRanges) {
+    void init(std::vector<std::unique_ptr<MockRange>> mockRanges) {
         ASSERT(!mockRanges.empty());
-        _mockRanges.mutableVector().insert(
-            _mockRanges.mutableVector().end(), mockRanges.begin(), mockRanges.end());
-        _nss = NamespaceString(_mockRanges.vector().front()->range.ns);
+        _mockRanges = std::move(mockRanges);
+        _nss = NamespaceString(_mockRanges.front()->range.ns);
     }
 
     const NamespaceString& getNS() const {
@@ -86,12 +85,12 @@ public:
      * Returns a ShardEndpoint for the doc from the mock ranges
      */
     Status targetInsert(OperationContext* txn, const BSONObj& doc, ShardEndpoint** endpoint) const {
-        std::vector<ShardEndpoint*> endpoints;
+        std::vector<std::unique_ptr<ShardEndpoint>> endpoints;
         Status status = targetQuery(doc, &endpoints);
         if (!status.isOK())
             return status;
         if (!endpoints.empty())
-            *endpoint = endpoints.front();
+            *endpoint = endpoints.front().release();
         return Status::OK();
     }
 
@@ -101,7 +100,7 @@ public:
      */
     Status targetUpdate(OperationContext* txn,
                         const BatchedUpdateDocument& updateDoc,
-                        std::vector<ShardEndpoint*>* endpoints) const {
+                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         return targetQuery(updateDoc.getQuery(), endpoints);
     }
 
@@ -111,22 +110,19 @@ public:
      */
     Status targetDelete(OperationContext* txn,
                         const BatchedDeleteDocument& deleteDoc,
-                        std::vector<ShardEndpoint*>* endpoints) const {
+                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         return targetQuery(deleteDoc.getQuery(), endpoints);
     }
 
-    Status targetCollection(std::vector<ShardEndpoint*>* endpoints) const {
+    Status targetCollection(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         // TODO: XXX
         // No-op
         return Status::OK();
     }
 
-    Status targetAllShards(std::vector<ShardEndpoint*>* endpoints) const {
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
-            endpoints->push_back(new ShardEndpoint(range->endpoint));
+    Status targetAllShards(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
+        for (const auto& range : getRanges()) {
+            endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
         }
 
         return Status::OK();
@@ -147,8 +143,8 @@ public:
         return Status::OK();
     }
 
-    const std::vector<MockRange*>& getRanges() const {
-        return _mockRanges.vector();
+    const std::vector<std::unique_ptr<MockRange>>& getRanges() const {
+        return _mockRanges;
     }
 
 private:
@@ -182,19 +178,16 @@ private:
      * Returns the first ShardEndpoint for the query from the mock ranges.  Only can handle
      * queries of the form { field : { $gte : <value>, $lt : <value> } }.
      */
-    Status targetQuery(const BSONObj& query, std::vector<ShardEndpoint*>* endpoints) const {
+    Status targetQuery(const BSONObj& query,
+                       std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         KeyRange queryRange = parseRange(query);
 
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
-
+        for (const auto& range : getRanges()) {
             if (rangeOverlaps(queryRange.minKey,
                               queryRange.maxKey,
                               range->range.minKey,
                               range->range.maxKey)) {
-                endpoints->push_back(new ShardEndpoint(range->endpoint));
+                endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
             }
         }
 
@@ -206,7 +199,7 @@ private:
     NamespaceString _nss;
 
     // Manually-stored ranges
-    OwnedPointerVector<MockRange> _mockRanges;
+    std::vector<std::unique_ptr<MockRange>> _mockRanges;
 };
 
 inline void assertEndpointsEqual(const ShardEndpoint& endpointA, const ShardEndpoint& endpointB) {

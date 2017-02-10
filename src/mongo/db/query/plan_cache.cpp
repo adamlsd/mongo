@@ -32,7 +32,6 @@
 
 #include "mongo/db/query/plan_cache.h"
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/client/dbclientinterface.h"  // For QueryOption_foobar
 #include "mongo/db/matcher/expression_array.h"
 #include "mongo/db/matcher/expression_geo.h"

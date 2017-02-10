@@ -29,7 +29,6 @@
 
 #include "mongo/s/write_ops/batch_upconvert.h"
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/builder.h"

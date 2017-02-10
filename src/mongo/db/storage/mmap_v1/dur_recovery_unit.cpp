@@ -310,7 +310,7 @@ void DurRecoveryUnit::setRollbackWritesDisabled() {
 
 void DurRecoveryUnit::registerChange(Change* change) {
     invariant(_inUnitOfWork);
-    _changes.push_back(change);
+    _changes.push_back(std::unique_ptr<Change>{change});
 }
 
 }  // namespace mongo

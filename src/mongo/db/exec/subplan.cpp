@@ -180,8 +180,8 @@ Status SubplanStage::planSubqueries() {
 
     for (size_t i = 0; i < _orExpression->numChildren(); ++i) {
         // We need a place to shove the results from planning this branch.
-        _branchResults.push_back(new BranchPlanningResult());
-        BranchPlanningResult* branchResult = _branchResults.back();
+        _branchResults.push_back(stdx::make_unique<BranchPlanningResult>());
+        BranchPlanningResult* branchResult = _branchResults.back().get();
 
         MatchExpression* orChild = _orExpression->getChild(i);
 
@@ -216,9 +216,13 @@ Status SubplanStage::planSubqueries() {
 
             // We don't set NO_TABLE_SCAN because peeking at the cache data will keep us from
             // considering any plan that's a collscan.
-            Status status = QueryPlanner::plan(*branchResult->canonicalQuery,
-                                               _plannerParams,
-                                               &branchResult->solutions.mutableVector());
+            std::vector<QuerySolution*> solutionsRaw;
+            Status status =
+                QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams, &solutionsRaw);
+
+            for (const auto& solution : solutionsRaw) {
+                branchResult->solutions.push_back(std::unique_ptr<QuerySolution>{solution});
+            }
 
             if (!status.isOK()) {
                 mongoutils::str::stream ss;
@@ -226,6 +230,7 @@ Status SubplanStage::planSubqueries() {
                    << status.reason();
                 return Status(ErrorCodes::BadValue, ss);
             }
+
             LOG(5) << "Subplanner: got " << branchResult->solutions.size() << " solutions";
 
             if (0 == branchResult->solutions.size()) {
@@ -290,7 +295,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
 
     for (size_t i = 0; i < _orExpression->numChildren(); ++i) {
         MatchExpression* orChild = _orExpression->getChild(i);
-        BranchPlanningResult* branchResult = _branchResults[i];
+        BranchPlanningResult* branchResult = _branchResults[i].get();
 
         if (branchResult->cachedSolution.get()) {
             // We can get the index tags we need out of the cache.
@@ -300,7 +305,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
                 return tagStatus;
             }
         } else if (1 == branchResult->solutions.size()) {
-            QuerySolution* soln = branchResult->solutions.front();
+            QuerySolution* soln = branchResult->solutions.front().get();
             Status tagStatus = tagOrChildAccordingToCache(
                 cacheData.get(), soln->cacheData.get(), orChild, _indexMap);
             if (!tagStatus.isOK()) {
@@ -342,7 +347,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
                                               &nextPlanRoot));
 
                 // Takes ownership of solution with index 'ix' and 'nextPlanRoot'.
-                multiPlanStage->addPlan(branchResult->solutions.releaseAt(ix), nextPlanRoot, _ws);
+                multiPlanStage->addPlan(branchResult->solutions[ix].release(), nextPlanRoot, _ws);
             }
 
             Status planSelectStat = multiPlanStage->pickBestPlan(yieldPolicy);
@@ -439,7 +444,10 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
                           " planner returned error: " + status.reason());
     }
 
-    OwnedPointerVector<QuerySolution> solutions(rawSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    for (const auto& solution : rawSolutions) {
+        solutions.push_back(std::unique_ptr<QuerySolution>{solution});
+    }
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?
@@ -457,7 +465,8 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
         _children.emplace_back(root);
 
         // This SubplanStage takes ownership of the query solution.
-        _compositeSolution.reset(solutions.popAndReleaseBack());
+        _compositeSolution = std::move(solutions.back());
+        solutions.pop_back();
 
         return Status::OK();
     } else {
@@ -478,7 +487,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
                 getOpCtx(), _collection, *_query, *solutions[ix], _ws, &nextPlanRoot));
 
             // Takes ownership of 'solutions[ix]' and 'nextPlanRoot'.
-            multiPlanStage->addPlan(solutions.releaseAt(ix), nextPlanRoot, _ws);
+            multiPlanStage->addPlan(solutions[ix].release(), nextPlanRoot, _ws);
         }
 
         // Delegate the the MultiPlanStage's plan selection facility.

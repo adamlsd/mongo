@@ -30,7 +30,6 @@
 
 #include "mongo/s/write_ops/batch_write_exec.h"
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/client/remote_command_targeter_factory_mock.h"
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/s/catalog/type_shard.h"
@@ -88,13 +87,13 @@ public:
 
         // Set up the namespace targeter to target the fake shard.
         ShardEndpoint endpoint(shardName, ChunkVersion::IGNORED());
-        vector<MockRange*> mockRanges;
+        std::vector<std::unique_ptr<MockRange>> mockRanges;
         mockRanges.push_back(
-            new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
-        nsTargeter.init(mockRanges);
+            stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+        nsTargeter.init(std::move(mockRanges));
 
         // Make the batch write executor use the mock backend.
-        exec.reset(new BatchWriteExec(&nsTargeter, &dispatcher));
+        exec = stdx::make_unique<BatchWriteExec>(&nsTargeter, &dispatcher);
     }
 
     void setMockResults(const vector<MockWriteResult*>& results) {

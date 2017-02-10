@@ -35,7 +35,6 @@
 #include <memory.h>
 
 #include "mongo/base/checked_cast.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/record_id.h"
 #include "mongo/db/storage/recovery_unit.h"

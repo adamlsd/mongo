@@ -34,7 +34,6 @@
 // For s2 search
 #include "third_party/s2/s2regionintersection.h"
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/exec/fetch.h"
 #include "mongo/db/exec/index_scan.h"
@@ -99,7 +98,7 @@ struct StoredGeometry {
  */
 static void extractGeometries(const BSONObj& doc,
                               const string& path,
-                              vector<StoredGeometry*>* geometries) {
+                              std::vector<std::unique_ptr<StoredGeometry>>* geometries) {
     BSONElementSet geomElements;
     // NOTE: Annoyingly, we cannot just expand arrays b/c single 2d points are arrays, we need
     // to manually expand all results to check if they are geometries
@@ -111,7 +110,7 @@ static void extractGeometries(const BSONObj& doc,
 
         if (stored.get()) {
             // Valid geometry element
-            geometries->push_back(stored.release());
+            geometries->push_back(std::move(stored));
         } else if (el.type() == Array) {
             // Many geometries may be in an array
             BSONObjIterator arrIt(el.Obj());
@@ -121,7 +120,7 @@ static void extractGeometries(const BSONObj& doc,
 
                 if (stored.get()) {
                     // Valid geometry element
-                    geometries->push_back(stored.release());
+                    geometries->push_back(std::move(stored));
                 } else {
                     warning() << "geoNear stage read non-geometry element " << redact(nextEl)
                               << " in array " << redact(el);
@@ -147,15 +146,14 @@ static StatusWith<double> computeGeoNearDistance(const GeoNearParams& nearParams
     CRS queryCRS = nearParams.nearQuery->centroid->crs;
 
     // Extract all the geometries out of this document for the near query
-    OwnedPointerVector<StoredGeometry> geometriesOwned;
-    vector<StoredGeometry*>& geometries = geometriesOwned.mutableVector();
+    std::vector<std::unique_ptr<StoredGeometry>> geometries;
     extractGeometries(member->obj.value(), nearParams.nearQuery->field, &geometries);
 
     // Compute the minimum distance of all the geometries in the document
     double minDistance = -1;
     BSONObj minDistanceObj;
-    for (vector<StoredGeometry*>::iterator it = geometries.begin(); it != geometries.end(); ++it) {
-        StoredGeometry& stored = **it;
+    for (auto& storedP : geometries) {
+        StoredGeometry& stored = *storedP;
 
         // NOTE: A stored document with STRICT_SPHERE CRS is treated as a malformed document
         // and ignored. Since GeoNear requires an index, there's no stored STRICT_SPHERE shape.

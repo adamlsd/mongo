@@ -31,6 +31,7 @@
 #include "mongo/s/write_ops/batch_write_op.h"
 
 #include "mongo/base/error_codes.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -210,12 +211,9 @@ static void cancelBatches(const WriteErrorDetail& why,
     // Collect all the writeOps that are currently targeted
     for (TargetedBatchMap::iterator it = batchMap->begin(); it != batchMap->end();) {
         TargetedWriteBatch* batch = it->second;
-        const vector<TargetedWrite*>& writes = batch->getWrites();
+        const std::vector<std::unique_ptr<TargetedWrite>>& writes = batch->getWrites();
 
-        for (vector<TargetedWrite*>::const_iterator writeIt = writes.begin();
-             writeIt != writes.end();
-             ++writeIt) {
-            TargetedWrite* write = *writeIt;
+        for (const auto& write : writes) {
 
             // NOTE: We may repeatedly cancel a write op here, but that's fast and we want to
             // cancel before erasing the TargetedWrite* (which owns the cancelled targeting
@@ -407,12 +405,10 @@ void BatchWriteOp::buildBatchRequest(const TargetedWriteBatch& targetedBatch,
     request->setNS(_clientRequest->getNS());
     request->setShouldBypassValidation(_clientRequest->shouldBypassValidation());
 
-    const vector<TargetedWrite*>& targetedWrites = targetedBatch.getWrites();
+    const std::vector<std::unique_ptr<TargetedWrite>>& targetedWrites = targetedBatch.getWrites();
 
-    for (vector<TargetedWrite*>::const_iterator it = targetedWrites.begin();
-         it != targetedWrites.end();
-         ++it) {
-        const WriteOpRef& writeOpRef = (*it)->writeOpRef;
+    for (const auto& write : targetedWrites) {
+        const WriteOpRef& writeOpRef = write->writeOpRef;
         BatchedCommandRequest::BatchType batchType = _clientRequest->getBatchType();
 
         // NOTE:  We copy the batch items themselves here from the client request
@@ -544,9 +540,9 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
 
     // Special handling for write concern errors, save for later
     if (response.isWriteConcernErrorSet()) {
-        unique_ptr<ShardWCError> wcError(
-            new ShardWCError(targetedBatch.getEndpoint(), *response.getWriteConcernError()));
-        _wcErrors.mutableVector().push_back(wcError.release());
+        auto wcError = stdx::make_unique<ShardWCError>(targetedBatch.getEndpoint(),
+                                                       *response.getWriteConcernError());
+        _wcErrors.push_back(std::move(wcError));
     }
 
     vector<WriteErrorDetail*> itemErrors;
@@ -573,10 +569,7 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
     vector<WriteErrorDetail*>::iterator itemErrorIt = itemErrors.begin();
     int index = 0;
     WriteErrorDetail* lastError = NULL;
-    for (vector<TargetedWrite *>::const_iterator it = targetedBatch.getWrites().begin();
-         it != targetedBatch.getWrites().end();
-         ++it, ++index) {
-        const TargetedWrite* write = *it;
+    for (const auto& write : targetedBatch.getWrites()) {
         WriteOp& writeOp = _writeOps[write->writeOpRef.first];
 
         dassert(writeOp.getWriteState() == WriteOpState_Pending);
@@ -624,10 +617,10 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
             int batchIndex = targetedBatch.getWrites()[childBatchIndex]->writeOpRef.first;
 
             // Push the upserted id with the correct index into the batch upserted ids
-            BatchedUpsertDetail* upsertedId = new BatchedUpsertDetail;
+            auto upsertedId = stdx::make_unique<BatchedUpsertDetail>();
             upsertedId->setIndex(batchIndex);
             upsertedId->setUpsertedID(childUpsertedId->getUpsertedID());
-            _upsertedIds.mutableVector().push_back(upsertedId);
+            _upsertedIds.push_back(std::move(upsertedId));
         }
     }
 }
@@ -757,9 +750,8 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
             error->setErrCode((*_wcErrors.begin())->error.getErrCode());
         }
 
-        for (vector<ShardWCError*>::const_iterator it = _wcErrors.begin(); it != _wcErrors.end();
-             ++it) {
-            const ShardWCError* wcError = *it;
+        for (auto it = _wcErrors.begin(); it != _wcErrors.end(); ++it) {
+            const ShardWCError* wcError = it->get();
             if (it != _wcErrors.begin())
                 msg << " :: and :: ";
             msg << wcError->error.getErrMessage() << " at " << wcError->endpoint.shardName;
@@ -774,7 +766,11 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
     //
 
     if (_upsertedIds.size() != 0) {
-        batchResp->setUpsertDetails(_upsertedIds.vector());
+        std::vector<BatchedUpsertDetail*> upsertedIds;
+        for (const auto& id : _upsertedIds) {
+            upsertedIds.push_back(id.get());
+        }
+        batchResp->setUpsertDetails(upsertedIds);
     }
 
     // Stats

@@ -155,7 +155,7 @@ public:
     //
 
     // Note: original contents of stats will be cleared. Caller owns the returned stats.
-    void getStatsHistory(std::vector<DeleteJobStats*>* stats) const;
+    void getStatsHistory(std::vector<std::unique_ptr<DeleteJobStats>>* stats) const;
 
     size_t getTotalDeletes() const;
     size_t getPendingDeletes() const;

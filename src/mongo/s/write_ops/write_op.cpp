@@ -30,9 +30,8 @@
 
 #include "mongo/s/write_ops/write_op.h"
 
-#include "mongo/stdx/memory.h"
 #include "mongo/base/error_codes.h"
-#include "mongo/base/owned_pointer_vector.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -74,8 +73,7 @@ Status WriteOp::targetWrites(OperationContext* txn,
     bool isIndexInsert = _itemRef.getRequest()->isInsertIndexRequest();
 
     Status targetStatus = Status::OK();
-    OwnedPointerVector<ShardEndpoint> endpointsOwned;
-    vector<ShardEndpoint*>& endpoints = endpointsOwned.mutableVector();
+    std::vector<std::unique_ptr<ShardEndpoint>> endpoints;
 
     if (isUpdate) {
         targetStatus = targeter.targetUpdate(txn, *_itemRef.getUpdate(), &endpoints);
@@ -100,7 +98,7 @@ Status WriteOp::targetWrites(OperationContext* txn,
 
         // Store single endpoint result if we targeted a single endpoint
         if (endpoint)
-            endpoints.push_back(endpoint);
+            endpoints.push_back(std::unique_ptr<ShardEndpoint>{endpoint});
     }
 
     // If we're targeting more than one endpoint with an update/delete, we have to target
@@ -108,7 +106,7 @@ Status WriteOp::targetWrites(OperationContext* txn,
     // NOTE: Index inserts are currently specially targeted only at the current collection to
     // avoid creating collections everywhere.
     if (targetStatus.isOK() && endpoints.size() > 1u && !isIndexInsert) {
-        endpointsOwned.clear();
+        endpoints.clear();
         invariant(endpoints.empty());
         targetStatus = targeter.targetAllShards(&endpoints);
     }
@@ -117,8 +115,7 @@ Status WriteOp::targetWrites(OperationContext* txn,
     if (!targetStatus.isOK())
         return targetStatus;
 
-    for (vector<ShardEndpoint*>::iterator it = endpoints.begin(); it != endpoints.end(); ++it) {
-        ShardEndpoint* endpoint = *it;
+    for (auto& endpoint : endpoints) {
 
         _childOps.push_back(new ChildWriteOp(this));
 
@@ -126,10 +123,10 @@ Status WriteOp::targetWrites(OperationContext* txn,
 
         // For now, multiple endpoints imply no versioning - we can't retry half a multi-write
         if (endpoints.size() == 1u) {
-            targetedWrites->push_back(stdx::make_unique< TargetedWrite>(*endpoint, ref));
+            targetedWrites->push_back(stdx::make_unique<TargetedWrite>(*endpoint, ref));
         } else {
             ShardEndpoint broadcastEndpoint(endpoint->shardName, ChunkVersion::IGNORED());
-            targetedWrites->push_back(stdx::make_unique< TargetedWrite>(broadcastEndpoint, ref));
+            targetedWrites->push_back(stdx::make_unique<TargetedWrite>(broadcastEndpoint, ref));
         }
 
         _childOps.back()->pendingWrite = targetedWrites->back().get();

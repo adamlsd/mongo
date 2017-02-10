@@ -203,7 +203,7 @@ private:
     //
     // All children intervals except the last active one are only used by getStats(),
     // because they are all EOF.
-    OwnedPointerVector<CoveredInterval> _childrenIntervals;
+    std::vector<std::unique_ptr<CoveredInterval>> _childrenIntervals;
 };
 
 /**

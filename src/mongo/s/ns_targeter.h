@@ -94,7 +94,7 @@ public:
      */
     virtual Status targetUpdate(OperationContext* txn,
                                 const BatchedUpdateDocument& updateDoc,
-                                std::vector<ShardEndpoint*>* endpoints) const = 0;
+                                std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const = 0;
 
     /**
      * Returns a vector of ShardEndpoints for a potentially multi-shard delete.
@@ -103,21 +103,23 @@ public:
      */
     virtual Status targetDelete(OperationContext* txn,
                                 const BatchedDeleteDocument& deleteDoc,
-                                std::vector<ShardEndpoint*>* endpoints) const = 0;
+                                std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const = 0;
 
     /**
      * Returns a vector of ShardEndpoints for the entire collection.
      *
      * Returns !OK with message if the full collection could not be targeted.
      */
-    virtual Status targetCollection(std::vector<ShardEndpoint*>* endpoints) const = 0;
+    virtual Status targetCollection(
+        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const = 0;
 
     /**
      * Returns a vector of ShardEndpoints for all shards.
      *
      * Returns !OK with message if all shards could not be targeted.
      */
-    virtual Status targetAllShards(std::vector<ShardEndpoint*>* endpoints) const = 0;
+    virtual Status targetAllShards(
+        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const = 0;
 
     /**
      * Informs the targeter that a targeting failure occurred during one of the last targeting

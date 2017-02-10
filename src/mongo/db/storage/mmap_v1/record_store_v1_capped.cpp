@@ -77,7 +77,8 @@ CappedRecordStoreV1::CappedRecordStoreV1(OperationContext* txn,
     : RecordStoreV1Base(ns, details, em, isSystemIndexes), _cappedCallback(collection) {
     DiskLoc extentLoc = details->firstExtent(txn);
     while (!extentLoc.isNull()) {
-        _extentAdvice.push_back(_extentManager->cacheHint(extentLoc, ExtentManager::Sequential));
+        _extentAdvice.push_back(std::unique_ptr<ExtentManager::CacheHint>(
+            _extentManager->cacheHint(extentLoc, ExtentManager::Sequential)));
         Extent* extent = em->getExtent(extentLoc);
         extentLoc = extent->xnext;
     }

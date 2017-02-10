@@ -44,6 +44,7 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/sharding_raii.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -348,9 +349,10 @@ Status ChunkManagerTargeter::targetInsert(OperationContext* txn,
     }
 }
 
-Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
-                                          const BatchedUpdateDocument& updateDoc,
-                                          vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetUpdate(
+    OperationContext* txn,
+    const BatchedUpdateDocument& updateDoc,
+    std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     //
     // Update targeting may use either the query or the update.  This is to support save-style
     // updates, of the form:
@@ -421,7 +423,7 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
         Status result = targetShardKey(
             txn, shardKey, collation, (query.objsize() + updateExpr.objsize()), &endpoint);
         if (result.isOK()) {
-            endpoints->push_back(endpoint);
+            endpoints->push_back(std::unique_ptr<ShardEndpoint>{endpoint});
             return result;
         }
     }
@@ -471,9 +473,10 @@ Status ChunkManagerTargeter::targetUpdate(OperationContext* txn,
     }
 }
 
-Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
-                                          const BatchedDeleteDocument& deleteDoc,
-                                          vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetDelete(
+    OperationContext* txn,
+    const BatchedDeleteDocument& deleteDoc,
+    std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     BSONObj shardKey;
 
     if (_manager) {
@@ -503,7 +506,7 @@ Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
         ShardEndpoint* endpoint = NULL;
         Status result = targetShardKey(txn, shardKey, collation, 0, &endpoint);
         if (result.isOK()) {
-            endpoints->push_back(endpoint);
+            endpoints->push_back(std::unique_ptr<ShardEndpoint>{endpoint});
             return result;
         }
     }
@@ -540,19 +543,21 @@ Status ChunkManagerTargeter::targetDelete(OperationContext* txn,
     return targetQuery(txn, deleteDoc.getQuery(), collation, endpoints);
 }
 
-Status ChunkManagerTargeter::targetDoc(OperationContext* txn,
-                                       const BSONObj& doc,
-                                       const BSONObj& collation,
-                                       vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetDoc(
+    OperationContext* txn,
+    const BSONObj& doc,
+    const BSONObj& collation,
+    std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     // NOTE: This is weird and fragile, but it's the way our language works right now -
     // documents are either A) invalid or B) valid equality queries over themselves.
     return targetQuery(txn, doc, collation, endpoints);
 }
 
-Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
-                                         const BSONObj& query,
-                                         const BSONObj& collation,
-                                         vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetQuery(
+    OperationContext* txn,
+    const BSONObj& query,
+    const BSONObj& collation,
+    std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
                       stream() << "could not target query in " << getNS().ns()
@@ -571,7 +576,7 @@ Status ChunkManagerTargeter::targetQuery(OperationContext* txn,
     }
 
     for (const ShardId& shardId : shardIds) {
-        endpoints->push_back(new ShardEndpoint(
+        endpoints->push_back(stdx::make_unique<ShardEndpoint>(
             shardId, _manager ? _manager->getVersion(shardId) : ChunkVersion::UNSHARDED()));
     }
 
@@ -602,7 +607,8 @@ Status ChunkManagerTargeter::targetShardKey(OperationContext* txn,
     return Status::OK();
 }
 
-Status ChunkManagerTargeter::targetCollection(vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetCollection(
+    std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
                       str::stream() << "could not target full range of " << getNS().ns()
@@ -617,14 +623,15 @@ Status ChunkManagerTargeter::targetCollection(vector<ShardEndpoint*>* endpoints)
     }
 
     for (const ShardId& shardId : shardIds) {
-        endpoints->push_back(new ShardEndpoint(
+        endpoints->push_back(stdx::make_unique<ShardEndpoint>(
             shardId, _manager ? _manager->getVersion(shardId) : ChunkVersion::UNSHARDED()));
     }
 
     return Status::OK();
 }
 
-Status ChunkManagerTargeter::targetAllShards(vector<ShardEndpoint*>* endpoints) const {
+Status ChunkManagerTargeter::targetAllShards(
+    vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     if (!_primary && !_manager) {
         return Status(ErrorCodes::NamespaceNotFound,
                       str::stream() << "could not target every shard with versions for "
@@ -636,7 +643,7 @@ Status ChunkManagerTargeter::targetAllShards(vector<ShardEndpoint*>* endpoints) 
     grid.shardRegistry()->getAllShardIds(&shardIds);
 
     for (const ShardId& shardId : shardIds) {
-        endpoints->push_back(new ShardEndpoint(
+        endpoints->push_back(stdx::make_unique<ShardEndpoint>(
             shardId, _manager ? _manager->getVersion(shardId) : ChunkVersion::UNSHARDED()));
     }
 

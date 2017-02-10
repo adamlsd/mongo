@@ -34,7 +34,6 @@
 
 #include "mongo/util/net/listen.h"
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/config.h"
 #include "mongo/db/server_options.h"

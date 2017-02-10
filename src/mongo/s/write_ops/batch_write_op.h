@@ -32,7 +32,6 @@
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/platform/unordered_map.h"
 #include "mongo/rpc/write_concern_error_detail.h"
@@ -173,10 +172,10 @@ private:
     std::set<const TargetedWriteBatch*> _targeted;
 
     // Write concern responses from all write batches so far
-    OwnedPointerVector<ShardWCError> _wcErrors;
+    std::vector<std::unique_ptr<ShardWCError>> _wcErrors;
 
     // Upserted ids for the whole write batch
-    OwnedPointerVector<BatchedUpsertDetail> _upsertedIds;
+    std::vector<std::unique_ptr<BatchedUpsertDetail>> _upsertedIds;
 
     // Stats for the entire batch op
     std::unique_ptr<BatchWriteStats> _stats;
@@ -221,11 +220,11 @@ public:
      * TargetedWrite is owned here once given to the TargetedWriteBatch
      */
     void addWrite(TargetedWrite* targetedWrite) {
-        _writes.mutableVector().push_back(targetedWrite);
+        _writes.push_back(std::unique_ptr<TargetedWrite>{targetedWrite});
     }
 
-    const std::vector<TargetedWrite*>& getWrites() const {
-        return _writes.vector();
+    const std::vector<std::unique_ptr<TargetedWrite>>& getWrites() const {
+        return _writes;
     }
 
 private:
@@ -234,7 +233,7 @@ private:
 
     // Where the responses go
     // TargetedWrite*s are owned by the TargetedWriteBatch
-    OwnedPointerVector<TargetedWrite> _writes;
+    std::vector<std::unique_ptr<TargetedWrite>> _writes;
 };
 
 /**

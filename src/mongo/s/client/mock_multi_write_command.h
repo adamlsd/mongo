@@ -90,8 +90,9 @@ class MockMultiWriteCommand : public MultiCommandDispatch {
 public:
     void init(const std::vector<MockWriteResult*> mockEndpoints) {
         ASSERT(!mockEndpoints.empty());
-        _mockEndpoints.mutableVector().insert(
-            _mockEndpoints.mutableVector().end(), mockEndpoints.begin(), mockEndpoints.end());
+        for (const auto& endpoint : mockEndpoints) {
+            _mockEndpoints.push_back(std::unique_ptr<MockWriteResult>{endpoint});
+        }
     }
 
     void addCommand(const ConnectionString& endpoint,
@@ -132,17 +133,17 @@ public:
         return Status::OK();
     }
 
-    const std::vector<MockWriteResult*>& getEndpoints() const {
-        return _mockEndpoints.vector();
+    const std::vector<std::unique_ptr<MockWriteResult>>& getEndpoints() const {
+        return _mockEndpoints;
     }
 
 private:
     // Find a MockEndpoint* by host, and release it so we don't see it again
     MockWriteResult* releaseByHost(const ConnectionString& endpoint) {
         for (auto it = _mockEndpoints.begin(); it != _mockEndpoints.end(); ++it) {
-            if ((*storedEndpoint)->endpoint.toString().compare(endpoint.toString()) == 0) {
+            if ((*it)->endpoint.toString().compare(endpoint.toString()) == 0) {
                 MockWriteResult* storedEndpoint = it->release();
-                endpoints.erase(it);
+                _mockEndpoints.erase(it);
                 return storedEndpoint;
             }
         }

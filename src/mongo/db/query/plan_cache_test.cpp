@@ -218,9 +218,9 @@ PlanRankingDecision* createDecision(size_t numPlans) {
     unique_ptr<PlanRankingDecision> why(new PlanRankingDecision());
     for (size_t i = 0; i < numPlans; ++i) {
         CommonStats common("COLLSCAN");
-        unique_ptr<PlanStageStats> stats(new PlanStageStats(common, STAGE_COLLSCAN));
+        auto stats = stdx::make_unique<PlanStageStats>(common, STAGE_COLLSCAN);
         stats->specific.reset(new CollectionScanStats());
-        why->stats.mutableVector().push_back(stats.release());
+        why->stats.push_back(std::move(stats));
         why->scores.push_back(0U);
         why->candidateOrder.push_back(i);
     }
@@ -453,8 +453,8 @@ protected:
     }
 
     void tearDown() {
-        for (vector<QuerySolution*>::iterator it = solns.begin(); it != solns.end(); ++it) {
-            delete *it;
+        for (auto& soln : solns) {
+            soln = nullptr;
         }
     }
 
@@ -542,10 +542,6 @@ protected:
         auto txn = serviceContext.makeOperationContext();
 
         // Clean up any previous state from a call to runQueryFull or runQueryAsCommand.
-        for (vector<QuerySolution*>::iterator it = solns.begin(); it != solns.end(); ++it) {
-            delete *it;
-        }
-
         solns.clear();
 
         auto qr = stdx::make_unique<QueryRequest>(nss);
@@ -574,10 +570,6 @@ protected:
         auto txn = serviceContext.makeOperationContext();
 
         // Clean up any previous state from a call to runQueryFull or runQueryAsCommand.
-        for (vector<QuerySolution*>::iterator it = solns.begin(); it != solns.end(); ++it) {
-            delete *it;
-        }
-
         solns.clear();
 
         const bool isExplain = false;
@@ -596,7 +588,7 @@ protected:
     //
 
     void dumpSolutions(str::stream& ost) const {
-        for (vector<QuerySolution*>::const_iterator it = solns.begin(); it != solns.end(); ++it) {
+        for (auto it = solns.begin(); it != solns.end(); ++it) {
             ost << (*it)->toString() << '\n';
         }
     }
@@ -607,7 +599,7 @@ protected:
     size_t numSolutionMatches(const string& solnJson) const {
         BSONObj testSoln = fromjson(solnJson);
         size_t matches = 0;
-        for (vector<QuerySolution*>::const_iterator it = solns.begin(); it != solns.end(); ++it) {
+        for (auto it = solns.begin(); it != solns.end(); ++it) {
             QuerySolutionNode* root = (*it)->root.get();
             if (QueryPlannerTestLib::solutionMatches(testSoln, root)) {
                 ++matches;
@@ -694,10 +686,10 @@ protected:
      */
     QuerySolution* firstMatchingSolution(const string& solnJson) const {
         BSONObj testSoln = fromjson(solnJson);
-        for (vector<QuerySolution*>::const_iterator it = solns.begin(); it != solns.end(); ++it) {
+        for (auto it = solns.begin(); it != solns.end(); ++it) {
             QuerySolutionNode* root = (*it)->root.get();
             if (QueryPlannerTestLib::solutionMatches(testSoln, root)) {
-                return *it;
+                return it->get();
             }
         }
 
@@ -771,7 +763,7 @@ protected:
 
     BSONObj queryObj;
     QueryPlannerParams params;
-    vector<QuerySolution*> solns;
+    std::vector<std::unique_ptr<QuerySolution>> solns;
 };
 
 const PlanCacheKey CachePlanSelectionTest::ck = "mock_cache_key";

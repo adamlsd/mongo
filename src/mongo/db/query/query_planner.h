@@ -55,7 +55,7 @@ public:
      */
     static Status plan(const CanonicalQuery& query,
                        const QueryPlannerParams& params,
-                       std::vector<QuerySolution*>* out);
+                       std::vector<std::unique_ptr<QuerySolution>>* out);
 
     /**
      * Attempt to generate a query solution, given data retrieved

@@ -250,7 +250,7 @@ public:
         plannerParams.options &= ~QueryPlannerParams::KEEP_MUTATIONS;
 
         // Plan.
-        vector<QuerySolution*> solutions;
+        std::vector<std::unique_ptr<QuerySolution>> solutions;
         Status status = QueryPlanner::plan(*cq, plannerParams, &solutions);
         ASSERT(status.isOK());
 
@@ -266,7 +266,7 @@ public:
             PlanStage* root;
             ASSERT(StageBuilder::build(&_txn, collection, *cq, *solutions[i], ws.get(), &root));
             // Takes ownership of 'solutions[i]' and 'root'.
-            mps->addPlan(solutions[i], root, ws.get());
+            mps->addPlan(solutions[i].release(), root, ws.get());
         }
 
         // This sets a backup plan.

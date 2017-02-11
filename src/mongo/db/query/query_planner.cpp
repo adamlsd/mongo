@@ -451,7 +451,7 @@ Status QueryPlanner::planFromCache(const CanonicalQuery& query,
 // static
 Status QueryPlanner::plan(const CanonicalQuery& query,
                           const QueryPlannerParams& params,
-                          std::vector<QuerySolution*>* out) {
+                          std::vector<std::unique_ptr<QuerySolution>>* out) {
     LOG(5) << "Beginning planning..." << endl
            << "=============================" << endl
            << "Options = " << optionString(params.options) << endl
@@ -471,9 +471,9 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     // can't provide one.  Is this what we want?
     if (isTailable) {
         if (!QueryPlannerCommon::hasNode(query.root(), MatchExpression::GEO_NEAR) && canTableScan) {
-            QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
-            if (NULL != soln) {
-                out->push_back(soln);
+            std::unique_ptr<QuerySolution> soln{buildCollscanSoln(query, isTailable, params)};
+            if (nullptr != soln) {
+                out->push_back(std::move(soln));
             }
         }
         return Status::OK();
@@ -496,9 +496,10 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
             // min/max are incompatible with $natural.
             if (canTableScan && query.getQueryRequest().getMin().isEmpty() &&
                 query.getQueryRequest().getMax().isEmpty()) {
-                QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
+                auto soln =
+                    std::unique_ptr<QuerySolution>{buildCollscanSoln(query, isTailable, params)};
                 if (NULL != soln) {
-                    out->push_back(soln);
+                    out->push_back(std::move(soln));
                 }
             }
             return Status::OK();
@@ -537,9 +538,10 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         const bool useIXScan = params.options & QueryPlannerParams::SNAPSHOT_USE_ID;
 
         if (!useIXScan) {
-            QuerySolution* soln = buildCollscanSoln(query, isTailable, params);
+            auto soln =
+                std::unique_ptr<QuerySolution>{buildCollscanSoln(query, isTailable, params)};
             if (soln) {
-                out->push_back(soln);
+                out->push_back(std::move(soln));
             }
             return Status::OK();
         } else {
@@ -683,9 +685,10 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         QuerySolutionNode* solnRoot = QueryPlannerAccess::makeIndexScan(
             params.indices[idxNo], query, params, finishedMinObj, finishedMaxObj);
 
-        QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+        auto soln = std::unique_ptr<QuerySolution>{
+            QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot)};
         if (NULL != soln) {
-            out->push_back(soln);
+            out->push_back(std::move(soln));
         }
 
         return Status::OK();
@@ -805,15 +808,16 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
                 continue;
             }
 
-            QuerySolution* soln = QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot);
+            auto soln = std::unique_ptr<QuerySolution>{
+                QueryPlannerAnalysis::analyzeDataAccess(query, params, solnRoot)};
             if (NULL != soln) {
                 LOG(5) << "Planner: adding solution:" << endl << redact(soln->toString());
                 if (indexTreeStatus.isOK()) {
                     SolutionCacheData* scd = new SolutionCacheData();
-                    scd->tree.reset(autoData.release());
+                    scd->tree = std::move(autoData);
                     soln->cacheData.reset(scd);
                 }
-                out->push_back(soln);
+                out->push_back(std::move(soln));
             }
         }
     }
@@ -844,9 +848,10 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
             // Push hinted index solution to output list if found. It is possible to end up without
             // a solution in the case where a filtering QueryPlannerParams argument, such as
             // NO_BLOCKING_SORT, leads to its exclusion.
-            if (auto soln = buildWholeIXSoln(params.indices[*hintIndexNumber], query, params)) {
+            if (auto soln = std::unique_ptr<QuerySolution>{
+                    buildWholeIXSoln(params.indices[*hintIndexNumber], query, params)}) {
                 LOG(5) << "Planner: outputting soln that uses hinted index as scan.";
-                out->push_back(soln);
+                out->push_back(std::move(soln));
             }
         }
         return Status::OK();
@@ -862,7 +867,7 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
         // This is implied by the presence of a non-blocking solution.
         bool usingIndexToSort = false;
         for (size_t i = 0; i < out->size(); ++i) {
-            QuerySolution* soln = (*out)[i];
+            QuerySolution* soln = (*out)[i].get();
             if (!soln->hasBlockingStage) {
                 usingIndexToSort = true;
                 break;
@@ -908,7 +913,8 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
                 const BSONObj kp = QueryPlannerAnalysis::getSortPattern(index.keyPattern);
                 if (providesSort(query, kp)) {
                     LOG(5) << "Planner: outputting soln that uses index to provide sort.";
-                    QuerySolution* soln = buildWholeIXSoln(params.indices[i], query, params);
+                    auto soln = std::unique_ptr<QuerySolution>{
+                        buildWholeIXSoln(params.indices[i], query, params)};
                     if (NULL != soln) {
                         PlanCacheIndexTree* indexTree = new PlanCacheIndexTree();
                         indexTree->setIndexEntry(params.indices[i]);
@@ -918,14 +924,15 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
                         scd->wholeIXSolnDir = 1;
 
                         soln->cacheData.reset(scd);
-                        out->push_back(soln);
+                        out->push_back(std::move(soln));
                         break;
                     }
                 }
                 if (providesSort(query, QueryPlannerCommon::reverseSortObj(kp))) {
                     LOG(5) << "Planner: outputting soln that uses (reverse) index "
                            << "to provide sort.";
-                    QuerySolution* soln = buildWholeIXSoln(params.indices[i], query, params, -1);
+                    auto soln = std::unique_ptr<QuerySolution>{
+                        buildWholeIXSoln(params.indices[i], query, params, -1)};
                     if (NULL != soln) {
                         PlanCacheIndexTree* indexTree = new PlanCacheIndexTree();
                         indexTree->setIndexEntry(params.indices[i]);
@@ -935,7 +942,7 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
                         scd->wholeIXSolnDir = -1;
 
                         soln->cacheData.reset(scd);
-                        out->push_back(soln);
+                        out->push_back(std::move(soln));
                         break;
                     }
                 }
@@ -956,13 +963,14 @@ Status QueryPlanner::plan(const CanonicalQuery& query,
     bool collscanNeeded = (0 == out->size() && canTableScan);
 
     if (possibleToCollscan && (collscanRequested || collscanNeeded)) {
-        QuerySolution* collscan = buildCollscanSoln(query, isTailable, params);
-        if (NULL != collscan) {
+        auto collscan =
+            std::unique_ptr<QuerySolution>{buildCollscanSoln(query, isTailable, params)};
+        if (nullptr != collscan) {
             SolutionCacheData* scd = new SolutionCacheData();
             scd->solnType = SolutionCacheData::COLLSCAN_SOLN;
             collscan->cacheData.reset(scd);
-            out->push_back(collscan);
-            LOG(5) << "Planner: outputting a collscan:" << endl << redact(collscan->toString());
+            out->push_back(std::move(collscan));
+            LOG(5) << "Planner: outputting a collscan:" << endl << redact(out->back()->toString());
         }
     }
 

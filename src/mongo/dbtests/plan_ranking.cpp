@@ -116,7 +116,7 @@ public:
         plannerParams.options &= ~QueryPlannerParams::KEEP_MUTATIONS;
 
         // Plan.
-        vector<QuerySolution*> solutions;
+        std::vector<std::unique_ptr<QuerySolution>> solutions;
         Status status = QueryPlanner::plan(*cq, plannerParams, &solutions);
         ASSERT(status.isOK());
 
@@ -130,7 +130,7 @@ public:
             PlanStage* root;
             ASSERT(StageBuilder::build(&_txn, collection, *cq, *solutions[i], ws.get(), &root));
             // Takes ownership of all (actually some) arguments.
-            _mps->addPlan(solutions[i], root, ws.get());
+            _mps->addPlan(solutions[i].release(), root, ws.get());
         }
         // This is what sets a backup plan, should we test for it.
         PlanYieldPolicy yieldPolicy(PlanExecutor::YIELD_MANUAL,

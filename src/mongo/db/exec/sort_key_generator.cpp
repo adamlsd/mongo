@@ -258,7 +258,7 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
     verify(statusWithQueryForSort.isOK());
     std::unique_ptr<CanonicalQuery> queryForSort = std::move(statusWithQueryForSort.getValue());
 
-    std::vector<QuerySolution*> solns;
+    std::vector<std::unique_ptr<QuerySolution>> solns;
     LOG(5) << "Sort key generation: Planning to obtain bounds for sort.";
     QueryPlanner::plan(*queryForSort, params, &solns);
 
@@ -270,7 +270,7 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
         if (rootNode->getType() == STAGE_FETCH) {
             FetchNode* fetchNode = static_cast<FetchNode*>(rootNode);
             if (fetchNode->children[0]->getType() != STAGE_IXSCAN) {
-                delete solns[0];
+                solns[0].reset();
                 // No bounds.
                 return;
             }
@@ -285,9 +285,6 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
         }
     }
 
-    for (size_t i = 0; i < solns.size(); ++i) {
-        delete solns[i];
-    }
 }
 
 //

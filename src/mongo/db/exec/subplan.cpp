@@ -216,13 +216,9 @@ Status SubplanStage::planSubqueries() {
 
             // We don't set NO_TABLE_SCAN because peeking at the cache data will keep us from
             // considering any plan that's a collscan.
-            std::vector<QuerySolution*> solutionsRaw;
-            Status status =
-                QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams, &solutionsRaw);
+            Status status = QueryPlanner::plan(
+                *branchResult->canonicalQuery, _plannerParams, &branchResult->solutions);
 
-            for (const auto& solution : solutionsRaw) {
-                branchResult->solutions.push_back(std::unique_ptr<QuerySolution>{solution});
-            }
 
             if (!status.isOK()) {
                 mongoutils::str::stream ss;
@@ -436,17 +432,12 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
     _ws->clear();
 
     // Use the query planning module to plan the whole query.
-    std::vector<QuerySolution*> rawSolutions;
-    Status status = QueryPlanner::plan(*_query, _plannerParams, &rawSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    Status status = QueryPlanner::plan(*_query, _plannerParams, &solutions);
     if (!status.isOK()) {
         return Status(ErrorCodes::BadValue,
                       "error processing query: " + _query->toString() +
                           " planner returned error: " + status.reason());
-    }
-
-    std::vector<std::unique_ptr<QuerySolution>> solutions;
-    for (const auto& solution : rawSolutions) {
-        solutions.push_back(std::unique_ptr<QuerySolution>{solution});
     }
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index

@@ -257,7 +257,7 @@ void QueryPlannerTest::runQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    ASSERT_OK(QueryPlanner::plan(*cq, params, &solns.mutableVector()));
+    ASSERT_OK(QueryPlanner::plan(*cq, params, &solns));
 }
 
 void QueryPlannerTest::runInvalidQuery(const BSONObj& query) {
@@ -334,7 +334,7 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status s = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    Status s = QueryPlanner::plan(*cq, params, &solns);
     ASSERT_NOT_OK(s);
 }
 
@@ -353,7 +353,7 @@ void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status s = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    Status s = QueryPlanner::plan(*cq, params, &solns);
     ASSERT_OK(s);
 }
 
@@ -372,7 +372,7 @@ void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status status = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    Status status = QueryPlanner::plan(*cq, params, &solns);
     ASSERT_NOT_OK(status);
 }
 

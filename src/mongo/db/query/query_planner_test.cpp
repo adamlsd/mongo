@@ -92,8 +92,7 @@ TEST_F(QueryPlannerTest, IndexFilterAppliedDefault) {
     assertSolutionExists("{fetch: {filter: null, node: {ixscan: {pattern: {x: 1}}}}}");
 
     // Check indexFilterApplied in query solutions;
-    for (std::vector<QuerySolution*>::const_iterator it = solns.begin(); it != solns.end(); ++it) {
-        QuerySolution* soln = *it;
+    for (const auto& soln : solns) {
         ASSERT_FALSE(soln->indexFilterApplied);
     }
 }
@@ -110,8 +109,7 @@ TEST_F(QueryPlannerTest, IndexFilterAppliedTrue) {
     assertSolutionExists("{fetch: {filter: null, node: {ixscan: {pattern: {x: 1}}}}}");
 
     // Check indexFilterApplied in query solutions;
-    for (std::vector<QuerySolution*>::const_iterator it = solns.begin(); it != solns.end(); ++it) {
-        QuerySolution* soln = *it;
+    for (const auto& soln : solns) {
         ASSERT_EQUALS(params.indexFiltersApplied, soln->indexFilterApplied);
     }
 }

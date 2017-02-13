@@ -63,6 +63,11 @@ namespace dps = ::mongo::dotted_path_support;
 
 namespace {
 
+template <typename T>
+T* toPointer(boost::optional<T>& opt) {
+    return opt ? &*opt : nullptr;
+}
+
 const char idFieldName[] = "_id";
 const FieldRef idFieldRef(idFieldName);
 
@@ -569,7 +574,7 @@ BSONObj UpdateStage::transformAndUpdate(const Snapshotted<BSONObj>& oldObj, Reco
                 immutableFields = getImmutableFields(getOpCtx(), request->getNamespaceString());
 
             uassertStatusOK(validate(
-                oldObj.value(), updatedFields, _doc, &*immutableFields, driver->modOptions()));
+                oldObj.value(), updatedFields, _doc, toPointer(immutableFields), driver->modOptions()));
         }
 
         // Prepare to write back the modified document
@@ -680,7 +685,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
     BSONObj original;
 
     if (cq) {
-        Status status = driver->populateDocumentWithQueryFields(*cq, &*immutablePaths, *doc);
+        Status status = driver->populateDocumentWithQueryFields(*cq, toPointer(immutablePaths), *doc);
         if (!status.isOK()) {
             return status;
         }
@@ -718,7 +723,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
         FieldRefSet noFields;
         // This will only validate the modified fields if not a replacement.
         Status validateStatus =
-            validate(original, noFields, *doc, &*immutablePaths, driver->modOptions());
+            validate(original, noFields, *doc, toPointer(immutablePaths), driver->modOptions());
         if (!validateStatus.isOK()) {
             return validateStatus;
         }

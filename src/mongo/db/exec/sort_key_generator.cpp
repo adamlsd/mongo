@@ -284,7 +284,6 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* txn,
             _hasBounds = true;
         }
     }
-
 }
 
 //

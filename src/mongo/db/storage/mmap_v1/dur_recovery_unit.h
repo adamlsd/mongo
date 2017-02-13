@@ -26,6 +26,7 @@
  *    it in the license file.
  */
 
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>

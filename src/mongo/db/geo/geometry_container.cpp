@@ -422,10 +422,13 @@ bool containsLine(const S2Polygon& poly, const S2Polyline& otherLine) {
     // Kind of a mess.  We get a function for clipping the line to the
     // polygon.  We do this and make sure the line is the same as the
     // line we're clipping against.
-    OwnedPointerVector<S2Polyline> clippedOwned;
-    vector<S2Polyline*>& clipped = clippedOwned.mutableVector();
+    std::vector<S2Polyline*> clipped;
 
     poly.IntersectWithPolyline(&otherLine, &clipped);
+    std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
+    for (const auto& clip : clipped) {
+        clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
+    }
     if (1 != clipped.size()) {
         return false;
     }

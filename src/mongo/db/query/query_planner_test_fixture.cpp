@@ -257,7 +257,11 @@ void QueryPlannerTest::runQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    ASSERT_OK(QueryPlanner::plan(*cq, params, &solns.mutableVector()));
+    std::vector<QuerySolution*> solnsRaw;
+    ASSERT_OK(QueryPlanner::plan(*cq, params, &solnsRaw));
+    for (const auto& soln : solnsRaw) {
+        solns.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
 }
 
 void QueryPlannerTest::runInvalidQuery(const BSONObj& query) {
@@ -334,7 +338,11 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status s = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    std::vector<QuerySolution*> solnsRaw;
+    Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
+    for (const auto& soln : solnsRaw) {
+        solns.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
     ASSERT_NOT_OK(s);
 }
 
@@ -353,7 +361,11 @@ void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status s = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    std::vector<QuerySolution*> solnsRaw;
+    Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
+    for (const auto& soln : solnsRaw) {
+        solns.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
     ASSERT_OK(s);
 }
 
@@ -372,7 +384,11 @@ void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    Status status = QueryPlanner::plan(*cq, params, &solns.mutableVector());
+    std::vector<QuerySolution*> solnsRaw;
+    Status status = QueryPlanner::plan(*cq, params, &solnsRaw);
+    for (const auto& soln : solnsRaw) {
+        solns.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
     ASSERT_NOT_OK(status);
 }
 

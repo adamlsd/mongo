@@ -213,7 +213,10 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
                                     << status.reason());
     }
 
-    OwnedPointerVector<QuerySolution> solutions(rawSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    for (const auto soln : rawSolutions) {
+        solutions.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?
@@ -236,7 +239,8 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
         verify(StageBuilder::build(
             getOpCtx(), _collection, *_canonicalQuery, *solutions[0], _ws, &newRoot));
         _children.emplace_back(newRoot);
-        _replannedQs.reset(solutions.popAndReleaseBack());
+        _replannedQs = std::move(solutions.back());
+        solutions.pop_back();
 
         LOG(1)
             << "Replanning of query resulted in single query solution, which will not be cached. "
@@ -264,7 +268,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
             getOpCtx(), _collection, *_canonicalQuery, *solutions[ix], _ws, &nextPlanRoot));
 
         // Takes ownership of 'solutions[ix]' and 'nextPlanRoot'.
-        multiPlanStage->addPlan(solutions.releaseAt(ix), nextPlanRoot, _ws);
+        multiPlanStage->addPlan(solutions[ix].release(), nextPlanRoot, _ws);
     }
 
     // Delegate to the MultiPlanStage's plan selection facility.

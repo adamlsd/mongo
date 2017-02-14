@@ -90,16 +90,23 @@ bool BigSimplePolygon::Contains(const S2Polyline& line) const {
     //
     const S2Polygon& polyBorder = GetPolygonBorder();
 
-    OwnedPointerVector<S2Polyline> clippedOwned;
-    vector<S2Polyline*>& clipped = clippedOwned.mutableVector();
+    std::vector<S2Polyline*> clipped;
 
     if (_isNormalized) {
         // Polygon border is the same as the loop
         polyBorder.SubtractFromPolyline(&line, &clipped);
+        std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
+        for (const auto clip : clipped) {
+            clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
+        }
         return clipped.size() == 0;
     } else {
         // Polygon border is the complement of the loop
         polyBorder.IntersectWithPolyline(&line, &clipped);
+        std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
+        for (const auto clip : clipped) {
+            clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
+        }
         return clipped.size() == 0;
     }
 }
@@ -164,9 +171,9 @@ const S2Polygon& BigSimplePolygon::GetPolygonBorder() const {
     // Any loop in polygon should be than a hemisphere (2*Pi).
     cloned->Normalize();
 
-    OwnedPointerVector<S2Loop> loops;
-    loops.mutableVector().push_back(cloned.release());
-    _borderPoly.reset(new S2Polygon(&loops.mutableVector()));
+    std::vector<S2Loop*> loops;
+    loops.push_back(cloned.release());
+    _borderPoly.reset(new S2Polygon(&loops));
     return *_borderPoly;
 }
 

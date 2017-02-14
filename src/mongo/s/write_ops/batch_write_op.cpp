@@ -31,6 +31,7 @@
 #include "mongo/s/write_ops/batch_write_op.h"
 
 #include "mongo/base/error_codes.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -548,9 +549,9 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
 
     // Special handling for write concern errors, save for later
     if (response.isWriteConcernErrorSet()) {
-        unique_ptr<ShardWCError> wcError(
-            new ShardWCError(targetedBatch.getEndpoint(), *response.getWriteConcernError()));
-        _wcErrors.mutableVector().push_back(wcError.release());
+        auto wcError = stdx::make_unique<ShardWCError>(targetedBatch.getEndpoint(),
+                                                       *response.getWriteConcernError());
+        _wcErrors.push_back(std::move(wcError));
     }
 
     vector<WriteErrorDetail*> itemErrors;
@@ -761,9 +762,8 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
             error->setErrCode((*_wcErrors.begin())->error.getErrCode());
         }
 
-        for (vector<ShardWCError*>::const_iterator it = _wcErrors.begin(); it != _wcErrors.end();
-             ++it) {
-            const ShardWCError* wcError = *it;
+        for (auto it = _wcErrors.begin(); it != _wcErrors.end(); ++it) {
+            const ShardWCError* wcError = it->get();
             if (it != _wcErrors.begin())
                 msg << " :: and :: ";
             msg << wcError->error.getErrMessage() << " at " << wcError->endpoint.shardName;

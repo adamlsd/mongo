@@ -667,7 +667,7 @@ std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
             // We collapse the entry from 'ownedScans' into the back of 'collapsedScans'.
             std::unique_ptr<QuerySolutionNode> collapseFrom(std::move(ownedScans[i]));
             FetchNode* collapseFromFetch = getFetchNode(collapseFrom.get());
-            FetchNode* collapseIntoFetch = getFetchNode(collapsedScans.back());
+            FetchNode* collapseIntoFetch = getFetchNode(collapsedScans.back().get());
 
             // If there's no filter associated with a fetch node on 'collapseFrom', all we have to
             // do is clear the filter on the node that we are collapsing into.
@@ -702,10 +702,11 @@ std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
 
     invariant(collapsedScans.size() > 0);
     std::vector<QuerySolutionNode*> result;
+	result.reserve(collapsedScans.size());
     for (auto& scan : collapsedScans) {
         result.push_back(scan.release());
     }
-    return collapsedScans.release();
+    return result;
 }
 
 // static

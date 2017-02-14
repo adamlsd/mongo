@@ -28,6 +28,9 @@
 
 #pragma once
 
+#include <vector>
+#include <memory>
+
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
@@ -223,7 +226,7 @@ public:
 
 private:
     // Ordered, parsed paths
-    const OwnedPointerVector<FieldRef> _keyPatternPaths;
+    const std::vector<std::unique_ptr<FieldRef>> _keyPatternPaths;
 
     const KeyPattern _keyPattern;
 };

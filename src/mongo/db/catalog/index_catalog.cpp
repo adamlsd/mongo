@@ -1081,7 +1081,7 @@ void IndexCatalog::IndexIterator::_advance() {
     _next = NULL;
 
     while (_iterator != _catalog->_entries.end()) {
-        IndexCatalogEntry* entry = *_iterator;
+        IndexCatalogEntry* entry = _iterator->get();
         ++_iterator;
 
         if (!_includeUnfinishedIndexes) {
@@ -1328,7 +1328,7 @@ Status IndexCatalog::indexRecords(OperationContext* txn,
 
     for (IndexCatalogEntryContainer::const_iterator i = _entries.begin(); i != _entries.end();
          ++i) {
-        Status s = _indexRecords(txn, *i, bsonRecords, keysInsertedOut);
+        Status s = _indexRecords(txn, i->get(), bsonRecords, keysInsertedOut);
         if (!s.isOK())
             return s;
     }
@@ -1347,7 +1347,7 @@ void IndexCatalog::unindexRecord(OperationContext* txn,
 
     for (IndexCatalogEntryContainer::const_iterator i = _entries.begin(); i != _entries.end();
          ++i) {
-        IndexCatalogEntry* entry = *i;
+        IndexCatalogEntry* entry = i->get();
 
         // If it's a background index, we DO NOT want to log anything.
         bool logIfError = entry->isReady(txn) ? !noWarn : false;

@@ -66,7 +66,7 @@ public:
 
         BSONObjBuilder result;
 
-        auto statsList= deleter->getStatsHistory();
+        auto statsList = deleter->getStatsHistory();
         BSONArrayBuilder oldStatsBuilder;
         for (auto it = statsList.begin(); it != statsList.end(); ++it) {
             BSONObjBuilder entryBuilder;

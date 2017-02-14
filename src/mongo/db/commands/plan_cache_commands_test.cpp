@@ -42,6 +42,7 @@
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/stdx/memory.h"
 
 using namespace mongo;
 
@@ -116,9 +117,9 @@ PlanRankingDecision* createDecision(size_t numPlans) {
     unique_ptr<PlanRankingDecision> why(new PlanRankingDecision());
     for (size_t i = 0; i < numPlans; ++i) {
         CommonStats common("COLLSCAN");
-        unique_ptr<PlanStageStats> stats(new PlanStageStats(common, STAGE_COLLSCAN));
+        auto stats=stdx::make_unique< PlanStageStats>(common, STAGE_COLLSCAN);
         stats->specific.reset(new CollectionScanStats());
-        why->stats.mutableVector().push_back(stats.release());
+        why->stats.push_back(std::move(stats));
         why->scores.push_back(0U);
         why->candidateOrder.push_back(i);
     }

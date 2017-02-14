@@ -238,15 +238,14 @@ private:
         if (!status.isOK())
             return status;
 
-        OwnedPointerVector<ShardEndpoint> endpointsOwned;
-        vector<ShardEndpoint*>& endpoints = endpointsOwned.mutableVector();
+        vector<std::unique_ptr<ShardEndpoint>> endpoints;
 
         if (targetingBatchItem.getOpType() == BatchedCommandRequest::BatchType_Insert) {
             ShardEndpoint* endpoint;
             Status status = targeter.targetInsert(txn, targetingBatchItem.getDocument(), &endpoint);
             if (!status.isOK())
                 return status;
-            endpoints.push_back(endpoint);
+            endpoints.push_back(std::unique_ptr<ShardEndpoint>{endpoint});
         } else if (targetingBatchItem.getOpType() == BatchedCommandRequest::BatchType_Update) {
             Status status = targeter.targetUpdate(txn, *targetingBatchItem.getUpdate(), &endpoints);
             if (!status.isOK())
@@ -261,9 +260,8 @@ private:
         DBClientMultiCommand dispatcher;
 
         // Assemble requests
-        for (vector<ShardEndpoint*>::const_iterator it = endpoints.begin(); it != endpoints.end();
-             ++it) {
-            const ShardEndpoint* endpoint = *it;
+        for (auto it = endpoints.begin(); it != endpoints.end(); ++it) {
+            const ShardEndpoint* endpoint = it->get();
 
             const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
             auto shardStatus = grid.shardRegistry()->getShard(txn, endpoint->shardName);

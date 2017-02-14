@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/s/ns_targeter.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -85,13 +86,15 @@ public:
     /**
      * Returns a ShardEndpoint for the doc from the mock ranges
      */
-    Status targetInsert(OperationContext* txn, const BSONObj& doc, ShardEndpoint** endpoint) const {
-        std::vector<ShardEndpoint*> endpoints;
+    Status targetInsert(OperationContext* txn,
+                        const BSONObj& doc,
+                        ShardEndpoint** endpoint) const override {
+        std::vector<std::unique_ptr<ShardEndpoint>> endpoints;
         Status status = targetQuery(doc, &endpoints);
         if (!status.isOK())
             return status;
         if (!endpoints.empty())
-            *endpoint = endpoints.front();
+            *endpoint = endpoints.front().release();
         return Status::OK();
     }
 
@@ -101,7 +104,7 @@ public:
      */
     Status targetUpdate(OperationContext* txn,
                         const BatchedUpdateDocument& updateDoc,
-                        std::vector<ShardEndpoint*>* endpoints) const {
+                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const override {
         return targetQuery(updateDoc.getQuery(), endpoints);
     }
 
@@ -111,22 +114,22 @@ public:
      */
     Status targetDelete(OperationContext* txn,
                         const BatchedDeleteDocument& deleteDoc,
-                        std::vector<ShardEndpoint*>* endpoints) const {
+                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         return targetQuery(deleteDoc.getQuery(), endpoints);
     }
 
-    Status targetCollection(std::vector<ShardEndpoint*>* endpoints) const {
+    Status targetCollection(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const override {
         // TODO: XXX
         // No-op
         return Status::OK();
     }
 
-    Status targetAllShards(std::vector<ShardEndpoint*>* endpoints) const {
+    Status targetAllShards(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const override {
         const std::vector<MockRange*>& ranges = getRanges();
         for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
              ++it) {
             const MockRange* range = *it;
-            endpoints->push_back(new ShardEndpoint(range->endpoint));
+            endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
         }
 
         return Status::OK();
@@ -182,7 +185,8 @@ private:
      * Returns the first ShardEndpoint for the query from the mock ranges.  Only can handle
      * queries of the form { field : { $gte : <value>, $lt : <value> } }.
      */
-    Status targetQuery(const BSONObj& query, std::vector<ShardEndpoint*>* endpoints) const {
+    Status targetQuery(const BSONObj& query,
+                       std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         KeyRange queryRange = parseRange(query);
 
         const std::vector<MockRange*>& ranges = getRanges();
@@ -194,7 +198,7 @@ private:
                               queryRange.maxKey,
                               range->range.minKey,
                               range->range.maxKey)) {
-                endpoints->push_back(new ShardEndpoint(range->endpoint));
+                endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
             }
         }
 

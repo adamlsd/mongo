@@ -158,7 +158,7 @@ private:
         std::unique_ptr<CachedSolution> cachedSolution;
 
         // Query solutions resulting from planning the $or branch.
-        OwnedPointerVector<QuerySolution> solutions;
+        std::vector<std::unique_ptr<QuerySolution>> solutions;
     };
 
     /**

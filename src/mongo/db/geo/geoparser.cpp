@@ -31,12 +31,14 @@
 #include "mongo/db/geo/geoparser.h"
 
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/geo/shapes.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "third_party/s2/s2polygonbuilder.h"
@@ -180,7 +182,7 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
         return BAD_VALUE("Polygon coordinates must be an array");
     }
 
-    OwnedPointerVector<S2Loop> loops;
+    std::vector<std::unique_ptr<S2Loop>> loops;
     Status status = Status::OK();
     string err;
 
@@ -209,8 +211,8 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
                 "Loop must have at least 3 different vertices: " << coordinateElt.toString(false));
         }
 
-        S2Loop* loop = new S2Loop(points);
-        loops.push_back(loop);
+        loops.push_back(stdx::make_unique<S2Loop>(points));
+        S2Loop* loop = loops.back().get();
 
         // Check whether this loop is valid.
         // 1. At least 3 vertices.
@@ -239,18 +241,32 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
         return BAD_VALUE("Polygon has no loops.");
     }
 
-    // Check if the given loops form a valid polygon.
-    // 1. If a loop contains an edge AB, then no other loop may contain AB or BA.
-    // 2. No loop covers more than half of the sphere.
-    // 3. No two loops cross.
-    if (!skipValidation && !S2Polygon::IsValid(loops.vector(), &err))
-        return BAD_VALUE("Polygon isn't valid: " << err << " " << elem.toString(false));
+    {
+        std::vector<S2Loop*> rawLoops;
+        for (const auto& l : loops) {
+            rawLoops.push_back(l.get());
+        }
+
+        // Check if the given loops form a valid polygon.
+        // 1. If a loop contains an edge AB, then no other loop may contain AB or BA.
+        // 2. No loop covers more than half of the sphere.
+        // 3. No two loops cross.
+        if (!skipValidation && !S2Polygon::IsValid(rawLoops, &err))
+            return BAD_VALUE("Polygon isn't valid: " << err << " " << elem.toString(false));
+    }
 
     // Given all loops are valid / normalized and S2Polygon::IsValid() above returns true.
     // The polygon must be valid. See S2Polygon member function IsValid().
 
-    // Transfer ownership of the loops and clears loop vector.
-    out->Init(&loops.mutableVector());
+    {
+        // Transfer ownership of the loops and clears loop vector.
+        std::vector<S2Loop*> rawLoops;
+        rawLoops.reserve(loops.size());
+        for (const auto& l : loops) {
+            rawLoops.push_back(l.get());
+        }
+        out->Init(&rawLoops);
+    }
 
     if (skipValidation)
         return Status::OK();

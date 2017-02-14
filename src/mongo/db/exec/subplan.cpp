@@ -32,6 +32,9 @@
 
 #include "mongo/db/exec/subplan.h"
 
+#include <memory>
+#include <vector>
+
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/exec/multi_plan.h"
 #include "mongo/db/exec/scoped_timer.h"
@@ -216,9 +219,15 @@ Status SubplanStage::planSubqueries() {
 
             // We don't set NO_TABLE_SCAN because peeking at the cache data will keep us from
             // considering any plan that's a collscan.
-            Status status = QueryPlanner::plan(*branchResult->canonicalQuery,
-                                               _plannerParams,
-                                               &branchResult->solutions.mutableVector());
+            std::vector<QuerySolution*> rawSolutions;
+            for (const auto& soln : branchResult->solutions) {
+                rawSolutions.push_back(soln.get());
+            }
+            Status status =
+                QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams, &rawSolutions);
+            for (const auto& soln : rawSolutions) {
+                branchResult->solutions.push_back(std::unique_ptr<QuerySolution>{soln});
+            }
 
             if (!status.isOK()) {
                 mongoutils::str::stream ss;
@@ -300,7 +309,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
                 return tagStatus;
             }
         } else if (1 == branchResult->solutions.size()) {
-            QuerySolution* soln = branchResult->solutions.front();
+            QuerySolution* soln = branchResult->solutions.front().get();
             Status tagStatus = tagOrChildAccordingToCache(
                 cacheData.get(), soln->cacheData.get(), orChild, _indexMap);
             if (!tagStatus.isOK()) {
@@ -342,7 +351,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
                                               &nextPlanRoot));
 
                 // Takes ownership of solution with index 'ix' and 'nextPlanRoot'.
-                multiPlanStage->addPlan(branchResult->solutions.releaseAt(ix), nextPlanRoot, _ws);
+                multiPlanStage->addPlan(branchResult->solutions[ix].release(), nextPlanRoot, _ws);
             }
 
             Status planSelectStat = multiPlanStage->pickBestPlan(yieldPolicy);
@@ -439,7 +448,10 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
                           " planner returned error: " + status.reason());
     }
 
-    OwnedPointerVector<QuerySolution> solutions(rawSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    for (const auto soln : rawSolutions) {
+        solutions.push_back(std::unique_ptr<QuerySolution>{soln});
+    }
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?
@@ -457,7 +469,8 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
         _children.emplace_back(root);
 
         // This SubplanStage takes ownership of the query solution.
-        _compositeSolution.reset(solutions.popAndReleaseBack());
+        _compositeSolution = std::move(solutions.back());
+        solutions.pop_back();
 
         return Status::OK();
     } else {
@@ -478,7 +491,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
                 getOpCtx(), _collection, *_query, *solutions[ix], _ws, &nextPlanRoot));
 
             // Takes ownership of 'solutions[ix]' and 'nextPlanRoot'.
-            multiPlanStage->addPlan(solutions.releaseAt(ix), nextPlanRoot, _ws);
+            multiPlanStage->addPlan(solutions[ix].release(), nextPlanRoot, _ws);
         }
 
         // Delegate the the MultiPlanStage's plan selection facility.

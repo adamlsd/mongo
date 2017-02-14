@@ -33,6 +33,7 @@
 #include "mongo/db/query/planner_access.h"
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #include "mongo/base/owned_pointer_vector.h"
@@ -647,20 +648,24 @@ void QueryPlannerAccess::findElemMatchChildren(const MatchExpression* node,
 // static
 std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
     const std::vector<QuerySolutionNode*> scans) {
-    OwnedPointerVector<QuerySolutionNode> ownedScans(scans);
+    std::vector<std::unique_ptr<QuerySolutionNode>> ownedScans;
+    for (const auto& scan : scans) {
+        ownedScans.push_back(std::unique_ptr<QuerySolutionNode>{scan});
+    }
     invariant(ownedScans.size() > 0);
+    invariant(ownedScans.size() == scans.size());
 
     // Scans that need to be collapsed will be adjacent to each other in the list due to how we
     // sort the query predicate. We step through the list, either merging the current scan into
     // the last scan in 'collapsedScans', or adding a new entry to 'collapsedScans' if it can't
     // be merged.
-    OwnedPointerVector<QuerySolutionNode> collapsedScans;
+    std::vector<std::unique_ptr<QuerySolutionNode>> collapsedScans;
 
-    collapsedScans.push_back(ownedScans.releaseAt(0));
+    collapsedScans.push_back(std::move(ownedScans[0]));
     for (size_t i = 1; i < ownedScans.size(); ++i) {
-        if (scansAreEquivalent(collapsedScans.back(), ownedScans[i])) {
+        if (scansAreEquivalent(collapsedScans.back().get(), ownedScans[i].get())) {
             // We collapse the entry from 'ownedScans' into the back of 'collapsedScans'.
-            std::unique_ptr<QuerySolutionNode> collapseFrom(ownedScans.releaseAt(i));
+            std::unique_ptr<QuerySolutionNode> collapseFrom(std::move(ownedScans[i]));
             FetchNode* collapseFromFetch = getFetchNode(collapseFrom.get());
             FetchNode* collapseIntoFetch = getFetchNode(collapsedScans.back());
 
@@ -691,11 +696,15 @@ std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
                 CanonicalQuery::normalizeTree(collapsedFilter.release()));
         } else {
             // Scans are not equivalent and can't be collapsed.
-            collapsedScans.push_back(ownedScans.releaseAt(i));
+            collapsedScans.push_back(std::move(ownedScans[i]));
         }
     }
 
     invariant(collapsedScans.size() > 0);
+    std::vector<QuerySolutionNode*> result;
+    for (auto& scan : collapsedScans) {
+        result.push_back(scan.release());
+    }
     return collapsedScans.release();
 }
 

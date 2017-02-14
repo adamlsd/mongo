@@ -32,6 +32,11 @@
 
 #include "mongo/db/query/plan_cache.h"
 
+#include <algorithm>
+#include <math.h>
+#include <memory>
+#include <vector>
+
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/client/dbclientinterface.h"  // For QueryOption_foobar
 #include "mongo/db/matcher/expression_array.h"
@@ -43,9 +48,6 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include <algorithm>
-#include <math.h>
-#include <memory>
 
 namespace mongo {
 namespace {
@@ -361,13 +363,15 @@ PlanCacheEntry::~PlanCacheEntry() {
 }
 
 PlanCacheEntry* PlanCacheEntry::clone() const {
-    OwnedPointerVector<QuerySolution> solutions;
+    std::vector<std::unique_ptr<QuerySolution>> solutions;
+    std::vector<QuerySolution*> rawSolutions;
     for (size_t i = 0; i < plannerData.size(); ++i) {
-        QuerySolution* qs = new QuerySolution();
+        auto qs = stdx::make_unique<QuerySolution>();
         qs->cacheData.reset(plannerData[i]->clone());
-        solutions.mutableVector().push_back(qs);
+        rawSolutions.push_back(qs.get());
+        solutions.push_back(std::move(qs));
     }
-    PlanCacheEntry* entry = new PlanCacheEntry(solutions.vector(), decision->clone());
+    PlanCacheEntry* entry = new PlanCacheEntry(rawSolutions, decision->clone());
 
     // Copy query shape.
     entry->query = query.getOwned();

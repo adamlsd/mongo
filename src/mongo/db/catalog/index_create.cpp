@@ -39,6 +39,7 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/index_catalog_impl.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -198,7 +199,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
 
         string pluginName = IndexNames::findPluginName(info["key"].Obj());
         if (pluginName.size()) {
-            Status s = _collection->getIndexCatalog()->_upgradeDatabaseMinorVersionIfNeeded(
+            Status s = _collection->getIndexCatalog()->upgradeDatabaseMinorVersionIfNeeded(
                 _txn, pluginName);
             if (!s.isOK())
                 return s;
@@ -246,7 +247,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlock::init(const std::vector<BSONObj
 
         const IndexDescriptor* descriptor = index.block->getEntry()->descriptor();
 
-        IndexCatalog::prepareInsertDeleteOptions(_txn, descriptor, &index.options);
+        IndexCatalogImpl::prepareInsertDeleteOptions(_txn, descriptor, &index.options);
         index.options.dupsAllowed = index.options.dupsAllowed || _ignoreUnique;
         if (_ignoreUnique) {
             index.options.getKeysMode = IndexAccessMethod::GetKeysMode::kRelaxConstraints;

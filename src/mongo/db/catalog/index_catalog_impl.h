@@ -174,7 +174,7 @@ public:
 
     class IndexIterator : public IndexCatalog::IndexIterator::Impl {
     public:
-        bool more() const override;
+        bool more() override;
         IndexDescriptor* next() override;
 
         // returns the access method for the last return IndexDescriptor
@@ -183,10 +183,15 @@ public:
         // returns the IndexCatalogEntry for the last return IndexDescriptor
         IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) override;
 
+
     private:
         IndexIterator(OperationContext* txn,
                       const IndexCatalog* cat,
                       bool includeUnfinishedIndexes);
+
+        inline IndexIterator* clone_impl() const override {
+            return new IndexIterator{*this};
+        }
 
         void _advance();
 
@@ -349,6 +354,20 @@ public:
                                            InsertDeleteOptions* options);
 
 private:
+    const Collection* collection() const override {
+        return this->_collection;
+    }
+    Collection* collection() override {
+        return this->_collection;
+    }
+
+    const IndexCatalogEntryContainer& entries() const override {
+        return this->_entries;
+    }
+    IndexCatalogEntryContainer& entries() override {
+        return this->_entries;
+    }
+
     static const BSONObj _idObj;  // { _id : 1 }
 
     bool _shouldOverridePlugin(OperationContext* txn, const BSONObj& keyPattern) const;

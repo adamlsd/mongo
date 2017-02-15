@@ -378,7 +378,7 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
 
     /// ----------   setup in memory structures  ----------------
     const bool initFromDisk = false;
-    _entry = _catalog->_setupInMemoryStructures(_txn, descriptorCleaner.release(), initFromDisk);
+    _entry = _catalog->setupInMemoryStructures(_txn, descriptorCleaner.release(), initFromDisk);
 
     // Register this index with the CollectionInfoCache to regenerate the cache. This way, updates
     // occurring while an index is being build in the background will be aware of whether or not
@@ -393,9 +393,9 @@ IndexCatalogImpl::IndexBuildBlock::~IndexBuildBlock() {
 }
 
 void IndexCatalogImpl::IndexBuildBlock::fail() {
-    fassert(17204, _catalog->_collection->ok());  // defensive
+    fassert(17204, _catalog->collection()->ok());  // defensive
 
-    IndexCatalogEntry* entry = _catalog->_entries.find(_indexName);
+    IndexCatalogEntry* entry = _catalog->entries().find(_indexName);
     invariant(entry == _entry);
 
     if (entry) {
@@ -406,7 +406,7 @@ void IndexCatalogImpl::IndexBuildBlock::fail() {
 }
 
 void IndexCatalogImpl::IndexBuildBlock::success() {
-    Collection* collection = _catalog->_collection;
+    Collection* collection = _catalog->collection();
     fassert(17207, collection->ok());
     NamespaceString ns(_indexNamespace);
     invariant(_txn->lockState()->isDbLockedForMode(ns.db(), MODE_X));
@@ -415,7 +415,7 @@ void IndexCatalogImpl::IndexBuildBlock::success() {
 
     IndexDescriptor* desc = _catalog->findIndexByName(_txn, _indexName, true);
     fassert(17330, desc);
-    IndexCatalogEntry* entry = _catalog->_entries.find(desc);
+    IndexCatalogEntry* entry = _catalog->entries().find(desc);
     fassert(17331, entry && entry == _entry);
 
     OperationContext* txn = _txn;
@@ -834,7 +834,7 @@ Status IndexCatalogImpl::dropAllIndexes(OperationContext* txn, bool includingIdI
     vector<string> indexNamesToDrop;
     {
         int seen = 0;
-        IndexIterator ii = getIndexIterator(txn, true);
+        auto ii = getIndexIterator(txn, true);
         while (ii.more()) {
             seen++;
             IndexDescriptor* desc = ii.next();
@@ -1030,7 +1030,7 @@ int IndexCatalogImpl::numIndexesTotal(OperationContext* txn) const {
 
 int IndexCatalogImpl::numIndexesReady(OperationContext* txn) const {
     int count = 0;
-    IndexIterator ii = getIndexIterator(txn, /*includeUnfinished*/ false);
+    auto ii = getIndexIterator(txn, /*includeUnfinished*/ false);
     while (ii.more()) {
         ii.next();
         count++;
@@ -1044,12 +1044,12 @@ bool IndexCatalogImpl::haveIdIndex(OperationContext* txn) const {
 }
 
 IndexCatalogImpl::IndexIterator::IndexIterator(OperationContext* txn,
-                                               const IndexCatalogImpl* cat,
+                                               const IndexCatalog* cat,
                                                bool includeUnfinishedIndexes)
     : _includeUnfinishedIndexes(includeUnfinishedIndexes),
       _txn(txn),
       _catalog(cat),
-      _iterator(cat->_entries.begin()),
+      _iterator(cat->entries().begin()),
       _start(true),
       _prev(NULL),
       _next(NULL) {}
@@ -1083,7 +1083,7 @@ IndexCatalogEntry* IndexCatalogImpl::IndexIterator::catalogEntry(const IndexDesc
 void IndexCatalogImpl::IndexIterator::_advance() {
     _next = NULL;
 
-    while (_iterator != _catalog->_entries.end()) {
+    while (_iterator != _catalog->entries().end()) {
         IndexCatalogEntry* entry = *_iterator;
         ++_iterator;
 
@@ -1108,7 +1108,7 @@ void IndexCatalogImpl::IndexIterator::_advance() {
 
 
 IndexDescriptor* IndexCatalogImpl::findIdIndex(OperationContext* txn) const {
-    IndexIterator ii = getIndexIterator(txn, false);
+    auto ii = getIndexIterator(txn, false);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         if (desc->isIdIndex())
@@ -1120,7 +1120,7 @@ IndexDescriptor* IndexCatalogImpl::findIdIndex(OperationContext* txn) const {
 IndexDescriptor* IndexCatalogImpl::findIndexByName(OperationContext* txn,
                                                    StringData name,
                                                    bool includeUnfinishedIndexes) const {
-    IndexIterator ii = getIndexIterator(txn, includeUnfinishedIndexes);
+    auto ii = getIndexIterator(txn, includeUnfinishedIndexes);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         if (desc->indexName() == name)
@@ -1134,7 +1134,7 @@ IndexDescriptor* IndexCatalogImpl::findIndexByKeyPatternAndCollationSpec(
     const BSONObj& key,
     const BSONObj& collationSpec,
     bool includeUnfinishedIndexes) const {
-    IndexIterator ii = getIndexIterator(txn, includeUnfinishedIndexes);
+    auto ii = getIndexIterator(txn, includeUnfinishedIndexes);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         if (SimpleBSONObjComparator::kInstance.evaluate(desc->keyPattern() == key) &&
@@ -1151,7 +1151,7 @@ void IndexCatalogImpl::findIndexesByKeyPattern(OperationContext* txn,
                                                bool includeUnfinishedIndexes,
                                                std::vector<IndexDescriptor*>* matches) const {
     invariant(matches);
-    IndexIterator ii = getIndexIterator(txn, includeUnfinishedIndexes);
+    auto ii = getIndexIterator(txn, includeUnfinishedIndexes);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         if (SimpleBSONObjComparator::kInstance.evaluate(desc->keyPattern() == key)) {
@@ -1165,7 +1165,7 @@ IndexDescriptor* IndexCatalogImpl::findShardKeyPrefixedIndex(OperationContext* t
                                                              bool requireSingleKey) const {
     IndexDescriptor* best = NULL;
 
-    IndexIterator ii = getIndexIterator(txn, false);
+    auto ii = getIndexIterator(txn, false);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         bool hasSimpleCollation = desc->infoObj().getObjectField("collation").isEmpty();
@@ -1190,7 +1190,7 @@ void IndexCatalogImpl::findIndexByType(OperationContext* txn,
                                        const string& type,
                                        vector<IndexDescriptor*>& matches,
                                        bool includeUnfinishedIndexes) const {
-    IndexIterator ii = getIndexIterator(txn, includeUnfinishedIndexes);
+    auto ii = getIndexIterator(txn, includeUnfinishedIndexes);
     while (ii.more()) {
         IndexDescriptor* desc = ii.next();
         if (IndexNames::findPluginName(desc->keyPattern()) == type) {

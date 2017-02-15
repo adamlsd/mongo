@@ -152,8 +152,8 @@ public:
         return _keyPattern;
     }
 
-    const std::vector<std::unique_ptr<FieldRef>>& getKeyPatternFields() const {
-        return _keyFields;
+    const std::vector<FieldRef*>& getKeyPatternFields() const {
+        return _keyFields.vector();
     }
 
     BSONObj getMinKey() const;
@@ -225,7 +225,7 @@ private:
     BSONObj _keyPattern;
 
     // A vector owning the FieldRefs parsed from the shard-key pattern of field names.
-    std::vector<std::unique_ptr<FieldRef>> _keyFields;
+    OwnedPointerVector<FieldRef> _keyFields;
 
     //
     // RangeMaps represent chunks by mapping the min key to the chunk's max key, allowing

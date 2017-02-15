@@ -1,0 +1,3 @@
+This directory contains the Mongo.Ming library.  This prevention of misuse is a fundamental design
+tenet of the "Ming" library.  MING is an acronym for "Mongo Internals: Next Generation".
+

@@ -71,6 +71,15 @@
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
+namespace {
+MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
+    IndexCatalog::registerFactory([](OperationContext* const txn,
+                                     const IndexCatalog* const cat,
+                                     const bool includeUnfinishedIndexes) {
+        return stdx::make_unique<IndexCatalogImpl>(txn, cat, includeUnfinishedIndexes);
+    });
+    return Status::OK();
+}
 
 using std::unique_ptr;
 using std::endl;

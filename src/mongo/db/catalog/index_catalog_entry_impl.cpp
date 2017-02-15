@@ -63,7 +63,6 @@ MONGO_INITIALIZER(InitializeIndexCatalogEntryFactory)(InitializerContext* const)
     });
     return Status::OK();
 }
-}  // namespace
 
 using std::string;
 
@@ -84,6 +83,7 @@ private:
     // Not owned here.
     IndexCatalogEntryImpl* _catalogEntry;
 };
+}  // namespace
 
 IndexCatalogEntryImpl::IndexCatalogEntryImpl(OperationContext* txn,
                                              StringData ns,

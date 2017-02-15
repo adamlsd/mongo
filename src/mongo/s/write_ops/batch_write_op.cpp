@@ -629,10 +629,10 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
             int batchIndex = targetedBatch.getWrites()[childBatchIndex]->writeOpRef.first;
 
             // Push the upserted id with the correct index into the batch upserted ids
-            BatchedUpsertDetail* upsertedId = new BatchedUpsertDetail;
+            auto upsertedId = stdx::make_unique<BatchedUpsertDetail>();
             upsertedId->setIndex(batchIndex);
             upsertedId->setUpsertedID(childUpsertedId->getUpsertedID());
-            _upsertedIds.mutableVector().push_back(upsertedId);
+            _upsertedIds.push_back(std::move(upsertedId));
         }
     }
 }
@@ -778,7 +778,11 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
     //
 
     if (_upsertedIds.size() != 0) {
-        batchResp->setUpsertDetails(_upsertedIds.vector());
+        std::vector<BatchedUpsertDetail*> upsertedIds;
+        for (const auto& id : _upsertedIds) {
+            upsertedIds.push_back(id.get());
+        }
+        batchResp->setUpsertDetails(upsertedIds);
     }
 
     // Stats

@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -176,7 +177,7 @@ private:
     std::vector<std::unique_ptr<ShardWCError>> _wcErrors;
 
     // Upserted ids for the whole write batch
-    OwnedPointerVector<BatchedUpsertDetail> _upsertedIds;
+    std::vector<std::unique_ptr<BatchedUpsertDetail>> _upsertedIds;
 
     // Stats for the entire batch op
     std::unique_ptr<BatchWriteStats> _stats;

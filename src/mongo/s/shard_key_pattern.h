@@ -28,8 +28,8 @@
 
 #pragma once
 
-#include <vector>
 #include <memory>
+#include <vector>
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"

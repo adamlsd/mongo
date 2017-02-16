@@ -455,7 +455,7 @@ void CollectionMetadata::fillKeyPatternFields() {
     while (patternIter.more()) {
         BSONElement current = patternIter.next();
 
-        _keyFields.push_back(stdx::make_unique< FieldRef>());
+        _keyFields.push_back(stdx::make_unique<FieldRef>());
         FieldRef* const newFieldRef = _keyFields.back().get();
         newFieldRef->parse(current.fieldNameStringData());
     }

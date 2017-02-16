@@ -214,7 +214,7 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
                                     << status.reason());
     }
 
-    const std::vector<std::unique_ptr<QuerySolution>> solutions =
+    std::vector<std::unique_ptr<QuerySolution>> solutions =
         transitional_tools_do_not_use::spool_vector(rawSolutions);
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index

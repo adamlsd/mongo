@@ -439,7 +439,7 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
     // Use the query planning module to plan the whole query.
     std::vector<QuerySolution*> rawSolutions;
     Status status = QueryPlanner::plan(*_query, _plannerParams, &rawSolutions);
-    const std::vector<std::unique_ptr<QuerySolution>> solutions =
+    std::vector<std::unique_ptr<QuerySolution>> solutions =
         transitional_tools_do_not_use::spool_vector(rawSolutions);
     if (!status.isOK()) {
         return Status(ErrorCodes::BadValue,

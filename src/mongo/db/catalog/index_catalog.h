@@ -91,15 +91,11 @@ public:
             return this->_pimpl.get();
         }
 
-        static std::unique_ptr<Impl> makeImpl(OperationContext* txn,
-                                              const IndexCatalog* cat,
-                                              bool includeUnfinishedIndexes);
-
     public:
-        static void registerFactory(stdx::function<std::unique_ptr<Impl>(
-                                        OperationContext*, const IndexCatalog*, bool)> factory);
-
         ~IndexIterator() = default;
+
+        explicit inline IndexIterator(std::unique_ptr<IndexIterator::Impl> impl)
+            : _pimpl(std::move(impl)) {}
 
         inline IndexIterator(const IndexIterator& copy) : _pimpl(copy.pimpl()->clone()) {}
         inline IndexIterator(IndexIterator&& copy) = default;
@@ -110,11 +106,6 @@ public:
 
             return *this;
         }
-
-        explicit inline IndexIterator(OperationContext* const txn,
-                                      const IndexCatalog* const cat,
-                                      const bool includeUnfinishedIndexes)
-            : _pimpl(makeImpl(txn, cat, includeUnfinishedIndexes)) {}
 
         inline bool more() {
             return this->pimpl()->more();
@@ -206,14 +197,6 @@ public:
     class Impl {
     public:
         virtual ~Impl();
-
-    private:
-        virtual Impl* clone_impl() const = 0;
-
-    public:
-        virtual std::unique_ptr<Impl> clone() const {
-            return std::unique_ptr<Impl>(this->clone_impl());
-        }
 
         virtual Status init(OperationContext* txn) = 0;
 
@@ -496,7 +479,7 @@ public:
 
     inline IndexIterator getIndexIterator(OperationContext* const txn,
                                           const bool includeUnfinishedIndexes) const {
-        return IndexIterator(txn, this, includeUnfinishedIndexes);
+        return this->pimpl()->getIndexIterator(txn, includeUnfinishedIndexes);
     };
 
     // ---- index set modifiers ------

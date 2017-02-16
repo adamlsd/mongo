@@ -42,6 +42,7 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/platform/unordered_map.h"
+#include "mongo/stdx/memory.h"
 
 namespace mongo {
 
@@ -184,11 +185,15 @@ public:
         IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) override;
 
 
-    private:
-        IndexIterator(OperationContext* txn,
-                      const IndexCatalog* cat,
-                      bool includeUnfinishedIndexes);
+        explicit inline IndexIterator(OperationContext* txn,
+                                      const IndexCatalogImpl* cat,
+                                      bool includeUnfinishedIndexes)
+            : _includeUnfinishedIndexes(includeUnfinishedIndexes),
+              _txn(txn),
+              _catalog(cat),
+              _iterator(cat->entries().begin()) {}
 
+    private:
         inline IndexIterator* clone_impl() const override {
             return new IndexIterator{*this};
         }
@@ -198,15 +203,13 @@ public:
         bool _includeUnfinishedIndexes;
 
         OperationContext* const _txn;
-        const IndexCatalog* _catalog;
+        const IndexCatalogImpl* _catalog;
         IndexCatalogEntryContainer::const_iterator _iterator;
 
-        bool _start;  // only true before we've called next() or more()
+        bool _start = true;  // only true before we've called next() or more()
 
-        IndexCatalogEntry* _prev;
-        IndexCatalogEntry* _next;
-
-        friend class IndexCatalog;
+        IndexCatalogEntry* _prev = nullptr;
+        IndexCatalogEntry* _next = nullptr;
     };
 
     // ---- index set modifiers ------
@@ -354,20 +357,6 @@ public:
                                            InsertDeleteOptions* options);
 
 private:
-    const Collection* collection() const override {
-        return this->_collection;
-    }
-    Collection* collection() override {
-        return this->_collection;
-    }
-
-    const IndexCatalogEntryContainer& entries() const override {
-        return this->_entries;
-    }
-    IndexCatalogEntryContainer& entries() override {
-        return this->_entries;
-    }
-
     static const BSONObj _idObj;  // { _id : 1 }
 
     bool _shouldOverridePlugin(OperationContext* txn, const BSONObj& keyPattern) const;
@@ -378,6 +367,12 @@ private:
      * differ, see shouldOverridePlugin.
      */
     std::string _getAccessMethodName(OperationContext* txn, const BSONObj& keyPattern) const;
+
+    inline IndexCatalog::IndexIterator getIndexIterator(
+        OperationContext* const txn, const bool includeUnfinishedIndexes) const override {
+        return IndexCatalog::IndexIterator{stdx::make_unique<IndexCatalogImpl::IndexIterator>(
+            txn, this, includeUnfinishedIndexes)};
+    }
 
     void _checkMagic() const;
 
@@ -427,6 +422,21 @@ private:
     Status _isSpecOk(OperationContext* txn, const BSONObj& spec) const;
 
     Status _doesSpecConflictWithExisting(OperationContext* txn, const BSONObj& spec) const;
+
+    const Collection* collection() const override {
+        return this->_collection;
+    }
+    Collection* collection() override {
+        return this->_collection;
+    }
+
+    const IndexCatalogEntryContainer& entries() const override {
+        return this->_entries;
+    }
+    IndexCatalogEntryContainer& entries() override {
+        return this->_entries;
+    }
+
 
     int _magic;
     Collection* const _collection;

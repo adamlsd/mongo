@@ -73,15 +73,6 @@
 
 namespace mongo {
 namespace {
-MONGO_INITIALIZER(InitializeIndexCatalog_IndexIteratorFactory)(InitializerContext* const) {
-    IndexCatalog::IndexBuildBlock::registerFactory([](OperationContext* const txn,
-                                                      const IndexCatalog* const cat,
-                                                      const bool includeUnfinishedIndexes) {
-        return stdx::make_unique<IndexCatalogImpl::IndexIterator>(
-            txn, cat, includeUnfinishedIndexes);
-    });
-    return Status::OK();
-}
 MONGO_INITIALIZER(InitializeIndexCatalog_IndexBuildBlockFactory)(InitializerContext* const) {
     IndexCatalog::IndexBuildBlock::registerFactory(
         [](OperationContext* const txn, Collection* const collection, const BSONObj& spec) {
@@ -96,6 +87,7 @@ MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
     });
     return Status::OK();
 }
+}  // namespace
 
 using std::unique_ptr;
 using std::endl;
@@ -1067,17 +1059,6 @@ int IndexCatalogImpl::numIndexesReady(OperationContext* txn) const {
 bool IndexCatalogImpl::haveIdIndex(OperationContext* txn) const {
     return findIdIndex(txn) != NULL;
 }
-
-IndexCatalogImpl::IndexIterator::IndexIterator(OperationContext* txn,
-                                               const IndexCatalog* cat,
-                                               bool includeUnfinishedIndexes)
-    : _includeUnfinishedIndexes(includeUnfinishedIndexes),
-      _txn(txn),
-      _catalog(cat),
-      _iterator(cat->entries().begin()),
-      _start(true),
-      _prev(NULL),
-      _next(NULL) {}
 
 bool IndexCatalogImpl::IndexIterator::more() {
     if (_start) {

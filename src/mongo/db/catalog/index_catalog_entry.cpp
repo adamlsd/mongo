@@ -52,11 +52,11 @@
 
 namespace mongo {
 namespace {
-std::function<std::unique_ptr<IndexCatalogEntry::Impl>(OperationContext* txn,
-                                                       StringData ns,
-                                                       CollectionCatalogEntry* collection,
-                                                       IndexDescriptor* descriptor,
-                                                       CollectionInfoCache* infoCache)>
+stdx::function<std::unique_ptr<IndexCatalogEntry::Impl>(OperationContext* txn,
+                                                        StringData ns,
+                                                        CollectionCatalogEntry* collection,
+                                                        IndexDescriptor* descriptor,
+                                                        CollectionInfoCache* infoCache)>
     factory;
 
 }  // namespace

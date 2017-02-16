@@ -35,10 +35,11 @@
 #include "mongo/db/query/plan_cache.h"
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/update_index_data.h"
+#include "mongo/stdx/functional.h"
 
 namespace mongo {
 namespace {
-std::function<std::unique_ptr<CollectionInfoCache::Impl>(Collection* collection)> implFactory;
+stdx::function<std::unique_ptr<CollectionInfoCache::Impl>(Collection* collection)> implFactory;
 }
 
 auto CollectionInfoCache::makeImpl(Collection* const collection) -> std::unique_ptr<Impl> {
@@ -46,7 +47,7 @@ auto CollectionInfoCache::makeImpl(Collection* const collection) -> std::unique_
 }
 
 void CollectionInfoCache::registerImpl(
-    std::function<std::unique_ptr<Impl>(Collection* collection)> factory) {
+    stdx::function<std::unique_ptr<Impl>(Collection* collection)> factory) {
     implFactory = std::move(factory);
 }
 

@@ -47,6 +47,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -213,10 +214,8 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
                                     << status.reason());
     }
 
-    std::vector<std::unique_ptr<QuerySolution>> solutions;
-    for (const auto soln : rawSolutions) {
-        solutions.push_back(std::unique_ptr<QuerySolution>{soln});
-    }
+    const std::vector<std::unique_ptr<QuerySolution>> solutions =
+        transitional_tools_do_not_use::spool_vector(rawSolutions);
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?

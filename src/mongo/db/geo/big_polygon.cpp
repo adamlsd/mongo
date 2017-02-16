@@ -32,6 +32,7 @@
 
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -95,18 +96,14 @@ bool BigSimplePolygon::Contains(const S2Polyline& line) const {
     if (_isNormalized) {
         // Polygon border is the same as the loop
         polyBorder.SubtractFromPolyline(&line, &clipped);
-        std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
-        for (const auto clip : clipped) {
-            clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
-        }
+        const std::vector<std::unique_ptr<S2Polyline>> clippedOwned =
+            transitional_tools_do_not_use::spool_vector(clipped);
         return clipped.size() == 0;
     } else {
         // Polygon border is the complement of the loop
         polyBorder.IntersectWithPolyline(&line, &clipped);
-        std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
-        for (const auto clip : clipped) {
-            clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
-        }
+        const std::vector<std::unique_ptr<S2Polyline>> clippedOwned =
+            transitional_tools_do_not_use::spool_vector(clipped);
         return clipped.size() == 0;
     }
 }
@@ -173,7 +170,7 @@ const S2Polygon& BigSimplePolygon::GetPolygonBorder() const {
 
     std::vector<S2Loop*> loops;
     loops.push_back(cloned.release());
-    _borderPoly.reset(new S2Polygon(&loops));
+    _borderPoly = stdx::make_unique<S2Polygon>(&loops);
     return *_borderPoly;
 }
 

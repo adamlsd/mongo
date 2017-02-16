@@ -40,6 +40,7 @@
 #include "mongo/db/ops/path_support.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -74,7 +75,7 @@ static bool isHashedPatternEl(const BSONElement& el) {
 }
 
 /**
- * Currently the allowable shard keys are either
+ * Currently the allowable shard keys are either:
  * i) a hashed single field, e.g. { a : "hashed" }, or
  * ii) a compound list of ascending, potentially-nested field paths, e.g. { a : 1 , b.c : 1 }
  */
@@ -288,11 +289,7 @@ BSONObj ShardKeyPattern::extractShardKeyFromQuery(const CanonicalQuery& query) c
     // Extract equalities from query.
     EqualityMatches equalities;
     // TODO: Build the path set initially?
-    std::vector<FieldRef*> paths;
-    for (const auto& path : _keyPatternPaths) {
-        paths.push_back(path.get());
-    }
-    FieldRefSet keyPatternPathSet(paths);
+    FieldRefSet keyPatternPathSet(transitional_tools_do_not_use::unspool_vector(_keyPatternPaths));
     // We only care about extracting the full key pattern paths - if they don't exist (or are
     // conflicting), we don't contain the shard key.
     Status eqStatus =

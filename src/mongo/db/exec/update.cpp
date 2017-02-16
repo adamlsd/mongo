@@ -48,6 +48,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -268,23 +269,16 @@ inline Status validate(const BSONObj& original,
 
         // Check all immutable fields
         if (immutableAndSingleValueFields) {
-            std::vector<FieldRef*> fields;
-            for (const auto& field : *immutableAndSingleValueFields) {
-                fields.push_back(field.get());
-            }
-
-            changedImmutableFields.fillFrom(fields);
+            changedImmutableFields.fillFrom(
+                transitional_tools_do_not_use::unspool_vector(*immutableAndSingleValueFields));
         }
     } else {
         // TODO: Change impl so we don't need to create a new FieldRefSet
         //       -- move all conflict logic into static function on FieldRefSet?
         FieldRefSet immutableFieldRef;
         if (immutableAndSingleValueFields) {
-            std::vector<FieldRef*> fields;
-            for (const auto& field : *immutableAndSingleValueFields) {
-                fields.push_back(field.get());
-            }
-            immutableFieldRef.fillFrom(fields);
+            immutableFieldRef.fillFrom(
+                transitional_tools_do_not_use::unspool_vector(*immutableAndSingleValueFields));
         }
 
         FieldRefSet::const_iterator where = updatedFields.begin();
@@ -687,9 +681,7 @@ Status UpdateStage::applyUpdateOpsForInsert(OperationContext* txn,
     if (cq) {
         std::vector<FieldRef*> fields;
         if (immutablePaths) {
-            for (const auto& field : *immutablePaths) {
-                fields.push_back(field.get());
-            }
+            fields = transitional_tools_do_not_use::unspool_vector(*immutablePaths);
         }
 
         Status status = driver->populateDocumentWithQueryFields(*cq, &fields, *doc);

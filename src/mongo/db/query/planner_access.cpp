@@ -50,6 +50,7 @@
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace {
 
@@ -648,12 +649,9 @@ void QueryPlannerAccess::findElemMatchChildren(const MatchExpression* node,
 // static
 std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
     const std::vector<QuerySolutionNode*> scans) {
-    std::vector<std::unique_ptr<QuerySolutionNode>> ownedScans;
-    for (const auto& scan : scans) {
-        ownedScans.push_back(std::unique_ptr<QuerySolutionNode>{scan});
-    }
+    std::vector<std::unique_ptr<QuerySolutionNode>> ownedScans =
+        transitional_tools_do_not_use::spool_vector(scans);
     invariant(ownedScans.size() > 0);
-    invariant(ownedScans.size() == scans.size());
 
     // Scans that need to be collapsed will be adjacent to each other in the list due to how we
     // sort the query predicate. We step through the list, either merging the current scan into
@@ -701,12 +699,7 @@ std::vector<QuerySolutionNode*> QueryPlannerAccess::collapseEquivalentScans(
     }
 
     invariant(collapsedScans.size() > 0);
-    std::vector<QuerySolutionNode*> result;
-	result.reserve(collapsedScans.size());
-    for (auto& scan : collapsedScans) {
-        result.push_back(scan.release());
-    }
-    return result;
+    return transitional_tools_do_not_use::leak_vector(collapsedScans);
 }
 
 // static

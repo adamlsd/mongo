@@ -41,6 +41,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 #include "third_party/s2/s2polygonbuilder.h"
 
 #define BAD_VALUE(error) Status(ErrorCodes::BadValue, ::mongoutils::str::stream() << error)
@@ -241,30 +242,21 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
         return BAD_VALUE("Polygon has no loops.");
     }
 
-    {
-        std::vector<S2Loop*> rawLoops;
-        for (const auto& l : loops) {
-            rawLoops.push_back(l.get());
-        }
 
-        // Check if the given loops form a valid polygon.
-        // 1. If a loop contains an edge AB, then no other loop may contain AB or BA.
-        // 2. No loop covers more than half of the sphere.
-        // 3. No two loops cross.
-        if (!skipValidation && !S2Polygon::IsValid(rawLoops, &err))
-            return BAD_VALUE("Polygon isn't valid: " << err << " " << elem.toString(false));
-    }
+    // Check if the given loops form a valid polygon.
+    // 1. If a loop contains an edge AB, then no other loop may contain AB or BA.
+    // 2. No loop covers more than half of the sphere.
+    // 3. No two loops cross.
+    if (!skipValidation &&
+        !S2Polygon::IsValid(transitional_tools_do_not_use::unspool_vector(loops), &err))
+        return BAD_VALUE("Polygon isn't valid: " << err << " " << elem.toString(false));
 
     // Given all loops are valid / normalized and S2Polygon::IsValid() above returns true.
     // The polygon must be valid. See S2Polygon member function IsValid().
 
     {
         // Transfer ownership of the loops and clears loop vector.
-        std::vector<S2Loop*> rawLoops;
-        rawLoops.reserve(loops.size());
-        for (auto& l : loops) {
-            rawLoops.push_back(l.release());
-        }
+        std::vector<S2Loop*> rawLoops = transitional_tools_do_not_use::unspool_vector(loops);
         out->Init(&rawLoops);
     }
 

@@ -42,6 +42,7 @@
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_test_lib.h"
 #include "mongo/util/log.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -259,9 +260,7 @@ void QueryPlannerTest::runQueryFull(const BSONObj& query,
 
     std::vector<QuerySolution*> solnsRaw;
     ASSERT_OK(QueryPlanner::plan(*cq, params, &solnsRaw));
-    for (const auto& soln : solnsRaw) {
-        solns.push_back(std::unique_ptr<QuerySolution>{soln});
-    }
+    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
 }
 
 void QueryPlannerTest::runInvalidQuery(const BSONObj& query) {
@@ -340,9 +339,7 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
 
     std::vector<QuerySolution*> solnsRaw;
     Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
-    for (const auto& soln : solnsRaw) {
-        solns.push_back(std::unique_ptr<QuerySolution>{soln});
-    }
+    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
     ASSERT_NOT_OK(s);
 }
 
@@ -363,9 +360,7 @@ void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
 
     std::vector<QuerySolution*> solnsRaw;
     Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
-    for (const auto& soln : solnsRaw) {
-        solns.push_back(std::unique_ptr<QuerySolution>{soln});
-    }
+    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
     ASSERT_OK(s);
 }
 
@@ -386,9 +381,7 @@ void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
 
     std::vector<QuerySolution*> solnsRaw;
     Status status = QueryPlanner::plan(*cq, params, &solnsRaw);
-    for (const auto& soln : solnsRaw) {
-        solns.push_back(std::unique_ptr<QuerySolution>{soln});
-    }
+    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
     ASSERT_NOT_OK(status);
 }
 

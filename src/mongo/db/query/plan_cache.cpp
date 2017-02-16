@@ -48,6 +48,7 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 namespace {
@@ -364,14 +365,13 @@ PlanCacheEntry::~PlanCacheEntry() {
 
 PlanCacheEntry* PlanCacheEntry::clone() const {
     std::vector<std::unique_ptr<QuerySolution>> solutions;
-    std::vector<QuerySolution*> rawSolutions;
     for (size_t i = 0; i < plannerData.size(); ++i) {
         auto qs = stdx::make_unique<QuerySolution>();
         qs->cacheData.reset(plannerData[i]->clone());
-        rawSolutions.push_back(qs.get());
         solutions.push_back(std::move(qs));
     }
-    PlanCacheEntry* entry = new PlanCacheEntry(rawSolutions, decision->clone());
+    PlanCacheEntry* entry = new PlanCacheEntry(
+        transitional_tools_do_not_use::unspool_vector(solutions), decision->clone());
 
     // Copy query shape.
     entry->query = query.getOwned();

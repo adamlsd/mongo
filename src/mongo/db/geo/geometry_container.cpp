@@ -425,10 +425,8 @@ bool containsLine(const S2Polygon& poly, const S2Polyline& otherLine) {
     std::vector<S2Polyline*> clipped;
 
     poly.IntersectWithPolyline(&otherLine, &clipped);
-    std::vector<std::unique_ptr<S2Polyline>> clippedOwned;
-    for (const auto& clip : clipped) {
-        clippedOwned.push_back(std::unique_ptr<S2Polyline>{clip});
-    }
+    const std::vector<std::unique_ptr<S2Polyline>> clippedOwned =
+        transitional_tools_do_not_use::spool_vector(clipped);
     if (1 != clipped.size()) {
         return false;
     }

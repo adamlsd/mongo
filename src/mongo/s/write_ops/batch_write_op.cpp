@@ -32,6 +32,7 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -778,11 +779,7 @@ void BatchWriteOp::buildClientResponse(BatchedCommandResponse* batchResp) {
     //
 
     if (_upsertedIds.size() != 0) {
-        std::vector<BatchedUpsertDetail*> upsertedIds;
-        for (const auto& id : _upsertedIds) {
-            upsertedIds.push_back(id.get());
-        }
-        batchResp->setUpsertDetails(upsertedIds);
+        batchResp->setUpsertDetails(transitional_tools_do_not_use::unspool_vector(_upsertedIds));
     }
 
     // Stats

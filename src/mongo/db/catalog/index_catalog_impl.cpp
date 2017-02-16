@@ -73,11 +73,26 @@
 
 namespace mongo {
 namespace {
+MONGO_INITIALIZER(InitializeIndexCatalog_IndexIteratorFactory)(InitializerContext* const) {
+    IndexCatalog::IndexBuildBlock::registerFactory([](OperationContext* const txn,
+                                                      const IndexCatalog* const cat,
+                                                      const bool includeUnfinishedIndexes) {
+        return stdx::make_unique<IndexCatalogImpl::IndexIterator>(
+            txn, cat, includeUnfinishedIndexes);
+    });
+    return Status::OK();
+}
+MONGO_INITIALIZER(InitializeIndexCatalog_IndexBuildBlockFactory)(InitializerContext* const) {
+    IndexCatalog::IndexBuildBlock::registerFactory(
+        [](OperationContext* const txn, Collection* const collection, const BSONObj& spec) {
+            return stdx::make_unique<IndexCatalogImpl::IndexBuildBlock>(txn, collection, spec);
+        });
+    return Status::OK();
+}
+
 MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
-    IndexCatalog::registerFactory([](OperationContext* const txn,
-                                     const IndexCatalog* const cat,
-                                     const bool includeUnfinishedIndexes) {
-        return stdx::make_unique<IndexCatalogImpl>(txn, cat, includeUnfinishedIndexes);
+    IndexCatalog::registerFactory([](Collection* const collection) {
+        return stdx::make_unique<IndexCatalogImpl>(collection);
     });
     return Status::OK();
 }

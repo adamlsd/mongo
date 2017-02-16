@@ -28,43 +28,39 @@
 
 #pragma once
 
-#include <vector>
-#include <memory>
 #include <algorithm>
 #include <iterator>
+#include <memory>
+#include <vector>
 
-namespace mongo
-{
-	namespace transitional_tools_do_not_use
-	{
-		template< typename T >
-		inline std::vector< T * >
-		unspool_vector( const std::vector< std::unique_ptr< T > > &v )
-		{
-			std::vector< T * > result;
-			result.reserve( v.size() );
-			std::transform( v.begin(), v.end(), std::back_inserter( result ), []( const auto &p ){ return p.get(); } );
-			return result;
-		}
+namespace mongo {
+namespace transitional_tools_do_not_use {
+template <typename T>
+inline std::vector<T*> unspool_vector(const std::vector<std::unique_ptr<T>>& v) {
+    std::vector<T*> result;
+    result.reserve(v.size());
+    std::transform(
+        v.begin(), v.end(), std::back_inserter(result), [](const auto& p) { return p.get(); });
+    return result;
+}
 
-		template< typename T >
-		inline std::vector< std::unique_ptr< T > >
-		spool_vector( const std::vector< T * > &v ) noexcept
-		{
-			std::vector< std::unique_ptr< T > > result;
-			result.reserve( v.size() );
-			std::transform( v.begin(), v.end(), std::back_inserter( result ), []( const auto &p ){ return std::unique_ptr< T >{ p }; } );
-			return result;
-		}
+template <typename T>
+inline std::vector<std::unique_ptr<T>> spool_vector(const std::vector<T*>& v) noexcept {
+    std::vector<std::unique_ptr<T>> result;
+    result.reserve(v.size());
+    std::transform(v.begin(), v.end(), std::back_inserter(result), [](const auto& p) {
+        return std::unique_ptr<T>{p};
+    });
+    return result;
+}
 
-		template< typename T >
-		inline std::vector< T * >
-		leak_vector( std::vector< std::unique_ptr< T > > &v ) noexcept
-		{
-			std::vector< T * > result;
-			result.reserve( v.size() );
-			std::transform( v.begin(), v.end(), std::back_inserter( result ), []( const auto &p ){ return p.release(); } );
-			return result;
-		}
-	}//namespace transitional_tools_do_not_use
-}//namespace mongo
+template <typename T>
+inline std::vector<T*> leak_vector(std::vector<std::unique_ptr<T>>& v) noexcept {
+    std::vector<T*> result;
+    result.reserve(v.size());
+    std::transform(
+        v.begin(), v.end(), std::back_inserter(result), [](auto& p) { return p.release(); });
+    return result;
+}
+}  // namespace transitional_tools_do_not_use
+}  // namespace mongo

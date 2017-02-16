@@ -256,7 +256,7 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
 
     {
         // Transfer ownership of the loops and clears loop vector.
-        std::vector<S2Loop*> rawLoops = transitional_tools_do_not_use::unspool_vector(loops);
+        std::vector<S2Loop*> rawLoops = transitional_tools_do_not_use::leak_vector(loops);
         out->Init(&rawLoops);
     }
 

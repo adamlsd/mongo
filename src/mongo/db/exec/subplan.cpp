@@ -220,8 +220,8 @@ Status SubplanStage::planSubqueries() {
 
             // We don't set NO_TABLE_SCAN because peeking at the cache data will keep us from
             // considering any plan that's a collscan.
-            std::vector<QuerySolution*> rawSolutions =
-                transitional_tools_do_not_use::leak_vector(branchResult->solutions);
+            invariant(branchResult->solutions.empty());
+            std::vector<QuerySolution*> rawSolutions;
             Status status =
                 QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams, &rawSolutions);
             branchResult->solutions = transitional_tools_do_not_use::spool_vector(rawSolutions);

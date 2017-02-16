@@ -36,27 +36,19 @@
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/update_index_data.h"
 
-namespace mongo
-{
-	namespace
-	{
-		std::function< std::unique_ptr< CollectionInfoCache::Impl > ( Collection *collection ) >
-				implFactory;
-	}
-	
-	auto
-	CollectionInfoCache::makeImpl( Collection *const collection )
-			-> std::unique_ptr< Impl >
-	{
-		return implFactory( collection );
-	}
+namespace mongo {
+namespace {
+std::function<std::unique_ptr<CollectionInfoCache::Impl>(Collection* collection)> implFactory;
+}
 
-	void
-	CollectionInfoCache::registerImpl(
-			std::function< std::unique_ptr< Impl > ( Collection *collection ) > factory )
-	{
-		implFactory= std::move( factory );
-	}
+auto CollectionInfoCache::makeImpl(Collection* const collection) -> std::unique_ptr<Impl> {
+    return implFactory(collection);
+}
 
-	CollectionInfoCache::Impl::~Impl()= default;
-}	// namespace mongo
+void CollectionInfoCache::registerImpl(
+    std::function<std::unique_ptr<Impl>(Collection* collection)> factory) {
+    implFactory = std::move(factory);
+}
+
+CollectionInfoCache::Impl::~Impl() = default;
+}  // namespace mongo

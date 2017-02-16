@@ -37,106 +37,104 @@
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/update_index_data.h"
 
-namespace mongo
-{
-	class Collection;
-	class IndexDescriptor;
-	class OperationContext;
+namespace mongo {
+class Collection;
+class IndexDescriptor;
+class OperationContext;
 
-	/**
-	 * this is for storing things that you want to cache about a single collection
-	 * life cycle is managed for you from inside Collection.
-	 */
-	class CollectionInfoCacheImpl : public CollectionInfoCache::Impl
-	{
-		public:
-			CollectionInfoCacheImpl( Collection *collection );
+/**
+ * this is for storing things that you want to cache about a single collection
+ * life cycle is managed for you from inside Collection.
+ */
+class CollectionInfoCacheImpl : public CollectionInfoCache::Impl {
+public:
+    CollectionInfoCacheImpl(Collection* collection);
 
-			~CollectionInfoCacheImpl();
+    ~CollectionInfoCacheImpl();
 
-			/**
-			 * Get the PlanCache for this collection.
-			 */
-			PlanCache *getPlanCache() const;
+    /**
+     * Get the PlanCache for this collection.
+     */
+    PlanCache* getPlanCache() const;
 
-			/**
-			 * Get the QuerySettings for this collection.
-			 */
-			QuerySettings *getQuerySettings() const;
+    /**
+     * Get the QuerySettings for this collection.
+     */
+    QuerySettings* getQuerySettings() const;
 
-			/**
-			 * Get set of index keys for this namespace.  Handy to quickly check if a given
-			 * field is indexed (Note it might be a secondary component of a compound index.)
-			 */
-			const UpdateIndexData &getIndexKeys( OperationContext *txn ) const;
+    /**
+     * Get set of index keys for this namespace.  Handy to quickly check if a given
+     * field is indexed (Note it might be a secondary component of a compound index.)
+     */
+    const UpdateIndexData& getIndexKeys(OperationContext* txn) const;
 
-			/**
-			 * Returns cached index usage statistics for this collection.  The map returned will contain
-			 * entry for each index in the collection along with both a usage counter and a timestamp
-			 * representing the date/time the counter is valid from.
-			 *
-			 * Note for performance that this method returns a copy of a StringMap.
-			 */
-			CollectionIndexUsageMap getIndexUsageStats() const;
+    /**
+     * Returns cached index usage statistics for this collection.  The map returned will contain
+     * entry for each index in the collection along with both a usage counter and a timestamp
+     * representing the date/time the counter is valid from.
+     *
+     * Note for performance that this method returns a copy of a StringMap.
+     */
+    CollectionIndexUsageMap getIndexUsageStats() const;
 
-			/**
-			 * Builds internal cache state based on the current state of the Collection's IndexCatalog.
-			 */
-			void init( OperationContext *txn );
+    /**
+     * Builds internal cache state based on the current state of the Collection's IndexCatalog.
+     */
+    void init(OperationContext* txn);
 
-			/**
-			 * Register a newly-created index with the cache.  Must be called whenever an index is
-			 * built on the associated collection.
-			 *
-			 * Must be called under exclusive collection lock.
-			 */
-			void addedIndex( OperationContext *txn, const IndexDescriptor *desc );
+    /**
+     * Register a newly-created index with the cache.  Must be called whenever an index is
+     * built on the associated collection.
+     *
+     * Must be called under exclusive collection lock.
+     */
+    void addedIndex(OperationContext* txn, const IndexDescriptor* desc);
 
-			/**
-			 * Deregister a newly-dropped index with the cache.  Must be called whenever an index is
-			 * dropped on the associated collection.
-			 *
-			 * Must be called under exclusive collection lock.
-			 */
-			void droppedIndex( OperationContext *txn, StringData indexName );
+    /**
+     * Deregister a newly-dropped index with the cache.  Must be called whenever an index is
+     * dropped on the associated collection.
+     *
+     * Must be called under exclusive collection lock.
+     */
+    void droppedIndex(OperationContext* txn, StringData indexName);
 
-			/**
-			 * Removes all cached query plans.
-			 */
-			void clearQueryCache();
+    /**
+     * Removes all cached query plans.
+     */
+    void clearQueryCache();
 
-			/**
-			 * Signal to the cache that a query operation has completed.  'indexesUsed' should list the
-			 * set of indexes used by the winning plan, if any.
-			 */
-			void notifyOfQuery( OperationContext *txn, const std::set< std::string > &indexesUsed );
+    /**
+     * Signal to the cache that a query operation has completed.  'indexesUsed' should list the
+     * set of indexes used by the winning plan, if any.
+     */
+    void notifyOfQuery(OperationContext* txn, const std::set<std::string>& indexesUsed);
 
-		private:
-			Collection *_collection;	// not owned
+private:
+    Collection* _collection;  // not owned
 
-			// ---  index keys cache
-			bool _keysComputed;
-			UpdateIndexData _indexedPaths;
+    // ---  index keys cache
+    bool _keysComputed;
+    UpdateIndexData _indexedPaths;
 
-			// A cache for query plans.
-			std::unique_ptr< PlanCache > _planCache;
+    // A cache for query plans.
+    std::unique_ptr<PlanCache> _planCache;
 
-			// Query settings.
-			// Includes index filters.
-			std::unique_ptr< QuerySettings > _querySettings;
+    // Query settings.
+    // Includes index filters.
+    std::unique_ptr<QuerySettings> _querySettings;
 
-			// Tracks index usage statistics for this collection.
-			CollectionIndexUsageTracker _indexUsageTracker;
+    // Tracks index usage statistics for this collection.
+    CollectionIndexUsageTracker _indexUsageTracker;
 
-			void computeIndexKeys( OperationContext *txn );
-			void updatePlanCacheIndexEntries( OperationContext *txn );
+    void computeIndexKeys(OperationContext* txn);
+    void updatePlanCacheIndexEntries(OperationContext* txn);
 
-			/**
-			 * Rebuilds cached information that is dependent on index composition. Must be called
-			 * when index composition changes.
-			 */
-			void rebuildIndexData( OperationContext *txn );
+    /**
+     * Rebuilds cached information that is dependent on index composition. Must be called
+     * when index composition changes.
+     */
+    void rebuildIndexData(OperationContext* txn);
 
-			bool _hasTTLIndex= false;
-	};
-}	// namespace mongo
+    bool _hasTTLIndex = false;
+};
+}  // namespace mongo

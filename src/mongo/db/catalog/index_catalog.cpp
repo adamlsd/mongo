@@ -34,67 +34,61 @@
 
 #include "mongo/db/catalog/index_catalog.h"
 
-namespace mongo
-{
-	namespace
-	{
-		stdx::function< std::unique_ptr< IndexCatalog::IndexIterator::Impl > ( OperationContext* , const IndexCatalog* , bool ) > iteratorFactory;
-	}//namespace
+namespace mongo {
+namespace {
+stdx::function<std::unique_ptr<IndexCatalog::IndexIterator::Impl>(
+    OperationContext*, const IndexCatalog*, bool)>
+    iteratorFactory;
+}  // namespace
 
-	auto
-	IndexCatalog::IndexIterator::makeImpl( OperationContext *const txn, const IndexCatalog *const cat, const bool includeUnfinishedIndexes )
-			-> std::unique_ptr< Impl >
-	{
-		return iteratorFactory( txn, cat, includeUnfinishedIndexes );
-	}
+auto IndexCatalog::IndexIterator::makeImpl(OperationContext* const txn,
+                                           const IndexCatalog* const cat,
+                                           const bool includeUnfinishedIndexes)
+    -> std::unique_ptr<Impl> {
+    return iteratorFactory(txn, cat, includeUnfinishedIndexes);
+}
 
-	void
-	IndexCatalog::IndexIterator::registerFactory( stdx::function< std::unique_ptr< Impl > ( OperationContext *, const IndexCatalog *, bool ) > newFactory )
-	{
-		iteratorFactory= std::move( newFactory );
-	}
+void IndexCatalog::IndexIterator::registerFactory(
+    stdx::function<std::unique_ptr<Impl>(OperationContext*, const IndexCatalog*, bool)>
+        newFactory) {
+    iteratorFactory = std::move(newFactory);
+}
 
-	// Emit the vtable for this class in this TU.
-	IndexCatalog::IndexIterator::Impl::~Impl()= default;
+// Emit the vtable for this class in this TU.
+IndexCatalog::IndexIterator::Impl::~Impl() = default;
 
-	namespace
-	{
-		stdx::function< std::unique_ptr< IndexCatalog::IndexBuildBlock::Impl > ( OperationContext *, Collection *, const BSONObj & ) > buildBlockFactory;
-	}//namespace
+namespace {
+stdx::function<std::unique_ptr<IndexCatalog::IndexBuildBlock::Impl>(
+    OperationContext*, Collection*, const BSONObj&)>
+    buildBlockFactory;
+}  // namespace
 
-	auto IndexCatalog::IndexBuildBlock::makeImpl( OperationContext *txn, Collection *collection, const BSONObj &spec )
-			->std::unique_ptr< Impl >
-	{
-		return buildBlockFactory( txn, collection, spec );
-	}
+auto IndexCatalog::IndexBuildBlock::makeImpl(OperationContext* txn,
+                                             Collection* collection,
+                                             const BSONObj& spec) -> std::unique_ptr<Impl> {
+    return buildBlockFactory(txn, collection, spec);
+}
 
-	void
-	IndexCatalog::IndexBuildBlock::registerFactory( stdx::function< std::unique_ptr< Impl > ( OperationContext *, Collection *, const BSONObj & ) > factory )
-	{
-		buildBlockFactory= std::move( factory );
-	}
+void IndexCatalog::IndexBuildBlock::registerFactory(
+    stdx::function<std::unique_ptr<Impl>(OperationContext*, Collection*, const BSONObj&)> factory) {
+    buildBlockFactory = std::move(factory);
+}
 
-	// Emit the vtable for this class in this TU.
-	IndexCatalog::IndexBuildBlock::Impl::~Impl()= default;
+// Emit the vtable for this class in this TU.
+IndexCatalog::IndexBuildBlock::Impl::~Impl() = default;
 
-	namespace
-	{
-		stdx::function< std::unique_ptr< IndexCatalog::Impl >( Collection * ) > catalogFactory;
-	}//namespace
+namespace {
+stdx::function<std::unique_ptr<IndexCatalog::Impl>(Collection*)> catalogFactory;
+}  // namespace
 
-	auto
-	IndexCatalog::makeImpl( Collection *const collection )
-			-> std::unique_ptr< Impl >
-	{
-		return catalogFactory( collection );
-	}
+auto IndexCatalog::makeImpl(Collection* const collection) -> std::unique_ptr<Impl> {
+    return catalogFactory(collection);
+}
 
-	void
-	IndexCatalog::registerFactory( stdx::function< std::unique_ptr< Impl >( Collection * ) > factory )
-	{
-		catalogFactory= std::move( factory );
-	}
+void IndexCatalog::registerFactory(stdx::function<std::unique_ptr<Impl>(Collection*)> factory) {
+    catalogFactory = std::move(factory);
+}
 
-	// Emit the vtable for this class in this TU.
-	IndexCatalog::Impl::~Impl()= default;
-}//namespace mongo
+// Emit the vtable for this class in this TU.
+IndexCatalog::Impl::~Impl() = default;
+}  // namespace mongo

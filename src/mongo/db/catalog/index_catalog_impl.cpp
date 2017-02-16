@@ -36,6 +36,7 @@
 
 #include <vector>
 
+#include "mongo/base/init.h"
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/audit.h"

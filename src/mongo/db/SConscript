@@ -613,7 +613,7 @@ env.Library(
         'db_raii',
         'index/index_access_methods',
         'ops/write_ops',
-        #'$BUILDDIR/mongo/db/catalog/catalog', # CYCLE
+        #'$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-02-03): See `CYCLE` tags above

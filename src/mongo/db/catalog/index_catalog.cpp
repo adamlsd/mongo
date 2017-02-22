@@ -36,6 +36,13 @@
 
 namespace mongo {
 
+IndexCatalog::IndexIterator::Impl* IndexCatalog::IndexIterator::pimpl() {
+    return this->_pimpl.get();
+}
+const IndexCatalog::IndexIterator::Impl* IndexCatalog::IndexIterator::pimpl() const {
+    return this->_pimpl.get();
+}
+
 // Emit the vtable for this class in this TU.
 IndexCatalog::IndexIterator::Impl::~Impl() = default;
 
@@ -56,6 +63,13 @@ void IndexCatalog::IndexBuildBlock::registerFactory(
     buildBlockFactory = std::move(factory);
 }
 
+IndexCatalog::IndexBuildBlock::Impl* IndexCatalog::IndexBuildBlock::pimpl() {
+    return this->_pimpl.get();
+}
+const IndexCatalog::IndexBuildBlock::Impl* IndexCatalog::IndexBuildBlock::pimpl() const {
+    return this->_pimpl.get();
+}
+
 // Emit the vtable for this class in this TU.
 IndexCatalog::IndexBuildBlock::Impl::~Impl() = default;
 
@@ -69,6 +83,14 @@ auto IndexCatalog::makeImpl(Collection* const collection) -> std::unique_ptr<Imp
 
 void IndexCatalog::registerFactory(stdx::function<std::unique_ptr<Impl>(Collection*)> factory) {
     catalogFactory = std::move(factory);
+}
+
+IndexCatalog::Impl* IndexCatalog::pimpl() {
+    return this->_pimpl.get();
+}
+
+const IndexCatalog::Impl* IndexCatalog::pimpl() const {
+    return this->_pimpl.get();
 }
 
 // Emit the vtable for this class in this TU.

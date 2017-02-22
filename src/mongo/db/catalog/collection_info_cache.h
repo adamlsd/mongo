@@ -75,7 +75,10 @@ public:
     };
 
 private:
-    std::unique_ptr<Impl> pimpl;
+    std::unique_ptr<Impl> _pimpl;
+
+    const Impl* pimpl() const;
+    Impl* pimpl();
 
     static std::unique_ptr<Impl> makeImpl(Collection* collection);
 
@@ -85,7 +88,7 @@ public:
     inline ~CollectionInfoCache() = default;
 
     explicit inline CollectionInfoCache(Collection* const collection)
-        : pimpl(makeImpl(collection)) {}
+        : _pimpl(makeImpl(collection)) {}
 
     inline CollectionInfoCache(CollectionInfoCache&& copy) = default;
     inline CollectionInfoCache& operator=(CollectionInfoCache&& copy) = default;
@@ -94,14 +97,14 @@ public:
      * Get the PlanCache for this collection.
      */
     inline PlanCache* getPlanCache() const {
-        return this->pimpl->getPlanCache();
+        return this->pimpl()->getPlanCache();
     }
 
     /**
      * Get the QuerySettings for this collection.
      */
     inline QuerySettings* getQuerySettings() const {
-        return this->pimpl->getQuerySettings();
+        return this->pimpl()->getQuerySettings();
     }
 
     /**
@@ -109,7 +112,7 @@ public:
      * field is indexed (Note it might be a secondary component of a compound index.)
      */
     inline const UpdateIndexData& getIndexKeys(OperationContext* const txn) const {
-        return this->pimpl->getIndexKeys(txn);
+        return this->pimpl()->getIndexKeys(txn);
     }
 
     /**
@@ -120,14 +123,14 @@ public:
      * Note for performance that this method returns a copy of a StringMap.
      */
     inline CollectionIndexUsageMap getIndexUsageStats() const {
-        return this->pimpl->getIndexUsageStats();
+        return this->pimpl()->getIndexUsageStats();
     }
 
     /**
      * Builds internal cache state based on the current state of the Collection's IndexCatalog.
      */
     inline void init(OperationContext* const txn) {
-        return this->pimpl->init(txn);
+        return this->pimpl()->init(txn);
     }
 
     /**
@@ -137,7 +140,7 @@ public:
      * Must be called under exclusive collection lock.
      */
     inline void addedIndex(OperationContext* const txn, const IndexDescriptor* const desc) {
-        return this->pimpl->addedIndex(txn, desc);
+        return this->pimpl()->addedIndex(txn, desc);
     }
 
     /**
@@ -147,14 +150,14 @@ public:
      * Must be called under exclusive collection lock.
      */
     inline void droppedIndex(OperationContext* const txn, const StringData indexName) {
-        return this->pimpl->droppedIndex(txn, indexName);
+        return this->pimpl()->droppedIndex(txn, indexName);
     }
 
     /**
      * Removes all cached query plans.
      */
     inline void clearQueryCache() {
-        return this->pimpl->clearQueryCache();
+        return this->pimpl()->clearQueryCache();
     }
 
     /**
@@ -163,7 +166,7 @@ public:
      */
     inline void notifyOfQuery(OperationContext* const txn,
                               const std::set<std::string>& indexesUsed) {
-        return this->pimpl->notifyOfQuery(txn, indexesUsed);
+        return this->pimpl()->notifyOfQuery(txn, indexesUsed);
     }
 };
 }  // namespace mongo

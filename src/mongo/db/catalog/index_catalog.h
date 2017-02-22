@@ -84,12 +84,9 @@ public:
     private:
         std::unique_ptr<Impl> _pimpl;
 
-        inline Impl* pimpl() {
-            return this->_pimpl.get();
-        }
-        inline const Impl* pimpl() const {
-            return this->_pimpl.get();
-        }
+        Impl* pimpl();
+
+        const Impl* pimpl() const;
 
     public:
         ~IndexIterator() = default;
@@ -152,12 +149,9 @@ public:
     private:
         std::unique_ptr<Impl> _pimpl;
 
-        Impl* pimpl() {
-            return this->_pimpl.get();
-        }
-        const Impl* pimpl() const {
-            return this->_pimpl.get();
-        }
+        Impl* pimpl();
+
+        const Impl* pimpl() const;
 
         static std::unique_ptr<Impl> makeImpl(OperationContext* txn,
                                               Collection* collection,
@@ -308,12 +302,9 @@ public:
 private:
     std::unique_ptr<Impl> _pimpl;
 
-    inline Impl* pimpl() {
-        return this->_pimpl.get();
-    }
-    inline const Impl* pimpl() const {
-        return this->_pimpl.get();
-    }
+    Impl* pimpl();
+
+    const Impl* pimpl() const;
 
     static std::unique_ptr<Impl> makeImpl(Collection*);
 

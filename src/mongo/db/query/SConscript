@@ -74,6 +74,8 @@ env.Library(
         "query_common",
         "query_planner",
         "query_planner_test_lib",
+        '$BUILD_DIR/mongo/db/catalog/collection_info_cache',
+        '$BUILD_DIR/mongo/db/catalog/index_catalog_entry',
         "$BUILD_DIR/mongo/db/curop",
         "$BUILD_DIR/mongo/db/exec/exec",
         "$BUILD_DIR/mongo/db/s/sharding",

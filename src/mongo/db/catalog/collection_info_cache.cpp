@@ -51,5 +51,14 @@ void CollectionInfoCache::registerImpl(
     implFactory = std::move(factory);
 }
 
+
+const CollectionInfoCache::Impl* CollectionInfoCache::pimpl() const {
+    return this->_pimpl.get();
+}
+
+CollectionInfoCache::Impl* CollectionInfoCache::pimpl() {
+    return this->_pimpl.get();
+}
+
 CollectionInfoCache::Impl::~Impl() = default;
 }  // namespace mongo

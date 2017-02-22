@@ -85,7 +85,7 @@ IndexCatalogEntry::Impl::~Impl() = default;
 
 // The clearing of cache entries needs to happen.
 IndexCatalogEntry::~IndexCatalogEntry() {
-    this->pimpl->descriptor()->_cachedEntry = nullptr;  // defensive
+    this->pimpl()->descriptor()->_cachedEntry = nullptr;  // defensive
 }
 
 
@@ -96,14 +96,14 @@ IndexCatalogEntry::IndexCatalogEntry(OperationContext* const txn,
                                      CollectionCatalogEntry* const collection,
                                      IndexDescriptor* const descriptor,
                                      CollectionInfoCache* const infoCache)
-    : pimpl(makeImpl(txn, ns, collection, descriptor, infoCache)) {
-    this->pimpl->descriptor()->_cachedEntry = this;
+    : _pimpl(makeImpl(txn, ns, collection, descriptor, infoCache)) {
+    this->pimpl()->descriptor()->_cachedEntry = this;
 }
 
 // A cyclic class member reference and inclusion structure forces this to be emitted in a last-in-TU
 // fashion
 void IndexCatalogEntry::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
-    this->pimpl->init(std::move(accessMethod));
+    this->pimpl()->init(std::move(accessMethod));
 }
 
 // ------------------
@@ -152,6 +152,15 @@ IndexCatalogEntry* IndexCatalogEntryContainer::release(const IndexDescriptor* de
         return e;
     }
     return NULL;
+}
+
+
+const IndexCatalogEntry::Impl* IndexCatalogEntry::pimpl() const {
+    return this->_pimpl.get();
+}
+
+IndexCatalogEntry::Impl* IndexCatalogEntry::pimpl() {
+    return this->_pimpl.get();
 }
 
 }  // namespace mongo

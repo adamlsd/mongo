@@ -98,7 +98,10 @@ public:
     };
 
 private:
-    std::unique_ptr<Impl> pimpl;
+    std::unique_ptr<Impl> _pimpl;
+
+	const Impl *pimpl() const;
+	Impl *pimpl();
 
     static std::unique_ptr<Impl> makeImpl(OperationContext* txn,
                                           StringData ns,
@@ -123,55 +126,55 @@ public:
     ~IndexCatalogEntry();
 
     const std::string& ns() const {
-        return this->pimpl->ns();
+        return this->pimpl()->ns();
     }
 
     void init(std::unique_ptr<IndexAccessMethod> accessMethod);
 
     IndexDescriptor* descriptor() {
-        return this->pimpl->descriptor();
+        return this->pimpl()->descriptor();
     }
 
     const IndexDescriptor* descriptor() const {
-        return const_cast<const Impl*>(this->pimpl.get())->descriptor();
+        return this->pimpl()->descriptor();
     }
 
     IndexAccessMethod* accessMethod() {
-        return this->pimpl->accessMethod();
+        return this->pimpl()->accessMethod();
     }
 
     const IndexAccessMethod* accessMethod() const {
-        return const_cast<const Impl*>(this->pimpl.get())->accessMethod();
+        return this->pimpl()->accessMethod();
     }
 
     const Ordering& ordering() const {
-        return this->pimpl->ordering();
+        return this->pimpl()->ordering();
     }
 
     const MatchExpression* getFilterExpression() const {
-        return this->pimpl->getFilterExpression();
+        return this->pimpl()->getFilterExpression();
     }
 
     const CollatorInterface* getCollator() const {
-        return this->pimpl->getCollator();
+        return this->pimpl()->getCollator();
     }
 
     /// ---------------------
 
     const RecordId& head(OperationContext* const txn) const {
-        return this->pimpl->head(txn);
+        return this->pimpl()->head(txn);
     }
 
     void setHead(OperationContext* const txn, const RecordId newHead) {
-        return this->pimpl->setHead(txn, newHead);
+        return this->pimpl()->setHead(txn, newHead);
     }
 
     void setIsReady(const bool newIsReady) {
-        return this->pimpl->setIsReady(newIsReady);
+        return this->pimpl()->setIsReady(newIsReady);
     }
 
     HeadManager* headManager() const {
-        return this->pimpl->headManager();
+        return this->pimpl()->headManager();
     }
 
     // --
@@ -180,7 +183,7 @@ public:
      * Returns true if this index is multikey, and returns false otherwise.
      */
     bool isMultikey() const {
-        return this->pimpl->isMultikey();
+        return this->pimpl()->isMultikey();
     }
 
     /**
@@ -193,7 +196,7 @@ public:
      * each element in the vector is an empty set.
      */
     MultikeyPaths getMultikeyPaths(OperationContext* const txn) const {
-        return this->pimpl->getMultikeyPaths(txn);
+        return this->pimpl()->getMultikeyPaths(txn);
     }
 
     /**
@@ -207,12 +210,12 @@ public:
      * one path component of the indexed fields must cause this index to be multikey.
      */
     void setMultikey(OperationContext* const txn, const MultikeyPaths& multikeyPaths) {
-        return this->pimpl->setMultikey(txn, multikeyPaths);
+        return this->pimpl()->setMultikey(txn, multikeyPaths);
     }
 
     // if this ready is ready for queries
     bool isReady(OperationContext* const txn) const {
-        return this->pimpl->isReady(txn);
+        return this->pimpl()->isReady(txn);
     }
 
     /**
@@ -220,11 +223,11 @@ public:
      * must treat this index as unfinished.
      */
     boost::optional<SnapshotName> getMinimumVisibleSnapshot() {
-        return this->pimpl->getMinimumVisibleSnapshot();
+        return this->pimpl()->getMinimumVisibleSnapshot();
     }
 
     void setMinimumVisibleSnapshot(const SnapshotName name) {
-        return this->pimpl->setMinimumVisibleSnapshot(name);
+        return this->pimpl()->setMinimumVisibleSnapshot(name);
     }
 };
 

@@ -42,6 +42,8 @@ env.Library(
         'logfile',
         'compress',
         '$BUILD_DIR/mongo/db/catalog/collection_options',
+        '$BUILD_DIR/mongo/db/catalog/index_catalog',
+        '$BUILD_DIR/mongo/db/catalog/index_catalog_entry',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/commands/core',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
@@ -51,7 +53,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/storage/journal_listener',
         '$BUILD_DIR/mongo/db/storage/paths',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
-        # '$BUILD_DIR/mongo/db/index/index_access_methods', # CYCLE
+        '$BUILD_DIR/mongo/db/index/index_access_methods',
         # '$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
     ],
     LIBDEPS_TAGS=[

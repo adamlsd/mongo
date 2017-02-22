@@ -40,7 +40,7 @@ namespace mongo {
 IndexCatalog::IndexIterator::Impl::~Impl() = default;
 
 namespace {
-stdx::function<std::unique_ptr<IndexCatalog::IndexBuildBlock::Impl>(
+static stdx::function<std::unique_ptr<IndexCatalog::IndexBuildBlock::Impl>(
     OperationContext*, Collection*, const BSONObj&)>
     buildBlockFactory;
 }  // namespace
@@ -60,7 +60,7 @@ void IndexCatalog::IndexBuildBlock::registerFactory(
 IndexCatalog::IndexBuildBlock::Impl::~Impl() = default;
 
 namespace {
-stdx::function<std::unique_ptr<IndexCatalog::Impl>(Collection*)> catalogFactory;
+static stdx::function<std::unique_ptr<IndexCatalog::Impl>(Collection*)> catalogFactory;
 }  // namespace
 
 auto IndexCatalog::makeImpl(Collection* const collection) -> std::unique_ptr<Impl> {

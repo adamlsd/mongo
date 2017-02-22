@@ -82,33 +82,34 @@ private:
 public:
     static void registerImpl(stdx::function<std::unique_ptr<Impl>(Collection*)> factory);
 
-    ~CollectionInfoCache() = default;
+    inline ~CollectionInfoCache() = default;
 
-    explicit CollectionInfoCache(Collection* const collection) : pimpl(makeImpl(collection)) {}
+    explicit inline CollectionInfoCache(Collection* const collection)
+        : pimpl(makeImpl(collection)) {}
 
-    CollectionInfoCache(CollectionInfoCache&& copy) = default;
-    CollectionInfoCache& operator=(CollectionInfoCache&& copy) = default;
+    inline CollectionInfoCache(CollectionInfoCache&& copy) = default;
+    inline CollectionInfoCache& operator=(CollectionInfoCache&& copy) = default;
 
     /**
      * Get the PlanCache for this collection.
      */
-    PlanCache* getPlanCache() const {
-        return pimpl->getPlanCache();
+    inline PlanCache* getPlanCache() const {
+        return this->pimpl->getPlanCache();
     }
 
     /**
      * Get the QuerySettings for this collection.
      */
-    QuerySettings* getQuerySettings() const {
-        return pimpl->getQuerySettings();
+    inline QuerySettings* getQuerySettings() const {
+        return this->pimpl->getQuerySettings();
     }
 
     /**
      * Gets the set of index keys for this namespace.  Handy to quickly check if a given
      * field is indexed (Note it might be a secondary component of a compound index.)
      */
-    const UpdateIndexData& getIndexKeys(OperationContext* const txn) const {
-        return pimpl->getIndexKeys(txn);
+    inline const UpdateIndexData& getIndexKeys(OperationContext* const txn) const {
+        return this->pimpl->getIndexKeys(txn);
     }
 
     /**
@@ -118,15 +119,15 @@ public:
      *
      * Note for performance that this method returns a copy of a StringMap.
      */
-    CollectionIndexUsageMap getIndexUsageStats() const {
-        return pimpl->getIndexUsageStats();
+    inline CollectionIndexUsageMap getIndexUsageStats() const {
+        return this->pimpl->getIndexUsageStats();
     }
 
     /**
      * Builds internal cache state based on the current state of the Collection's IndexCatalog.
      */
-    void init(OperationContext* const txn) {
-        return pimpl->init(txn);
+    inline void init(OperationContext* const txn) {
+        return this->pimpl->init(txn);
     }
 
     /**
@@ -135,8 +136,8 @@ public:
      *
      * Must be called under exclusive collection lock.
      */
-    void addedIndex(OperationContext* const txn, const IndexDescriptor* const desc) {
-        return pimpl->addedIndex(txn, desc);
+    inline void addedIndex(OperationContext* const txn, const IndexDescriptor* const desc) {
+        return this->pimpl->addedIndex(txn, desc);
     }
 
     /**
@@ -145,23 +146,24 @@ public:
      *
      * Must be called under exclusive collection lock.
      */
-    void droppedIndex(OperationContext* const txn, const StringData indexName) {
-        return pimpl->droppedIndex(txn, indexName);
+    inline void droppedIndex(OperationContext* const txn, const StringData indexName) {
+        return this->pimpl->droppedIndex(txn, indexName);
     }
 
     /**
      * Removes all cached query plans.
      */
-    void clearQueryCache() {
-        return pimpl->clearQueryCache();
+    inline void clearQueryCache() {
+        return this->pimpl->clearQueryCache();
     }
 
     /**
      * Signal to the cache that a query operation has completed.  'indexesUsed' should list the
      * set of indexes used by the winning plan, if any.
      */
-    void notifyOfQuery(OperationContext* const txn, const std::set<std::string>& indexesUsed) {
-        return pimpl->notifyOfQuery(txn, indexesUsed);
+    inline void notifyOfQuery(OperationContext* const txn,
+                              const std::set<std::string>& indexesUsed) {
+        return this->pimpl->notifyOfQuery(txn, indexesUsed);
     }
 };
 }  // namespace mongo

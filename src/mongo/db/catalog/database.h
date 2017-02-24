@@ -1,7 +1,7 @@
 // database.h
 
 /**
-*    Copyright (C) 2008 10gen Inc.
+*    Copyright (C) 2017 MongoDB Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -40,11 +40,11 @@
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {
-
 class Collection;
 class DataFile;
 class DatabaseCatalogEntry;
@@ -75,7 +75,8 @@ public:
         using difference_type = ptrdiff_t;
 
         iterator() = default;
-        iterator(CollectionMap::const_iterator it) : _it(it) {}
+
+        explicit iterator(CollectionMap::const_iterator it) : _it(it) {}
 
         reference operator*() const {
             return _it->second;
@@ -108,27 +109,120 @@ public:
         CollectionMap::const_iterator _it;
     };
 
-    Database(OperationContext* txn, StringData name, DatabaseCatalogEntry* dbEntry);
+    class Impl {
+    public:
+        virtual ~Impl();
+
+        virtual iterator begin() const = 0;
+
+        virtual iterator end() const = 0;
+
+        // closes files and other cleanup see below.
+        virtual void close(Database* this_, OperationContext* txn) = 0;
+
+        virtual const std::string& name() const = 0;
+
+        virtual void clearTmpCollections(OperationContext* txn) = 0;
+
+        virtual Status setProfilingLevel(Database* this_, OperationContext* txn, int newLevel) = 0;
+
+        virtual int getProfilingLevel() const = 0;
+
+        virtual const char* getProfilingNS() const = 0;
+
+        virtual void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale) = 0;
+
+        virtual const DatabaseCatalogEntry* getDatabaseCatalogEntry() const = 0;
+
+        virtual Status dropCollection(OperationContext* txn, StringData fullns) = 0;
+
+        virtual Status dropCollectionEvenIfSystem(OperationContext* txn,
+                                                  const NamespaceString& fullns) = 0;
+
+        virtual Status dropView(OperationContext* txn, StringData fullns) = 0;
+
+        virtual Collection* createCollection(OperationContext* txn,
+                                             StringData ns,
+                                             const CollectionOptions& options,
+                                             bool createDefaultIndexes,
+                                             const BSONObj& idIndex) = 0;
+
+        virtual CollectionMap& collections() = 0;
+
+        virtual const CollectionMap& collections() const = 0;
+
+        virtual Status createView(OperationContext* txn,
+                                  StringData viewName,
+                                  const CollectionOptions& options) = 0;
+
+        virtual Collection* getCollection(StringData ns) const = 0;
+
+        virtual ViewCatalog* getViewCatalog() = 0;
+
+        virtual Collection* getOrCreateCollection(OperationContext* txn, StringData ns) = 0;
+
+        virtual Status renameCollection(OperationContext* txn,
+                                        StringData fromNS,
+                                        StringData toNS,
+                                        bool stayTemp) = 0;
+
+        virtual const std::string& getSystemIndexesName() const = 0;
+
+        virtual const std::string& getSystemViewsName() const = 0;
+    };
+
+    friend class DatabaseImpl;
+
+private:
+    std::unique_ptr<Impl> _pimpl;
+
+    Impl* pimpl();
+
+    const Impl* pimpl() const;
+
+    static std::unique_ptr<Impl> makeImpl(Database* this_,
+                                          OperationContext* txn,
+                                          StringData name,
+                                          DatabaseCatalogEntry* dbEntry);
+
+public:
+    static void registerImpl(
+        stdx::function<std::unique_ptr<Impl>(
+            Database*, OperationContext*, StringData, DatabaseCatalogEntry*)> factory);
 
     // must call close first
-    ~Database();
+    inline ~Database() = default;
 
-    iterator begin() const {
-        return iterator(_collections.begin());
+    inline Database(Database&& copy) = default;
+
+    inline Database& operator=(Database&& copy) = default;
+
+    explicit inline Database(OperationContext* const txn,
+                             const StringData name,
+                             DatabaseCatalogEntry* const dbEntry)
+        : _pimpl(makeImpl(this, txn, name, dbEntry)) {}
+
+
+    inline iterator begin() const {
+        return this->pimpl()->begin();
     }
 
-    iterator end() const {
-        return iterator(_collections.end());
+    inline iterator end() const {
+        return this->pimpl()->end();
     }
 
     // closes files and other cleanup see below.
-    void close(OperationContext* txn);
-
-    const std::string& name() const {
-        return _name;
+    inline void close(OperationContext* const txn) {
+        return this->pimpl()->close(this, txn);
     }
 
-    void clearTmpCollections(OperationContext* txn);
+    inline const std::string& name() const {
+        return this->pimpl()->name();
+    }
+
+    inline void clearTmpCollections(OperationContext* const txn) {
+        return this->pimpl()->clearTmpCollections(txn);
+    }
 
     /**
      * Sets a new profiling level for the database and returns the outcome.
@@ -136,59 +230,87 @@ public:
      * @param txn Operation context which to use for creating the profiling collection.
      * @param newLevel New profiling level to use.
      */
-    Status setProfilingLevel(OperationContext* txn, int newLevel);
-
-    int getProfilingLevel() const {
-        return _profile;
-    }
-    const char* getProfilingNS() const {
-        return _profileName.c_str();
+    inline Status setProfilingLevel(OperationContext* const txn, const int newLevel) {
+        return this->pimpl()->setProfilingLevel(this, txn, newLevel);
     }
 
-    void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale = 1);
+    inline int getProfilingLevel() const {
+        return this->pimpl()->getProfilingLevel();
+    }
 
-    const DatabaseCatalogEntry* getDatabaseCatalogEntry() const;
+    inline const char* getProfilingNS() const {
+        return this->pimpl()->getProfilingNS();
+    }
+
+    inline void getStats(OperationContext* const opCtx,
+                         BSONObjBuilder* const output,
+                         const double scale = 1) {
+        return this->pimpl()->getStats(opCtx, output, scale);
+    }
+
+    inline const DatabaseCatalogEntry* getDatabaseCatalogEntry() const {
+        return this->pimpl()->getDatabaseCatalogEntry();
+    }
 
     /**
      * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
      * that is required.
      */
-    Status dropCollection(OperationContext* txn, StringData fullns);
-    Status dropCollectionEvenIfSystem(OperationContext* txn, const NamespaceString& fullns);
+    inline Status dropCollection(OperationContext* const txn, const StringData fullns) {
+        return this->pimpl()->dropCollection(txn, fullns);
+    }
+    inline Status dropCollectionEvenIfSystem(OperationContext* const txn,
+                                             const NamespaceString& fullns) {
+        return this->pimpl()->dropCollectionEvenIfSystem(txn, fullns);
+    }
 
-    Status dropView(OperationContext* txn, StringData fullns);
+    inline Status dropView(OperationContext* const txn, const StringData fullns) {
+        return this->pimpl()->dropView(txn, fullns);
+    }
 
-    Collection* createCollection(OperationContext* txn,
-                                 StringData ns,
-                                 const CollectionOptions& options = CollectionOptions(),
-                                 bool createDefaultIndexes = true,
-                                 const BSONObj& idIndex = BSONObj());
+    inline Collection* createCollection(OperationContext* const txn,
+                                        const StringData ns,
+                                        const CollectionOptions& options = CollectionOptions(),
+                                        const bool createDefaultIndexes = true,
+                                        const BSONObj& idIndex = BSONObj()) {
+        return this->pimpl()->createCollection(txn, ns, options, createDefaultIndexes, idIndex);
+    }
 
-    Status createView(OperationContext* txn, StringData viewName, const CollectionOptions& options);
+    inline Status createView(OperationContext* const txn,
+                             const StringData viewName,
+                             const CollectionOptions& options) {
+        return this->pimpl()->createView(txn, viewName, options);
+    }
 
     /**
      * @param ns - this is fully qualified, which is maybe not ideal ???
      */
-    Collection* getCollection(StringData ns) const;
+    inline Collection* getCollection(const StringData ns) const {
+        return this->pimpl()->getCollection(ns);
+    }
 
-    Collection* getCollection(const NamespaceString& ns) const {
-        return getCollection(ns.ns());
+    inline Collection* getCollection(const NamespaceString& ns) const {
+        return this->getCollection(ns.ns());
     }
 
     /**
      * Get the view catalog, which holds the definition for all views created on this database. You
      * must be holding a database lock to use this accessor.
      */
-    ViewCatalog* getViewCatalog() {
-        return &_views;
+    inline ViewCatalog* getViewCatalog() {
+        return this->pimpl()->getViewCatalog();
     }
 
-    Collection* getOrCreateCollection(OperationContext* txn, StringData ns);
+    inline Collection* getOrCreateCollection(OperationContext* const txn, const StringData ns) {
+        return this->pimpl()->getOrCreateCollection(txn, ns);
+    }
 
-    Status renameCollection(OperationContext* txn,
-                            StringData fromNS,
-                            StringData toNS,
-                            bool stayTemp);
+    inline Status renameCollection(OperationContext* const txn,
+                                   const StringData fromNS,
+                                   const StringData toNS,
+                                   const bool stayTemp) {
+        return this->pimpl()->renameCollection(txn, fromNS, toNS, stayTemp);
+    }
 
     /**
      * Physically drops the specified opened database and removes it from the server's metadata. It
@@ -201,59 +323,23 @@ public:
 
     static Status validateDBName(StringData dbname);
 
-    const std::string& getSystemIndexesName() const {
-        return _indexesName;
+    inline const std::string& getSystemIndexesName() const {
+        return this->pimpl()->getSystemIndexesName();
     }
 
     const std::string& getSystemViewsName() const {
-        return _viewsName;
+        return this->pimpl()->getSystemViewsName();
     }
 
 private:
-    /**
-     * Gets or creates collection instance from existing metadata,
-     * Returns NULL if invalid
-     *
-     * Note: This does not add the collection to _collections map, that must be done
-     * by the caller, who takes onership of the Collection*
-     */
-    Collection* _getOrCreateCollectionInstance(OperationContext* txn, StringData fullns);
+    inline CollectionMap& collections() {
+        return this->pimpl()->collections();
+    }
 
-    /**
-     * Throws if there is a reason 'ns' cannot be created as a user collection.
-     */
-    void _checkCanCreateCollection(const NamespaceString& nss, const CollectionOptions& options);
-
-    /**
-     * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
-     * 'reason' for why the cache is being cleared.
-     */
-    void _clearCollectionCache(OperationContext* txn, StringData fullns, const std::string& reason);
-
-    class AddCollectionChange;
-    class RemoveCollectionChange;
-
-    const std::string _name;  // "dbname"
-
-    DatabaseCatalogEntry* _dbEntry;  // not owned here
-
-    const std::string _profileName;  // "dbname.system.profile"
-    const std::string _indexesName;  // "dbname.system.indexes"
-    const std::string _viewsName;    // "dbname.system.views"
-
-    int _profile;  // 0=off.
-
-    CollectionMap _collections;
-
-    DurableViewCatalogImpl _durableViews;  // interface for system.views operations
-    ViewCatalog _views;                    // in-memory representation of _durableViews
-
-    friend class Collection;
-    friend class NamespaceDetails;
-    friend class IndexCatalog;
+    inline const CollectionMap& collections() const {
+        return this->pimpl()->collections();
+    }
 };
-
-void dropAllDatabasesExceptLocal(OperationContext* txn);
 
 /**
  * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
@@ -268,4 +354,11 @@ Status userCreateNS(OperationContext* txn,
                     bool createDefaultIndexes = true,
                     const BSONObj& idIndex = BSONObj());
 
+void registerUserCreateNSHandler(
+    stdx::function<Status(OperationContext*, Database*, StringData, BSONObj, bool, const BSONObj&)>
+        handler);
+
+void dropAllDatabasesExceptLocal(OperationContext* txn);
+
+void registerDropAllDatabasesExceptLocalHandler(stdx::function<void(OperationContext*)> handler);
 }  // namespace mongo

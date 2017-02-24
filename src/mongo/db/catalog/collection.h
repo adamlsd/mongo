@@ -534,7 +534,7 @@ private:
     // The earliest snapshot that is allowed to use this collection.
     boost::optional<SnapshotName> _minVisibleSnapshot;
 
-    friend class Database;
+    friend class DatabaseImpl;
     friend class IndexCatalogImpl;
     friend class NamespaceDetails;
 };

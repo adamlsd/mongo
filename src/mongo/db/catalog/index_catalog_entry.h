@@ -108,7 +108,7 @@ namespace mongo
 			static std::unique_ptr< Impl > makeImpl( IndexCatalogEntry *this_, OperationContext *opCtx, StringData ns, CollectionCatalogEntry *collection, std::unique_ptr< IndexDescriptor > descriptor, CollectionInfoCache *infoCache );
 
 		public:
-			void registerFactory( stdx::function< std::unique_ptr< Impl > ( IndexCatalogEntry *, OperationContext *, StringData, CollectionCatalogEntry *, std::unique_ptr< IndexDescriptor >, CollectionInfoCache * ) > factory );
+			static void registerFactory( stdx::function< std::unique_ptr< Impl > ( IndexCatalogEntry *, OperationContext *, StringData, CollectionCatalogEntry *, std::unique_ptr< IndexDescriptor >, CollectionInfoCache * ) > factory );
 
 			explicit
 			IndexCatalogEntry( OperationContext *opCtx, StringData ns,

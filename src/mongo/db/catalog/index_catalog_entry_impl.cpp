@@ -36,6 +36,7 @@
 
 #include <algorithm>
 
+#include "mongo/base/init.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/head_manager.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -47,10 +48,25 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/service_context.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+namespace {
+MONGO_INITIALIZER(InitializeIndexCatalogEntryFactory)(InitializerContext* const) {
+    IndexCatalogEntry::registerFactory([](IndexCatalogEntry* const this_,
+                                          OperationContext* const opCtx,
+                                          const StringData ns,
+                                          CollectionCatalogEntry* const collection,
+                                          std::unique_ptr<IndexDescriptor> descriptor,
+                                          CollectionInfoCache* const infoCache) {
+        return stdx::make_unique<IndexCatalogEntryImpl>(
+            this_, opCtx, ns, collection, std::move(descriptor), infoCache);
+    });
+    return Status::OK();
+}
+}  // namespace
 
 using std::string;
 
@@ -72,18 +88,18 @@ private:
     IndexCatalogEntry* _catalogEntry;
 };
 
-IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry *this_,
-OperationContext* opCtx,
-                                             StringData ns,
-                                             CollectionCatalogEntry* collection,
-                                             IndexDescriptor* descriptor,
-                                             CollectionInfoCache* infoCache)
+IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
+                                             OperationContext* const opCtx,
+                                             const StringData ns,
+                                             CollectionCatalogEntry* const collection,
+                                             std::unique_ptr<IndexDescriptor> descriptor,
+                                             CollectionInfoCache* const infoCache)
     : _ns(ns.toString()),
       _collection(collection),
-      _descriptor(descriptor),
+      _descriptor(std::move(descriptor)),
       _infoCache(infoCache),
-      _headManager(new HeadManagerImpl(this_)),
-      _ordering(Ordering::make(descriptor->keyPattern())),
+      _headManager(stdx::make_unique<HeadManagerImpl>(this_)),
+      _ordering(Ordering::make(_descriptor->keyPattern())),
       _isReady(false) {
     _descriptor->_cachedEntry = this_;
 

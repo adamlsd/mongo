@@ -57,12 +57,13 @@ class IndexCatalogEntryImpl : public IndexCatalogEntry::Impl {
     MONGO_DISALLOW_COPYING(IndexCatalogEntryImpl);
 
 public:
-    explicit IndexCatalogEntryImpl(IndexCatalogEntry* this_,
-                                   OperationContext* opCtx,
-                                   StringData ns,
-                                   CollectionCatalogEntry* collection,  // not owned
-                                   IndexDescriptor* descriptor,         // ownership passes to me
-                                   CollectionInfoCache* infoCache);     // not owned, optional
+    explicit IndexCatalogEntryImpl(
+        IndexCatalogEntry* this_,
+        OperationContext* opCtx,
+        StringData ns,
+        CollectionCatalogEntry* collection,           // not owned
+        std::unique_ptr<IndexDescriptor> descriptor,  // ownership passes to me
+        CollectionInfoCache* infoCache);              // not owned, optional
 
     ~IndexCatalogEntryImpl() override;
 

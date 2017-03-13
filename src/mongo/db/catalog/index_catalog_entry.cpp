@@ -34,37 +34,46 @@
 
 #include "mongo/db/catalog/index_catalog_entry.h"
 
-#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index/index_access_method.h"
+#include "mongo/db/index/index_descriptor.h"
 
-namespace mongo
-{
-	IndexCatalogEntry::Impl::~Impl()= default;
+namespace mongo {
+IndexCatalogEntry::Impl::~Impl() = default;
 
-	namespace
-	{
-		stdx::function< std::unique_ptr< IndexCatalogEntry::Impl >( IndexCatalogEntry *, OperationContext *, StringData, CollectionCatalogEntry *, std::unique_ptr< IndexDescriptor >, CollectionInfoCache * ) > factory;
-	}
+namespace {
+using factory_function_type = IndexCatalogEntry::factory_function_type;
+stdx::function<factory_function_type> factory;
+}  // namespace
 
-	void
-	IndexCatalogEntry::registerFactory( decltype( factory ) newFactory ) { factory= std::move( newFactory ); }
+void IndexCatalogEntry::registerFactory(decltype(factory) newFactory) {
+    factory = std::move(newFactory);
+}
 
-	auto
-	IndexCatalogEntry::makeImpl( IndexCatalogEntry *const this_, OperationContext *const opCtx, const StringData ns, CollectionCatalogEntry *const collection, std::unique_ptr< IndexDescriptor > descriptor, CollectionInfoCache *const infoCache )
-	->std::unique_ptr< Impl >
-	{
-		return factory( this_, opCtx, ns, collection, std::move( descriptor ), infoCache );
-	}
+auto IndexCatalogEntry::makeImpl(IndexCatalogEntry* const this_,
+                                 OperationContext* const opCtx,
+                                 const StringData ns,
+                                 CollectionCatalogEntry* const collection,
+                                 std::unique_ptr<IndexDescriptor> descriptor,
+                                 CollectionInfoCache* const infoCache) -> std::unique_ptr<Impl> {
+    return factory(this_, opCtx, ns, collection, std::move(descriptor), infoCache);
+}
 
-	auto
-	IndexCatalogEntry::impl() const->const Impl &{ return *this->_pimpl; }
+auto IndexCatalogEntry::impl() const -> const Impl& {
+    return *this->_pimpl;
+}
 
-	auto
-	IndexCatalogEntry::impl()->Impl & { return *this->_pimpl; }
+auto IndexCatalogEntry::impl() -> Impl& {
+    return *this->_pimpl;
+}
 
-	IndexCatalogEntry::IndexCatalogEntry( OperationContext *opCtx, StringData ns, CollectionCatalogEntry *collection, std::unique_ptr< IndexDescriptor > descriptor, CollectionInfoCache *infoCache )
-		: _pimpl( makeImpl( this, opCtx, ns, collection, std::move( descriptor ), infoCache ) ) {}
+IndexCatalogEntry::IndexCatalogEntry(OperationContext* opCtx,
+                                     StringData ns,
+                                     CollectionCatalogEntry* collection,
+                                     std::unique_ptr<IndexDescriptor> descriptor,
+                                     CollectionInfoCache* infoCache)
+    : _pimpl(makeImpl(this, opCtx, ns, collection, std::move(descriptor), infoCache)) {}
 
-	void
-	IndexCatalogEntry::init ( std::unique_ptr< IndexAccessMethod > accessMethod ) { return this->impl().init( std::move( accessMethod ) ); }
-}	// namespace mongo
+void IndexCatalogEntry::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
+    return this->impl().init(std::move(accessMethod));
+}
+}  // namespace mongo

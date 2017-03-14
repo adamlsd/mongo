@@ -1,7 +1,6 @@
 #pragma once
 
 namespace mongo {
-namespace ming {
 namespace concept {
 /**
  * The ConvertibleTo concept models a type which can be converted implicitly into a `T`.
@@ -12,5 +11,4 @@ struct ConvertibleTo {
     operator T();
 }
 }  // namespace concept
-}  // namespace ming
 }  // namespace mongo

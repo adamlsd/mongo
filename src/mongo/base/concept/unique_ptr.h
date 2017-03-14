@@ -1,13 +1,12 @@
 #pragma once
 
-#include "mongo/base/ming/convertible_to.h"
+#include "mongo/base/concept/convertible_to.h"
 
 namespace mongo {
-namespace ming {
 namespace concept {
 /**
  * The `UniquePtr` Concept models a movable owning pointer of an object.
- * `std::unique_ptr< T >` is a model of `mongo::ming::concept::UniquePtr< T >`.
+ * `std::unique_ptr< T >` is a model of `mongo::concept::UniquePtr< T >`.
  */
 template <typename T>
 struct UniquePtr {
@@ -39,5 +38,4 @@ bool operator==(const UniquePtr<T>& lhs, const UniquePtr<T>& rhs);
 template <typename T>
 bool operator!=(const UniquePtr<T>& lhs, const UniquePtr<T>& rhs);
 }  // namespace concept
-}  // namespace ming
 }  // namespace mongo

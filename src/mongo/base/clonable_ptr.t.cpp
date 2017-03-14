@@ -41,7 +41,6 @@ private:
 }  // namespace
 
 namespace mongo {
-namespace ming {
 template <>
 struct clonable_traits<::Alt2ClonableTest> {
     struct clone_factory_type {
@@ -50,8 +49,7 @@ struct clonable_traits<::Alt2ClonableTest> {
         }
     };
 };
-}
-}
+}  // namespace mongo
 
 namespace {
 class FunctorClonable {
@@ -86,11 +84,9 @@ public:
         const FunctorWithDynamicStateClonable&)>;
 
     static CloningFunctionType getCloningFunction() {
-        int calls = 0;
-        return [calls](const FunctorWithDynamicStateClonable& c) mutable {
-            ++calls;
+        return [calls = 0](const FunctorWithDynamicStateClonable& c) mutable {
             return mongo::stdx::make_unique<FunctorWithDynamicStateClonable>(
-                c.data + boost::lexical_cast<std::string>(calls));
+                c.data + boost::lexical_cast<std::string>(++calls));
         };
     }
 };
@@ -111,50 +107,50 @@ public:
 
 TEST(ClonablePtrTest, syntax_smoke_test) {
     {
-        mongo::ming::clonable_ptr<ClonableTest> p;
+        mongo::clonable_ptr<ClonableTest> p;
 
         p = mongo::stdx::make_unique<ClonableTest>();
 
-        mongo::ming::clonable_ptr<ClonableTest> p2 = p;
+        mongo::clonable_ptr<ClonableTest> p2 = p;
 
         ASSERT_TRUE(p != p2);
 
         static_assert(sizeof(p) == sizeof(ClonableTest*),
-                      "`mongo::ming::clonable_ptr< T >` should be `sizeof` a pointer when there is "
-                      "no CloneFactory");
+                      "`mongo::clonable_ptr< T >` should be `sizeof` a pointer when there is no "
+                      "CloneFactory");
     }
 
     {
-        mongo::ming::clonable_ptr<AltClonableTest> p;
+        mongo::clonable_ptr<AltClonableTest> p;
 
         p = mongo::stdx::make_unique<AltClonableTest>();
 
-        mongo::ming::clonable_ptr<AltClonableTest> p2 = p;
+        mongo::clonable_ptr<AltClonableTest> p2 = p;
 
         ASSERT_TRUE(p != p2);
     }
 
     {
-        mongo::ming::clonable_ptr<Alt2ClonableTest> p;
+        mongo::clonable_ptr<Alt2ClonableTest> p;
 
         p = mongo::stdx::make_unique<Alt2ClonableTest>();
 
-        mongo::ming::clonable_ptr<Alt2ClonableTest> p2 = p;
+        mongo::clonable_ptr<Alt2ClonableTest> p2 = p;
 
         ASSERT_TRUE(p != p2);
     }
 
     {
-        mongo::ming::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p{
+        mongo::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p{
             FunctorClonable::getCloningFunction()};
 
         p = mongo::stdx::make_unique<FunctorClonable>();
 
-        mongo::ming::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p2 = p;
+        mongo::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p2 = p;
 
         ASSERT_TRUE(p != p2);
 
-        mongo::ming::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p3{
+        mongo::clonable_ptr<FunctorClonable, FunctorClonable::CloningFunctionType> p3{
             FunctorClonable::getCloningFunction()};
 
         auto tmp = mongo::stdx::make_unique<FunctorClonable>();
@@ -166,68 +162,65 @@ TEST(ClonablePtrTest, syntax_smoke_test) {
     }
 }
 
-// These tests check that all expected valid syntactic forms of use for the
-// `mongo::ming::clonable_ptr< Clonable >` are valid.  These tests assert nothing but provide a
-// single unified place to check the syntax of this component.  Build failures in these parts
-// indicate that a change to the component has broken an expected valid syntactic usage.  Any
-// expected valid usage which is not in this list should be added.
+// These tests check that all expected valid syntactic forms of use for the `mongo::clonable_ptr<
+// Clonable >` are valid.  These tests assert nothing but provide a single unified place to check
+// the syntax of this component.  Build failures in these parts indicate that a change to the
+// component has broken an expected valid syntactic usage.  Any expected valid usage which is not in
+// this list should be added.
 namespace SyntaxTests {
 template <typename Clonable>
 void construction() {
     // Test default construction
-    { mongo::ming::clonable_ptr<Clonable>{}; }
+    { mongo::clonable_ptr<Clonable>{}; }
 
     // Test construction from a nullptr
-    { mongo::ming::clonable_ptr<Clonable>{nullptr}; }
+    { mongo::clonable_ptr<Clonable>{nullptr}; }
 
     // Test construction from a Clonable pointer.
     {
         Clonable* const local = nullptr;
-        mongo::ming::clonable_ptr<Clonable>{local};
+        mongo::clonable_ptr<Clonable>{local};
     }
 
     // Test move construction.
-    { mongo::ming::clonable_ptr<Clonable>{mongo::ming::clonable_ptr<Clonable>{}}; }
+    { mongo::clonable_ptr<Clonable>{mongo::clonable_ptr<Clonable>{}}; }
 
     // Test copy construction.
     {
-        mongo::ming::clonable_ptr<Clonable> a;
-        mongo::ming::clonable_ptr<Clonable> b{a};
+        mongo::clonable_ptr<Clonable> a;
+        mongo::clonable_ptr<Clonable> b{a};
     }
 
     // Test move assignment.
     {
-        mongo::ming::clonable_ptr<Clonable> a;
-        a = mongo::ming::clonable_ptr<Clonable>{};
+        mongo::clonable_ptr<Clonable> a;
+        a = mongo::clonable_ptr<Clonable>{};
     }
 
     // Test copy assignment.
     {
-        mongo::ming::clonable_ptr<Clonable> a;
-        mongo::ming::clonable_ptr<Clonable> b;
+        mongo::clonable_ptr<Clonable> a;
+        mongo::clonable_ptr<Clonable> b;
         b = a;
     }
 
     // Test unique pointer construction
-    { mongo::ming::clonable_ptr<Clonable>{mongo::stdx::make_unique<Clonable>()}; }
+    { mongo::clonable_ptr<Clonable>{mongo::stdx::make_unique<Clonable>()}; }
 
     // Test unique pointer construction (conversion)
     {
-        auto acceptor = [](const mongo::ming::clonable_ptr<Clonable>&) {};
+        auto acceptor = [](const mongo::clonable_ptr<Clonable>&) {};
         acceptor(mongo::stdx::make_unique<Clonable>());
     }
 
     // Test non-conversion pointer construction
-    {
-        static_assert(!std::is_convertible<Clonable*, mongo::ming::clonable_ptr<Clonable>>::value,
-                      "");
-    }
+    { static_assert(!std::is_convertible<Clonable*, mongo::clonable_ptr<Clonable>>::value, ""); }
 
     // Test conversion unique pointer construction
     {
-        static_assert(std::is_convertible<std::unique_ptr<Clonable>,
-                                          mongo::ming::clonable_ptr<Clonable>>::value,
-                      "");
+        static_assert(
+            std::is_convertible<std::unique_ptr<Clonable>, mongo::clonable_ptr<Clonable>>::value,
+            "");
     }
 }
 
@@ -236,104 +229,101 @@ template <typename Clonable, typename CloneFactory>
 void augmented_construction() {
     // Test default construction
     {
-        static_assert(!std::is_default_constructible<
-                          mongo::ming::clonable_ptr<Clonable, CloneFactory>>::value,
-                      "");
+        static_assert(
+            !std::is_default_constructible<mongo::clonable_ptr<Clonable, CloneFactory>>::value, "");
     }
 
     // Test Clone Factory construction
-    { mongo::ming::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()}; }
+    { mongo::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()}; }
 
     // Test non-construction from a nullptr
     {
-        static_assert(!std::is_constructible<mongo::ming::clonable_ptr<Clonable, CloneFactory>,
+        static_assert(!std::is_constructible<mongo::clonable_ptr<Clonable, CloneFactory>,
                                              std::nullptr_t>::value,
                       "");
     }
 
     // Test construction from a nullptr with factory
-    { mongo::ming::clonable_ptr<Clonable, CloneFactory>{nullptr, Clonable::getCloningFunction()}; }
+    { mongo::clonable_ptr<Clonable, CloneFactory>{nullptr, Clonable::getCloningFunction()}; }
 
     // Test construction from a Clonable pointer.
     {
-        static_assert(!std::is_constructible<mongo::ming::clonable_ptr<Clonable, CloneFactory>,
-                                             Clonable*>::value,
-                      "");
+        static_assert(
+            !std::is_constructible<mongo::clonable_ptr<Clonable, CloneFactory>, Clonable*>::value,
+            "");
     }
 
 
     // Test construction from a Clonable pointer with factory.
     {
         Clonable* const local = nullptr;
-        mongo::ming::clonable_ptr<Clonable, CloneFactory>{local, Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory>{local, Clonable::getCloningFunction()};
     }
 
     // Test move construction.
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory>{
-            mongo::ming::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()}};
+        mongo::clonable_ptr<Clonable, CloneFactory>{
+            mongo::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()}};
     }
 
     // Test copy construction.
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> b{a};
+        mongo::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> b{a};
     }
 
     // Test augmented copy construction.
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> b{a, Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> b{a, Clonable::getCloningFunction()};
     }
 
 
     // Test move assignment.
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
-        a = mongo::ming::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
+        a = mongo::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()};
     }
 
     // Test copy assignment.
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> b{Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> a{Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> b{Clonable::getCloningFunction()};
         b = a;
     }
 
     // Test unique pointer construction
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory>{mongo::stdx::make_unique<Clonable>(),
-                                                          Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory>{mongo::stdx::make_unique<Clonable>(),
+                                                    Clonable::getCloningFunction()};
     }
 
     // Test augmented unique pointer construction
     {
-        mongo::ming::clonable_ptr<Clonable, CloneFactory>{mongo::stdx::make_unique<Clonable>(),
-                                                          Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory>{mongo::stdx::make_unique<Clonable>(),
+                                                    Clonable::getCloningFunction()};
     }
 
     // Test non-conversion pointer construction
     {
         static_assert(
-            !std::is_convertible<Clonable*,
-                                 mongo::ming::clonable_ptr<Clonable, CloneFactory>>::value,
+            !std::is_convertible<Clonable*, mongo::clonable_ptr<Clonable, CloneFactory>>::value,
             "");
         Clonable* p = nullptr;
-        mongo::ming::clonable_ptr<Clonable, CloneFactory> x(p);
+        mongo::clonable_ptr<Clonable, CloneFactory> x(p);
     }
 
     // Test conversion unique pointer construction
     {
-        static_assert(
-            !std::is_convertible<std::unique_ptr<Clonable>,
-                                 mongo::ming::clonable_ptr<Clonable, CloneFactory>>::value,
-            "");
+        static_assert(!std::is_convertible<std::unique_ptr<Clonable>,
+                                           mongo::clonable_ptr<Clonable, CloneFactory>>::value,
+                      "");
     }
 }
 
 template <typename Clonable>
 void pointer_operations() {
-    mongo::ming::clonable_ptr<Clonable> a;
+    mongo::clonable_ptr<Clonable> a;
 
     // Test `.get()` functionality:
     {
@@ -366,8 +356,8 @@ void pointer_operations() {
 
 template <typename Clonable>
 void equality_operations() {
-    mongo::ming::clonable_ptr<Clonable> a;
-    mongo::ming::clonable_ptr<Clonable> b;
+    mongo::clonable_ptr<Clonable> a;
+    mongo::clonable_ptr<Clonable> b;
 
     std::unique_ptr<Clonable> ua;
 
@@ -479,28 +469,26 @@ TEST(ClonablePtrTest, basic_construction_test) {
     // Do not default construct the object
     {
         DestructionGuard check;
-        mongo::ming::clonable_ptr<DetectDestruction> p;
+        mongo::clonable_ptr<DetectDestruction> p;
         ASSERT_EQ(DetectDestruction::activeCount, 0);
     }
 
     // Do not make unnecessary copies of the object from ptr
     {
         DestructionGuard check;
-        mongo::ming::clonable_ptr<DetectDestruction> p{new DetectDestruction};
+        mongo::clonable_ptr<DetectDestruction> p{new DetectDestruction};
         ASSERT_EQ(DetectDestruction::activeCount, 1);
     }
 
     // Do not make unnecessary copies of the object from unique_ptr
     {
         DestructionGuard check;
-        mongo::ming::clonable_ptr<DetectDestruction> p{
-            mongo::stdx::make_unique<DetectDestruction>()};
+        mongo::clonable_ptr<DetectDestruction> p{mongo::stdx::make_unique<DetectDestruction>()};
         ASSERT_EQ(DetectDestruction::activeCount, 1);
     }
     {
         DestructionGuard check;
-        mongo::ming::clonable_ptr<DetectDestruction> p =
-            mongo::stdx::make_unique<DetectDestruction>();
+        mongo::clonable_ptr<DetectDestruction> p = mongo::stdx::make_unique<DetectDestruction>();
         ASSERT_EQ(DetectDestruction::activeCount, 1);
     }
 
@@ -508,12 +496,11 @@ TEST(ClonablePtrTest, basic_construction_test) {
     {
         DestructionGuard check;
 
-        mongo::ming::clonable_ptr<DetectDestruction> p1{
-            mongo::stdx::make_unique<DetectDestruction>()};
+        mongo::clonable_ptr<DetectDestruction> p1{mongo::stdx::make_unique<DetectDestruction>()};
         ASSERT_EQ(DetectDestruction::activeCount, 1);
 
         {
-            mongo::ming::clonable_ptr<DetectDestruction> p2{
+            mongo::clonable_ptr<DetectDestruction> p2{
                 mongo::stdx::make_unique<DetectDestruction>()};
             ASSERT_EQ(DetectDestruction::activeCount, 2);
         }
@@ -524,11 +511,11 @@ TEST(ClonablePtrTest, basic_construction_test) {
     {
         DestructionGuard check;
 
-        auto p1 = mongo::stdx::make_unique<mongo::ming::clonable_ptr<DetectDestruction>>(
+        auto p1 = mongo::stdx::make_unique<mongo::clonable_ptr<DetectDestruction>>(
             mongo::stdx::make_unique<DetectDestruction>());
         ASSERT_EQ(DetectDestruction::activeCount, 1);
 
-        auto p2 = mongo::stdx::make_unique<mongo::ming::clonable_ptr<DetectDestruction>>(
+        auto p2 = mongo::stdx::make_unique<mongo::clonable_ptr<DetectDestruction>>(
             mongo::stdx::make_unique<DetectDestruction>());
         ASSERT_EQ(DetectDestruction::activeCount, 2);
 
@@ -567,20 +554,20 @@ TEST(ClonablePtrTest, basic_construction_test) {
 TEST(ClonablePtrTest, basic_equality_test) {
     DestructionGuard check;
 
-    mongo::ming::clonable_ptr<DetectDestruction> n1;
-    mongo::ming::clonable_ptr<DetectDestruction> n2;
-    mongo::ming::clonable_ptr<DetectDestruction> n3;
+    mongo::clonable_ptr<DetectDestruction> n1;
+    mongo::clonable_ptr<DetectDestruction> n2;
+    mongo::clonable_ptr<DetectDestruction> n3;
 
-    mongo::ming::clonable_ptr<DetectDestruction> a = mongo::stdx::make_unique<DetectDestruction>();
-    mongo::ming::clonable_ptr<DetectDestruction> b = mongo::stdx::make_unique<DetectDestruction>();
-    mongo::ming::clonable_ptr<DetectDestruction> c = mongo::stdx::make_unique<DetectDestruction>();
+    mongo::clonable_ptr<DetectDestruction> a = mongo::stdx::make_unique<DetectDestruction>();
+    mongo::clonable_ptr<DetectDestruction> b = mongo::stdx::make_unique<DetectDestruction>();
+    mongo::clonable_ptr<DetectDestruction> c = mongo::stdx::make_unique<DetectDestruction>();
 
-    const mongo::ming::clonable_ptr<DetectDestruction>& ap = a;
-    const mongo::ming::clonable_ptr<DetectDestruction>& bp = b;
-    const mongo::ming::clonable_ptr<DetectDestruction>& cp = c;
-    const mongo::ming::clonable_ptr<DetectDestruction>& ap2 = a;
-    const mongo::ming::clonable_ptr<DetectDestruction>& bp2 = b;
-    const mongo::ming::clonable_ptr<DetectDestruction>& cp2 = c;
+    const mongo::clonable_ptr<DetectDestruction>& ap = a;
+    const mongo::clonable_ptr<DetectDestruction>& bp = b;
+    const mongo::clonable_ptr<DetectDestruction>& cp = c;
+    const mongo::clonable_ptr<DetectDestruction>& ap2 = a;
+    const mongo::clonable_ptr<DetectDestruction>& bp2 = b;
+    const mongo::clonable_ptr<DetectDestruction>& cp2 = c;
 
     // Equals operator
 
@@ -733,15 +720,15 @@ TEST(ClonablePtrTest, ownership_stability_test) {
         auto ptr_init = mongo::stdx::make_unique<DetectDestruction>();
         const auto* rp = ptr_init.get();
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp = std::move(ptr_init);
+        mongo::clonable_ptr<DetectDestruction> cp = std::move(ptr_init);
 
         ASSERT(rp == cp.get());
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp2 = std::move(cp);
+        mongo::clonable_ptr<DetectDestruction> cp2 = std::move(cp);
 
         ASSERT(rp == cp2.get());
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp3;
+        mongo::clonable_ptr<DetectDestruction> cp3;
 
         ASSERT(nullptr == cp3);
 
@@ -754,15 +741,15 @@ TEST(ClonablePtrTest, ownership_stability_test) {
         auto ptr_init = mongo::stdx::make_unique<DetectDestruction>();
         const auto* rp = ptr_init.get();
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp{ptr_init.release()};
+        mongo::clonable_ptr<DetectDestruction> cp{ptr_init.release()};
 
         ASSERT(rp == cp.get());
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp2 = std::move(cp);
+        mongo::clonable_ptr<DetectDestruction> cp2 = std::move(cp);
 
         ASSERT(rp == cp2.get());
 
-        mongo::ming::clonable_ptr<DetectDestruction> cp3;
+        mongo::clonable_ptr<DetectDestruction> cp3;
 
         ASSERT(nullptr == cp3.get());
 
@@ -799,28 +786,28 @@ bool operator!=(const ClonableObject& lhs, const ClonableObject& rhs) {
 }
 
 TEST(ClonablePtrTest, no_object_copy_semantic_test) {
-    mongo::ming::clonable_ptr<ClonableObject> p;
+    mongo::clonable_ptr<ClonableObject> p;
 
-    mongo::ming::clonable_ptr<ClonableObject> p2 = p;
+    mongo::clonable_ptr<ClonableObject> p2 = p;
     ASSERT(p == p2);
 
-    mongo::ming::clonable_ptr<ClonableObject> p3;
+    mongo::clonable_ptr<ClonableObject> p3;
 
     p3 = p;
     ASSERT(p == p3);
 }
 
 TEST(ClonablePtrTest, object_copy_semantic_test) {
-    mongo::ming::clonable_ptr<ClonableObject> p = mongo::stdx::make_unique<ClonableObject>(1);
-    mongo::ming::clonable_ptr<ClonableObject> q = mongo::stdx::make_unique<ClonableObject>(2);
+    mongo::clonable_ptr<ClonableObject> p = mongo::stdx::make_unique<ClonableObject>(1);
+    mongo::clonable_ptr<ClonableObject> q = mongo::stdx::make_unique<ClonableObject>(2);
     ASSERT(p != q);
     ASSERT(*p != *q);
 
-    mongo::ming::clonable_ptr<ClonableObject> p2 = p;
+    mongo::clonable_ptr<ClonableObject> p2 = p;
     ASSERT(p != p2);
     ASSERT(*p == *p2);
 
-    mongo::ming::clonable_ptr<ClonableObject> q2 = q;
+    mongo::clonable_ptr<ClonableObject> q2 = q;
     ASSERT(q2 != q);
     ASSERT(q2 != p);
     ASSERT(q2 != p2);

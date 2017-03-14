@@ -1,7 +1,6 @@
 #pragma once
 
 namespace mongo {
-namespace ming {
 namespace concept {
 /**
  * The CopyAssignable concept models a type which can be copy assigned.
@@ -16,5 +15,4 @@ struct CopyAssignable {
     CopyAssignable& operator=(const CopyAssignable&) &;
 };
 }  // namespace concept
-}  // namespace ming
 }  // namespace mongo

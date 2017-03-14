@@ -1,10 +1,9 @@
 #pragma once
 
-#include "mongo/base/ming/concept/constructible.h"
-#include "mongo/base/ming/concept/unique_ptr.h"
+#include "mongo/base/concept/constructible.h"
+#include "mongo/base/concept/unique_ptr.h"
 
 namespace mongo {
-namespace ming {
 namespace concept {
 /*!
  * Objects conforming to the Clonable concept can be dynamically copied, using `this->clone()`.
@@ -18,5 +17,4 @@ struct Clonable {
     Constructible<UniquePtr<Clonable>> clone() const;
 };
 }  // namespace concept
-}  // namespace ming
 }  // namespace mongo

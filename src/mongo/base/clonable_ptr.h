@@ -1,6 +1,7 @@
 // clonable_ptr.h
 
-/*    Copyright (C) 2016,2017 MongoDB Inc.
+/*-
+ *    Copyright (C) 2016,2017 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -35,12 +36,8 @@
 #include <type_traits>
 
 namespace mongo {
-namespace ming {
-// To allow for future ABI/API breaking changes, each ABI/API major version will be named with an
-// inline namespace using an alphebetical name.
-inline namespace Aura {
-namespace detail {
-// This is the default `CloneFactory` conforming to `mongo::ming::concept::CloneFactory` for
+namespace cloneable_ptr_detail {
+// This is the default `CloneFactory` conforming to `mongo::concept::CloneFactory` for
 // `clonable_ptr`.
 template <typename Clonable>
 struct CloneFactory {
@@ -89,12 +86,12 @@ template <typename T>
 struct clonable_traits_impl<T, true> {
     using clone_factory_type = typename T::clone_factory_type;
 };
-}  // namespace detail
+}  // namespace clonable_ptr_detail
 
 /**
  * The 'clonable_traits' class is a specializable traits class for clonable-like types.  By
  * specializing this traits class for a type it is possible to change the global default
- * `CloneFactory` type for a specific type.  Types which conform to `mongo::ming::concept::Clonable`
+ * `CloneFactory` type for a specific type.  Types which conform to `mongo::concept::Clonable`
  * will get a default `CloneFactory` type whch invokes their specific `Clonable::clone` function.  A
  * specialization can be used to make a type use a different clone factory function.  A type `T` may
  * specify `T::clone_factory_type` instead of specializing this traits type.
@@ -106,12 +103,12 @@ struct clonable_traits : detail::clonable_traits_impl<T> {};
  * The `clonable_ptr` represents a value-like type held at a distance.  The `clonable_ptr` class is
  * a smart-pointer type which functions like a `std::unique_ptr` with the added ability to create
  * new copies of the pointee on copy construction.  The default CloneFactory assumes that `T` is a
- * type which models the Concept `mongo::ming::concept::Clonable`.  The supplied type may supply an
+ * type which models the Concept `mongo::concept::Clonable`.  The supplied type may supply an
  * alternative default `CloneFactory` type by either of two means:
  *
  *  * `T` may define a member `T::clone_factory_type` which conforms to
- *    `mongo::ming::concept::CloneFactory`
- *  * `T` may have an accompanying specialization of `mongo::ming::clonable_traits< T >` which
+ *    `mongo::concept::CloneFactory`
+ *  * `T` may have an accompanying specialization of `mongo::clonable_traits< T >` which
  *    defines `clonable_factory_type`.
  *
  * NOTE: The `CloneFactory` type is permitted to be stateful, but must be copy constructible and
@@ -120,8 +117,8 @@ struct clonable_traits : detail::clonable_traits_impl<T> {};
  * even when it has state.
  *
  * `T`: The type of the object being managed.
- * `CloneFactory`: A type which models the Concept `mongo::ming::concept::CloneFactory`.
- * `UniquePtr`: A type which models the Concept `mongo::ming::concept::UniquePtr`
+ * `CloneFactory`: A type which models the Concept `mongo::concept::CloneFactory`.
+ * `UniquePtr`: A type which models the Concept `mongo::concept::UniquePtr`
  */
 template <typename T,
           typename CloneFactory = typename clonable_traits<T>::clone_factory_type,
@@ -199,6 +196,7 @@ public:
      *
      * `copy`: The original value to copy.
      * THROWS: Any exceptions thrown by `cloneFactory( *copy )`.
+     * TODO: Consider adding a noexcept deduction specifier to this copy operation.
      */
     inline clonable_ptr(const clonable_ptr& copy)
         : data{copy.cloneFactory(), clone_with_factory(copy, copy.cloneFactory())} {}
@@ -218,6 +216,7 @@ public:
      * `copy`: The original value to copy.
      * `factory`: The factory to use for cloning.  Defaults to the source's factory.
      * THROWS: Any exceptions thrown by `factory( *copy )`.
+     * TODO: Consider adding a noexcept deduction specifier to this copy operation.
      */
     inline clonable_ptr(const clonable_ptr& copy, const CloneFactory& factory)
         : data{factory, clone_with_factory(copy, factory)} {}
@@ -239,11 +238,16 @@ public:
      *
      * `copy`: The value to make a copy of.
      * RETURNS: A reference to this pointer, after modification.
+     * TODO: Consider adding a noexcept deduction specifier to this copy operation.
      */
     inline clonable_ptr& operator=(const clonable_ptr& copy) & {
         return *this = clonable_ptr{copy};
     }
 
+    // Maintenance note: The two enable_if overloads of `clonable_ptr( std::nullptr_t )` are
+    // necessary, due to the fact that `std::nullptr_t` is capable of implicit conversion to a
+    // built-in pointer type.  If the stateful form being deleted causes the `nullptr` to convert,
+    // this could cause binding to another ctor which may be undesired.
 
     /*!
      * `nullptr` construct a clonable pointer (to `nullptr`), if the `CloneFactory` type is
@@ -270,7 +274,7 @@ public:
      */
     template <typename CloneFactory_ = CloneFactory,
               typename = typename std::enable_if<std::is_empty<CloneFactory_>::value>::type>
-    explicit inline clonable_ptr() {}
+    explicit inline clonable_ptr() noexcept {}
 
     /*! Constructs a pointer to nothing, with the specified `CloneFactory`. */
     explicit inline clonable_ptr(CloneFactory factory) : data{factory, nullptr} {}
@@ -283,6 +287,15 @@ public:
     template <typename CloneFactory_ = CloneFactory,
               typename = typename std::enable_if<std::is_empty<CloneFactory_>::value>::type>
     explicit inline clonable_ptr(T* const p) : clonable_ptr{UniquePtr<T>(p)} {}
+
+    /*!
+     * Disable single-argument construction of clonable pointer (with a raw pointer), if the
+     * `CloneFactory` type is stateful.
+     * NOTE: This constructor is disabled for types with a stateless `CloneFactory` type.
+     */
+    template <typename CloneFactory_ = CloneFactory,
+              typename = typename std::enable_if<!std::is_empty<CloneFactory_>::value>::type>
+    explicit inline clonable_ptr(T* const p) = delete;
 
     // The reason that we have two overloads for clone factory is to ensure that we avoid as many
     // exception-unsafe uses as possible.  The const-lvalue-reference variant in conjunction with
@@ -460,11 +473,11 @@ public:
         return this->ptr().get();
     }
 
-    inline void reset() noexcept {
+    inline void reset() & noexcept {
         this->ptr().reset();
     }
 
-    inline void reset(T* p) noexcept(noexcept(this->ptr().reset(p))) {
+    inline void reset(T* const p) & noexcept(noexcept(this->ptr().reset(p))) {
         this->ptr().reset(p);
     }
 
@@ -632,6 +645,4 @@ template <typename C, typename F, template <typename, typename...> class U>
 inline bool operator>=(const clonable_ptr<C, F, U>& lhs, const std::nullptr_t& rhs) {
     return !(lhs < rhs);
 }
-}  // inline namespace Aura
-}  // namespace ming
 }  // namespace mongo

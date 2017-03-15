@@ -36,7 +36,7 @@
 #include <type_traits>
 
 namespace mongo {
-namespace cloneable_ptr_detail {
+namespace clonable_ptr_detail {
 // This is the default `CloneFactory` conforming to `mongo::concept::CloneFactory` for
 // `clonable_ptr`.
 template <typename Clonable>
@@ -97,7 +97,7 @@ struct clonable_traits_impl<T, true> {
  * specify `T::clone_factory_type` instead of specializing this traits type.
  */
 template <typename T>
-struct clonable_traits : detail::clonable_traits_impl<T> {};
+struct clonable_traits : clonable_ptr_detail::clonable_traits_impl<T> {};
 
 /**
  * The `clonable_ptr` represents a value-like type held at a distance.  The `clonable_ptr` class is
@@ -284,18 +284,19 @@ public:
      * This function is unavailable when `CloneFactory` is stateful.
      * `p`: The pointer to take ownership of.
      */
-    template <typename CloneFactory_ = CloneFactory,
-              typename = typename std::enable_if<std::is_empty<CloneFactory_>::value>::type>
-    explicit inline clonable_ptr(T* const p) : clonable_ptr{UniquePtr<T>(p)} {}
+    template <typename CloneFactory_ = CloneFactory>
+    explicit inline clonable_ptr(
+        typename std::enable_if<std::is_empty<CloneFactory_>::value, T* const>::type p)
+        : clonable_ptr(UniquePtr<T>{p}) {}
 
     /*!
      * Disable single-argument construction of clonable pointer (with a raw pointer), if the
      * `CloneFactory` type is stateful.
      * NOTE: This constructor is disabled for types with a stateless `CloneFactory` type.
      */
-    template <typename CloneFactory_ = CloneFactory,
-              typename = typename std::enable_if<!std::is_empty<CloneFactory_>::value>::type>
-    explicit inline clonable_ptr(T* const p) = delete;
+    template <typename CloneFactory_ = CloneFactory>
+    explicit inline clonable_ptr(
+        typename std::enable_if<!std::is_empty<CloneFactory_>::value, T* const>::type) = delete;
 
     // The reason that we have two overloads for clone factory is to ensure that we avoid as many
     // exception-unsafe uses as possible.  The const-lvalue-reference variant in conjunction with
@@ -366,8 +367,9 @@ public:
      * ~~~
      */
     template <typename CloneFactory_ = CloneFactory,
+              typename Derived,
               typename = typename std::enable_if<std::is_empty<CloneFactory_>::value>::type>
-    inline clonable_ptr(UniquePtr<T>) : data{CloneFactory{}, std::move(p)} {}
+    inline clonable_ptr(UniquePtr<Derived> p) : data{CloneFactory{}, std::move(p)} {}
 
     /*!
      * Constructs a `clonable_ptr` by transferring ownership from `p` to `*this`.  The `factory`
@@ -382,7 +384,8 @@ public:
      *                                            [](const T& p){ return p; }}; // GOOD IDEA!!!
      * ~~~
      */
-    inline clonable_ptr(UniquePtr<T> p, CloneFactory factory)
+    template <typename Derived>
+    inline clonable_ptr(UniquePtr<Derived> p, CloneFactory factory)
         : data{std::move(factory), std::move(p)} {}
 
     /*!
@@ -407,6 +410,11 @@ public:
         return *this = std::move(clonable_ptr{std::move(copy), this->cloneFactory()});
     }
 
+    template <typename Derived>
+    inline clonable_ptr& operator=(UniquePtr< Derived > copy) & {
+        return *this = std::move(clonable_ptr{std::move(copy), this->cloneFactory()});
+    }
+
     /*!
      * Change the `CloneFactory` for `*this` to `factory`.
      * NOTE: This operation cannot be performed on an xvalue or prvalue instance.  (This prevents
@@ -422,7 +430,7 @@ public:
      * NOTE: The behavior is undefined if `this->get() == nullptr`.
      * RETURNS: The object owned by `*this`, equivalent to `*get()`.
      */
-    inline auto operator*() const noexcept(noexcept(*this->ptr())) {
+    inline auto& operator*() const noexcept(noexcept(*this->ptr())) {
         return *this->ptr();
     }
 
@@ -431,7 +439,7 @@ public:
      * NOTE: The behavior is undefined if `this->get() == nullptr`.
      * RETURNS: A pointer to the object owned by `*this`, equivalent to `get()`.
      */
-    inline auto operator-> () const noexcept(noexcept(this->ptr().operator->())) {
+    inline auto* operator-> () const noexcept(noexcept(this->ptr().operator->())) {
         return this->ptr().operator->();
     }
 

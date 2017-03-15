@@ -154,7 +154,7 @@ TEST(ClonablePtrTest, syntax_smoke_test) {
             FunctorClonable::getCloningFunction()};
 
         auto tmp = mongo::stdx::make_unique<FunctorClonable>();
-        p3 = tmp;
+        p3 = std::move(tmp);
 
         ASSERT_TRUE(p != p2);
         ASSERT_TRUE(p2 != p3);
@@ -310,7 +310,7 @@ void augmented_construction() {
             !std::is_convertible<Clonable*, mongo::clonable_ptr<Clonable, CloneFactory>>::value,
             "");
         Clonable* p = nullptr;
-        mongo::clonable_ptr<Clonable, CloneFactory> x(p);
+        mongo::clonable_ptr<Clonable, CloneFactory> x(p, CloneFactory{});
     }
 
     // Test conversion unique pointer construction
@@ -819,5 +819,76 @@ TEST(ClonablePtrTest, object_copy_semantic_test) {
     ASSERT(q2 != p2);
     ASSERT(*q2 == *p2);
 }
+
+class Interface {
+public:
+    virtual ~Interface() = default;
+    virtual void consumeText(const std::string& message) = 0;
+    virtual std::string produceText() = 0;
+
+    std::unique_ptr<Interface> clone() const {
+        return std::unique_ptr<Interface>{this->clone_impl()};
+    }
+
+private:
+    virtual Interface* clone_impl() const = 0;
+};
+
+class GeneratorImplementation : public Interface {
+private:
+    const std::string root;
+    int generation = 0;
+
+    GeneratorImplementation* clone_impl() const {
+        return new GeneratorImplementation{*this};
+    }
+
+public:
+    explicit GeneratorImplementation(const std::string& m) : root(m) {}
+
+    void consumeText(const std::string&) override {}
+
+    std::string produceText() override {
+        return root + boost::lexical_cast<std::string>(++generation);
+    }
+};
+
+class StorageImplementation : public Interface {
+private:
+    std::string store;
+
+    StorageImplementation* clone_impl() const {
+        return new StorageImplementation{*this};
+    }
+
+public:
+    void consumeText(const std::string& m) override {
+        store = m;
+    }
+    std::string produceText() override {
+        return store;
+    }
+};
+
+
+TEST(ClonablePtrSimpleTest, simple_usage_example) {
+    mongo::clonable_ptr<Interface> source;
+    mongo::clonable_ptr<Interface> sink;
+
+    mongo::clonable_ptr<Interface> instance = std::make_unique<StorageImplementation>();
+
+    sink = instance;
+
+    ASSERT(instance.get() != sink.get());
+
+    instance = std::make_unique<GeneratorImplementation>("base message");
+
+
+    source = std::move(instance);
+
+
+    sink->consumeText(source->produceText());
+}
+
 }  // namespace BehaviorTests
 }  // namespace

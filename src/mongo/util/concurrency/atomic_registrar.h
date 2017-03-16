@@ -29,6 +29,7 @@
 
 #include <vector>
 
+#include "mongo/base/disallow_copying.h"
 #include "mongo/stdx/list.h"
 #include "mongo/stdx/mutex.h"
 
@@ -125,7 +126,7 @@ private:
     using StorageType = stdx::list<T>;
 
     // TODO: Modernize to C++11 lifecycle declarations.
-	MONGO_DISALLOW_COPY_AND_ASSIGN(AtomicRegistrar);
+    MONGO_DISALLOW_COPYING(AtomicRegistrar);
 
 public:
     using RegistrationList = std::vector<T>;
@@ -176,7 +177,7 @@ public:
      */
     void retire(Ticket ticket) {
         const stdx::lock_guard<stdx::mutex> lock(this->_access);
-        this->_list.erase(this->_ticket.it);
+        this->_list.erase(ticket._it);
     }
 
     /**

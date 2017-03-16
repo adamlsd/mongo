@@ -121,6 +121,10 @@ public:
         std::unique_ptr<IndexDescriptor> descriptor,  // ownership passes to me
         CollectionInfoCache* infoCache);              // not owned, optional
 
+    // Do not call this function.  It exists for use with test drivers that need to inject
+    // alternative implementations.
+    explicit IndexCatalogEntry(std::unique_ptr<Impl> impl) : _pimpl(std::move(impl)) {}
+
     inline ~IndexCatalogEntry() = default;
 
     inline const std::string& ns() const {

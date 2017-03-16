@@ -228,7 +228,11 @@ auto TransportLayerLegacy::viewAllSessions() const -> std::vector<LegacySessionH
     using std::begin;
     using std::end;
     auto snapshot = _sessions.snapshot();
-    return {begin(snapshot), end(snapshot)};
+    std::vector<LegacySessionHandle> rv;
+    std::transform(begin(snapshot), end(snapshot), std::back_inserter(rv), [](const auto& handle) {
+        return handle.lock();
+    });
+    return rv;
 }
 
 // Promote all of the weak pointers in our registrar, to delay their expiry until we finish

@@ -58,13 +58,7 @@ auto IndexCatalogEntry::makeImpl(IndexCatalogEntry* const this_,
     return factory(this_, opCtx, ns, collection, std::move(descriptor), infoCache);
 }
 
-auto IndexCatalogEntry::impl() const -> const Impl& {
-    return *this->_pimpl;
-}
-
-auto IndexCatalogEntry::impl() -> Impl& {
-    return *this->_pimpl;
-}
+void IndexCatalogEntry::TUHook::hook() noexcept {}
 
 IndexCatalogEntry::IndexCatalogEntry(OperationContext* opCtx,
                                      StringData ns,
@@ -74,6 +68,6 @@ IndexCatalogEntry::IndexCatalogEntry(OperationContext* opCtx,
     : _pimpl(makeImpl(this, opCtx, ns, collection, std::move(descriptor), infoCache)) {}
 
 void IndexCatalogEntry::init(std::unique_ptr<IndexAccessMethod> accessMethod) {
-    return this->impl().init(std::move(accessMethod));
+    return this->_impl().init(std::move(accessMethod));
 }
 }  // namespace mongo

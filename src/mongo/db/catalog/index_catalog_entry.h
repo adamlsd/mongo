@@ -41,6 +41,7 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/debug_util.h"
 
 namespace mongo {
 class CollatorInterface;
@@ -54,6 +55,9 @@ class OperationContext;
 
 class IndexCatalogEntry {
 public:
+    // This class represents the internal vtable for the (potentially polymorphic) implementation of
+    // the `IndexCatalogEntry` class.  This allows us to expose an interface to this object without
+    // requiring a dependency upon the implementation's definition library.
     class Impl {
     public:
         virtual ~Impl() = 0;
@@ -99,8 +103,22 @@ public:
 
 private:
     std::unique_ptr<Impl> _pimpl;
-    const Impl& impl() const;
-    Impl& impl();
+    struct TUHook {
+        static void hook() noexcept;
+
+        explicit inline TUHook() noexcept {
+            if (kDebugBuild)
+                this->hook();
+        }
+    };
+    inline const Impl& _impl() const {
+        TUHook{};
+        return *this->_pimpl;
+    }
+    inline Impl& _impl() {
+        TUHook{};
+        return *this->_pimpl;
+    }
 
     static std::unique_ptr<Impl> makeImpl(IndexCatalogEntry* this_,
                                           OperationContext* opCtx,
@@ -128,55 +146,55 @@ public:
     inline ~IndexCatalogEntry() = default;
 
     inline const std::string& ns() const {
-        return this->impl().ns();
+        return this->_impl().ns();
     }
 
     void init(std::unique_ptr<IndexAccessMethod> accessMethod);
 
     inline IndexDescriptor* descriptor() {
-        return this->impl().descriptor();
+        return this->_impl().descriptor();
     }
 
     inline const IndexDescriptor* descriptor() const {
-        return this->impl().descriptor();
+        return this->_impl().descriptor();
     }
 
     inline IndexAccessMethod* accessMethod() {
-        return this->impl().accessMethod();
+        return this->_impl().accessMethod();
     }
 
     inline const IndexAccessMethod* accessMethod() const {
-        return this->impl().accessMethod();
+        return this->_impl().accessMethod();
     }
 
     inline const Ordering& ordering() const {
-        return this->impl().ordering();
+        return this->_impl().ordering();
     }
 
     inline const MatchExpression* getFilterExpression() const {
-        return this->impl().getFilterExpression();
+        return this->_impl().getFilterExpression();
     }
 
     inline const CollatorInterface* getCollator() const {
-        return this->impl().getCollator();
+        return this->_impl().getCollator();
     }
 
     /// ---------------------
 
     inline const RecordId& head(OperationContext* const opCtx) const {
-        return this->impl().head(opCtx);
+        return this->_impl().head(opCtx);
     }
 
     inline void setHead(OperationContext* const opCtx, const RecordId newHead) {
-        return this->impl().setHead(opCtx, newHead);
+        return this->_impl().setHead(opCtx, newHead);
     }
 
     inline void setIsReady(const bool newIsReady) {
-        return this->impl().setIsReady(newIsReady);
+        return this->_impl().setIsReady(newIsReady);
     }
 
     inline HeadManager* headManager() const {
-        return this->impl().headManager();
+        return this->_impl().headManager();
     }
 
     // --
@@ -185,7 +203,7 @@ public:
      * Returns true if this index is multikey and false otherwise.
      */
     inline bool isMultikey() const {
-        return this->impl().isMultikey();
+        return this->_impl().isMultikey();
     }
 
     /**
@@ -198,7 +216,7 @@ public:
      * each element in the vector is an empty set.
      */
     inline MultikeyPaths getMultikeyPaths(OperationContext* const opCtx) const {
-        return this->impl().getMultikeyPaths(opCtx);
+        return this->_impl().getMultikeyPaths(opCtx);
     }
 
     /**
@@ -212,12 +230,12 @@ public:
      * one path component of the indexed fields must cause this index to be multikey.
      */
     void setMultikey(OperationContext* const opCtx, const MultikeyPaths& multikeyPaths) {
-        return this->impl().setMultikey(opCtx, multikeyPaths);
+        return this->_impl().setMultikey(opCtx, multikeyPaths);
     }
 
     // if this ready is ready for queries
     bool isReady(OperationContext* const opCtx) const {
-        return this->impl().isReady(opCtx);
+        return this->_impl().isReady(opCtx);
     }
 
     /**
@@ -225,11 +243,11 @@ public:
      * must treat this index as unfinished.
      */
     boost::optional<SnapshotName> getMinimumVisibleSnapshot() {
-        return this->impl().getMinimumVisibleSnapshot();
+        return this->_impl().getMinimumVisibleSnapshot();
     }
 
     void setMinimumVisibleSnapshot(const SnapshotName name) {
-        return this->impl().setMinimumVisibleSnapshot(name);
+        return this->_impl().setMinimumVisibleSnapshot(name);
     }
 };
 

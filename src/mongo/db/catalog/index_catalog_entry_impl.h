@@ -65,49 +65,49 @@ public:
         std::unique_ptr<IndexDescriptor> descriptor,  // ownership passes to me
         CollectionInfoCache* infoCache);              // not owned, optional
 
-    ~IndexCatalogEntryImpl() override;
+    ~IndexCatalogEntryImpl() final;
 
-    const std::string& ns() const override {
+    const std::string& ns() const final {
         return _ns;
     }
 
-    void init(std::unique_ptr<IndexAccessMethod> accessMethod) override;
+    void init(std::unique_ptr<IndexAccessMethod> accessMethod) final;
 
-    IndexDescriptor* descriptor() override {
+    IndexDescriptor* descriptor() final {
         return _descriptor.get();
     }
-    const IndexDescriptor* descriptor() const override {
+    const IndexDescriptor* descriptor() const final {
         return _descriptor.get();
     }
 
-    IndexAccessMethod* accessMethod() override {
+    IndexAccessMethod* accessMethod() final {
         return _accessMethod.get();
     }
-    const IndexAccessMethod* accessMethod() const override {
+    const IndexAccessMethod* accessMethod() const final {
         return _accessMethod.get();
     }
 
-    const Ordering& ordering() const override {
+    const Ordering& ordering() const final {
         return _ordering;
     }
 
-    const MatchExpression* getFilterExpression() const override {
+    const MatchExpression* getFilterExpression() const final {
         return _filterExpression.get();
     }
 
-    const CollatorInterface* getCollator() const override {
+    const CollatorInterface* getCollator() const final {
         return _collator.get();
     }
 
     /// ---------------------
 
-    const RecordId& head(OperationContext* opCtx) const override;
+    const RecordId& head(OperationContext* opCtx) const final;
 
-    void setHead(OperationContext* opCtx, RecordId newHead) override;
+    void setHead(OperationContext* opCtx, RecordId newHead) final;
 
-    void setIsReady(bool newIsReady) override;
+    void setIsReady(bool newIsReady) final;
 
-    HeadManager* headManager() const override {
+    HeadManager* headManager() const final {
         return _headManager.get();
     }
 
@@ -116,7 +116,7 @@ public:
     /**
      * Returns true if this index is multikey, and returns false otherwise.
      */
-    bool isMultikey() const override;
+    bool isMultikey() const final;
 
     /**
      * Returns the path components that cause this index to be multikey if this index supports
@@ -127,7 +127,7 @@ public:
      * returns a vector with size equal to the number of elements in the index key pattern where
      * each element in the vector is an empty set.
      */
-    MultikeyPaths getMultikeyPaths(OperationContext* opCtx) const override;
+    MultikeyPaths getMultikeyPaths(OperationContext* opCtx) const final;
 
     /**
      * Sets this index to be multikey. Information regarding which newly detected path components
@@ -139,20 +139,20 @@ public:
      * with size equal to the number of elements in the index key pattern. Additionally, at least
      * one path component of the indexed fields must cause this index to be multikey.
      */
-    void setMultikey(OperationContext* opCtx, const MultikeyPaths& multikeyPaths) override;
+    void setMultikey(OperationContext* opCtx, const MultikeyPaths& multikeyPaths) final;
 
     // if this ready is ready for queries
-    bool isReady(OperationContext* opCtx) const override;
+    bool isReady(OperationContext* opCtx) const final;
 
     /**
      * If return value is not boost::none, reads with majority read concern using an older snapshot
      * must treat this index as unfinished.
      */
-    boost::optional<SnapshotName> getMinimumVisibleSnapshot() override {
+    boost::optional<SnapshotName> getMinimumVisibleSnapshot() final {
         return _minVisibleSnapshot;
     }
 
-    void setMinimumVisibleSnapshot(SnapshotName name) override {
+    void setMinimumVisibleSnapshot(SnapshotName name) final {
         _minVisibleSnapshot = name;
     }
 

@@ -41,8 +41,7 @@ namespace mongo {
 IndexCatalogEntry::Impl::~Impl() = default;
 
 namespace {
-using factory_function_type = IndexCatalogEntry::factory_function_type;
-stdx::function<factory_function_type> factory;
+stdx::function<IndexCatalogEntry::factory_function_type> factory;
 }  // namespace
 
 void IndexCatalogEntry::registerFactory(decltype(factory) newFactory) {

@@ -286,7 +286,7 @@ void construction() {
 
 // Tests that syntactic forms that require augmented construction are proper
 template <typename Clonable, typename CloneFactory>
-void augmented_construction() {
+void augmentedConstruction() {
     // Test default construction
     {
         static_assert(
@@ -382,7 +382,7 @@ void augmented_construction() {
 }
 
 template <typename Clonable>
-void pointer_operations() {
+void pointerOperations() {
     mongo::clonable_ptr<Clonable> a;
 
     // Test `.get()` functionality:
@@ -415,7 +415,7 @@ void pointer_operations() {
 }
 
 template <typename Clonable>
-void equality_operations() {
+void equalityOperations() {
     mongo::clonable_ptr<Clonable> a;
     mongo::clonable_ptr<Clonable> b;
 
@@ -457,26 +457,26 @@ TEST(ClonablePtrSyntaxTests, construction) {
     SyntaxTests::construction<UniquePtrClonable>();
 }
 
-TEST(ClonablePtrSyntaxTests, augmented_construction) {
-    SyntaxTests::augmented_construction<FunctorClonable, FunctorClonable::CloningFunctionType>();
-    SyntaxTests::augmented_construction<FunctorWithDynamicStateClonable,
+TEST(ClonablePtrSyntaxTests, augmentedConstruction) {
+    SyntaxTests::augmentedConstruction<FunctorClonable, FunctorClonable::CloningFunctionType>();
+    SyntaxTests::augmentedConstruction<FunctorWithDynamicStateClonable,
                                         FunctorWithDynamicStateClonable::CloningFunctionType>();
 }
 
-TEST(ClonablePtrSyntaxTests, pointer_operations) {
-    SyntaxTests::pointer_operations<ClonableTest>();
-    SyntaxTests::pointer_operations<AltClonableTest>();
-    SyntaxTests::pointer_operations<Alt2ClonableTest>();
-    SyntaxTests::pointer_operations<RawPointerClonable>();
-    SyntaxTests::pointer_operations<UniquePtrClonable>();
+TEST(ClonablePtrSyntaxTests, pointerOperations) {
+    SyntaxTests::pointerOperations<ClonableTest>();
+    SyntaxTests::pointerOperations<AltClonableTest>();
+    SyntaxTests::pointerOperations<Alt2ClonableTest>();
+    SyntaxTests::pointerOperations<RawPointerClonable>();
+    SyntaxTests::pointerOperations<UniquePtrClonable>();
 }
 
-TEST(ClonablePtrSyntaxTests, equality_operations) {
-    SyntaxTests::equality_operations<ClonableTest>();
-    SyntaxTests::equality_operations<AltClonableTest>();
-    SyntaxTests::equality_operations<Alt2ClonableTest>();
-    SyntaxTests::equality_operations<RawPointerClonable>();
-    SyntaxTests::equality_operations<UniquePtrClonable>();
+TEST(ClonablePtrSyntaxTests, equalityOperations) {
+    SyntaxTests::equalityOperations<ClonableTest>();
+    SyntaxTests::equalityOperations<AltClonableTest>();
+    SyntaxTests::equalityOperations<Alt2ClonableTest>();
+    SyntaxTests::equalityOperations<RawPointerClonable>();
+    SyntaxTests::equalityOperations<UniquePtrClonable>();
 }
 
 namespace BehaviorTests {
@@ -611,7 +611,7 @@ TEST(ClonablePtrTest, basic_construction_test) {
 //
 // All other tests can then just use equality to verify that an object is in the desired state.
 // This greatly simplifies testing and also makes tests more precise.
-TEST(ClonablePtrTest, basic_equality_test) {
+TEST(ClonablePtrTest, basicEqualityTest) {
     DestructionGuard check;
 
     mongo::clonable_ptr<DetectDestruction> n1;
@@ -773,7 +773,7 @@ TEST(ClonablePtrTest, basic_equality_test) {
 // TODO: all other forms of equality with other types (`std::nullptr_t` and `std::unique_ptr< T >`)
 // need testing still.
 
-TEST(ClonablePtrTest, ownership_stability_test) {
+TEST(ClonablePtrTest, ownershipStabilityTest) {
     {
         DestructionGuard check;
 
@@ -845,7 +845,7 @@ bool operator!=(const ClonableObject& lhs, const ClonableObject& rhs) {
     return !(lhs == rhs);
 }
 
-TEST(ClonablePtrTest, no_object_copy_semantic_test) {
+TEST(ClonablePtrTest, noObjectCopySemanticTest) {
     mongo::clonable_ptr<ClonableObject> p;
 
     mongo::clonable_ptr<ClonableObject> p2 = p;
@@ -857,7 +857,7 @@ TEST(ClonablePtrTest, no_object_copy_semantic_test) {
     ASSERT(p == p3);
 }
 
-TEST(ClonablePtrTest, object_copy_semantic_test) {
+TEST(ClonablePtrTest, objectCopySemanticTest) {
     mongo::clonable_ptr<ClonableObject> p = mongo::stdx::make_unique<ClonableObject>(1);
     mongo::clonable_ptr<ClonableObject> q = mongo::stdx::make_unique<ClonableObject>(2);
     ASSERT(p != q);
@@ -931,7 +931,7 @@ public:
 };
 
 
-TEST(ClonablePtrSimpleTest, simple_usage_example) {
+TEST(ClonablePtrSimpleTest, simpleUsageExample) {
     mongo::clonable_ptr<Interface> source;
     mongo::clonable_ptr<Interface> sink;
 

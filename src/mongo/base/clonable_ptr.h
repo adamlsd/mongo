@@ -1,7 +1,7 @@
 // clonable_ptr.h
 
 /*-
- *    Copyright (C) 2016,2017 MongoDB Inc.
+ *    Copyright (C) 2016 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -141,11 +141,11 @@ private:
         return std::get<1>(data);
     }
 
-    inline const auto& make_equality_lens() const noexcept {
+    inline const auto& _makeEqualityLens() const noexcept {
         return this->ptr();
     }
 
-    inline const auto& make_strict_weak_order_lens() const noexcept {
+    inline const auto& _makeStrictWeakOrderLens() const noexcept {
         return this->ptr();
     }
 
@@ -494,27 +494,27 @@ public:
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator==(const clonable_ptr<C, F, U>& lhs,
                                   const clonable_ptr<C, F, U>& rhs) {
-        return lhs.make_equality_lens() == rhs.make_equality_lens();
+        return lhs._makeEqualityLens() == rhs._makeEqualityLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator==(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
-        return lhs == rhs.make_equality_lens();
+        return lhs == rhs._makeEqualityLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator==(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
-        return lhs.make_equality_lens() == rhs;
+        return lhs._makeEqualityLens() == rhs;
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator==(const std::nullptr_t& lhs, const clonable_ptr<C, F, U>& rhs) {
-        return lhs == rhs.make_equality_lens();
+        return lhs == rhs._makeEqualityLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator==(const clonable_ptr<C, F, U>& lhs, const std::nullptr_t& rhs) {
-        return lhs.make_equality_lens() == rhs;
+        return lhs._makeEqualityLens() == rhs;
     }
 
     // Strict weak order
@@ -522,27 +522,27 @@ public:
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator<(const clonable_ptr<C, F, U>& lhs,
                                  const clonable_ptr<C, F, U>& rhs) {
-        return lhs.make_strict_weak_order_lens() < rhs.make_strict_weak_order_lens();
+        return lhs._makeStrictWeakOrderLens() < rhs._makeStrictWeakOrderLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator<(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
-        return lhs < rhs.make_strict_weak_order_lens();
+        return lhs < rhs._makeStrictWeakOrderLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator<(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
-        return lhs.make_strict_weak_order_lens() < rhs;
+        return lhs._makeStrictWeakOrderLens() < rhs;
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator<(const std::nullptr_t& lhs, const clonable_ptr<C, F, U>& rhs) {
-        return lhs < rhs.make_strict_weak_order_lens();
+        return lhs < rhs._makeStrictWeakOrderLens();
     }
 
     template <typename C, typename F, template <typename, typename...> class U>
     inline friend bool operator<(const clonable_ptr<C, F, U>& lhs, const std::nullptr_t& rhs) {
-        return lhs.make_strict_weak_order_lens() < rhs;
+        return lhs._makeStrictWeakOrderLens() < rhs;
     }
 };
 

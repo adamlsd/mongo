@@ -35,6 +35,7 @@
 #include "mongo/s/write_ops/batched_delete_document.h"
 #include "mongo/s/write_ops/mock_ns_targeter.h"
 #include "mongo/s/write_ops/write_error_detail.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -49,30 +50,34 @@ namespace {
 void initTargeterFullRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
-    targeter->init(mockRanges);
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+    targeter->init(std::move(mockRanges));
 }
 
 void initTargeterSplitRange(const NamespaceString& nss,
                             const ShardEndpoint& endpointA,
                             const ShardEndpoint& endpointB,
                             MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
-    mockRanges.push_back(new MockRange(endpointB, nss, BSON("x" << 0), BSON("x" << MAXKEY)));
-    targeter->init(mockRanges);
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointB, nss, BSON("x" << 0), BSON("x" << MAXKEY)));
+    targeter->init(std::move(mockRanges));
 }
 
 void initTargeterHalfRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << 0)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << 0)));
 
     // x >= 0 values untargetable
 
-    targeter->init(mockRanges);
+    targeter->init(std::move(mockRanges));
 }
 
 BatchedDeleteDocument* buildDelete(const BSONObj& query, int limit) {

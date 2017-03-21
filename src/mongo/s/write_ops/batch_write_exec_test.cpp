@@ -87,13 +87,13 @@ public:
 
         // Set up the namespace targeter to target the fake shard.
         ShardEndpoint endpoint(shardName, ChunkVersion::IGNORED());
-        vector<MockRange*> mockRanges;
+        std::vector<std::unique_ptr<MockRange>> mockRanges;
         mockRanges.push_back(
-            new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
-        nsTargeter.init(mockRanges);
+            stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+        nsTargeter.init(std::move(mockRanges));
 
         // Make the batch write executor use the mock backend.
-        exec.reset(new BatchWriteExec(&nsTargeter));
+        exec = stdx::make_unique<BatchWriteExec>(&nsTargeter);
     }
 
     void expectInsertsReturnSuccess(const std::vector<BSONObj>& expected) {

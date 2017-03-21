@@ -74,11 +74,10 @@ struct MockRange {
  */
 class MockNSTargeter : public NSTargeter {
 public:
-    void init(const std::vector<MockRange*> mockRanges) {
+    void init(std::vector<std::unique_ptr<MockRange>> mockRanges) {
         ASSERT(!mockRanges.empty());
-        _mockRanges.mutableVector().insert(
-            _mockRanges.mutableVector().end(), mockRanges.begin(), mockRanges.end());
-        _nss = NamespaceString(_mockRanges.vector().front()->range.ns);
+        _mockRanges = std::move(mockRanges);
+        _nss = NamespaceString(_mockRanges.front()->range.ns);
     }
 
     const NamespaceString& getNS() const {
@@ -127,10 +126,7 @@ public:
     }
 
     Status targetAllShards(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const override {
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
+        for (const auto& range : getRanges()) {
             endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
         }
 
@@ -152,8 +148,8 @@ public:
         return Status::OK();
     }
 
-    const std::vector<MockRange*>& getRanges() const {
-        return _mockRanges.vector();
+    const std::vector<std::unique_ptr<MockRange>>& getRanges() const {
+        return _mockRanges;
     }
 
 private:
@@ -191,11 +187,7 @@ private:
                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         KeyRange queryRange = parseRange(query);
 
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
-
+        for (const auto& range : getRanges()) {
             if (rangeOverlaps(queryRange.minKey,
                               queryRange.maxKey,
                               range->range.minKey,

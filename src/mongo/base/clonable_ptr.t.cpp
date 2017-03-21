@@ -36,6 +36,11 @@
 #include <boost/lexical_cast.hpp>
 
 namespace {
+// These testing helper classes model various kinds of class which should be compatible with
+// `mongo::clonable_ptr`.  The basic use cases satisfied by each class are described in each class's
+// documentation.
+
+// This class models the `Clonable` concept, and is used to test the simple case of `clonable_ptr`.
 class ClonableTest {
 private:
     std::string data =
@@ -48,6 +53,9 @@ public:
     }
 };
 
+// This class provides a member structure which models `CloneFactory<AltClonableTest>`.  The member
+// structure is available under the expected member name of `clone_factory_type`.  The
+// `CloneFactory` is stateless.
 class AltClonableTest {
 private:
     std::string data =
@@ -62,6 +70,9 @@ public:
     };
 };
 
+// This class requires a companion cloning function models `CloneFactory<Alt2ClonableTest>`.  There
+// is an attendant specialization of the `mongo::clonable_traits` metafunction to provide the clone
+// factory for this type.  That `CloneFactory` is stateless.
 class Alt2ClonableTest {
 private:
     std::string data =
@@ -71,6 +82,8 @@ private:
 }  // namespace
 
 namespace mongo {
+// This specialization of the `mongo::clonable_traits` metafunction provides a model of a stateless
+// `CloneFactory<Alt2ClonableTest>`
 template <>
 struct clonable_traits<::Alt2ClonableTest> {
     struct clone_factory_type {
@@ -82,6 +95,9 @@ struct clonable_traits<::Alt2ClonableTest> {
 }  // namespace mongo
 
 namespace {
+// This class uses a stateful cloning function provided by the `getCloningFunction` static member.
+// This stateful `CloneFactory<FunctorClonable>` must be passed to constructors of the
+// `cloning_ptr`.
 class FunctorClonable {
 private:
     std::string data =
@@ -98,6 +114,10 @@ public:
     }
 };
 
+// This class uses a stateful cloning function provided by the `getCloningFunction` static member.
+// This stateful `CloneFactory<FunctorWithDynamicStateClonable>` must be passed to constructors of
+// the `cloning_ptr`.  The `CloneFactory` for this type dynamically updates its internal state.
+// This is used to test cloning of objects that have dynamically changing clone factories.
 class FunctorWithDynamicStateClonable {
 private:
     std::string data =
@@ -121,6 +141,11 @@ public:
     }
 };
 
+// This class models `Clonable`, with a return from clone which is
+// `Constructible<std::unique_ptr<RawPointerClonable>>` but isn't
+// `std::unique_ptr<RawPointerClonable>`.  This is used to test that the `clonable_ptr` class does
+// not expect `RawPointerClonable::clone() const` to return a model of
+// `UniquePtr<RawPointerClonable>`
 class RawPointerClonable {
 public:
     RawPointerClonable* clone() const {
@@ -128,6 +153,11 @@ public:
     }
 };
 
+// This class models `Clonable`, with a return from clone which is
+// `Constructible<std::unique_ptr<UniquePtrClonable>>` because it is
+// `std::unique_ptr<UniquePtrClonable>`.  This is used to test that the `clonable_ptr` class can
+// use a `UniquePtrClonable::clone() const` that returns a model of
+// `UniquePtr<UniquePtrClonable>`
 class UniquePtrClonable {
 public:
     std::unique_ptr<UniquePtrClonable> clone() const {
@@ -192,11 +222,11 @@ TEST(ClonablePtrTest, syntax_smoke_test) {
     }
 }
 
-// These tests check that all expected valid syntactic forms of use for the `mongo::clonable_ptr<
-// Clonable >` are valid.  These tests assert nothing but provide a single unified place to check
-// the syntax of this component.  Build failures in these parts indicate that a change to the
-// component has broken an expected valid syntactic usage.  Any expected valid usage which is not in
-// this list should be added.
+// These tests check that all expected valid syntactic forms of use for the
+// `mongo::clonable_ptr<Clonable>` are valid.  These tests assert nothing but provide a single
+// unified place to check the syntax of this component.  Build failures in these parts indicate that
+// a change to the component has broken an expected valid syntactic usage.  Any expected valid usage
+// which is not in this list should be added.
 namespace SyntaxTests {
 template <typename Clonable>
 void construction() {
@@ -557,7 +587,7 @@ TEST(ClonablePtrTest, basic_construction_test) {
     }
 }
 
-// TODO: Bring in my "equivalence class for equality predicate testing" framework.
+// TODO: Bring in an "equivalence class for equality predicate testing" framework.
 // Equals and Not Equals need to be tested independently -- It is not valid to assume that equals
 // and not equals are correctly implemented as complimentary predicates.  Equality must be
 // reflexive, symmetric and transitive.  This requres several instances that all have the same

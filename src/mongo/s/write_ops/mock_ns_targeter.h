@@ -28,6 +28,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -210,7 +212,7 @@ private:
     NamespaceString _nss;
 
     // Manually-stored ranges
-    OwnedPointerVector<MockRange> _mockRanges;
+    std::vector<std::unique_ptr<MockRange>> _mockRanges;
 };
 
 inline void assertEndpointsEqual(const ShardEndpoint& endpointA, const ShardEndpoint& endpointB) {

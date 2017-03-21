@@ -219,14 +219,14 @@ public:
     }
 
     /**
-     * TargetedWrite is owned here once given to the TargetedWriteBatch
+     * TargetedWrite is owned here once given to the TargetedWriteBatch.
      */
-    void addWrite(TargetedWrite* targetedWrite) {
-        _writes.mutableVector().push_back(targetedWrite);
+    void addWrite(std::unique_ptr<TargetedWrite> targetedWrite) {
+        _writes.push_back(std::move(targetedWrite));
     }
 
-    const std::vector<TargetedWrite*>& getWrites() const {
-        return _writes.vector();
+    const std::vector<std::unique_ptr<TargetedWrite>>& getWrites() const {
+        return _writes;
     }
 
 private:
@@ -235,7 +235,7 @@ private:
 
     // Where the responses go
     // TargetedWrite*s are owned by the TargetedWriteBatch
-    OwnedPointerVector<TargetedWrite> _writes;
+    std::vector<std::unique_ptr<TargetedWrite>> _writes;
 };
 
 /**

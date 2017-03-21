@@ -214,13 +214,8 @@ static void cancelBatches(const WriteErrorDetail& why,
     // Collect all the writeOps that are currently targeted
     for (TargetedBatchMap::iterator it = batchMap->begin(); it != batchMap->end();) {
         TargetedWriteBatch* batch = it->second;
-        const vector<TargetedWrite*>& writes = batch->getWrites();
 
-        for (vector<TargetedWrite*>::const_iterator writeIt = writes.begin();
-             writeIt != writes.end();
-             ++writeIt) {
-            TargetedWrite* write = *writeIt;
-
+        for (auto& write : batch->getWrites()) {
             // NOTE: We may repeatedly cancel a write op here, but that's fast and we want to
             // cancel before erasing the TargetedWrite* (which owns the cancelled targeting
             // info) for reporting reasons.
@@ -292,10 +287,11 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
         //
 
         // TargetedWrites need to be owned once returned
-        OwnedPointerVector<TargetedWrite> writesOwned;
-        vector<TargetedWrite*>& writes = writesOwned.mutableVector();
+        std::vector<TargetedWrite*> writesUnowned;
 
-        Status targetStatus = writeOp.targetWrites(opCtx, targeter, &writes);
+        Status targetStatus = writeOp.targetWrites(opCtx, targeter, &writesUnowned);
+        std::vector<std::unique_ptr<TargetedWrite>> writes =
+            transitional_tools_do_not_use::spool_vector(writesUnowned);
 
         if (!targetStatus.isOK()) {
             WriteErrorDetail targetError;
@@ -335,7 +331,8 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
 
         if (ordered && !batchMap.empty()) {
             dassert(batchMap.size() == 1u);
-            if (isNewBatchRequired(writes, batchMap)) {
+            if (isNewBatchRequired(transitional_tools_do_not_use::unspool_vector(writes),
+                                   batchMap)) {
                 writeOp.cancelWrites(NULL);
                 break;
             }
@@ -346,7 +343,9 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
         //
 
         int writeSizeBytes = getWriteSizeBytes(writeOp);
-        if (wouldMakeBatchesTooBig(writes, writeSizeBytes, batchSizes)) {
+        if (wouldMakeBatchesTooBig(transitional_tools_do_not_use::unspool_vector(writes),
+                                   writeSizeBytes,
+                                   batchSizes)) {
             invariant(!batchMap.empty());
             writeOp.cancelWrites(NULL);
             break;
@@ -356,9 +355,7 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
         // Targeting went ok, add to appropriate TargetedBatch
         //
 
-        for (vector<TargetedWrite*>::iterator it = writes.begin(); it != writes.end(); ++it) {
-            TargetedWrite* write = *it;
-
+        for (auto& write : writes) {
             TargetedBatchMap::iterator batchIt = batchMap.find(&write->endpoint);
             TargetedBatchSizeMap::iterator batchSizeIt = batchSizes.find(&write->endpoint);
 
@@ -374,11 +371,9 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
 
             ++batchSize.numOps;
             batchSize.sizeBytes += writeSizeBytes;
-            batch->addWrite(write);
+            // Relinquish ownership of TargetedWrite, now the TargetedBatch owns them
+            batch->addWrite(std::move(write));
         }
-
-        // Relinquish ownership of TargetedWrites, now the TargetedBatches own them
-        writesOwned.mutableVector().clear();
 
         //
         // Break if we're ordered and we have more than one endpoint - later writes cannot be
@@ -414,12 +409,8 @@ void BatchWriteOp::buildBatchRequest(const TargetedWriteBatch& targetedBatch,
     request->setNS(_clientRequest->getNS());
     request->setShouldBypassValidation(_clientRequest->shouldBypassValidation());
 
-    const vector<TargetedWrite*>& targetedWrites = targetedBatch.getWrites();
-
-    for (vector<TargetedWrite*>::const_iterator it = targetedWrites.begin();
-         it != targetedWrites.end();
-         ++it) {
-        const WriteOpRef& writeOpRef = (*it)->writeOpRef;
+    for (const auto& write : targetedBatch.getWrites()) {
+        const WriteOpRef& writeOpRef = write->writeOpRef;
         BatchedCommandRequest::BatchType batchType = _clientRequest->getBatchType();
 
         // NOTE:  We copy the batch items themselves here from the client request
@@ -579,17 +570,14 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
 
     vector<WriteErrorDetail*>::iterator itemErrorIt = itemErrors.begin();
     int index = 0;
-    WriteErrorDetail* lastError = NULL;
-    for (vector<TargetedWrite *>::const_iterator it = targetedBatch.getWrites().begin();
-         it != targetedBatch.getWrites().end();
-         ++it, ++index) {
-        const TargetedWrite* write = *it;
+    WriteErrorDetail* lastError = nullptr;
+    for (const auto& write : targetedBatch.getWrites()) {
         WriteOp& writeOp = _writeOps[write->writeOpRef.first];
 
         dassert(writeOp.getWriteState() == WriteOpState_Pending);
 
         // See if we have an error for the write
-        WriteErrorDetail* writeError = NULL;
+        WriteErrorDetail* writeError = nullptr;
 
         if (itemErrorIt != itemErrors.end() && (*itemErrorIt)->getIndex() == index) {
             // We have an per-item error for this write op's index
@@ -598,7 +586,7 @@ void BatchWriteOp::noteBatchResponse(const TargetedWriteBatch& targetedBatch,
         }
 
         // Finish the response (with error, if needed)
-        if (NULL == writeError) {
+        if (nullptr == writeError) {
             if (!ordered || !lastError) {
                 writeOp.noteWriteComplete(*write);
             } else {

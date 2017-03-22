@@ -430,7 +430,7 @@ public:
      * NOTE: The behavior is undefined if `this->get() == nullptr`.
      * RETURNS: The object owned by `*this`, equivalent to `*get()`.
      */
-    inline auto& operator*() const noexcept(noexcept(*this->ptr())) {
+    inline auto& operator*() const {
         return *this->ptr();
     }
 
@@ -439,7 +439,7 @@ public:
      * NOTE: The behavior is undefined if `this->get() == nullptr`.
      * RETURNS: A pointer to the object owned by `*this`, equivalent to `get()`.
      */
-    inline auto* operator-> () const noexcept(noexcept(this->ptr().operator->())) {
+    inline auto* operator-> () const {
         return this->ptr().operator->();
     }
 
@@ -477,7 +477,7 @@ public:
     }
 
     /*! Provides a C-style `T *` pointer to the object owned by `*this`. */
-    inline T* get() const noexcept(noexcept(this->ptr().get())) {
+    inline T* get() const {
         return this->ptr().get();
     }
 
@@ -485,7 +485,7 @@ public:
         this->ptr().reset();
     }
 
-    inline void reset(T* const p) & noexcept(noexcept(this->ptr().reset(p))) {
+    inline void reset(T* const p) & {
         this->ptr().reset(p);
     }
 

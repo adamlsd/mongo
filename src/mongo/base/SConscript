@@ -60,7 +60,7 @@ env.CppUnitTest(
         'clonable_ptr_test',
     ],
     source=[
-        'clonable_ptr.t.cpp',
+        'clonable_ptr_test.cpp',
     ],
 )
 

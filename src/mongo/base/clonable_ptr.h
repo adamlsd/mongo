@@ -411,7 +411,7 @@ public:
     }
 
     template <typename Derived>
-    inline clonable_ptr& operator=(UniquePtr< Derived > copy) & {
+    inline clonable_ptr& operator=(UniquePtr<Derived> copy) & {
         return *this = std::move(clonable_ptr{std::move(copy), this->cloneFactory()});
     }
 

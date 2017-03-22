@@ -460,7 +460,7 @@ TEST(ClonablePtrSyntaxTests, construction) {
 TEST(ClonablePtrSyntaxTests, augmentedConstruction) {
     SyntaxTests::augmentedConstruction<FunctorClonable, FunctorClonable::CloningFunctionType>();
     SyntaxTests::augmentedConstruction<FunctorWithDynamicStateClonable,
-                                        FunctorWithDynamicStateClonable::CloningFunctionType>();
+                                       FunctorWithDynamicStateClonable::CloningFunctionType>();
 }
 
 TEST(ClonablePtrSyntaxTests, pointerOperations) {

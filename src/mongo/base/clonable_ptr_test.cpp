@@ -28,7 +28,7 @@
  *    then also delete it in the license file.
  */
 
-#include "clonable_ptr.h"
+#include "mongo/base/clonable_ptr.h"
 
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"

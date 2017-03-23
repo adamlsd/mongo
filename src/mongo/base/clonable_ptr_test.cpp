@@ -1,4 +1,4 @@
-// clonable_ptr.t.cpp
+// clonable_ptr_test.cpp
 
 /*-
  *    Copyright (C) 2016 MongoDB Inc.
@@ -106,13 +106,14 @@ private:
 
 public:
     using CloningFunctionType =
-        std::function<std::unique_ptr<FunctorClonable>(const FunctorClonable&)>;
+        mongo::stdx::function<std::unique_ptr<FunctorClonable>(const FunctorClonable&)>;
 
     static CloningFunctionType getCloningFunction() {
         return
             [](const FunctorClonable& c) { return mongo::stdx::make_unique<FunctorClonable>(c); };
     }
 };
+
 
 // This class uses a stateful cloning function provided by the `getCloningFunction` static member.
 // This stateful `CloneFactory<FunctorWithDynamicStateClonable>` must be passed to constructors of
@@ -306,7 +307,7 @@ void augmentedConstruction() {
     // Test construction from a nullptr with factory
     { mongo::clonable_ptr<Clonable, CloneFactory>{nullptr, Clonable::getCloningFunction()}; }
 
-    // Test construction from a Clonable pointer.
+    // Test construction from a raw Clonable pointer.
     {
         static_assert(
             !std::is_constructible<mongo::clonable_ptr<Clonable, CloneFactory>, Clonable*>::value,
@@ -314,10 +315,11 @@ void augmentedConstruction() {
     }
 
 
-    // Test construction from a Clonable pointer with factory.
+    // Test initialization of a raw Clonable pointer with factory, using reset.
     {
         Clonable* const local = nullptr;
-        mongo::clonable_ptr<Clonable, CloneFactory>{local, Clonable::getCloningFunction()};
+        mongo::clonable_ptr<Clonable, CloneFactory> p{Clonable::getCloningFunction()};
+        p.reset(local);
     }
 
     // Test move construction.
@@ -367,10 +369,15 @@ void augmentedConstruction() {
     // Test non-conversion pointer construction
     {
         static_assert(
-            !std::is_convertible<Clonable*, mongo::clonable_ptr<Clonable, CloneFactory>>::value,
+            !std::is_convertible<mongo::clonable_ptr<Clonable, CloneFactory>, Clonable*>::value,
             "");
-        Clonable* p = nullptr;
-        mongo::clonable_ptr<Clonable, CloneFactory> x(p, CloneFactory{});
+    }
+
+    // Test non-conversion from factory
+    {
+        static_assert(
+            !std::is_convertible<mongo::clonable_ptr<Clonable, CloneFactory>, CloneFactory>::value,
+            "");
     }
 
     // Test conversion unique pointer construction

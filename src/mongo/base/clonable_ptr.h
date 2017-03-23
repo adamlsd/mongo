@@ -331,11 +331,9 @@ public:
         : clonable_ptr{UniquePtr<T>{p}, std::addressof(factory), internal_construction{}} {}
 
     /*!
-     * Constructs a `clonable_ptr` which owns `p`, initializing the stored pointer with `p`.  The
-     * `factory` parameter will be used as the `CloneFactory` for future copies.
-     * `p`: The pointer to take ownership of.
-     * `factory`: The clone factory to use in future copies.
-     * NOTE: It is not recommended to use this constructor, as the following is not exception safe
+     * We forbid construction of a `clonable_ptr` from an unmanaged pointer, when specifying
+     * a cloning function -- regardless of whether the `CloneFactory` is stateful or not.
+     * NOTE: We have disabled this constructor, as the following is not exception safe
      * code:
      * ~~~
      * clonable_ptr<T, std::function<T* ()>> bad{new T, [](const T& p){ return p; }}; // BAD IDEA!!!
@@ -344,14 +342,16 @@ public:
      * which would not be exception safe.  (The above is not exception safe, because the `new T`
      * expression can be evaluated before the lambda expression is evaluated and converted to a
      * `std::function`.  The `std::function` constructor is allowed to throw, thus leaving `new T`
-     * to be abandoned.
+     * to be abandoned.  More complicated cases are completely hidden from `clonable_ptr`'s
+     * inspection, thus making this constructor too dangerous to exist.
      */
-    explicit inline clonable_ptr(T* const p, CloneFactory&& factory)
-        : clonable_ptr{UniquePtr<T>{p}, std::move(factory), internal_construction{}} {
-        static_assert(std::is_nothrow_move_constructible<CloneFactory>::value,
-                      "The `CloneFactory` type must be nothrow constructible to use as an r-value "
-                      "in an initialization expression with a raw pointer.");
-    }
+    explicit inline clonable_ptr(T* const p, CloneFactory&& factory) = delete;
+
+    /*!
+     * Constructs a `nullptr` valued clonable pointer, with a specified `CloneFactory`, `factory`.
+     */
+    explicit inline clonable_ptr(std::nullptr_t, CloneFactory&& factory)
+        : clonable_ptr{UniquePtr<T>{nullptr}, std::move(factory), internal_construction{}} {}
 
     /*!
      * Constructs a `clonable_ptr` by transferring ownership from `p` to `*this`.  A default
@@ -491,57 +491,49 @@ public:
 
     // Equality
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator==(const clonable_ptr<C, F, U>& lhs,
-                                  const clonable_ptr<C, F, U>& rhs) {
+    inline friend bool operator==(const clonable_ptr& lhs, const clonable_ptr& rhs) {
         return lhs._makeEqualityLens() == rhs._makeEqualityLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator==(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+    template <template <typename, typename...> class U>
+    inline friend bool operator==(const U<T>& lhs, const clonable_ptr& rhs) {
         return lhs == rhs._makeEqualityLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator==(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+    template <template <typename, typename...> class U>
+    inline friend bool operator==(const clonable_ptr& lhs, const U<T>& rhs) {
         return lhs._makeEqualityLens() == rhs;
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator==(const std::nullptr_t& lhs, const clonable_ptr<C, F, U>& rhs) {
+    inline friend bool operator==(const std::nullptr_t& lhs, const clonable_ptr& rhs) {
         return lhs == rhs._makeEqualityLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator==(const clonable_ptr<C, F, U>& lhs, const std::nullptr_t& rhs) {
+    inline friend bool operator==(const clonable_ptr& lhs, const std::nullptr_t& rhs) {
         return lhs._makeEqualityLens() == rhs;
     }
 
     // Strict weak order
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator<(const clonable_ptr<C, F, U>& lhs,
-                                 const clonable_ptr<C, F, U>& rhs) {
+    inline friend bool operator<(const clonable_ptr& lhs, const clonable_ptr& rhs) {
         return lhs._makeStrictWeakOrderLens() < rhs._makeStrictWeakOrderLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator<(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+    template <template <typename, typename...> class U>
+    inline friend bool operator<(const U<T>& lhs, const clonable_ptr& rhs) {
         return lhs < rhs._makeStrictWeakOrderLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator<(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+    template <template <typename, typename...> class U>
+    inline friend bool operator<(const clonable_ptr& lhs, const U<T>& rhs) {
         return lhs._makeStrictWeakOrderLens() < rhs;
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator<(const std::nullptr_t& lhs, const clonable_ptr<C, F, U>& rhs) {
+    inline friend bool operator<(const std::nullptr_t& lhs, const clonable_ptr& rhs) {
         return lhs < rhs._makeStrictWeakOrderLens();
     }
 
-    template <typename C, typename F, template <typename, typename...> class U>
-    inline friend bool operator<(const clonable_ptr<C, F, U>& lhs, const std::nullptr_t& rhs) {
+    inline friend bool operator<(const clonable_ptr& lhs, const std::nullptr_t& rhs) {
         return lhs._makeStrictWeakOrderLens() < rhs;
     }
 };

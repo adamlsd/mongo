@@ -168,6 +168,8 @@ public:
 };
 
 TEST(ClonablePtrTest, syntax_smoke_test) {
+// TODO: Either add a compressed pair type for optimization, or wait for MSVC to get this feature by
+//       default.  MSVC doesn't make its tuple compressed, which causes this test to fail on MSVC.
 #ifndef _MSC_VER
     {
         mongo::clonable_ptr<ClonableTest> p;

@@ -30,6 +30,7 @@
 
 #include "mongo/base/clonable_ptr.h"
 
+#include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 

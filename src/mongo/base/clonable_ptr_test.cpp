@@ -131,7 +131,7 @@ public:
 
     FunctorWithDynamicStateClonable(const std::string& s) : data(s) {}
 
-    using CloningFunctionType = std::function<std::unique_ptr<FunctorWithDynamicStateClonable>(
+    using CloningFunctionType = stdx::function<std::unique_ptr<FunctorWithDynamicStateClonable>(
         const FunctorWithDynamicStateClonable&)>;
 
     static CloningFunctionType getCloningFunction() {
@@ -942,13 +942,13 @@ TEST(ClonablePtrSimpleTest, simpleUsageExample) {
     mongo::clonable_ptr<Interface> source;
     mongo::clonable_ptr<Interface> sink;
 
-    mongo::clonable_ptr<Interface> instance = std::make_unique<StorageImplementation>();
+    mongo::clonable_ptr<Interface> instance = stdx::make_unique<StorageImplementation>();
 
     sink = instance;
 
     ASSERT(instance.get() != sink.get());
 
-    instance = std::make_unique<GeneratorImplementation>("base message");
+    instance = stdx::make_unique<GeneratorImplementation>("base message");
 
 
     source = std::move(instance);

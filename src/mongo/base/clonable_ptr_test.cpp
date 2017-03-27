@@ -37,7 +37,7 @@
 #include <boost/lexical_cast.hpp>
 
 namespace {
-namespace stdx= mongo::stdx;
+namespace stdx = mongo::stdx;
 
 // These testing helper classes model various kinds of class which should be compatible with
 // `mongo::clonable_ptr`.  The basic use cases satisfied by each class are described in each class's

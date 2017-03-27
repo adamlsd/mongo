@@ -168,6 +168,7 @@ public:
 };
 
 TEST(ClonablePtrTest, syntax_smoke_test) {
+#ifndef _MSC_VER
     {
         mongo::clonable_ptr<ClonableTest> p;
 
@@ -181,6 +182,7 @@ TEST(ClonablePtrTest, syntax_smoke_test) {
                       "`mongo::clonable_ptr< T >` should be `sizeof` a pointer when there is no "
                       "CloneFactory");
     }
+#endif
 
     {
         mongo::clonable_ptr<AltClonableTest> p;

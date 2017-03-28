@@ -101,6 +101,10 @@ public:
 
 private:
     std::unique_ptr<Impl> _pimpl;
+
+    // This structure exists to give us a customization point to decide how to force users of this
+    // class to depend upon the corresponding `index_catalog_entry.cpp` Translation Unit (TU).  All
+    // public forwarding functions call `_impl(), and `_impl` creates an instance of this structure.
     struct TUHook {
         static void hook() noexcept;
 
@@ -109,10 +113,12 @@ private:
                 this->hook();
         }
     };
+
     inline const Impl& _impl() const {
         TUHook{};
         return *this->_pimpl;
     }
+
     inline Impl& _impl() {
         TUHook{};
         return *this->_pimpl;

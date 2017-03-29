@@ -1,7 +1,5 @@
-// database.h
-
 /**
-*    Copyright (C) 2008 10gen Inc.
+*    Copyright (C) 2017 10gen Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -43,232 +41,276 @@
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/string_map.h"
 
-namespace mongo {
-
-class Collection;
-class DatabaseCatalogEntry;
-class IndexCatalog;
-class NamespaceDetails;
-class OperationContext;
-
-/**
- * Represents a logical database containing Collections.
- *
- * The semantics for a const Database are that you can mutate individual collections but not add or
- * remove them.
- */
-class Database {
-public:
-    typedef StringMap<Collection*> CollectionMap;
-
+namespace mongo
+{
     /**
-     * Iterating over a Database yields Collection* pointers.
+     * Represents a logical database containing Collections.
+     *
+     * The semantics for a const Database are that you can mutate individual collections but not add or
+     * remove them.
      */
-    class iterator {
-    public:
-        using iterator_category = std::forward_iterator_tag;
-        using value_type = Collection*;
-        using pointer = const value_type*;
-        using reference = const value_type&;
-        using difference_type = ptrdiff_t;
+    class Database
+    {
+        public:
+			class Impl
+			{
+				public:
+					virtual ~Impl()= 0;
 
-        iterator() = default;
-        iterator(CollectionMap::const_iterator it) : _it(it) {}
+					virtual void close( OperationContext *opCtx )= 0;
 
-        reference operator*() const {
-            return _it->second;
-        }
+					virtual const std::string &name() const= 0;
 
-        pointer operator->() const {
-            return &_it->second;
-        }
+					virtual void clearTmpCollections( OperationContext *opCtx )= 0;
 
-        bool operator==(const iterator& other) {
-            return _it == other._it;
-        }
+					virtual Status setProfilingLevel( OperationContext *opCtx, int newLevel )= 0;
 
-        bool operator!=(const iterator& other) {
-            return _it != other._it;
-        }
+					virtual int getProfilingLevel() const= 0;
 
-        iterator& operator++() {
-            ++_it;
-            return *this;
-        }
+					virtual const char *getProfilingNS() const= 0;
 
-        iterator operator++(int) {
-            auto oldPosition = *this;
-            ++_it;
-            return oldPosition;
-        }
+					virtual void getStats( OperationContext *opCtx, BSONObjBuilder *output, double scale )= 0;
 
-    private:
-        CollectionMap::const_iterator _it;
+					virtual const DatabaseCatalogEntry *getDatabaseCatalogEntry() const= 0;
+
+					virtual Status dropCollection( OperationContext *opCtx, StringData fullns )= 0;
+					virtual Status dropCollectionEvenIfSystem( OperationContext *opCtx, const NamespaceString &fullns )= 0;
+
+					virtual Status dropView( OperationContext *opCtx, StringData fullns )= 0;
+
+					virtual Collection *createCollection( OperationContext *opCtx, StringData ns, const CollectionOptions &options, bool createDefaultIndexes, const BSONObj &idIndex )= 0;
+
+					virtual Status createView( OperationContext *opCtx, StringData viewName, const CollectionOptions &options )= 0;
+
+					virtual Collection *getCollection( StringData ns ) const= 0;
+
+					virtual ViewCatalog * getViewCatalog()= 0;
+
+					virtual Collection *getOrCreateCollection( OperationContext *opCtx, StringData ns )= 0;
+
+					virtual Status renameCollection( OperationContext *opCtx, StringData fromNS, StringData toNS, bool stayTemp )= 0;
+
+					virtual const std::string & getSystemIndexesName() const= 0;
+
+					virtual const std::string & getSystemViewsName() const= 0;
+			};
+
+		private:
+			std::unique_ptr< Pimpl >
+            typedef StringMap< Collection * > CollectionMap;
+
+            /**
+             * Iterating over a Database yields Collection* pointers.
+             */
+            class iterator
+            {
+                public:
+                    using iterator_category= std::forward_iterator_tag;
+                    using value_type= Collection*;
+                    using pointer= const value_type*;
+                    using reference= const value_type &;
+                    using difference_type= ptrdiff_t;
+
+                    explicit inline iterator()= default;
+                    inline iterator( CollectionMap::const_iterator it ) : _it( it ) {}
+
+                    inline reference operator*() const { return _it->second; }
+
+                    inline pointer operator->() const { return &_it->second; } 
+
+                    inline friend bool operator==( const iterator &lhs, const iterator &rhs ) { return lhs._it == rhs._it; }
+
+                    inline friend bool operator!=( const iterator &lhs, const iterator &rhs ) { return !( lhs == rhs ); }
+
+                    inline iterator & operator++() { ++_it; return *this; }
+
+                    inline iterator operator++( int ) { auto oldPosition= *this; ++_it; return oldPosition; }
+
+                private:
+                    CollectionMap::const_iterator _it;
+            };
+
+            Database( OperationContext *opCtx, StringData name, DatabaseCatalogEntry *dbEntry );
+
+            // must call close first
+            ~Database();
+
+            iterator
+            begin() const
+            {
+                return iterator( _collections.begin() );
+            }
+
+            iterator
+            end() const
+            {
+                return iterator( _collections.end() );
+            }
+
+            // closes files and other cleanup see below.
+            void close( OperationContext *opCtx );
+
+            const std::string &
+            name() const
+            {
+                return _name;
+            }
+
+            void clearTmpCollections( OperationContext *opCtx );
+
+            /**
+             * Sets a new profiling level for the database and returns the outcome.
+             *
+             * @param opCtx Operation context which to use for creating the profiling collection.
+             * @param newLevel New profiling level to use.
+             */
+            Status setProfilingLevel( OperationContext *opCtx, int newLevel );
+
+            int
+            getProfilingLevel() const
+            {
+                return _profile;
+            }
+
+            const char *
+            getProfilingNS() const
+            {
+                return _profileName.c_str();
+            }
+
+            void getStats( OperationContext *opCtx, BSONObjBuilder *output, double scale= 1 );
+
+            const DatabaseCatalogEntry *getDatabaseCatalogEntry() const;
+
+            /**
+             * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
+             * that is required.
+             */
+            Status dropCollection( OperationContext *opCtx, StringData fullns );
+            Status dropCollectionEvenIfSystem( OperationContext *opCtx, const NamespaceString &fullns );
+
+            Status dropView( OperationContext *opCtx, StringData fullns );
+
+            Collection *createCollection( OperationContext *opCtx,
+                    StringData ns,
+                    const CollectionOptions &options= CollectionOptions(),
+                    bool createDefaultIndexes= true,
+                    const BSONObj &idIndex= BSONObj() );
+
+            Status createView( OperationContext *opCtx,
+                    StringData viewName,
+                    const CollectionOptions &options );
+
+            /**
+             * @param ns - this is fully qualified, which is maybe not ideal ???
+             */
+            Collection *getCollection( StringData ns ) const;
+
+            Collection *
+            getCollection( const NamespaceString &ns ) const
+            {
+                return getCollection( ns.ns() );
+            }
+
+            /**
+             * Get the view catalog, which holds the definition for all views created on this database. You
+             * must be holding a database lock to use this accessor.
+             */
+            ViewCatalog *
+            getViewCatalog()
+            {
+                return &_views;
+            }
+
+            Collection *getOrCreateCollection( OperationContext *opCtx, StringData ns );
+
+            Status renameCollection( OperationContext *opCtx,
+                    StringData fromNS,
+                    StringData toNS,
+                    bool stayTemp );
+
+            /**
+             * Physically drops the specified opened database and removes it from the server's metadata. It
+             * doesn't notify the replication subsystem or do any other consistency checks, so it should
+             * not be used directly from user commands.
+             *
+             * Must be called with the specified database locked in X mode.
+             */
+            static void dropDatabase( OperationContext *opCtx, Database *db );
+
+            static Status validateDBName( StringData dbname );
+
+            const std::string &
+            getSystemIndexesName() const
+            {
+                return _indexesName;
+            }
+
+            const std::string &
+            getSystemViewsName() const
+            {
+                return _viewsName;
+            }
+
+        private:
+            /**
+             * Gets or creates collection instance from existing metadata,
+             * Returns NULL if invalid
+             *
+             * Note: This does not add the collection to _collections map, that must be done
+             * by the caller, who takes onership of the Collection*
+             */
+            Collection *_getOrCreateCollectionInstance( OperationContext *opCtx, StringData fullns );
+
+            /**
+             * Throws if there is a reason 'ns' cannot be created as a user collection.
+             */
+            void _checkCanCreateCollection( const NamespaceString &nss, const CollectionOptions &options );
+
+            /**
+             * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
+             * 'reason' for why the cache is being cleared.
+             */
+            void _clearCollectionCache( OperationContext *opCtx,
+                    StringData fullns,
+                    const std::string &reason );
+
+            class AddCollectionChange;
+            class RemoveCollectionChange;
+
+            const std::string _name;  // "dbname"
+
+            DatabaseCatalogEntry *_dbEntry;  // not owned here
+
+            const std::string _profileName;  // "dbname.system.profile"
+            const std::string _indexesName;  // "dbname.system.indexes"
+            const std::string _viewsName;    // "dbname.system.views"
+
+            int _profile;  // 0=off.
+
+            CollectionMap _collections;
+
+            DurableViewCatalogImpl _durableViews;  // interface for system.views operations
+            ViewCatalog _views;                    // in-memory representation of _durableViews
+
+            friend class Collection;
+            friend class NamespaceDetails;
+            friend class IndexCatalog;
     };
 
-    Database(OperationContext* opCtx, StringData name, DatabaseCatalogEntry* dbEntry);
-
-    // must call close first
-    ~Database();
-
-    iterator begin() const {
-        return iterator(_collections.begin());
-    }
-
-    iterator end() const {
-        return iterator(_collections.end());
-    }
-
-    // closes files and other cleanup see below.
-    void close(OperationContext* opCtx);
-
-    const std::string& name() const {
-        return _name;
-    }
-
-    void clearTmpCollections(OperationContext* opCtx);
+    void dropAllDatabasesExceptLocal( OperationContext *opCtx );
 
     /**
-     * Sets a new profiling level for the database and returns the outcome.
-     *
-     * @param opCtx Operation context which to use for creating the profiling collection.
-     * @param newLevel New profiling level to use.
+     * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
+     * is true, creates the _id index for the collection (and the system indexes, in the case of system
+     * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
+     * 'idIndex' is empty, creates the default _id index.
      */
-    Status setProfilingLevel(OperationContext* opCtx, int newLevel);
-
-    int getProfilingLevel() const {
-        return _profile;
-    }
-    const char* getProfilingNS() const {
-        return _profileName.c_str();
-    }
-
-    void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale = 1);
-
-    const DatabaseCatalogEntry* getDatabaseCatalogEntry() const;
-
-    /**
-     * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
-     * that is required.
-     */
-    Status dropCollection(OperationContext* opCtx, StringData fullns);
-    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns);
-
-    Status dropView(OperationContext* opCtx, StringData fullns);
-
-    Collection* createCollection(OperationContext* opCtx,
-                                 StringData ns,
-                                 const CollectionOptions& options = CollectionOptions(),
-                                 bool createDefaultIndexes = true,
-                                 const BSONObj& idIndex = BSONObj());
-
-    Status createView(OperationContext* opCtx,
-                      StringData viewName,
-                      const CollectionOptions& options);
-
-    /**
-     * @param ns - this is fully qualified, which is maybe not ideal ???
-     */
-    Collection* getCollection(StringData ns) const;
-
-    Collection* getCollection(const NamespaceString& ns) const {
-        return getCollection(ns.ns());
-    }
-
-    /**
-     * Get the view catalog, which holds the definition for all views created on this database. You
-     * must be holding a database lock to use this accessor.
-     */
-    ViewCatalog* getViewCatalog() {
-        return &_views;
-    }
-
-    Collection* getOrCreateCollection(OperationContext* opCtx, StringData ns);
-
-    Status renameCollection(OperationContext* opCtx,
-                            StringData fromNS,
-                            StringData toNS,
-                            bool stayTemp);
-
-    /**
-     * Physically drops the specified opened database and removes it from the server's metadata. It
-     * doesn't notify the replication subsystem or do any other consistency checks, so it should
-     * not be used directly from user commands.
-     *
-     * Must be called with the specified database locked in X mode.
-     */
-    static void dropDatabase(OperationContext* opCtx, Database* db);
-
-    static Status validateDBName(StringData dbname);
-
-    const std::string& getSystemIndexesName() const {
-        return _indexesName;
-    }
-
-    const std::string& getSystemViewsName() const {
-        return _viewsName;
-    }
-
-private:
-    /**
-     * Gets or creates collection instance from existing metadata,
-     * Returns NULL if invalid
-     *
-     * Note: This does not add the collection to _collections map, that must be done
-     * by the caller, who takes onership of the Collection*
-     */
-    Collection* _getOrCreateCollectionInstance(OperationContext* opCtx, StringData fullns);
-
-    /**
-     * Throws if there is a reason 'ns' cannot be created as a user collection.
-     */
-    void _checkCanCreateCollection(const NamespaceString& nss, const CollectionOptions& options);
-
-    /**
-     * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
-     * 'reason' for why the cache is being cleared.
-     */
-    void _clearCollectionCache(OperationContext* opCtx,
-                               StringData fullns,
-                               const std::string& reason);
-
-    class AddCollectionChange;
-    class RemoveCollectionChange;
-
-    const std::string _name;  // "dbname"
-
-    DatabaseCatalogEntry* _dbEntry;  // not owned here
-
-    const std::string _profileName;  // "dbname.system.profile"
-    const std::string _indexesName;  // "dbname.system.indexes"
-    const std::string _viewsName;    // "dbname.system.views"
-
-    int _profile;  // 0=off.
-
-    CollectionMap _collections;
-
-    DurableViewCatalogImpl _durableViews;  // interface for system.views operations
-    ViewCatalog _views;                    // in-memory representation of _durableViews
-
-    friend class Collection;
-    friend class NamespaceDetails;
-    friend class IndexCatalog;
-};
-
-void dropAllDatabasesExceptLocal(OperationContext* opCtx);
-
-/**
- * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
- * is true, creates the _id index for the collection (and the system indexes, in the case of system
- * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
- * 'idIndex' is empty, creates the default _id index.
- */
-Status userCreateNS(OperationContext* opCtx,
-                    Database* db,
-                    StringData ns,
-                    BSONObj options,
-                    CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
-                    bool createDefaultIndexes = true,
-                    const BSONObj& idIndex = BSONObj());
-
+    Status userCreateNS( OperationContext *opCtx,
+            Database *db,
+            StringData ns,
+            BSONObj options,
+            CollectionOptions::ParseKind parseKind= CollectionOptions::parseForCommand,
+            bool createDefaultIndexes= true,
+            const BSONObj &idIndex= BSONObj() );
 }  // namespace mongo

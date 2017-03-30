@@ -96,7 +96,7 @@ public:
         help << "usage: {copydbgetnonce: 1, fromhost: <hostname>}";
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string&,
                      BSONObj& cmdObj,
                      int,
@@ -112,7 +112,7 @@ public:
 
         const ConnectionString cs(uassertStatusOK(ConnectionString::parse(fromhost)));
 
-        auto& authConn = CopyDbAuthConnection::forClient(txn->getClient());
+        auto& authConn = CopyDbAuthConnection::forClient(opCtx->getClient());
         authConn.reset(cs.connect(StringData(), errmsg));
         if (!authConn) {
             return false;
@@ -170,13 +170,21 @@ public:
                 "from secure server\n";
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string&,
                      BSONObj& cmdObj,
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
-        const string fromDb = cmdObj.getStringField("fromdb");
+        const auto fromdbElt = cmdObj["fromdb"];
+        uassert(ErrorCodes::TypeMismatch,
+                "'renameCollection' must be of type String",
+                fromdbElt.type() == BSONType::String);
+        const string fromDb = fromdbElt.str();
+        uassert(
+            ErrorCodes::InvalidNamespace,
+            str::stream() << "Invalid 'fromdb' name: " << fromDb,
+            NamespaceString::validDBName(fromDb, NamespaceString::DollarInDbNameBehavior::Allow));
 
         string fromHost = cmdObj.getStringField("fromhost");
         if (fromHost.empty()) {
@@ -201,7 +209,7 @@ public:
             return false;
         }
 
-        auto& authConn = CopyDbAuthConnection::forClient(txn->getClient());
+        auto& authConn = CopyDbAuthConnection::forClient(opCtx->getClient());
         authConn.reset(cs.connect(StringData(), errmsg));
         if (!authConn.get()) {
             return false;

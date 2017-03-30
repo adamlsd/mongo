@@ -16,6 +16,8 @@
 #define	WT_EVICT_WALK_BASE	300	/* Pages tracked across file visits */
 #define	WT_EVICT_WALK_INCR	100	/* Pages added each walk */
 
+#define	WT_EVICT_MAX_TREES	1000	/* Maximum walk points */
+
 /*
  * WT_EVICT_ENTRY --
  *	Encapsulation of an eviction candidate.
@@ -81,7 +83,7 @@ struct __wt_cache {
 	uint64_t worker_evicts;		/* Pages evicted by worker threads */
 
 	uint64_t evict_max_page_size;	/* Largest page seen at eviction */
-#ifdef	HAVE_DIAGNOSTIC
+#if defined(HAVE_DIAGNOSTIC) || defined(HAVE_VERBOSE)
 	struct timespec stuck_ts;	/* Stuck timestamp */
 #endif
 
@@ -91,6 +93,7 @@ struct __wt_cache {
 	uint64_t read_gen;		/* Current page read generation */
 	uint64_t read_gen_oldest;	/* Oldest read generation the eviction
 					 * server saw in its last queue load */
+	uint64_t evict_pass_gen;	/* Number of eviction passes */
 
 	/*
 	 * Eviction thread information.
@@ -184,9 +187,9 @@ struct __wt_cache {
 	uint32_t flags;
 };
 
-#define	WT_WITH_PASS_LOCK(session, ret, op) do {			\
+#define	WT_WITH_PASS_LOCK(session, op) do {				\
 	WT_ASSERT(session, !F_ISSET(session, WT_SESSION_LOCKED_PASS));	\
-	WT_WITH_LOCK(session, ret,					\
+	WT_WITH_LOCK_WAIT(session,					\
 	    &cache->evict_pass_lock, WT_SESSION_LOCKED_PASS, op);	\
 } while (0)
 

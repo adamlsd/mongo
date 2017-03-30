@@ -40,6 +40,7 @@
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source_tee_consumer.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/pipeline/tee_buffer.h"
 #include "mongo/db/pipeline/value.h"
@@ -178,11 +179,11 @@ DocumentSource::GetNextResult DocumentSourceFacet::getNext() {
     return resultDoc.freeze();
 }
 
-Value DocumentSourceFacet::serialize(bool explain) const {
+Value DocumentSourceFacet::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     MutableDocument serialized;
     for (auto&& facet : _facets) {
-        serialized[facet.name] =
-            Value(explain ? facet.pipeline->writeExplainOps() : facet.pipeline->serialize());
+        serialized[facet.name] = Value(explain ? facet.pipeline->writeExplainOps(*explain)
+                                               : facet.pipeline->serialize());
     }
     return Value(Document{{"$facet", serialized.freezeToValue()}});
 }
@@ -200,12 +201,6 @@ intrusive_ptr<DocumentSource> DocumentSourceFacet::optimize() {
         facet.pipeline->optimizePipeline();
     }
     return this;
-}
-
-void DocumentSourceFacet::doInjectExpressionContext() {
-    for (auto&& facet : _facets) {
-        facet.pipeline->injectExpressionContext(pExpCtx);
-    }
 }
 
 void DocumentSourceFacet::doInjectMongodInterface(std::shared_ptr<MongodInterface> mongod) {

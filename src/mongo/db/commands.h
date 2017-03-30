@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
 #include <string>
 #include <vector>
 
@@ -39,11 +40,16 @@
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/logical_time.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/rpc/reply_builder_interface.h"
 #include "mongo/rpc/request_interface.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/util/string_map.h"
+
+// Included for the purpose of granting friendship to `execCommandClient` and `execCommandDatabase`
+#include "mongo/db/commands_helpers.h"
 
 namespace mongo {
 
@@ -128,7 +134,7 @@ public:
 
        return value is true if succeeded.  if false, set errmsg text.
     */
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& db,
                      BSONObj& cmdObj,
                      int options,
@@ -141,7 +147,7 @@ public:
      * Then we won't need to mutate the command object. At that point we can also make
      * this method virtual so commands can override it directly.
      */
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const rpc::RequestInterface& request,
              rpc::ReplyBuilderInterface* replyBuilder);
 
@@ -204,22 +210,23 @@ public:
      *   which knows how to convert an execution stage tree into explain output.
      *
      * TODO: Remove the 'serverSelectionMetadata' parameter in favor of reading the
-     * ServerSelectionMetadata off 'txn'. Once OP_COMMAND is implemented in mongos, this metadata
+     * ServerSelectionMetadata off 'opCtx'. Once OP_COMMAND is implemented in mongos, this metadata
      * will be parsed and attached as a decoration on the OperationContext, as is already done on
      * the mongod side.
      */
-    virtual Status explain(OperationContext* txn,
+    virtual Status explain(OperationContext* opCtx,
                            const std::string& dbname,
                            const BSONObj& cmdObj,
-                           ExplainCommon::Verbosity verbosity,
+                           ExplainOptions::Verbosity verbosity,
                            const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                            BSONObjBuilder* out) const;
 
     /**
-     * Checks if the client associated with the given OperationContext, "txn", is authorized to run
+     * Checks if the client associated with the given OperationContext, "opCtx", is authorized to
+     * run
      * this command on database "dbname" with the invocation described by "cmdObj".
      */
-    virtual Status checkAuthForOperation(OperationContext* txn,
+    virtual Status checkAuthForOperation(OperationContext* opCtx,
                                          const std::string& dbname,
                                          const BSONObj& cmdObj);
 
@@ -307,26 +314,29 @@ public:
      *
      * This is currently used by mongod and dbwebserver.
      */
-    static void execCommand(OperationContext* txn,
+    static void execCommand(OperationContext* opCtx,
                             Command* command,
                             const rpc::RequestInterface& request,
                             rpc::ReplyBuilderInterface* replyBuilder);
 
-    // For mongos
-    // TODO: remove this entirely now that all instances of Client are instances
-    // of Client. This will happen as part of SERVER-18292
-    static void execCommandClient(OperationContext* txn,
-                                  Command* c,
-                                  int queryOptions,
-                                  const char* ns,
-                                  BSONObj& cmdObj,
-                                  BSONObjBuilder& result);
+    using ExecCommandHandler = decltype(Command::execCommand);
+
+    /**
+     * Registers the implementation of the `registerExecCommand` function. This must be called from
+     * a MONGO_INITIALIZER context and/or a single-threaded context.
+     */
+    static void registerExecCommand(stdx::function<ExecCommandHandler> handler);
 
     // Helper for setting errmsg and ok field in command result object.
     static void appendCommandStatus(BSONObjBuilder& result, bool ok, const std::string& errmsg);
 
     // @return s.isOK()
     static bool appendCommandStatus(BSONObjBuilder& result, const Status& status);
+
+    /**
+     * Appends "operationTime" field to the command result object as a Timestamp type.
+     */
+    static void appendOperationTime(BSONObjBuilder& result, LogicalTime operationTime);
 
     /**
      * Helper for setting a writeConcernError field in the command result object if
@@ -360,7 +370,6 @@ public:
      * mongo initializers:
      *
      *     int myMain(int argc, char** argv, char** envp) {
-     *         static StaticObserver StaticObserver;
      *         Command::testCommandsEnabled = true;
      *         ...
      *         runGlobalInitializersOrDie(argc, argv, envp);
@@ -380,7 +389,7 @@ public:
      * Generates a reply from the 'help' information associated with a command. The state of
      * the passed ReplyBuilder will be in kOutputDocs after calling this method.
      */
-    static void generateHelpResponse(OperationContext* txn,
+    static void generateHelpResponse(OperationContext* opCtx,
                                      const rpc::RequestInterface& request,
                                      rpc::ReplyBuilderInterface* replyBuilder,
                                      const Command& command);
@@ -392,7 +401,7 @@ public:
      * already an active exception when this function is called, so there
      * is little that can be done if it fails.
      */
-    static void generateErrorResponse(OperationContext* txn,
+    static void generateErrorResponse(OperationContext* opCtx,
                                       rpc::ReplyBuilderInterface* replyBuilder,
                                       const DBException& exception,
                                       const rpc::RequestInterface& request,
@@ -401,11 +410,22 @@ public:
 
     /**
      * Generates a command error response. This overload of generateErrorResponse is intended
+     * to also add an operationTime.
+     */
+    static void generateErrorResponse(OperationContext* opCtx,
+                                      rpc::ReplyBuilderInterface* replyBuilder,
+                                      const DBException& exception,
+                                      const rpc::RequestInterface& request,
+                                      Command* command,
+                                      const BSONObj& metadata,
+                                      LogicalTime operationTime);
+    /**
+     * Generates a command error response. This overload of generateErrorResponse is intended
      * to be called if the command is successfully parsed, but there is an error before we have
      * a handle to the actual Command object. This can happen, for example, when the command
      * is not found.
      */
-    static void generateErrorResponse(OperationContext* txn,
+    static void generateErrorResponse(OperationContext* opCtx,
                                       rpc::ReplyBuilderInterface* replyBuilder,
                                       const DBException& exception,
                                       const rpc::RequestInterface& request);
@@ -416,7 +436,7 @@ public:
      * neccessary, for example, if there is
      * an assertion hit while parsing the command.
      */
-    static void generateErrorResponse(OperationContext* txn,
+    static void generateErrorResponse(OperationContext* opCtx,
                                       rpc::ReplyBuilderInterface* replyBuilder,
                                       const DBException& exception);
 
@@ -424,7 +444,15 @@ public:
      * Records the error on to the OperationContext. This hook is needed because mongos
      * does not have CurOp linked in to it.
      */
-    static void registerError(OperationContext* txn, const DBException& exception);
+    static void registerError(OperationContext* opCtx, const DBException& exception);
+
+    /**
+     * Registers the implementation of the `registerError` function. This hook is needed because
+     * mongos does not have CurOp linked in to it. This must be called from a MONGO_INITIALIZER
+     * context and/or a single-threaded context.
+     */
+    static void registerRegisterError(
+        stdx::function<void(OperationContext*, const DBException&)> registerErrorHandler);
 
     /**
      * This function checks if a command is a user management command by name.
@@ -432,7 +460,7 @@ public:
     static bool isUserManagementCommand(const std::string& name);
 
     /**
-     * Checks to see if the client executing "txn" is authorized to run the given command with the
+     * Checks to see if the client executing "opCtx" is authorized to run the given command with the
      * given parameters on the given named database.
      *
      * Returns Status::OK() if the command is authorized.  Most likely returns
@@ -477,6 +505,18 @@ private:
     // Pointers to hold the metrics tree references
     ServerStatusMetricField<Counter64> _commandsExecutedMetric;
     ServerStatusMetricField<Counter64> _commandsFailedMetric;
+
+    friend void mongo::execCommandClient(OperationContext* opCtx,
+                                         Command* c,
+                                         int queryOptions,
+                                         const char* ns,
+                                         BSONObj& cmdObj,
+                                         BSONObjBuilder& result);
+
+    friend void mongo::execCommandDatabase(OperationContext* opCtx,
+                                           Command* command,
+                                           const rpc::RequestInterface& request,
+                                           rpc::ReplyBuilderInterface* replyBuilder);
 };
 
 }  // namespace mongo

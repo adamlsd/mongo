@@ -121,11 +121,22 @@ Value ExclusionNode::applyProjectionToValue(Value val) const {
     }
 }
 
+void ExclusionNode::addModifiedPaths(std::set<std::string>* modifiedPaths) const {
+    for (auto&& excludedField : _excludedFields) {
+        modifiedPaths->insert(FieldPath::getFullyQualifiedPath(_pathToNode, excludedField));
+    }
+
+    for (auto&& childPair : _children) {
+        childPair.second->addModifiedPaths(modifiedPaths);
+    }
+}
+
 //
 // ParsedExclusionProjection.
 //
 
-Document ParsedExclusionProjection::serialize(bool explain) const {
+Document ParsedExclusionProjection::serialize(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
     return _root->serialize();
 }
 
@@ -133,7 +144,10 @@ Document ParsedExclusionProjection::applyProjection(Document inputDoc) const {
     return _root->applyProjection(inputDoc);
 }
 
-void ParsedExclusionProjection::parse(const BSONObj& spec, ExclusionNode* node, size_t depth) {
+void ParsedExclusionProjection::parse(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                      const BSONObj& spec,
+                                      ExclusionNode* node,
+                                      size_t depth) {
     for (auto elem : spec) {
         const auto fieldName = elem.fieldNameStringData().toString();
 
@@ -178,7 +192,7 @@ void ParsedExclusionProjection::parse(const BSONObj& spec, ExclusionNode* node, 
                     child = child->addOrGetChild(fullPath.fullPath());
                 }
 
-                parse(elem.Obj(), child, depth + 1);
+                parse(expCtx, elem.Obj(), child, depth + 1);
                 break;
             }
             default: { MONGO_UNREACHABLE; }

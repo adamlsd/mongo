@@ -48,7 +48,7 @@ namespace repl {
 class HeartbeatResponseAction;
 class OpTime;
 class ReplSetHeartbeatArgs;
-class ReplicaSetConfig;
+class ReplSetConfig;
 class TagSubgroup;
 class LastVote;
 struct MemberState;
@@ -138,7 +138,7 @@ public:
      * Chooses and sets a new sync source, based on our current knowledge of the world.
      */
     virtual HostAndPort chooseNewSyncSource(Date_t now,
-                                            const Timestamp& lastTimestampApplied,
+                                            const OpTime& lastOpTimeFetched,
                                             ChainingPreference chainingPreference) = 0;
 
     /**
@@ -166,10 +166,13 @@ public:
      * ("syncSourceHasSyncSource" is false), and only has data up to "myLastOpTime", returns true.
      *
      * "now" is used to skip over currently blacklisted sync sources.
+     *
+     * TODO (SERVER-27668): Make OplogQueryMetadata non-optional in mongodb 3.8.
      */
     virtual bool shouldChangeSyncSource(const HostAndPort& currentSource,
                                         const OpTime& myLastOpTime,
-                                        const rpc::ReplSetMetadata& metadata,
+                                        const rpc::ReplSetMetadata& replMetadata,
+                                        boost::optional<rpc::OplogQueryMetadata> oqMetadata,
                                         Date_t now) const = 0;
 
     /**
@@ -292,7 +295,7 @@ public:
      * newConfig.isInitialized() should be true, though implementations may accept
      * configurations where this is not true, for testing purposes.
      */
-    virtual void updateConfig(const ReplicaSetConfig& newConfig,
+    virtual void updateConfig(const ReplSetConfig& newConfig,
                               int selfIndex,
                               Date_t now,
                               const OpTime& lastOpApplied) = 0;
@@ -394,12 +397,24 @@ public:
     /**
      * Tries to transition the coordinator from the leader role to the follower role.
      *
-     * Fails if "force" is not set and no follower is known to be up.  It is illegal
-     * to call this method if the node is not leader.
+     * If force==true, step down this node and return true immediately. Else, a step down
+     * succeeds only if the following conditions are met:
      *
-     * Returns whether or not the step down succeeded.
+     *      C1. A majority set of nodes, M, in the replica set have optimes greater than or
+     *      equal to the last applied optime of the primary.
+     *
+     *      C2. If C1 holds, then there must exist at least one electable secondary node in the
+     *      majority set M.
+     *
+     * If C1 and C2 hold, a step down occurs and this method returns true. Else, the step down
+     * fails and this method returns false.
+     *
+     * NOTE: It is illegal to call this method if the node is not a primary.
      */
-    virtual bool stepDown(Date_t until, bool force, const OpTime& lastOpApplied) = 0;
+    virtual bool stepDown(Date_t until,
+                          bool force,
+                          const OpTime& lastOpApplied,
+                          const OpTime& lastOpCommitted) = 0;
 
     /**
      * Sometimes a request to step down comes in (like via a heartbeat), but we don't have the
@@ -410,6 +425,11 @@ public:
      * scheduled.  Returns true if it actually steps down, and false otherwise.
      */
     virtual bool stepDownIfPending() = 0;
+
+    /**
+     * Returns true if a stepdown request is pending on acquisition of the global lock.
+     */
+    virtual bool isStepDownPending() const = 0;
 
     /**
      * Considers whether or not this node should stand for election, and returns true
@@ -423,11 +443,19 @@ public:
     virtual void setMyHeartbeatMessage(const Date_t now, const std::string& s) = 0;
 
     /**
-     * Prepares a BSONObj describing the current term, primary, and lastOp information.
+     * Prepares a ReplSetMetadata object describing the current term, primary, and lastOp
+     * information.
      */
-    virtual void prepareReplMetadata(rpc::ReplSetMetadata* metadata,
-                                     const OpTime& lastVisibleOpTime,
-                                     const OpTime& lastCommittedOpTime) const = 0;
+    virtual rpc::ReplSetMetadata prepareReplSetMetadata(
+        const OpTime& lastVisibleOpTime, const OpTime& lastCommittedOpTime) const = 0;
+
+    /**
+     * Prepares an OplogQueryMetadata object describing the current sync source, rbid, primary,
+     * lastOpApplied, and lastOpCommitted.
+     */
+    virtual rpc::OplogQueryMetadata prepareOplogQueryMetadata(const OpTime& lastCommittedOpTime,
+                                                              const OpTime& lastAppliedOpTime,
+                                                              int rbid) const = 0;
 
     /**
      * Writes into 'output' all the information needed to generate a summary of the current
@@ -462,7 +490,9 @@ public:
     /**
      * Transitions to the candidate role if the node is electable.
      */
-    virtual Status becomeCandidateIfElectable(const Date_t now, const OpTime& lastOpApplied) = 0;
+    virtual Status becomeCandidateIfElectable(const Date_t now,
+                                              const OpTime& lastOpApplied,
+                                              bool isPriorityTakeover) = 0;
 
     /**
      * Updates the storage engine read committed support in the TopologyCoordinator options after

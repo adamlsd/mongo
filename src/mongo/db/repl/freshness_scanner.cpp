@@ -44,8 +44,9 @@ namespace mongo {
 namespace repl {
 
 using executor::RemoteCommandRequest;
+using executor::RemoteCommandResponse;
 
-FreshnessScanner::Algorithm::Algorithm(const ReplicaSetConfig& rsConfig,
+FreshnessScanner::Algorithm::Algorithm(const ReplSetConfig& rsConfig,
                                        int myIndex,
                                        Milliseconds timeout)
     : _rsConfig(rsConfig), _myIndex(myIndex), _timeout(timeout) {
@@ -70,7 +71,7 @@ std::vector<RemoteCommandRequest> FreshnessScanner::Algorithm::getRequests() con
 }
 
 void FreshnessScanner::Algorithm::processResponse(const RemoteCommandRequest& request,
-                                                  const ResponseStatus& response) {
+                                                  const RemoteCommandResponse& response) {
     _responsesProcessed++;
     if (!response.isOK()) {  // failed response
         LOG(2) << "FreshnessScanner: Got failed response from " << request.target << ": "
@@ -108,9 +109,9 @@ FreshnessScanner::Result FreshnessScanner::Algorithm::getResult() const {
     return _freshnessInfos;
 }
 
-StatusWith<ReplicationExecutor::EventHandle> FreshnessScanner::start(
-    ReplicationExecutor* executor,
-    const ReplicaSetConfig& rsConfig,
+StatusWith<executor::TaskExecutor::EventHandle> FreshnessScanner::start(
+    executor::TaskExecutor* executor,
+    const ReplSetConfig& rsConfig,
     int myIndex,
     Milliseconds timeout) {
     _algorithm.reset(new Algorithm(rsConfig, myIndex, timeout));

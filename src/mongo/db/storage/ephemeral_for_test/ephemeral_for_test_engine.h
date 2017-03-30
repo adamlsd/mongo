@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include <memory>
+
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/stdx/mutex.h"
@@ -48,10 +50,10 @@ public:
                                      StringData ident,
                                      const CollectionOptions& options);
 
-    virtual RecordStore* getRecordStore(OperationContext* opCtx,
-                                        StringData ns,
-                                        StringData ident,
-                                        const CollectionOptions& options);
+    virtual std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx,
+                                                        StringData ns,
+                                                        StringData ident,
+                                                        const CollectionOptions& options);
 
     virtual Status createSortedDataInterface(OperationContext* opCtx,
                                              StringData ident,
@@ -61,11 +63,11 @@ public:
                                                         StringData ident,
                                                         const IndexDescriptor* desc);
 
-    virtual Status beginBackup(OperationContext* txn) {
+    virtual Status beginBackup(OperationContext* opCtx) {
         return Status::OK();
     }
 
-    virtual void endBackup(OperationContext* txn) {}
+    virtual void endBackup(OperationContext* opCtx) {}
 
     virtual Status dropIdent(OperationContext* opCtx, StringData ident);
 

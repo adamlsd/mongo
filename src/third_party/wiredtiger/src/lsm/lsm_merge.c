@@ -46,7 +46,7 @@ __wt_lsm_merge_update_tree(WT_SESSION_IMPL *session,
 static void
 __lsm_merge_aggressive_clear(WT_LSM_TREE *lsm_tree)
 {
-	F_CLR(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER);
+	lsm_tree->aggressive_timer_enabled = false;
 	lsm_tree->merge_aggressiveness = 0;
 }
 
@@ -54,7 +54,7 @@ __lsm_merge_aggressive_clear(WT_LSM_TREE *lsm_tree)
  * __lsm_merge_aggressive_update --
  *	Update the merge aggressiveness for an LSM tree.
  */
-static int
+static void
 __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 {
 	struct timespec now;
@@ -72,7 +72,7 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	if (!lsm_tree->modified ||
 	    F_ISSET(lsm_tree, WT_LSM_TREE_COMPACTING)) {
 		lsm_tree->merge_aggressiveness = 10;
-		return (0);
+		return;
 	}
 
 	/*
@@ -81,20 +81,20 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 */
 	if (lsm_tree->chunks_flushed <= lsm_tree->merge_min) {
 		__lsm_merge_aggressive_clear(lsm_tree);
-		return (0);
+		return;
 	}
 
 	/*
-	 * Start the timer if it isn't running. Use a flag to define whether
+	 * Start the timer if it isn't running. Use a bool to define whether
 	 * the timer is running - since clearing and checking a special
 	 * timer value isn't simple.
 	 */
-	if (!F_ISSET(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER)) {
-		F_SET(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER);
-		return (__wt_epoch(session, &lsm_tree->merge_aggressive_ts));
+	if (!lsm_tree->aggressive_timer_enabled) {
+		lsm_tree->aggressive_timer_enabled = true;
+		__wt_epoch(session, &lsm_tree->merge_aggressive_ts);
 	}
 
-	WT_RET(__wt_epoch(session, &now));
+	__wt_epoch(session, &now);
 	msec_since_last_merge =
 	    WT_TIMEDIFF_MS(now, lsm_tree->merge_aggressive_ts);
 
@@ -113,7 +113,7 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 * generates a variable load.
 	 */
 	if (msec_since_last_merge < msec_to_create_merge)
-		return (0);
+		return;
 
 	/*
 	 * Bump how aggressively we look for merges based on how long since
@@ -134,7 +134,6 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 		    msec_since_last_merge, lsm_tree->chunk_fill_ms);
 		lsm_tree->merge_aggressiveness = new_aggressive;
 	}
-	return (0);
 }
 
 /*
@@ -326,7 +325,7 @@ retry_find:
 			goto retry_find;
 		}
 		/* Consider getting aggressive if no merge was found */
-		WT_RET(__lsm_merge_aggressive_update(session, lsm_tree));
+		__lsm_merge_aggressive_update(session, lsm_tree);
 		return (WT_NOTFOUND);
 	}
 
@@ -435,7 +434,7 @@ __wt_lsm_merge(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, u_int id)
 	F_SET(src, WT_CURSTD_RAW);
 	WT_ERR(__wt_clsm_init_merge(src, start_chunk, start_id, nchunks));
 
-	WT_WITH_SCHEMA_LOCK(session, ret,
+	WT_WITH_SCHEMA_LOCK(session,
 	    ret = __wt_lsm_tree_setup_chunk(session, lsm_tree, chunk));
 	WT_ERR(ret);
 	if (create_bloom) {
@@ -580,7 +579,7 @@ __wt_lsm_merge(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, u_int id)
 	 * Any errors that happened after the tree was locked are
 	 * fatal - we can't guarantee the state of the tree.
 	 */
-	if ((ret = __wt_lsm_meta_write(session, lsm_tree)) != 0)
+	if ((ret = __wt_lsm_meta_write(session, lsm_tree, NULL)) != 0)
 		WT_PANIC_ERR(session, ret, "Failed finalizing LSM merge");
 
 	lsm_tree->dsk_gen++;
@@ -605,13 +604,13 @@ err:	if (locked)
 	if (ret != 0 && created_chunk) {
 		/* Drop the newly-created files on error. */
 		if (chunk->uri != NULL) {
-			WT_WITH_SCHEMA_LOCK(session, tret,
+			WT_WITH_SCHEMA_LOCK(session,
 			    tret = __wt_schema_drop(
 			    session, chunk->uri, drop_cfg));
 			WT_TRET(tret);
 		}
 		if (create_bloom && chunk->bloom_uri != NULL) {
-			WT_WITH_SCHEMA_LOCK(session, tret,
+			WT_WITH_SCHEMA_LOCK(session,
 			    tret = __wt_schema_drop(
 			    session, chunk->bloom_uri, drop_cfg));
 			WT_TRET(tret);

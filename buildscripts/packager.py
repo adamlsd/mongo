@@ -28,18 +28,14 @@
 
 import argparse
 import errno
-import getopt
-import httplib2
 from glob import glob
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import time
-import urlparse
 
 # The MongoDB names for the architectures we support.
 ARCH_CHOICES=["x86_64", "arm64"]
@@ -290,7 +286,7 @@ def get_args(distros, arch_choices):
     parser.add_argument("-d", "--distros", help="Distros to build for", choices=distro_choices, required=False, default=[], action='append')
     parser.add_argument("-p", "--prefix", help="Directory to build into", required=False)
     parser.add_argument("-a", "--arches", help="Architecture to build", choices=arch_choices, default=[], required=False, action='append')
-    parser.add_argument("-t", "--tarball", help="Local tarball to package instead of downloading (only valid with one distro/arch combination)", required=False, type=lambda x: is_valid_file(parser, x))
+    parser.add_argument("-t", "--tarball", help="Local tarball to package", required=True, type=lambda x: is_valid_file(parser, x))
 
     args = parser.parse_args()
 
@@ -319,9 +315,6 @@ def main(argv):
 
     os.chdir(prefix)
     try:
-      # Download the binaries.
-      urlfmt="http://downloads.mongodb.org/linux/mongodb-linux-%s-%s-%s.tgz"
-
       # Build a package for each distro/spec/arch tuple, and
       # accumulate the repository-layout directories.
       for (distro, arch) in crossproduct(distros, args.arches):
@@ -329,12 +322,9 @@ def main(argv):
           for build_os in distro.build_os(arch):
             if build_os in args.distros or not args.distros:
 
-              if args.tarball:
-                filename = tarfile(build_os, arch, spec)
-                ensure_dir(filename)
-                shutil.copyfile(args.tarball,filename)
-              else:
-                httpget(urlfmt % (arch, build_os, spec.version()), ensure_dir(tarfile(build_os, arch, spec)))
+              filename = tarfile(build_os, arch, spec)
+              ensure_dir(filename)
+              shutil.copyfile(args.tarball, filename)
 
               repo = make_package(distro, build_os, arch, spec, srcdir)
               make_repo(repo, distro, build_os, spec)
@@ -385,27 +375,6 @@ def setupdir(distro, build_os, arch, spec):
     # would be dst/x86_64/debian-sysvinit/wheezy/mongodb-org-unstable/
     # or dst/x86_64/redhat/rhel55/mongodb-org-unstable/
     return "dst/%s/%s/%s/%s%s-%s/" % (arch, distro.name(), build_os, distro.pkgbase(), spec.suffix(), spec.pversion(distro))
-
-def httpget(url, filename):
-    """Download the contents of url to filename, return filename."""
-    print "Fetching %s to %s." % (url, filename)
-    conn = None
-    u=urlparse.urlparse(url)
-    assert(u.scheme=='http')
-    try:
-        h = httplib2.Http(cache = os.environ["HOME"] + "/.cache")
-        resp, content = h.request(url, "GET")
-        t=filename+'.TMP'
-        if resp.status==200:
-            with open(t, 'w') as f:
-                f.write(content)
-        else:
-            raise Exception("HTTP error %d" % resp.status)
-        os.rename(t, filename)
-    finally:
-        if conn:
-            conn.close()
-    return filename
 
 def unpack_binaries_into(build_os, arch, spec, where):
     """Unpack the tarfile for (build_os, arch, spec) into directory where."""
@@ -646,13 +615,31 @@ def make_rpm(distro, build_os, arch, spec, srcdir):
     suffix=spec.suffix()
     sdir=setupdir(distro, build_os, arch, spec)
 
-    # Use special suse init script if we're building for SUSE
+    specfile = srcdir + "rpm/mongodb%s.spec" % suffix
+    init_spec = specfile.replace(".spec", "-init.spec")
+
+    # The Debian directory is here for the manpages so we we need to remove the service file
+    # from it so that RPM packages don't end up with the Debian file.
+    os.unlink(sdir + "debian/mongod.service")
+
+    # Swap out systemd files, different systemd spec files, and init scripts as needed based on
+    # underlying os version. Arranged so that new distros moving forward automatically use
+    # systemd. Note: the SUSE init packages use a different init script than then other RPM
+    # distros.
     #
-    if distro.name() == "suse":
+    if distro.name() == "suse" and distro.repo_os_version(build_os) in ("10", "11"):
         os.unlink(sdir+"rpm/init.d-mongod")
         os.link(sdir+"rpm/init.d-mongod.suse", sdir+"rpm/init.d-mongod")
 
-    specfile=srcdir+"rpm/mongodb%s.spec" % suffix
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+    elif distro.name() == "redhat" and distro.repo_os_version(build_os) in ("5", "6"):
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+    elif distro.name() == "amazon":
+        os.unlink(specfile)
+        os.link(init_spec, specfile)
+
     topdir=ensure_dir('%s/rpmbuild/%s/' % (os.getcwd(), build_os))
     for subdir in ["BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"]:
         ensure_dir("%s/%s/" % (topdir, subdir))

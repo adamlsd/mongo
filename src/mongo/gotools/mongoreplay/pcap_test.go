@@ -128,7 +128,7 @@ func TestMultiChannelGetMoreLiveDB(t *testing.T) {
 
 func pcapTestHelper(t *testing.T, pcapFname string, preprocess bool, verifier verifyFunc) {
 
-	pcapFile := "testPcap/" + pcapFname
+	pcapFile := "mongoreplay/testPcap/" + pcapFname
 	if _, err := os.Stat(pcapFile); err != nil {
 		t.Skipf("pcap file %v not present, skipping test", pcapFile)
 	}
@@ -165,7 +165,7 @@ func pcapTestHelper(t *testing.T, pcapFname string, preprocess bool, verifier ve
 		t.Errorf("error opening playback file to write: %v\n", err)
 	}
 
-	statCollector, _ := newStatCollector(testCollectorOpts, true, true)
+	statCollector, _ := newStatCollector(testCollectorOpts, "format", true, true)
 	statRec := statCollector.StatRecorder.(*BufferedStatRecorder)
 	context := NewExecutionContext(statCollector)
 

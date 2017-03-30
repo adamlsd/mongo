@@ -30,6 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/s/client/shard_registry.h"
@@ -92,6 +93,13 @@ Status Shard::CommandResponse::processBatchWriteResponse(
 
 const Milliseconds Shard::kDefaultConfigCommandTimeout = Seconds{30};
 
+bool Shard::shouldErrorBePropagated(ErrorCodes::Error code) {
+    return std::find(RemoteCommandRetryScheduler::kAllRetriableErrors.begin(),
+                     RemoteCommandRetryScheduler::kAllRetriableErrors.end(),
+                     code) == RemoteCommandRetryScheduler::kAllRetriableErrors.end() &&
+        code != ErrorCodes::ExceededTimeLimit;
+}
+
 Shard::Shard(const ShardId& id) : _id(id) {}
 
 const ShardId Shard::getId() const {
@@ -102,27 +110,27 @@ bool Shard::isConfig() const {
     return _id == "config";
 }
 
-StatusWith<Shard::CommandResponse> Shard::runCommand(OperationContext* txn,
+StatusWith<Shard::CommandResponse> Shard::runCommand(OperationContext* opCtx,
                                                      const ReadPreferenceSetting& readPref,
                                                      const std::string& dbName,
                                                      const BSONObj& cmdObj,
                                                      RetryPolicy retryPolicy) {
-    return runCommand(txn, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
+    return runCommand(opCtx, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
 }
 
-StatusWith<Shard::CommandResponse> Shard::runCommand(OperationContext* txn,
+StatusWith<Shard::CommandResponse> Shard::runCommand(OperationContext* opCtx,
                                                      const ReadPreferenceSetting& readPref,
                                                      const std::string& dbName,
                                                      const BSONObj& cmdObj,
                                                      Milliseconds maxTimeMSOverride,
                                                      RetryPolicy retryPolicy) {
     while (true) {
-        auto interruptStatus = txn->checkForInterruptNoAssert();
+        auto interruptStatus = opCtx->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
             return interruptStatus;
         }
 
-        auto hostWithResponse = _runCommand(txn, readPref, dbName, maxTimeMSOverride, cmdObj);
+        auto hostWithResponse = _runCommand(opCtx, readPref, dbName, maxTimeMSOverride, cmdObj);
         auto swCmdResponse = std::move(hostWithResponse.commandResponse);
         auto commandStatus = _getEffectiveCommandStatus(swCmdResponse);
 
@@ -139,29 +147,29 @@ StatusWith<Shard::CommandResponse> Shard::runCommand(OperationContext* txn,
 }
 
 StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
-    OperationContext* txn,
+    OperationContext* opCtx,
     const ReadPreferenceSetting& readPref,
     const std::string& dbName,
     const BSONObj& cmdObj,
     RetryPolicy retryPolicy) {
     return runCommandWithFixedRetryAttempts(
-        txn, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
+        opCtx, readPref, dbName, cmdObj, Milliseconds::max(), retryPolicy);
 }
 
 StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
-    OperationContext* txn,
+    OperationContext* opCtx,
     const ReadPreferenceSetting& readPref,
     const std::string& dbName,
     const BSONObj& cmdObj,
     Milliseconds maxTimeMSOverride,
     RetryPolicy retryPolicy) {
     for (int retry = 1; retry <= kOnErrorNumRetries; ++retry) {
-        auto interruptStatus = txn->checkForInterruptNoAssert();
+        auto interruptStatus = opCtx->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
             return interruptStatus;
         }
 
-        auto hostWithResponse = _runCommand(txn, readPref, dbName, maxTimeMSOverride, cmdObj);
+        auto hostWithResponse = _runCommand(opCtx, readPref, dbName, maxTimeMSOverride, cmdObj);
         auto swCmdResponse = std::move(hostWithResponse.commandResponse);
         auto commandStatus = _getEffectiveCommandStatus(swCmdResponse);
 
@@ -178,7 +186,7 @@ StatusWith<Shard::CommandResponse> Shard::runCommandWithFixedRetryAttempts(
 }
 
 BatchedCommandResponse Shard::runBatchWriteCommandOnConfig(
-    OperationContext* txn, const BatchedCommandRequest& batchRequest, RetryPolicy retryPolicy) {
+    OperationContext* opCtx, const BatchedCommandRequest& batchRequest, RetryPolicy retryPolicy) {
     invariant(isConfig());
 
     const std::string dbname = batchRequest.getNS().db().toString();
@@ -187,7 +195,7 @@ BatchedCommandResponse Shard::runBatchWriteCommandOnConfig(
     const BSONObj cmdObj = batchRequest.toBSON();
 
     for (int retry = 1; retry <= kOnErrorNumRetries; ++retry) {
-        auto response = _runCommand(txn,
+        auto response = _runCommand(opCtx,
                                     ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                     dbname,
                                     kDefaultConfigCommandTimeout,
@@ -213,7 +221,7 @@ BatchedCommandResponse Shard::runBatchWriteCommandOnConfig(
 }
 
 StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
-    OperationContext* txn,
+    OperationContext* opCtx,
     const ReadPreferenceSetting& readPref,
     const repl::ReadConcernLevel& readConcernLevel,
     const NamespaceString& nss,
@@ -225,7 +233,7 @@ StatusWith<Shard::QueryResponse> Shard::exhaustiveFindOnConfig(
 
     for (int retry = 1; retry <= kOnErrorNumRetries; retry++) {
         auto result =
-            _exhaustiveFindOnConfig(txn, readPref, readConcernLevel, nss, query, sort, limit);
+            _exhaustiveFindOnConfig(opCtx, readPref, readConcernLevel, nss, query, sort, limit);
 
         if (retry < kOnErrorNumRetries &&
             isRetriableError(result.getStatus().code(), RetryPolicy::kIdempotent)) {

@@ -33,6 +33,7 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/cursor_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
 #include "mongo/platform/atomic_word.h"
@@ -124,7 +125,7 @@ public:
     ExceptionInfo exceptionInfo;
 
     // response info
-    int executionTime{0};
+    long long executionTimeMicros{0};
     long long nreturned{-1};
     int responseLength{-1};
 };
@@ -191,7 +192,7 @@ public:
         return _originatingCommand;
     }
 
-    void enter_inlock(const char* ns, int dbProfileLevel);
+    void enter_inlock(const char* ns, boost::optional<int> dbProfileLevel);
 
     /**
      * Sets the type of the current network operation.
@@ -231,11 +232,19 @@ public:
         return _ns;
     }
 
-    bool shouldDBProfile(int ms) const {
+    /**
+     * Returns true iff the elapsed time of this operation is such that it should be profiled.
+     * Uses total time if the operation is done, current elapsed time otherwise.
+     */
+    bool shouldDBProfile() {
         if (_dbprofile <= 0)
             return false;
 
-        return _dbprofile >= 2 || ms >= serverGlobalParams.slowMS;
+        if (_dbprofile >= 2)
+            return true;
+
+        long long opMicros = isDone() ? totalTimeMicros() : elapsedMicros();
+        return opMicros >= serverGlobalParams.slowMS * 1000LL;
     }
 
     /**
@@ -285,22 +294,21 @@ public:
     void done() {
         _end = curTimeMicros64();
     }
+    bool isDone() const {
+        return _end > 0;
+    }
 
     long long totalTimeMicros() {
         massert(12601, "CurOp not marked done yet", _end);
         return _end - startTime();
     }
-    int totalTimeMillis() {
-        return (int)(totalTimeMicros() / 1000);
-    }
+
     long long elapsedMicros() {
         return curTimeMicros64() - startTime();
     }
-    int elapsedMillis() {
-        return (int)(elapsedMicros() / 1000);
-    }
+
     int elapsedSeconds() {
-        return elapsedMillis() / 1000;
+        return static_cast<int>(elapsedMicros() / (1000 * 1000));
     }
 
     /**
@@ -320,7 +328,7 @@ public:
     }
 
     /**
-     * Sets the original command object. Used only by the getMore command.
+     * Sets the original command object.
      */
     void setOriginatingCommand_inlock(const BSONObj& commandObj) {
         _originatingCommand = commandObj.getOwned();
@@ -450,4 +458,18 @@ private:
 
     std::string _planSummary;
 };
+
+/**
+ * Upconverts a legacy query object such that it matches the format of the find command.
+ */
+BSONObj upconvertQueryEntry(const BSONObj& query,
+                            const NamespaceString& nss,
+                            int ntoreturn,
+                            int ntoskip);
+
+/**
+ * Generates a getMore command object from the specified namespace, cursor ID and batchsize.
+ */
+BSONObj upconvertGetMoreEntry(const NamespaceString& nss, CursorId cursorId, int ntoreturn);
+
 }  // namespace mongo

@@ -7,6 +7,8 @@
 (function() {
     "use strict";
 
+    load('jstests/libs/write_concern_util.js');
+
     var st = new ShardingTest({shards: 1});
 
     var replTest = new ReplSetTest({nodes: 3});
@@ -17,6 +19,16 @@
     var secondaries = replTest.getSecondaries();
     var configConnStr = st.configRS.getURL();
 
+    // Wait for the secondaries to have the latest oplog entries before stopping the fetcher to
+    // avoid the situation where one of the secondaries will not have an overlapping oplog with
+    // the other nodes once the primary is killed.
+    replTest.awaitSecondaryNodes();
+    replTest.awaitReplication();
+
+    stopServerReplication(secondaries);
+
+    jsTest.log("inserting shardIdentity document to primary that shouldn't replicate");
+
     var shardIdentityDoc = {
         _id: 'shardIdentity',
         configsvrConnectionString: configConnStr,
@@ -24,12 +36,6 @@
         clusterId: ObjectId()
     };
 
-    nodes.forEach(function(node) {
-        assert.commandWorked(node.getDB('admin').runCommand(
-            {configureFailPoint: 'stopOplogFetcher', mode: 'alwaysOn'}));
-    });
-
-    jsTest.log("inserting shardIdentity document to primary that shouldn't replicate");
     assert.writeOK(priConn.getDB('admin').system.version.update(
         {_id: 'shardIdentity'}, shardIdentityDoc, {upsert: true}));
 
@@ -59,10 +65,7 @@
 
     // Disable the fail point so that the elected node can exit drain mode and finish becoming
     // primary.
-    secondaries.forEach(function(secondary) {
-        assert.commandWorked(secondary.getDB('admin').runCommand(
-            {configureFailPoint: 'stopOplogFetcher', mode: 'off'}));
-    });
+    restartServerReplication(secondaries);
 
     // Wait for a new healthy primary
     var newPriConn = replTest.getPrimary();

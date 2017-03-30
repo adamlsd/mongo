@@ -27,6 +27,8 @@
  */
 #include "test_util.h"
 
+void (*custom_die)(void) = NULL;
+
 /*
  * die --
  *	Report an error and quit.
@@ -76,7 +78,7 @@ testutil_work_dir_from_path(char *buffer, size_t len, const char *dir)
  *	Remove the work directory.
  */
 void
-testutil_clean_work_dir(char *dir)
+testutil_clean_work_dir(const char *dir)
 {
 	size_t len;
 	int ret;
@@ -142,8 +144,6 @@ testutil_cleanup(TEST_OPTS *opts)
 	if (!opts->preserve)
 		testutil_clean_work_dir(opts->home);
 
-	free(opts->conn_config);
-	free(opts->table_config);
 	free(opts->uri);
 	free(opts->home);
 }

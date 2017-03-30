@@ -62,13 +62,13 @@ HaystackAccessMethod::HaystackAccessMethod(IndexCatalogEntry* btreeState,
     uassert(16774, "no non-geo fields specified", _otherFields.size());
 }
 
-void HaystackAccessMethod::getKeys(const BSONObj& obj,
-                                   BSONObjSet* keys,
-                                   MultikeyPaths* multikeyPaths) const {
+void HaystackAccessMethod::doGetKeys(const BSONObj& obj,
+                                     BSONObjSet* keys,
+                                     MultikeyPaths* multikeyPaths) const {
     ExpressionKeysPrivate::getHaystackKeys(obj, _geoField, _otherFields, _bucketSize, keys);
 }
 
-void HaystackAccessMethod::searchCommand(OperationContext* txn,
+void HaystackAccessMethod::searchCommand(OperationContext* opCtx,
                                          Collection* collection,
                                          const BSONObj& nearObj,
                                          double maxDistance,
@@ -87,7 +87,7 @@ void HaystackAccessMethod::searchCommand(OperationContext* txn,
     }
     int scale = static_cast<int>(ceil(maxDistance / _bucketSize));
 
-    GeoHaystackSearchHopper hopper(txn, nearObj, maxDistance, limit, _geoField, collection);
+    GeoHaystackSearchHopper hopper(opCtx, nearObj, maxDistance, limit, _geoField, collection);
 
     long long btreeMatches = 0;
 
@@ -111,7 +111,7 @@ void HaystackAccessMethod::searchCommand(OperationContext* txn,
 
 
             unique_ptr<PlanExecutor> exec(
-                InternalPlanner::indexScan(txn,
+                InternalPlanner::indexScan(opCtx,
                                            collection,
                                            _descriptor,
                                            key,

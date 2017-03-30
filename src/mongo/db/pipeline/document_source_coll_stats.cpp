@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_coll_stats.h"
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
@@ -126,7 +126,7 @@ bool DocumentSourceCollStats::isValidInitialSource() const {
     return true;
 }
 
-Value DocumentSourceCollStats::serialize(bool explain) const {
+Value DocumentSourceCollStats::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(Document{{getSourceName(), _collStatsSpec}});
 }
 

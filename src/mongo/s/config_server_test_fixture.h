@@ -45,9 +45,9 @@ class StatusWith;
 
 /**
  * Provides config-specific functionality in addition to the mock storage engine and mock network
- * provided by MongodTestFixture.
+ * provided by ShardingMongodTestFixture.
  */
-class ConfigServerTestFixture : public MongodTestFixture {
+class ConfigServerTestFixture : public ShardingMongodTestFixture {
 public:
     ConfigServerTestFixture();
     ~ConfigServerTestFixture();
@@ -57,14 +57,14 @@ public:
     /**
      * Insert a document to this config server to the specified namespace.
      */
-    Status insertToConfigCollection(OperationContext* txn,
+    Status insertToConfigCollection(OperationContext* opCtx,
                                     const NamespaceString& ns,
                                     const BSONObj& doc);
 
     /**
      * Reads a single document from a collection living on the config server.
      */
-    StatusWith<BSONObj> findOneOnConfigCollection(OperationContext* txn,
+    StatusWith<BSONObj> findOneOnConfigCollection(OperationContext* opCtx,
                                                   const NamespaceString& ns,
                                                   const BSONObj& filter);
 
@@ -77,7 +77,7 @@ public:
      * Retrieves the shard document from the config server.
      * Returns {ErrorCodes::ShardNotFound} if the given shard does not exists.
      */
-    StatusWith<ShardType> getShardDoc(OperationContext* txn, const std::string& shardId);
+    StatusWith<ShardType> getShardDoc(OperationContext* opCtx, const std::string& shardId);
 
     /**
      * Setup the config.chunks collection to contain the given chunks.
@@ -87,12 +87,12 @@ public:
     /**
      * Retrieves the chunk document from the config server.
      */
-    StatusWith<ChunkType> getChunkDoc(OperationContext* txn, const BSONObj& minKey);
+    StatusWith<ChunkType> getChunkDoc(OperationContext* opCtx, const BSONObj& minKey);
 
     /**
      * Returns the indexes definitions defined on a given collection.
      */
-    StatusWith<std::vector<BSONObj>> getIndexes(OperationContext* txn, const NamespaceString& ns);
+    StatusWith<std::vector<BSONObj>> getIndexes(OperationContext* opCtx, const NamespaceString& ns);
 
     /**
      * Returns the stored raw pointer to the addShard TaskExecutor's NetworkInterface.
@@ -105,7 +105,7 @@ public:
     executor::TaskExecutor* executorForAddShard() const;
 
     /**
-     * Same as MongodTestFixture::onCommand but run against _addShardNetworkTestEnv.
+     * Same as ShardingMongodTestFixture::onCommand but run against _addShardNetworkTestEnv.
      */
     void onCommandForAddShard(executor::NetworkTestEnv::OnCommandFunction func);
 

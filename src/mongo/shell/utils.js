@@ -37,6 +37,12 @@ function _getErrorWithCode(codeOrObj, message) {
     return e;
 }
 
+// Checks if a javascript exception is a network error.
+function isNetworkError(error) {
+    return error.message.indexOf("error doing query") >= 0 ||
+        error.message.indexOf("socket exception") >= 0;
+}
+
 // Please consider using bsonWoCompare instead of this as much as possible.
 friendlyEqual = function(a, b) {
     if (a == b)
@@ -210,7 +216,7 @@ jsTestOptions = function() {
             adminUser: TestData.adminUser || "admin",
             adminPassword: TestData.adminPassword || "password",
             useLegacyConfigServers: TestData.useLegacyConfigServers || false,
-            useLegacyReplicationProtocol: TestData.useLegacyReplicationProtocol || false,
+            forceReplicationProtocolVersion: TestData.forceReplicationProtocolVersion,
             enableMajorityReadConcern: TestData.enableMajorityReadConcern,
             writeConcernMajorityShouldJournal: TestData.writeConcernMajorityShouldJournal,
             enableEncryption: TestData.enableEncryption,
@@ -278,7 +284,15 @@ jsTest.authenticateNodes = function(nodes) {
     assert.soonNoExcept(function() {
         for (var i = 0; i < nodes.length; i++) {
             // Don't try to authenticate to arbiters
-            res = nodes[i].getDB("admin").runCommand({replSetGetStatus: 1});
+            try {
+                res = nodes[i].getDB("admin").runCommand({replSetGetStatus: 1});
+            } catch (e) {
+                // ReplicaSet tests which don't use auth are allowed to have nodes crash during
+                // startup. To allow tests which use to behavior to work with auth,
+                // attempting authentication against a dead node should be non-fatal.
+                print("Caught exception getting replSetStatus while authenticating: " + e);
+                continue;
+            }
             if (res.myState == 7) {
                 continue;
             }
@@ -981,6 +995,26 @@ var Random = (function() {
 
 })();
 
+/**
+ * Compares Timestamp objects. Returns -1 if ts1 is 'earlier' than ts2, 1 if 'later'
+ * and 0 if equal.
+ */
+function timestampCmp(ts1, ts2) {
+    if (ts1.getTime() == ts2.getTime()) {
+        if (ts1.getInc() < ts2.getInc()) {
+            return -1;
+        } else if (ts1.getInc() > ts2.getInc()) {
+            return 1;
+        } else {
+            return 0;
+        }
+    } else if (ts1.getTime() < ts2.getTime()) {
+        return -1;
+    } else {
+        return 1;
+    }
+}
+
 Geo = {};
 Geo.distance = function(a, b) {
     var ax = null;
@@ -1160,7 +1194,7 @@ rs._runCmd = function(c) {
     try {
         res = db.adminCommand(c);
     } catch (e) {
-        if (("" + e).indexOf("error doing query") >= 0) {
+        if (isNetworkError(e)) {
             // closed connection.  reconnect.
             db.getLastErrorObj();
             var o = db.getLastErrorObj();
@@ -1294,6 +1328,52 @@ rs.debug.getLastOpWritten = function(server) {
     s.getMongo().setSlaveOk();
 
     return s.oplog.rs.find().sort({$natural: -1}).limit(1).next();
+};
+
+/**
+ * Compares OpTimes. Returns -1 if ot1 is 'earlier' than ot2, 1 if 'later' and 0 if equal.
+ *
+ * Note: Since Protocol Version 1 was introduced for replication, 'OpTimes'
+ * can come in two different formats. This function will throw an error when the OpTime
+ * passed do not have the same protocol version.
+ *
+ * OpTime Formats:
+ * PV0: Timestamp
+ * PV1: {ts:Timestamp, t:NumberLong}
+ */
+rs.compareOpTimes = function(ot1, ot2) {
+    function _isOpTimeV1(opTime) {
+        return (opTime.hasOwnProperty("ts") && opTime.hasOwnProperty("t"));
+    }
+    function _isEmptyOpTime(opTime) {
+        return (opTime.ts.getTime() == 0 && opTime.ts.getInc() == 0 && opTime.t == -1);
+    }
+
+    // Make sure both OpTimes have a timestamp and a term.
+    var ot1 = _isOpTimeV1(ot1) ? ot1 : {ts: ot1, t: NumberLong(-1)};
+    var ot2 = _isOpTimeV1(ot2) ? ot2 : {ts: ot2, t: NumberLong(-1)};
+
+    if (_isEmptyOpTime(ot1) || _isEmptyOpTime(ot2)) {
+        throw Error("cannot do comparison with empty OpTime, received: " + tojson(ot1) + " and " +
+                    tojson(ot2));
+    }
+
+    if ((ot1.t == -1 && ot2.t != -1) || (ot1.t != -1 && ot2.t == -1)) {
+        throw Error("cannot compare OpTimes between different protocol versions, received: " +
+                    tojson(ot1) + " and " + tojson(ot2));
+    }
+
+    if (!friendlyEqual(ot1.t, ot2.t)) {
+        if (ot1.t < ot2.t) {
+            return -1;
+        } else {
+            return 1;
+        }
+    }
+    // else equal terms, so proceed to compare timestamp component.
+
+    // Otherwise, choose the OpTime with the lower timestamp.
+    return timestampCmp(ot1.ts, ot2.ts);
 };
 
 help = shellHelper.help = function(x) {

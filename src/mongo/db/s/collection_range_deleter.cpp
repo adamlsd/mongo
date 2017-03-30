@@ -73,32 +73,34 @@ const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
 CollectionRangeDeleter::CollectionRangeDeleter(NamespaceString nss) : _nss(std::move(nss)) {}
 
 void CollectionRangeDeleter::run() {
-    Client::initThread(getThreadName().c_str());
+    Client::initThread(getThreadName());
     ON_BLOCK_EXIT([&] { Client::destroy(); });
-    auto txn = cc().makeOperationContext().get();
-    bool hasNextRangeToClean = cleanupNextRange(txn);
+    auto opCtx = cc().makeOperationContext().get();
+
+    const int maxToDelete = std::max(int(internalQueryExecYieldIterations.load()), 1);
+    bool hasNextRangeToClean = cleanupNextRange(opCtx, maxToDelete);
 
     // If there are more ranges to run, we add <this> back onto the task executor to run again.
     if (hasNextRangeToClean) {
-        auto executor = ShardingState::get(txn)->getRangeDeleterTaskExecutor();
+        auto executor = ShardingState::get(opCtx)->getRangeDeleterTaskExecutor();
         executor->scheduleWork([this](const CallbackArgs& cbArgs) { run(); });
     } else {
         delete this;
     }
 }
 
-bool CollectionRangeDeleter::cleanupNextRange(OperationContext* txn) {
-    int numDocumentsDeleted;
+bool CollectionRangeDeleter::cleanupNextRange(OperationContext* opCtx, int maxToDelete) {
 
     {
-        AutoGetCollection autoColl(txn, _nss, MODE_IX);
-        Collection* collection = autoColl.getCollection();
+        AutoGetCollection autoColl(opCtx, _nss, MODE_IX);
+        auto* collection = autoColl.getCollection();
         if (!collection) {
             return false;
         }
+        auto* collectionShardingState = CollectionShardingState::get(opCtx, _nss);
+        dassert(collectionShardingState != nullptr);  // every collection gets one
 
-        CollectionShardingState* shardingState = CollectionShardingState::get(txn, _nss);
-        MetadataManager& metadataManager = shardingState->_metadataManager;
+        auto& metadataManager = collectionShardingState->_metadataManager;
 
         if (!_rangeInProgress && !metadataManager.hasRangesToClean()) {
             // Nothing left to do
@@ -107,26 +109,27 @@ bool CollectionRangeDeleter::cleanupNextRange(OperationContext* txn) {
 
         if (!_rangeInProgress || !metadataManager.isInRangesToClean(_rangeInProgress.get())) {
             // No valid chunk in progress, get a new one
+            if (!metadataManager.hasRangesToClean()) {
+                return false;
+            }
             _rangeInProgress = metadataManager.getNextRangeToClean();
         }
 
-        auto metadata = shardingState->getMetadata();
-        if (!metadata) {
-            return false;
-        }
-
-        numDocumentsDeleted = _doDeletion(txn, collection, metadata->getKeyPattern());
+        auto scopedCollectionMetadata = collectionShardingState->getMetadata();
+        int numDocumentsDeleted =
+            _doDeletion(opCtx, collection, scopedCollectionMetadata->getKeyPattern(), maxToDelete);
         if (numDocumentsDeleted <= 0) {
             metadataManager.removeRangeToClean(_rangeInProgress.get());
             _rangeInProgress = boost::none;
-            return true;
+            return metadataManager.hasRangesToClean();
         }
     }
 
     // wait for replication
     WriteConcernResult wcResult;
-    auto currentClientOpTime = repl::ReplClientInfo::forClient(txn->getClient()).getLastOp();
-    Status status = waitForWriteConcern(txn, currentClientOpTime, kMajorityWriteConcern, &wcResult);
+    auto currentClientOpTime = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+    Status status =
+        waitForWriteConcern(opCtx, currentClientOpTime, kMajorityWriteConcern, &wcResult);
     if (!status.isOK()) {
         warning() << "Error when waiting for write concern after removing chunks in " << _nss
                   << " : " << status.reason();
@@ -135,16 +138,17 @@ bool CollectionRangeDeleter::cleanupNextRange(OperationContext* txn) {
     return true;
 }
 
-int CollectionRangeDeleter::_doDeletion(OperationContext* txn,
+int CollectionRangeDeleter::_doDeletion(OperationContext* opCtx,
                                         Collection* collection,
-                                        const BSONObj& keyPattern) {
+                                        const BSONObj& keyPattern,
+                                        int maxToDelete) {
     invariant(_rangeInProgress);
     invariant(collection);
 
     // The IndexChunk has a keyPattern that may apply to more than one index - we need to
     // select the index and get the full index keyPattern here.
     const IndexDescriptor* idx =
-        collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn, keyPattern, false);
+        collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx, keyPattern, false);
     if (idx == NULL) {
         warning() << "Unable to find shard key index for " << keyPattern.toString() << " in "
                   << _nss;
@@ -162,36 +166,31 @@ int CollectionRangeDeleter::_doDeletion(OperationContext* txn,
     LOG(1) << "begin removal of " << min << " to " << max << " in " << _nss;
 
     auto indexName = idx->indexName();
-    IndexDescriptor* desc = collection->getIndexCatalog()->findIndexByName(txn, indexName);
+    IndexDescriptor* desc = collection->getIndexCatalog()->findIndexByName(opCtx, indexName);
     if (!desc) {
         warning() << "shard key index with name " << indexName << " on '" << _nss
                   << "' was dropped";
         return -1;
     }
 
-    std::unique_ptr<PlanExecutor> exec(
-        InternalPlanner::indexScan(txn,
-                                   collection,
-                                   desc,
-                                   min,
-                                   max,
-                                   BoundInclusion::kIncludeStartKeyOnly,
-                                   PlanExecutor::YIELD_MANUAL,
-                                   InternalPlanner::FORWARD,
-                                   InternalPlanner::IXSCAN_FETCH));
     int numDeleted = 0;
-    const int maxItersBeforeYield = std::max(static_cast<int>(internalQueryExecYieldIterations), 1);
-
-    while (numDeleted < maxItersBeforeYield) {
+    do {
+        auto exec = InternalPlanner::indexScan(opCtx,
+                                               collection,
+                                               desc,
+                                               min,
+                                               max,
+                                               BoundInclusion::kIncludeStartKeyOnly,
+                                               PlanExecutor::YIELD_MANUAL,
+                                               InternalPlanner::FORWARD,
+                                               InternalPlanner::IXSCAN_FETCH);
         RecordId rloc;
         BSONObj obj;
-        PlanExecutor::ExecState state;
-        state = exec->getNext(&obj, &rloc);
-        if (PlanExecutor::IS_EOF == state) {
+        PlanExecutor::ExecState state = exec->getNext(&obj, &rloc);
+        if (state == PlanExecutor::IS_EOF) {
             break;
         }
-
-        if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
+        if (state == PlanExecutor::FAILURE || state == PlanExecutor::DEAD) {
             warning(LogComponent::kSharding)
                 << PlanExecutor::statestr(state) << " - cursor error while trying to delete " << min
                 << " to " << max << " in " << _nss << ": " << WorkingSetCommon::toStatusString(obj)
@@ -200,22 +199,16 @@ int CollectionRangeDeleter::_doDeletion(OperationContext* txn,
         }
 
         invariant(PlanExecutor::ADVANCED == state);
-
-        WriteUnitOfWork wuow(txn);
-
-        NamespaceString nss(_nss);
-        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss)) {
-            warning() << "stepped down from primary while deleting chunk; "
-                      << "orphaning data in " << _nss << " in range [" << min << ", " << max << ")";
-            return numDeleted;
+        WriteUnitOfWork wuow(opCtx);
+        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, _nss)) {
+            warning() << "stepped down from primary while deleting chunk; orphaning data in "
+                      << _nss << " in range [" << min << ", " << max << ")";
+            break;
         }
-
         OpDebug* const nullOpDebug = nullptr;
-        collection->deleteDocument(txn, rloc, nullOpDebug, true);
+        collection->deleteDocument(opCtx, rloc, nullOpDebug, true);
         wuow.commit();
-        numDeleted++;
-    }
-
+    } while (++numDeleted < maxToDelete);
     return numDeleted;
 }
 

@@ -31,9 +31,14 @@
 #include <sys/wait.h>
 #include <signal.h>
 
-static char home[512];			/* Program working dir */
+static char home[1024];			/* Program working dir */
 static const char *progname;		/* Program name */
+/*
+ * These two names for the URI and file system must be maintained in tandem.
+ */
 static const char * const uri = "table:main";
+static const char * const fs_main = "main.wt";
+static bool inmem;
 
 #define	MAX_TH	12
 #define	MIN_TH	5
@@ -41,7 +46,9 @@ static const char * const uri = "table:main";
 #define	MIN_TIME	10
 #define	RECORDS_FILE	"records-%" PRIu32
 
-#define	ENV_CONFIG						\
+#define	ENV_CONFIG_DEF						\
+    "create,log=(file_max=10M,archive=false,enabled)"
+#define	ENV_CONFIG_TXNSYNC					\
     "create,log=(file_max=10M,archive=false,enabled),"		\
     "transaction_sync=(enabled,method=none)"
 #define	ENV_CONFIG_REC "log=(recover=on)"
@@ -73,17 +80,28 @@ thread_run(void *arg)
 	WT_THREAD_DATA *td;
 	uint64_t i;
 	int ret;
-	char buf[MAX_VAL], kname[64];
+	size_t lsize;
+	char buf[MAX_VAL], kname[64], lgbuf[8];
+	char large[128*1024];
 
 	__wt_random_init(&rnd);
 	memset(buf, 0, sizeof(buf));
 	memset(kname, 0, sizeof(kname));
+	lsize = sizeof(large);
+	memset(large, 0, lsize);
 
 	td = (WT_THREAD_DATA *)arg;
 	/*
 	 * The value is the name of the record file with our id appended.
 	 */
 	snprintf(buf, sizeof(buf), RECORDS_FILE, td->id);
+	/*
+	 * Set up a large value putting our id in it.  Write it in there a
+	 * bunch of times, but the rest of the buffer can just be zero.
+	 */
+	snprintf(lgbuf, sizeof(lgbuf), "th-%" PRIu32, td->id);
+	for (i = 0; i < 128; i += strlen(lgbuf))
+		snprintf(&large[i], lsize - i, "%s", lgbuf);
 	/*
 	 * Keep a separate file with the records we wrote for checking.
 	 */
@@ -107,8 +125,18 @@ thread_run(void *arg)
 	 */
 	for (i = td->start; ; ++i) {
 		snprintf(kname, sizeof(kname), "%" PRIu64, i);
-		data.size = __wt_random(&rnd) % MAX_VAL;
 		cursor->set_key(cursor, kname);
+		/*
+		 * Every 30th record write a very large record that exceeds the
+		 * log buffer size.  This forces us to use the unbuffered path.
+		 */
+		if (i % 30 == 0) {
+			data.size = 128 * 1024;
+			data.data = large;
+		} else {
+			data.size = __wt_random(&rnd) % MAX_VAL;
+			data.data = buf;
+		}
 		cursor->set_value(cursor, &data);
 		if ((ret = cursor->insert(cursor)) != 0)
 			testutil_die(ret, "WT_CURSOR.insert");
@@ -136,12 +164,17 @@ fill_db(uint32_t nth)
 	WT_THREAD_DATA *td;
 	uint32_t i;
 	int ret;
+	const char *envconf;
 
 	thr = dcalloc(nth, sizeof(pthread_t));
 	td = dcalloc(nth, sizeof(WT_THREAD_DATA));
 	if (chdir(home) != 0)
 		testutil_die(errno, "Child chdir: %s", home);
-	if ((ret = wiredtiger_open(NULL, NULL, ENV_CONFIG, &conn)) != 0)
+	if (inmem)
+		envconf = ENV_CONFIG_DEF;
+	else
+		envconf = ENV_CONFIG_TXNSYNC;
+	if ((ret = wiredtiger_open(NULL, NULL, envconf, &conn)) != 0)
 		testutil_die(ret, "wiredtiger_open");
 	if ((ret = conn->open_session(conn, NULL, NULL, &session)) != 0)
 		testutil_die(ret, "WT_CONNECTION:open_session");
@@ -179,39 +212,42 @@ fill_db(uint32_t nth)
 extern int __wt_optind;
 extern char *__wt_optarg;
 
-void (*custom_die)(void) = NULL;
-
 int
 main(int argc, char *argv[])
 {
+	struct stat sb;
 	FILE *fp;
 	WT_CONNECTION *conn;
 	WT_CURSOR *cursor;
 	WT_SESSION *session;
 	WT_RAND_STATE rnd;
-	uint64_t key, last_key;
-	uint32_t absent, count, i, nth, timeout;
+	uint64_t absent, count, key, last_key, middle;
+	uint32_t i, nth, timeout;
 	int ch, status, ret;
 	pid_t pid;
-	bool rand_th, rand_time, verify_only;
+	bool fatal, rand_th, rand_time, verify_only;
 	const char *working_dir;
-	char fname[64], kname[64];
+	char fname[64], kname[64], statname[1024];
 
 	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
 		progname = argv[0];
 	else
 		++progname;
 
+	inmem = false;
 	nth = MIN_TH;
 	rand_th = rand_time = true;
 	timeout = MIN_TIME;
 	verify_only = false;
 	working_dir = "WT_TEST.random-abort";
 
-	while ((ch = __wt_getopt(progname, argc, argv, "h:T:t:v")) != EOF)
+	while ((ch = __wt_getopt(progname, argc, argv, "h:mT:t:v")) != EOF)
 		switch (ch) {
 		case 'h':
 			working_dir = __wt_optarg;
+			break;
+		case 'm':
+			inmem = true;
 			break;
 		case 'T':
 			rand_th = false;
@@ -232,7 +268,7 @@ main(int argc, char *argv[])
 	if (argc != 0)
 		usage();
 
-	testutil_work_dir_from_path(home, 512, working_dir);
+	testutil_work_dir_from_path(home, sizeof(home), working_dir);
 	/*
 	 * If the user wants to verify they need to tell us how many threads
 	 * there were so we can find the old record files.
@@ -245,7 +281,7 @@ main(int argc, char *argv[])
 	if (!verify_only) {
 		testutil_make_work_dir(home);
 
-		testutil_assert(__wt_random_init_seed(NULL, &rnd) == 0);
+		__wt_random_init_seed(NULL, &rnd);
 		if (rand_time) {
 			timeout = __wt_random(&rnd) % MAX_TIME;
 			if (timeout < MIN_TIME)
@@ -274,8 +310,15 @@ main(int argc, char *argv[])
 		/* parent */
 		/*
 		 * Sleep for the configured amount of time before killing
-		 * the child.
+		 * the child.  Start the timeout from the time we notice that
+		 * the table has been created.  That allows the test to run
+		 * correctly on really slow machines.  Verify the process ID
+		 * still exists in case the child aborts for some reason we
+		 * don't stay in this loop forever.
 		 */
+		snprintf(statname, sizeof(statname), "%s/%s", home, fs_main);
+		while (stat(statname, &sb) != 0 && kill(pid, 0) == 0)
+			sleep(1);
 		sleep(timeout);
 
 		/*
@@ -305,18 +348,19 @@ main(int argc, char *argv[])
 		testutil_die(ret, "WT_SESSION.open_cursor: %s", uri);
 
 	absent = count = 0;
+	fatal = false;
 	for (i = 0; i < nth; ++i) {
+		middle = 0;
 		snprintf(fname, sizeof(fname), RECORDS_FILE, i);
-		if ((fp = fopen(fname, "r")) == NULL) {
-			fprintf(stderr,
-			    "Failed to open %s. i %" PRIu32 "\n", fname, i);
-			testutil_die(errno, "fopen");
-		}
+		if ((fp = fopen(fname, "r")) == NULL)
+			testutil_die(errno, "fopen: %s", fname);
 
 		/*
 		 * For every key in the saved file, verify that the key exists
-		 * in the table after recovery.  Since we did write-no-sync, we
-		 * expect every key to have been recovered.
+		 * in the table after recovery.  If we're doing in-memory
+		 * log buffering we never expect a record missing in the middle,
+		 * but records may be missing at the end.  If we did
+		 * write-no-sync, we expect every key to have been recovered.
 		 */
 		for (last_key = UINT64_MAX;; ++count, last_key = key) {
 			ret = fscanf(fp, "%" SCNu64 "\n", &key);
@@ -340,9 +384,20 @@ main(int argc, char *argv[])
 			if ((ret = cursor->search(cursor)) != 0) {
 				if (ret != WT_NOTFOUND)
 					testutil_die(ret, "search");
-				printf("%s: no record with key %" PRIu64 "\n",
-				    fname, key);
-				++absent;
+				if (!inmem)
+					printf("%s: no record with key %"
+					    PRIu64 "\n", fname, key);
+				absent++;
+				middle = key;
+			} else if (middle != 0) {
+				/*
+				 * We should never find an existing key after
+				 * we have detected one missing.
+				 */
+				printf("%s: after absent record at %" PRIu64
+				    " key %" PRIu64 " exists\n",
+				    fname, middle, key);
+				fatal = true;
 			}
 		}
 		if (fclose(fp) != 0)
@@ -350,11 +405,13 @@ main(int argc, char *argv[])
 	}
 	if ((ret = conn->close(conn, NULL)) != 0)
 		testutil_die(ret, "WT_CONNECTION:close");
-	if (absent) {
-		printf("%" PRIu32 " record(s) absent from %" PRIu32 "\n",
+	if (fatal)
+		return (EXIT_FAILURE);
+	if (!inmem && absent) {
+		printf("%" PRIu64 " record(s) absent from %" PRIu64 "\n",
 		    absent, count);
 		return (EXIT_FAILURE);
 	}
-	printf("%" PRIu32 " records verified\n", count);
+	printf("%" PRIu64 " records verified\n", count);
 	return (EXIT_SUCCESS);
 }

@@ -210,6 +210,20 @@ Status OperationContext::checkForInterruptNoAssert() {
     return Status::OK();
 }
 
+void OperationContext::sleepUntil(Date_t deadline) {
+    stdx::mutex m;
+    stdx::condition_variable cv;
+    stdx::unique_lock<stdx::mutex> lk(m);
+    invariant(!waitForConditionOrInterruptUntil(cv, lk, deadline, [] { return false; }));
+}
+
+void OperationContext::sleepFor(Milliseconds duration) {
+    stdx::mutex m;
+    stdx::condition_variable cv;
+    stdx::unique_lock<stdx::mutex> lk(m);
+    invariant(!waitForConditionOrInterruptFor(cv, lk, duration, [] { return false; }));
+}
+
 void OperationContext::waitForConditionOrInterrupt(stdx::condition_variable& cv,
                                                    stdx::unique_lock<stdx::mutex>& m) {
     uassertStatusOK(waitForConditionOrInterruptNoAssert(cv, m));
@@ -229,41 +243,6 @@ stdx::cv_status OperationContext::waitForConditionOrInterruptUntil(
     stdx::condition_variable& cv, stdx::unique_lock<stdx::mutex>& m, Date_t deadline) {
 
     return uassertStatusOK(waitForConditionOrInterruptNoAssertUntil(cv, m, deadline));
-}
-
-static NOINLINE_DECL stdx::cv_status cvWaitUntilWithClockSource(ClockSource* clockSource,
-                                                                stdx::condition_variable& cv,
-                                                                stdx::unique_lock<stdx::mutex>& m,
-                                                                Date_t deadline) {
-    if (deadline <= clockSource->now()) {
-        return stdx::cv_status::timeout;
-    }
-
-    struct AlarmInfo {
-        stdx::mutex controlMutex;
-        stdx::mutex* waitMutex;
-        stdx::condition_variable* waitCV;
-        stdx::cv_status cvWaitResult = stdx::cv_status::no_timeout;
-    };
-    auto alarmInfo = std::make_shared<AlarmInfo>();
-    alarmInfo->waitCV = &cv;
-    alarmInfo->waitMutex = m.mutex();
-    invariantOK(clockSource->setAlarm(deadline, [alarmInfo] {
-        stdx::lock_guard<stdx::mutex> controlLk(alarmInfo->controlMutex);
-        alarmInfo->cvWaitResult = stdx::cv_status::timeout;
-        if (!alarmInfo->waitMutex) {
-            return;
-        }
-        stdx::lock_guard<stdx::mutex> waitLk(*alarmInfo->waitMutex);
-        alarmInfo->waitCV->notify_all();
-    }));
-    cv.wait(m);
-    m.unlock();
-    stdx::lock_guard<stdx::mutex> controlLk(alarmInfo->controlMutex);
-    m.lock();
-    alarmInfo->waitMutex = nullptr;
-    alarmInfo->waitCV = nullptr;
-    return alarmInfo->cvWaitResult;
 }
 
 // Theory of operation for waitForConditionOrInterruptNoAssertUntil and markKilled:
@@ -318,14 +297,7 @@ StatusWith<stdx::cv_status> OperationContext::waitForConditionOrInterruptNoAsser
             cv.wait(m);
             return stdx::cv_status::no_timeout;
         }
-        const auto clockSource = getServiceContext()->getPreciseClockSource();
-        if (clockSource->tracksSystemClock()) {
-            return cv.wait_until(m, deadline.toSystemTimePoint());
-        }
-
-        // The following cases only occur during testing, when the precise clock source is
-        // virtualized and does not track the system clock.
-        return cvWaitUntilWithClockSource(clockSource, cv, m, deadline);
+        return getServiceContext()->getPreciseClockSource()->waitForConditionUntil(cv, m, deadline);
     }();
 
     // Continue waiting on cv until no other thread is attempting to kill this one.
@@ -394,6 +366,10 @@ void OperationContext::setLockState(std::unique_ptr<Locker> locker) {
     dassert(!_locker);
     dassert(locker);
     _locker = std::move(locker);
+}
+
+Date_t OperationContext::getExpirationDateForWaitForValue(Milliseconds waitFor) {
+    return getServiceContext()->getPreciseClockSource()->now() + waitFor;
 }
 
 }  // namespace mongo

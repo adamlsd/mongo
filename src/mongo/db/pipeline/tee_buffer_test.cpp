@@ -31,17 +31,12 @@
 #include "mongo/db/pipeline/tee_buffer.h"
 
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_mock.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
-
-// Crutch.
-bool isMongos() {
-    return false;
-}
-
 namespace {
 
 TEST(TeeBufferTest, ShouldRequireAtLeastOneConsumer) {

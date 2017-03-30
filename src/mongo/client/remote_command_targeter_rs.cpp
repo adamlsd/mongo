@@ -65,12 +65,12 @@ StatusWith<HostAndPort> RemoteCommandTargeterRS::findHostWithMaxWait(
     return _rsMonitor->getHostOrRefresh(readPref, maxWait);
 }
 
-StatusWith<HostAndPort> RemoteCommandTargeterRS::findHost(OperationContext* txn,
+StatusWith<HostAndPort> RemoteCommandTargeterRS::findHost(OperationContext* opCtx,
                                                           const ReadPreferenceSetting& readPref) {
-    auto clock = txn->getServiceContext()->getFastClockSource();
+    auto clock = opCtx->getServiceContext()->getFastClockSource();
     auto startDate = clock->now();
     while (true) {
-        const auto interruptStatus = txn->checkForInterruptNoAssert();
+        const auto interruptStatus = opCtx->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
             return interruptStatus;
         }
@@ -88,16 +88,16 @@ StatusWith<HostAndPort> RemoteCommandTargeterRS::findHost(OperationContext* txn,
     }
 }
 
-void RemoteCommandTargeterRS::markHostNotMaster(const HostAndPort& host) {
+void RemoteCommandTargeterRS::markHostNotMaster(const HostAndPort& host, const Status& status) {
     invariant(_rsMonitor);
 
-    _rsMonitor->failedHost(host);
+    _rsMonitor->failedHost(host, status);
 }
 
-void RemoteCommandTargeterRS::markHostUnreachable(const HostAndPort& host) {
+void RemoteCommandTargeterRS::markHostUnreachable(const HostAndPort& host, const Status& status) {
     invariant(_rsMonitor);
 
-    _rsMonitor->failedHost(host);
+    _rsMonitor->failedHost(host, status);
 }
 
 }  // namespace mongo

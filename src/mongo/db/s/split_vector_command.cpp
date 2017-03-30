@@ -50,7 +50,6 @@
 #include "mongo/db/keypattern.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/s/catalog/type_chunk.h"
-#include "mongo/s/chunk.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
@@ -62,9 +61,9 @@ using std::string;
 using std::stringstream;
 using std::vector;
 
-namespace dps = ::mongo::dotted_path_support;
-
 namespace {
+
+const int kMaxObjectPerChunk{250000};
 
 BSONObj prettyKey(const BSONObj& keyPattern, const BSONObj& key) {
     return key.replaceFieldNames(keyPattern).clientReadable();
@@ -73,13 +72,16 @@ BSONObj prettyKey(const BSONObj& keyPattern, const BSONObj& key) {
 class SplitVector : public Command {
 public:
     SplitVector() : Command("splitVector", false) {}
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
+
+    bool slaveOk() const override {
         return false;
     }
-    virtual void help(stringstream& help) const {
+
+    void help(stringstream& help) const override {
         help << "Internal command.\n"
                 "examples:\n"
                 "  { splitVector : \"blog.post\" , keyPattern:{x:1} , min:{x:10} , max:{x:20}, "
@@ -93,9 +95,10 @@ public:
                 "  'force' will produce one split point even if data is small; defaults to false\n"
                 "NOTE: This command may take a while to run";
     }
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) override {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
                 ActionType::splitVector)) {
@@ -103,15 +106,17 @@ public:
         }
         return Status::OK();
     }
-    virtual std::string parseNs(const string& dbname, const BSONObj& cmdObj) const {
+
+    std::string parseNs(const string& dbname, const BSONObj& cmdObj) const override {
         return parseNsFullyQualified(dbname, cmdObj);
     }
-    bool run(OperationContext* txn,
+
+    bool run(OperationContext* opCtx,
              const string& dbname,
              BSONObj& jsobj,
-             int,
+             int options,
              string& errmsg,
-             BSONObjBuilder& result) {
+             BSONObjBuilder& result) override {
         //
         // 1.a We'll parse the parameters in two steps. First, make sure the we can use the split
         //     index to get a good approximation of the size of the chunk -- without needing to
@@ -141,7 +146,7 @@ public:
             maxSplitPoints = maxSplitPointsElem.numberLong();
         }
 
-        long long maxChunkObjects = Chunk::MaxObjectPerChunk;
+        long long maxChunkObjects = kMaxObjectPerChunk;
         BSONElement MaxChunkObjectsElem = jsobj["maxChunkObjects"];
         if (MaxChunkObjectsElem.isNumber()) {
             maxChunkObjects = MaxChunkObjectsElem.numberLong();
@@ -151,7 +156,7 @@ public:
 
         {
             // Get the size estimate for this namespace
-            AutoGetCollection autoColl(txn, nss, MODE_IS);
+            AutoGetCollection autoColl(opCtx, nss, MODE_IS);
 
             Collection* const collection = autoColl.getCollection();
             if (!collection) {
@@ -163,7 +168,7 @@ public:
             // Therefore, any multi-key index prefixed by shard key cannot be multikey over
             // the shard key fields.
             IndexDescriptor* idx =
-                collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn, keyPattern, false);
+                collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx, keyPattern, false);
             if (idx == NULL) {
                 errmsg = (string) "couldn't find index over splitting key " +
                     keyPattern.clientReadable().toString();
@@ -180,8 +185,8 @@ public:
                 max = Helpers::toKeyFormat(kp.extendRangeBound(max, false));
             }
 
-            const long long recCount = collection->numRecords(txn);
-            const long long dataSize = collection->dataSize(txn);
+            const long long recCount = collection->numRecords(opCtx);
+            const long long dataSize = collection->dataSize(opCtx);
 
             //
             // 1.b Now that we have the size estimate, go over the remaining parameters and apply
@@ -254,7 +259,7 @@ public:
             long long numChunks = 0;
 
             unique_ptr<PlanExecutor> exec(
-                InternalPlanner::indexScan(txn,
+                InternalPlanner::indexScan(opCtx,
                                            collection,
                                            idx,
                                            min,
@@ -274,7 +279,7 @@ public:
             // to be removed at the end. If a key appears more times than entries allowed on a
             // chunk, we issue a warning and split on the following key.
             auto tooFrequentKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
-            splitKeys.push_back(dps::extractElementsBasedOnTemplate(
+            splitKeys.push_back(dotted_path_support::extractElementsBasedOnTemplate(
                 prettyKey(idx->keyPattern(), currKey.getOwned()), keyPattern));
 
             exec->setYieldPolicy(PlanExecutor::YIELD_AUTO, collection);
@@ -283,7 +288,7 @@ public:
                     currCount++;
 
                     if (currCount > keyCount && !forceMedianSplit) {
-                        currKey = dps::extractElementsBasedOnTemplate(
+                        currKey = dotted_path_support::extractElementsBasedOnTemplate(
                             prettyKey(idx->keyPattern(), currKey.getOwned()), keyPattern);
                         // Do not use this split key if it is the same used in the previous split
                         // point.
@@ -330,7 +335,7 @@ public:
                 log() << "splitVector doing another cycle because of force, keyCount now: "
                       << keyCount;
 
-                exec = InternalPlanner::indexScan(txn,
+                exec = InternalPlanner::indexScan(opCtx,
                                                   collection,
                                                   idx,
                                                   min,
@@ -349,9 +354,7 @@ public:
             //
 
             // Warn for keys that are more numerous than maxChunkSize allows.
-            for (set<BSONObj>::const_iterator it = tooFrequentKeys.begin();
-                 it != tooFrequentKeys.end();
-                 ++it) {
+            for (auto it = tooFrequentKeys.cbegin(); it != tooFrequentKeys.cend(); ++it) {
                 warning() << "possible low cardinality key detected in " << nss.toString()
                           << " - key is " << prettyKey(idx->keyPattern(), *it);
             }

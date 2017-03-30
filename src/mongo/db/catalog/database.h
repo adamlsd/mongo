@@ -46,9 +46,7 @@
 namespace mongo {
 
 class Collection;
-class DataFile;
 class DatabaseCatalogEntry;
-class ExtentManager;
 class IndexCatalog;
 class NamespaceDetails;
 class OperationContext;
@@ -108,7 +106,7 @@ public:
         CollectionMap::const_iterator _it;
     };
 
-    Database(OperationContext* txn, StringData name, DatabaseCatalogEntry* dbEntry);
+    Database(OperationContext* opCtx, StringData name, DatabaseCatalogEntry* dbEntry);
 
     // must call close first
     ~Database();
@@ -122,21 +120,21 @@ public:
     }
 
     // closes files and other cleanup see below.
-    void close(OperationContext* txn);
+    void close(OperationContext* opCtx);
 
     const std::string& name() const {
         return _name;
     }
 
-    void clearTmpCollections(OperationContext* txn);
+    void clearTmpCollections(OperationContext* opCtx);
 
     /**
      * Sets a new profiling level for the database and returns the outcome.
      *
-     * @param txn Operation context which to use for creating the profiling collection.
+     * @param opCtx Operation context which to use for creating the profiling collection.
      * @param newLevel New profiling level to use.
      */
-    Status setProfilingLevel(OperationContext* txn, int newLevel);
+    Status setProfilingLevel(OperationContext* opCtx, int newLevel);
 
     int getProfilingLevel() const {
         return _profile;
@@ -149,16 +147,24 @@ public:
 
     const DatabaseCatalogEntry* getDatabaseCatalogEntry() const;
 
-    Status dropCollection(OperationContext* txn, StringData fullns);
+    /**
+     * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
+     * that is required.
+     */
+    Status dropCollection(OperationContext* opCtx, StringData fullns);
+    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns);
 
-    Status dropView(OperationContext* txn, StringData fullns);
+    Status dropView(OperationContext* opCtx, StringData fullns);
 
-    Collection* createCollection(OperationContext* txn,
+    Collection* createCollection(OperationContext* opCtx,
                                  StringData ns,
                                  const CollectionOptions& options = CollectionOptions(),
-                                 bool createDefaultIndexes = true);
+                                 bool createDefaultIndexes = true,
+                                 const BSONObj& idIndex = BSONObj());
 
-    Status createView(OperationContext* txn, StringData viewName, const CollectionOptions& options);
+    Status createView(OperationContext* opCtx,
+                      StringData viewName,
+                      const CollectionOptions& options);
 
     /**
      * @param ns - this is fully qualified, which is maybe not ideal ???
@@ -177,9 +183,9 @@ public:
         return &_views;
     }
 
-    Collection* getOrCreateCollection(OperationContext* txn, StringData ns);
+    Collection* getOrCreateCollection(OperationContext* opCtx, StringData ns);
 
-    Status renameCollection(OperationContext* txn,
+    Status renameCollection(OperationContext* opCtx,
                             StringData fromNS,
                             StringData toNS,
                             bool stayTemp);
@@ -191,16 +197,7 @@ public:
      *
      * Must be called with the specified database locked in X mode.
      */
-    static void dropDatabase(OperationContext* txn, Database* db);
-
-    /**
-     * @return name of an existing database with same text name but different
-     * casing, if one exists.  Otherwise the empty std::string is returned.  If
-     * 'duplicates' is specified, it is filled with all duplicate names.
-     // TODO move???
-     */
-    static std::string duplicateUncasedName(const std::string& name,
-                                            std::set<std::string>* duplicates = 0);
+    static void dropDatabase(OperationContext* opCtx, Database* db);
 
     static Status validateDBName(StringData dbname);
 
@@ -220,7 +217,7 @@ private:
      * Note: This does not add the collection to _collections map, that must be done
      * by the caller, who takes onership of the Collection*
      */
-    Collection* _getOrCreateCollectionInstance(OperationContext* txn, StringData fullns);
+    Collection* _getOrCreateCollectionInstance(OperationContext* opCtx, StringData fullns);
 
     /**
      * Throws if there is a reason 'ns' cannot be created as a user collection.
@@ -231,7 +228,9 @@ private:
      * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
      * 'reason' for why the cache is being cleared.
      */
-    void _clearCollectionCache(OperationContext* txn, StringData fullns, const std::string& reason);
+    void _clearCollectionCache(OperationContext* opCtx,
+                               StringData fullns,
+                               const std::string& reason);
 
     class AddCollectionChange;
     class RemoveCollectionChange;
@@ -256,12 +255,20 @@ private:
     friend class IndexCatalog;
 };
 
-void dropAllDatabasesExceptLocal(OperationContext* txn);
+void dropAllDatabasesExceptLocal(OperationContext* opCtx);
 
-Status userCreateNS(OperationContext* txn,
+/**
+ * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
+ * is true, creates the _id index for the collection (and the system indexes, in the case of system
+ * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
+ * 'idIndex' is empty, creates the default _id index.
+ */
+Status userCreateNS(OperationContext* opCtx,
                     Database* db,
                     StringData ns,
                     BSONObj options,
-                    bool createDefaultIndexes = true);
+                    CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
+                    bool createDefaultIndexes = true,
+                    const BSONObj& idIndex = BSONObj());
 
 }  // namespace mongo

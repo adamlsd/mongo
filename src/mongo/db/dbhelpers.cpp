@@ -44,6 +44,7 @@
 #include "mongo/db/json.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/update.h"
@@ -82,7 +83,7 @@ using std::stringstream;
 
 using logger::LogComponent;
 
-void Helpers::ensureIndex(OperationContext* txn,
+void Helpers::ensureIndex(OperationContext* opCtx,
                           Collection* collection,
                           BSONObj keyPattern,
                           IndexDescriptor::IndexVersion indexVersion,
@@ -96,7 +97,7 @@ void Helpers::ensureIndex(OperationContext* txn,
     b.appendBool("unique", unique);
     BSONObj o = b.done();
 
-    MultiIndexBlock indexer(txn, collection);
+    MultiIndexBlock indexer(opCtx, collection);
 
     Status status = indexer.init(o).getStatus();
     if (status.code() == ErrorCodes::IndexAlreadyExists)
@@ -105,7 +106,7 @@ void Helpers::ensureIndex(OperationContext* txn,
 
     uassertStatusOK(indexer.insertAllDocumentsInCollection());
 
-    WriteUnitOfWork wunit(txn);
+    WriteUnitOfWork wunit(opCtx);
     indexer.commit();
     wunit.commit();
 }
@@ -113,40 +114,40 @@ void Helpers::ensureIndex(OperationContext* txn,
 /* fetch a single object from collection ns that matches query
    set your db SavedContext first
 */
-bool Helpers::findOne(OperationContext* txn,
+bool Helpers::findOne(OperationContext* opCtx,
                       Collection* collection,
                       const BSONObj& query,
                       BSONObj& result,
                       bool requireIndex) {
-    RecordId loc = findOne(txn, collection, query, requireIndex);
+    RecordId loc = findOne(opCtx, collection, query, requireIndex);
     if (loc.isNull())
         return false;
-    result = collection->docFor(txn, loc).value();
+    result = collection->docFor(opCtx, loc).value();
     return true;
 }
 
 /* fetch a single object from collection ns that matches query
    set your db SavedContext first
 */
-RecordId Helpers::findOne(OperationContext* txn,
+RecordId Helpers::findOne(OperationContext* opCtx,
                           Collection* collection,
                           const BSONObj& query,
                           bool requireIndex) {
     if (!collection)
         return RecordId();
 
-    const ExtensionsCallbackReal extensionsCallback(txn, &collection->ns());
+    const ExtensionsCallbackReal extensionsCallback(opCtx, &collection->ns());
 
     auto qr = stdx::make_unique<QueryRequest>(collection->ns());
     qr->setFilter(query);
 
-    auto statusWithCQ = CanonicalQuery::canonicalize(txn, std::move(qr), extensionsCallback);
+    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
     massert(17244, "Could not canonicalize " + query.toString(), statusWithCQ.isOK());
     unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
     size_t options = requireIndex ? QueryPlannerParams::NO_TABLE_SCAN : QueryPlannerParams::DEFAULT;
     auto statusWithPlanExecutor =
-        getExecutor(txn, collection, std::move(cq), PlanExecutor::YIELD_MANUAL, options);
+        getExecutor(opCtx, collection, std::move(cq), PlanExecutor::YIELD_MANUAL, options);
     massert(17245,
             "Could not get executor for query " + query.toString(),
             statusWithPlanExecutor.isOK());
@@ -164,7 +165,7 @@ RecordId Helpers::findOne(OperationContext* txn,
     return RecordId();
 }
 
-bool Helpers::findById(OperationContext* txn,
+bool Helpers::findById(OperationContext* opCtx,
                        Database* database,
                        const char* ns,
                        BSONObj query,
@@ -182,7 +183,7 @@ bool Helpers::findById(OperationContext* txn,
         *nsFound = true;
 
     IndexCatalog* catalog = collection->getIndexCatalog();
-    const IndexDescriptor* desc = catalog->findIdIndex(txn);
+    const IndexDescriptor* desc = catalog->findIdIndex(opCtx);
 
     if (!desc)
         return false;
@@ -190,44 +191,49 @@ bool Helpers::findById(OperationContext* txn,
     if (indexFound)
         *indexFound = 1;
 
-    RecordId loc = catalog->getIndex(desc)->findSingle(txn, query["_id"].wrap());
+    RecordId loc = catalog->getIndex(desc)->findSingle(opCtx, query["_id"].wrap());
     if (loc.isNull())
         return false;
-    result = collection->docFor(txn, loc).value();
+    result = collection->docFor(opCtx, loc).value();
     return true;
 }
 
-RecordId Helpers::findById(OperationContext* txn, Collection* collection, const BSONObj& idquery) {
+RecordId Helpers::findById(OperationContext* opCtx,
+                           Collection* collection,
+                           const BSONObj& idquery) {
     verify(collection);
     IndexCatalog* catalog = collection->getIndexCatalog();
-    const IndexDescriptor* desc = catalog->findIdIndex(txn);
+    const IndexDescriptor* desc = catalog->findIdIndex(opCtx);
     uassert(13430, "no _id index", desc);
-    return catalog->getIndex(desc)->findSingle(txn, idquery["_id"].wrap());
+    return catalog->getIndex(desc)->findSingle(opCtx, idquery["_id"].wrap());
 }
 
-bool Helpers::getSingleton(OperationContext* txn, const char* ns, BSONObj& result) {
-    AutoGetCollectionForRead ctx(txn, ns);
-    unique_ptr<PlanExecutor> exec(
-        InternalPlanner::collectionScan(txn, ns, ctx.getCollection(), PlanExecutor::YIELD_MANUAL));
-    PlanExecutor::ExecState state = exec->getNext(&result, NULL);
-
-    CurOp::get(txn)->done();
-
-    // Non-yielding collection scans from InternalPlanner will never error.
-    invariant(PlanExecutor::ADVANCED == state || PlanExecutor::IS_EOF == state);
-
-    if (PlanExecutor::ADVANCED == state) {
-        result = result.getOwned();
-        return true;
-    }
-
-    return false;
-}
-
-bool Helpers::getLast(OperationContext* txn, const char* ns, BSONObj& result) {
-    AutoGetCollectionForRead autoColl(txn, ns);
+bool Helpers::getSingleton(OperationContext* opCtx, const char* ns, BSONObj& result) {
+    AutoGetCollectionForReadCommand ctx(opCtx, NamespaceString(ns));
     unique_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(
-        txn, ns, autoColl.getCollection(), PlanExecutor::YIELD_MANUAL, InternalPlanner::BACKWARD));
+        opCtx, ns, ctx.getCollection(), PlanExecutor::YIELD_MANUAL));
+    PlanExecutor::ExecState state = exec->getNext(&result, NULL);
+
+    CurOp::get(opCtx)->done();
+
+    // Non-yielding collection scans from InternalPlanner will never error.
+    invariant(PlanExecutor::ADVANCED == state || PlanExecutor::IS_EOF == state);
+
+    if (PlanExecutor::ADVANCED == state) {
+        result = result.getOwned();
+        return true;
+    }
+
+    return false;
+}
+
+bool Helpers::getLast(OperationContext* opCtx, const char* ns, BSONObj& result) {
+    AutoGetCollectionForReadCommand autoColl(opCtx, NamespaceString(ns));
+    unique_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(opCtx,
+                                                                  ns,
+                                                                  autoColl.getCollection(),
+                                                                  PlanExecutor::YIELD_MANUAL,
+                                                                  InternalPlanner::BACKWARD));
     PlanExecutor::ExecState state = exec->getNext(&result, NULL);
 
     // Non-yielding collection scans from InternalPlanner will never error.
@@ -241,12 +247,15 @@ bool Helpers::getLast(OperationContext* txn, const char* ns, BSONObj& result) {
     return false;
 }
 
-void Helpers::upsert(OperationContext* txn, const string& ns, const BSONObj& o, bool fromMigrate) {
+void Helpers::upsert(OperationContext* opCtx,
+                     const string& ns,
+                     const BSONObj& o,
+                     bool fromMigrate) {
     BSONElement e = o["_id"];
     verify(e.type());
     BSONObj id = e.wrap();
 
-    OldClientContext context(txn, ns);
+    OldClientContext context(opCtx, ns);
 
     const NamespaceString requestNs(ns);
     UpdateRequest request(requestNs);
@@ -258,11 +267,11 @@ void Helpers::upsert(OperationContext* txn, const string& ns, const BSONObj& o, 
     UpdateLifecycleImpl updateLifecycle(requestNs);
     request.setLifecycle(&updateLifecycle);
 
-    update(txn, context.db(), request);
+    update(opCtx, context.db(), request);
 }
 
-void Helpers::putSingleton(OperationContext* txn, const char* ns, BSONObj obj) {
-    OldClientContext context(txn, ns);
+void Helpers::putSingleton(OperationContext* opCtx, const char* ns, BSONObj obj) {
+    OldClientContext context(opCtx, ns);
 
     const NamespaceString requestNs(ns);
     UpdateRequest request(requestNs);
@@ -272,9 +281,9 @@ void Helpers::putSingleton(OperationContext* txn, const char* ns, BSONObj obj) {
     UpdateLifecycleImpl updateLifecycle(requestNs);
     request.setLifecycle(&updateLifecycle);
 
-    update(txn, context.db(), request);
+    update(opCtx, context.db(), request);
 
-    CurOp::get(txn)->done();
+    CurOp::get(opCtx)->done();
 }
 
 BSONObj Helpers::toKeyFormat(const BSONObj& o) {
@@ -293,7 +302,7 @@ BSONObj Helpers::inferKeyPattern(const BSONObj& o) {
     return kpBuilder.obj();
 }
 
-long long Helpers::removeRange(OperationContext* txn,
+long long Helpers::removeRange(OperationContext* opCtx,
                                const KeyRange& range,
                                BoundInclusion boundInclusion,
                                const WriteConcernOptions& writeConcern,
@@ -301,7 +310,7 @@ long long Helpers::removeRange(OperationContext* txn,
                                bool fromMigrate,
                                bool onlyRemoveOrphanedDocs) {
     Timer rangeRemoveTimer;
-    const string& ns = range.ns;
+    const NamespaceString nss(range.ns);
 
     // The IndexChunk has a keyPattern that may apply to more than one index - we need to
     // select the index and get the full index keyPattern here.
@@ -310,12 +319,12 @@ long long Helpers::removeRange(OperationContext* txn,
     BSONObj max;
 
     {
-        AutoGetCollectionForRead ctx(txn, ns);
+        AutoGetCollectionForReadCommand ctx(opCtx, nss);
         Collection* collection = ctx.getCollection();
         if (!collection) {
             warning(LogComponent::kSharding)
                 << "collection deleted before cleaning data over range of type " << range.keyPattern
-                << " in " << ns << endl;
+                << " in " << nss.ns() << endl;
             return -1;
         }
 
@@ -323,12 +332,12 @@ long long Helpers::removeRange(OperationContext* txn,
         // Therefore, any multi-key index prefixed by shard key cannot be multikey over
         // the shard key fields.
         const IndexDescriptor* idx =
-            collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn,
+            collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx,
                                                                      range.keyPattern,
                                                                      false);  // requireSingleKey
         if (!idx) {
             warning(LogComponent::kSharding) << "no index found to clean data over range of type "
-                                             << range.keyPattern << " in " << ns << endl;
+                                             << range.keyPattern << " in " << nss.ns() << endl;
             return -1;
         }
 
@@ -348,7 +357,7 @@ long long Helpers::removeRange(OperationContext* txn,
 
 
     MONGO_LOG_COMPONENT(1, LogComponent::kSharding)
-        << "begin removal of " << min << " to " << max << " in " << ns
+        << "begin removal of " << min << " to " << max << " in " << nss.ns()
         << " with write concern: " << writeConcern.toBSON() << endl;
 
     long long numDeleted = 0;
@@ -358,15 +367,22 @@ long long Helpers::removeRange(OperationContext* txn,
     while (1) {
         // Scoping for write lock.
         {
-            OldClientWriteContext ctx(txn, ns);
+            AutoGetCollection ctx(opCtx, nss, MODE_IX, MODE_IX);
             Collection* collection = ctx.getCollection();
             if (!collection)
                 break;
 
-            IndexDescriptor* desc = collection->getIndexCatalog()->findIndexByName(txn, indexName);
+            IndexDescriptor* desc =
+                collection->getIndexCatalog()->findIndexByName(opCtx, indexName);
+
+            if (!desc) {
+                warning(LogComponent::kSharding) << "shard key index '" << indexName << "' on '"
+                                                 << nss.ns() << "' was dropped";
+                return -1;
+            }
 
             unique_ptr<PlanExecutor> exec(
-                InternalPlanner::indexScan(txn,
+                InternalPlanner::indexScan(opCtx,
                                            collection,
                                            desc,
                                            min,
@@ -389,7 +405,7 @@ long long Helpers::removeRange(OperationContext* txn,
             if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
                 warning(LogComponent::kSharding)
                     << PlanExecutor::statestr(state) << " - cursor error while trying to delete "
-                    << min << " to " << max << " in " << ns << ": "
+                    << min << " to " << max << " in " << nss.ns() << ": "
                     << WorkingSetCommon::toStatusString(obj)
                     << ", stats: " << Explain::getWinningPlanStats(exec.get()) << endl;
                 break;
@@ -397,7 +413,7 @@ long long Helpers::removeRange(OperationContext* txn,
 
             verify(PlanExecutor::ADVANCED == state);
 
-            WriteUnitOfWork wuow(txn);
+            WriteUnitOfWork wuow(opCtx);
 
             if (onlyRemoveOrphanedDocs) {
                 // Do a final check in the write lock to make absolutely sure that our
@@ -406,12 +422,12 @@ long long Helpers::removeRange(OperationContext* txn,
 
                 // We should never be able to turn off the sharding state once enabled, but
                 // in the future we might want to.
-                verify(ShardingState::get(txn)->enabled());
+                verify(ShardingState::get(opCtx)->enabled());
 
                 bool docIsOrphan;
 
                 // In write lock, so will be the most up-to-date version
-                auto metadataNow = CollectionShardingState::get(txn, ns)->getMetadata();
+                auto metadataNow = CollectionShardingState::get(opCtx, nss.ns())->getMetadata();
                 if (metadataNow) {
                     ShardKeyPattern kp(metadataNow->getKeyPattern());
                     BSONObj key = kp.extractShardKeyFromDoc(obj);
@@ -425,16 +441,15 @@ long long Helpers::removeRange(OperationContext* txn,
                     warning(LogComponent::kSharding)
                         << "aborting migration cleanup for chunk " << min << " to " << max
                         << (metadataNow ? (string) " at document " + obj.toString() : "")
-                        << ", collection " << ns << " has changed " << endl;
+                        << ", collection " << nss.ns() << " has changed " << endl;
                     break;
                 }
             }
 
-            NamespaceString nss(ns);
-            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(nss)) {
+            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, nss)) {
                 warning() << "stepped down from primary while deleting chunk; "
-                          << "orphaning data in " << ns << " in range [" << redact(min) << ", "
-                          << redact(max) << ")";
+                          << "orphaning data in " << nss.ns() << " in range [" << redact(min)
+                          << ", " << redact(max) << ")";
                 return numDeleted;
             }
 
@@ -442,7 +457,7 @@ long long Helpers::removeRange(OperationContext* txn,
                 callback->goingToDelete(obj);
 
             OpDebug* const nullOpDebug = nullptr;
-            collection->deleteDocument(txn, rloc, nullOpDebug, fromMigrate);
+            collection->deleteDocument(opCtx, rloc, nullOpDebug, fromMigrate);
             wuow.commit();
             numDeleted++;
         }
@@ -453,8 +468,8 @@ long long Helpers::removeRange(OperationContext* txn,
         if (writeConcern.shouldWaitForOtherNodes() && numDeleted > 0) {
             repl::ReplicationCoordinator::StatusAndDuration replStatus =
                 repl::getGlobalReplicationCoordinator()->awaitReplication(
-                    txn,
-                    repl::ReplClientInfo::forClient(txn->getClient()).getLastOp(),
+                    opCtx,
+                    repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
                     writeConcern);
             if (replStatus.status.code() == ErrorCodes::ExceededTimeLimit) {
                 warning(LogComponent::kSharding) << "replication to secondaries for removeRange at "
@@ -472,19 +487,17 @@ long long Helpers::removeRange(OperationContext* txn,
             << durationCount<Milliseconds>(millisWaitingForReplication) << "ms" << endl;
 
     MONGO_LOG_COMPONENT(1, LogComponent::kSharding) << "end removal of " << min << " to " << max
-                                                    << " in " << ns << " (took "
+                                                    << " in " << nss.ns() << " (took "
                                                     << rangeRemoveTimer.millis() << "ms)" << endl;
 
     return numDeleted;
 }
 
-void Helpers::emptyCollection(OperationContext* txn, const char* ns) {
-    OldClientContext context(txn, ns);
-    bool shouldReplicateWrites = txn->writesAreReplicated();
-    txn->setReplicatedWrites(false);
-    ON_BLOCK_EXIT(&OperationContext::setReplicatedWrites, txn, shouldReplicateWrites);
+void Helpers::emptyCollection(OperationContext* opCtx, const char* ns) {
+    OldClientContext context(opCtx, ns);
+    repl::UnreplicatedWritesBlock uwb(opCtx);
     Collection* collection = context.db() ? context.db()->getCollection(ns) : nullptr;
-    deleteObjects(txn, collection, ns, BSONObj(), PlanExecutor::YIELD_MANUAL, false);
+    deleteObjects(opCtx, collection, ns, BSONObj(), PlanExecutor::YIELD_MANUAL, false);
 }
 
 Helpers::RemoveSaver::RemoveSaver(const string& a, const string& b, const string& why) {
@@ -558,6 +571,9 @@ Helpers::RemoveSaver::~RemoveSaver() {
 
 Status Helpers::RemoveSaver::goingToDelete(const BSONObj& o) {
     if (!_out) {
+        // We don't expect to ever pass "" to create_directories below, but catch
+        // this anyway as per SERVER-26412.
+        invariant(!_root.empty());
         boost::filesystem::create_directories(_root);
         _out.reset(new ofstream(_file.string().c_str(), ios_base::out | ios_base::binary));
         if (_out->fail()) {

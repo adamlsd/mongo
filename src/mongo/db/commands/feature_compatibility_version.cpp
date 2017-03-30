@@ -34,6 +34,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
@@ -41,6 +42,7 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
@@ -50,13 +52,14 @@
 
 namespace mongo {
 
+using repl::UnreplicatedWritesBlock;
+
 constexpr StringData FeatureCompatibilityVersion::k32IncompatibleIndexName;
 constexpr StringData FeatureCompatibilityVersion::kCollection;
 constexpr StringData FeatureCompatibilityVersion::kCommandName;
+constexpr StringData FeatureCompatibilityVersion::kDatabase;
 constexpr StringData FeatureCompatibilityVersion::kParameterName;
 constexpr StringData FeatureCompatibilityVersion::kVersionField;
-constexpr StringData FeatureCompatibilityVersion::kVersion34;
-constexpr StringData FeatureCompatibilityVersion::kVersion32;
 
 namespace {
 const BSONObj k32IncompatibleIndexSpec =
@@ -101,9 +104,9 @@ StringData getFeatureCompatibilityVersionString(
     ServerGlobalParams::FeatureCompatibility::Version version) {
     switch (version) {
         case ServerGlobalParams::FeatureCompatibility::Version::k34:
-            return FeatureCompatibilityVersion::kVersion34;
+            return FeatureCompatibilityVersionCommandParser::kVersion34;
         case ServerGlobalParams::FeatureCompatibility::Version::k32:
-            return FeatureCompatibilityVersion::kVersion32;
+            return FeatureCompatibilityVersionCommandParser::kVersion32;
         default:
             MONGO_UNREACHABLE;
     }
@@ -136,9 +139,9 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
                         << featureCompatibilityVersionDoc
                         << ". See http://dochub.mongodb.org/core/3.4-feature-compatibility.");
             }
-            if (elem.String() == FeatureCompatibilityVersion::kVersion34) {
+            if (elem.String() == FeatureCompatibilityVersionCommandParser::kVersion34) {
                 version = ServerGlobalParams::FeatureCompatibility::Version::k34;
-            } else if (elem.String() == FeatureCompatibilityVersion::kVersion32) {
+            } else if (elem.String() == FeatureCompatibilityVersionCommandParser::kVersion32) {
                 version = ServerGlobalParams::FeatureCompatibility::Version::k32;
             } else {
                 return Status(
@@ -149,9 +152,9 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
                         << ", found "
                         << elem.String()
                         << ", expected '"
-                        << FeatureCompatibilityVersion::kVersion34
+                        << FeatureCompatibilityVersionCommandParser::kVersion34
                         << "' or '"
-                        << FeatureCompatibilityVersion::kVersion32
+                        << FeatureCompatibilityVersionCommandParser::kVersion32
                         << "'. Contents of "
                         << FeatureCompatibilityVersion::kParameterName
                         << " document in "
@@ -190,17 +193,17 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
     return version;
 }
 
-void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version) {
+void FeatureCompatibilityVersion::set(OperationContext* opCtx, StringData version) {
     uassert(40284,
             "featureCompatibilityVersion must be '3.4' or '3.2'. See "
             "http://dochub.mongodb.org/core/3.4-feature-compatibility.",
-            version == FeatureCompatibilityVersion::kVersion34 ||
-                version == FeatureCompatibilityVersion::kVersion32);
+            version == FeatureCompatibilityVersionCommandParser::kVersion34 ||
+                version == FeatureCompatibilityVersionCommandParser::kVersion32);
 
-    DBDirectClient client(txn);
+    DBDirectClient client(opCtx);
     NamespaceString nss(FeatureCompatibilityVersion::kCollection);
 
-    if (version == FeatureCompatibilityVersion::kVersion34) {
+    if (version == FeatureCompatibilityVersionCommandParser::kVersion34) {
         // We build a v=2 index on the "admin.system.version" collection as part of setting the
         // featureCompatibilityVersion to 3.4. This is a new index version that isn't supported by
         // versions of MongoDB earlier than 3.4 that will cause 3.2 secondaries to crash when it is
@@ -208,20 +211,34 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
         std::vector<BSONObj> indexSpecs{k32IncompatibleIndexSpec};
 
         {
-            ScopedTransaction transaction(txn, MODE_IX);
-            AutoGetOrCreateDb autoDB(txn, nss.db(), MODE_X);
+            AutoGetOrCreateDb autoDB(opCtx, nss.db(), MODE_X);
 
-            IndexBuilder builder(k32IncompatibleIndexSpec);
-            auto status = builder.buildInForeground(txn, autoDB.getDb());
+            uassert(ErrorCodes::NotMaster,
+                    str::stream() << "Cannot set featureCompatibilityVersion to '" << version
+                                  << "'. Not primary while attempting to create index on: "
+                                  << nss.ns(),
+                    repl::ReplicationCoordinator::get(opCtx->getServiceContext())
+                        ->canAcceptWritesFor(opCtx, nss));
+
+            // If the "admin.system.version" collection has not been created yet, explicitly create
+            // it to hold the v=2 index.
+            if (!autoDB.getDb()->getCollection(nss)) {
+                uassertStatusOK(
+                    repl::StorageInterface::get(opCtx)->createCollection(opCtx, nss, {}));
+            }
+
+            IndexBuilder builder(k32IncompatibleIndexSpec, false);
+            auto status = builder.buildInForeground(opCtx, autoDB.getDb());
             uassertStatusOK(status);
 
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                WriteUnitOfWork wuow(txn);
+                WriteUnitOfWork wuow(opCtx);
                 getGlobalServiceContext()->getOpObserver()->onCreateIndex(
-                    txn, autoDB.getDb()->getSystemIndexesName(), k32IncompatibleIndexSpec);
+                    opCtx, autoDB.getDb()->getSystemIndexesName(), k32IncompatibleIndexSpec, false);
                 wuow.commit();
             }
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "FeatureCompatibilityVersion::set", nss.ns());
+            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
+                opCtx, "FeatureCompatibilityVersion::set", nss.ns());
         }
 
         // We then update the featureCompatibilityVersion document stored in the
@@ -238,7 +255,7 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
         // We then update the value of the featureCompatibilityVersion server parameter.
         serverGlobalParams.featureCompatibility.version.store(
             ServerGlobalParams::FeatureCompatibility::Version::k34);
-    } else if (version == FeatureCompatibilityVersion::kVersion32) {
+    } else if (version == FeatureCompatibilityVersionCommandParser::kVersion32) {
         // We update the featureCompatibilityVersion document stored in the "admin.system.version"
         // collection. We do this before dropping the v=2 index in order to maintain the invariant
         // that if the featureCompatibilityVersion is 3.4, then 'k32IncompatibleIndexSpec' index
@@ -269,7 +286,7 @@ void FeatureCompatibilityVersion::set(OperationContext* txn, StringData version)
     }
 }
 
-void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
+void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
                                                     repl::StorageInterface* storageInterface) {
     if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
         std::vector<std::string> dbNames;
@@ -282,7 +299,7 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
             }
         }
 
-        txn->setReplicatedWrites(false);
+        UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx);
         NamespaceString nss(FeatureCompatibilityVersion::kCollection);
 
         // We build a v=2 index on the "admin.system.version" collection as part of setting the
@@ -292,11 +309,16 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
         std::vector<BSONObj> indexSpecs{k32IncompatibleIndexSpec};
 
         {
-            ScopedTransaction transaction(txn, MODE_IX);
-            AutoGetOrCreateDb autoDB(txn, nss.db(), MODE_X);
+            AutoGetOrCreateDb autoDB(opCtx, nss.db(), MODE_X);
 
-            IndexBuilder builder(k32IncompatibleIndexSpec);
-            auto status = builder.buildInForeground(txn, autoDB.getDb());
+            // We reached this point because the only database that exists on the server is "local"
+            // and we have just created an empty "admin" database.
+            // Therefore, it is safe to create the "admin.system.version" collection.
+            invariant(autoDB.justCreated());
+            uassertStatusOK(storageInterface->createCollection(opCtx, nss, {}));
+
+            IndexBuilder builder(k32IncompatibleIndexSpec, false);
+            auto status = builder.buildInForeground(opCtx, autoDB.getDb());
             uassertStatusOK(status);
         }
 
@@ -307,11 +329,11 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* txn,
         // document when starting up, then on a subsequent start-up we'd no longer consider the data
         // files "clean" and would instead be in featureCompatibilityVersion=3.2.
         uassertStatusOK(storageInterface->insertDocument(
-            txn,
+            opCtx,
             nss,
             BSON("_id" << FeatureCompatibilityVersion::kParameterName
                        << FeatureCompatibilityVersion::kVersionField
-                       << FeatureCompatibilityVersion::kVersion34)));
+                       << FeatureCompatibilityVersionCommandParser::kVersion34)));
 
         // We then update the value of the featureCompatibilityVersion server parameter.
         serverGlobalParams.featureCompatibility.version.store(
@@ -337,7 +359,15 @@ void FeatureCompatibilityVersion::onDelete(const BSONObj& doc) {
         idElement.String() != FeatureCompatibilityVersion::kParameterName) {
         return;
     }
-    log() << "setting featureCompatibilityVersion to " << FeatureCompatibilityVersion::kVersion32;
+    log() << "setting featureCompatibilityVersion to "
+          << FeatureCompatibilityVersionCommandParser::kVersion32;
+    serverGlobalParams.featureCompatibility.version.store(
+        ServerGlobalParams::FeatureCompatibility::Version::k32);
+}
+
+void FeatureCompatibilityVersion::onDropCollection() {
+    log() << "setting featureCompatibilityVersion to "
+          << FeatureCompatibilityVersionCommandParser::kVersion32;
     serverGlobalParams.featureCompatibility.version.store(
         ServerGlobalParams::FeatureCompatibility::Version::k32);
 }
@@ -354,7 +384,7 @@ public:
                           false   // allowedToChangeAtRuntime
                           ) {}
 
-    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+    virtual void append(OperationContext* opCtx, BSONObjBuilder& b, const std::string& name) {
         b.append(name,
                  getFeatureCompatibilityVersionString(
                      serverGlobalParams.featureCompatibility.version.load()));
@@ -374,5 +404,7 @@ public:
                                        "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
     }
 } featureCompatibilityVersionParameter;
+
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(internalValidateFeaturesAsMaster, bool, true);
 
 }  // namespace mongo

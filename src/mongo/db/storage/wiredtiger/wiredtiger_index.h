@@ -72,47 +72,45 @@ public:
      * Creates a WiredTiger table suitable for implementing a MongoDB index.
      * 'config' should be created with generateCreateString().
      */
-    static int Create(OperationContext* txn, const std::string& uri, const std::string& config);
+    static int Create(OperationContext* opCtx, const std::string& uri, const std::string& config);
 
-    /**
-     * @param unique - If this is a unique index.
-     *                 Note: even if unique, it may be allowed ot be non-unique at times.
-     */
     WiredTigerIndex(OperationContext* ctx, const std::string& uri, const IndexDescriptor* desc);
 
-    virtual Status insert(OperationContext* txn,
+    virtual Status insert(OperationContext* opCtx,
                           const BSONObj& key,
                           const RecordId& id,
                           bool dupsAllowed);
 
-    virtual void unindex(OperationContext* txn,
+    virtual void unindex(OperationContext* opCtx,
                          const BSONObj& key,
                          const RecordId& id,
                          bool dupsAllowed);
 
-    virtual void fullValidate(OperationContext* txn,
+    virtual void fullValidate(OperationContext* opCtx,
                               long long* numKeysOut,
                               ValidateResults* fullResults) const;
-    virtual bool appendCustomStats(OperationContext* txn,
+    virtual bool appendCustomStats(OperationContext* opCtx,
                                    BSONObjBuilder* output,
                                    double scale) const;
-    virtual Status dupKeyCheck(OperationContext* txn, const BSONObj& key, const RecordId& id);
+    virtual Status dupKeyCheck(OperationContext* opCtx, const BSONObj& key, const RecordId& id);
 
-    virtual bool isEmpty(OperationContext* txn);
+    virtual bool isEmpty(OperationContext* opCtx);
 
-    virtual Status touch(OperationContext* txn) const;
+    virtual Status touch(OperationContext* opCtx) const;
 
-    virtual long long getSpaceUsedBytes(OperationContext* txn) const;
+    virtual long long getSpaceUsedBytes(OperationContext* opCtx) const;
 
-    bool isDup(WT_CURSOR* c, const BSONObj& key, const RecordId& id);
+    virtual Status initAsEmpty(OperationContext* opCtx);
 
-    virtual Status initAsEmpty(OperationContext* txn);
-
-    virtual Status compact(OperationContext* txn);
+    virtual Status compact(OperationContext* opCtx);
 
     const std::string& uri() const {
         return _uri;
     }
+
+    // WiredTigerIndex additions
+
+    bool isDup(WT_CURSOR* c, const BSONObj& key, const RecordId& id);
 
     uint64_t tableId() const {
         return _tableId;
@@ -123,6 +121,10 @@ public:
 
     KeyString::Version keyStringVersion() const {
         return _keyStringVersion;
+    }
+
+    std::string indexName() const {
+        return _indexName;
     }
 
     virtual bool unique() const = 0;
@@ -160,10 +162,10 @@ public:
                           const std::string& uri,
                           const IndexDescriptor* desc);
 
-    std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* txn,
+    std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                            bool forward) const override;
 
-    SortedDataBuilderInterface* getBulkBuilder(OperationContext* txn, bool dupsAllowed) override;
+    SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx, bool dupsAllowed) override;
 
     bool unique() const override {
         return true;
@@ -180,10 +182,10 @@ public:
                             const std::string& uri,
                             const IndexDescriptor* desc);
 
-    std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* txn,
+    std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                            bool forward) const override;
 
-    SortedDataBuilderInterface* getBulkBuilder(OperationContext* txn, bool dupsAllowed) override;
+    SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx, bool dupsAllowed) override;
 
     bool unique() const override {
         return false;

@@ -1102,14 +1102,14 @@ TEST(QueryRequestTest, ConvertToAggregationSucceeds) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, agg.getValue());
     ASSERT_OK(ar.getStatus());
-    ASSERT(!ar.getValue().isExplain());
+    ASSERT(!ar.getValue().getExplain());
     ASSERT(ar.getValue().getPipeline().empty());
-    ASSERT(ar.getValue().isCursorCommand());
+    ASSERT_EQ(ar.getValue().getBatchSize(), AggregationRequest::kDefaultBatchSize);
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSONObj());
 }
 
-TEST(QueryRequestTest, ConvertToAggregationWithExplainSucceeds) {
+TEST(QueryRequestTest, ConvertToAggregationOmitsExplain) {
     QueryRequest qr(testns);
     qr.setExplain(true);
     auto agg = qr.asAggregationCommand();
@@ -1117,11 +1117,21 @@ TEST(QueryRequestTest, ConvertToAggregationWithExplainSucceeds) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, agg.getValue());
     ASSERT_OK(ar.getStatus());
-    ASSERT(ar.getValue().isExplain());
+    ASSERT_FALSE(ar.getValue().getExplain());
     ASSERT(ar.getValue().getPipeline().empty());
-    ASSERT(ar.getValue().isCursorCommand());
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSONObj());
+}
+
+TEST(QueryRequestTest, ConvertToAggregationWithHintSucceeds) {
+    QueryRequest qr(testns);
+    qr.setHint(fromjson("{a_1: -1}"));
+    const auto aggCmd = qr.asAggregationCommand();
+    ASSERT_OK(aggCmd);
+
+    auto ar = AggregationRequest::parseFromBSON(testns, aggCmd.getValue());
+    ASSERT_OK(ar.getStatus());
+    ASSERT_BSONOBJ_EQ(qr.getHint(), ar.getValue().getHint());
 }
 
 TEST(QueryRequestTest, ConvertToAggregationWithMinFails) {
@@ -1168,16 +1178,15 @@ TEST(QueryRequestTest, ConvertToAggregationWithReturnKeyFails) {
     ASSERT_NOT_OK(qr.asAggregationCommand());
 }
 
-TEST(QueryRequestTest, ConvertToAggregationWithHintFails) {
-    QueryRequest qr(testns);
-    qr.setHint(fromjson("{a_1: -1}"));
-    ASSERT_NOT_OK(qr.asAggregationCommand());
-}
-
-TEST(QueryRequestTest, ConvertToAggregationWithCommentFails) {
+TEST(QueryRequestTest, ConvertToAggregationWithCommentSucceeds) {
     QueryRequest qr(testns);
     qr.setComment("test");
-    ASSERT_NOT_OK(qr.asAggregationCommand());
+    const auto aggCmd = qr.asAggregationCommand();
+    ASSERT_OK(aggCmd);
+
+    auto ar = AggregationRequest::parseFromBSON(testns, aggCmd.getValue());
+    ASSERT_OK(ar.getStatus());
+    ASSERT_EQ(qr.getComment(), ar.getValue().getComment());
 }
 
 TEST(QueryRequestTest, ConvertToAggregationWithShowRecordIdFails) {
@@ -1241,8 +1250,8 @@ TEST(QueryRequestTest, ConvertToAggregationWithPipeline) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, agg.getValue());
     ASSERT_OK(ar.getStatus());
-    ASSERT(!ar.getValue().isExplain());
-    ASSERT(ar.getValue().isCursorCommand());
+    ASSERT(!ar.getValue().getExplain());
+    ASSERT_EQ(ar.getValue().getBatchSize(), AggregationRequest::kDefaultBatchSize);
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSONObj());
 
@@ -1266,8 +1275,7 @@ TEST(QueryRequestTest, ConvertToAggregationWithBatchSize) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, agg.getValue());
     ASSERT_OK(ar.getStatus());
-    ASSERT(ar.getValue().isCursorCommand());
-    ASSERT(!ar.getValue().isExplain());
+    ASSERT(!ar.getValue().getExplain());
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_EQ(ar.getValue().getBatchSize(), 4LL);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSONObj());
@@ -1285,8 +1293,8 @@ TEST(QueryRequestTest, ConvertToAggregationWithMaxTimeMS) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, cmdObj);
     ASSERT_OK(ar.getStatus());
-    ASSERT(!ar.getValue().isExplain());
-    ASSERT(ar.getValue().isCursorCommand());
+    ASSERT(!ar.getValue().getExplain());
+    ASSERT_EQ(ar.getValue().getBatchSize(), AggregationRequest::kDefaultBatchSize);
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSONObj());
 }
@@ -1299,11 +1307,34 @@ TEST(QueryRequestTest, ConvertToAggregationWithCollationSucceeds) {
 
     auto ar = AggregationRequest::parseFromBSON(testns, agg.getValue());
     ASSERT_OK(ar.getStatus());
-    ASSERT(!ar.getValue().isExplain());
+    ASSERT(!ar.getValue().getExplain());
     ASSERT(ar.getValue().getPipeline().empty());
-    ASSERT(ar.getValue().isCursorCommand());
+    ASSERT_EQ(ar.getValue().getBatchSize(), AggregationRequest::kDefaultBatchSize);
     ASSERT_EQ(ar.getValue().getNamespaceString(), testns);
     ASSERT_BSONOBJ_EQ(ar.getValue().getCollation(), BSON("f" << 1));
+}
+
+TEST(QueryRequestTest, ParseFromLegacyObjMetaOpComment) {
+    BSONObj queryObj = fromjson(
+        "{$query: {a: 1},"
+        "$comment: {b: 2, c: {d: 'ParseFromLegacyObjMetaOpComment'}}}");
+    const NamespaceString nss("test.testns");
+    unique_ptr<QueryRequest> qr(
+        assertGet(QueryRequest::fromLegacyQueryForTest(nss, queryObj, BSONObj(), 0, 0, 0)));
+
+    // Ensure that legacy comment meta-operator is parsed to a string comment
+    ASSERT_EQ(qr->getComment(), "{ b: 2, c: { d: \"ParseFromLegacyObjMetaOpComment\" } }");
+}
+
+TEST(QueryRequestTest, ParseFromLegacyStringMetaOpComment) {
+    BSONObj queryObj = fromjson(
+        "{$query: {a: 1},"
+        "$comment: 'ParseFromLegacyStringMetaOpComment'}");
+    const NamespaceString nss("test.testns");
+    unique_ptr<QueryRequest> qr(
+        assertGet(QueryRequest::fromLegacyQueryForTest(nss, queryObj, BSONObj(), 0, 0, 0)));
+
+    ASSERT_EQ(qr->getComment(), "ParseFromLegacyStringMetaOpComment");
 }
 
 }  // namespace mongo

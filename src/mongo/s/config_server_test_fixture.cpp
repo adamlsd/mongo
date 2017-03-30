@@ -46,14 +46,13 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_settings.h"
-#include "mongo/db/service_context_noop.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
-#include "mongo/s/balancer/balancer_configuration.h"
-#include "mongo/s/catalog/catalog_cache.h"
+#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
@@ -62,6 +61,7 @@
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_local.h"
 #include "mongo/s/client/shard_registry.h"
@@ -69,7 +69,6 @@
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/set_shard_version_request.h"
-#include "mongo/s/sharding_egress_metadata_hook_for_mongod.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
@@ -82,7 +81,6 @@ using executor::NetworkInterfaceMock;
 using executor::NetworkTestEnv;
 using executor::RemoteCommandRequest;
 using executor::RemoteCommandResponse;
-using rpc::ShardingEgressMetadataHookForMongod;
 using unittest::assertGet;
 
 using std::string;
@@ -98,7 +96,10 @@ ConfigServerTestFixture::ConfigServerTestFixture() = default;
 ConfigServerTestFixture::~ConfigServerTestFixture() = default;
 
 void ConfigServerTestFixture::setUp() {
-    MongodTestFixture::setUp();
+    ShardingMongodTestFixture::setUp();
+    // TODO: SERVER-26919 set the flag on the mock repl coordinator just for the window where it
+    // actually needs to bypass the op observer.
+    replicationCoordinator()->alwaysAllowWrites(true);
 
     // Initialize sharding components as a config server.
     serverGlobalParams.clusterRole = ClusterRole::ConfigServer;
@@ -140,7 +141,7 @@ std::unique_ptr<ShardingCatalogManager> ConfigServerTestFixture::makeShardingCat
     _addShardNetworkTestEnv =
         stdx::make_unique<NetworkTestEnv>(specialExec.get(), _mockNetworkForAddShard);
 
-    return stdx::make_unique<ShardingCatalogManagerImpl>(catalogClient, std::move(specialExec));
+    return stdx::make_unique<ShardingCatalogManagerImpl>(std::move(specialExec));
 }
 
 std::unique_ptr<CatalogCache> ConfigServerTestFixture::makeCatalogCache() {
@@ -173,7 +174,7 @@ std::shared_ptr<Shard> ConfigServerTestFixture::getConfigShard() const {
     return shardRegistry()->getConfigShard();
 }
 
-Status ConfigServerTestFixture::insertToConfigCollection(OperationContext* txn,
+Status ConfigServerTestFixture::insertToConfigCollection(OperationContext* opCtx,
                                                          const NamespaceString& ns,
                                                          const BSONObj& doc) {
     auto insert(stdx::make_unique<BatchedInsertRequest>());
@@ -185,7 +186,7 @@ Status ConfigServerTestFixture::insertToConfigCollection(OperationContext* txn,
     auto config = getConfigShard();
     invariant(config);
 
-    auto insertResponse = config->runCommand(txn,
+    auto insertResponse = config->runCommand(opCtx,
                                              kReadPref,
                                              ns.db().toString(),
                                              request.toBSON(),
@@ -197,14 +198,14 @@ Status ConfigServerTestFixture::insertToConfigCollection(OperationContext* txn,
     return status;
 }
 
-StatusWith<BSONObj> ConfigServerTestFixture::findOneOnConfigCollection(OperationContext* txn,
+StatusWith<BSONObj> ConfigServerTestFixture::findOneOnConfigCollection(OperationContext* opCtx,
                                                                        const NamespaceString& ns,
                                                                        const BSONObj& filter) {
     auto config = getConfigShard();
     invariant(config);
 
     auto findStatus = config->exhaustiveFindOnConfig(
-        txn, kReadPref, repl::ReadConcernLevel::kMajorityReadConcern, ns, filter, BSONObj(), 1);
+        opCtx, kReadPref, repl::ReadConcernLevel::kMajorityReadConcern, ns, filter, BSONObj(), 1);
     if (!findStatus.isOK()) {
         return findStatus.getStatus();
     }
@@ -230,10 +231,10 @@ Status ConfigServerTestFixture::setupShards(const std::vector<ShardType>& shards
     return Status::OK();
 }
 
-StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* txn,
+StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* opCtx,
                                                            const std::string& shardId) {
     auto doc = findOneOnConfigCollection(
-        txn, NamespaceString(ShardType::ConfigNS), BSON(ShardType::name(shardId)));
+        opCtx, NamespaceString(ShardType::ConfigNS), BSON(ShardType::name(shardId)));
     if (!doc.isOK()) {
         if (doc.getStatus() == ErrorCodes::NoMatchingDocument) {
             return {ErrorCodes::ShardNotFound,
@@ -248,7 +249,8 @@ StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* txn
 Status ConfigServerTestFixture::setupChunks(const std::vector<ChunkType>& chunks) {
     const NamespaceString chunkNS(ChunkType::ConfigNS);
     for (const auto& chunk : chunks) {
-        auto insertStatus = insertToConfigCollection(operationContext(), chunkNS, chunk.toBSON());
+        auto insertStatus =
+            insertToConfigCollection(operationContext(), chunkNS, chunk.toConfigBSON());
         if (!insertStatus.isOK())
             return insertStatus;
     }
@@ -256,21 +258,21 @@ Status ConfigServerTestFixture::setupChunks(const std::vector<ChunkType>& chunks
     return Status::OK();
 }
 
-StatusWith<ChunkType> ConfigServerTestFixture::getChunkDoc(OperationContext* txn,
+StatusWith<ChunkType> ConfigServerTestFixture::getChunkDoc(OperationContext* opCtx,
                                                            const BSONObj& minKey) {
     auto doc = findOneOnConfigCollection(
-        txn, NamespaceString(ChunkType::ConfigNS), BSON(ChunkType::min() << minKey));
+        opCtx, NamespaceString(ChunkType::ConfigNS), BSON(ChunkType::min() << minKey));
     if (!doc.isOK())
         return doc.getStatus();
 
-    return ChunkType::fromBSON(doc.getValue());
+    return ChunkType::fromConfigBSON(doc.getValue());
 }
 
-StatusWith<std::vector<BSONObj>> ConfigServerTestFixture::getIndexes(OperationContext* txn,
+StatusWith<std::vector<BSONObj>> ConfigServerTestFixture::getIndexes(OperationContext* opCtx,
                                                                      const NamespaceString& ns) {
     auto configShard = getConfigShard();
 
-    auto response = configShard->runCommand(txn,
+    auto response = configShard->runCommand(opCtx,
                                             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                                             ns.db().toString(),
                                             BSON("listIndexes" << ns.coll().toString()),

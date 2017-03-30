@@ -659,6 +659,7 @@ function doMultiThreadedWork(primary, numThreads) {
     // Create a replica set with 2 nodes of each of the types below, plus one arbiter.
     var oldVersion = "last-stable";
     var newVersion = "latest";
+
     var setups = [
         {binVersion: newVersion, storageEngine: 'mmapv1'},
         {binVersion: newVersion, storageEngine: 'mmapv1'},
@@ -672,13 +673,6 @@ function doMultiThreadedWork(primary, numThreads) {
     replTest.startSet();
     replTest.initiate();
 
-    // We set the featureCompatibilityVersion to 3.2 so that 3.2 secondaries can successfully
-    // initial sync from a 3.4 primary. We do this prior to adding any other members to the replica
-    // set. This effectively allows us to emulate upgrading some of our nodes to the latest version
-    // while different 3.4 and 3.2 mongod processes are being elected primary.
-    assert.commandWorked(
-        replTest.getPrimary().adminCommand({setFeatureCompatibilityVersion: "3.2"}));
-
     for (let i = 1; i < setups.length; ++i) {
         replTest.add(setups[i]);
     }
@@ -688,7 +682,7 @@ function doMultiThreadedWork(primary, numThreads) {
     // primary/secondary syncing.
     config.settings = {chainingAllowed: false};
     config.protocolVersion = 0;
-    config.version = 2;
+    config.version = replTest.getReplSetConfigFromNode().version + 1;
     reconfig(replTest, config);
 
     // Ensure all are synced.
@@ -716,14 +710,14 @@ function doMultiThreadedWork(primary, numThreads) {
         highestPriority++;
         printjson(config);
         reconfig(replTest, config);
-        replTest.awaitReplication(60000);  // 2 times the election period.
+        replTest.awaitReplication();
         assert.soon(primaryChanged(replTest.nodes, replTest, primaryIndex),
                     "waiting for higher priority primary to be elected",
                     100000);
         print("New primary elected, doing a bunch of work");
         primary = replTest.getPrimary();
         doMultiThreadedWork(primary, 10);
-        replTest.awaitReplication(50000);
+        replTest.awaitReplication();
         print("Work done, checking to see all nodes match");
         assertSameData(primary, replTest.nodes);
     }

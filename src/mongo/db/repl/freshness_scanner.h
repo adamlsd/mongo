@@ -34,10 +34,10 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/replica_set_config.h"
-#include "mongo/db/repl/replication_executor.h"
+#include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/scatter_gather_algorithm.h"
 #include "mongo/db/repl/scatter_gather_runner.h"
+#include "mongo/executor/task_executor.h"
 #include "mongo/stdx/functional.h"
 
 namespace mongo {
@@ -53,7 +53,7 @@ class FreshnessScanner {
 
 public:
     struct FreshnessInfo {
-        // The index of node in ReplicaSetConfig.
+        // The index of node in ReplSetConfig.
         int index;
         // The latest applied opTime on that node.
         OpTime opTime;
@@ -63,10 +63,10 @@ public:
 
     class Algorithm : public ScatterGatherAlgorithm {
     public:
-        Algorithm(const ReplicaSetConfig& rsConfig, int myIndex, Milliseconds timeout);
+        Algorithm(const ReplSetConfig& rsConfig, int myIndex, Milliseconds timeout);
         virtual std::vector<executor::RemoteCommandRequest> getRequests() const;
         virtual void processResponse(const executor::RemoteCommandRequest& request,
-                                     const ResponseStatus& response);
+                                     const executor::RemoteCommandResponse& response);
         virtual bool hasReceivedSufficientResponses() const;
 
         /**
@@ -77,7 +77,7 @@ public:
         Result getResult() const;
 
     private:
-        const ReplicaSetConfig _rsConfig;
+        const ReplSetConfig _rsConfig;
         std::vector<HostAndPort> _targets;
         const int _myIndex;
         const Milliseconds _timeout;
@@ -96,10 +96,10 @@ public:
      * evh can be used to schedule a callback when the process is complete.
      * If this function returns Status::OK(), evh is then guaranteed to be signaled.
      **/
-    StatusWith<ReplicationExecutor::EventHandle> start(ReplicationExecutor* executor,
-                                                       const ReplicaSetConfig& rsConfig,
-                                                       int myIndex,
-                                                       Milliseconds timeout);
+    StatusWith<executor::TaskExecutor::EventHandle> start(executor::TaskExecutor* executor,
+                                                          const ReplSetConfig& rsConfig,
+                                                          int myIndex,
+                                                          Milliseconds timeout);
 
     /**
      * Informs the FreshnessScanner to cancel further processing.

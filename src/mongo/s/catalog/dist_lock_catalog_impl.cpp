@@ -116,11 +116,41 @@ StatusWith<OID> extractElectionId(const BSONObj& responseObj) {
         return {ErrorCodes::UnsupportedFormat, replElemStatus.reason()};
     }
 
+    const auto replSubObj = replElem.Obj();
     OID electionId;
-
-    auto electionIdStatus = bsonExtractOIDField(replElem.Obj(), "electionId", &electionId);
+    auto electionIdStatus = bsonExtractOIDField(replSubObj, "electionId", &electionId);
 
     if (!electionIdStatus.isOK()) {
+        // Secondaries don't have electionId.
+        if (electionIdStatus.code() == ErrorCodes::NoSuchKey) {
+            // Verify that the from replSubObj that this is indeed not a primary.
+            bool isPrimary = false;
+            auto isPrimaryStatus = bsonExtractBooleanField(replSubObj, "ismaster", &isPrimary);
+
+            if (!isPrimaryStatus.isOK()) {
+                return {ErrorCodes::UnsupportedFormat, isPrimaryStatus.reason()};
+            }
+
+            if (isPrimary) {
+                string hostContacted;
+                auto hostContactedStatus = bsonExtractStringField(replSubObj, "me", &hostContacted);
+
+                if (!hostContactedStatus.isOK()) {
+                    return {
+                        ErrorCodes::UnsupportedFormat,
+                        str::stream()
+                            << "failed to extract 'me' field from repl subsection of serverStatus: "
+                            << hostContactedStatus.reason()};
+                }
+
+                return {ErrorCodes::UnsupportedFormat,
+                        str::stream() << "expected primary to have electionId but not present on "
+                                      << hostContacted};
+            }
+
+            return {ErrorCodes::NotMaster, "only primary can have electionId"};
+        }
+
         return {ErrorCodes::UnsupportedFormat, electionIdStatus.reason()};
     }
 
@@ -134,10 +164,10 @@ DistLockCatalogImpl::DistLockCatalogImpl(ShardRegistry* shardRegistry)
 
 DistLockCatalogImpl::~DistLockCatalogImpl() = default;
 
-StatusWith<LockpingsType> DistLockCatalogImpl::getPing(OperationContext* txn,
+StatusWith<LockpingsType> DistLockCatalogImpl::getPing(OperationContext* opCtx,
                                                        StringData processID) {
     auto findResult = _findOnConfig(
-        txn, kReadPref, _lockPingNS, BSON(LockpingsType::process() << processID), BSONObj(), 1);
+        opCtx, kReadPref, _lockPingNS, BSON(LockpingsType::process() << processID), BSONObj(), 1);
 
     if (!findResult.isOK()) {
         return findResult.getStatus();
@@ -161,7 +191,7 @@ StatusWith<LockpingsType> DistLockCatalogImpl::getPing(OperationContext* txn,
     return pingDocResult.getValue();
 }
 
-Status DistLockCatalogImpl::ping(OperationContext* txn, StringData processID, Date_t ping) {
+Status DistLockCatalogImpl::ping(OperationContext* opCtx, StringData processID, Date_t ping) {
     auto request =
         FindAndModifyRequest::makeUpdate(_lockPingNS,
                                          BSON(LockpingsType::process() << processID),
@@ -170,7 +200,7 @@ Status DistLockCatalogImpl::ping(OperationContext* txn, StringData processID, Da
     request.setWriteConcern(kMajorityWriteConcern);
 
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         request.toBSON(),
@@ -181,7 +211,7 @@ Status DistLockCatalogImpl::ping(OperationContext* txn, StringData processID, Da
     return findAndModifyStatus.getStatus();
 }
 
-StatusWith<LocksType> DistLockCatalogImpl::grabLock(OperationContext* txn,
+StatusWith<LocksType> DistLockCatalogImpl::grabLock(OperationContext* opCtx,
                                                     StringData lockID,
                                                     const OID& lockSessionID,
                                                     StringData who,
@@ -207,7 +237,7 @@ StatusWith<LocksType> DistLockCatalogImpl::grabLock(OperationContext* txn,
     request.setWriteConcern(writeConcern);
 
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         request.toBSON(),
@@ -236,7 +266,7 @@ StatusWith<LocksType> DistLockCatalogImpl::grabLock(OperationContext* txn,
     return locksTypeResult.getValue();
 }
 
-StatusWith<LocksType> DistLockCatalogImpl::overtakeLock(OperationContext* txn,
+StatusWith<LocksType> DistLockCatalogImpl::overtakeLock(OperationContext* opCtx,
                                                         StringData lockID,
                                                         const OID& lockSessionID,
                                                         const OID& currentHolderTS,
@@ -264,7 +294,7 @@ StatusWith<LocksType> DistLockCatalogImpl::overtakeLock(OperationContext* txn,
     request.setWriteConcern(kMajorityWriteConcern);
 
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         request.toBSON(),
@@ -287,16 +317,16 @@ StatusWith<LocksType> DistLockCatalogImpl::overtakeLock(OperationContext* txn,
     return locksTypeResult.getValue();
 }
 
-Status DistLockCatalogImpl::unlock(OperationContext* txn, const OID& lockSessionID) {
+Status DistLockCatalogImpl::unlock(OperationContext* opCtx, const OID& lockSessionID) {
     FindAndModifyRequest request = FindAndModifyRequest::makeUpdate(
         _locksNS,
         BSON(LocksType::lockID(lockSessionID)),
         BSON("$set" << BSON(LocksType::state(LocksType::UNLOCKED))));
     request.setWriteConcern(kMajorityWriteConcern);
-    return _unlock(txn, request);
+    return _unlock(opCtx, request);
 }
 
-Status DistLockCatalogImpl::unlock(OperationContext* txn,
+Status DistLockCatalogImpl::unlock(OperationContext* opCtx,
                                    const OID& lockSessionID,
                                    StringData name) {
     FindAndModifyRequest request = FindAndModifyRequest::makeUpdate(
@@ -304,12 +334,12 @@ Status DistLockCatalogImpl::unlock(OperationContext* txn,
         BSON(LocksType::lockID(lockSessionID) << LocksType::name(name.toString())),
         BSON("$set" << BSON(LocksType::state(LocksType::UNLOCKED))));
     request.setWriteConcern(kMajorityWriteConcern);
-    return _unlock(txn, request);
+    return _unlock(opCtx, request);
 }
 
-Status DistLockCatalogImpl::_unlock(OperationContext* txn, const FindAndModifyRequest& request) {
+Status DistLockCatalogImpl::_unlock(OperationContext* opCtx, const FindAndModifyRequest& request) {
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         request.toBSON(),
@@ -327,7 +357,7 @@ Status DistLockCatalogImpl::_unlock(OperationContext* txn, const FindAndModifyRe
     return findAndModifyStatus.getStatus();
 }
 
-Status DistLockCatalogImpl::unlockAll(OperationContext* txn, const std::string& processID) {
+Status DistLockCatalogImpl::unlockAll(OperationContext* opCtx, const std::string& processID) {
     std::unique_ptr<BatchedUpdateDocument> updateDoc(new BatchedUpdateDocument());
     updateDoc->setQuery(BSON(LocksType::process(processID)));
     updateDoc->setUpdateExpr(BSON("$set" << BSON(LocksType::state(LocksType::UNLOCKED))));
@@ -344,7 +374,7 @@ Status DistLockCatalogImpl::unlockAll(OperationContext* txn, const std::string& 
     BSONObj cmdObj = request.toBSON();
 
     auto response = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         cmdObj,
@@ -373,9 +403,10 @@ Status DistLockCatalogImpl::unlockAll(OperationContext* txn, const std::string& 
     return batchResponse.toStatus();
 }
 
-StatusWith<DistLockCatalog::ServerInfo> DistLockCatalogImpl::getServerInfo(OperationContext* txn) {
+StatusWith<DistLockCatalog::ServerInfo> DistLockCatalogImpl::getServerInfo(
+    OperationContext* opCtx) {
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         kReadPref,
         "admin",
         BSON("serverStatus" << 1),
@@ -402,16 +433,16 @@ StatusWith<DistLockCatalog::ServerInfo> DistLockCatalogImpl::getServerInfo(Opera
     auto electionIdStatus = extractElectionId(responseObj);
 
     if (!electionIdStatus.isOK()) {
-        return {ErrorCodes::UnsupportedFormat, electionIdStatus.getStatus().reason()};
+        return electionIdStatus.getStatus();
     }
 
     return DistLockCatalog::ServerInfo(localTimeElem.date(), electionIdStatus.getValue());
 }
 
-StatusWith<LocksType> DistLockCatalogImpl::getLockByTS(OperationContext* txn,
+StatusWith<LocksType> DistLockCatalogImpl::getLockByTS(OperationContext* opCtx,
                                                        const OID& lockSessionID) {
     auto findResult = _findOnConfig(
-        txn, kReadPref, _locksNS, BSON(LocksType::lockID(lockSessionID)), BSONObj(), 1);
+        opCtx, kReadPref, _locksNS, BSON(LocksType::lockID(lockSessionID)), BSONObj(), 1);
 
     if (!findResult.isOK()) {
         return findResult.getStatus();
@@ -435,9 +466,9 @@ StatusWith<LocksType> DistLockCatalogImpl::getLockByTS(OperationContext* txn,
     return locksTypeResult.getValue();
 }
 
-StatusWith<LocksType> DistLockCatalogImpl::getLockByName(OperationContext* txn, StringData name) {
+StatusWith<LocksType> DistLockCatalogImpl::getLockByName(OperationContext* opCtx, StringData name) {
     auto findResult =
-        _findOnConfig(txn, kReadPref, _locksNS, BSON(LocksType::name() << name), BSONObj(), 1);
+        _findOnConfig(opCtx, kReadPref, _locksNS, BSON(LocksType::name() << name), BSONObj(), 1);
 
     if (!findResult.isOK()) {
         return findResult.getStatus();
@@ -461,13 +492,13 @@ StatusWith<LocksType> DistLockCatalogImpl::getLockByName(OperationContext* txn, 
     return locksTypeResult.getValue();
 }
 
-Status DistLockCatalogImpl::stopPing(OperationContext* txn, StringData processId) {
+Status DistLockCatalogImpl::stopPing(OperationContext* opCtx, StringData processId) {
     auto request =
         FindAndModifyRequest::makeRemove(_lockPingNS, BSON(LockpingsType::process() << processId));
     request.setWriteConcern(kMajorityWriteConcern);
 
     auto resultStatus = _client->getConfigShard()->runCommandWithFixedRetryAttempts(
-        txn,
+        opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         _locksNS.db().toString(),
         request.toBSON(),
@@ -479,14 +510,14 @@ Status DistLockCatalogImpl::stopPing(OperationContext* txn, StringData processId
 }
 
 StatusWith<vector<BSONObj>> DistLockCatalogImpl::_findOnConfig(
-    OperationContext* txn,
+    OperationContext* opCtx,
     const ReadPreferenceSetting& readPref,
     const NamespaceString& nss,
     const BSONObj& query,
     const BSONObj& sort,
     boost::optional<long long> limit) {
     auto result = _client->getConfigShard()->exhaustiveFindOnConfig(
-        txn, readPref, repl::ReadConcernLevel::kMajorityReadConcern, nss, query, sort, limit);
+        opCtx, readPref, repl::ReadConcernLevel::kMajorityReadConcern, nss, query, sort, limit);
     if (!result.isOK()) {
         return result.getStatus();
     }

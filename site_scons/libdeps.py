@@ -68,7 +68,7 @@ def sorted_by_str(iterable):
     across invocations of SCons.  Since dependency order changes force rebuilds,
     we use this sort to create stable dependency orders.
     """
-    return sorted(iterable, cmp=lambda lhs, rhs: cmp(str(lhs), str(rhs)))
+    return sorted(iterable, key=str)
 
 class DependencyCycleError(SCons.Errors.UserError):
     """Exception representing a cycle discovered in library dependencies."""
@@ -126,7 +126,7 @@ def __get_syslibdeps(node):
     cached_var_name = syslibdeps_env_var + '_cached'
     if not hasattr(node.attributes, cached_var_name):
         syslibdeps = node.get_env().Flatten(node.get_env().get(syslibdeps_env_var, []))
-        for lib in __get_libdeps(node):
+        for lib in sorted_by_str(__get_libdeps(node)):
             for syslib in node.get_env().Flatten(lib.get_env().get(syslibdeps_env_var, [])):
                 if syslib:
                     if type(syslib) in (str, unicode) and syslib.startswith(missing_syslibdep):

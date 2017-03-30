@@ -40,6 +40,7 @@
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/index/index_descriptor.h"
@@ -51,7 +52,6 @@
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/server_options.h"
-#include "mongo/db/service_context.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/scopeguard.h"
@@ -67,6 +67,7 @@ namespace {
 const StringData kIndexesFieldName = "indexes"_sd;
 const StringData kCommandName = "createIndexes"_sd;
 const StringData kWriteConcern = "writeConcern"_sd;
+const StringData kMaxTimeMS = "maxTimeMS"_sd;
 
 /**
  * Parses the index specifications from 'cmdObj', validates them, and returns equivalent index
@@ -76,7 +77,7 @@ const StringData kWriteConcern = "writeConcern"_sd;
 StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
     const NamespaceString& ns,
     const BSONObj& cmdObj,
-    ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion) {
+    const ServerGlobalParams::FeatureCompatibility& featureCompatibility) {
     bool hasIndexesField = false;
 
     std::vector<BSONObj> indexSpecs;
@@ -99,17 +100,32 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
                                           << typeName(indexesElem.type())};
                 }
 
-                auto indexSpec =
-                    validateIndexSpec(indexesElem.Obj(), ns, featureCompatibilityVersion);
-                if (!indexSpec.isOK()) {
-                    return indexSpec.getStatus();
+                auto indexSpecStatus = index_key_validate::validateIndexSpec(
+                    indexesElem.Obj(), ns, featureCompatibility);
+                if (!indexSpecStatus.isOK()) {
+                    return indexSpecStatus.getStatus();
                 }
-                indexSpecs.push_back(std::move(indexSpec.getValue()));
+                auto indexSpec = indexSpecStatus.getValue();
+
+                if (IndexDescriptor::isIdIndexPattern(
+                        indexSpec[IndexDescriptor::kKeyPatternFieldName].Obj())) {
+                    auto status = index_key_validate::validateIdIndexSpec(indexSpec);
+                    if (!status.isOK()) {
+                        return status;
+                    }
+                } else if (indexSpec[IndexDescriptor::kIndexNameFieldName].String() == "_id_"_sd) {
+                    return {ErrorCodes::BadValue,
+                            str::stream() << "The index name '_id_' is reserved for the _id index, "
+                                             "which must have key pattern {_id: 1}, found "
+                                          << indexSpec[IndexDescriptor::kKeyPatternFieldName]};
+                }
+
+                indexSpecs.push_back(std::move(indexSpec));
             }
 
             hasIndexesField = true;
-        } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName) {
-            // Both the command name and writeConcern are valid top-level fields.
+        } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName ||
+                   kMaxTimeMS == cmdElemFieldName) {
             continue;
         } else {
             return {ErrorCodes::BadValue,
@@ -142,65 +158,43 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
  * form stored in the IndexCatalog should any of these indexes already exist.
  */
 StatusWith<std::vector<BSONObj>> resolveCollectionDefaultProperties(
-    OperationContext* txn, const Collection* collection, std::vector<BSONObj> indexSpecs) {
+    OperationContext* opCtx, const Collection* collection, std::vector<BSONObj> indexSpecs) {
     std::vector<BSONObj> indexSpecsWithDefaults = std::move(indexSpecs);
 
     for (size_t i = 0, numIndexSpecs = indexSpecsWithDefaults.size(); i < numIndexSpecs; ++i) {
-        const BSONObj& indexSpec = indexSpecsWithDefaults[i];
-        if (auto collationElem = indexSpec[IndexDescriptor::kCollationFieldName]) {
-            // validateIndexSpec() should have already verified that 'collationElem' is an object.
-            invariant(collationElem.type() == BSONType::Object);
+        auto indexSpecStatus = index_key_validate::validateIndexSpecCollation(
+            opCtx, indexSpecsWithDefaults[i], collection->getDefaultCollator());
+        if (!indexSpecStatus.isOK()) {
+            return indexSpecStatus.getStatus();
+        }
+        auto indexSpec = indexSpecStatus.getValue();
 
-            auto collator = CollatorFactoryInterface::get(txn->getServiceContext())
-                                ->makeFromBSON(collationElem.Obj());
-            if (!collator.isOK()) {
-                return collator.getStatus();
+        if (IndexDescriptor::isIdIndexPattern(
+                indexSpec[IndexDescriptor::kKeyPatternFieldName].Obj())) {
+            std::unique_ptr<CollatorInterface> indexCollator;
+            if (auto collationElem = indexSpec[IndexDescriptor::kCollationFieldName]) {
+                auto collatorStatus = CollatorFactoryInterface::get(opCtx->getServiceContext())
+                                          ->makeFromBSON(collationElem.Obj());
+                // validateIndexSpecCollation() should have checked that the index collation spec is
+                // valid.
+                invariantOK(collatorStatus.getStatus());
+                indexCollator = std::move(collatorStatus.getValue());
             }
-
-            if (collator.getValue()) {
-                // If the collator factory returned a non-null collator, then inject the entire
-                // collation specification into the index specification. This is necessary to fill
-                // in any options that the user omitted.
-                BSONObjBuilder bob;
-
-                for (auto&& indexSpecElem : indexSpec) {
-                    if (IndexDescriptor::kCollationFieldName !=
-                        indexSpecElem.fieldNameStringData()) {
-                        bob.append(indexSpecElem);
-                    }
-                }
-                bob.append(IndexDescriptor::kCollationFieldName,
-                           collator.getValue()->getSpec().toBSON());
-
-                indexSpecsWithDefaults[i] = bob.obj();
-            } else {
-                // If the collator factory returned a null collator (representing the "simple"
-                // collation), then we simply omit the "collation" from the index specification.
-                // This is desirable to make the representation for the "simple" collation
-                // consistent between v=1 and v=2 indexes.
-                indexSpecsWithDefaults[i] =
-                    indexSpec.removeField(IndexDescriptor::kCollationFieldName);
-            }
-        } else if (collection->getDefaultCollator()) {
-            // validateIndexSpec() should have added the "v" field if it was not present and
-            // verified that 'versionElem' is a number.
-            auto versionElem = indexSpec[IndexDescriptor::kIndexVersionFieldName];
-            invariant(versionElem.isNumber());
-
-            if (IndexVersion::kV2 <= static_cast<IndexVersion>(versionElem.numberInt())) {
-                // The user did not specify an explicit collation for this index and the collection
-                // has a default collator. If we're building a v=2 index, then we should inherit the
-                // collection default. However, if we're building a v=1 index, then we're implicitly
-                // building an index that's using the "simple" collation.
-                BSONObjBuilder bob;
-
-                bob.appendElements(indexSpec);
-                bob.append(IndexDescriptor::kCollationFieldName,
-                           collection->getDefaultCollator()->getSpec().toBSON());
-
-                indexSpecsWithDefaults[i] = bob.obj();
+            if (!CollatorInterface::collatorsMatch(collection->getDefaultCollator(),
+                                                   indexCollator.get())) {
+                return {ErrorCodes::BadValue,
+                        str::stream() << "The _id index must have the same collation as the "
+                                         "collection. Index collation: "
+                                      << (indexCollator.get() ? indexCollator->getSpec().toBSON()
+                                                              : CollationSpec::kSimpleSpec)
+                                      << ", collection collation: "
+                                      << (collection->getDefaultCollator()
+                                              ? collection->getDefaultCollator()->getSpec().toBSON()
+                                              : CollationSpec::kSimpleSpec)};
             }
         }
+
+        indexSpecsWithDefaults[i] = indexSpec;
     }
 
     return indexSpecsWithDefaults;
@@ -233,21 +227,20 @@ public:
         return Status(ErrorCodes::Unauthorized, "Unauthorized");
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int options,
                      string& errmsg,
                      BSONObjBuilder& result) {
-        const NamespaceString ns(parseNs(dbname, cmdObj));
+        const NamespaceString ns(parseNsCollectionRequired(dbname, cmdObj));
 
         Status status = userAllowedWriteNS(ns);
         if (!status.isOK())
             return appendCommandStatus(result, status);
 
-        const auto featureCompatibilityVersion =
-            serverGlobalParams.featureCompatibility.version.load();
-        auto specsWithStatus = parseAndValidateIndexSpecs(ns, cmdObj, featureCompatibilityVersion);
+        auto specsWithStatus =
+            parseAndValidateIndexSpecs(ns, cmdObj, serverGlobalParams.featureCompatibility);
         if (!specsWithStatus.isOK()) {
             return appendCommandStatus(result, specsWithStatus.getStatus());
         }
@@ -255,56 +248,55 @@ public:
 
         // now we know we have to create index(es)
         // Note: createIndexes command does not currently respect shard versioning.
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbLock(txn->lockState(), ns.db(), MODE_X);
-        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns)) {
+        Lock::DBLock dbLock(opCtx, ns.db(), MODE_X);
+        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
             return appendCommandStatus(
                 result,
                 Status(ErrorCodes::NotMaster,
                        str::stream() << "Not primary while creating indexes in " << ns.ns()));
         }
 
-        Database* db = dbHolder().get(txn, ns.db());
+        Database* db = dbHolder().get(opCtx, ns.db());
         if (!db) {
-            db = dbHolder().openDb(txn, ns.db());
+            db = dbHolder().openDb(opCtx, ns.db());
         }
 
         Collection* collection = db->getCollection(ns.ns());
         if (collection) {
             result.appendBool("createdCollectionAutomatically", false);
         } else {
-            if (db->getViewCatalog()->lookup(txn, ns.ns())) {
+            if (db->getViewCatalog()->lookup(opCtx, ns.ns())) {
                 errmsg = "Cannot create indexes on a view";
                 return appendCommandStatus(result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
             }
 
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                WriteUnitOfWork wunit(txn);
-                collection = db->createCollection(txn, ns.ns(), CollectionOptions());
+                WriteUnitOfWork wunit(opCtx);
+                collection = db->createCollection(opCtx, ns.ns(), CollectionOptions());
                 invariant(collection);
                 wunit.commit();
             }
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
+            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, kCommandName, ns.ns());
             result.appendBool("createdCollectionAutomatically", true);
         }
 
         auto indexSpecsWithDefaults =
-            resolveCollectionDefaultProperties(txn, collection, std::move(specs));
+            resolveCollectionDefaultProperties(opCtx, collection, std::move(specs));
         if (!indexSpecsWithDefaults.isOK()) {
             return appendCommandStatus(result, indexSpecsWithDefaults.getStatus());
         }
         specs = std::move(indexSpecsWithDefaults.getValue());
 
-        const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(txn);
+        const int numIndexesBefore = collection->getIndexCatalog()->numIndexesTotal(opCtx);
         result.append("numIndexesBefore", numIndexesBefore);
 
-        auto client = txn->getClient();
+        auto client = opCtx->getClient();
         ScopeGuard lastOpSetterGuard =
             MakeObjGuard(repl::ReplClientInfo::forClient(client),
                          &repl::ReplClientInfo::setLastOpToSystemLastOpTime,
-                         txn);
+                         opCtx);
 
-        MultiIndexBlock indexer(txn, collection);
+        MultiIndexBlock indexer(opCtx, collection);
         indexer.allowBackgroundBuilding();
         indexer.allowInterruption();
 
@@ -324,7 +316,7 @@ public:
         for (size_t i = 0; i < specs.size(); i++) {
             const BSONObj& spec = specs[i];
             if (spec["unique"].trueValue()) {
-                status = checkUniqueIndexConstraints(txn, ns.ns(), spec["key"].Obj());
+                status = checkUniqueIndexConstraints(opCtx, ns.ns(), spec["key"].Obj());
 
                 if (!status.isOK()) {
                     return appendCommandStatus(result, status);
@@ -336,14 +328,14 @@ public:
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
             indexInfoObjs = uassertStatusOK(indexer.init(specs));
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, kCommandName, ns.ns());
 
         // If we're a background index, replace exclusive db lock with an intent lock, so that
         // other readers and writers can proceed during this phase.
         if (indexer.getBuildInBackground()) {
-            txn->recoveryUnit()->abandonSnapshot();
+            opCtx->recoveryUnit()->abandonSnapshot();
             dbLock.relockWithMode(MODE_IX);
-            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns)) {
+            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
                 return appendCommandStatus(
                     result,
                     Status(ErrorCodes::NotMaster,
@@ -353,7 +345,7 @@ public:
         }
 
         try {
-            Lock::CollectionLock colLock(txn->lockState(), ns.ns(), MODE_IX);
+            Lock::CollectionLock colLock(opCtx->lockState(), ns.ns(), MODE_IX);
             uassertStatusOK(indexer.insertAllDocumentsInCollection());
         } catch (const DBException& e) {
             invariant(e.getCode() != ErrorCodes::WriteConflict);
@@ -363,9 +355,9 @@ public:
                 try {
                     // This function cannot throw today, but we will preemptively prepare for
                     // that day, to avoid data corruption due to lack of index cleanup.
-                    txn->recoveryUnit()->abandonSnapshot();
+                    opCtx->recoveryUnit()->abandonSnapshot();
                     dbLock.relockWithMode(MODE_X);
-                    if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns)) {
+                    if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
                         return appendCommandStatus(
                             result,
                             Status(ErrorCodes::NotMaster,
@@ -383,35 +375,33 @@ public:
         }
         // Need to return db lock back to exclusive, to complete the index build.
         if (indexer.getBuildInBackground()) {
-            txn->recoveryUnit()->abandonSnapshot();
+            opCtx->recoveryUnit()->abandonSnapshot();
             dbLock.relockWithMode(MODE_X);
             uassert(ErrorCodes::NotMaster,
                     str::stream() << "Not primary while completing index build in " << dbname,
-                    repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(ns));
+                    repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns));
 
-            Database* db = dbHolder().get(txn, ns.db());
+            Database* db = dbHolder().get(opCtx, ns.db());
             uassert(28551, "database dropped during index build", db);
             uassert(28552, "collection dropped during index build", db->getCollection(ns.ns()));
         }
 
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-            WriteUnitOfWork wunit(txn);
+            WriteUnitOfWork wunit(opCtx);
 
             indexer.commit();
 
             for (auto&& infoObj : indexInfoObjs) {
                 std::string systemIndexes = ns.getSystemIndexesCollection();
-                auto opObserver = getGlobalServiceContext()->getOpObserver();
-                if (opObserver) {
-                    opObserver->onCreateIndex(txn, systemIndexes, infoObj);
-                }
+                getGlobalServiceContext()->getOpObserver()->onCreateIndex(
+                    opCtx, systemIndexes, infoObj, false);
             }
 
             wunit.commit();
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, kCommandName, ns.ns());
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, kCommandName, ns.ns());
 
-        result.append("numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(txn));
+        result.append("numIndexesAfter", collection->getIndexCatalog()->numIndexesTotal(opCtx));
 
         lastOpSetterGuard.Dismiss();
 
@@ -419,12 +409,12 @@ public:
     }
 
 private:
-    static Status checkUniqueIndexConstraints(OperationContext* txn,
+    static Status checkUniqueIndexConstraints(OperationContext* opCtx,
                                               StringData ns,
                                               const BSONObj& newIdxKey) {
-        invariant(txn->lockState()->isCollectionLockedForMode(ns, MODE_X));
+        invariant(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X));
 
-        auto metadata(CollectionShardingState::get(txn, ns.toString())->getMetadata());
+        auto metadata(CollectionShardingState::get(opCtx, ns.toString())->getMetadata());
         if (metadata) {
             ShardKeyPattern shardKeyPattern(metadata->getKeyPattern());
             if (!shardKeyPattern.isUniqueIndexCompatible(newIdxKey)) {

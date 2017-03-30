@@ -50,6 +50,7 @@
 
 namespace mongo {
 
+using repl::UnreplicatedWritesBlock;
 using std::endl;
 using std::string;
 using std::stringstream;
@@ -74,35 +75,32 @@ public:
     virtual void help(stringstream& help) const {
         help << "internal. for testing only.";
     }
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int,
                      string& errmsg,
                      BSONObjBuilder& result) {
-        string coll = cmdObj["godinsert"].valuestrsafe();
-        log() << "test only command godinsert invoked coll:" << coll;
-        uassert(13049, "godinsert must specify a collection", !coll.empty());
-        string ns = dbname + "." + coll;
+        const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
+        log() << "test only command godinsert invoked coll:" << nss.coll();
         BSONObj obj = cmdObj["obj"].embeddedObjectUserCheck();
 
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock lk(txn->lockState(), dbname, MODE_X);
-        OldClientContext ctx(txn, ns);
+        Lock::DBLock lk(opCtx, dbname, MODE_X);
+        OldClientContext ctx(opCtx, nss.ns());
         Database* db = ctx.db();
 
-        WriteUnitOfWork wunit(txn);
-        txn->setReplicatedWrites(false);
-        Collection* collection = db->getCollection(ns);
+        WriteUnitOfWork wunit(opCtx);
+        UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx);
+        Collection* collection = db->getCollection(nss);
         if (!collection) {
-            collection = db->createCollection(txn, ns);
+            collection = db->createCollection(opCtx, nss.ns());
             if (!collection) {
                 errmsg = "could not create collection";
                 return false;
             }
         }
         OpDebug* const nullOpDebug = nullptr;
-        Status status = collection->insertDocument(txn, obj, nullOpDebug, false);
+        Status status = collection->insertDocument(opCtx, obj, nullOpDebug, false);
         if (status.isOK()) {
             wunit.commit();
         }
@@ -141,20 +139,18 @@ public:
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}
 
-    void _sleepInReadLock(mongo::OperationContext* txn, long long millis) {
-        ScopedTransaction transaction(txn, MODE_S);
-        Lock::GlobalRead lk(txn->lockState());
+    void _sleepInReadLock(mongo::OperationContext* opCtx, long long millis) {
+        Lock::GlobalRead lk(opCtx);
         sleepmillis(millis);
     }
 
-    void _sleepInWriteLock(mongo::OperationContext* txn, long long millis) {
-        ScopedTransaction transaction(txn, MODE_X);
-        Lock::GlobalWrite lk(txn->lockState());
+    void _sleepInWriteLock(mongo::OperationContext* opCtx, long long millis) {
+        Lock::GlobalWrite lk(opCtx);
         sleepmillis(millis);
     }
 
     CmdSleep() : Command("sleep") {}
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& ns,
              BSONObj& cmdObj,
              int,
@@ -179,9 +175,9 @@ public:
         if (!cmdObj["lock"]) {
             // Legacy implementation
             if (cmdObj.getBoolField("w")) {
-                _sleepInWriteLock(txn, millis);
+                _sleepInWriteLock(opCtx, millis);
             } else {
-                _sleepInReadLock(txn, millis);
+                _sleepInReadLock(opCtx, millis);
             }
         } else {
             uassert(34346, "Only one of 'w' and 'lock' may be set.", !cmdObj["w"]);
@@ -190,15 +186,15 @@ public:
             if (lock == "none") {
                 sleepmillis(millis);
             } else if (lock == "w") {
-                _sleepInWriteLock(txn, millis);
+                _sleepInWriteLock(opCtx, millis);
             } else {
                 uassert(34347, "'lock' must be one of 'r', 'w', 'none'.", lock == "r");
-                _sleepInReadLock(txn, millis);
+                _sleepInReadLock(opCtx, millis);
             }
         }
 
         // Interrupt point for testing (e.g. maxTimeMS).
-        txn->checkForInterrupt();
+        opCtx->checkForInterrupt();
 
         return true;
     }
@@ -218,7 +214,7 @@ public:
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int,
@@ -233,11 +229,11 @@ public:
                                        {ErrorCodes::BadValue, "n must be a positive integer"});
         }
 
-        OldClientWriteContext ctx(txn, fullNs.ns());
+        OldClientWriteContext ctx(opCtx, fullNs.ns());
         Collection* collection = ctx.getCollection();
 
         if (!collection) {
-            if (ctx.db()->getViewCatalog()->lookup(txn, fullNs.ns())) {
+            if (ctx.db()->getViewCatalog()->lookup(opCtx, fullNs.ns())) {
                 return appendCommandStatus(
                     result,
                     {ErrorCodes::CommandNotSupportedOnView,
@@ -260,7 +256,7 @@ public:
             // We will remove 'n' documents, so start truncating from the (n + 1)th document to the
             // end.
             std::unique_ptr<PlanExecutor> exec(
-                InternalPlanner::collectionScan(txn,
+                InternalPlanner::collectionScan(opCtx,
                                                 fullNs.ns(),
                                                 collection,
                                                 PlanExecutor::YIELD_MANUAL,
@@ -278,7 +274,7 @@ public:
             }
         }
 
-        collection->temp_cappedTruncateAfter(txn, end, inc);
+        collection->cappedTruncateAfter(opCtx, end, inc);
 
         return true;
     }
@@ -299,7 +295,7 @@ public:
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int,
@@ -307,7 +303,7 @@ public:
                      BSONObjBuilder& result) {
         const NamespaceString nss = parseNsCollectionRequired(dbname, cmdObj);
 
-        return appendCommandStatus(result, emptyCapped(txn, nss));
+        return appendCommandStatus(result, emptyCapped(opCtx, nss));
     }
 };
 

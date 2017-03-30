@@ -40,18 +40,14 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/dependencies.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
-
-// Crutch.
-bool isMongos() {
-    return false;
-}
 
 namespace {
 
@@ -184,6 +180,13 @@ TEST_F(DocumentSourceSortTest, OutputSort) {
     ASSERT_EQUALS(outputSort.size(), 2U);
 }
 
+TEST_F(DocumentSourceSortTest, ReportsNoPathsModified) {
+    createSort(BSON("a" << 1 << "b.c" << -1));
+    auto modifiedPaths = sort()->getModifiedPaths();
+    ASSERT(modifiedPaths.type == DocumentSource::GetModPathsReturn::Type::kFiniteSet);
+    ASSERT_EQUALS(0U, modifiedPaths.paths.size());
+}
+
 class DocumentSourceSortExecutionTest : public DocumentSourceSortTest {
 public:
     void checkResults(deque<DocumentSource::GetNextResult> inputDocs,
@@ -279,7 +282,7 @@ TEST_F(DocumentSourceSortExecutionTest, CompoundSortSpecAlternateOrderSecondFiel
 
 /** Sorting different types is not supported. */
 TEST_F(DocumentSourceSortExecutionTest, InconsistentTypeSort) {
-    checkResults({Document{{"_id", 0}, {"a", 1}}, Document{{"_id", 1}, {"a", "foo"}}},
+    checkResults({Document{{"_id", 0}, {"a", 1}}, Document{{"_id", 1}, {"a", "foo"_sd}}},
                  BSON("a" << 1),
                  "[{_id:0,a:1},{_id:1,a:\"foo\"}]");
 }

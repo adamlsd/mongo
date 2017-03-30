@@ -32,6 +32,10 @@
 #include <vector>
 
 #include "mongo/bson/json.h"
+#include "mongo/db/catalog/collection.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/curop.h"
+#include "mongo/db/db_raii.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
@@ -144,7 +148,7 @@ TEST_F(ConfigInitializationTest, InitInvalidConfigVersionDoc) {
     ASSERT_OK(insertToConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), versionDoc));
 
-    ASSERT_EQ(ErrorCodes::UnsupportedFormat,
+    ASSERT_EQ(ErrorCodes::TypeMismatch,
               catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
@@ -210,17 +214,29 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
     // Now remove the version document and re-run initializeConfigDatabaseIfNeeded().
     {
         // Mirror what happens if the config.version document is rolled back.
-        ON_BLOCK_EXIT([&] {
-            operationContext()->setReplicatedWrites(true);
-            replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY);
-        });
-        operationContext()->setReplicatedWrites(false);
+        ON_BLOCK_EXIT(
+            [&] { replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY); });
         replicationCoordinator()->setFollowerMode(repl::MemberState::RS_ROLLBACK);
-        ASSERT_OK(
-            catalogClient()->removeConfigDocuments(operationContext(),
-                                                   VersionType::ConfigNS,
-                                                   BSONObj(),
-                                                   ShardingCatalogClient::kMajorityWriteConcern));
+        auto opCtx = operationContext();
+        repl::UnreplicatedWritesBlock uwb(opCtx);
+        auto nss = NamespaceString(VersionType::ConfigNS);
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+            AutoGetCollection autoColl(opCtx, nss, MODE_IX);
+            auto coll = autoColl.getCollection();
+            ASSERT_TRUE(coll);
+            auto cursor = coll->getCursor(opCtx);
+            std::vector<RecordId> recordIds;
+            while (auto recordId = cursor->next()) {
+                recordIds.push_back(recordId->id);
+            }
+            mongo::WriteUnitOfWork wuow(opCtx);
+            for (auto recordId : recordIds) {
+                coll->deleteDocument(opCtx, recordId, nullptr);
+            }
+            wuow.commit();
+            ASSERT_EQUALS(0UL, coll->numRecords(opCtx));
+        }
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "removeConfigDocuments", nss.ns());
     }
 
     // Verify the document was actually removed.

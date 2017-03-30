@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <memory>
 #include <queue>
 #include <string>
 
@@ -39,6 +40,7 @@
 #include "mongo/bson/ordering.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/elapsed_tracker.h"
 
@@ -85,10 +87,10 @@ public:
                                      StringData ident,
                                      const CollectionOptions& options);
 
-    virtual RecordStore* getRecordStore(OperationContext* opCtx,
-                                        StringData ns,
-                                        StringData ident,
-                                        const CollectionOptions& options);
+    virtual std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx,
+                                                        StringData ns,
+                                                        StringData ident,
+                                                        const CollectionOptions& options);
 
     virtual Status createSortedDataInterface(OperationContext* opCtx,
                                              StringData ident,
@@ -106,11 +108,11 @@ public:
                               StringData ident,
                               const RecordStore* originalRecordStore) const;
 
-    virtual int flushAllFiles(bool sync);
+    virtual int flushAllFiles(OperationContext* opCtx, bool sync);
 
-    virtual Status beginBackup(OperationContext* txn);
+    virtual Status beginBackup(OperationContext* opCtx);
 
-    virtual void endBackup(OperationContext* txn);
+    virtual void endBackup(OperationContext* opCtx);
 
     virtual int64_t getIdentSize(OperationContext* opCtx, StringData ident);
 
@@ -140,6 +142,13 @@ public:
     bool haveDropsQueued() const;
 
     void syncSizeInfo(bool sync) const;
+
+    /**
+     * Sets the implementation for `initRsOplogBackgroundThread` (allowing tests to skip the
+     * background job, for example). Intended to be called from a MONGO_INITIALIZER and therefroe in
+     * a single threaded context.
+     */
+    static void setInitRsOplogBackgroundThreadCallback(stdx::function<bool(StringData)> cb);
 
     /**
      * Initializes a background job to remove excess documents in the oplog collections.

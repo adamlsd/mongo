@@ -33,17 +33,22 @@
 
 #include "mongo/dbtests/dbtests.h"
 
+#include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
+#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/logical_clock.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d.h"
+#include "mongo/db/time_proof_service.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/dbtests/framework.h"
 #include "mongo/scripting/engine.h"
@@ -51,13 +56,18 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers_synchronous.h"
 #include "mongo/util/startup_test.h"
-#include "mongo/util/static_observer.h"
 #include "mongo/util/text.h"
 
 namespace mongo {
 namespace dbtests {
 namespace {
 const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
+
+MONGO_INITIALIZER(FeatureCompatibilityVersionForTest)(InitializerContext* context) {
+    serverGlobalParams.featureCompatibility.version.store(
+        ServerGlobalParams::FeatureCompatibility::Version::k34);
+    return Status::OK();
+}
 }  // namespace
 
 void initWireSpec() {
@@ -70,7 +80,7 @@ void initWireSpec() {
     spec.outgoing.maxWireVersion = COMMANDS_ACCEPT_WRITE_CONCERN;
 }
 
-Status createIndex(OperationContext* txn, StringData ns, const BSONObj& keys, bool unique) {
+Status createIndex(OperationContext* opCtx, StringData ns, const BSONObj& keys, bool unique) {
     BSONObjBuilder specBuilder;
     specBuilder.append("name", DBClientBase::genIndexName(keys));
     specBuilder.append("ns", ns);
@@ -79,19 +89,19 @@ Status createIndex(OperationContext* txn, StringData ns, const BSONObj& keys, bo
     if (unique) {
         specBuilder.appendBool("unique", true);
     }
-    return createIndexFromSpec(txn, ns, specBuilder.done());
+    return createIndexFromSpec(opCtx, ns, specBuilder.done());
 }
 
-Status createIndexFromSpec(OperationContext* txn, StringData ns, const BSONObj& spec) {
-    AutoGetOrCreateDb autoDb(txn, nsToDatabaseSubstring(ns), MODE_X);
+Status createIndexFromSpec(OperationContext* opCtx, StringData ns, const BSONObj& spec) {
+    AutoGetOrCreateDb autoDb(opCtx, nsToDatabaseSubstring(ns), MODE_X);
     Collection* coll;
     {
-        WriteUnitOfWork wunit(txn);
-        coll = autoDb.getDb()->getOrCreateCollection(txn, ns);
+        WriteUnitOfWork wunit(opCtx);
+        coll = autoDb.getDb()->getOrCreateCollection(opCtx, ns);
         invariant(coll);
         wunit.commit();
     }
-    MultiIndexBlock indexer(txn, coll);
+    MultiIndexBlock indexer(opCtx, coll);
     Status status = indexer.init(spec).getStatus();
     if (status == ErrorCodes::IndexAlreadyExists) {
         return Status::OK();
@@ -103,7 +113,7 @@ Status createIndexFromSpec(OperationContext* txn, StringData ns, const BSONObj& 
     if (!status.isOK()) {
         return status;
     }
-    WriteUnitOfWork wunit(txn);
+    WriteUnitOfWork wunit(opCtx);
     indexer.commit();
     wunit.commit();
     return Status::OK();
@@ -114,14 +124,21 @@ Status createIndexFromSpec(OperationContext* txn, StringData ns, const BSONObj& 
 
 
 int dbtestsMain(int argc, char** argv, char** envp) {
-    static StaticObserver StaticObserver;
     Command::testCommandsEnabled = true;
     ::mongo::setupSynchronousSignalHandlers();
     mongo::dbtests::initWireSpec();
     mongo::runGlobalInitializersOrDie(argc, argv, envp);
     repl::ReplSettings replSettings;
     replSettings.setOplogSizeBytes(10 * 1024 * 1024);
-    repl::setGlobalReplicationCoordinator(new repl::ReplicationCoordinatorMock(replSettings));
+    ServiceContext* service = getGlobalServiceContext();
+
+    auto timeProofService = stdx::make_unique<TimeProofService>();
+    auto logicalClock = stdx::make_unique<LogicalClock>(service, std::move(timeProofService));
+    LogicalClock::set(service, std::move(logicalClock));
+
+    repl::setGlobalReplicationCoordinator(
+        new repl::ReplicationCoordinatorMock(service, replSettings));
+    repl::getGlobalReplicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY);
     getGlobalAuthorizationManager()->setAuthEnabled(false);
     ScriptEngine::setup();
     StartupTest::runTests();

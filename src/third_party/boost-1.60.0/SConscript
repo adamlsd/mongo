@@ -2,6 +2,8 @@
 
 Import("env")
 
+env = env.Clone()
+
 env.Library('boost_system', ['libs/system/src/error_code.cpp'])
 
 boost_thread_source = dict(
@@ -47,12 +49,25 @@ env.Library('boost_program_options', [
         'libs/program_options/src/value_semantic.cpp',
         'libs/program_options/src/variables_map.cpp',
         'libs/program_options/src/winmain.cpp',
+        ],
+        # Because `::environ` is resolved in `/usr/lib/crt1.o` on FreeBSD, this library needs to be
+        # marked `incomplete` on FreeBSD.
+        LIBDEPS_TAGS=[] if not env.TargetOSIs('freebsd') else [
+            'illegal_cyclic_or_unresolved_dependencies_whitelisted',
         ])
 
 env.Library('boost_chrono', [
         'libs/chrono/src/chrono.cpp',
         'libs/chrono/src/process_cpu_clocks.cpp',
         'libs/chrono/src/thread_clock.cpp',
+        ],
+        LIBDEPS=[
+            'boost_system',
+        ])
+
+env.Library('boost_iostreams', [
+        'libs/iostreams/src/file_descriptor.cpp',
+        'libs/iostreams/src/mapped_file.cpp',
         ],
         LIBDEPS=[
             'boost_system',

@@ -30,7 +30,7 @@
 
 #include <string>
 
-#include "mongo/db/query/explain_common.h"
+#include "mongo/db/query/explain_options.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 
@@ -49,6 +49,19 @@ class ServerSelectionMetadata;
 class ClusterExplain {
 public:
     /**
+     * Given the BSON specification for a command, 'cmdObj', wraps the object in order to produce
+     * the BSON for an explain of that command, at the given verbosity level 'verbosity.'
+     *
+     * Adds the result to the BSONObjBuidler 'out'.
+     *
+     * Unlike wrapAsExplain, does not downconvert the command to OP_QUERY. Should be used for paths
+     * that send the command over the NetworkInterfaceASIO rather than DBClient.
+     */
+    static void wrapAsExplainForOP_COMMAND(const BSONObj& cmdObj,
+                                           ExplainOptions::Verbosity verbosity,
+                                           BSONObjBuilder* explainBuilder);
+
+    /**
      * Given the BSON specification for a command, 'cmdObj', wraps the object in order to
      * produce the BSON for an explain of that command, at the given verbosity level
      * 'verbosity' and according to the metadata in 'serverSelectionMetadata'.
@@ -59,7 +72,7 @@ public:
      * be forwarded to the shards.
      */
     static void wrapAsExplain(const BSONObj& cmdObj,
-                              ExplainCommon::Verbosity verbosity,
+                              ExplainOptions::Verbosity verbosity,
                               const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                               BSONObjBuilder* out,
                               int* optionsOut);
@@ -78,7 +91,7 @@ public:
      *
      * On success, the output is added to the BSONObj builder 'out'.
      */
-    static Status buildExplainResult(OperationContext* txn,
+    static Status buildExplainResult(OperationContext* opCtx,
                                      const std::vector<Strategy::CommandResult>& shardResults,
                                      const char* mongosStageName,
                                      long long millisElapsed,
@@ -107,7 +120,7 @@ private:
      * The planner info will display 'mongosStageName' as the name of the execution stage
      * performed by mongos after gathering results from the shards.
      */
-    static void buildPlannerInfo(OperationContext* txn,
+    static void buildPlannerInfo(OperationContext* opCtx,
                                  const std::vector<Strategy::CommandResult>& shardResults,
                                  const char* mongosStageName,
                                  BSONObjBuilder* out);

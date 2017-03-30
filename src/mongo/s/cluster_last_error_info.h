@@ -28,6 +28,7 @@
 #pragma once
 
 #include <set>
+#include <string>
 
 #include "mongo/db/client.h"
 #include "mongo/s/write_ops/batch_write_exec.h"
@@ -69,13 +70,6 @@ public:
      */
     const HostOpTimeMap& getPrevHostOpTimes() const {
         return _prev->hostOpTimes;
-    }
-
-    /**
-     * resets the information stored for the current request
-     */
-    void clearRequestInfo() {
-        _cur->clear();
     }
 
     void disableForCommand();

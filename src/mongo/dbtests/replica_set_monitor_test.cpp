@@ -28,6 +28,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include <set>
+#include <vector>
+
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclient_rs.h"
 #include "mongo/client/dbclientinterface.h"
@@ -37,12 +40,8 @@
 #include "mongo/dbtests/mock/mock_replica_set.h"
 #include "mongo/unittest/unittest.h"
 
-#include <set>
-#include <vector>
-
+namespace mongo {
 namespace {
-
-using namespace mongo;
 
 using std::map;
 using std::vector;
@@ -104,18 +103,18 @@ TEST_F(ReplicaSetMonitorTest, SeedWithPriOnlySecDown) {
 
 namespace {
 /**
- * Takes a repl::ReplicaSetConfig and a node to remove and returns a new config with equivalent
+ * Takes a repl::ReplSetConfig and a node to remove and returns a new config with equivalent
  * members minus the one specified to be removed.  NOTE: Does not copy over properties of the
  * members other than their id and host.
  */
-repl::ReplicaSetConfig _getConfigWithMemberRemoved(const repl::ReplicaSetConfig& oldConfig,
-                                                   const HostAndPort& toRemove) {
+repl::ReplSetConfig _getConfigWithMemberRemoved(const repl::ReplSetConfig& oldConfig,
+                                                const HostAndPort& toRemove) {
     BSONObjBuilder newConfigBuilder;
     newConfigBuilder.append("_id", oldConfig.getReplSetName());
     newConfigBuilder.append("version", oldConfig.getConfigVersion());
 
     BSONArrayBuilder membersBuilder(newConfigBuilder.subarrayStart("members"));
-    for (repl::ReplicaSetConfig::MemberIterator member = oldConfig.membersBegin();
+    for (repl::ReplSetConfig::MemberIterator member = oldConfig.membersBegin();
          member != oldConfig.membersEnd();
          ++member) {
         if (member->getHostAndPort() == toRemove) {
@@ -127,7 +126,7 @@ repl::ReplicaSetConfig _getConfigWithMemberRemoved(const repl::ReplicaSetConfig&
     }
 
     membersBuilder.done();
-    repl::ReplicaSetConfig newConfig;
+    repl::ReplSetConfig newConfig;
     ASSERT_OK(newConfig.initialize(newConfigBuilder.obj()));
     ASSERT_OK(newConfig.validate());
     return newConfig;
@@ -149,7 +148,7 @@ TEST(ReplicaSetMonitorTest, PrimaryRemovedFromSetStress) {
     seedList.insert(HostAndPort(replSet.getPrimary()));
     auto replMonitor = ReplicaSetMonitor::createIfNeeded(replSetName, seedList);
 
-    const repl::ReplicaSetConfig& origConfig = replSet.getReplConfig();
+    const repl::ReplSetConfig& origConfig = replSet.getReplConfig();
 
     for (size_t idxToRemove = 0; idxToRemove < NODE_COUNT; idxToRemove++) {
         replSet.setConfig(origConfig);
@@ -171,7 +170,7 @@ TEST(ReplicaSetMonitorTest, PrimaryRemovedFromSetStress) {
         // Make sure the monitor sees the new primary
         replMonitor->startOrContinueRefresh().refreshAll();
 
-        repl::ReplicaSetConfig newConfig =
+        repl::ReplSetConfig newConfig =
             _getConfigWithMemberRemoved(origConfig, HostAndPort(hostToRemove));
         replSet.setConfig(newConfig);
         replSet.setPrimary(newConfig.getMemberAt(0).getHostAndPort().toString());
@@ -196,7 +195,7 @@ protected:
         _originalConnectionHook = ConnectionString::getConnectionHook();
         ConnectionString::setConnectionHook(mongo::MockConnRegistry::get()->getConnStrHook());
 
-        repl::ReplicaSetConfig oldConfig = _replSet->getReplConfig();
+        repl::ReplSetConfig oldConfig = _replSet->getReplConfig();
 
         mongo::BSONObjBuilder newConfigBuilder;
         newConfigBuilder.append("_id", oldConfig.getReplSetName());
@@ -228,7 +227,7 @@ protected:
 
         membersBuilder.done();
 
-        repl::ReplicaSetConfig newConfig;
+        repl::ReplSetConfig newConfig;
         fassert(28572, newConfig.initialize(newConfigBuilder.done()));
         fassert(28571, newConfig.validate());
         _replSet->setConfig(newConfig);
@@ -303,4 +302,5 @@ TEST_F(TwoNodeWithTags, SecDownRetryWithTag) {
     monitor.reset();
 }
 
+}  // namespace
 }  // namespace mongo

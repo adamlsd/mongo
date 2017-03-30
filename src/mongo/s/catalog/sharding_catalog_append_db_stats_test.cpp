@@ -35,6 +35,7 @@
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/server_selection_metadata.h"
+#include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog/sharding_catalog_test_fixture.h"
 #include "mongo/stdx/future.h"
@@ -62,12 +63,13 @@ TEST_F(ShardingCatalogClientAppendDbStatsTest, BasicAppendDBStats) {
 
     BSONArrayBuilder builder;
     auto future = launchAsync([this, &builder] {
-        ASSERT_OK(
-            catalogClient()->appendInfoForConfigServerDatabases(operationContext(), &builder));
+        ASSERT_OK(catalogClient()->appendInfoForConfigServerDatabases(
+            operationContext(), BSON("listDatabases" << 1), &builder));
     });
 
     onCommand([](const RemoteCommandRequest& request) {
-        ASSERT_BSONOBJ_EQ(kReplSecondaryOkMetadata, request.metadata);
+        ASSERT_BSONOBJ_EQ(kReplSecondaryOkMetadata,
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
         ASSERT_EQ("admin", request.dbname);
         ASSERT_BSONOBJ_EQ(BSON("listDatabases" << 1), request.cmdObj);
@@ -116,13 +118,49 @@ TEST_F(ShardingCatalogClientAppendDbStatsTest, BasicAppendDBStats) {
     ASSERT_TRUE(localIter == dbMap.end());
 }
 
+TEST_F(ShardingCatalogClientAppendDbStatsTest, AppendDBStatsWithFilter) {
+    configTargeter()->setFindHostReturnValue(HostAndPort("TestHost1"));
+
+    BSONArrayBuilder builder;
+    auto future = launchAsync([this, &builder] {
+        ASSERT_OK(catalogClient()->appendInfoForConfigServerDatabases(
+            operationContext(),
+            BSON("listDatabases" << 1 << "filter" << BSON("name"
+                                                          << "config")),
+            &builder));
+    });
+
+    onCommand([](const RemoteCommandRequest& request) {
+        ASSERT_BSONOBJ_EQ(kReplSecondaryOkMetadata,
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
+
+        ASSERT_EQ("admin", request.dbname);
+        ASSERT_BSONOBJ_EQ(BSON("listDatabases" << 1 << "filter" << BSON("name"
+                                                                        << "config")),
+                          request.cmdObj);
+
+        return fromjson(R"({
+            databases: [
+                {
+                    name: 'config',
+                    empty: false,
+                    sizeOnDisk: 40000
+                }
+            ],
+            ok: 1
+        })");
+    });
+
+    future.timed_get(kFutureTimeout);
+}
+
 TEST_F(ShardingCatalogClientAppendDbStatsTest, ErrorRunningListDatabases) {
     configTargeter()->setFindHostReturnValue(HostAndPort("TestHost1"));
 
     BSONArrayBuilder builder;
     auto future = launchAsync([this, &builder] {
-        auto status =
-            catalogClient()->appendInfoForConfigServerDatabases(operationContext(), &builder);
+        auto status = catalogClient()->appendInfoForConfigServerDatabases(
+            operationContext(), BSON("listDatabases" << 1), &builder);
         ASSERT_NOT_OK(status);
         ASSERT_EQ(ErrorCodes::AuthenticationFailed, status.code());
         ASSERT_FALSE(status.reason().empty());
@@ -140,8 +178,8 @@ TEST_F(ShardingCatalogClientAppendDbStatsTest, MalformedListDatabasesResponse) {
 
     BSONArrayBuilder builder;
     auto future = launchAsync([this, &builder] {
-        auto status =
-            catalogClient()->appendInfoForConfigServerDatabases(operationContext(), &builder);
+        auto status = catalogClient()->appendInfoForConfigServerDatabases(
+            operationContext(), BSON("listDatabases" << 1), &builder);
         ASSERT_NOT_OK(status);
         ASSERT_EQ(ErrorCodes::NoSuchKey, status.code());
         ASSERT_FALSE(status.reason().empty());
@@ -157,8 +195,8 @@ TEST_F(ShardingCatalogClientAppendDbStatsTest, MalformedListDatabasesEntryInResp
 
     BSONArrayBuilder builder;
     auto future = launchAsync([this, &builder] {
-        auto status =
-            catalogClient()->appendInfoForConfigServerDatabases(operationContext(), &builder);
+        auto status = catalogClient()->appendInfoForConfigServerDatabases(
+            operationContext(), BSON("listDatabases" << 1), &builder);
         ASSERT_NOT_OK(status);
         ASSERT_EQ(ErrorCodes::NoSuchKey, status.code());
         ASSERT_FALSE(status.reason().empty());

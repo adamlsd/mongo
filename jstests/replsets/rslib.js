@@ -1,3 +1,4 @@
+var syncFrom;
 var wait;
 var occasionally;
 var reconnect;
@@ -7,13 +8,39 @@ var reconfig;
 var awaitOpTime;
 var startSetIfSupportsReadMajority;
 var waitUntilAllNodesCaughtUp;
-var updateConfigIfNotDurable;
+var waitForState;
 var reInitiateWithoutThrowingOnAbortedMember;
+var awaitRSClientHosts;
+var getLastOpTime;
 
 (function() {
     "use strict";
+    load("jstests/libs/write_concern_util.js");
+
     var count = 0;
     var w = 0;
+
+    /**
+     * A wrapper around `replSetSyncFrom` to ensure that the desired sync source is ahead of the
+     * syncing node so that the syncing node can choose to sync from the desired sync source.
+     * It first stops replication on the syncing node so that it can do a write on the desired
+     * sync source and make sure it's ahead. When replication is restarted, the desired sync
+     * source will be a valid sync source for the syncing node.
+     */
+    syncFrom = function(syncingNode, desiredSyncSource, rst) {
+        jsTestLog("Forcing " + syncingNode.name + " to sync from " + desiredSyncSource.name);
+        stopServerReplication(syncingNode);
+        var dummyName = "dummyForSyncFrom";
+        assert.writeOK(rst.getPrimary().getDB(dummyName).getCollection(dummyName).insert({a: 1}));
+        // Wait for 'desiredSyncSource' to get the dummy write we just did so we know it's
+        // definitely ahead of 'syncingNode' before we call replSetSyncFrom.
+        assert.soonNoExcept(function() {
+            return desiredSyncSource.getDB(dummyName).getCollection(dummyName).findOne({a: 1});
+        });
+        assert.commandWorked(syncingNode.adminCommand({replSetSyncFrom: desiredSyncSource.name}));
+        restartServerReplication(syncingNode);
+        rst.awaitSyncSource(syncingNode, desiredSyncSource);
+    };
 
     wait = function(f, msg) {
         w++;
@@ -119,9 +146,10 @@ var reInitiateWithoutThrowingOnAbortedMember;
         var e;
         var master;
         try {
-            assert.commandWorked(admin.runCommand({replSetReconfig: config, force: force}));
+            assert.commandWorked(admin.runCommand(
+                {replSetReconfig: rs._updateConfigIfNotDurable(config), force: force}));
         } catch (e) {
-            if (tojson(e).indexOf("error doing query: failed") < 0) {
+            if (!isNetworkError(e)) {
                 throw e;
             }
         }
@@ -185,9 +213,17 @@ var reInitiateWithoutThrowingOnAbortedMember;
                 assert.eq(rs.length, rsStatus.members.length, tojson(rsStatus));
                 ot = rsStatus.members[0].optime;
                 for (var i = 1; i < rsStatus.members.length; ++i) {
-                    otherOt = rsStatus.members[i].optime;
-                    if (bsonWoCompare({ts: otherOt.ts}, {ts: ot.ts}) ||
-                        bsonWoCompare({t: otherOt.t}, {t: ot.t})) {
+                    var otherNode = rsStatus.members[i];
+
+                    // Must be in PRIMARY or SECONDARY state.
+                    if (otherNode.state != ReplSetTest.State.PRIMARY &&
+                        otherNode.state != ReplSetTest.State.SECONDARY) {
+                        return false;
+                    }
+
+                    // Fail if optimes are not equal.
+                    otherOt = otherNode.optime;
+                    if (!friendlyEqual(otherOt, ot)) {
                         firstConflictingIndex = i;
                         return false;
                     }
@@ -199,6 +235,17 @@ var reInitiateWithoutThrowingOnAbortedMember;
                     " (" + tojson(otherOt) + ") are different in " + tojson(rsStatus);
             },
             timeout);
+    };
+
+    /**
+     * Waits for the given node to reach the given state, ignoring network errors.
+     */
+    waitForState = function(node, state) {
+        assert.soonNoExcept(function() {
+            assert.commandWorked(node.adminCommand(
+                {replSetTest: 1, waitForMemberState: state, timeoutMillis: 60 * 1000 * 5}));
+            return true;
+        });
     };
 
     /**
@@ -224,19 +271,6 @@ var reInitiateWithoutThrowingOnAbortedMember;
     };
 
     /**
-     * Changes the replica set config if journaling/ephemal storage engine to set
-     * writeConcernMajorityJournalDefault to false.
-     */
-    updateConfigIfNotDurable = function(config) {
-        var runningWithoutJournaling = TestData.noJournal ||
-            0 != ["inMemory", "ephemeralForTest"].filter((a) => a == TestData.storageEngine).length;
-        if (runningWithoutJournaling) {
-            config.writeConcernMajorityJournalDefault = false;
-        }
-        return config;
-    };
-
-    /**
      * Performs a reInitiate() call on 'replSetTest', ignoring errors that are related to an aborted
      * secondary member. All other errors are rethrown.
      */
@@ -247,12 +281,114 @@ var reInitiateWithoutThrowingOnAbortedMember;
             // reInitiate can throw because it tries to run an ismaster command on
             // all secondaries, including the new one that may have already aborted
             const errMsg = tojson(e);
-            if (errMsg.indexOf("error doing query: failed") > -1 ||
-                errMsg.indexOf("socket exception") > -1) {
+            if (isNetworkError(e)) {
                 // Ignore these exceptions, which are indicative of an aborted node
             } else {
                 throw e;
             }
         }
+    };
+
+    /**
+     * Waits for the specified hosts to enter a certain state.
+     */
+    awaitRSClientHosts = function(conn, host, hostOk, rs, timeout) {
+        var hostCount = host.length;
+        if (hostCount) {
+            for (var i = 0; i < hostCount; i++) {
+                awaitRSClientHosts(conn, host[i], hostOk, rs);
+            }
+
+            return;
+        }
+
+        timeout = timeout || 5 * 60 * 1000;
+
+        if (hostOk == undefined)
+            hostOk = {ok: true};
+        if (host.host)
+            host = host.host;
+        if (rs)
+            rs = rs.name;
+
+        print("Awaiting " + host + " to be " + tojson(hostOk) + " for " + conn + " (rs: " + rs +
+              ")");
+
+        var tests = 0;
+
+        assert.soon(function() {
+            var rsClientHosts = conn.adminCommand('connPoolStats').replicaSets;
+            if (tests++ % 10 == 0) {
+                printjson(rsClientHosts);
+            }
+
+            for (var rsName in rsClientHosts) {
+                if (rs && rs != rsName)
+                    continue;
+
+                for (var i = 0; i < rsClientHosts[rsName].hosts.length; i++) {
+                    var clientHost = rsClientHosts[rsName].hosts[i];
+                    if (clientHost.addr != host)
+                        continue;
+
+                    // Check that *all* host properties are set correctly
+                    var propOk = true;
+                    for (var prop in hostOk) {
+                        // Use special comparator for tags because isMaster can return the fields in
+                        // different order. The fields of the tags should be treated like a set of
+                        // strings and 2 tags should be considered the same if the set is equal.
+                        if (prop == 'tags') {
+                            if (!clientHost.tags) {
+                                propOk = false;
+                                break;
+                            }
+
+                            for (var hostTag in hostOk.tags) {
+                                if (clientHost.tags[hostTag] != hostOk.tags[hostTag]) {
+                                    propOk = false;
+                                    break;
+                                }
+                            }
+
+                            for (var clientTag in clientHost.tags) {
+                                if (clientHost.tags[clientTag] != hostOk.tags[clientTag]) {
+                                    propOk = false;
+                                    break;
+                                }
+                            }
+
+                            continue;
+                        }
+
+                        if (isObject(hostOk[prop])) {
+                            if (!friendlyEqual(hostOk[prop], clientHost[prop])) {
+                                propOk = false;
+                                break;
+                            }
+                        } else if (clientHost[prop] != hostOk[prop]) {
+                            propOk = false;
+                            break;
+                        }
+                    }
+
+                    if (propOk) {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }, 'timed out waiting for replica set client to recognize hosts', timeout);
+    };
+
+    /**
+     * Returns the last opTime of the connection based from replSetGetStatus. Can only
+     * be used on replica set nodes.
+     */
+    getLastOpTime = function(conn) {
+        var replSetStatus =
+            assert.commandWorked(conn.getDB("admin").runCommand({replSetGetStatus: 1}));
+        var connStatus = replSetStatus.members.filter(m => m.self)[0];
+        return connStatus.optime;
     };
 }());

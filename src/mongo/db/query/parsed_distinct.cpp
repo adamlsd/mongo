@@ -35,6 +35,7 @@
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -53,7 +54,8 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
     // pipeline that looks like this:
     //
     //      [
-    //          { $match: { ... },
+    //          { $match: { ... } },
+    //          { $unwind: { path: "$<key>", preserveNullAndEmptyArrays: true } },
     //          { $group: { _id: null, distinct: { $addToSet: "$<key>" } } }
     //      ]
     BSONArrayBuilder pipelineBuilder(aggregationBuilder.subarrayStart("pipeline"));
@@ -62,6 +64,14 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
         matchStageBuilder.append("$match", qr.getFilter());
         matchStageBuilder.doneFast();
     }
+    BSONObjBuilder unwindStageBuilder(pipelineBuilder.subobjStart());
+    {
+        BSONObjBuilder unwindBuilder(unwindStageBuilder.subobjStart("$unwind"));
+        unwindBuilder.append("path", str::stream() << "$" << _key);
+        unwindBuilder.append("preserveNullAndEmptyArrays", true);
+        unwindBuilder.doneFast();
+    }
+    unwindStageBuilder.doneFast();
     BSONObjBuilder groupStageBuilder(pipelineBuilder.subobjStart());
     {
         BSONObjBuilder groupBuilder(groupStageBuilder.subobjStart("$group"));
@@ -76,9 +86,6 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
     groupStageBuilder.doneFast();
     pipelineBuilder.doneFast();
 
-    if (_query->getQueryRequest().isExplain()) {
-        aggregationBuilder.append("explain", true);
-    }
     aggregationBuilder.append(kCollationField, qr.getCollation());
 
     // Specify the 'cursor' option so that aggregation uses the cursor interface.
@@ -87,7 +94,7 @@ StatusWith<BSONObj> ParsedDistinct::asAggregationCommand() const {
     return aggregationBuilder.obj();
 }
 
-StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* txn,
+StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* opCtx,
                                                  const NamespaceString& nss,
                                                  const BSONObj& cmdObj,
                                                  const ExtensionsCallback& extensionsCallback,
@@ -132,7 +139,7 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* txn,
 
     qr->setExplain(isExplain);
 
-    auto cq = CanonicalQuery::canonicalize(txn, std::move(qr), extensionsCallback);
+    auto cq = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
     if (!cq.isOK()) {
         return cq.getStatus();
     }

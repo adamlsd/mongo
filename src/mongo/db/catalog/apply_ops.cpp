@@ -89,16 +89,14 @@ bool canBeAtomic(const BSONObj& applyOpCmd) {
     return true;
 }
 
-Status _applyOps(OperationContext* txn,
+Status _applyOps(OperationContext* opCtx,
                  const std::string& dbName,
                  const BSONObj& applyOpCmd,
                  BSONObjBuilder* result,
                  int* numApplied) {
-    dassert(txn->lockState()->isLockHeldForMode(
+    dassert(opCtx->lockState()->isLockHeldForMode(
         ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_GLOBAL), MODE_X));
 
-    bool shouldReplicateWrites = txn->writesAreReplicated();
-    txn->setReplicatedWrites(false);
     BSONObj ops = applyOpCmd.firstElement().Obj();
 
     // apply
@@ -109,91 +107,103 @@ Status _applyOps(OperationContext* txn,
     BSONArrayBuilder ab;
     const bool alwaysUpsert =
         applyOpCmd.hasField("alwaysUpsert") ? applyOpCmd["alwaysUpsert"].trueValue() : true;
-    const bool haveWrappingWUOW = txn->lockState()->inAWriteUnitOfWork();
+    const bool haveWrappingWUOW = opCtx->lockState()->inAWriteUnitOfWork();
 
-    while (i.more()) {
-        BSONElement e = i.next();
-        const BSONObj& opObj = e.Obj();
+    {
+        repl::UnreplicatedWritesBlock uwb(opCtx);
 
-        // Ignore 'n' operations.
-        const char* opType = opObj["op"].valuestrsafe();
-        if (*opType == 'n')
-            continue;
+        while (i.more()) {
+            BSONElement e = i.next();
+            const BSONObj& opObj = e.Obj();
 
-        const std::string ns = opObj["ns"].String();
+            // Ignore 'n' operations.
+            const char* opType = opObj["op"].valuestrsafe();
+            if (*opType == 'n')
+                continue;
 
-        // Need to check this here, or OldClientContext may fail an invariant.
-        if (*opType != 'c' && !NamespaceString(ns).isValid())
-            return {ErrorCodes::InvalidNamespace, "invalid ns: " + ns};
+            const std::string ns = opObj["ns"].String();
 
-        Status status(ErrorCodes::InternalError, "");
+            // Need to check this here, or OldClientContext may fail an invariant.
+            if (*opType != 'c' && !NamespaceString(ns).isValid())
+                return {ErrorCodes::InvalidNamespace, "invalid ns: " + ns};
 
-        if (haveWrappingWUOW) {
-            invariant(*opType != 'c');
+            Status status(ErrorCodes::InternalError, "");
 
-            OldClientContext ctx(txn, ns);
-            status = repl::applyOperation_inlock(txn, ctx.db(), opObj, alwaysUpsert);
-            if (!status.isOK())
-                return status;
-            logOpForDbHash(txn, ns.c_str());
-        } else {
-            try {
-                // Run operations under a nested lock as a hack to prevent yielding.
-                //
-                // The list of operations is supposed to be applied atomically; yielding
-                // would break atomicity by allowing an interruption or a shutdown to occur
-                // after only some operations are applied.  We are already locked globally
-                // at this point, so taking a DBLock on the namespace creates a nested lock,
-                // and yields are disallowed for operations that hold a nested lock.
-                //
-                // We do not have a wrapping WriteUnitOfWork so it is possible for a journal
-                // commit to happen with a subset of ops applied.
-                Lock::GlobalWrite globalWriteLockDisallowTempRelease(txn->lockState());
+            if (haveWrappingWUOW) {
+                invariant(*opType != 'c');
 
-                // Ensures that yielding will not happen (see the comment above).
-                DEV {
-                    Locker::LockSnapshot lockSnapshot;
-                    invariant(!txn->lockState()->saveLockStateAndUnlock(&lockSnapshot));
-                };
-
-                MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                    if (*opType == 'c') {
-                        status = repl::applyCommand_inlock(txn, opObj, true);
-                    } else {
-                        OldClientContext ctx(txn, ns);
-
-                        status = repl::applyOperation_inlock(txn, ctx.db(), opObj, alwaysUpsert);
-                    }
+                if (!dbHolder().get(opCtx, ns)) {
+                    throw DBException(
+                        "cannot create a database in atomic applyOps mode; will retry without "
+                        "atomicity",
+                        ErrorCodes::NamespaceNotFound);
                 }
-                MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "applyOps", ns);
-            } catch (const DBException& ex) {
-                ab.append(false);
-                result->append("applied", ++(*numApplied));
-                result->append("code", ex.getCode());
-                result->append("codeName",
-                               ErrorCodes::errorString(ErrorCodes::fromInt(ex.getCode())));
-                result->append("errmsg", ex.what());
-                result->append("results", ab.arr());
-                return Status(ErrorCodes::UnknownError, "");
+
+                OldClientContext ctx(opCtx, ns);
+                status = repl::applyOperation_inlock(opCtx, ctx.db(), opObj, alwaysUpsert);
+                if (!status.isOK())
+                    return status;
+                logOpForDbHash(opCtx, ns.c_str());
+            } else {
+                try {
+                    // Run operations under a nested lock as a hack to prevent yielding.
+                    //
+                    // The list of operations is supposed to be applied atomically; yielding
+                    // would break atomicity by allowing an interruption or a shutdown to occur
+                    // after only some operations are applied.  We are already locked globally
+                    // at this point, so taking a DBLock on the namespace creates a nested lock,
+                    // and yields are disallowed for operations that hold a nested lock.
+                    //
+                    // We do not have a wrapping WriteUnitOfWork so it is possible for a journal
+                    // commit to happen with a subset of ops applied.
+                    Lock::GlobalWrite globalWriteLockDisallowTempRelease(opCtx);
+
+                    // Ensures that yielding will not happen (see the comment above).
+                    DEV {
+                        Locker::LockSnapshot lockSnapshot;
+                        invariant(!opCtx->lockState()->saveLockStateAndUnlock(&lockSnapshot));
+                    };
+
+                    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+                        if (*opType == 'c') {
+                            status = repl::applyCommand_inlock(opCtx, opObj, true);
+                        } else {
+                            OldClientContext ctx(opCtx, ns);
+
+                            status =
+                                repl::applyOperation_inlock(opCtx, ctx.db(), opObj, alwaysUpsert);
+                        }
+                    }
+                    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "applyOps", ns);
+                } catch (const DBException& ex) {
+                    ab.append(false);
+                    result->append("applied", ++(*numApplied));
+                    result->append("code", ex.getCode());
+                    result->append("codeName",
+                                   ErrorCodes::errorString(ErrorCodes::fromInt(ex.getCode())));
+                    result->append("errmsg", ex.what());
+                    result->append("results", ab.arr());
+                    return Status(ErrorCodes::UnknownError, ex.what());
+                }
+                WriteUnitOfWork wuow(opCtx);
+                logOpForDbHash(opCtx, ns.c_str());
+                wuow.commit();
             }
-            WriteUnitOfWork wuow(txn);
-            logOpForDbHash(txn, ns.c_str());
-            wuow.commit();
+
+            ab.append(status.isOK());
+            if (!status.isOK()) {
+                log() << "applyOps error applying: " << status;
+                errors++;
+            }
+
+            (*numApplied)++;
         }
 
-        ab.append(status.isOK());
-        if (!status.isOK()) {
-            errors++;
-        }
+        result->append("applied", *numApplied);
+        result->append("results", ab.arr());
+    }  // set replicatedWrites back to original value
 
-        (*numApplied)++;
-    }
-
-    result->append("applied", *numApplied);
-    result->append("results", ab.arr());
-    txn->setReplicatedWrites(shouldReplicateWrites);
-
-    if (txn->writesAreReplicated()) {
+    if (opCtx->writesAreReplicated()) {
         // We want this applied atomically on slaves
         // so we re-wrap without the pre-condition for speed
 
@@ -217,7 +227,7 @@ Status _applyOps(OperationContext* txn,
         auto opObserver = getGlobalServiceContext()->getOpObserver();
         invariant(opObserver);
         if (haveWrappingWUOW) {
-            opObserver->onApplyOps(txn, tempNS, cmdRewritten);
+            opObserver->onApplyOps(opCtx, tempNS, cmdRewritten);
         } else {
             // When executing applyOps outside of a wrapping WriteUnitOfWOrk, always logOp the
             // command regardless of whether the individial ops succeeded and rely on any
@@ -225,14 +235,14 @@ Status _applyOps(OperationContext* txn,
             // has always done and is part of its "correct" behavior.
             while (true) {
                 try {
-                    WriteUnitOfWork wunit(txn);
-                    opObserver->onApplyOps(txn, tempNS, cmdRewritten);
+                    WriteUnitOfWork wunit(opCtx);
+                    opObserver->onApplyOps(opCtx, tempNS, cmdRewritten);
 
                     wunit.commit();
                     break;
                 } catch (const WriteConflictException& wce) {
                     LOG(2) << "WriteConflictException while logging applyOps command, retrying.";
-                    txn->recoveryUnit()->abandonSnapshot();
+                    opCtx->recoveryUnit()->abandonSnapshot();
                     continue;
                 }
             }
@@ -240,14 +250,14 @@ Status _applyOps(OperationContext* txn,
     }
 
     if (errors != 0) {
-        return Status(ErrorCodes::UnknownError, "");
+        return Status(ErrorCodes::UnknownError, "applyOps had one or more errors applying ops");
     }
 
     return Status::OK();
 }
 
-Status preconditionOK(OperationContext* txn, const BSONObj& applyOpCmd, BSONObjBuilder* result) {
-    dassert(txn->lockState()->isLockHeldForMode(
+Status preconditionOK(OperationContext* opCtx, const BSONObj& applyOpCmd, BSONObjBuilder* result) {
+    dassert(opCtx->lockState()->isLockHeldForMode(
         ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_GLOBAL), MODE_X));
 
     if (applyOpCmd["preCondition"].type() == Array) {
@@ -264,11 +274,11 @@ Status preconditionOK(OperationContext* txn, const BSONObj& applyOpCmd, BSONObjB
                 return {ErrorCodes::InvalidNamespace, "invalid ns: " + nss.ns()};
             }
 
-            DBDirectClient db(txn);
+            DBDirectClient db(opCtx);
             BSONObj realres = db.findOne(nss.ns(), preCondition["q"].Obj());
 
             // Get collection default collation.
-            Database* database = dbHolder().get(txn, nss.db());
+            Database* database = dbHolder().get(opCtx, nss.db());
             if (!database) {
                 return {ErrorCodes::NamespaceNotFound,
                         "database in ns does not exist: " + nss.ns()};
@@ -295,41 +305,43 @@ Status preconditionOK(OperationContext* txn, const BSONObj& applyOpCmd, BSONObjB
 }
 }  // namespace
 
-Status applyOps(OperationContext* txn,
+Status applyOps(OperationContext* opCtx,
                 const std::string& dbName,
                 const BSONObj& applyOpCmd,
                 BSONObjBuilder* result) {
-    // SERVER-4328 todo : is global ok or does this take a long time? i believe multiple
-    // ns used so locking individually requires more analysis
-    ScopedTransaction scopedXact(txn, MODE_X);
-    Lock::GlobalWrite globalWriteLock(txn->lockState());
+    Lock::GlobalWrite globalWriteLock(opCtx);
 
-    bool userInitiatedWritesAndNotPrimary = txn->writesAreReplicated() &&
-        !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(dbName);
+    bool userInitiatedWritesAndNotPrimary = opCtx->writesAreReplicated() &&
+        !repl::getGlobalReplicationCoordinator()->canAcceptWritesForDatabase(opCtx, dbName);
 
     if (userInitiatedWritesAndNotPrimary)
         return Status(ErrorCodes::NotMaster,
                       str::stream() << "Not primary while applying ops to database " << dbName);
 
-    Status preconditionStatus = preconditionOK(txn, applyOpCmd, result);
+    Status preconditionStatus = preconditionOK(opCtx, applyOpCmd, result);
     if (!preconditionStatus.isOK()) {
         return preconditionStatus;
     }
 
     int numApplied = 0;
     if (!canBeAtomic(applyOpCmd))
-        return _applyOps(txn, dbName, applyOpCmd, result, &numApplied);
+        return _applyOps(opCtx, dbName, applyOpCmd, result, &numApplied);
 
     // Perform write ops atomically
     try {
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-            WriteUnitOfWork wunit(txn);
+            WriteUnitOfWork wunit(opCtx);
             numApplied = 0;
-            uassertStatusOK(_applyOps(txn, dbName, applyOpCmd, result, &numApplied));
+            uassertStatusOK(_applyOps(opCtx, dbName, applyOpCmd, result, &numApplied));
             wunit.commit();
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "applyOps", dbName);
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "applyOps", dbName);
     } catch (const DBException& ex) {
+        if (ex.getCode() == ErrorCodes::NamespaceNotFound) {
+            // Retry in non-atomic mode, since MMAP cannot implicitly create a new database
+            // within an active WriteUnitOfWork.
+            return _applyOps(opCtx, dbName, applyOpCmd, result, &numApplied);
+        }
         BSONArrayBuilder ab;
         ++numApplied;
         for (int j = 0; j < numApplied; j++)
@@ -339,7 +351,7 @@ Status applyOps(OperationContext* txn,
         result->append("codeName", ErrorCodes::errorString(ErrorCodes::fromInt(ex.getCode())));
         result->append("errmsg", ex.what());
         result->append("results", ab.arr());
-        return Status(ErrorCodes::UnknownError, "");
+        return Status(ErrorCodes::UnknownError, ex.what());
     }
 
     return Status::OK();

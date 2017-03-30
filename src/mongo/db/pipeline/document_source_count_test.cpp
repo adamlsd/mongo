@@ -37,7 +37,9 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/document.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_count.h"
+#include "mongo/db/pipeline/document_source_group.h"
+#include "mongo/db/pipeline/document_source_single_document_transformation.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/value.h"
 
@@ -61,7 +63,7 @@ public:
             dynamic_cast<DocumentSourceSingleDocumentTransformation*>(result[1].get());
         ASSERT(projectStage);
 
-        const bool explain = true;
+        auto explain = ExplainOptions::Verbosity::kQueryPlanner;
         vector<Value> explainedStages;
         groupStage->serializeToArray(explainedStages, explain);
         projectStage->serializeToArray(explainedStages, explain);

@@ -34,14 +34,14 @@
 #include <memory>
 
 #include "mongo/bson/bsonelement.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_single_document_transformation.h"
 #include "mongo/db/pipeline/field_path.h"
 
 namespace mongo {
 
 class BSONObj;
 class Document;
-struct ExpressionContext;
+class ExpressionContext;
 
 namespace parsed_aggregation_projection {
 
@@ -117,7 +117,8 @@ public:
      *
      * Throws a UserException if 'spec' is an invalid projection specification.
      */
-    static std::unique_ptr<ParsedAggregationProjection> create(const BSONObj& spec);
+    static std::unique_ptr<ParsedAggregationProjection> create(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx, const BSONObj& spec);
 
     virtual ~ParsedAggregationProjection() = default;
 
@@ -132,17 +133,13 @@ public:
      * inclusions and exclusions. 'variablesParseState' is used by any contained expressions to
      * track which variables are defined so that they can later be referenced at execution time.
      */
-    virtual void parse(const BSONObj& spec) = 0;
+    virtual void parse(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                       const BSONObj& spec) = 0;
 
     /**
      * Optimize any expressions contained within this projection.
      */
     virtual void optimize() {}
-
-    /**
-     * Inject the ExpressionContext into any expressions contained within this projection.
-     */
-    virtual void injectExpressionContext(const boost::intrusive_ptr<ExpressionContext>& expCtx) {}
 
     /**
      * Add any dependencies needed by this projection or any sub-expressions to 'deps'.

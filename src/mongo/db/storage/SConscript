@@ -1,4 +1,7 @@
+# -*- mode: python -*-
 Import("env")
+
+env = env.Clone()
 
 env.SConscript(
     dirs=[
@@ -7,6 +10,9 @@ env.SConscript(
         'kv',
         'mmap_v1',
         'wiredtiger',
+    ],
+    exports=[
+        'env'
     ],
 )
 
@@ -64,16 +70,6 @@ env.Library(
     )
 
 env.Library(
-    target='paths',
-    source=[
-        'paths.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-    ],
-)
-
-env.Library(
     target='storage_options',
     source=[
         'storage_options.cpp',
@@ -81,6 +77,18 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/server_parameters',
     ],
+)
+
+env.Library(
+    target='test_harness_helper',
+    source=[
+        'test_harness_helper.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/db/service_context',
+    ],
+
 )
 
 env.Library(
@@ -109,10 +117,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/unittest/unittest',
         'index_entry_comparison',
-    ],
-    LIBDEPS_TAGS=[
-        # Depends on newHarnessHelper, which does not have a unique definition
-        'incomplete',
+        'test_harness_helper',
     ],
 
 )
@@ -142,11 +147,8 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/unittest/unittest',
+        'test_harness_helper',
         ],
-    LIBDEPS_TAGS=[
-        # Depends on newHarnessHelper, which does not have a unique definition
-        'incomplete',
-    ],
     )
 
 env.Library(
@@ -155,10 +157,20 @@ env.Library(
         'storage_engine_lock_file_${TARGET_OS_FAMILY}.cpp',
         ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/platform/platform',
-        'paths',
+        '$BUILD_DIR/mongo/base',
         ]
     )
+
+env.Library(
+    target="storage_init_d",
+    source=[
+        "storage_init.cpp",
+    ],
+    LIBDEPS=[
+        "$BUILD_DIR/mongo/db/commands/core",
+        "storage_options",
+    ],
+)
 
 env.CppUnitTest(
     target= 'storage_engine_lock_file_test',

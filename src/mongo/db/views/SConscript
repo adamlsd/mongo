@@ -2,6 +2,8 @@
 
 Import("env")
 
+env = env.Clone()
+
 env.Library(
     target='views_mongod',
     source=[
@@ -11,9 +13,13 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/views/views',
-        '$BUILD_DIR/mongo/db/catalog/catalog',
         '$BUILD_DIR/mongo/db/s/sharding',
-    ]
+        #'$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
+    ],
+    LIBDEPS_TAGS=[
+        # TODO(ADAM, 2017-03-10): See `CYCLE` tags above.
+        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
+    ],
 )
 
 env.Library(
@@ -34,15 +40,19 @@ env.Library(
 )
 
 env.CppUnitTest(
-    target='view_catalog_test',
+    target='views_test',
     source=[
+        'resolved_view_test.cpp',
         'view_catalog_test.cpp',
+        'view_definition_test.cpp',
     ],
     LIBDEPS=[
         'views',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/query/collation/collator_interface_mock',
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/is_mongos',
         '$BUILD_DIR/mongo/unittest/unittest',
     ],
 )

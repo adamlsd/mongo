@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -54,14 +55,13 @@ public:
     // ---------
 
     /**
-     * Caller takes ownership
      * Having multiple out for the same ns is a rules violation;
      * Calling on a non-created ident is invalid and may crash.
      */
-    virtual RecordStore* getRecordStore(OperationContext* opCtx,
-                                        StringData ns,
-                                        StringData ident,
-                                        const CollectionOptions& options) = 0;
+    virtual std::unique_ptr<RecordStore> getRecordStore(OperationContext* opCtx,
+                                                        StringData ns,
+                                                        StringData ident,
+                                                        const CollectionOptions& options) = 0;
 
     virtual SortedDataInterface* getSortedDataInterface(OperationContext* opCtx,
                                                         StringData ident,
@@ -91,14 +91,14 @@ public:
     virtual Status dropIdent(OperationContext* opCtx, StringData ident) = 0;
 
     // optional
-    virtual int flushAllFiles(bool sync) {
+    virtual int flushAllFiles(OperationContext* opCtx, bool sync) {
         return 0;
     }
 
     /**
      * See StorageEngine::beginBackup for details
      */
-    virtual Status beginBackup(OperationContext* txn) {
+    virtual Status beginBackup(OperationContext* opCtx) {
         return Status(ErrorCodes::CommandNotSupported,
                       "The current storage engine doesn't support backup mode");
     }
@@ -106,7 +106,7 @@ public:
     /**
      * See StorageEngine::endBackup for details
      */
-    virtual void endBackup(OperationContext* txn) {
+    virtual void endBackup(OperationContext* opCtx) {
         MONGO_UNREACHABLE;
     }
 

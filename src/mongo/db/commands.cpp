@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "mongo/bson/mutable/document.h"
+#include "mongo/bson/timestamp.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -106,23 +107,13 @@ string Command::parseNs(const string& dbname, const BSONObj& cmdObj) const {
     if (first.type() != mongo::String)
         return dbname;
 
-    string coll = cmdObj.firstElement().valuestr();
-#if defined(CLC)
-    DEV if (mongoutils::str::startsWith(coll, dbname + '.')) {
-        log() << "DEBUG parseNs Command's collection name looks like it includes the db name\n"
-              << dbname << '\n'
-              << coll << '\n'
-              << cmdObj.toString();
-        dassert(false);
-    }
-#endif
-    return dbname + '.' + coll;
+    return str::stream() << dbname << '.' << cmdObj.firstElement().valueStringData();
 }
 
 ResourcePattern Command::parseResourcePattern(const std::string& dbname,
                                               const BSONObj& cmdObj) const {
-    std::string ns = parseNs(dbname, cmdObj);
-    if (ns.find('.') == std::string::npos) {
+    const std::string ns = parseNs(dbname, cmdObj);
+    if (!NamespaceString::validCollectionComponent(ns)) {
         return ResourcePattern::forDatabaseName(ns);
     }
     return ResourcePattern::forExactNamespace(NamespaceString(ns));
@@ -152,10 +143,10 @@ void Command::help(stringstream& help) const {
     help << "no help defined";
 }
 
-Status Command::explain(OperationContext* txn,
+Status Command::explain(OperationContext* opCtx,
                         const string& dbname,
                         const BSONObj& cmdObj,
-                        ExplainCommon::Verbosity verbosity,
+                        ExplainOptions::Verbosity verbosity,
                         const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                         BSONObjBuilder* out) const {
     return {ErrorCodes::IllegalOperation, str::stream() << "Cannot explain cmd: " << getName()};
@@ -205,10 +196,14 @@ void Command::appendCommandWCStatus(BSONObjBuilder& result,
     }
 }
 
-Status Command::checkAuthForOperation(OperationContext* txn,
+void Command::appendOperationTime(BSONObjBuilder& result, LogicalTime operationTime) {
+    result.append("operationTime", operationTime.asTimestamp());
+}
+
+Status Command::checkAuthForOperation(OperationContext* opCtx,
                                       const std::string& dbname,
                                       const BSONObj& cmdObj) {
-    return checkAuthForCommand(txn->getClient(), dbname, cmdObj);
+    return checkAuthForCommand(opCtx->getClient(), dbname, cmdObj);
 }
 
 Status Command::checkAuthForCommand(Client* client,
@@ -233,18 +228,18 @@ BSONObj Command::getRedactedCopyForLogging(const BSONObj& cmdObj) {
 }
 
 static Status _checkAuthorizationImpl(Command* c,
-                                      OperationContext* txn,
+                                      OperationContext* opCtx,
                                       const std::string& dbname,
                                       const BSONObj& cmdObj) {
     namespace mmb = mutablebson;
-    auto client = txn->getClient();
+    auto client = opCtx->getClient();
     if (c->adminOnly() && dbname != "admin") {
         return Status(ErrorCodes::Unauthorized,
                       str::stream() << c->getName()
                                     << " may only be run against the admin database.");
     }
     if (AuthorizationSession::get(client)->getAuthorizationManager().isAuthEnabled()) {
-        Status status = c->checkAuthForOperation(txn, dbname, cmdObj);
+        Status status = c->checkAuthForOperation(opCtx, dbname, cmdObj);
         if (status == ErrorCodes::Unauthorized) {
             mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
             c->redactForLogging(&cmdToLog);
@@ -265,15 +260,15 @@ static Status _checkAuthorizationImpl(Command* c,
 }
 
 Status Command::checkAuthorization(Command* c,
-                                   OperationContext* txn,
+                                   OperationContext* opCtx,
                                    const std::string& dbname,
                                    const BSONObj& cmdObj) {
     namespace mmb = mutablebson;
-    Status status = _checkAuthorizationImpl(c, txn, dbname, cmdObj);
+    Status status = _checkAuthorizationImpl(c, opCtx, dbname, cmdObj);
     if (!status.isOK()) {
         log(LogComponent::kAccessControl) << status;
     }
-    audit::logCommandAuthzCheck(txn->getClient(), dbname, cmdObj, c, status.code());
+    audit::logCommandAuthzCheck(opCtx->getClient(), dbname, cmdObj, c, status.code());
     return status;
 }
 
@@ -283,7 +278,7 @@ bool Command::isHelpRequest(const BSONElement& helpElem) {
 
 const char Command::kHelpFieldName[] = "help";
 
-void Command::generateHelpResponse(OperationContext* txn,
+void Command::generateHelpResponse(OperationContext* opCtx,
                                    const rpc::RequestInterface& request,
                                    rpc::ReplyBuilderInterface* replyBuilder,
                                    const Command& command) {
@@ -299,11 +294,11 @@ void Command::generateHelpResponse(OperationContext* txn,
 
 namespace {
 
-void _generateErrorResponse(OperationContext* txn,
+void _generateErrorResponse(OperationContext* opCtx,
                             rpc::ReplyBuilderInterface* replyBuilder,
                             const DBException& exception,
                             const BSONObj& metadata) {
-    Command::registerError(txn, exception);
+    Command::registerError(opCtx, exception);
 
     // We could have thrown an exception after setting fields in the builder,
     // so we need to reset it to a clean state just to be sure.
@@ -325,9 +320,55 @@ void _generateErrorResponse(OperationContext* txn,
     replyBuilder->setMetadata(metadata);
 }
 
+void _generateErrorResponse(OperationContext* opCtx,
+                            rpc::ReplyBuilderInterface* replyBuilder,
+                            const DBException& exception,
+                            const BSONObj& metadata,
+                            LogicalTime operationTime) {
+    Command::registerError(opCtx, exception);
+
+    // We could have thrown an exception after setting fields in the builder,
+    // so we need to reset it to a clean state just to be sure.
+    replyBuilder->reset();
+
+    // We need to include some extra information for SendStaleConfig.
+    if (exception.getCode() == ErrorCodes::SendStaleConfig) {
+        const SendStaleConfigException& scex =
+            static_cast<const SendStaleConfigException&>(exception);
+        replyBuilder->setCommandReply(scex.toStatus(),
+                                      BSON("ns" << scex.getns() << "vReceived"
+                                                << BSONArray(scex.getVersionReceived().toBSON())
+                                                << "vWanted"
+                                                << BSONArray(scex.getVersionWanted().toBSON())
+                                                << "operationTime"
+                                                << operationTime.asTimestamp()));
+    } else {
+        replyBuilder->setCommandReply(exception.toStatus(),
+                                      BSON("operationTime" << operationTime.asTimestamp()));
+    }
+
+    replyBuilder->setMetadata(metadata);
+}
+
 }  // namespace
 
-void Command::generateErrorResponse(OperationContext* txn,
+void Command::generateErrorResponse(OperationContext* opCtx,
+                                    rpc::ReplyBuilderInterface* replyBuilder,
+                                    const DBException& exception,
+                                    const rpc::RequestInterface& request,
+                                    Command* command,
+                                    const BSONObj& metadata,
+                                    LogicalTime operationTime) {
+    LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
+           << "on database '" << request.getDatabase() << "' "
+           << "with arguments '" << command->getRedactedCopyForLogging(request.getCommandArgs())
+           << "' metadata '" << request.getMetadata() << "' and operationTime '"
+           << operationTime.toString() << "': " << exception.toString();
+
+    _generateErrorResponse(opCtx, replyBuilder, exception, metadata, operationTime);
+}
+
+void Command::generateErrorResponse(OperationContext* opCtx,
                                     rpc::ReplyBuilderInterface* replyBuilder,
                                     const DBException& exception,
                                     const rpc::RequestInterface& request,
@@ -339,24 +380,24 @@ void Command::generateErrorResponse(OperationContext* txn,
            << "' "
            << "and metadata '" << request.getMetadata() << "': " << exception.toString();
 
-    _generateErrorResponse(txn, replyBuilder, exception, metadata);
+    _generateErrorResponse(opCtx, replyBuilder, exception, metadata);
 }
 
-void Command::generateErrorResponse(OperationContext* txn,
+void Command::generateErrorResponse(OperationContext* opCtx,
                                     rpc::ReplyBuilderInterface* replyBuilder,
                                     const DBException& exception,
                                     const rpc::RequestInterface& request) {
     LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
            << "on database '" << request.getDatabase() << "': " << exception.toString();
 
-    _generateErrorResponse(txn, replyBuilder, exception, rpc::makeEmptyMetadata());
+    _generateErrorResponse(opCtx, replyBuilder, exception, rpc::makeEmptyMetadata());
 }
 
-void Command::generateErrorResponse(OperationContext* txn,
+void Command::generateErrorResponse(OperationContext* opCtx,
                                     rpc::ReplyBuilderInterface* replyBuilder,
                                     const DBException& exception) {
     LOG(1) << "assertion while executing command: " << exception.toString();
-    _generateErrorResponse(txn, replyBuilder, exception, rpc::makeEmptyMetadata());
+    _generateErrorResponse(opCtx, replyBuilder, exception, rpc::makeEmptyMetadata());
 }
 
 namespace {
@@ -382,4 +423,36 @@ bool Command::isUserManagementCommand(const std::string& name) {
     return userManagementCommands.count(name);
 }
 
+namespace {
+stdx::function<void(OperationContext*, const DBException&)> registeredRegisterErrorHandler =
+    [](OperationContext*, const DBException&) { fassertFailed(40357); };
+}  // namespace
+
+void Command::registerRegisterError(
+    stdx::function<void(OperationContext*, const DBException&)> handler) {
+    registeredRegisterErrorHandler = std::move(handler);
+}
+
+void Command::registerError(OperationContext* const opCtx, const DBException& exception) {
+    registeredRegisterErrorHandler(opCtx, exception);
+}
+
+namespace {
+stdx::function<Command::ExecCommandHandler> execCommandHandler =
+    [](OperationContext* const,
+       Command* const,
+       const rpc::RequestInterface&,
+       rpc::ReplyBuilderInterface* const) { invariant(false); };
+}  // namespace
+
+void Command::execCommand(OperationContext* const opCtx,
+                          Command* const command,
+                          const rpc::RequestInterface& request,
+                          rpc::ReplyBuilderInterface* const replyBuilder) {
+    execCommandHandler(opCtx, command, request, replyBuilder);
+}
+
+void Command::registerExecCommand(stdx::function<Command::ExecCommandHandler> handler) {
+    execCommandHandler = std::move(handler);
+}
 }  // namespace mongo

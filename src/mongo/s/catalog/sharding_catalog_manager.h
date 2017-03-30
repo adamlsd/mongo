@@ -29,6 +29,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/stdx/memory.h"
@@ -40,9 +41,9 @@ class ChunkRange;
 class ConnectionString;
 class NamespaceString;
 class OperationContext;
-class RemoteCommandTargeter;
 class ShardId;
 class ShardType;
+class ChunkType;
 class Status;
 template <typename T>
 class StatusWith;
@@ -82,7 +83,7 @@ public:
     /**
      * Performs necessary cleanup when shutting down cleanly.
      */
-    virtual void shutDown(OperationContext* txn) = 0;
+    virtual void shutDown(OperationContext* opCtx) = 0;
 
     /**
      *
@@ -97,7 +98,7 @@ public:
      *         no limitation to space usage.
      * @return either an !OK status or the name of the newly added shard.
      */
-    virtual StatusWith<std::string> addShard(OperationContext* txn,
+    virtual StatusWith<std::string> addShard(OperationContext* opCtx,
                                              const std::string* shardProposedName,
                                              const ConnectionString& shardConnectionString,
                                              const long long maxSize) = 0;
@@ -106,7 +107,7 @@ public:
      * Adds the shard to the zone.
      * Returns ErrorCodes::ShardNotFound if the shard does not exist.
      */
-    virtual Status addShardToZone(OperationContext* txn,
+    virtual Status addShardToZone(OperationContext* opCtx,
                                   const std::string& shardName,
                                   const std::string& zoneName) = 0;
 
@@ -114,7 +115,7 @@ public:
      * Removes the shard from the zone.
      * Returns ErrorCodes::ShardNotFound if the shard does not exist.
      */
-    virtual Status removeShardFromZone(OperationContext* txn,
+    virtual Status removeShardFromZone(OperationContext* opCtx,
                                        const std::string& shardName,
                                        const std::string& zoneName) = 0;
 
@@ -123,7 +124,7 @@ public:
      * the shard key, the range will be converted into a new range with full shard key filled
      * with MinKey values.
      */
-    virtual Status assignKeyRangeToZone(OperationContext* txn,
+    virtual Status assignKeyRangeToZone(OperationContext* opCtx,
                                         const NamespaceString& ns,
                                         const ChunkRange& range,
                                         const std::string& zoneName) = 0;
@@ -133,15 +134,15 @@ public:
      * Note: unlike assignKeyRangeToZone, the given range will never be converted to include the
      * full shard key.
      */
-    virtual Status removeKeyRangeFromZone(OperationContext* txn,
+    virtual Status removeKeyRangeFromZone(OperationContext* opCtx,
                                           const NamespaceString& ns,
                                           const ChunkRange& range) = 0;
 
     /**
-     * Updates chunk metadata in config.chunks collection to reflect the given chunk being split
-     * into multiple smaller chunks based on the specified split points.
+     * Updates metadata in config.chunks collection to show the given chunk as split
+     * into smaller chunks at the specified split points.
      */
-    virtual Status commitChunkSplit(OperationContext* txn,
+    virtual Status commitChunkSplit(OperationContext* opCtx,
                                     const NamespaceString& ns,
                                     const OID& requestEpoch,
                                     const ChunkRange& range,
@@ -149,14 +150,25 @@ public:
                                     const std::string& shardName) = 0;
 
     /**
-     * Updates chunk metadata in config.chunks collection to reflect the given chunks being merged
-     * into a single larger chunk based on the specified boundaries of the smaller chunks.
+     * Updates metadata in config.chunks collection so the chunks with given boundaries are seen
+     * merged into a single larger chunk.
      */
-    virtual Status commitChunkMerge(OperationContext* txn,
+    virtual Status commitChunkMerge(OperationContext* opCtx,
                                     const NamespaceString& ns,
                                     const OID& requestEpoch,
                                     const std::vector<BSONObj>& chunkBoundaries,
                                     const std::string& shardName) = 0;
+
+    /**
+     * Updates metadata in config.chunks collection to show the given chunk in its new shard.
+     */
+    virtual StatusWith<BSONObj> commitChunkMigration(OperationContext* opCtx,
+                                                     const NamespaceString& nss,
+                                                     const ChunkType& migratedChunk,
+                                                     const boost::optional<ChunkType>& controlChunk,
+                                                     const OID& collectionEpoch,
+                                                     const ShardId& fromShard,
+                                                     const ShardId& toShard) = 0;
 
     /**
      * Append information about the connection pools owned by the CatalogManager.
@@ -167,7 +179,7 @@ public:
      * Initializes the collections that live in the config server.  Mostly this involves building
      * necessary indexes and populating the config.version document.
      */
-    virtual Status initializeConfigDatabaseIfNeeded(OperationContext* txn) = 0;
+    virtual Status initializeConfigDatabaseIfNeeded(OperationContext* opCtx) = 0;
 
     /**
      * Called if the config.version document is rolled back.  Indicates to the
@@ -178,39 +190,18 @@ public:
     virtual void discardCachedConfigDatabaseInitializationState() = 0;
 
     /**
-     * For upgrade from 3.2 to 3.4, for each shard in config.shards that is not marked as sharding
-     * aware, schedules a task to upsert a shardIdentity doc into the shard and mark the shard as
-     * sharding aware.
-     */
-    virtual Status initializeShardingAwarenessOnUnawareShards(OperationContext* txn) = 0;
-
-    /**
-     * For rolling upgrade and backwards compatibility with 3.2 mongos, schedules an asynchronous
-     * task against addShard executor to upsert a shardIdentity doc into the new shard described by
-     * shardType. On failure to upsert the doc on the shard, the task reschedules itself with a
-     * delay indefinitely, and is canceled only when a removeShard is called.
-     */
-    virtual Status upsertShardIdentityOnShard(OperationContext* txn, ShardType shardType) = 0;
-
-    /**
      * Returns a BSON representation of an update request that can be used to insert a
      * shardIdentity doc into the shard for the given shardType (or update the shard's existing
      * shardIdentity doc's configsvrConnString if the _id, shardName, and clusterId do not
      * conflict).
      */
-    virtual BSONObj createShardIdentityUpsertForAddShard(OperationContext* txn,
+    virtual BSONObj createShardIdentityUpsertForAddShard(OperationContext* opCtx,
                                                          const std::string& shardName) = 0;
-
-    /**
-     * For rolling upgrade and backwards compatibility, cancels a pending addShard task to upsert
-     * a shardIdentity document into the shard with id shardId (if there is such a task pending).
-     */
-    virtual void cancelAddShardTaskIfNeeded(const ShardId& shardId) = 0;
 
     /**
      * Runs the setFeatureCompatibilityVersion command on all shards.
      */
-    virtual Status setFeatureCompatibilityVersionOnShards(OperationContext* txn,
+    virtual Status setFeatureCompatibilityVersionOnShards(OperationContext* opCtx,
                                                           const std::string& version) = 0;
 
 protected:

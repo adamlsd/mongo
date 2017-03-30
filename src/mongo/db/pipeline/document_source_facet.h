@@ -43,7 +43,7 @@ namespace mongo {
 class BSONElement;
 class TeeBuffer;
 class DocumentSourceTeeConsumer;
-struct ExpressionContext;
+class ExpressionContext;
 class NamespaceString;
 
 /**
@@ -98,11 +98,6 @@ public:
     boost::intrusive_ptr<DocumentSource> optimize() final;
 
     /**
-     * Injects the expression context into inner pipelines.
-     */
-    void doInjectExpressionContext() final;
-
-    /**
      * Takes a union of all sub-pipelines, and adds them to 'deps'.
      */
     GetDepsReturn getDependencies(DepsTracker* deps) const final;
@@ -140,7 +135,7 @@ private:
     DocumentSourceFacet(std::vector<FacetPipeline> facetPipelines,
                         const boost::intrusive_ptr<ExpressionContext>& expCtx);
 
-    Value serialize(bool explain = false) const final;
+    Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
     boost::intrusive_ptr<TeeBuffer> _teeBuffer;
     std::vector<FacetPipeline> _facets;

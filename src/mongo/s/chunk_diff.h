@@ -46,13 +46,15 @@ public:
      * Structure repsenting the generated query and sort order for a chunk diffing operation.
      */
     struct QueryAndSort {
-        QueryAndSort(BSONObj inQuery, BSONObj inSort) : query(inQuery), sort(inSort) {}
-
-        std::string toString() const;
-
         const BSONObj query;
         const BSONObj sort;
     };
+
+    /**
+     * Returns the query needed to find incremental changes to a collection from the config server.
+     */
+    static QueryAndSort createConfigDiffQuery(const NamespaceString& nss,
+                                              ChunkVersion collectionVersion);
 };
 
 /**
@@ -81,35 +83,23 @@ public:
     // Map of shard identifiers to the maximum chunk version on that shard
     typedef typename std::map<ShardId, ChunkVersion> MaxChunkVersionMap;
 
-    ConfigDiffTracker();
-    virtual ~ConfigDiffTracker();
-
     /**
-     * The tracker attaches to a set of ranges with versions, and uses a config server
-     * connection to update these. Because the set of ranges and versions may be large, they
-     * aren't owned by the tracker, they're just passed in and updated.  Therefore they must all
-     * stay in scope while the tracker is working.
-     *
-     * TODO: Make a standard VersionedRange to encapsulate this info in both mongod and mongos?
+     * The tracker attaches to a set of ranges with versions, and uses the catalog client to update
+     * these. Because the set of ranges and versions may be large, they aren't owned by the tracker,
+     * they're just passed in and updated. Therefore they must all stay in scope while the tracker
+     * is working.
      */
-    void attach(const std::string& ns,
-                RangeMap& currMap,
-                ChunkVersion& maxVersion,
-                MaxChunkVersionMap& maxShardVersions);
+    ConfigDiffTracker(const std::string& ns,
+                      RangeMap* currMap,
+                      ChunkVersion* maxVersion,
+                      MaxChunkVersionMap* maxShardVersions);
 
-    // Call after load for more information
-    int numValidDiffs() const {
-        return _validDiffs;
-    }
+    virtual ~ConfigDiffTracker();
 
     // Applies changes to the config data from a vector of chunks passed in. Also includes minor
     // version changes for particular major-version chunks if explicitly specified.
     // Returns the number of diffs processed, or -1 if the diffs were inconsistent.
-    int calculateConfigDiff(OperationContext* txn, const std::vector<ChunkType>& chunks);
-
-    // Returns the query needed to find new changes to a collection from the config server
-    // Needed only if a custom connection is required to the config server
-    QueryAndSort configDiffQuery() const;
+    int calculateConfigDiff(OperationContext* opCtx, const std::vector<ChunkType>& chunks);
 
 protected:
     /**
@@ -125,27 +115,22 @@ protected:
         return true;
     }
 
-    virtual std::pair<BSONObj, ValType> rangeFor(OperationContext* txn,
+    virtual std::pair<BSONObj, ValType> rangeFor(OperationContext* opCtx,
                                                  const ChunkType& chunk) const = 0;
 
-    virtual ShardId shardFor(OperationContext* txn, const ShardId& name) const = 0;
+    virtual ShardId shardFor(OperationContext* opCtx, const ShardId& name) const = 0;
 
 private:
-    void _assertAttached() const;
-
     // Whether or not a range exists in the min/max region
     bool _isOverlapping(const BSONObj& min, const BSONObj& max);
 
     // Returns a subset of ranges overlapping the region min/max
     RangeOverlap _overlappingRange(const BSONObj& min, const BSONObj& max);
 
-    std::string _ns;
-    RangeMap* _currMap;
-    ChunkVersion* _maxVersion;
-    MaxChunkVersionMap* _maxShardVersions;
-
-    // Store for later use
-    int _validDiffs;
+    const std::string _ns;
+    RangeMap* const _currMap;
+    ChunkVersion* const _maxVersion;
+    MaxChunkVersionMap* const _maxShardVersions;
 };
 
 }  // namespace mongo

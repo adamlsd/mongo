@@ -57,7 +57,7 @@ public:
     ClientListPlugin() : WebStatusPlugin("clients", 20) {}
     virtual void init() {}
 
-    virtual void run(OperationContext* txn, std::stringstream& ss) {
+    virtual void run(OperationContext* opCtx, std::stringstream& ss) {
         using namespace html;
 
         ss << "\n<table border=1 cellpadding=2 cellspacing=0>";
@@ -78,7 +78,7 @@ public:
 
            << "</tr>\n";
 
-        _processAllClients(txn->getClient()->getServiceContext(), ss);
+        _processAllClients(opCtx->getClient()->getServiceContext(), ss);
 
         ss << "</table>\n";
     }
@@ -92,23 +92,23 @@ private:
 
             // Make the client stable
             stdx::lock_guard<Client> lk(*client);
-            const OperationContext* txn = client->getOperationContext();
-            if (!txn)
+            const OperationContext* opCtx = client->getOperationContext();
+            if (!opCtx)
                 continue;
 
-            CurOp* curOp = CurOp::get(txn);
+            CurOp* curOp = CurOp::get(opCtx);
             if (!curOp)
                 continue;
 
             ss << "<tr><td>" << client->desc() << "</td>";
 
-            tablecell(ss, txn->getOpID());
+            tablecell(ss, opCtx->getOpID());
             tablecell(ss, true);
 
             // LockState
             {
                 Locker::LockerInfo lockerInfo;
-                txn->lockState()->getLockerInfo(&lockerInfo);
+                opCtx->lockState()->getLockerInfo(&lockerInfo);
 
                 BSONObjBuilder lockerInfoBuilder;
                 fillLockerInfo(lockerInfo, lockerInfoBuilder);
@@ -137,121 +137,6 @@ private:
     }
 
 } clientListPlugin;
-
-
-class CurrentOpContexts : public Command {
-public:
-    CurrentOpContexts() : Command("currentOpCtx") {}
-
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    virtual bool slaveOk() const {
-        return true;
-    }
-
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
-        if (AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
-                ResourcePattern::forClusterResource(), ActionType::inprog)) {
-            return Status::OK();
-        }
-
-        return Status(ErrorCodes::Unauthorized, "unauthorized");
-    }
-
-    bool run(OperationContext* txn,
-             const string& dbname,
-             BSONObj& cmdObj,
-             int,
-             string& errmsg,
-             BSONObjBuilder& result) {
-        unique_ptr<MatchExpression> filter;
-        if (cmdObj["filter"].isABSONObj()) {
-            const CollatorInterface* collator = nullptr;
-            StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-                cmdObj["filter"].Obj(), ExtensionsCallbackDisallowExtensions(), collator);
-            if (!statusWithMatcher.isOK()) {
-                return appendCommandStatus(result, statusWithMatcher.getStatus());
-            }
-            filter = std::move(statusWithMatcher.getValue());
-        }
-
-        result.appendArray("operations",
-                           _processAllClients(txn->getClient()->getServiceContext(), filter.get()));
-
-        return true;
-    }
-
-
-private:
-    static BSONArray _processAllClients(ServiceContext* service, MatchExpression* matcher) {
-        BSONArrayBuilder array;
-
-        for (ServiceContext::LockedClientsCursor cursor(service); Client* client = cursor.next();) {
-            invariant(client);
-
-            BSONObjBuilder b;
-
-            // Make the client stable
-            stdx::lock_guard<Client> lk(*client);
-
-            client->reportState(b);
-
-            const auto& clientMetadata =
-                ClientMetadataIsMasterState::get(client).getClientMetadata();
-            if (clientMetadata) {
-                auto appName = clientMetadata.get().getApplicationName();
-                if (!appName.empty()) {
-                    b.append("applicationName", appName);
-                }
-            }
-
-            const OperationContext* txn = client->getOperationContext();
-            b.appendBool("active", static_cast<bool>(txn));
-            if (txn) {
-                b.append("opid", txn->getOpID());
-                if (txn->isKillPending()) {
-                    b.append("killPending", true);
-                }
-
-                CurOp::get(txn)->reportState(&b);
-
-                // LockState
-                if (txn->lockState()) {
-                    StringBuilder ss;
-                    ss << txn->lockState();
-                    b.append("lockStatePointer", ss.str());
-
-                    Locker::LockerInfo lockerInfo;
-                    txn->lockState()->getLockerInfo(&lockerInfo);
-
-                    BSONObjBuilder lockerInfoBuilder;
-                    fillLockerInfo(lockerInfo, lockerInfoBuilder);
-
-                    b.append("lockState", lockerInfoBuilder.obj());
-                }
-
-                // RecoveryUnit
-                if (txn->recoveryUnit()) {
-                    txn->recoveryUnit()->reportState(&b);
-                }
-            }
-
-            const BSONObj obj = b.obj();
-
-            if (!matcher || matcher->matchesBSON(obj)) {
-                array.append(obj);
-            }
-        }
-
-        return array.arr();
-    }
-
-} currentOpContexts;
 
 }  // namespace
 }  // namespace mongo

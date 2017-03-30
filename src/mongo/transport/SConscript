@@ -2,13 +2,15 @@
 
 Import('env')
 
+env = env.Clone()
+
 env.CppUnitTest(
     target='ingress_header_test',
     source=[
         'ingress_header_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/foundation',
+        '$BUILD_DIR/mongo/base',
     ],
 )
 
@@ -20,7 +22,6 @@ env.Library(
         'transport_layer.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/net/network',
         '$BUILD_DIR/mongo/transport/message_compressor',
     ],
@@ -111,6 +112,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/util/decorable',
         '$BUILD_DIR/mongo/util/options_parser/options_parser',
         '$BUILD_DIR/third_party/shim_snappy',
     ]
@@ -125,5 +127,17 @@ env.CppUnitTest(
     LIBDEPS=[
         'message_compressor',
     ]
+)
+
+env.CppUnitTest(
+    target='transport_layer_legacy_test',
+    source=[
+        'transport_layer_legacy_test.cpp',
+    ],
+    LIBDEPS=[
+        'transport_layer_legacy',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+    ],
 )
 

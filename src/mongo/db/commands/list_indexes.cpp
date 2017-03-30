@@ -100,7 +100,7 @@ public:
 
         // Check for the listIndexes ActionType on the database, or find on system.indexes for pre
         // 3.0 systems.
-        NamespaceString ns(parseNs(dbname, cmdObj));
+        const NamespaceString ns(parseNsCollectionRequired(dbname, cmdObj));
         if (authzSession->isAuthorizedForActionsOnResource(ResourcePattern::forExactNamespace(ns),
                                                            ActionType::listIndexes) ||
             authzSession->isAuthorizedForActionsOnResource(
@@ -116,13 +116,13 @@ public:
 
     CmdListIndexes() : Command("listIndexes") {}
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& dbname,
              BSONObj& cmdObj,
              int,
              string& errmsg,
              BSONObjBuilder& result) {
-        const NamespaceString ns(parseNs(dbname, cmdObj));
+        const NamespaceString ns(parseNsCollectionRequired(dbname, cmdObj));
 
         const long long defaultBatchSize = std::numeric_limits<long long>::max();
         long long batchSize;
@@ -132,7 +132,7 @@ public:
             return appendCommandStatus(result, parseCursorStatus);
         }
 
-        AutoGetCollectionForRead autoColl(txn, ns);
+        AutoGetCollectionForReadCommand autoColl(opCtx, ns);
         if (!autoColl.getDb()) {
             return appendCommandStatus(result,
                                        Status(ErrorCodes::NamespaceNotFound, "no database"));
@@ -150,19 +150,19 @@ public:
         vector<string> indexNames;
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
             indexNames.clear();
-            cce->getAllIndexes(txn, &indexNames);
+            cce->getAllIndexes(opCtx, &indexNames);
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "listIndexes", ns.ns());
+        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "listIndexes", ns.ns());
 
         auto ws = make_unique<WorkingSet>();
-        auto root = make_unique<QueuedDataStage>(txn, ws.get());
+        auto root = make_unique<QueuedDataStage>(opCtx, ws.get());
 
         for (size_t i = 0; i < indexNames.size(); i++) {
             BSONObj indexSpec;
             MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                indexSpec = cce->getIndexSpec(txn, indexNames[i]);
+                indexSpec = cce->getIndexSpec(opCtx, indexNames[i]);
             }
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(txn, "listIndexes", ns.ns());
+            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "listIndexes", ns.ns());
 
             if (ns.ns() == FeatureCompatibilityVersion::kCollection &&
                 indexNames[i] == FeatureCompatibilityVersion::k32IncompatibleIndexName) {
@@ -198,7 +198,7 @@ public:
         dassert(ns == cursorNss.getTargetNSForListIndexes());
 
         auto statusWithPlanExecutor = PlanExecutor::make(
-            txn, std::move(ws), std::move(root), cursorNss.ns(), PlanExecutor::YIELD_MANUAL);
+            opCtx, std::move(ws), std::move(root), cursorNss, PlanExecutor::YIELD_MANUAL);
         if (!statusWithPlanExecutor.isOK()) {
             return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
@@ -227,12 +227,13 @@ public:
         if (!exec->isEOF()) {
             exec->saveState();
             exec->detachFromOperationContext();
-            ClientCursor* cursor =
-                new ClientCursor(CursorManager::getGlobalCursorManager(),
-                                 exec.release(),
-                                 cursorNss.ns(),
-                                 txn->recoveryUnit()->isReadingFromMajorityCommittedSnapshot());
-            cursorId = cursor->cursorid();
+            auto pinnedCursor = CursorManager::getGlobalCursorManager()->registerCursor(
+                {std::move(exec),
+                 cursorNss,
+                 AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
+                 opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot(),
+                 cmdObj});
+            cursorId = pinnedCursor.getCursor()->cursorid();
         }
 
         appendCursorResponseObject(cursorId, cursorNss.ns(), firstBatch.arr(), &result);

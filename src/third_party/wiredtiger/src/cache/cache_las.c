@@ -49,7 +49,7 @@ __wt_las_stats_update(WT_SESSION_IMPL *session)
 	 * don't have to worry about users seeing inconsistent data source
 	 * information.
 	 */
-	if (FLD_ISSET(conn->stat_flags, WT_CONN_STAT_CLEAR)) {
+	if (FLD_ISSET(conn->stat_flags, WT_STAT_CLEAR)) {
 		WT_STAT_SET(session, dstats, cursor_insert, 0);
 		WT_STAT_SET(session, dstats, cursor_remove, 0);
 	}
@@ -63,6 +63,7 @@ int
 __wt_las_create(WT_SESSION_IMPL *session)
 {
 	WT_CONNECTION_IMPL *conn;
+	WT_DECL_RET;
 	uint32_t session_flags;
 	const char *drop_cfg[] = {
 	    WT_CONFIG_BASE(session, WT_SESSION_drop), "force=true", NULL };
@@ -80,7 +81,9 @@ __wt_las_create(WT_SESSION_IMPL *session)
 	 *
 	 * Discard any previous incarnation of the table.
 	 */
-	WT_RET(__wt_session_drop(session, WT_LAS_URI, drop_cfg));
+	WT_WITH_SCHEMA_LOCK(session,
+	    ret = __wt_schema_drop(session, WT_LAS_URI, drop_cfg));
+	WT_RET(ret);
 
 	/* Re-create the table. */
 	WT_RET(__wt_session_create(session, WT_LAS_URI, WT_LAS_FORMAT));

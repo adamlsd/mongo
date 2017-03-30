@@ -28,12 +28,13 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_redact.h"
 
 #include <boost/optional.hpp>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
@@ -55,9 +56,9 @@ const char* DocumentSourceRedact::getSourceName() const {
     return "$redact";
 }
 
-static const Value descendVal = Value("descend");
-static const Value pruneVal = Value("prune");
-static const Value keepVal = Value("keep");
+static const Value descendVal = Value("descend"_sd);
+static const Value pruneVal = Value("prune"_sd);
+static const Value keepVal = Value("keep"_sd);
 
 DocumentSource::GetNextResult DocumentSourceRedact::getNext() {
     auto nextInput = pSource->getNext();
@@ -72,7 +73,7 @@ DocumentSource::GetNextResult DocumentSourceRedact::getNext() {
     return nextInput;
 }
 
-Pipeline::SourceContainer::iterator DocumentSourceRedact::optimizeAt(
+Pipeline::SourceContainer::iterator DocumentSourceRedact::doOptimizeAt(
     Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
     invariant(*itr == this);
 
@@ -162,12 +163,8 @@ intrusive_ptr<DocumentSource> DocumentSourceRedact::optimize() {
     return this;
 }
 
-void DocumentSourceRedact::doInjectExpressionContext() {
-    _expression->injectExpressionContext(pExpCtx);
-}
-
-Value DocumentSourceRedact::serialize(bool explain) const {
-    return Value(DOC(getSourceName() << _expression.get()->serialize(explain)));
+Value DocumentSourceRedact::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
+    return Value(DOC(getSourceName() << _expression.get()->serialize(static_cast<bool>(explain))));
 }
 
 intrusive_ptr<DocumentSource> DocumentSourceRedact::createFromBson(
@@ -178,7 +175,7 @@ intrusive_ptr<DocumentSource> DocumentSourceRedact::createFromBson(
     Variables::Id decendId = vps.defineVariable("DESCEND");
     Variables::Id pruneId = vps.defineVariable("PRUNE");
     Variables::Id keepId = vps.defineVariable("KEEP");
-    intrusive_ptr<Expression> expression = Expression::parseOperand(elem, vps);
+    intrusive_ptr<Expression> expression = Expression::parseOperand(expCtx, elem, vps);
     intrusive_ptr<DocumentSourceRedact> source = new DocumentSourceRedact(expCtx, expression);
 
     // TODO figure out how much of this belongs in constructor and how much here.

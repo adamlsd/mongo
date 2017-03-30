@@ -31,9 +31,13 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include "mongo/platform/basic.h"
+
 #ifdef _WIN32
 #define NVALGRIND
 #endif
+
+#include <memory>
 
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 
@@ -55,6 +59,7 @@
 #include "mongo/db/storage/journal_listener.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_extensions.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_global_options.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_index.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
@@ -62,7 +67,9 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_size_storer.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/background.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
@@ -102,11 +109,12 @@ public:
                 invariant(e.getCode() == ErrorCodes::ShutdownInProgress);
             }
 
-            int ms = storageGlobalParams.journalCommitIntervalMs;
+            int ms = storageGlobalParams.journalCommitIntervalMs.load();
             if (!ms) {
                 ms = 100;
             }
 
+            MONGO_IDLE_THREAD_BLOCK;
             sleepmillis(ms);
         }
         LOG(1) << "stopping " << name() << " thread";
@@ -119,7 +127,7 @@ public:
 
 private:
     WiredTigerSessionCache* _sessionCache;
-    std::atomic<bool> _shuttingDown{false};  // NOLINT
+    AtomicBool _shuttingDown{false};
 };
 
 namespace {
@@ -131,7 +139,7 @@ public:
     TicketServerParameter(TicketHolder* holder, const std::string& name)
         : ServerParameter(ServerParameterSet::getGlobal(), name, true, true), _holder(holder) {}
 
-    virtual void append(OperationContext* txn, BSONObjBuilder& b, const std::string& name) {
+    virtual void append(OperationContext* opCtx, BSONObjBuilder& b, const std::string& name) {
         b.append(name, _holder->outof());
     }
 
@@ -169,6 +177,9 @@ TicketHolder openReadTransaction(128);
 TicketServerParameter openReadTransactionParam(&openReadTransaction,
                                                "wiredTigerConcurrentReadTransactions");
 
+stdx::function<bool(StringData)> initRsOplogBackgroundThreadCallback = [](StringData) -> bool {
+    fassertFailed(40358);
+};
 }  // namespace
 
 WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
@@ -206,7 +217,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     ss << "create,";
     ss << "cache_size=" << cacheSizeMB << "M,";
     ss << "session_max=20000,";
-    ss << "eviction=(threads_max=4),";
+    ss << "eviction=(threads_min=4,threads_max=4),";
     ss << "config_base=false,";
     ss << "statistics=(fast),";
     // The setting may have a later setting override it if not using the journal.  We make it
@@ -220,8 +231,11 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         ss << "checkpoint=(wait=" << wiredTigerGlobalOptions.checkpointDelaySecs;
         ss << ",log_size=2GB),";
         ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
+        ss << "verbose=(recovery_progress),";
     }
-    ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())->getOpenConfig("system");
+    ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())
+              ->getTableCreateConfig("system");
+    ss << WiredTigerExtensions::get(getGlobalServiceContext())->getOpenExtensionsConfig();
     ss << extraOpenOptions;
     if (_readOnly) {
         invariant(!_durable);
@@ -380,7 +394,10 @@ Status WiredTigerKVEngine::_salvageIfNeeded(const char* uri) {
         // SERVER-16457: verify and salvage are occasionally failing with EBUSY. For now we
         // lie and return OK to avoid breaking tests. This block should go away when that ticket
         // is resolved.
-        error() << "Verify on " << uri << " failed with EBUSY. Assuming no salvage is needed.";
+        error()
+            << "Verify on " << uri << " failed with EBUSY. "
+            << "This means the collection was being accessed. No repair is necessary unless other "
+               "errors are reported.";
         return Status::OK();
     }
 
@@ -389,7 +406,7 @@ Status WiredTigerKVEngine::_salvageIfNeeded(const char* uri) {
     return wtRCToStatus(session->salvage(session, uri, NULL), "Salvage failed:");
 }
 
-int WiredTigerKVEngine::flushAllFiles(bool sync) {
+int WiredTigerKVEngine::flushAllFiles(OperationContext* opCtx, bool sync) {
     LOG(1) << "WiredTigerKVEngine::flushAllFiles";
     if (_ephemeral) {
         return 0;
@@ -400,7 +417,7 @@ int WiredTigerKVEngine::flushAllFiles(bool sync) {
     return 1;
 }
 
-Status WiredTigerKVEngine::beginBackup(OperationContext* txn) {
+Status WiredTigerKVEngine::beginBackup(OperationContext* opCtx) {
     invariant(!_backupSession);
 
     // This cursor will be freed by the backupSession being closed as the session is uncached
@@ -415,7 +432,7 @@ Status WiredTigerKVEngine::beginBackup(OperationContext* txn) {
     return Status::OK();
 }
 
-void WiredTigerKVEngine::endBackup(OperationContext* txn) {
+void WiredTigerKVEngine::endBackup(OperationContext* opCtx) {
     _backupSession.reset();
 }
 
@@ -462,32 +479,33 @@ Status WiredTigerKVEngine::createRecordStore(OperationContext* opCtx,
     return wtRCToStatus(s->create(s, uri.c_str(), config.c_str()));
 }
 
-RecordStore* WiredTigerKVEngine::getRecordStore(OperationContext* opCtx,
-                                                StringData ns,
-                                                StringData ident,
-                                                const CollectionOptions& options) {
+std::unique_ptr<RecordStore> WiredTigerKVEngine::getRecordStore(OperationContext* opCtx,
+                                                                StringData ns,
+                                                                StringData ident,
+                                                                const CollectionOptions& options) {
     if (options.capped) {
-        return new WiredTigerRecordStore(opCtx,
-                                         ns,
-                                         _uri(ident),
-                                         _canonicalName,
-                                         options.capped,
-                                         _ephemeral,
-                                         options.cappedSize ? options.cappedSize : 4096,
-                                         options.cappedMaxDocs ? options.cappedMaxDocs : -1,
-                                         NULL,
-                                         _sizeStorer.get());
+        return stdx::make_unique<WiredTigerRecordStore>(
+            opCtx,
+            ns,
+            _uri(ident),
+            _canonicalName,
+            options.capped,
+            _ephemeral,
+            options.cappedSize ? options.cappedSize : 4096,
+            options.cappedMaxDocs ? options.cappedMaxDocs : -1,
+            nullptr,
+            _sizeStorer.get());
     } else {
-        return new WiredTigerRecordStore(opCtx,
-                                         ns,
-                                         _uri(ident),
-                                         _canonicalName,
-                                         false,
-                                         _ephemeral,
-                                         -1,
-                                         -1,
-                                         NULL,
-                                         _sizeStorer.get());
+        return stdx::make_unique<WiredTigerRecordStore>(opCtx,
+                                                        ns,
+                                                        _uri(ident),
+                                                        _canonicalName,
+                                                        false,
+                                                        _ephemeral,
+                                                        -1,
+                                                        -1,
+                                                        nullptr,
+                                                        _sizeStorer.get());
     }
 }
 
@@ -710,5 +728,14 @@ void WiredTigerKVEngine::_checkIdentPath(StringData ident) {
 
 void WiredTigerKVEngine::setJournalListener(JournalListener* jl) {
     return _sessionCache->setJournalListener(jl);
+}
+
+void WiredTigerKVEngine::setInitRsOplogBackgroundThreadCallback(
+    stdx::function<bool(StringData)> cb) {
+    initRsOplogBackgroundThreadCallback = std::move(cb);
+}
+
+bool WiredTigerKVEngine::initRsOplogBackgroundThread(StringData ns) {
+    return initRsOplogBackgroundThreadCallback(ns);
 }
 }

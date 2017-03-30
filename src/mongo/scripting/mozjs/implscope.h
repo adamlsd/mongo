@@ -96,11 +96,11 @@ public:
 
     OperationContext* getOpContext() const;
 
-    void registerOperation(OperationContext* txn) override;
+    void registerOperation(OperationContext* opCtx) override;
 
     void unregisterOperation() override;
 
-    void localConnectForDbEval(OperationContext* txn, const char* dbName) override;
+    void localConnectForDbEval(OperationContext* opCtx, const char* dbName) override;
 
     void externalSetup() override;
 
@@ -316,6 +316,8 @@ public:
         return _internedStrings.getInternedString(name);
     }
 
+    std::string buildStackString();
+
 private:
     void _MozJSCreateFunction(const char* raw,
                               ScriptingFunction functionNumber,
@@ -330,11 +332,10 @@ private:
     struct MozRuntime {
     public:
         MozRuntime(const MozJSScriptEngine* engine);
-        ~MozRuntime();
 
-        PRThread* _thread = nullptr;
-        JSRuntime* _runtime = nullptr;
-        JSContext* _context = nullptr;
+        std::unique_ptr<PRThread, std::function<void(PRThread*)>> _thread;
+        std::unique_ptr<JSRuntime, std::function<void(JSRuntime*)>> _runtime;
+        std::unique_ptr<JSContext, std::function<void(JSContext*)>> _context;
     };
 
     /**

@@ -11,11 +11,22 @@
  *	Wait on a mutex, optionally timing out.
  */
 static inline void
-__wt_cond_wait(WT_SESSION_IMPL *session, WT_CONDVAR *cond, uint64_t usecs)
+__wt_cond_wait(WT_SESSION_IMPL *session,
+    WT_CONDVAR *cond, uint64_t usecs, bool (*run_func)(WT_SESSION_IMPL *))
 {
 	bool notused;
 
-	__wt_cond_wait_signal(session, cond, usecs, &notused);
+	__wt_cond_wait_signal(session, cond, usecs, run_func, &notused);
+}
+
+/*
+ * __wt_hex --
+ *	Convert a byte to a hex character.
+ */
+static inline u_char
+__wt_hex(int c)
+{
+	return ((u_char)"0123456789abcdef"[c]);
 }
 
 /*
@@ -33,16 +44,14 @@ __wt_strdup(WT_SESSION_IMPL *session, const char *str, void *retp)
  * __wt_seconds --
  *	Return the seconds since the Epoch.
  */
-static inline int
+static inline void
 __wt_seconds(WT_SESSION_IMPL *session, time_t *timep)
 {
 	struct timespec t;
 
-	WT_RET(__wt_epoch(session, &t));
+	__wt_epoch(session, &t);
 
 	*timep = t.tv_sec;
-
-	return (0);
 }
 
 /*

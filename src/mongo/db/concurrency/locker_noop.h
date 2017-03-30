@@ -41,11 +41,19 @@ class LockerNoop : public Locker {
 public:
     LockerNoop() {}
 
+    virtual bool isNoop() const {
+        return true;
+    }
+
     virtual ClientState getClientState() const {
         invariant(false);
     }
 
     virtual LockerId getId() const {
+        invariant(false);
+    }
+
+    stdx::thread::id getThreadId() const override {
         invariant(false);
     }
 
@@ -85,7 +93,7 @@ public:
                             LockMode mode,
                             unsigned timeoutMs,
                             bool checkDeadlock) {
-        invariant(false);
+        return LockResult::LOCK_OK;
     }
 
     virtual void downgrade(ResourceId resId, LockMode newMode) {
@@ -93,7 +101,7 @@ public:
     }
 
     virtual bool unlock(ResourceId resId) {
-        invariant(false);
+        return true;
     }
 
     virtual LockMode getLockMode(ResourceId resId) const {
@@ -149,10 +157,6 @@ public:
     }
 
     virtual bool isReadLocked() const {
-        invariant(false);
-    }
-
-    virtual void assertEmptyAndReset() {
         invariant(false);
     }
 

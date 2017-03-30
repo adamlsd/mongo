@@ -379,7 +379,7 @@ assert.eq(1, t.getDB().adminCommand({configureFailPoint: "maxTimeNeverTimeOut", 
 //
 
 // "aggregate" command.
-res = t.runCommand("aggregate", {pipeline: [], maxTimeMS: 60 * 1000});
+res = t.runCommand("aggregate", {pipeline: [], cursor: {}, maxTimeMS: 60 * 1000});
 assert(res.ok == 1,
        "expected aggregate with maxtime to succeed, ok=" + res.ok + ", code=" + res.code);
 
@@ -387,6 +387,10 @@ assert(res.ok == 1,
 res = t.runCommand("collMod", {usePowerOf2Sizes: true, maxTimeMS: 60 * 1000});
 assert(res.ok == 1,
        "expected collmod with maxtime to succeed, ok=" + res.ok + ", code=" + res.code);
+
+// "createIndexes" command.
+assert.commandWorked(
+    t.runCommand("createIndexes", {indexes: [{key: {x: 1}, name: "x_1"}], maxTimeMS: 60 * 1000}));
 
 //
 // Test maxTimeMS for parallelCollectionScan

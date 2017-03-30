@@ -54,24 +54,29 @@ using enable_if_t = typename std::enable_if<B, T>::type;
 }  // namespace mongo
 #endif
 
-#if __cplusplus > 201701
+#if __cplusplus >= 201703
 
 namespace mongo {
 namespace stdx {
+
 using std::void_t;
-}
-}
 
-#else
+}  // namespace stdx
+}  // namespace mongo
+
+#elif __cplusplus >= 201402
 
 namespace mongo {
 namespace stdx {
+
 template <typename...>
 struct make_void {
     using type = void;
 };
+
 template <typename... Args>
 using void_t = typename make_void<Args...>::type;
+
 }  // namespace stdx
 }  // namespace mongo
 #endif

@@ -495,13 +495,13 @@ public:
         return lhs._makeEqualityLens() == rhs._makeEqualityLens();
     }
 
-    template <template <typename, typename...> class U>
-    inline friend bool operator==(const U<T>& lhs, const clonable_ptr& rhs) {
+    template <template <typename, typename...> class U, typename... UArgs>
+    inline friend bool operator==(const U<T, UArgs...>& lhs, const clonable_ptr& rhs) {
         return lhs == rhs._makeEqualityLens();
     }
 
-    template <template <typename, typename...> class U>
-    inline friend bool operator==(const clonable_ptr& lhs, const U<T>& rhs) {
+    template <template <typename, typename...> class U, typename... UArgs>
+    inline friend bool operator==(const clonable_ptr& lhs, const U<T, UArgs...>& rhs) {
         return lhs._makeEqualityLens() == rhs;
     }
 
@@ -519,13 +519,13 @@ public:
         return lhs._makeStrictWeakOrderLens() < rhs._makeStrictWeakOrderLens();
     }
 
-    template <template <typename, typename...> class U>
-    inline friend bool operator<(const U<T>& lhs, const clonable_ptr& rhs) {
+    template <template <typename, typename...> class U, typename... UArgs>
+    inline friend bool operator<(const U<T, UArgs...>& lhs, const clonable_ptr& rhs) {
         return lhs < rhs._makeStrictWeakOrderLens();
     }
 
-    template <template <typename, typename...> class U>
-    inline friend bool operator<(const clonable_ptr& lhs, const U<T>& rhs) {
+    template <template <typename, typename...> class U, typename... UArgs>
+    inline friend bool operator<(const clonable_ptr& lhs, const U<T, UArgs...>& rhs) {
         return lhs._makeStrictWeakOrderLens() < rhs;
     }
 
@@ -545,13 +545,13 @@ inline bool operator!=(const clonable_ptr<C, F, U>& lhs, const clonable_ptr<C, F
     return !(lhs == rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator!=(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator!=(const U<C, UArgs...>& lhs, const clonable_ptr<C, F, U>& rhs) {
     return !(lhs == rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator!=(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator!=(const clonable_ptr<C, F, U>& lhs, const U<C, UArgs...>& rhs) {
     return !(lhs == rhs);
 }
 
@@ -572,13 +572,13 @@ inline bool operator>(const clonable_ptr<C, F, U>& lhs, const clonable_ptr<C, F,
     return rhs < lhs;
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator>(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator>(const U<C, UArgs...>& lhs, const clonable_ptr<C, F, U>& rhs) {
     return rhs < lhs;
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator>(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator>(const clonable_ptr<C, F, U>& lhs, const U<C, UArgs...>& rhs) {
     return rhs < lhs;
 }
 
@@ -599,13 +599,13 @@ inline bool operator<=(const clonable_ptr<C, F, U>& lhs, const clonable_ptr<C, F
     return !(lhs > rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator<=(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator<=(const U<C, UArgs...>& lhs, const clonable_ptr<C, F, U>& rhs) {
     return !(lhs > rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator<=(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator<=(const clonable_ptr<C, F, U>& lhs, const U<C, UArgs...>& rhs) {
     return !(lhs > rhs);
 }
 
@@ -626,13 +626,13 @@ inline bool operator>=(const clonable_ptr<C, F, U>& lhs, const clonable_ptr<C, F
     return !(lhs < rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator>=(const U<C>& lhs, const clonable_ptr<C, F, U>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator>=(const U<C, UArgs...>& lhs, const clonable_ptr<C, F, U>& rhs) {
     return !(lhs < rhs);
 }
 
-template <typename C, typename F, template <typename, typename...> class U>
-inline bool operator>=(const clonable_ptr<C, F, U>& lhs, const U<C>& rhs) {
+template <typename C, typename F, template <typename, typename...> class U, typename... UArgs>
+inline bool operator>=(const clonable_ptr<C, F, U>& lhs, const U<C, UArgs...>& rhs) {
     return !(lhs < rhs);
 }
 

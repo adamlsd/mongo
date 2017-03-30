@@ -304,22 +304,28 @@ void augmentedConstruction() {
     // Test Clone Factory construction
     { mongo::clonable_ptr<Clonable, CloneFactory>{Clonable::getCloningFunction()}; }
 
+// TODO: Revist this when MSVC's enable-if and deletion on ctors works.
+#ifndef _MSC_VER
     // Test non-construction from a nullptr
     {
         static_assert(!std::is_constructible<mongo::clonable_ptr<Clonable, CloneFactory>,
                                              std::nullptr_t>::value,
                       "");
     }
+#endif
 
     // Test construction from a nullptr with factory
     { mongo::clonable_ptr<Clonable, CloneFactory>{nullptr, Clonable::getCloningFunction()}; }
 
+// TODO: Revist this when MSVC's enable-if and deletion on ctors works.
+#ifndef _MSC_VER
     // Test construction from a raw Clonable pointer.
     {
         static_assert(
             !std::is_constructible<mongo::clonable_ptr<Clonable, CloneFactory>, Clonable*>::value,
             "");
     }
+#endif
 
 
     // Test initialization of a raw Clonable pointer with factory, using reset.

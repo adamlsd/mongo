@@ -27,13 +27,14 @@
     clearRawMongoProgramOutput();
     reInitiateWithoutThrowingOnAbortedMember(replTest);
 
-    const msg1 = "The field 'invalidOption' is not valid for an index specification";
-    const msg2 = "Fatal assertion 40088 InitialSyncFailure";
+    const msgInvalidOption = "The field 'invalidOption' is not valid for an index specification";
+    const msgInitialSyncFatalAssertion = "Fatal assertion 40088 InitialSyncFailure";
 
     const assertFn = function() {
-        return rawMongoProgramOutput().match(msg1) && rawMongoProgramOutput().match(msg2);
+        return rawMongoProgramOutput().match(msgInvalidOption) &&
+            rawMongoProgramOutput().match(msgInitialSyncFatalAssertion);
     };
-    assert.soon(assertFn, "Initial sync should have aborted on invalid index specification", 60000);
+    assert.soon(assertFn, "Initial sync should have aborted on invalid index specification");
 
     replTest.stopSet(undefined,
                      undefined,

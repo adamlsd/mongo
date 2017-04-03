@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_sample.h"
 
 #include "mongo/db/client.h"
 #include "mongo/db/pipeline/document.h"
@@ -83,12 +83,8 @@ DocumentSource::GetNextResult DocumentSourceSample::getNext() {
     return _sortStage->getNext();
 }
 
-Value DocumentSourceSample::serialize(bool explain) const {
+Value DocumentSourceSample::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(DOC(getSourceName() << DOC("size" << _size)));
-}
-
-void DocumentSourceSample::doInjectExpressionContext() {
-    _sortStage->injectExpressionContext(pExpCtx);
 }
 
 namespace {

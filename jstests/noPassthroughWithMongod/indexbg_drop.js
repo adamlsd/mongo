@@ -49,7 +49,7 @@ var bulk = masterDB.getCollection(collection).initializeUnorderedBulkOp();
 for (i = 0; i < size; ++i) {
     bulk.insert({i: Random.rand()});
 }
-assert.writeOK(bulk.execute());
+assert.writeOK(bulk.execute({w: 2, wtimeout: replTest.kDefaultTimeoutMS}));
 
 jsTest.log("Starting background indexing for test of: " + tojson(dc));
 // Add another index to be sure the drop command works.
@@ -84,7 +84,7 @@ assert.soon(function() {
 jsTest.log("dropping index");
 masterDB.runCommand({dropIndexes: collection, index: "*"});
 jsTest.log("Waiting on replication");
-replTest.awaitReplication(60000);
+replTest.awaitReplication();
 
 print("index list on master:");
 masterDB.getCollection(collection).getIndexes().forEach(printjson);

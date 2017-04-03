@@ -31,19 +31,17 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/client/remote_command_targeter.h"
-#include "mongo/db/client.h"
-#include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/write_commands/write_commands_common.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/stats/counters.h"
-#include "mongo/db/stats/counters.h"
-#include "mongo/s/chunk_manager_targeter.h"
-#include "mongo/s/client/dbclient_multi_command.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_last_error_info.h"
-#include "mongo/s/cluster_write.h"
+#include "mongo/s/commands/chunk_manager_targeter.h"
 #include "mongo/s/commands/cluster_explain.h"
+#include "mongo/s/commands/cluster_write.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batch_upconvert.h"
 #include "mongo/s/write_ops/batched_command_request.h"
@@ -94,10 +92,10 @@ public:
         return status;
     }
 
-    virtual Status explain(OperationContext* txn,
+    virtual Status explain(OperationContext* opCtx,
                            const std::string& dbname,
                            const BSONObj& cmdObj,
-                           ExplainCommon::Verbosity verbosity,
+                           ExplainOptions::Verbosity verbosity,
                            const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                            BSONObjBuilder* out) const {
         BatchedCommandRequest request(_writeType);
@@ -113,9 +111,7 @@ public:
         }
 
         BSONObjBuilder explainCmdBob;
-        int options = 0;
-        ClusterExplain::wrapAsExplain(
-            cmdObj, verbosity, serverSelectionMetadata, &explainCmdBob, &options);
+        ClusterExplain::wrapAsExplainForOP_COMMAND(cmdObj, verbosity, &explainCmdBob);
 
         // We will time how long it takes to run the commands on the shards.
         Timer timer;
@@ -124,16 +120,16 @@ public:
         BatchItemRef targetingBatchItem(&request, 0);
         vector<Strategy::CommandResult> shardResults;
         Status status =
-            _commandOpWrite(txn, dbname, explainCmdBob.obj(), targetingBatchItem, &shardResults);
+            _commandOpWrite(opCtx, dbname, explainCmdBob.obj(), targetingBatchItem, &shardResults);
         if (!status.isOK()) {
             return status;
         }
 
         return ClusterExplain::buildExplainResult(
-            txn, shardResults, ClusterExplain::kWriteOnShards, timer.millis(), out);
+            opCtx, shardResults, ClusterExplain::kWriteOnShards, timer.millis(), out);
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int options,
@@ -150,14 +146,13 @@ public:
             // Disable the last error object for the duration of the write
             LastError::Disabled disableLastError(cmdLastError);
 
-            // TODO: if we do namespace parsing, push this to the type
             if (!request.parseBSON(dbname, cmdObj, &errmsg) || !request.isValid(&errmsg)) {
                 // Batch parse failure
                 response.setOk(false);
                 response.setErrCode(ErrorCodes::FailedToParse);
                 response.setErrMessage(errmsg);
             } else {
-                writer.write(txn, request, &response);
+                writer.write(opCtx, request, &response);
             }
 
             dassert(response.isValid(NULL));
@@ -225,7 +220,7 @@ private:
      *
      * Does *not* retry or retarget if the metadata is stale.
      */
-    static Status _commandOpWrite(OperationContext* txn,
+    static Status _commandOpWrite(OperationContext* opCtx,
                                   const std::string& dbName,
                                   const BSONObj& command,
                                   BatchItemRef targetingBatchItem,
@@ -235,77 +230,75 @@ private:
         TargeterStats stats;
         ChunkManagerTargeter targeter(
             NamespaceString(targetingBatchItem.getRequest()->getTargetingNS()), &stats);
-        Status status = targeter.init(txn);
+        Status status = targeter.init(opCtx);
         if (!status.isOK())
             return status;
 
-        OwnedPointerVector<ShardEndpoint> endpointsOwned;
-        vector<ShardEndpoint*>& endpoints = endpointsOwned.mutableVector();
+        vector<std::unique_ptr<ShardEndpoint>> endpoints;
 
         if (targetingBatchItem.getOpType() == BatchedCommandRequest::BatchType_Insert) {
             ShardEndpoint* endpoint;
-            Status status = targeter.targetInsert(txn, targetingBatchItem.getDocument(), &endpoint);
+            Status status =
+                targeter.targetInsert(opCtx, targetingBatchItem.getDocument(), &endpoint);
             if (!status.isOK())
                 return status;
-            endpoints.push_back(endpoint);
+            endpoints.push_back(std::unique_ptr<ShardEndpoint>{endpoint});
         } else if (targetingBatchItem.getOpType() == BatchedCommandRequest::BatchType_Update) {
-            Status status = targeter.targetUpdate(txn, *targetingBatchItem.getUpdate(), &endpoints);
+            Status status =
+                targeter.targetUpdate(opCtx, *targetingBatchItem.getUpdate(), &endpoints);
             if (!status.isOK())
                 return status;
         } else {
             invariant(targetingBatchItem.getOpType() == BatchedCommandRequest::BatchType_Delete);
-            Status status = targeter.targetDelete(txn, *targetingBatchItem.getDelete(), &endpoints);
+            Status status =
+                targeter.targetDelete(opCtx, *targetingBatchItem.getDelete(), &endpoints);
             if (!status.isOK())
                 return status;
         }
 
-        DBClientMultiCommand dispatcher;
+        auto shardRegistry = Grid::get(opCtx)->shardRegistry();
 
         // Assemble requests
-        for (vector<ShardEndpoint*>::const_iterator it = endpoints.begin(); it != endpoints.end();
-             ++it) {
-            const ShardEndpoint* endpoint = *it;
+        std::vector<AsyncRequestsSender::Request> requests;
+        for (auto it = endpoints.begin(); it != endpoints.end(); ++it) {
+            const ShardEndpoint* endpoint = it->get();
 
-            const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
-            auto shardStatus = grid.shardRegistry()->getShard(txn, endpoint->shardName);
+            auto shardStatus = shardRegistry->getShard(opCtx, endpoint->shardName);
             if (!shardStatus.isOK()) {
                 return shardStatus.getStatus();
             }
-            auto swHostAndPort = shardStatus.getValue()->getTargeter()->findHostNoWait(readPref);
-            if (!swHostAndPort.isOK()) {
-                return swHostAndPort.getStatus();
-            }
-
-            ConnectionString host(swHostAndPort.getValue());
-            dispatcher.addCommand(host, dbName, command);
+            requests.emplace_back(shardStatus.getValue()->getId(), command);
         }
 
-        // Errors reported when recv'ing responses
-        dispatcher.sendAll();
+        // Send the requests.
+
+        const ReadPreferenceSetting readPref(ReadPreference::PrimaryOnly, TagSet());
+        AsyncRequestsSender ars(opCtx,
+                                Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
+                                dbName,
+                                requests,
+                                readPref);
+
+        // Receive the responses.
+
         Status dispatchStatus = Status::OK();
+        while (!ars.done()) {
+            // Block until a response is available.
+            auto response = ars.next();
 
-        // Recv responses
-        while (dispatcher.numPending() > 0) {
-            ConnectionString host;
-            RawBSONSerializable response;
-
-            Status status = dispatcher.recvAny(&host, &response);
-            if (!status.isOK()) {
-                // We always need to recv() all the sent operations
-                dispatchStatus = status;
-                continue;
+            if (!response.swResponse.isOK()) {
+                dispatchStatus = std::move(response.swResponse.getStatus());
+                break;
             }
 
             Strategy::CommandResult result;
-            result.target = host;
-            {
-                auto shardStatus = grid.shardRegistry()->getShard(txn, host.toString());
-                if (!shardStatus.isOK()) {
-                    return shardStatus.getStatus();
-                }
-                result.shardTargetId = shardStatus.getValue()->getId();
-            }
-            result.result = response.toBSON();
+
+            // If the response status was OK, the response must contain which host was targeted.
+            invariant(response.shardHostAndPort);
+            result.target = ConnectionString(std::move(*response.shardHostAndPort));
+
+            result.shardTargetId = std::move(response.shardId);
+            result.result = std::move(response.swResponse.getValue().data);
 
             results->push_back(result);
         }

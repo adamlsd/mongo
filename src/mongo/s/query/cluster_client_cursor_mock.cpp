@@ -43,7 +43,7 @@ ClusterClientCursorMock::~ClusterClientCursorMock() {
     invariant(_exhausted || _killed);
 }
 
-StatusWith<ClusterQueryResult> ClusterClientCursorMock::next() {
+StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(OperationContext* opCtx) {
     invariant(!_killed);
 
     if (_resultsQueue.empty()) {
@@ -66,7 +66,7 @@ long long ClusterClientCursorMock::getNumReturnedSoFar() const {
     return _numReturnedSoFar;
 }
 
-void ClusterClientCursorMock::kill() {
+void ClusterClientCursorMock::kill(OperationContext* opCtx) {
     _killed = true;
     if (_killCallback) {
         _killCallback();
@@ -75,6 +75,14 @@ void ClusterClientCursorMock::kill() {
 
 bool ClusterClientCursorMock::isTailable() const {
     return false;
+}
+
+namespace {
+const std::vector<UserName> emptyAuthenticatedUsers{};
+}  // namespace
+
+UserNameIterator ClusterClientCursorMock::getAuthenticatedUsers() const {
+    return makeUserNameIterator(emptyAuthenticatedUsers.begin(), emptyAuthenticatedUsers.end());
 }
 
 void ClusterClientCursorMock::queueResult(const ClusterQueryResult& result) {
@@ -95,11 +103,6 @@ void ClusterClientCursorMock::queueError(Status status) {
 
 Status ClusterClientCursorMock::setAwaitDataTimeout(Milliseconds awaitDataTimeout) {
     MONGO_UNREACHABLE;
-}
-
-
-void ClusterClientCursorMock::setOperationContext(OperationContext* txn) {
-    // Do nothing
 }
 
 }  // namespace mongo

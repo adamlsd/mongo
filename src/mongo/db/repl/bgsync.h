@@ -37,6 +37,7 @@
 #include "mongo/db/repl/oplog_buffer.h"
 #include "mongo/db/repl/oplog_fetcher.h"
 #include "mongo/db/repl/optime.h"
+#include "mongo/db/repl/rollback_impl.h"
 #include "mongo/db/repl/sync_source_resolver.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
@@ -53,39 +54,55 @@ namespace repl {
 
 class ReplicationCoordinator;
 class ReplicationCoordinatorExternalState;
+class StorageInterface;
 
 class BackgroundSync {
     MONGO_DISALLOW_COPYING(BackgroundSync);
 
 public:
+    /**
+     *   Stopped -> Starting -> Running
+     *      ^          |            |
+     *      |__________|____________|
+     *
+     * In normal cases: Stopped -> Starting -> Running -> Stopped.
+     * It is also possible to transition directly from Starting to Stopped.
+     *
+     * We need a separate Starting state since part of the startup process involves reading from
+     * disk and we want to do that disk I/O in the bgsync thread, rather than whatever thread calls
+     * start().
+     */
+    enum class ProducerState { Starting, Running, Stopped };
+
     BackgroundSync(ReplicationCoordinatorExternalState* replicationCoordinatorExternalState,
                    std::unique_ptr<OplogBuffer> oplogBuffer);
 
     // stop syncing (when this node becomes a primary, e.g.)
-    void stop();
+    // During stepdown, the last fetched optime is not reset in order to keep track of the lastest
+    // optime in the buffer. However, the last fetched optime has to be reset after initial sync or
+    // rollback.
+    void stop(bool resetLastFetchedOptime);
 
     /**
      * Starts oplog buffer, task executor and producer thread, in that order.
      */
-    void startup(OperationContext* txn);
+    void startup(OperationContext* opCtx);
 
     /**
      * Signals producer thread to stop.
      */
-    void shutdown(OperationContext* txn);
+    void shutdown(OperationContext* opCtx);
 
     /**
      * Waits for producer thread to stop before shutting down the task executor and oplog buffer.
      */
-    void join(OperationContext* txn);
+    void join(OperationContext* opCtx);
 
     /**
      * Returns true if shutdown() has been called.
      * Once this returns true, nothing more will be added to the queue and consumers must shutdown.
      */
     bool inShutdown() const;
-
-    bool isStopped() const;
 
     // starts the sync target notifying thread
     void notifierThread();
@@ -94,8 +111,8 @@ public:
 
     // Interface implementation
 
-    bool peek(OperationContext* txn, BSONObj* op);
-    void consume(OperationContext* txn);
+    bool peek(OperationContext* opCtx, BSONObj* op);
+    void consume(OperationContext* opCtx);
     void clearSyncTarget();
     void waitForMore();
 
@@ -103,12 +120,7 @@ public:
     BSONObj getCounters();
 
     // Clears any fetched and buffered oplog entries.
-    void clearBuffer(OperationContext* txn);
-
-    /**
-     * Cancel existing find/getMore commands on the sync source's oplog collection.
-     */
-    void cancelFetcher();
+    void clearBuffer(OperationContext* opCtx);
 
     /**
      * Returns true if any of the following is true:
@@ -119,8 +131,12 @@ public:
      */
     bool shouldStopFetching() const;
 
-    // Testing related stuff
-    void pushTestOpToBuffer(OperationContext* txn, const BSONObj& op);
+    ProducerState getState() const;
+    // Starts the producer if it's stopped. Otherwise, let it keep running.
+    void startProducerIfStopped();
+
+    // Adds a fake oplog entry to buffer. Used for testing only.
+    void pushTestOpToBuffer(OperationContext* opCtx, const BSONObj& op);
 
 private:
     bool _inShutdown_inlock() const;
@@ -134,36 +150,31 @@ private:
     void _run();
     // Production thread inner loop.
     void _runProducer();
-    void _produce(OperationContext* txn);
-
-    /**
-     * Signals to the applier that we have no new data,
-     * and are in sync with the applier at this point.
-     *
-     * NOTE: Used after rollback and during draining to transition to Primary role;
-     */
-    void _signalNoNewDataForApplier(OperationContext* txn);
+    void _produce(OperationContext* opCtx);
 
     /**
      * Checks current background sync state before pushing operations into blocking queue and
      * updating metrics. If the queue is full, might block.
+     *
+     * requiredRBID is reset to empty after the first call.
      */
-    void _enqueueDocuments(Fetcher::Documents::const_iterator begin,
-                           Fetcher::Documents::const_iterator end,
-                           const OplogFetcher::DocumentsInfo& info);
+    Status _enqueueDocuments(Fetcher::Documents::const_iterator begin,
+                             Fetcher::Documents::const_iterator end,
+                             const OplogFetcher::DocumentsInfo& info);
 
     /**
      * Executes a rollback.
-     * 'getConnection' returns a connection to the sync source.
      */
-    void _rollback(OperationContext* txn,
-                   const HostAndPort& source,
-                   stdx::function<DBClientBase*()> getConnection);
+    void _runRollback(OperationContext* opCtx,
+                      const Status& fetcherReturnStatus,
+                      const HostAndPort& source,
+                      int requiredRBID,
+                      StorageInterface* storageInterface);
 
     // restart syncing
-    void start(OperationContext* txn);
+    void start(OperationContext* opCtx);
 
-    long long _readLastAppliedHash(OperationContext* txn);
+    OpTimeWithHash _readLastAppliedOpTimeWithHash(OperationContext* opCtx);
 
     // Production thread
     std::unique_ptr<OplogBuffer> _oplogBuffer;
@@ -174,11 +185,9 @@ private:
     // A pointer to the replication coordinator external state.
     ReplicationCoordinatorExternalState* _replicationCoordinatorExternalState;
 
-    // Used to determine sync source.
-    // TODO(dannenberg) move into DataReplicator.
-    SyncSourceResolver _syncSourceResolver;
-
     // _mutex protects all of the class variables declared below.
+    //
+    // Never hold bgsync mutex when trying to acquire the ReplicationCoordinator mutex.
     mutable stdx::mutex _mutex;
 
     OpTime _lastOpTimeFetched;
@@ -193,14 +202,22 @@ private:
     // Set to true if shutdown() has been called.
     bool _inShutdown = false;
 
-    // if producer thread should not be running
-    bool _stopped = true;
+    ProducerState _state = ProducerState::Starting;
 
     HostAndPort _syncSourceHost;
 
+    // Current sync source resolver validating sync source candidates.
+    // Pointer may be read on any thread that locks _mutex or unlocked on the BGSync thread. It can
+    // only be written to by the BGSync thread while holding _mutex.
+    std::unique_ptr<SyncSourceResolver> _syncSourceResolver;
+
     // Current oplog fetcher tailing the oplog on the sync source.
-    // Owned by us.
     std::unique_ptr<OplogFetcher> _oplogFetcher;
+
+    // Current rollback process. If this component is active, we are currently reverting local
+    // operations in the local oplog in order to bring this server to a consistent state relative
+    // to the sync source.
+    std::unique_ptr<RollbackImpl> _rollback;
 };
 
 

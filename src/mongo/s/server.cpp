@@ -52,9 +52,11 @@
 #include "mongo/db/client.h"
 #include "mongo/db/dbwebserver.h"
 #include "mongo/db/initialize_server_global_state.h"
-#include "mongo/db/instance.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/log_process_details.h"
+#include "mongo/db/logical_clock.h"
+#include "mongo/db/logical_time_metadata_hook.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_noop.h"
@@ -62,21 +64,22 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/balancer/balancer_configuration.h"
+#include "mongo/rpc/metadata/egress_metadata_hook_list.h"
+#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/shard_remote.h"
-#include "mongo/s/client/sharding_connection_hook_for_mongos.h"
-#include "mongo/s/commands/request.h"
-#include "mongo/s/config.h"
+#include "mongo/s/client/sharding_connection_hook.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/is_mongos.h"
 #include "mongo/s/mongos_options.h"
 #include "mongo/s/query/cluster_cursor_cleanup_job.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/service_entry_point_mongos.h"
+#include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
 #include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
 #include "mongo/s/sharding_initialization.h"
 #include "mongo/s/sharding_uptime_reporter.h"
@@ -86,6 +89,7 @@
 #include "mongo/transport/transport_layer_legacy.h"
 #include "mongo/util/admin_access.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
@@ -100,7 +104,6 @@
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/stacktrace.h"
-#include "mongo/util/static_observer.h"
 #include "mongo/util/stringutils.h"
 #include "mongo/util/system_clock_source.h"
 #include "mongo/util/system_tick_source.h"
@@ -135,23 +138,23 @@ static void cleanupTask() {
         Client::initThreadIfNotAlready();
         Client& client = cc();
         ServiceContext::UniqueOperationContext uniqueTxn;
-        OperationContext* txn = client.getOperationContext();
-        if (!txn) {
+        OperationContext* opCtx = client.getOperationContext();
+        if (!opCtx) {
             uniqueTxn = client.makeOperationContext();
-            txn = uniqueTxn.get();
+            opCtx = uniqueTxn.get();
         }
 
         if (serviceContext)
             serviceContext->setKillAllOperations();
 
-        if (auto cursorManager = Grid::get(txn)->getCursorManager()) {
+        if (auto cursorManager = Grid::get(opCtx)->getCursorManager()) {
             cursorManager->shutdown();
         }
-        if (auto pool = Grid::get(txn)->getExecutorPool()) {
+        if (auto pool = Grid::get(opCtx)->getExecutorPool()) {
             pool->shutdownAndJoin();
         }
-        if (auto catalog = Grid::get(txn)->catalogClient(txn)) {
-            catalog->shutDown(txn);
+        if (auto catalog = Grid::get(opCtx)->catalogClient(opCtx)) {
+            catalog->shutDown(opCtx);
         }
     }
 
@@ -172,7 +175,7 @@ static BSONObj buildErrReply(const DBException& ex) {
 
 using namespace mongo;
 
-static Status initializeSharding(OperationContext* txn) {
+static Status initializeSharding(OperationContext* opCtx) {
     auto targeterFactory = stdx::make_unique<RemoteCommandTargeterFactoryImpl>();
     auto targeterFactoryPtr = targeterFactory.get();
 
@@ -197,11 +200,17 @@ static Status initializeSharding(OperationContext* txn) {
         stdx::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
 
     Status status = initializeGlobalShardingState(
-        txn,
+        opCtx,
         mongosGlobalParams.configdbs,
-        generateDistLockProcessId(txn),
+        generateDistLockProcessId(opCtx),
         std::move(shardFactory),
-        []() { return stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>(); },
+        [opCtx]() {
+            auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+            hookList->addHook(
+                stdx::make_unique<rpc::LogicalTimeMetadataHook>(opCtx->getServiceContext()));
+            hookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+            return hookList;
+        },
         [](ShardingCatalogClient* catalogClient, std::unique_ptr<executor::TaskExecutor> executor) {
             return nullptr;  // Only config servers get a real ShardingCatalogManager.
         });
@@ -210,7 +219,7 @@ static Status initializeSharding(OperationContext* txn) {
         return status;
     }
 
-    status = reloadShardRegistryUntilSuccess(txn);
+    status = reloadShardRegistryUntilSuccess(opCtx);
     if (!status.isOK()) {
         return status;
     }
@@ -220,12 +229,11 @@ static Status initializeSharding(OperationContext* txn) {
 
 static void _initWireSpec() {
     WireSpec& spec = WireSpec::instance();
-    // accept from any version
-    spec.incoming.minWireVersion = RELEASE_2_4_AND_BEFORE;
-    spec.incoming.maxWireVersion = COMMANDS_ACCEPT_WRITE_CONCERN;
     // connect to version supporting Write Concern only
     spec.outgoing.minWireVersion = COMMANDS_ACCEPT_WRITE_CONCERN;
     spec.outgoing.maxWireVersion = COMMANDS_ACCEPT_WRITE_CONCERN;
+
+    spec.isInternalClient = true;
 }
 
 static ExitCode runMongosServer() {
@@ -250,14 +258,25 @@ static ExitCode runMongosServer() {
         return EXIT_NET_ERROR;
     }
 
+    auto unshardedHookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+    unshardedHookList->addHook(
+        stdx::make_unique<rpc::LogicalTimeMetadataHook>(getGlobalServiceContext()));
+    unshardedHookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+
     // Add sharding hooks to both connection pools - ShardingConnectionHook includes auth hooks
-    globalConnPool.addHook(new ShardingConnectionHookForMongos(false));
-    shardConnectionPool.addHook(new ShardingConnectionHookForMongos(true));
+    globalConnPool.addHook(new ShardingConnectionHook(false, std::move(unshardedHookList)));
+
+    auto shardedHookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+    shardedHookList->addHook(
+        stdx::make_unique<rpc::LogicalTimeMetadataHook>(getGlobalServiceContext()));
+    shardedHookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+
+    shardConnectionPool.addHook(new ShardingConnectionHook(true, std::move(shardedHookList)));
 
     ReplicaSetMonitor::setAsynchronousConfigChangeHook(
-        &ConfigServer::replicaSetChangeConfigServerUpdateHook);
+        &ShardRegistry::replicaSetChangeConfigServerUpdateHook);
     ReplicaSetMonitor::setSynchronousConfigChangeHook(
-        &ConfigServer::replicaSetChangeShardRegistryUpdateHook);
+        &ShardRegistry::replicaSetChangeShardRegistryUpdateHook);
 
     // Mongos connection pools already takes care of authenticating new connections so the
     // replica set connection shouldn't need to.
@@ -269,11 +288,16 @@ static ExitCode runMongosServer() {
 
     auto opCtx = cc().makeOperationContext();
 
+    auto timeProofService = stdx::make_unique<TimeProofService>();
+    auto logicalClock =
+        stdx::make_unique<LogicalClock>(opCtx->getServiceContext(), std::move(timeProofService));
+    LogicalClock::set(opCtx->getServiceContext(), std::move(logicalClock));
+
     {
         Status status = initializeSharding(opCtx.get());
         if (!status.isOK()) {
             if (status == ErrorCodes::CallbackCanceled) {
-                invariant(inShutdown());
+                invariant(globalInShutdownDeprecated());
                 log() << "Shutdown called before mongos finished starting up";
                 return EXIT_CLEAN;
             }
@@ -323,17 +347,25 @@ static ExitCode runMongosServer() {
 
 #if !defined(_WIN32)
     mongo::signalForkSuccess();
+#else
+    if (ntservice::shouldStartService()) {
+        ntservice::reportStatus(SERVICE_RUNNING);
+        log() << "Service running";
+    }
 #endif
 
     // Block until shutdown.
+    MONGO_IDLE_THREAD_BLOCK;
     return waitForShutdown();
 }
 
+namespace {
 MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 (InitializerContext* context) {
     mongo::forkServerOrDie();
     return Status::OK();
 }
+}  // namespace
 
 // We set the featureCompatibilityVersion to 3.4 in the mongos so that BSON validation always uses
 // BSONVersion::kLatest.
@@ -365,6 +397,8 @@ static int _main() {
 
     getGlobalServiceContext()->setFastClockSource(FastClockSourceFactory::create(Milliseconds{10}));
 
+    auto shardingContext = Grid::get(getGlobalServiceContext());
+
     // we either have a setting where all processes are in localhost or none are
     std::vector<HostAndPort> configServers = mongosGlobalParams.configdbs.getServers();
     for (std::vector<HostAndPort>::const_iterator it = configServers.begin();
@@ -373,10 +407,10 @@ static int _main() {
         const HostAndPort& configAddr = *it;
 
         if (it == configServers.begin()) {
-            grid.setAllowLocalHost(configAddr.isLocalHost());
+            shardingContext->setAllowLocalHost(configAddr.isLocalHost());
         }
 
-        if (configAddr.isLocalHost() != grid.allowLocalHost()) {
+        if (configAddr.isLocalHost() != shardingContext->allowLocalHost()) {
             mongo::log(LogComponent::kDefault)
                 << "cannot mix localhost and ip addresses in configdbs";
             return 10;
@@ -397,9 +431,6 @@ static int _main() {
 #if defined(_WIN32)
 namespace mongo {
 static ExitCode initService() {
-    ntservice::reportStatus(SERVICE_RUNNING);
-    log() << "Service running";
-
     return runMongosServer();
 }
 }  // namespace mongo
@@ -432,7 +463,8 @@ MONGO_INITIALIZER_GENERAL(setSSLManagerType, MONGO_NO_PREREQUISITES, ("SSLManage
 #endif
 
 int mongoSMain(int argc, char* argv[], char** envp) {
-    static StaticObserver staticObserver;
+    mongo::setMongos();
+
     if (argc < 1)
         return EXIT_FAILURE;
 

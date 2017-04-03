@@ -2,6 +2,8 @@
 
 Import("env")
 
+env = env.Clone()
+
 env.Library(
     target=[
         'command_status',
@@ -14,7 +16,6 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/common',
-        '$BUILD_DIR/mongo/util/foundation'
     ],
 )
 
@@ -42,6 +43,7 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/wire_version',
     ],
 )
 
@@ -139,7 +141,7 @@ env.Library(
     ],
 )
 
-env.Library(
+env.Clone().InjectModule("enterprise").Library(
     target=[
         'metadata',
     ],
@@ -147,16 +149,23 @@ env.Library(
         'metadata.cpp',
         'metadata/audit_metadata.cpp',
         'metadata/config_server_metadata.cpp',
+        'metadata/egress_metadata_hook_list.cpp',
+        'metadata/logical_time_metadata.cpp',
         'metadata/server_selection_metadata.cpp',
         'metadata/sharding_metadata.cpp',
         'metadata/repl_set_metadata.cpp',
+        'metadata/oplog_query_metadata.cpp',
+        'metadata/tracking_metadata.cpp',
     ],
     LIBDEPS=[
         'client_metadata',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/client/read_preference',
+        '$BUILD_DIR/mongo/db/auth/authcore',
         '$BUILD_DIR/mongo/db/repl/optime',
+        '$BUILD_DIR/mongo/db/logical_clock',
+        '$BUILD_DIR/mongo/db/signed_logical_time',
         '$BUILD_DIR/mongo/util/decorable',
     ],
 )
@@ -166,8 +175,11 @@ env.CppUnitTest(
         'rpc_metadata_test',
     ],
     source=[
+        'metadata/egress_metadata_hook_list_test.cpp',
+        'metadata/logical_time_metadata_test.cpp',
         'metadata/server_selection_metadata_test.cpp',
         'metadata/sharding_metadata_test.cpp',
+        'metadata/tracking_metadata_test.cpp',
     ],
     LIBDEPS=[
         'metadata',
@@ -202,6 +214,14 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
+    target='oplog_query_metadata_test',
+    source=[
+        'metadata/oplog_query_metadata_test.cpp',
+    ],
+    LIBDEPS=['metadata']
+)
+
+env.CppUnitTest(
     target='config_server_metadata_test',
     source=[
         'metadata/config_server_metadata_test.cpp',
@@ -217,6 +237,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/transport/transport_layer_legacy',
         "$BUILD_DIR/mongo/util/concurrency/spin_lock",
         '$BUILD_DIR/mongo/util/decorable',
         '$BUILD_DIR/mongo/util/net/hostandport',

@@ -29,7 +29,7 @@ load('jstests/libs/write_concern_util.js');
         db.runCommand({dropDatabase: 1});
         db.extra.insert({a: 1});
         coll = db[collName];
-        st.ensurePrimaryShard(db.toString(), st._shardNames[0]);
+        st.ensurePrimaryShard(db.toString(), st.shard0.shardName);
         assert.eq(0, coll.find().itcount(), "test collection not empty");
         assert.eq(1, db.extra.find().itcount(), "extra collection should have 1 document");
     }
@@ -56,7 +56,7 @@ load('jstests/libs/write_concern_util.js');
         req: {createIndexes: collName, indexes: [{key: {'type': 1}, name: 'type_index'}]},
         setupFunc: function() {
             coll.insert({type: 'oak'});
-            st.ensurePrimaryShard(db.toString(), st._shardNames[0]);
+            st.ensurePrimaryShard(db.toString(), st.shard0.shardName);
             assert.eq(coll.getIndexes().length, 1);
         },
         confirmFunc: function() {
@@ -84,7 +84,7 @@ load('jstests/libs/write_concern_util.js');
             db = db.getSiblingDB("renameCollWC");
             // Ensure that database is created.
             db.leaves.insert({type: 'oak'});
-            st.ensurePrimaryShard(db.toString(), st._shardNames[0]);
+            st.ensurePrimaryShard(db.toString(), st.shard0.shardName);
             db.leaves.drop();
             db.pine_needles.drop();
             db.leaves.insert({type: 'oak'});
@@ -131,7 +131,7 @@ load('jstests/libs/write_concern_util.js');
 
     // Aggregate with passthrough.
     commands.push({
-        req: {aggregate: collName, pipeline: [{$sort: {type: 1}}, {$out: "foo"}]},
+        req: {aggregate: collName, pipeline: [{$sort: {type: 1}}, {$out: "foo"}], cursor: {}},
         setupFunc: function() {
             coll.insert({_id: 1, x: 3, type: 'oak'});
             coll.insert({_id: 2, x: 13, type: 'maple'});
@@ -148,7 +148,8 @@ load('jstests/libs/write_concern_util.js');
     commands.push({
         req: {
             aggregate: collName,
-            pipeline: [{$match: {x: -3}}, {$match: {type: {$exists: 1}}}, {$out: "foo"}]
+            pipeline: [{$match: {x: -3}}, {$match: {type: {$exists: 1}}}, {$out: "foo"}],
+            cursor: {}
         },
         setupFunc: function() {
             shardCollectionWithChunks(st, coll);
@@ -168,7 +169,8 @@ load('jstests/libs/write_concern_util.js');
     commands.push({
         req: {
             aggregate: collName,
-            pipeline: [{$match: {type: {$exists: 1}}}, {$sort: {type: 1}}, {$out: "foo"}]
+            pipeline: [{$match: {type: {$exists: 1}}}, {$sort: {type: 1}}, {$out: "foo"}],
+            cursor: {}
         },
         setupFunc: function() {
             shardCollectionWithChunks(st, coll);
@@ -367,38 +369,38 @@ load('jstests/libs/write_concern_util.js');
     // Create a non-sharded collection in the move-primary-db.
     db.getSiblingDB("move-primary-db-sharded").nonshardColl.insert({a: 1});
     commands.push({
-        req: {movePrimary: "move-primary-db-sharded", to: st._shardNames[1]},
+        req: {movePrimary: "move-primary-db-sharded", to: st.shard1.shardName},
         setupFunc: function() {
-            st.ensurePrimaryShard("move-primary-db-sharded", st._shardNames[0]);
+            st.ensurePrimaryShard("move-primary-db-sharded", st.shard0.shardName);
             assert.eq(db.getSiblingDB('config')
                           .databases.findOne({_id: 'move-primary-db-sharded'})
                           .primary,
-                      st._shardNames[0]);
+                      st.shard0.shardName);
         },
         confirmFunc: function() {
             assert.eq(db.getSiblingDB('config')
                           .databases.findOne({_id: 'move-primary-db-sharded'})
                           .primary,
-                      st._shardNames[1]);
+                      st.shard1.shardName);
         },
         admin: true
     });
 
     commands.push({
-        req: {movePrimary: "move-primary-db-unsharded", to: st._shardNames[1]},
+        req: {movePrimary: "move-primary-db-unsharded", to: st.shard1.shardName},
         setupFunc: function() {
             db.getSiblingDB("move-primary-db-unsharded").nonshardColl.insert({a: 1});
-            st.ensurePrimaryShard("move-primary-db-unsharded", st._shardNames[0]);
+            st.ensurePrimaryShard("move-primary-db-unsharded", st.shard0.shardName);
             assert.eq(db.getSiblingDB('config')
                           .databases.findOne({_id: 'move-primary-db-unsharded'})
                           .primary,
-                      st._shardNames[0]);
+                      st.shard0.shardName);
         },
         confirmFunc: function() {
             assert.eq(db.getSiblingDB('config')
                           .databases.findOne({_id: 'move-primary-db-unsharded'})
                           .primary,
-                      st._shardNames[1]);
+                      st.shard1.shardName);
         },
         admin: true
     });

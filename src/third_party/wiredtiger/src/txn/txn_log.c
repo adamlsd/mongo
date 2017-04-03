@@ -262,20 +262,20 @@ err:	__wt_logrec_free(session, &logrec);
  *	Read a log record for a checkpoint operation.
  */
 int
-__wt_txn_checkpoint_logread(
-    WT_SESSION_IMPL *session, const uint8_t **pp, const uint8_t *end,
-    WT_LSN *ckpt_lsn)
+__wt_txn_checkpoint_logread(WT_SESSION_IMPL *session,
+    const uint8_t **pp, const uint8_t *end, WT_LSN *ckpt_lsn)
 {
-	WT_ITEM ckpt_snapshot;
+	WT_DECL_RET;
+	WT_ITEM ckpt_snapshot_unused;
 	uint32_t ckpt_file, ckpt_offset;
-	u_int ckpt_nsnapshot;
-	const char *fmt = WT_UNCHECKED_STRING(IIIU);
+	u_int ckpt_nsnapshot_unused;
+	const char *fmt = WT_UNCHECKED_STRING(IIIu);
 
-	WT_RET(__wt_struct_unpack(session, *pp, WT_PTRDIFF(end, *pp), fmt,
+	if ((ret = __wt_struct_unpack(session, *pp, WT_PTRDIFF(end, *pp), fmt,
 	    &ckpt_file, &ckpt_offset,
-	    &ckpt_nsnapshot, &ckpt_snapshot));
-	WT_UNUSED(ckpt_nsnapshot);
-	WT_UNUSED(ckpt_snapshot);
+	    &ckpt_nsnapshot_unused, &ckpt_snapshot_unused)) != 0)
+		WT_RET_MSG(session,
+		    ret, "txn_checkpoint_logread: unpack failure");
 	WT_SET_LSN(ckpt_lsn, ckpt_file, ckpt_offset);
 	*pp = end;
 	return (0);
@@ -297,7 +297,7 @@ __wt_txn_checkpoint_log(
 	uint8_t *end, *p;
 	size_t recsize;
 	uint32_t i, rectype = WT_LOGREC_CHECKPOINT;
-	const char *fmt = WT_UNCHECKED_STRING(IIIIU);
+	const char *fmt = WT_UNCHECKED_STRING(IIIIu);
 
 	txn = &session->txn;
 	ckpt_lsn = &txn->ckpt_lsn;
@@ -368,14 +368,16 @@ __wt_txn_checkpoint_log(
 
 		/*
 		 * If this full checkpoint completed successfully and there is
-		 * no hot backup in progress, tell the logging subsystem the
-		 * checkpoint LSN so that it can archive.  Do not update the
-		 * logging checkpoint LSN if this is during a clean connection
-		 * close, only during a full checkpoint.  A clean close may not
-		 * update any metadata LSN and we do not want to archive in
-		 * that case.
+		 * no hot backup in progress and this is not recovery, tell
+		 * the logging subsystem the checkpoint LSN so that it can
+		 * archive.  Do not update the logging checkpoint LSN if this
+		 * is during a clean connection close, only during a full
+		 * checkpoint.  A clean close may not update any metadata LSN
+		 * and we do not want to archive in that case.
 		 */
-		if (!S2C(session)->hot_backup && txn->full_ckpt)
+		if (!S2C(session)->hot_backup &&
+		    !F_ISSET(S2C(session), WT_CONN_RECOVERING) &&
+		    txn->full_ckpt)
 			__wt_log_ckpt(session, ckpt_lsn);
 
 		/* FALLTHROUGH */
@@ -551,6 +553,7 @@ __txn_printlog(WT_SESSION_IMPL *session,
  */
 int
 __wt_txn_printlog(WT_SESSION *wt_session, uint32_t flags)
+    WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
 	WT_SESSION_IMPL *session;
 	WT_TXN_PRINTLOG_ARGS args;

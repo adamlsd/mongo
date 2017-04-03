@@ -36,6 +36,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/value.h"
+#include "mongo/db/query/explain_options.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/timer.h"
 
@@ -45,7 +46,7 @@ class BSONObjBuilder;
 class CollatorInterface;
 class DocumentSource;
 class OperationContext;
-struct ExpressionContext;
+class ExpressionContext;
 
 /**
  * A Pipeline object represents a list of DocumentSources and is responsible for optimizing the
@@ -129,12 +130,6 @@ public:
     void optimizePipeline();
 
     /**
-     * Propagates a reference to the ExpressionContext to all of the pipeline's contained stages and
-     * expressions.
-     */
-    void injectExpressionContext(const boost::intrusive_ptr<ExpressionContext>& expCtx);
-
-    /**
      * Returns any other collections involved in the pipeline in addition to the collection the
      * aggregation is run on.
      */
@@ -145,13 +140,6 @@ public:
      */
     std::vector<Value> serialize() const;
 
-    /**
-      Run the Pipeline on the given source.
-
-      @param result builder to write the result to
-    */
-    void run(BSONObjBuilder& result);
-
     /// The initial source is special since it varies between mongos and mongod.
     void addInitialSource(boost::intrusive_ptr<DocumentSource> source);
 
@@ -161,10 +149,10 @@ public:
     boost::optional<Document> getNext();
 
     /**
-     * Write the pipeline's operators to a std::vector<Value>, with the
-     * explain flag true (for DocumentSource::serializeToArray()).
+     * Write the pipeline's operators to a std::vector<Value>, providing the level of detail
+     * specified by 'verbosity'.
      */
-    std::vector<Value> writeExplainOps() const;
+    std::vector<Value> writeExplainOps(ExplainOptions::Verbosity verbosity) const;
 
     /**
      * Returns the dependencies needed by this pipeline. 'metadataAvailable' should reflect what

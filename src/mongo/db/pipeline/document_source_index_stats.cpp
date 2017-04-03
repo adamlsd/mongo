@@ -28,9 +28,11 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_index_stats.h"
 
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
+#include "mongo/db/server_options.h"
+#include "mongo/util/net/sock.h"
 
 namespace mongo {
 
@@ -79,7 +81,8 @@ intrusive_ptr<DocumentSource> DocumentSourceIndexStats::createFromBson(
     return new DocumentSourceIndexStats(pExpCtx);
 }
 
-Value DocumentSourceIndexStats::serialize(bool explain) const {
+Value DocumentSourceIndexStats::serialize(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(DOC(getSourceName() << Document()));
 }
 }

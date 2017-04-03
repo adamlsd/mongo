@@ -35,16 +35,13 @@
 #include "mongo/client/constants.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/server_options.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/net/abstract_message_port.h"
 #include "mongo/util/net/message.h"
 
 namespace mongo {
 
 class OperationContext;
-
-namespace transport {
-class Session;
-}  // namespace transport
 
 /* db response format
 
@@ -225,9 +222,8 @@ public:
     DbMessage(const Message& msg);
 
     // Indicates whether this message is expected to have a ns
-    // or in the case of dbMsg, a string in the same place as ns
     bool messageShouldHaveNs() const {
-        return (_msg.operation() >= dbMsg) & (_msg.operation() <= dbDelete);
+        return (_msg.operation() >= dbUpdate) & (_msg.operation() <= dbDelete);
     }
 
     /** the 32 bit field before the ns
@@ -363,7 +359,7 @@ public:
     /**
      * Finishes the reply and sends the message out to 'destination'.
      */
-    void send(transport::Session* session,
+    void send(const transport::SessionHandle& session,
               int queryResultFlags,
               const Message& requestMsg,
               int nReturned,
@@ -373,15 +369,15 @@ public:
     /**
      * Similar to send() but used for replying to a command.
      */
-    void sendCommandReply(transport::Session* session, const Message& requestMsg);
+    void sendCommandReply(const transport::SessionHandle& session, const Message& requestMsg);
 
 private:
     BufBuilder _buffer;
 };
 
 void replyToQuery(int queryResultFlags,
-                  transport::Session* session,
-                  Message& requestMsg,
+                  const transport::SessionHandle& session,
+                  const Message& requestMsg,
                   const void* data,
                   int size,
                   int nReturned,
@@ -390,12 +386,12 @@ void replyToQuery(int queryResultFlags,
 
 /* object reply helper. */
 void replyToQuery(int queryResultFlags,
-                  transport::Session* session,
-                  Message& requestMsg,
+                  const transport::SessionHandle& session,
+                  const Message& requestMsg,
                   const BSONObj& responseObj);
 
 /* helper to do a reply using a DbResponse object */
-void replyToQuery(int queryResultFlags, Message& m, DbResponse& dbresponse, BSONObj obj);
+void replyToQuery(int queryResultFlags, const Message& m, DbResponse& dbresponse, BSONObj obj);
 
 /**
  * Helper method for setting up a response object.

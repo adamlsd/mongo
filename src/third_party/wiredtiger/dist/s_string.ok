@@ -18,8 +18,10 @@ ASYNC
 Addr
 Ailamaki
 Alakuijala
+Alexandrescu's
 Alloc
 Async
+AsyncOp
 Athanassoulis
 Athlon
 BBBBB
@@ -37,6 +39,7 @@ BTREE
 BUF
 BZ
 Barack
+BerkeleyDB
 Bitfield
 Bitwise
 Brueckner
@@ -59,15 +62,19 @@ COVERITY
 CPUs
 CRC
 CSV
+CStream
+CURFILE
 CURSORs
 CURSTD
 CallsCustDate
 Castagnoli
+CentOS
 Checkpointing
 Checksum
 Checksums
 CityHash
 CloseHandle
+Collet
 Comparator
 Config
 Coverity
@@ -85,6 +92,7 @@ DNE
 DOI
 DONTNEED
 DUPLICATEV
+DataSet
 DbCursor
 DbEnv
 Decrement
@@ -123,7 +131,9 @@ FNV
 FORALL
 FOREACH
 FS
+FTRUNCATE
 FULLFSYNC
+Facebook
 FindClose
 FindFirstFile
 Fixup
@@ -152,6 +162,7 @@ HHHHLL
 HHHLL
 Hendrik
 HyperLevelDB
+ID's
 IEC
 IEEE
 IKEY
@@ -163,8 +174,10 @@ INITIALIZER
 INMEM
 INSN
 INTL
+INULL
 ISA
 ITEMs
+ITER
 InitializeCriticalSectionAndSpinCount
 Inline
 Intra
@@ -212,8 +225,10 @@ MEMALIGN
 MERCHANTABILITY
 METADATA
 MONGODB
+MOVEFILE
 MRXB
 MRXBOPC
+MSDN
 MSVC
 MULTI
 MULTIBLOCK
@@ -227,8 +242,7 @@ Metadata
 Mewhort
 Mitzenmacher
 MongoDB
-MoveFile
-MoveFileW
+MoveFileExW
 Multi
 MultiByteToWideChar
 Multithreaded
@@ -242,6 +256,7 @@ NONINFRINGEMENT
 NOTFOUND
 NOTREACHED
 NOVALUE
+NOWAIT
 NUL
 NUM
 NetBSD
@@ -264,6 +279,8 @@ PRIu
 PRNG
 PTHREAD
 PTR
+PackInputStream
+PackOutputStream
 Pandis
 Phong
 PlatformSDK
@@ -295,6 +312,7 @@ Readonly
 Rebalance
 RedHat
 Redistributions
+Refactor
 Resize
 RocksDB
 SIMD
@@ -326,6 +344,7 @@ Split's
 Stoica
 StoreLoad
 StoreStore
+Syscall
 TAILQ
 TCMalloc
 TESTUTIL
@@ -372,6 +391,7 @@ WILLNEED
 WIREDTIGER
 WRLSN
 WRNOLOCK
+WTPERF
 WaitForSingleObject
 WakeAllConditionVariable
 Wconditional
@@ -391,10 +411,20 @@ WiredTigerPreplog
 WiredTigerTmplog
 WiredTigerTxn
 WithSeeds
+Wpedantic
 WriteFile
 Wuninitialized
 Wunused
 XP
+Xcode
+Xcode/
+Yann
+ZSTD
+Zlib
+Zlib's
+Zstandard
+Zstd
+Zstd's
 abcdef
 abcdefghijklmnopqrstuvwxyz
 addl
@@ -416,6 +446,8 @@ argc
 args
 argv
 asm
+aspell
+assertfmt
 async
 asyncopp
 asyncops
@@ -511,6 +543,7 @@ collatorp
 comparator
 comparep
 compat
+compressStream
 concat
 cond
 conf
@@ -530,8 +563,10 @@ cp
 cpuid
 crc
 create's
+createCStream
 crypto
 cryptobad
+csuite
 csv
 ctime
 ctype
@@ -583,6 +618,7 @@ dequeue
 dequeued
 der
 dereference
+dereferenced
 desc
 designator
 dest
@@ -595,6 +631,7 @@ difftime
 dir
 dirlist
 disjunction
+disjunctions
 dlclose
 dlh
 dll
@@ -618,10 +655,12 @@ dumpcmp
 dumpfile
 dup
 eg
+egrep
 emp
 encodings
 encryptor
 encryptors
+endStream
 endian
 english
 enqueue
@@ -707,6 +746,7 @@ gettime
 gettimeofday
 getv
 github
+gitignore
 gobare
 goesc
 gostring
@@ -733,6 +773,7 @@ idx
 ifdef
 ifdef's
 iiSii
+iiiS
 iiii
 iiu
 ikey
@@ -749,6 +790,7 @@ infeasible
 inflateInit
 infmt
 init
+initCStream
 initializers
 initn
 initsize
@@ -784,6 +826,7 @@ isupper
 isxdigit
 iter
 iteratively
+iters
 jnr
 jrx
 json
@@ -816,6 +859,7 @@ libdatasource
 libs
 libtool
 libwiredtiger
+linkers
 llll
 llu
 loadtext
@@ -824,6 +868,7 @@ localtime
 logf
 logmgr
 lognum
+logop
 logread
 logrec
 logsize
@@ -844,11 +889,13 @@ lu
 lwsync
 lz
 lzo
+mT
 madvise
 majorp
 malloc
 marshall
 marshalled
+maxCLevel
 maxcpu
 maxdbs
 mbll
@@ -914,6 +961,7 @@ nowait
 nset
 nsnap
 nul
+nullptr
 nuls
 numSymbols
 numbare
@@ -927,6 +975,7 @@ oo
 opcode
 opendir
 openfile
+oplog
 optimizations
 optype
 ori
@@ -948,6 +997,7 @@ pclose
 pcpu
 perf
 pfx
+pluggable
 popen
 poptable
 popthreads
@@ -989,12 +1039,14 @@ qdown
 qrrSS
 qsort
 quartile
+queueable
 qup
 rN
 rS
 rb
 rbrace
 rbracket
+rcursor
 rdonly
 rduppo
 readlock
@@ -1090,12 +1142,15 @@ subgetraw
 subgets
 subinit
 sublicense
+subtest
 subtree
 sunique
 superset
 sw
+sx
 sy
 sys
+syscall
 sz
 t's
 tV
@@ -1133,6 +1188,7 @@ txt
 typedef
 uB
 uS
+ui
 uint
 uintmax
 unbare
@@ -1168,6 +1224,7 @@ upg
 uri
 uri's
 uris
+usec
 usecs
 usedp
 userbad
@@ -1198,9 +1255,14 @@ vunpack
 vw
 vxr
 waitpid
+waker
+wakeup
+wakeups
 walk's
 warmup
 wb
+wcursor
+whitespace
 wiredTiger
 wiredtiger
 workFactor
@@ -1214,6 +1276,7 @@ ws
 wtbench
 wti
 wtperf
+wtperf's
 wts
 wtstats
 xF
@@ -1222,6 +1285,11 @@ xxxx
 xxxxx
 xxxxxx
 zalloc
+zf
 zfree
 zlib
+zlib's
+zseries
+zstd
+zstd's
 zu

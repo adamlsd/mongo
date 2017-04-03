@@ -40,7 +40,7 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/config.h"
 #include "mongo/db/db.h"
-#include "mongo/db/instance.h"
+#include "mongo/db/diag_log.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_options_helpers.h"
@@ -59,8 +59,6 @@ using std::endl;
 using std::string;
 
 MongodGlobalParams mongodGlobalParams;
-
-extern DiagLog _diaglog;
 
 Status addMongodOptions(moe::OptionSection* options) {
     moe::OptionSection general_options("General options");
@@ -147,6 +145,13 @@ Status addMongodOptions(moe::OptionSection* options) {
                            moe::Int,
                            "value of slow for profile and console log")
         .setDefault(moe::Value(100));
+
+    general_options
+        .addOptionChaining("operationProfiling.slowOpSampleRate",
+                           "slowOpSampleRate",
+                           moe::Double,
+                           "fraction of slow ops to include in the profile and console log")
+        .setDefault(moe::Value(1.0));
 
     general_options.addOptionChaining("profile", "profile", moe::Int, "0=off 1=slow, 2=all")
         .setSources(moe::SourceAllLegacy);
@@ -350,10 +355,12 @@ Status addMongodOptions(moe::OptionSection* options) {
 
     // Deprecated option that we don't want people to use for performance reasons
     storage_options
-        .addOptionChaining(
-            "nopreallocj", "nopreallocj", moe::Switch, "don't preallocate journal files")
+        .addOptionChaining("storage.mmapv1.journal.nopreallocj",
+                           "nopreallocj",
+                           moe::Switch,
+                           "don't preallocate journal files")
         .hidden()
-        .setSources(moe::SourceAllLegacy);
+        .setSources(moe::SourceAll);
 
 #if defined(__linux__)
     general_options.addOptionChaining(
@@ -1044,8 +1051,19 @@ Status storeMongodOptions(const moe::Environment& params) {
         serverGlobalParams.slowMS = params["operationProfiling.slowOpThresholdMs"].as<int>();
     }
 
+    if (params.count("operationProfiling.slowOpSampleRate")) {
+        serverGlobalParams.sampleRate = params["operationProfiling.slowOpSampleRate"].as<double>();
+    }
+
     if (params.count("storage.syncPeriodSecs")) {
         storageGlobalParams.syncdelay = params["storage.syncPeriodSecs"].as<double>();
+        if (storageGlobalParams.syncdelay < 0 ||
+            storageGlobalParams.syncdelay > StorageGlobalParams::kMaxSyncdelaySecs) {
+            return Status(ErrorCodes::BadValue,
+                          str::stream() << "syncdelay out of allowed range (0-"
+                                        << StorageGlobalParams::kMaxSyncdelaySecs
+                                        << "s)");
+        }
     }
 
     if (params.count("storage.directoryPerDB")) {
@@ -1077,11 +1095,10 @@ Status storeMongodOptions(const moe::Environment& params) {
         // don't check if dur is false here as many will just use the default, and will default
         // to off on win32.  ie no point making life a little more complex by giving an error on
         // a dev environment.
-        storageGlobalParams.journalCommitIntervalMs =
-            params["storage.journal.commitIntervalMs"].as<int>();
-        if (storageGlobalParams.journalCommitIntervalMs < 1 ||
-            storageGlobalParams.journalCommitIntervalMs >
-                StorageGlobalParams::kMaxJournalCommitIntervalMs) {
+        auto journalCommitIntervalMs = params["storage.journal.commitIntervalMs"].as<int>();
+        storageGlobalParams.journalCommitIntervalMs.store(journalCommitIntervalMs);
+        if (journalCommitIntervalMs < 1 ||
+            journalCommitIntervalMs > StorageGlobalParams::kMaxJournalCommitIntervalMs) {
             return Status(ErrorCodes::BadValue,
                           str::stream() << "--journalCommitInterval out of allowed range (1-"
                                         << StorageGlobalParams::kMaxJournalCommitIntervalMs
@@ -1091,8 +1108,8 @@ Status storeMongodOptions(const moe::Environment& params) {
     if (params.count("storage.mmapv1.journal.debugFlags")) {
         mmapv1GlobalOptions.journalOptions = params["storage.mmapv1.journal.debugFlags"].as<int>();
     }
-    if (params.count("nopreallocj")) {
-        mmapv1GlobalOptions.preallocj = !params["nopreallocj"].as<bool>();
+    if (params.count("storage.mmapv1.journal.nopreallocj")) {
+        mmapv1GlobalOptions.preallocj = !params["storage.mmapv1.journal.nopreallocj"].as<bool>();
     }
 
     if (params.count("net.http.RESTInterfaceEnabled")) {
@@ -1137,7 +1154,7 @@ Status storeMongodOptions(const moe::Environment& params) {
         storageGlobalParams.upgrade = 1;
     }
     if (params.count("notablescan")) {
-        storageGlobalParams.noTableScan = params["notablescan"].as<bool>();
+        storageGlobalParams.noTableScan.store(params["notablescan"].as<bool>());
     }
 
     repl::ReplSettings replSettings;

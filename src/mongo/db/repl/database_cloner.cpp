@@ -58,6 +58,8 @@ using UniqueLock = stdx::unique_lock<stdx::mutex>;
 
 const char* kNameFieldName = "name";
 const char* kOptionsFieldName = "options";
+const char* kInfoFieldName = "info";
+const char* kUUIDFieldName = "uuid";
 
 // The number of attempts for the listCollections commands.
 MONGO_EXPORT_SERVER_PARAMETER(numInitialSyncListCollectionsAttempts, int, 3);
@@ -116,7 +118,7 @@ DatabaseCloner::DatabaseCloner(executor::TaskExecutor* executor,
                               rpc::ServerSelectionMetadata(true, boost::none).toBSON(),
                               RemoteCommandRequest::kNoTimeout,
                               RemoteCommandRetryScheduler::makeRetryPolicy(
-                                  numInitialSyncListCollectionsAttempts,
+                                  numInitialSyncListCollectionsAttempts.load(),
                                   executor::RemoteCommandRequest::kNoTimeout,
                                   RemoteCommandRetryScheduler::kAllRetriableErrors)),
       _startCollectionCloner([](CollectionCloner& cloner) { return cloner.startup(); }) {
@@ -152,7 +154,7 @@ std::string DatabaseCloner::_getDiagnosticString_inlock() const {
     output << " source: " << _source.toString();
     output << " database: " << _dbname;
     output << " listCollections filter" << _listCollectionsFilter;
-    output << " active: " << _active;
+    output << " active: " << _isActive_inlock();
     output << " collection info objects (empty if listCollections is in progress): "
            << _collectionInfos.size();
     return output;
@@ -160,14 +162,26 @@ std::string DatabaseCloner::_getDiagnosticString_inlock() const {
 
 bool DatabaseCloner::isActive() const {
     LockGuard lk(_mutex);
-    return _active;
+    return _isActive_inlock();
 }
 
-Status DatabaseCloner::startup() {
+bool DatabaseCloner::_isActive_inlock() const {
+    return State::kRunning == _state || State::kShuttingDown == _state;
+}
+
+Status DatabaseCloner::startup() noexcept {
     LockGuard lk(_mutex);
 
-    if (_active) {
-        return Status(ErrorCodes::IllegalOperation, "database cloner already started");
+    switch (_state) {
+        case State::kPreStart:
+            _state = State::kRunning;
+            break;
+        case State::kRunning:
+            return Status(ErrorCodes::InternalError, "database cloner already started");
+        case State::kShuttingDown:
+            return Status(ErrorCodes::ShutdownInProgress, "database cloner shutting down");
+        case State::kComplete:
+            return Status(ErrorCodes::ShutdownInProgress, "database cloner completed");
     }
 
     _stats.start = _executor->now();
@@ -176,21 +190,31 @@ Status DatabaseCloner::startup() {
     if (!scheduleResult.isOK()) {
         error() << "Error scheduling listCollections for database: " << _dbname
                 << ", error:" << scheduleResult;
+        _state = State::kComplete;
         return scheduleResult;
     }
-
-    _active = true;
 
     return Status::OK();
 }
 
 void DatabaseCloner::shutdown() {
-    {
-        LockGuard lk(_mutex);
-
-        if (!_active) {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    switch (_state) {
+        case State::kPreStart:
+            // Transition directly from PreStart to Complete if not started yet.
+            _state = State::kComplete;
             return;
-        }
+        case State::kRunning:
+            _state = State::kShuttingDown;
+            break;
+        case State::kShuttingDown:
+        case State::kComplete:
+            // Nothing to do if we are already in ShuttingDown or Complete state.
+            return;
+    }
+
+    for (auto&& collectionCloner : _collectionCloners) {
+        collectionCloner.shutdown();
     }
 
     _listCollectionsFetcher.shutdown();
@@ -207,7 +231,7 @@ DatabaseCloner::Stats DatabaseCloner::getStats() const {
 
 void DatabaseCloner::join() {
     UniqueLock lk(_mutex);
-    _condition.wait(lk, [this]() { return !_active; });
+    _condition.wait(lk, [this]() { return !_isActive_inlock(); });
 }
 
 void DatabaseCloner::setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& work) {
@@ -219,6 +243,11 @@ void DatabaseCloner::setScheduleDbWorkFn_forTest(const CollectionCloner::Schedul
 void DatabaseCloner::setStartCollectionClonerFn(
     const StartCollectionClonerFn& startCollectionCloner) {
     _startCollectionCloner = startCollectionCloner;
+}
+
+DatabaseCloner::State DatabaseCloner::getState_forTest() const {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    return _state;
 }
 
 void DatabaseCloner::_listCollectionsCallback(const StatusWith<Fetcher::QueryResponse>& result,
@@ -314,11 +343,26 @@ void DatabaseCloner::_listCollectionsCallback(const StatusWith<Fetcher::QueryRes
         }
         const BSONObj optionsObj = optionsElement.Obj();
         CollectionOptions options;
-        Status parseStatus = options.parse(optionsObj);
+        Status parseStatus = options.parse(optionsObj, CollectionOptions::parseForCommand);
         if (!parseStatus.isOK()) {
             _finishCallback_inlock(lk, parseStatus);
             return;
         }
+
+        BSONElement infoElement = info.getField(kInfoFieldName);
+        if (infoElement.isABSONObj()) {
+            BSONElement uuidElement = infoElement[kUUIDFieldName];
+            if (!uuidElement.eoo()) {
+                auto res = CollectionUUID::parse(uuidElement);
+                if (!res.isOK()) {
+                    _finishCallback_inlock(lk, res.getStatus());
+                    return;
+                }
+                options.uuid = res.getValue();
+            }
+        }
+        // TODO(SERVER-27994): Ensure UUID present when FCV >= "3.6".
+
         seen.insert(collectionName);
 
         _collectionNamespaces.emplace_back(_dbname, collectionName);
@@ -409,7 +453,8 @@ void DatabaseCloner::_collectionClonerCallback(const Status& status, const Names
 void DatabaseCloner::_finishCallback(const Status& status) {
     _onCompletion(status);
     LockGuard lk(_mutex);
-    _active = false;
+    invariant(_state != State::kComplete);
+    _state = State::kComplete;
     _condition.notify_all();
     _stats.end = _executor->now();
     LOG(1) << "    database: " << _dbname << ", stats: " << _stats.toString();
@@ -455,6 +500,20 @@ void DatabaseCloner::Stats::append(BSONObjBuilder* builder) const {
         collection.append(&collectionBuilder);
         collectionBuilder.doneFast();
     }
+}
+
+std::ostream& operator<<(std::ostream& os, const DatabaseCloner::State& state) {
+    switch (state) {
+        case DatabaseCloner::State::kPreStart:
+            return os << "PreStart";
+        case DatabaseCloner::State::kRunning:
+            return os << "Running";
+        case DatabaseCloner::State::kShuttingDown:
+            return os << "ShuttingDown";
+        case DatabaseCloner::State::kComplete:
+            return os << "Complete";
+    }
+    MONGO_UNREACHABLE;
 }
 
 }  // namespace repl

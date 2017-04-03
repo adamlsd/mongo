@@ -72,6 +72,7 @@ ToolTest.prototype.runTool = function() {
 ReplTest = function(name, ports) {
     this.name = name;
     this.ports = ports || allocatePorts(2);
+    this.kDefaultTimeoutMS = 10 * 60 * 1000;
 };
 
 ReplTest.prototype.getPort = function(master) {
@@ -210,7 +211,8 @@ allocatePorts = function(numPorts) {
 };
 
 function startParallelShell(jsCode, port, noConnect) {
-    var args = ["mongo"];
+    var shellPath = MongoRunner.mongoShellPath;
+    var args = [shellPath];
 
     if (typeof db == "object") {
         var hostAndPort = db.getMongo().host.split(':');

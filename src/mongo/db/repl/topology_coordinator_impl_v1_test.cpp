@@ -41,6 +41,7 @@
 #include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/db/server_options.h"
 #include "mongo/logger/logger.h"
+#include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
@@ -53,6 +54,7 @@
 
 using std::unique_ptr;
 using mongo::rpc::ReplSetMetadata;
+using mongo::rpc::OplogQueryMetadata;
 
 namespace mongo {
 namespace repl {
@@ -130,7 +132,7 @@ protected:
                       int selfIndex,
                       Date_t now = Date_t::fromMillisSinceEpoch(-1),
                       const OpTime& lastOp = OpTime()) {
-        ReplicaSetConfig config;
+        ReplSetConfig config;
         // Use Protocol version 1 by default.
         ASSERT_OK(config.initialize(cfg, true));
         ASSERT_OK(config.validate());
@@ -149,18 +151,26 @@ protected:
         _currentConfig = config;
     }
 
-    // Make the metadata coming from sync source.
+    // Make the ReplSetMetadata coming from sync source.
     // Only set visibleOpTime, primaryIndex and syncSourceIndex
-    ReplSetMetadata makeMetadata(OpTime opTime = OpTime(),
-                                 int primaryIndex = -1,
-                                 int syncSourceIndex = -1) {
+    ReplSetMetadata makeReplSetMetadata(OpTime visibleOpTime = OpTime(),
+                                        int primaryIndex = -1,
+                                        int syncSourceIndex = -1) {
         return ReplSetMetadata(_topo->getTerm(),
                                OpTime(),
-                               opTime,
+                               visibleOpTime,
                                _currentConfig.getConfigVersion(),
                                OID(),
                                primaryIndex,
                                syncSourceIndex);
+    }
+
+    // Make the OplogQueryMetadata coming from sync source.
+    // Only set lastAppliedOpTime, primaryIndex and syncSourceIndex
+    OplogQueryMetadata makeOplogQueryMetadata(OpTime lastAppliedOpTime = OpTime(),
+                                              int primaryIndex = -1,
+                                              int syncSourceIndex = -1) {
+        return OplogQueryMetadata(OpTime(), lastAppliedOpTime, -1, primaryIndex, syncSourceIndex);
     }
 
     HeartbeatResponseAction receiveUpHeartbeat(const HostAndPort& member,
@@ -186,7 +196,7 @@ protected:
         ErrorCodes::Error errcode = ErrorCodes::HostUnreachable) {
         // timed out heartbeat to mark a node as down
 
-        Milliseconds roundTripTime{ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod};
+        Milliseconds roundTripTime{ReplSetConfig::kDefaultHeartbeatTimeoutPeriod};
         return _receiveHeartbeatHelper(Status(errcode, ""),
                                        member,
                                        setName,
@@ -242,7 +252,7 @@ private:
 private:
     unique_ptr<TopologyCoordinatorImpl> _topo;
     unique_ptr<ReplicationExecutor::CallbackArgs> _cbData;
-    ReplicaSetConfig _currentConfig;
+    ReplSetConfig _currentConfig;
     Date_t _now;
     int _selfIndex;
     TopologyCoordinatorImpl::Options _options;
@@ -251,7 +261,7 @@ private:
 TEST_F(TopoCoordTest, NodeReturnsSecondaryWithMostRecentDataAsSyncSource) {
     // if we do not have an index in the config, we should get an empty syncsource
     HostAndPort newSyncSource = getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_TRUE(newSyncSource.empty());
 
     updateConfig(BSON("_id"
@@ -278,7 +288,7 @@ TEST_F(TopoCoordTest, NodeReturnsSecondaryWithMostRecentDataAsSyncSource) {
 
     // Fail due to insufficient number of pings
     newSyncSource = getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(getTopoCoord().getSyncSourceAddress(), newSyncSource);
     ASSERT(getTopoCoord().getSyncSourceAddress().empty());
 
@@ -289,7 +299,7 @@ TEST_F(TopoCoordTest, NodeReturnsSecondaryWithMostRecentDataAsSyncSource) {
 
     // Should choose h2, since it is furthest ahead
     newSyncSource = getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(getTopoCoord().getSyncSourceAddress(), newSyncSource);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
@@ -297,34 +307,34 @@ TEST_F(TopoCoordTest, NodeReturnsSecondaryWithMostRecentDataAsSyncSource) {
     heartbeatFromMember(
         HostAndPort("h3"), "rs0", MemberState::RS_SECONDARY, OpTime(Timestamp(2, 0), 0));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 
     // h3 becomes an invalid candidate for sync source; should choose h2 again
     heartbeatFromMember(
         HostAndPort("h3"), "rs0", MemberState::RS_RECOVERING, OpTime(Timestamp(2, 0), 0));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // h3 back in SECONDARY and ahead
     heartbeatFromMember(
         HostAndPort("h3"), "rs0", MemberState::RS_SECONDARY, OpTime(Timestamp(2, 0), 0));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 
     // h3 goes down
     receiveDownHeartbeat(HostAndPort("h3"), "rs0", OpTime());
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // h3 back up and ahead
     heartbeatFromMember(
         HostAndPort("h3"), "rs0", MemberState::RS_SECONDARY, OpTime(Timestamp(2, 0), 0));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -369,7 +379,7 @@ TEST_F(TopoCoordTest, NodeReturnsClosestValidSyncSourceAsSyncSource) {
                  0);
 
     setSelfMemberState(MemberState::RS_SECONDARY);
-    Timestamp lastOpTimeWeApplied = Timestamp(100, 0);
+    OpTime lastOpTimeWeApplied = OpTime(Timestamp(100, 0), 0);
 
     heartbeatFromMember(HostAndPort("h1"),
                         "rs0",
@@ -500,6 +510,57 @@ TEST_F(TopoCoordTest, NodeReturnsClosestValidSyncSourceAsSyncSource) {
     ASSERT(getTopoCoord().getSyncSourceAddress().empty());
 }
 
+TEST_F(TopoCoordTest, NodeWontChooseSyncSourceFromOlderTerm) {
+    updateConfig(BSON("_id"
+                      << "rs0"
+                      << "version"
+                      << 1
+                      << "members"
+                      << BSON_ARRAY(BSON("_id" << 1 << "host"
+                                               << "hself")
+                                    << BSON("_id" << 10 << "host"
+                                                  << "h1")
+                                    << BSON("_id" << 20 << "host"
+                                                  << "h2"))),
+                 0);
+
+    setSelfMemberState(MemberState::RS_SECONDARY);
+    OpTime lastOpTimeWeApplied = OpTime(Timestamp(100, 0), 3);
+
+    heartbeatFromMember(HostAndPort("h1"),
+                        "rs0",
+                        MemberState::RS_SECONDARY,
+                        OpTime(Timestamp(200, 0), 3),
+                        Milliseconds(200));
+    heartbeatFromMember(HostAndPort("h2"),
+                        "rs0",
+                        MemberState::RS_SECONDARY,
+                        OpTime(Timestamp(300, 0), 2),  // old term
+                        Milliseconds(100));
+
+    // Record 2nd round of pings to allow choosing a new sync source
+    heartbeatFromMember(HostAndPort("h1"),
+                        "rs0",
+                        MemberState::RS_SECONDARY,
+                        OpTime(Timestamp(200, 0), 3),
+                        Milliseconds(200));
+    heartbeatFromMember(HostAndPort("h2"),
+                        "rs0",
+                        MemberState::RS_SECONDARY,
+                        OpTime(Timestamp(300, 0), 2),  // old term
+                        Milliseconds(100));
+
+    getTopoCoord().chooseNewSyncSource(
+        now()++, lastOpTimeWeApplied, TopologyCoordinator::ChainingPreference::kUseConfiguration);
+    ASSERT_EQUALS(HostAndPort("h1"), getTopoCoord().getSyncSourceAddress());
+
+    // h1 goes down; no sync source candidates remain
+    receiveDownHeartbeat(HostAndPort("h1"), "rs0", OpTime());
+    getTopoCoord().chooseNewSyncSource(
+        now()++, lastOpTimeWeApplied, TopologyCoordinator::ChainingPreference::kUseConfiguration);
+    ASSERT(getTopoCoord().getSyncSourceAddress().empty());
+}
+
 
 TEST_F(TopoCoordTest, ChooseOnlyPrimaryAsSyncSourceWhenChainingIsDisallowed) {
     updateConfig(BSON("_id"
@@ -544,7 +605,7 @@ TEST_F(TopoCoordTest, ChooseOnlyPrimaryAsSyncSourceWhenChainingIsDisallowed) {
     ASSERT_EQUALS(
         HostAndPort(),
         getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+            now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT(getTopoCoord().getSyncSourceAddress().empty());
 
     // Add primary
@@ -559,18 +620,20 @@ TEST_F(TopoCoordTest, ChooseOnlyPrimaryAsSyncSourceWhenChainingIsDisallowed) {
     // h3 is primary and should be chosen as the sync source when we are not in catch-up mode,
     // despite being further away than h2 and the primary (h3) being behind our most recently
     // applied optime.
-    ASSERT_EQUALS(
-        HostAndPort("h3"),
-        getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(10, 0), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+    ASSERT_EQUALS(HostAndPort("h3"),
+                  getTopoCoord().chooseNewSyncSource(
+                      now()++,
+                      OpTime(Timestamp(10, 0), 0),
+                      TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 
     // When we are in catch-up mode, the chainingAllowed setting is ignored. h2 should be chosen as
     // the sync source.
-    ASSERT_EQUALS(
-        HostAndPort("h2"),
-        getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(10, 0), TopologyCoordinator::ChainingPreference::kAllowChaining));
+    ASSERT_EQUALS(HostAndPort("h2"),
+                  getTopoCoord().chooseNewSyncSource(
+                      now()++,
+                      OpTime(Timestamp(10, 0), 0),
+                      TopologyCoordinator::ChainingPreference::kAllowChaining));
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // Become primary: should not choose self as sync source.
@@ -584,7 +647,7 @@ TEST_F(TopoCoordTest, ChooseOnlyPrimaryAsSyncSourceWhenChainingIsDisallowed) {
     ASSERT_EQUALS(
         HostAndPort(),
         getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+            now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT(getTopoCoord().getSyncSourceAddress().empty());
 }
 
@@ -600,7 +663,7 @@ TEST_F(TopoCoordTest, ChooseOnlyVotersAsSyncSourceWhenNodeIsAVoter) {
 
     HostAndPort h2("h2"), h3("h3");
     Timestamp t1(1, 0), t5(5, 0), t10(10, 0);
-    OpTime ot1(t1, 0), ot5(t5, 0);
+    OpTime ot1(t1, 0), ot5(t5, 0), ot10(t10, 0);
     Milliseconds hbRTT100(100), hbRTT300(300);
 
     // Two rounds of heartbeat pings from each member.
@@ -611,18 +674,18 @@ TEST_F(TopoCoordTest, ChooseOnlyVotersAsSyncSourceWhenNodeIsAVoter) {
 
     // Should choose h3 as it is a voter
     auto newSource = getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(h3, newSource);
 
     // Can't choose h2 as it is not a voter
     newSource = getTopoCoord().chooseNewSyncSource(
-        now()++, t10, TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, ot10, TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort(), newSource);
 
     // Should choose h3 as it is a voter, and ahead
     heartbeatFromMember(h3, "rs0", MemberState::RS_SECONDARY, ot5, hbRTT300);
     newSource = getTopoCoord().chooseNewSyncSource(
-        now()++, t1, TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, ot1, TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(h3, newSource);
 }
 
@@ -668,7 +731,7 @@ TEST_F(TopoCoordTest, ChooseSameSyncSourceEvenWhenPrimary) {
     ASSERT_EQUALS(
         HostAndPort("h2"),
         getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+            now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // Become primary
@@ -679,7 +742,7 @@ TEST_F(TopoCoordTest, ChooseSameSyncSourceEvenWhenPrimary) {
     ASSERT_EQUALS(
         HostAndPort("h2"),
         getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+            now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -713,22 +776,32 @@ TEST_F(TopoCoordTest, ChooseRequestedSyncSourceOnlyTheFirstTimeAfterTheSyncSourc
 
     // force should overrule other defaults
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
     getTopoCoord().setForceSyncSourceIndex(1);
     // force should cause shouldChangeSyncSource() to return true
     // even if the currentSource is the force target
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("h2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(),
+                                                      makeOplogQueryMetadata(oldOpTime),
+                                                      now()));
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("h3"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(),
+                                                      makeOplogQueryMetadata(newOpTime),
+                                                      now()));
     ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("h2"), OpTime(), makeMetadata(oldOpTime), now()));
+        HostAndPort("h2"), OpTime(), makeReplSetMetadata(oldOpTime), boost::none, now()));
     ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("h3"), OpTime(), makeMetadata(newOpTime), now()));
+        HostAndPort("h3"), OpTime(), makeReplSetMetadata(newOpTime), boost::none, now()));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // force should only work for one call to chooseNewSyncSource
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -771,19 +844,19 @@ TEST_F(TopoCoordTest, NodeDoesNotChooseBlacklistedSyncSourceUntilBlacklistingExp
                         Milliseconds(100));
 
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 
     Date_t expireTime = Date_t::fromMillisSinceEpoch(1000);
     getTopoCoord().blacklistSyncSource(HostAndPort("h3"), expireTime);
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     // Should choose second best choice now that h3 is blacklisted.
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     // After time has passed, should go back to original sync source
     getTopoCoord().chooseNewSyncSource(
-        expireTime, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        expireTime, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h3"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -829,19 +902,19 @@ TEST_F(TopoCoordTest, ChooseNoSyncSourceWhenPrimaryIsBlacklistedAndChainingIsDis
                         Milliseconds(100));
 
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 
     Date_t expireTime = Date_t::fromMillisSinceEpoch(1000);
     getTopoCoord().blacklistSyncSource(HostAndPort("h2"), expireTime);
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     // Can't choose any sync source now.
     ASSERT(getTopoCoord().getSyncSourceAddress().empty());
 
     // After time has passed, should go back to the primary
     getTopoCoord().chooseNewSyncSource(
-        expireTime, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        expireTime, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h2"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -886,7 +959,7 @@ TEST_F(TopoCoordTest, NodeChangesToRecoveringWhenOnlyUnauthorizedNodesAreUp) {
     ASSERT_EQUALS(
         HostAndPort("h3"),
         getTopoCoord().chooseNewSyncSource(
-            now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
+            now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration));
     ASSERT_EQUALS(MemberState::RS_SECONDARY, getTopoCoord().getMemberState().s);
     // Good state setup done
 
@@ -895,7 +968,7 @@ TEST_F(TopoCoordTest, NodeChangesToRecoveringWhenOnlyUnauthorizedNodesAreUp) {
     receiveDownHeartbeat(HostAndPort("h3"), "rs0", OpTime(), ErrorCodes::NetworkTimeout);
     ASSERT_TRUE(getTopoCoord()
                     .chooseNewSyncSource(now()++,
-                                         Timestamp(),
+                                         OpTime(),
                                          TopologyCoordinator::ChainingPreference::kUseConfiguration)
                     .empty());
     ASSERT_EQUALS(MemberState::RS_SECONDARY, getTopoCoord().getMemberState().s);
@@ -905,7 +978,7 @@ TEST_F(TopoCoordTest, NodeChangesToRecoveringWhenOnlyUnauthorizedNodesAreUp) {
     receiveDownHeartbeat(HostAndPort("h3"), "rs0", OpTime(), ErrorCodes::Unauthorized);
     ASSERT_TRUE(getTopoCoord()
                     .chooseNewSyncSource(now()++,
-                                         Timestamp(),
+                                         OpTime(),
                                          TopologyCoordinator::ChainingPreference::kUseConfiguration)
                     .empty());
     ASSERT_EQUALS(MemberState::RS_RECOVERING, getTopoCoord().getMemberState().s);
@@ -1281,9 +1354,8 @@ TEST_F(TopoCoordTest, ChooseRequestedNodeWhenSyncFromRequestsAStaleNode) {
     ASSERT_OK(result);
     ASSERT_EQUALS("requested member \"h5:27017\" is more than 10 seconds behind us",
                   response.obj()["warning"].String());
-    getTopoCoord().chooseNewSyncSource(now()++,
-                                       ourOpTime.getTimestamp(),
-                                       TopologyCoordinator::ChainingPreference::kUseConfiguration);
+    getTopoCoord().chooseNewSyncSource(
+        now()++, ourOpTime, TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h5"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -1330,9 +1402,8 @@ TEST_F(TopoCoordTest, ChooseRequestedNodeWhenSyncFromRequestsAValidNode) {
     ASSERT_OK(result);
     BSONObj responseObj = response.obj();
     ASSERT_FALSE(responseObj.hasField("warning"));
-    getTopoCoord().chooseNewSyncSource(now()++,
-                                       ourOpTime.getTimestamp(),
-                                       TopologyCoordinator::ChainingPreference::kUseConfiguration);
+    getTopoCoord().chooseNewSyncSource(
+        now()++, ourOpTime, TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h6"), getTopoCoord().getSyncSourceAddress());
 }
 
@@ -1381,7 +1452,7 @@ TEST_F(TopoCoordTest,
     ASSERT_FALSE(responseObj.hasField("warning"));
     receiveDownHeartbeat(HostAndPort("h6"), "rs0", OpTime());
     HostAndPort syncSource = getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h6"), syncSource);
 }
 
@@ -1495,9 +1566,8 @@ TEST_F(TopoCoordTest,
     BSONObj responseObj = response.obj();
     ASSERT_FALSE(responseObj.hasField("warning"));
     ASSERT_FALSE(responseObj.hasField("prevSyncTarget"));
-    getTopoCoord().chooseNewSyncSource(now()++,
-                                       ourOpTime.getTimestamp(),
-                                       TopologyCoordinator::ChainingPreference::kUseConfiguration);
+    getTopoCoord().chooseNewSyncSource(
+        now()++, ourOpTime, TopologyCoordinator::ChainingPreference::kUseConfiguration);
     ASSERT_EQUALS(HostAndPort("h5"), getTopoCoord().getSyncSourceAddress());
 
     heartbeatFromMember(
@@ -1561,7 +1631,7 @@ TEST_F(TopoCoordTest, ReplSetGetStatus) {
         startupTime + Milliseconds(2), Milliseconds(1), member, hbResponseGood, OpTime());
     getTopoCoord().prepareHeartbeatRequestV1(startupTime + Milliseconds(3), setName, member);
     Date_t timeoutTime =
-        startupTime + Milliseconds(3) + ReplicaSetConfig::kDefaultHeartbeatTimeoutPeriod;
+        startupTime + Milliseconds(3) + ReplSetConfig::kDefaultHeartbeatTimeoutPeriod;
 
     StatusWith<ReplSetHeartbeatResponse> hbResponseDown =
         StatusWith<ReplSetHeartbeatResponse>(Status(ErrorCodes::HostUnreachable, ""));
@@ -1960,7 +2030,7 @@ TEST_F(PrepareHeartbeatResponseV1Test,
     heartbeatFromMember(
         HostAndPort("h2"), "rs0", MemberState::RS_SECONDARY, OpTime(Timestamp(1, 0), 0));
     getTopoCoord().chooseNewSyncSource(
-        now()++, Timestamp(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
+        now()++, OpTime(), TopologyCoordinator::ChainingPreference::kUseConfiguration);
 
     // set up args
     ReplSetHeartbeatArgsV1 args;
@@ -2006,7 +2076,7 @@ TEST_F(TopoCoordTest, BecomeCandidateWhenBecomingSecondaryInSingleNodeSet) {
 TEST_F(TopoCoordTest, BecomeCandidateWhenReconfigToBeElectableInSingleNodeSet) {
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     ASSERT_EQUALS(MemberState::RS_STARTUP, getTopoCoord().getMemberState().s);
-    ReplicaSetConfig cfg;
+    ReplSetConfig cfg;
     cfg.initialize(BSON("_id"
                         << "rs0"
                         << "version"
@@ -2040,7 +2110,7 @@ TEST_F(TopoCoordTest, BecomeCandidateWhenReconfigToBeElectableInSingleNodeSet) {
 TEST_F(TopoCoordTest, NodeDoesNotBecomeCandidateWhenBecomingSecondaryInSingleNodeSetIfUnelectable) {
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     ASSERT_EQUALS(MemberState::RS_STARTUP, getTopoCoord().getMemberState().s);
-    ReplicaSetConfig cfg;
+    ReplSetConfig cfg;
     cfg.initialize(BSON("_id"
                         << "rs0"
                         << "version"
@@ -3179,10 +3249,23 @@ TEST_F(HeartbeatResponseTestV1,
 
     // set up complete, time for actual check
     startCapturingLogMessages();
-    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(),
+                                                      makeOplogQueryMetadata(lastOpTimeApplied),
+                                                      now()));
     stopCapturingLogMessages();
-    ASSERT_EQUALS(1, countLogLinesContaining("re-evaluating sync source"));
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
+
+    // set up complete, time for actual check
+    startCapturingLogMessages();
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(lastOpTimeApplied),
+                                                      boost::none,
+                                                      now()));
+    stopCapturingLogMessages();
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
 }
 
 TEST_F(HeartbeatResponseTestV1, NodeReturnsBadValueWhenProcessingPV0ElectionCommandsInPV1) {
@@ -3221,8 +3304,16 @@ TEST_F(HeartbeatResponseTestV1,
                                                             lastOpTimeApplied);
     ASSERT_NO_ACTION(nextAction.getAction());
     // Show we like host2 while it is primary.
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), lastOpTimeApplied, makeMetadata(lastOpTimeApplied, 1), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       lastOpTimeApplied,
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied, 1),
+                                                       now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       lastOpTimeApplied,
+                                                       makeReplSetMetadata(lastOpTimeApplied, 1),
+                                                       boost::none,
+                                                       now()));
 
     // Show that we also like host2 while it has a sync source.
     nextAction = receiveUpHeartbeat(HostAndPort("host2"),
@@ -3232,8 +3323,17 @@ TEST_F(HeartbeatResponseTestV1,
                                     lastOpTimeApplied,
                                     lastOpTimeApplied);
     ASSERT_NO_ACTION(nextAction.getAction());
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), lastOpTimeApplied, makeMetadata(lastOpTimeApplied, 2, 2), now()));
+    ASSERT_FALSE(
+        getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                              lastOpTimeApplied,
+                                              makeReplSetMetadata(),
+                                              makeOplogQueryMetadata(lastOpTimeApplied, 2, 2),
+                                              now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       lastOpTimeApplied,
+                                                       makeReplSetMetadata(lastOpTimeApplied, 2, 2),
+                                                       boost::none,
+                                                       now()));
 
     // Show that we do not like it when it is not PRIMARY and lacks a sync source and lacks progress
     // beyond our own.
@@ -3244,14 +3344,30 @@ TEST_F(HeartbeatResponseTestV1,
                                     lastOpTimeApplied,
                                     lastOpTimeApplied);
     ASSERT_NO_ACTION(nextAction.getAction());
-    ASSERT(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), lastOpTimeApplied, makeMetadata(lastOpTimeApplied), now()));
+    ASSERT(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                 lastOpTimeApplied,
+                                                 makeReplSetMetadata(),
+                                                 makeOplogQueryMetadata(lastOpTimeApplied),
+                                                 now()));
+    ASSERT(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                 lastOpTimeApplied,
+                                                 makeReplSetMetadata(lastOpTimeApplied),
+                                                 boost::none,
+                                                 now()));
 
     // Sometimes the heartbeat is stale and the metadata says it's the primary. Trust the metadata.
     ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
         HostAndPort("host2"),
         lastOpTimeApplied,
-        makeMetadata(lastOpTimeApplied, 1 /* host2 is primary */, -1 /* no sync source */),
+        makeReplSetMetadata(),
+        makeOplogQueryMetadata(
+            lastOpTimeApplied, 1 /* host2 is primary */, -1 /* no sync source */),
+        now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
+        HostAndPort("host2"),
+        lastOpTimeApplied,
+        makeReplSetMetadata(lastOpTimeApplied, 1 /* host2 is primary */, -1 /* no sync source */),
+        boost::none,
         now()));
 
     // But if it is secondary and has some progress beyond our own, we still like it.
@@ -3263,8 +3379,18 @@ TEST_F(HeartbeatResponseTestV1,
                                     newerThanLastOpTimeApplied,
                                     newerThanLastOpTimeApplied);
     ASSERT_NO_ACTION(nextAction.getAction());
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), lastOpTimeApplied, makeMetadata(newerThanLastOpTimeApplied), now()));
+    ASSERT_FALSE(
+        getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                              lastOpTimeApplied,
+                                              makeReplSetMetadata(),
+                                              makeOplogQueryMetadata(newerThanLastOpTimeApplied),
+                                              now()));
+    ASSERT_FALSE(
+        getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                              lastOpTimeApplied,
+                                              makeReplSetMetadata(newerThanLastOpTimeApplied),
+                                              boost::none,
+                                              now()));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenFresherMemberIsDown) {
@@ -3295,8 +3421,17 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenFresherMemberIsDown
     // set up complete, time for actual check
     nextAction = receiveDownHeartbeat(HostAndPort("host3"), "rs0", lastOpTimeApplied);
     ASSERT_NO_ACTION(nextAction.getAction());
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
+
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhileFresherMemberIsBlackListed) {
@@ -3327,21 +3462,49 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhileFresherMemberIsBla
     getTopoCoord().blacklistSyncSource(HostAndPort("host3"), now() + Milliseconds(100));
 
     // set up complete, time for actual check
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
 
     // unblacklist with too early a time (node should remained blacklisted)
     getTopoCoord().unblacklistSyncSource(HostAndPort("host3"), now() + Milliseconds(90));
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
 
     // unblacklist and it should succeed
     getTopoCoord().unblacklistSyncSource(HostAndPort("host3"), now() + Milliseconds(100));
     startCapturingLogMessages();
-    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(),
+                                                      makeOplogQueryMetadata(lastOpTimeApplied),
+                                                      now()));
     stopCapturingLogMessages();
-    ASSERT_EQUALS(1, countLogLinesContaining("re-evaluating sync source"));
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
+
+    startCapturingLogMessages();
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(lastOpTimeApplied),
+                                                      boost::none,
+                                                      now()));
+    stopCapturingLogMessages();
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceIfNodeIsFreshByHeartbeatButNotMetadata) {
@@ -3371,10 +3534,22 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceIfNodeIsFreshByHeartbea
 
     // set up complete, time for actual check
     startCapturingLogMessages();
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
     stopCapturingLogMessages();
-    ASSERT_EQUALS(0, countLogLinesContaining("re-evaluating sync source"));
+    ASSERT_EQUALS(0, countLogLinesContaining("Choosing new sync source"));
+
+    startCapturingLogMessages();
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
+    stopCapturingLogMessages();
+    ASSERT_EQUALS(0, countLogLinesContaining("Choosing new sync source"));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceIfNodeIsStaleByHeartbeatButNotMetadata) {
@@ -3404,10 +3579,24 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceIfNodeIsStaleByHeartbea
 
     // set up complete, time for actual check
     startCapturingLogMessages();
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(fresherLastOpTimeApplied), now()));
+    ASSERT_FALSE(
+        getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                              OpTime(),
+                                              makeReplSetMetadata(),
+                                              makeOplogQueryMetadata(fresherLastOpTimeApplied),
+                                              now()));
     stopCapturingLogMessages();
-    ASSERT_EQUALS(0, countLogLinesContaining("re-evaluating sync source"));
+    ASSERT_EQUALS(0, countLogLinesContaining("Choosing new sync source"));
+    // set up complete, time for actual check
+    startCapturingLogMessages();
+    ASSERT_FALSE(
+        getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                              OpTime(),
+                                              makeReplSetMetadata(fresherLastOpTimeApplied),
+                                              boost::none,
+                                              now()));
+    stopCapturingLogMessages();
+    ASSERT_EQUALS(0, countLogLinesContaining("Choosing new sync source"));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldChangeSyncSourceWhenFresherMemberExists) {
@@ -3436,25 +3625,38 @@ TEST_F(HeartbeatResponseTestV1, ShouldChangeSyncSourceWhenFresherMemberExists) {
 
     // set up complete, time for actual check
     startCapturingLogMessages();
-    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(),
+                                                      makeOplogQueryMetadata(lastOpTimeApplied),
+                                                      now()));
     stopCapturingLogMessages();
-    ASSERT_EQUALS(1, countLogLinesContaining("re-evaluating sync source"));
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
+
+    // set up complete, time for actual check
+    startCapturingLogMessages();
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                      OpTime(),
+                                                      makeReplSetMetadata(lastOpTimeApplied),
+                                                      boost::none,
+                                                      now()));
+    stopCapturingLogMessages();
+    ASSERT_EQUALS(1, countLogLinesContaining("Choosing new sync source"));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenMemberHasYetToHeartbeatUs) {
     // In this test, the TopologyCoordinator should not tell us to change sync sources away from
     // "host2" since we do not use the member's heartbeatdata in pv1.
     ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(), now()));
+        HostAndPort("host2"), OpTime(), makeReplSetMetadata(), makeOplogQueryMetadata(), now()));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenMemberNotInConfig) {
     // In this test, the TopologyCoordinator should tell us to change sync sources away from
     // "host4" since "host4" is absent from the config of version 10.
-    ReplSetMetadata metadata(0, OpTime(), OpTime(), 10, OID(), -1, -1);
-    ASSERT_TRUE(
-        getTopoCoord().shouldChangeSyncSource(HostAndPort("host4"), OpTime(), metadata, now()));
+    ReplSetMetadata replMetadata(0, OpTime(), OpTime(), 10, OID(), -1, -1);
+    ASSERT_TRUE(getTopoCoord().shouldChangeSyncSource(
+        HostAndPort("host4"), OpTime(), replMetadata, makeOplogQueryMetadata(), now()));
 }
 
 // TODO(dannenberg) figure out what this is trying to test..
@@ -3789,7 +3991,7 @@ TEST_F(HeartbeatResponseTestV1,
     ASSERT_NO_ACTION(nextAction.getAction());
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // We are electable now.
-    ASSERT_OK(getTopoCoord().becomeCandidateIfElectable(now(), lastOpTimeApplied));
+    ASSERT_OK(getTopoCoord().becomeCandidateIfElectable(now(), lastOpTimeApplied, false));
     ASSERT_TRUE(TopologyCoordinator::Role::candidate == getTopoCoord().getRole());
 }
 
@@ -3821,7 +4023,7 @@ TEST_F(HeartbeatResponseTestV1, ScheduleElectionWhenPrimaryIsMarkedDownAndWeAreE
     ASSERT_EQUALS(-1, getCurrentPrimaryIndex());
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // We are electable now.
-    ASSERT_OK(getTopoCoord().becomeCandidateIfElectable(now(), lastOpTimeApplied));
+    ASSERT_OK(getTopoCoord().becomeCandidateIfElectable(now(), lastOpTimeApplied, false));
     ASSERT_TRUE(TopologyCoordinator::Role::candidate == getTopoCoord().getRole());
 }
 
@@ -4336,7 +4538,7 @@ TEST_F(HeartbeatResponseTestV1, NodeDoesNotRetryHeartbeatIfTheFirstFailureTakesT
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat timed out, we'll retry in half of the election timeout.
     ASSERT_EQUALS(firstRequestDate + Milliseconds(5000) +
-                      ReplicaSetConfig::kDefaultElectionTimeoutPeriod / 2,
+                      ReplSetConfig::kDefaultElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 }
 
@@ -4383,8 +4585,17 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenFresherMemberDoesNo
     ASSERT_NO_ACTION(nextAction.getAction());
 
     // set up complete, time for actual check
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
+    // set up complete, time for actual check
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
 }
 
 TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenFresherMemberIsNotReadable) {
@@ -4413,8 +4624,18 @@ TEST_F(HeartbeatResponseTestV1, ShouldNotChangeSyncSourceWhenFresherMemberIsNotR
     ASSERT_NO_ACTION(nextAction.getAction());
 
     // set up complete, time for actual check
-    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(
-        HostAndPort("host2"), OpTime(), makeMetadata(lastOpTimeApplied), now()));
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(),
+                                                       makeOplogQueryMetadata(lastOpTimeApplied),
+                                                       now()));
+
+    // set up complete, time for actual check
+    ASSERT_FALSE(getTopoCoord().shouldChangeSyncSource(HostAndPort("host2"),
+                                                       OpTime(),
+                                                       makeReplSetMetadata(lastOpTimeApplied),
+                                                       boost::none,
+                                                       now()));
 }
 
 class HeartbeatResponseTestOneRetryV1 : public HeartbeatResponseTestV1 {
@@ -4521,7 +4742,7 @@ TEST_F(HeartbeatResponseTestOneRetryV1,
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat timed out, we'll retry in half of the election timeout.
     ASSERT_EQUALS(firstRequestDate() + Milliseconds(5010) +
-                      ReplicaSetConfig::kDefaultElectionTimeoutPeriod / 2,
+                      ReplSetConfig::kDefaultElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 }
 
@@ -4595,7 +4816,7 @@ TEST_F(HeartbeatResponseTestTwoRetriesV1, NodeDoesNotRetryHeartbeatsAfterFailing
     // Because this is the second retry, rather than retry again, we expect to wait for half
     // of the election timeout interval of 2 seconds to elapse.
     ASSERT_EQUALS(firstRequestDate() + Milliseconds(4800) +
-                      ReplicaSetConfig::kDefaultElectionTimeoutPeriod / 2,
+                      ReplSetConfig::kDefaultElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 
     // Ensure a third failed heartbeat caused the node to be marked down
@@ -4642,7 +4863,7 @@ TEST_F(HeartbeatResponseTestTwoRetriesV1, HeartbeatThreeNonconsecutiveFailures) 
     ASSERT_TRUE(TopologyCoordinator::Role::follower == getTopoCoord().getRole());
     // Because the heartbeat succeeded, we'll retry in half of the election timeout.
     ASSERT_EQUALS(firstRequestDate() + Milliseconds(4500) +
-                      ReplicaSetConfig::kDefaultElectionTimeoutPeriod / 2,
+                      ReplSetConfig::kDefaultElectionTimeoutPeriod / 2,
                   action.getNextHeartbeatStartDate());
 
     // request next heartbeat
@@ -4731,7 +4952,7 @@ TEST_F(HeartbeatResponseHighVerbosityTestV1, UpdateHeartbeatDataSameConfig) {
 
     // construct a copy of the original config for log message checking later
     // see HeartbeatResponseTest for the origin of the original config
-    ReplicaSetConfig originalConfig;
+    ReplSetConfig originalConfig;
     originalConfig.initialize(BSON("_id"
                                    << "rs0"
                                    << "version"

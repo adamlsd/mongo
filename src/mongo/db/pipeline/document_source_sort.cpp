@@ -28,10 +28,11 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_sort.h"
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
@@ -78,16 +79,17 @@ DocumentSource::GetNextResult DocumentSourceSort::getNext() {
     return _output->next().second;
 }
 
-void DocumentSourceSort::serializeToArray(vector<Value>& array, bool explain) const {
+void DocumentSourceSort::serializeToArray(
+    std::vector<Value>& array, boost::optional<ExplainOptions::Verbosity> explain) const {
     if (explain) {  // always one Value for combined $sort + $limit
-        array.push_back(
-            Value(DOC(getSourceName()
-                      << DOC("sortKey" << serializeSortKey(explain) << "mergePresorted"
-                                       << (_mergingPresorted ? Value(true) : Value())
-                                       << "limit"
-                                       << (limitSrc ? Value(limitSrc->getLimit()) : Value())))));
+        array.push_back(Value(
+            DOC(getSourceName() << DOC(
+                    "sortKey" << serializeSortKey(static_cast<bool>(explain)) << "mergePresorted"
+                              << (_mergingPresorted ? Value(true) : Value())
+                              << "limit"
+                              << (limitSrc ? Value(limitSrc->getLimit()) : Value())))));
     } else {  // one Value for $sort and maybe a Value for $limit
-        MutableDocument inner(serializeSortKey(explain));
+        MutableDocument inner(serializeSortKey(static_cast<bool>(explain)));
         if (_mergingPresorted)
             inner["$mergePresorted"] = Value(true);
         array.push_back(Value(DOC(getSourceName() << inner.freeze())));
@@ -112,7 +114,7 @@ long long DocumentSourceSort::getLimit() const {
 void DocumentSourceSort::addKey(StringData fieldPath, bool ascending) {
     VariablesIdGenerator idGenerator;
     VariablesParseState vps(&idGenerator);
-    vSortKey.push_back(ExpressionFieldPath::parse("$$ROOT." + fieldPath.toString(), vps));
+    vSortKey.push_back(ExpressionFieldPath::parse(pExpCtx, "$$ROOT." + fieldPath.toString(), vps));
     vAscending.push_back(ascending);
 }
 
@@ -138,11 +140,10 @@ Document DocumentSourceSort::serializeSortKey(bool explain) const {
     return keyObj.freeze();
 }
 
-Pipeline::SourceContainer::iterator DocumentSourceSort::optimizeAt(
+Pipeline::SourceContainer::iterator DocumentSourceSort::doOptimizeAt(
     Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
     invariant(*itr == this);
 
-    auto nextMatch = dynamic_cast<DocumentSourceMatch*>((*std::next(itr)).get());
     auto nextLimit = dynamic_cast<DocumentSourceLimit*>((*std::next(itr)).get());
 
     if (nextLimit) {
@@ -150,11 +151,6 @@ Pipeline::SourceContainer::iterator DocumentSourceSort::optimizeAt(
         setLimitSrc(nextLimit);
         container->erase(std::next(itr));
         return itr;
-    } else if (nextMatch && !nextMatch->isTextQuery()) {
-        // Swap the $match before the $sort, thus reducing the number of documents that pass into
-        // this stage.
-        std::swap(*itr, *std::next(itr));
-        return itr == container->begin() ? itr : std::prev(itr);
     }
     return std::next(itr);
 }
@@ -181,7 +177,6 @@ intrusive_ptr<DocumentSourceSort> DocumentSourceSort::create(
     uint64_t maxMemoryUsageBytes) {
     intrusive_ptr<DocumentSourceSort> pSort(new DocumentSourceSort(pExpCtx));
     pSort->_maxMemoryUsageBytes = maxMemoryUsageBytes;
-    pSort->injectExpressionContext(pExpCtx);
     pSort->_sort = sortOrder.getOwned();
 
     for (auto&& keyField : sortOrder) {
@@ -202,7 +197,7 @@ intrusive_ptr<DocumentSourceSort> DocumentSourceSort::create(
 
             VariablesIdGenerator idGen;
             VariablesParseState vps(&idGen);
-            pSort->vSortKey.push_back(ExpressionMeta::parse(metaDoc.firstElement(), vps));
+            pSort->vSortKey.push_back(ExpressionMeta::parse(pExpCtx, metaDoc.firstElement(), vps));
 
             // If sorting by textScore, sort highest scores first. If sorting by randVal, order
             // doesn't matter, so just always use descending.

@@ -38,6 +38,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/service_context.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 
@@ -106,13 +107,14 @@ StatusWith<SnapshotDiff> Snapshots::computeDelta() {
 
 void StatsSnapshotThread::run() {
     Client::initThread("statsSnapshot");
-    while (!inShutdown()) {
+    while (!globalInShutdownDeprecated()) {
         try {
             statsSnapshots.takeSnapshot();
         } catch (std::exception& e) {
             log() << "ERROR in SnapshotThread: " << redact(e.what()) << endl;
         }
 
+        MONGO_IDLE_THREAD_BLOCK;
         sleepsecs(4);
     }
 }

@@ -57,11 +57,8 @@ namespace {
 // Tightness rules are shared for $lt, $lte, $gt, $gte.
 IndexBoundsBuilder::BoundsTightness getInequalityPredicateTightness(const BSONElement& dataElt,
                                                                     const IndexEntry& index) {
-    if (dataElt.isSimpleType() || dataElt.type() == BSONType::BinData) {
-        return IndexBoundsBuilder::EXACT;
-    }
-
-    return IndexBoundsBuilder::INEXACT_FETCH;
+    return Indexability::isExactBoundsGenerating(dataElt) ? IndexBoundsBuilder::EXACT
+                                                          : IndexBoundsBuilder::INEXACT_FETCH;
 }
 
 }  // namespace
@@ -589,7 +586,7 @@ void IndexBoundsBuilder::translate(const MatchExpression* expr,
             const R2Region& region = gme->getGeoExpression().getGeometry().getR2Region();
 
             ExpressionMapping::cover2d(
-                region, index.infoObj, internalGeoPredicateQuery2DMaxCoveringCells, oilOut);
+                region, index.infoObj, internalGeoPredicateQuery2DMaxCoveringCells.load(), oilOut);
 
             *tightnessOut = IndexBoundsBuilder::INEXACT_FETCH;
         } else {

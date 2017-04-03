@@ -44,6 +44,7 @@
 #include "mongo/scripting/mozjs/objectwrapper.h"
 #include "mongo/scripting/mozjs/valuereader.h"
 #include "mongo/scripting/mozjs/valuewriter.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/log.h"
@@ -95,7 +96,7 @@ bool closeToMaxMemory() {
 }
 }  // namespace
 
-MONGO_TRIVIALLY_CONSTRUCTIBLE_THREAD_LOCAL MozJSImplScope* kCurrentScope;
+MONGO_TRIVIALLY_CONSTRUCTIBLE_THREAD_LOCAL MozJSImplScope* kCurrentScope = nullptr;
 
 struct MozJSImplScope::MozJSEntry {
     MozJSEntry(MozJSImplScope* scope)
@@ -156,18 +157,18 @@ std::string MozJSImplScope::getError() {
     return "";
 }
 
-void MozJSImplScope::registerOperation(OperationContext* txn) {
+void MozJSImplScope::registerOperation(OperationContext* opCtx) {
     invariant(_opCtx == nullptr);
 
     // getPooledScope may call registerOperation with a nullptr, so we have to
     // check for that here.
-    if (!txn)
+    if (!opCtx)
         return;
 
-    _opCtx = txn;
-    _opId = txn->getOpID();
+    _opCtx = opCtx;
+    _opId = opCtx->getOpID();
 
-    _engine->registerOperation(txn, this);
+    _engine->registerOperation(opCtx, this);
 }
 
 void MozJSImplScope::unregisterOperation() {
@@ -218,7 +219,8 @@ bool MozJSImplScope::_interruptCallback(JSContext* cx) {
     }
     // If we are on the right thread, in the middle of an operation, and we have a registered opCtx,
     // then we should check the opCtx for interrupts.
-    if ((scope->_mr._thread == PR_GetCurrentThread()) && (scope->_inOp > 0) && scope->_opCtx) {
+    if ((scope->_mr._thread.get() == PR_GetCurrentThread()) && (scope->_inOp > 0) &&
+        scope->_opCtx) {
         auto status = scope->_opCtx->checkForInterruptNoAssert();
         if (!status.isOK()) {
             scope->_status = status;
@@ -244,12 +246,21 @@ void MozJSImplScope::_gcCallback(JSRuntime* rt, JSGCStatus status, void* data) {
 }
 
 MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
+    // While we're initializing the runtime/scope, calling MozJSImplScope::getThreadScope() should
+    // return a nullptr.
+    kCurrentScope = nullptr;
+
     /**
      * The maximum amount of memory to be given out per thread to mozilla. We
      * manage this by trapping all calls to malloc, free, etc. and keeping track of
      * counts in some thread locals
      */
-    size_t mallocMemoryLimit = 1024ul * 1024 * engine->getJSHeapLimitMB();
+
+    const auto jsHeapLimit = engine->getJSHeapLimitMB();
+    if (jsHeapLimit != 0 && jsHeapLimit < 10) {
+        warning() << "JavaScript may not be able to initialize with a heap limit less than 10MB.";
+    }
+    size_t mallocMemoryLimit = 1024ul * 1024 * jsHeapLimit;
     mongo::sm::reset(mallocMemoryLimit);
 
     // If this runtime isn't running on an NSPR thread, then it is
@@ -258,7 +269,15 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
     // without falling over.
     auto thread = PR_GetCurrentThread();
     if (!thread) {
-        PR_BindThread(_thread = PR_CreateFakeThread());
+        _thread = std::unique_ptr<PRThread, std::function<void(PRThread*)>>(
+            PR_CreateFakeThread(), [](PRThread* ptr) {
+                if (ptr) {
+                    invariant(PR_GetCurrentThread() == ptr);
+                    PR_DestroyFakeThread(ptr);
+                    PR_BindThread(nullptr);
+                }
+            });
+        PR_BindThread(_thread.get());
     }
 
     {
@@ -273,12 +292,13 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
             gFirstRuntimeCreated = true;
         }
 
-        _runtime = JS_NewRuntime(kMaxBytesBeforeGC);
+        _runtime = std::unique_ptr<JSRuntime, std::function<void(JSRuntime*)>>(
+            JS_NewRuntime(kMaxBytesBeforeGC), [](JSRuntime* ptr) { JS_DestroyRuntime(ptr); });
         uassert(ErrorCodes::JSInterpreterFailure, "Failed to initialize JSRuntime", _runtime);
 
         // We turn on a variety of optimizations if the jit is enabled
         if (engine->isJITEnabled()) {
-            JS::RuntimeOptionsRef(_runtime)
+            JS::RuntimeOptionsRef(_runtime.get())
                 .setAsmJS(true)
                 .setThrowOnAsmJSValidationFailure(true)
                 .setBaseline(true)
@@ -301,45 +321,39 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
             //
             // TODO: What if we are running on a platform with very
             // large pages, like 4MB?
-            const int available_stack_space = available.get();
+            const auto available_stack_space = available.get();
 
 #if defined(__powerpc64__) && defined(MONGO_CONFIG_DEBUG_BUILD)
             // From experimentation, we need a larger reservation of 96k since debug ppc64le code
             // needs more stack space to process stack overflow. In debug builds, more variables are
             // stored on the stack which increases the stack pressure. It does not affects non-debug
             // builds.
-            const int reserve_stack_space = 96 * 1024;
+            const decltype(available_stack_space) reserve_stack_space = 96 * 1024;
 #else
-            const int reserve_stack_space = 64 * 1024;
+            const decltype(available_stack_space) reserve_stack_space = 64 * 1024;
 #endif
 
-            JS_SetNativeStackQuota(_runtime, available_stack_space - reserve_stack_space);
+            JS_SetNativeStackQuota(_runtime.get(), available_stack_space - reserve_stack_space);
         }
 
         // The memory limit is in megabytes
-        JS_SetGCParametersBasedOnAvailableMemory(_runtime, engine->getJSHeapLimitMB());
+        JS_SetGCParametersBasedOnAvailableMemory(_runtime.get(), engine->getJSHeapLimitMB());
     }
 
-    _context = JS_NewContext(_runtime, kStackChunkSize);
+    _context = std::unique_ptr<JSContext, std::function<void(JSContext*)>>(
+        JS_NewContext(_runtime.get(), kStackChunkSize),
+        [](JSContext* ptr) { JS_DestroyContext(ptr); });
     uassert(ErrorCodes::JSInterpreterFailure, "Failed to initialize JSContext", _context);
-}
-
-MozJSImplScope::MozRuntime::~MozRuntime() {
-    JS_DestroyContext(_context);
-    JS_DestroyRuntime(_runtime);
-
-    if (_thread) {
-        invariant(PR_GetCurrentThread() == _thread);
-        PR_DestroyFakeThread(_thread);
-        PR_BindThread(nullptr);
-    }
+    uassert(ErrorCodes::ExceededMemoryLimit,
+            "Out of memory while trying to initialize javascript scope",
+            mallocMemoryLimit == 0 || mongo::sm::get_total_bytes() < mallocMemoryLimit);
 }
 
 MozJSImplScope::MozJSImplScope(MozJSScriptEngine* engine)
     : _engine(engine),
       _mr(engine),
-      _runtime(_mr._runtime),
-      _context(_mr._context),
+      _runtime(_mr._runtime.get()),
+      _context(_mr._context.get()),
       _globalProto(_context),
       _global(_globalProto.getProto()),
       _funcs(),
@@ -737,7 +751,7 @@ void MozJSImplScope::gc() {
     JS_RequestInterruptCallback(_runtime);
 }
 
-void MozJSImplScope::localConnectForDbEval(OperationContext* txn, const char* dbName) {
+void MozJSImplScope::localConnectForDbEval(OperationContext* opCtx, const char* dbName) {
     MozJSEntry entry(this);
 
     if (_connectState == ConnectState::External)
@@ -768,7 +782,7 @@ void MozJSImplScope::localConnectForDbEval(OperationContext* txn, const char* db
     _connectState = ConnectState::Local;
     _localDBName = dbName;
 
-    loadStored(txn);
+    loadStored(opCtx);
 }
 
 void MozJSImplScope::externalSetup() {
@@ -922,6 +936,21 @@ void MozJSImplScope::advanceGeneration() {
 
 const std::string& MozJSImplScope::getParentStack() const {
     return _parentStack;
+}
+
+std::string MozJSImplScope::buildStackString() {
+    JS::RootedObject stack(_context);
+
+    if (!JS::CaptureCurrentStack(_context, &stack)) {
+        return {};
+    }
+
+    JS::RootedString out(_context);
+    if (JS::BuildStackString(_context, stack, &out)) {
+        return JSStringWrapper(_context, out.get()).toString();
+    } else {
+        return {};
+    }
 }
 
 }  // namespace mozjs

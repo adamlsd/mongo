@@ -33,8 +33,8 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/commands.h"
-#include "mongo/s/balancer/balancer.h"
-#include "mongo/s/balancer/balancer_configuration.h"
+#include "mongo/db/s/balancer/balancer.h"
+#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -72,30 +72,28 @@ public:
         return Status::OK();
     }
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const std::string& unusedDbName,
              BSONObj& cmdObj,
              int options,
              std::string& errmsg,
              BSONObjBuilder& result) final {
-        if (cmdObj.firstElementFieldName() != getName()) {
-            uasserted(ErrorCodes::InternalError,
-                      str::stream() << "Expected to find a " << getName() << " command, but found "
-                                    << cmdObj);
-        }
+        uassert(ErrorCodes::InternalError,
+                str::stream() << "Expected to find a " << getName() << " command, but found "
+                              << cmdObj,
+                cmdObj.firstElementFieldName() == getName());
 
-        if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            uasserted(ErrorCodes::IllegalOperation,
-                      str::stream() << getName() << " can only be run on config servers");
-        }
+        uassert(ErrorCodes::IllegalOperation,
+                str::stream() << getName() << " can only be run on config servers",
+                serverGlobalParams.clusterRole == ClusterRole::ConfigServer);
 
-        _run(txn, &result);
+        _run(opCtx, &result);
 
         return true;
     }
 
 private:
-    virtual void _run(OperationContext* txn, BSONObjBuilder* result) = 0;
+    virtual void _run(OperationContext* opCtx, BSONObjBuilder* result) = 0;
 };
 
 class ConfigSvrBalancerStartCommand : public ConfigSvrBalancerControlCommand {
@@ -103,9 +101,9 @@ public:
     ConfigSvrBalancerStartCommand() : ConfigSvrBalancerControlCommand("_configsvrBalancerStart") {}
 
 private:
-    void _run(OperationContext* txn, BSONObjBuilder* result) override {
-        uassertStatusOK(Grid::get(txn)->getBalancerConfiguration()->setBalancerMode(
-            txn, BalancerSettingsType::kFull));
+    void _run(OperationContext* opCtx, BSONObjBuilder* result) override {
+        uassertStatusOK(Grid::get(opCtx)->getBalancerConfiguration()->setBalancerMode(
+            opCtx, BalancerSettingsType::kFull));
     }
 };
 
@@ -114,10 +112,10 @@ public:
     ConfigSvrBalancerStopCommand() : ConfigSvrBalancerControlCommand("_configsvrBalancerStop") {}
 
 private:
-    void _run(OperationContext* txn, BSONObjBuilder* result) override {
-        uassertStatusOK(Grid::get(txn)->getBalancerConfiguration()->setBalancerMode(
-            txn, BalancerSettingsType::kOff));
-        Balancer::get(txn)->joinCurrentRound(txn);
+    void _run(OperationContext* opCtx, BSONObjBuilder* result) override {
+        uassertStatusOK(Grid::get(opCtx)->getBalancerConfiguration()->setBalancerMode(
+            opCtx, BalancerSettingsType::kOff));
+        Balancer::get(opCtx)->joinCurrentRound(opCtx);
     }
 };
 
@@ -127,8 +125,8 @@ public:
         : ConfigSvrBalancerControlCommand("_configsvrBalancerStatus") {}
 
 private:
-    void _run(OperationContext* txn, BSONObjBuilder* result) override {
-        Balancer::get(txn)->report(txn, result);
+    void _run(OperationContext* opCtx, BSONObjBuilder* result) override {
+        Balancer::get(opCtx)->report(opCtx, result);
     }
 };
 

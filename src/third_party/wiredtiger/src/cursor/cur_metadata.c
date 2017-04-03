@@ -16,7 +16,7 @@
 	WT_CURSOR_NEEDKEY(cursor);					\
 	WT_ERR(__wt_buf_set(session,					\
 	    &((WT_CURSOR_METADATA *)(cursor))->file_cursor->key,	\
-	    cursor->key.data, cursor->key.size));			\
+	    (cursor)->key.data, (cursor)->key.size));			\
 	F_SET(((WT_CURSOR_METADATA *)(cursor))->file_cursor,		\
 	    WT_CURSTD_KEY_EXT);						\
 } while (0)
@@ -25,7 +25,7 @@
 	WT_CURSOR_NEEDVALUE(cursor);					\
 	WT_ERR(__wt_buf_set(session,					\
 	    &((WT_CURSOR_METADATA *)(cursor))->file_cursor->value,	\
-	    cursor->value.data, cursor->value.size));			\
+	    (cursor)->value.data, (cursor)->value.size));		\
 	F_SET(((WT_CURSOR_METADATA *)(cursor))->file_cursor,		\
 	    WT_CURSTD_VALUE_EXT);					\
 } while (0)
@@ -48,7 +48,10 @@ __schema_source_config(WT_SESSION_IMPL *session,
 	WT_ERR(__wt_buf_fmt(session, buf, "%.*s", (int)cval.len, cval.str));
 	srch->set_key(srch, buf->data);
 	if ((ret = srch->search(srch)) == WT_NOTFOUND)
-		WT_ERR(EINVAL);
+		WT_ERR_MSG(session, EINVAL,
+		    "metadata information for source configuration \"%s\" "
+		    "not found",
+		    (char *)buf->data);
 	WT_ERR(ret);
 	WT_ERR(srch->get_value(srch, &v));
 	WT_ERR(__wt_strdup(session, v, result));

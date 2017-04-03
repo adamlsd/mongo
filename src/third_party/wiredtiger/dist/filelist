@@ -30,6 +30,7 @@ src/btree/bt_io.c
 src/btree/bt_misc.c
 src/btree/bt_ovfl.c
 src/btree/bt_page.c
+src/btree/bt_random.c
 src/btree/bt_read.c
 src/btree/bt_rebalance.c
 src/btree/bt_ret.c
@@ -48,12 +49,12 @@ src/btree/row_modify.c
 src/btree/row_srch.c
 src/cache/cache_las.c
 src/checksum/arm64/crc32-arm64.c	ARM64_HOST
-src/checksum/power8/crc32.S		POWERPC_HOST
+src/checksum/power8/crc32.sx		POWERPC_HOST
 src/checksum/power8/crc32_wrapper.c	POWERPC_HOST
 src/checksum/software/checksum.c
 src/checksum/x86/crc32-x86.c		X86_HOST
 src/checksum/zseries/crc32-s390x.c	ZSERIES_HOST
-src/checksum/zseries/crc32le-vx.S	ZSERIES_HOST
+src/checksum/zseries/crc32le-vx.sx	ZSERIES_HOST
 src/config/config.c
 src/config/config_api.c
 src/config/config_check.c
@@ -90,6 +91,7 @@ src/cursor/cur_table.c
 src/evict/evict_file.c
 src/evict/evict_lru.c
 src/evict/evict_page.c
+src/evict/evict_stat.c
 src/log/log.c
 src/log/log_auto.c
 src/log/log_slot.c
@@ -131,6 +133,7 @@ src/os_posix/os_path.c			POSIX_HOST
 src/os_posix/os_priv.c			POSIX_HOST
 src/os_posix/os_setvbuf.c		POSIX_HOST
 src/os_posix/os_sleep.c			POSIX_HOST
+src/os_posix/os_snprintf.c		POSIX_HOST
 src/os_posix/os_thread.c		POSIX_HOST
 src/os_posix/os_time.c			POSIX_HOST
 src/os_posix/os_yield.c			POSIX_HOST
@@ -150,7 +153,6 @@ src/os_win/os_snprintf.c		WINDOWS_HOST
 src/os_win/os_thread.c			WINDOWS_HOST
 src/os_win/os_time.c			WINDOWS_HOST
 src/os_win/os_utf8.c			WINDOWS_HOST
-src/os_win/os_vsnprintf.c		WINDOWS_HOST
 src/os_win/os_winerr.c			WINDOWS_HOST
 src/os_win/os_yield.c			WINDOWS_HOST
 src/packing/pack_api.c
@@ -158,6 +160,7 @@ src/packing/pack_impl.c
 src/packing/pack_stream.c
 src/reconcile/rec_track.c
 src/reconcile/rec_write.c
+src/schema/schema_alter.c
 src/schema/schema_create.c
 src/schema/schema_drop.c
 src/schema/schema_list.c

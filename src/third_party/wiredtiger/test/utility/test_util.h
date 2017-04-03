@@ -48,7 +48,7 @@
 /* Generic option parsing structure shared by all test cases. */
 typedef struct {
 	char  *home;
-	char  *progname;
+	const char  *progname;
 	enum {	TABLE_COL=1,	/* Fixed-length column store */
 		TABLE_FIX=2,	/* Variable-length column store */
 		TABLE_ROW=3	/* Row-store */
@@ -68,10 +68,8 @@ typedef struct {
 	 * resources.
 	 */
 	WT_CONNECTION *conn;
-	char	  *conn_config;
 	WT_SESSION    *session;
 	bool	   running;
-	char	  *table_config;
 	char	  *uri;
 	volatile uint64_t   next_threadid;
 	uint64_t   max_inserted_id;
@@ -84,6 +82,16 @@ typedef struct {
 #define	testutil_assert(a) do {						\
 	if (!(a))							\
 		testutil_die(0, "%s/%d: %s", __func__, __LINE__, #a);	\
+} while (0)
+
+/*
+ * testutil_assertfmt --
+ *	Complain and quit if something isn't true.
+ */
+#define	testutil_assertfmt(a, fmt, ...) do {				\
+	if (!(a))							\
+		testutil_die(0, "%s/%d: %s: " fmt,			\
+		__func__, __LINE__, #a, __VA_ARGS__);			\
 } while (0)
 
 /*
@@ -108,6 +116,62 @@ typedef struct {
 		    __func__, __LINE__, #call, __VA_ARGS__);		\
 } while (0)
 
+/*
+ * u64_to_string --
+ *	Convert a uint64_t to a text string.
+ *
+ * Algorithm from Andrei Alexandrescu's talk: "Three Optimization Tips for C++"
+ */
+static inline void
+u64_to_string(uint64_t n, char **pp)
+{
+	static const char hundred_lookup[201] =
+	    "0001020304050607080910111213141516171819"
+	    "2021222324252627282930313233343536373839"
+	    "4041424344454647484950515253545556575859"
+	    "6061626364656667686970717273747576777879"
+	    "8081828384858687888990919293949596979899";
+	u_int i;
+	char *p;
+
+	/*
+	 * The argument pointer references the last element of a buffer (which
+	 * must be large enough to hold any possible value).
+	 *
+	 * Nul-terminate the buffer.
+	 */
+	for (p = *pp, *p-- = '\0'; n >= 100; n /= 100) {
+		i = (n % 100) * 2;
+		*p-- = hundred_lookup[i + 1];
+		*p-- = hundred_lookup[i];
+	}
+
+	/* Handle the last two digits. */
+	i = (u_int)n * 2;
+	*p = hundred_lookup[i + 1];
+	if (n >= 10)
+		*--p = hundred_lookup[i];
+
+	/* Return a pointer to the first byte of the text string. */
+	*pp = p;
+}
+
+/*
+ * u64_to_string_zf --
+ *	Convert a uint64_t to a text string, zero-filling the buffer.
+ */
+static inline void
+u64_to_string_zf(uint64_t n, char *buf, size_t len)
+{
+	char *p;
+
+	p = buf + (len - 1);
+	u64_to_string(n, &p);
+
+	while (p > buf)
+		*--p = '0';
+}
+
 /* Allow tests to add their own death handling. */
 extern void (*custom_die)(void);
 
@@ -119,12 +183,15 @@ void *dmalloc(size_t);
 void *drealloc(void *, size_t);
 void *dstrdup(const void *);
 void *dstrndup(const char *, size_t);
-void  testutil_clean_work_dir(char *);
+void  testutil_clean_work_dir(const char *);
 void  testutil_cleanup(TEST_OPTS *);
-bool  testutil_disable_long_tests(void);
+bool  testutil_enable_long_tests(void);
 void  testutil_make_work_dir(char *);
 int   testutil_parse_opts(int, char * const *, TEST_OPTS *);
 void  testutil_work_dir_from_path(char *, size_t, const char *);
 void *thread_append(void *);
 void *thread_insert_append(void *);
 void *thread_prev(void *);
+
+extern const char *progname;
+const char *testutil_set_progname(char * const *);

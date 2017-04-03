@@ -47,12 +47,10 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/util/background.h"
-#include "mongo/util/concurrency/mutex.h"  // for StaticObserver
 #include "mongo/util/debug_util.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/static_observer.h"
 #include "mongo/util/string_map.h"
 #include "mongo/util/timer.h"
 
@@ -94,8 +92,6 @@ const Milliseconds kFindHostMaxBackOffTime(500);
 // TODO: Move to ReplicaSetMonitorManager
 ReplicaSetMonitor::ConfigChangeHook asyncConfigChangeHook;
 ReplicaSetMonitor::ConfigChangeHook syncConfigChangeHook;
-
-StaticObserver staticObserver;
 
 //
 // Helpers for stl algorithms
@@ -165,7 +161,6 @@ struct HostNotIn {
 
 /**
  * Replica set refresh period on the task executor.
- * This value must be equal to ReadPreferenceSettings::kMinimalMaxStalenessValue / 2
  */
 const Seconds kRefreshPeriod(30);
 }  // namespace
@@ -180,10 +175,12 @@ ReplicaSetMonitor::ReplicaSetMonitor(StringData name, const std::set<HostAndPort
     : _state(std::make_shared<SetState>(name, seeds)),
       _executor(globalRSMonitorManager.getExecutor()) {}
 
+ReplicaSetMonitor::ReplicaSetMonitor(const MongoURI& uri)
+    : _state(std::make_shared<SetState>(uri)), _executor(globalRSMonitorManager.getExecutor()) {}
+
 void ReplicaSetMonitor::init() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     invariant(_executor);
-    invariant(kRefreshPeriod * 2 == ReadPreferenceSetting::kMinimalMaxStalenessValue);
     std::weak_ptr<ReplicaSetMonitor> that(shared_from_this());
     auto status = _executor->scheduleWork([=](const CallbackArgs& cbArgs) {
         if (auto ptr = that.lock()) {
@@ -233,6 +230,11 @@ void ReplicaSetMonitor::_refresh(const CallbackArgs& cbArgs) {
     {
         // reschedule itself
         invariant(_executor);
+        if (_isRemovedFromManager.load()) {  // already removed so no need to refresh
+            LOG(1) << "Stopping refresh for replica set " << getName() << " because its removed";
+            return;
+        }
+
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         std::weak_ptr<ReplicaSetMonitor> that(shared_from_this());
         auto status = _executor->scheduleWorkAt(_executor->now() + kRefreshPeriod,
@@ -260,6 +262,11 @@ void ReplicaSetMonitor::_refresh(const CallbackArgs& cbArgs) {
 
 StatusWith<HostAndPort> ReplicaSetMonitor::getHostOrRefresh(const ReadPreferenceSetting& criteria,
                                                             Milliseconds maxWait) {
+    if (_isRemovedFromManager.load()) {
+        return Status(ErrorCodes::ReplicaSetMonitorRemoved,
+                      str::stream() << "ReplicaSetMonitor for set " << getName() << " is removed");
+    }
+
     {
         // Fast path, for the failure-free case
         stdx::lock_guard<stdx::mutex> lk(_state->mutex);
@@ -310,11 +317,11 @@ Refresher ReplicaSetMonitor::startOrContinueRefresh() {
     return out;
 }
 
-void ReplicaSetMonitor::failedHost(const HostAndPort& host) {
+void ReplicaSetMonitor::failedHost(const HostAndPort& host, const Status& status) {
     stdx::lock_guard<stdx::mutex> lk(_state->mutex);
     Node* node = _state->findNode(host);
     if (node)
-        node->markFailed();
+        node->markFailed(status);
     DEV _state->checkInvariants();
 }
 
@@ -373,6 +380,10 @@ shared_ptr<ReplicaSetMonitor> ReplicaSetMonitor::createIfNeeded(const string& na
                                                                 const set<HostAndPort>& servers) {
     return globalRSMonitorManager.getOrCreateMonitor(
         ConnectionString::forReplicaSet(name, vector<HostAndPort>(servers.begin(), servers.end())));
+}
+
+shared_ptr<ReplicaSetMonitor> ReplicaSetMonitor::createIfNeeded(const MongoURI& uri) {
+    return globalRSMonitorManager.getOrCreateMonitor(uri);
 }
 
 shared_ptr<ReplicaSetMonitor> ReplicaSetMonitor::get(const std::string& name) {
@@ -451,6 +462,10 @@ bool ReplicaSetMonitor::isKnownToHaveGoodPrimary() const {
     }
 
     return false;
+}
+
+void ReplicaSetMonitor::markAsRemoved() {
+    _isRemovedFromManager.store(true);
 }
 
 Refresher::Refresher(const SetStatePtr& setState)
@@ -545,9 +560,10 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
     _scan->waitingFor.erase(from);
 
     const IsMasterReply reply(from, latencyMicros, replyObj);
+
     // Handle various failure cases
     if (!reply.ok) {
-        failedHost(from);
+        failedHost(from, {ErrorCodes::CommandFailed, "Failed to execute 'ismaster' command"});
         return;
     }
 
@@ -565,17 +581,19 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
             warning() << "node: " << from << " isn't a part of set: " << _set->name
                       << " ismaster: " << replyObj;
         }
-        failedHost(from);
+
+        failedHost(from,
+                   {ErrorCodes::InconsistentReplicaSetNames,
+                    str::stream() << "Target replica set name " << reply.setName
+                                  << " does not match the monitored set name "
+                                  << _set->name});
         return;
     }
 
     if (reply.isMaster) {
-        if (!receivedIsMasterFromMaster(reply)) {
-            log() << "node " << from << " believes it is primary, but its election id of "
-                  << reply.electionId << " and config version of " << reply.configVersion
-                  << " is older than the most recent election id " << _set->maxElectionId
-                  << " and config version of " << _set->configVersion;
-            failedHost(from);
+        Status status = receivedIsMasterFromMaster(from, reply);
+        if (!status.isOK()) {
+            failedHost(from, status);
             return;
         }
     }
@@ -598,7 +616,7 @@ void Refresher::receivedIsMaster(const HostAndPort& from,
     DEV _set->checkInvariants();
 }
 
-void Refresher::failedHost(const HostAndPort& host) {
+void Refresher::failedHost(const HostAndPort& host, const Status& status) {
     _scan->waitingFor.erase(host);
 
     // Failed hosts can't pass criteria, so the only way they'd effect the _refreshUntilMatches
@@ -608,7 +626,7 @@ void Refresher::failedHost(const HostAndPort& host) {
 
     Node* node = _set->findNode(host);
     if (node)
-        node->markFailed();
+        node->markFailed(status);
 }
 
 ScanStatePtr Refresher::startNewScan(const SetState* set) {
@@ -646,13 +664,18 @@ ScanStatePtr Refresher::startNewScan(const SetState* set) {
     return scan;
 }
 
-bool Refresher::receivedIsMasterFromMaster(const IsMasterReply& reply) {
+Status Refresher::receivedIsMasterFromMaster(const HostAndPort& from, const IsMasterReply& reply) {
     invariant(reply.isMaster);
 
     // Reject if config version is older. This is for backwards compatibility with nodes in pv0
     // since they don't have the same ordering with pv1 electionId.
     if (reply.configVersion < _set->configVersion) {
-        return false;
+        return {ErrorCodes::NotMaster,
+                str::stream() << "Node " << from
+                              << " believes it is primary, but its config version "
+                              << reply.configVersion
+                              << " is older than the most recent config version "
+                              << _set->configVersion};
     }
 
     if (reply.electionId.isSet()) {
@@ -661,7 +684,12 @@ bool Refresher::receivedIsMasterFromMaster(const IsMasterReply& reply) {
         // because configVersion needs to be incremented whenever the protocol version is changed.
         if (reply.configVersion == _set->configVersion && _set->maxElectionId.isSet() &&
             _set->maxElectionId.compare(reply.electionId) > 0) {
-            return false;
+            return {ErrorCodes::NotMaster,
+                    str::stream() << "Node " << from
+                                  << " believes it is primary, but its election id "
+                                  << reply.electionId
+                                  << " is older than the most recent election id "
+                                  << _set->maxElectionId};
         }
 
         _set->maxElectionId = reply.electionId;
@@ -744,7 +772,7 @@ bool Refresher::receivedIsMasterFromMaster(const IsMasterReply& reply) {
     _scan->foundUpMaster = true;
     _set->lastSeenMaster = reply.host;
 
-    return true;
+    return Status::OK();
 }
 
 void Refresher::receivedIsMasterBeforeFoundMaster(const IsMasterReply& reply) {
@@ -789,19 +817,30 @@ HostAndPort Refresher::_refreshUntilMatches(const ReadPreferenceSetting* criteri
                 continue;
 
             case NextStep::CONTACT_HOST: {
-                BSONObj reply;  // empty on error
+                StatusWith<BSONObj> isMasterReplyStatus{ErrorCodes::InternalError,
+                                                        "Uninitialized variable"};
                 int64_t pingMicros = 0;
+                MongoURI targetURI;
 
-                lk.unlock();  // relocked after attempting to call isMaster
+                if (_set->setUri.isValid()) {
+                    targetURI = _set->setUri.cloneURIForServer(ns.host);
+                } else {
+                    targetURI = MongoURI(ConnectionString(ns.host));
+                }
+
+                // Do not do network calls while holding a mutex
+                lk.unlock();
                 try {
-                    ScopedDbConnection conn(ConnectionString(ns.host), socketTimeoutSecs);
+                    ScopedDbConnection conn(targetURI, socketTimeoutSecs);
                     bool ignoredOutParam = false;
                     Timer timer;
+                    BSONObj reply;
                     conn->isMaster(ignoredOutParam, &reply);
+                    isMasterReplyStatus = reply;
                     pingMicros = timer.micros();
                     conn.done();  // return to pool on success.
-                } catch (...) {
-                    reply = BSONObj();  // should be a no-op but want to be sure
+                } catch (const DBException& ex) {
+                    isMasterReplyStatus = ex.toStatus();
                 }
                 lk.lock();
 
@@ -810,10 +849,10 @@ HostAndPort Refresher::_refreshUntilMatches(const ReadPreferenceSetting* criteri
                 if (_scan != _set->currentScan)
                     return criteria ? _set->getMatchingHost(*criteria) : HostAndPort();
 
-                if (reply.isEmpty())
-                    failedHost(ns.host);
+                if (isMasterReplyStatus.isOK())
+                    receivedIsMaster(ns.host, pingMicros, isMasterReplyStatus.getValue());
                 else
-                    receivedIsMaster(ns.host, pingMicros, reply);
+                    failedHost(ns.host, isMasterReplyStatus.getStatus());
             }
         }
     }
@@ -872,10 +911,13 @@ void IsMasterReply::parse(const BSONObj& obj) {
 
 Node::Node(const HostAndPort& host) : host(host), latencyMicros(unknownLatency) {}
 
-void Node::markFailed() {
-    LOG(1) << "Marking host " << host << " as failed";
+void Node::markFailed(const Status& status) {
+    if (isUp) {
+        log() << "Marking host " << host << " as failed" << causedBy(redact(status));
 
-    isUp = false;
+        isUp = false;
+    }
+
     isMaster = false;
 }
 
@@ -966,6 +1008,12 @@ SetState::SetState(StringData name, const std::set<HostAndPort>& seedNodes)
     DEV checkInvariants();
 }
 
+SetState::SetState(const MongoURI& uri)
+    : SetState(uri.getSetName(),
+               std::set<HostAndPort>(uri.getServers().begin(), uri.getServers().end())) {
+    setUri = uri;
+}
+
 HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) const {
     switch (criteria.pref) {
         // "Prefered" read preferences are defined in terms of other preferences
@@ -976,12 +1024,12 @@ HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) con
             if (!out.empty())
                 return out;
             return getMatchingHost(ReadPreferenceSetting(
-                ReadPreference::SecondaryOnly, criteria.tags, criteria.maxStalenessMS));
+                ReadPreference::SecondaryOnly, criteria.tags, criteria.maxStalenessSeconds));
         }
 
         case ReadPreference::SecondaryPreferred: {
             HostAndPort out = getMatchingHost(ReadPreferenceSetting(
-                ReadPreference::SecondaryOnly, criteria.tags, criteria.maxStalenessMS));
+                ReadPreference::SecondaryOnly, criteria.tags, criteria.maxStalenessSeconds));
             if (!out.empty())
                 return out;
             // NOTE: the spec says we should use the primary even if tags don't match
@@ -1004,7 +1052,7 @@ HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) con
                 return true;
             };
             // build comparator
-            if (criteria.maxStalenessMS.count()) {
+            if (criteria.maxStalenessSeconds.count()) {
                 auto masterIt = std::find_if(nodes.begin(), nodes.end(), isMaster);
                 if (masterIt == nodes.end() || !masterIt->lastWriteDate.toMillisSinceEpoch()) {
                     auto writeDateCmp = [](const Node* a, const Node* b) -> bool {
@@ -1024,18 +1072,19 @@ HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) con
                     } else {
                         Date_t maxWriteTime = (*latestSecNode)->lastWriteDate;
                         matchNode = [=](const Node& node) -> bool {
-                            return Milliseconds(maxWriteTime - node.lastWriteDate) +
+                            return duration_cast<Seconds>(maxWriteTime - node.lastWriteDate) +
                                 kRefreshPeriod <=
-                                criteria.maxStalenessMS;
+                                criteria.maxStalenessSeconds;
                         };
                     }
                 } else {
-                    Milliseconds primaryStaleness =
-                        masterIt->lastWriteDateUpdateTime - masterIt->lastWriteDate;
+                    Seconds primaryStaleness = duration_cast<Seconds>(
+                        masterIt->lastWriteDateUpdateTime - masterIt->lastWriteDate);
                     matchNode = [=](const Node& node) -> bool {
-                        return Milliseconds(node.lastWriteDateUpdateTime - node.lastWriteDate) -
+                        return duration_cast<Seconds>(node.lastWriteDateUpdateTime -
+                                                      node.lastWriteDate) -
                             primaryStaleness + kRefreshPeriod <=
-                            criteria.maxStalenessMS;
+                            criteria.maxStalenessSeconds;
                     };
                 }
             }

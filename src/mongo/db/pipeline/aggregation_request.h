@@ -34,6 +34,7 @@
 #include "mongo/bson/bsonelement.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/query/explain_options.h"
 
 namespace mongo {
 
@@ -54,6 +55,8 @@ public:
     static const StringData kCollationName;
     static const StringData kExplainName;
     static const StringData kAllowDiskUseName;
+    static const StringData kHintName;
+    static const StringData kCommentName;
 
     static const long long kDefaultBatchSize;
 
@@ -61,8 +64,15 @@ public:
      * Create a new instance of AggregationRequest by parsing the raw command object. Returns a
      * non-OK status if a required field was missing, if there was an unrecognized field name or if
      * there was a bad value for one of the fields.
+     *
+     * If we are parsing a request for an explained aggregation with an explain verbosity provided,
+     * then 'explainVerbosity' contains this information. In this case, 'cmdObj' may not itself
+     * contain the explain specifier. Otherwise, 'explainVerbosity' should be boost::none.
      */
-    static StatusWith<AggregationRequest> parseFromBSON(NamespaceString nss, const BSONObj& cmdObj);
+    static StatusWith<AggregationRequest> parseFromBSON(
+        NamespaceString nss,
+        const BSONObj& cmdObj,
+        boost::optional<ExplainOptions::Verbosity> explainVerbosity = boost::none);
 
     /**
      * Constructs an AggregationRequest over the given namespace with the given pipeline. All
@@ -74,6 +84,9 @@ public:
      * Serializes the options to a Document. Note that this serialization includes the original
      * pipeline object, as specified. Callers will likely want to override this field with a
      * serialization of a parsed and optimized Pipeline object.
+     *
+     * The explain option is not serialized. Since the explain command format is {explain:
+     * {aggregate: ...}, ...}, explain options are not part of the aggregate command object.
      */
     Document serializeToCommandObj() const;
 
@@ -81,7 +94,7 @@ public:
     // Getters.
     //
 
-    boost::optional<long long> getBatchSize() const {
+    long long getBatchSize() const {
         return _batchSize;
     }
 
@@ -94,14 +107,6 @@ public:
      */
     const std::vector<BSONObj>& getPipeline() const {
         return _pipeline;
-    }
-
-    bool isCursorCommand() const {
-        return _cursorCommand;
-    }
-
-    bool isExplain() const {
-        return _explain;
     }
 
     bool isFromRouter() const {
@@ -123,13 +128,24 @@ public:
         return _collation;
     }
 
+    BSONObj getHint() const {
+        return _hint;
+    }
+
+    const std::string& getComment() const {
+        return _comment;
+    }
+
+    boost::optional<ExplainOptions::Verbosity> getExplain() const {
+        return _explainMode;
+    }
+
     //
     // Setters for optional fields.
     //
 
     /**
-     * Must be either unset or non-negative. Negative batchSize is illegal but batchSize of 0 is
-     * allowed.
+     * Negative batchSize is illegal but batchSize of 0 is allowed.
      */
     void setBatchSize(long long batchSize) {
         uassert(40203, "batchSize must be non-negative", batchSize >= 0);
@@ -140,12 +156,16 @@ public:
         _collation = collation.getOwned();
     }
 
-    void setCursorCommand(bool isCursorCommand) {
-        _cursorCommand = isCursorCommand;
+    void setHint(BSONObj hint) {
+        _hint = hint.getOwned();
     }
 
-    void setExplain(bool isExplain) {
-        _explain = isExplain;
+    void setComment(const std::string& comment) {
+        _comment = comment;
+    }
+
+    void setExplain(boost::optional<ExplainOptions::Verbosity> verbosity) {
+        _explainMode = verbosity;
     }
 
     void setAllowDiskUse(bool allowDiskUse) {
@@ -162,24 +182,32 @@ public:
 
 private:
     // Required fields.
-
     const NamespaceString _nss;
 
     // An unparsed version of the pipeline.
     const std::vector<BSONObj> _pipeline;
 
-    // Optional fields.
+    long long _batchSize;
 
-    boost::optional<long long> _batchSize;
+    // Optional fields.
 
     // An owned copy of the user-specified collation object, or an empty object if no collation was
     // specified.
     BSONObj _collation;
 
-    bool _explain = false;
+    // The hint provided, if any.  If the hint was by index key pattern, the value of '_hint' is
+    // the key pattern hinted.  If the hint was by index name, the value of '_hint' is
+    // {$hint: <String>}, where <String> is the index name hinted.
+    BSONObj _hint;
+
+    // The comment parameter attached to this aggregation.
+    std::string _comment;
+
+    // The explain mode to use, or boost::none if this is not a request for an aggregation explain.
+    boost::optional<ExplainOptions::Verbosity> _explainMode;
+
     bool _allowDiskUse = false;
     bool _fromRouter = false;
     bool _bypassDocumentValidation = false;
-    bool _cursorCommand = false;
 };
 }  // namespace mongo

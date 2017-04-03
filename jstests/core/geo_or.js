@@ -1,3 +1,7 @@
+// Cannot implicitly shard accessed collections because of use of $near query instead of geoNear
+// command.
+// @tags: [assumes_unsharded_collection]
+
 // multiple geo clauses with $or
 
 t = db.geoor;
@@ -24,7 +28,7 @@ assert.throws(function() {
     assert.eq(2,
               t.find({$or: [{loc: {$nearSphere: p}}, {loc: {$nearSphere: q}}]}).itcount(),
               'geo query not supported by $or. index type: ' + indexname);
-}, null, '$or with multiple $near clauses');
+}, [], '$or with multiple $near clauses');
 
 // the following tests should match the points in the collection
 

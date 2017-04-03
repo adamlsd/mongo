@@ -28,21 +28,23 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
-#include "mongo/db/lasterror.h"
-#include "mongo/s/write_ops/batched_command_request.h"
-#include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/util/net/message.h"
-
 namespace mongo {
+
+class BatchedCommandRequest;
+class BatchedCommandResponse;
+class LastError;
+class Message;
 
 //
 // Utility functions for up-converting incoming write messages into batch write requests.
 // NOTE: These functions throw on invalid message format.
 //
 
-void msgToBatchRequests(const Message& msg, std::vector<BatchedCommandRequest*>* requests);
+void msgToBatchRequests(const Message& msg,
+                        std::vector<std::unique_ptr<BatchedCommandRequest>>* requests);
 
 /**
  * Utility function for recording completed batch writes into the LastError object.
@@ -53,4 +55,5 @@ void msgToBatchRequests(const Message& msg, std::vector<BatchedCommandRequest*>*
 bool batchErrorToLastError(const BatchedCommandRequest& request,
                            const BatchedCommandResponse& response,
                            LastError* error);
-}
+
+}  // namespace mongo

@@ -39,13 +39,7 @@
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/internal_user_auth.h"
-#include "mongo/db/dbhelpers.h"
-#include "mongo/db/jsobj.h"
-#include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/repl/storage_interface.h"
 #include "mongo/executor/network_interface.h"
-#include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -101,104 +95,10 @@ void OplogReader::tailCheck() {
     }
 }
 
-void OplogReader::query(
-    const char* ns, Query query, int nToReturn, int nToSkip, const BSONObj* fields) {
-    cursor.reset(
-        _conn->query(ns, query, nToReturn, nToSkip, fields, QueryOption_SlaveOk).release());
-}
-
 void OplogReader::tailingQuery(const char* ns, const BSONObj& query) {
     verify(!haveCursor());
     LOG(2) << ns << ".find(" << redact(query) << ')' << endl;
     cursor.reset(_conn->query(ns, query, 0, 0, nullptr, _tailingQueryOptions).release());
-}
-
-void OplogReader::tailingQueryGTE(const char* ns, Timestamp optime) {
-    BSONObjBuilder gte;
-    gte.append("$gte", optime);
-    BSONObjBuilder query;
-    query.append("ts", gte.done());
-    tailingQuery(ns, query.done());
-}
-
-HostAndPort OplogReader::getHost() const {
-    return _host;
-}
-
-void OplogReader::connectToSyncSource(OperationContext* txn,
-                                      const OpTime& lastOpTimeFetched,
-                                      ReplicationCoordinator* replCoord) {
-    const Timestamp sentinelTimestamp(duration_cast<Seconds>(Date_t::now().toDurationSinceEpoch()),
-                                      0);
-    const OpTime sentinel(sentinelTimestamp, std::numeric_limits<long long>::max());
-    OpTime oldestOpTimeSeen = sentinel;
-
-    invariant(conn() == NULL);
-
-    while (true) {
-        HostAndPort candidate = replCoord->chooseNewSyncSource(lastOpTimeFetched.getTimestamp());
-
-        if (candidate.empty()) {
-            if (oldestOpTimeSeen == sentinel) {
-                // If, in this invocation of connectToSyncSource(), we did not successfully
-                // connect to any node ahead of us,
-                // we apparently have no sync sources to connect to.
-                // This situation is common; e.g. if there are no writes to the primary at
-                // the moment.
-                return;
-            }
-
-            // Connected to at least one member, but in all cases we were too stale to use them
-            // as a sync source.
-            error() << "too stale to catch up -- entering maintenance mode";
-            log() << "our last optime : " << lastOpTimeFetched;
-            log() << "oldest available is " << oldestOpTimeSeen;
-            log() << "See http://dochub.mongodb.org/core/resyncingaverystalereplicasetmember";
-            auto status = replCoord->setMaintenanceMode(true);
-            if (!status.isOK()) {
-                warning() << "Failed to transition into maintenance mode: " << status;
-            }
-            bool worked = replCoord->setFollowerMode(MemberState::RS_RECOVERING);
-            if (!worked) {
-                warning() << "Failed to transition into " << MemberState(MemberState::RS_RECOVERING)
-                          << ". Current state: " << replCoord->getMemberState();
-            }
-            return;
-        }
-
-        if (!connect(candidate)) {
-            LOG(2) << "can't connect to " << candidate.toString() << " to read operations";
-            resetConnection();
-            replCoord->blacklistSyncSource(candidate, Date_t::now() + Seconds(10));
-            continue;
-        }
-        // Read the first (oldest) op and confirm that it's not newer than our last
-        // fetched op. Otherwise, we have fallen off the back of that source's oplog.
-        BSONObj remoteOldestOp(findOne(rsOplogName.c_str(), Query()));
-        OpTime remoteOldOpTime =
-            fassertStatusOK(28776, OpTime::parseFromOplogEntry(remoteOldestOp));
-
-        // remoteOldOpTime may come from a very old config, so we cannot compare their terms.
-        if (!lastOpTimeFetched.isNull() &&
-            lastOpTimeFetched.getTimestamp() < remoteOldOpTime.getTimestamp()) {
-            // We're too stale to use this sync source.
-            resetConnection();
-            replCoord->blacklistSyncSource(candidate, Date_t::now() + Minutes(1));
-            if (oldestOpTimeSeen.getTimestamp() > remoteOldOpTime.getTimestamp()) {
-                warning() << "we are too stale to use " << candidate.toString()
-                          << " as a sync source";
-                oldestOpTimeSeen = remoteOldOpTime;
-            }
-            continue;
-        }
-
-
-        // TODO: If we were too stale (recovering with maintenance mode on), then turn it off, to
-        //       allow becoming secondary/etc.
-
-        // Got a valid sync source.
-        return;
-    }  // while (true)
 }
 
 }  // namespace repl

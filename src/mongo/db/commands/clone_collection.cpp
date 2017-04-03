@@ -45,7 +45,6 @@
 #include "mongo/db/commands/rename_collection.h"
 #include "mongo/db/db.h"
 #include "mongo/db/index_builder.h"
-#include "mongo/db/instance.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/ops/insert.h"
@@ -104,7 +103,7 @@ public:
                 "is placed at the same db.collection (namespace) as the source.\n";
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      BSONObj& cmdObj,
                      int,
@@ -112,7 +111,7 @@ public:
                      BSONObjBuilder& result) {
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
         if (shouldBypassDocumentValidationForCommand(cmdObj))
-            maybeDisableValidation.emplace(txn);
+            maybeDisableValidation.emplace(opCtx);
 
         string fromhost = cmdObj.getStringField("from");
         if (fromhost.empty()) {
@@ -122,7 +121,7 @@ public:
 
         {
             HostAndPort h(fromhost);
-            if (repl::isSelf(h, txn->getServiceContext())) {
+            if (repl::isSelf(h, opCtx->getServiceContext())) {
                 errmsg = "can't cloneCollection from self";
                 return false;
             }
@@ -153,7 +152,7 @@ public:
 
         cloner.setConnection(myconn.release());
 
-        return cloner.copyCollection(txn, collection, query, errmsg, copyIndexes);
+        return cloner.copyCollection(opCtx, collection, query, errmsg, copyIndexes);
     }
 
 } cmdCloneCollection;

@@ -45,7 +45,7 @@ PlanYieldPolicy::PlanYieldPolicy(PlanExecutor* exec, PlanExecutor::YieldPolicy p
     : _policy(policy),
       _forceYield(false),
       _elapsedTracker(exec->getOpCtx()->getServiceContext()->getFastClockSource(),
-                      internalQueryExecYieldIterations,
+                      internalQueryExecYieldIterations.load(),
                       Milliseconds(internalQueryExecYieldPeriodMS.load())),
       _planYielding(exec) {}
 
@@ -54,7 +54,7 @@ PlanYieldPolicy::PlanYieldPolicy(PlanExecutor::YieldPolicy policy, ClockSource* 
     : _policy(policy),
       _forceYield(false),
       _elapsedTracker(cs,
-                      internalQueryExecYieldIterations,
+                      internalQueryExecYieldIterations.load(),
                       Milliseconds(internalQueryExecYieldPeriodMS.load())),
       _planYielding(nullptr) {}
 
@@ -108,14 +108,14 @@ bool PlanYieldPolicy::yield(RecordFetcher* fetcher) {
                 opCtx->recoveryUnit()->abandonSnapshot();
             } else {
                 // Release and reacquire locks.
-                QueryYield::yieldAllLocks(opCtx, fetcher, _planYielding->ns());
+                QueryYield::yieldAllLocks(opCtx, fetcher, _planYielding->nss());
             }
 
             return _planYielding->restoreStateWithoutRetrying();
         } catch (const WriteConflictException& wce) {
             CurOp::get(opCtx)->debug().writeConflicts++;
             WriteConflictException::logAndBackoff(
-                attempt, "plan execution restoreState", _planYielding->ns());
+                attempt, "plan execution restoreState", _planYielding->nss().ns());
             // retry
         }
     }

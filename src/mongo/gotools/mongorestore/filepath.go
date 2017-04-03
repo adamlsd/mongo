@@ -152,7 +152,7 @@ func (f *realMetadataFile) Open() (err error) {
 		if err != nil {
 			return fmt.Errorf("error reading compressed metadata %v: %v", f.path, err)
 		}
-		f.ReadCloser = &wrappedReadCloser{gzFile, file}
+		f.ReadCloser = &util.WrappedReadCloser{gzFile, file}
 	} else {
 		f.ReadCloser = file
 	}
@@ -467,7 +467,7 @@ func (restore *MongoRestore) CreateStdinIntentForCollection(db string, collectio
 		C:        collection,
 		Location: "-",
 	}
-	intent.BSONFile = &stdinFile{Reader: restore.stdin}
+	intent.BSONFile = &stdinFile{Reader: restore.InputReader}
 	restore.manager.Put(intent)
 	return nil
 }

@@ -2,6 +2,8 @@
 
 Import("env")
 
+env = env.Clone()
+
 env.Library(
     target='batch_write_types',
     source=[
@@ -33,6 +35,7 @@ env.Library(
     LIBDEPS=[
         'batch_write_types',
         '$BUILD_DIR/mongo/client/connection_string',
+        '$BUILD_DIR/mongo/s/async_requests_sender',
         '$BUILD_DIR/mongo/s/client/sharding_client',
         '$BUILD_DIR/mongo/s/coreshard',
     ],
@@ -89,7 +92,6 @@ env.CppUnitTest(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/s/mongoscore',
         'cluster_write_op',
         'cluster_write_op_conversion',
     ]

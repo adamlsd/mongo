@@ -56,10 +56,6 @@ class AbstractMessagingPort;
 class Collection;
 class OperationContext;
 
-namespace transport {
-class Session;
-}  // namespace transport
-
 typedef long long ConnectionId;
 
 /**
@@ -73,13 +69,12 @@ public:
      * An unowned pointer to a transport::Session may optionally be provided. If 'session'
      * is non-null, then it will be used to augment the thread name, and for reporting purposes.
      *
-     * If provided, 'session' must outlive the newly-created Client object. Client::destroy() may
-     * be used to help enforce that the Client does not outlive 'session.'
+     * If provided, session's ref count will be bumped by this Client.
      */
-    static void initThread(const char* desc, transport::Session* session = nullptr);
-    static void initThread(const char* desc,
+    static void initThread(StringData desc, transport::SessionHandle session = nullptr);
+    static void initThread(StringData desc,
                            ServiceContext* serviceContext,
-                           transport::Session* session);
+                           transport::SessionHandle session);
 
     static Client* getCurrent();
 
@@ -91,7 +86,7 @@ public:
     }
 
     bool hasRemote() const {
-        return _session;
+        return (_session != nullptr);
     }
 
     HostAndPort getRemote() const {
@@ -109,15 +104,19 @@ public:
     /**
      * Returns the Session to which this client is bound, if any.
      */
-    transport::Session* session() const {
+    const transport::SessionHandle& session() const& {
         return _session;
+    }
+
+    transport::SessionHandle session() && {
+        return std::move(_session);
     }
 
     /**
      * Inits a thread if that thread has not already been init'd, setting the thread name to
      * "desc".
      */
-    static void initThreadIfNotAlready(const char* desc);
+    static void initThreadIfNotAlready(StringData desc);
 
     /**
      * Inits a thread if that thread has not already been init'd, using the existing thread name
@@ -156,12 +155,12 @@ public:
     ServiceContext::UniqueOperationContext makeOperationContext();
 
     /**
-     * Sets the active operation context on this client to "txn", which must be non-NULL.
+     * Sets the active operation context on this client to "opCtx", which must be non-NULL.
      *
      * It is an error to call this method if there is already an operation context on Client.
      * It is an error to call this on an unlocked client.
      */
-    void setOperationContext(OperationContext* txn);
+    void setOperationContext(OperationContext* opCtx);
 
     /**
      * Clears the active operation context on this client.
@@ -178,7 +177,7 @@ public:
      * by this method while the client is not locked.
      */
     OperationContext* getOperationContext() {
-        return _txn;
+        return _opCtx;
     }
 
     // TODO(spencer): SERVER-10228 SERVER-14779 Remove this/move it fully into OperationContext.
@@ -202,10 +201,12 @@ public:
 
 private:
     friend class ServiceContext;
-    Client(std::string desc, ServiceContext* serviceContext, transport::Session* session = nullptr);
+    explicit Client(std::string desc,
+                    ServiceContext* serviceContext,
+                    transport::SessionHandle session);
 
     ServiceContext* const _serviceContext;
-    transport::Session* const _session;
+    const transport::SessionHandle _session;
 
     // Description for the client (e.g. conn8)
     const std::string _desc;
@@ -223,7 +224,7 @@ private:
     bool _inDirectClient = false;
 
     // If != NULL, then contains the currently active OperationContext
-    OperationContext* _txn = nullptr;
+    OperationContext* _opCtx = nullptr;
 
     PseudoRandom _prng;
 };

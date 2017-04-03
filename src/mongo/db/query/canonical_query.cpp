@@ -33,9 +33,11 @@
 #include "mongo/db/query/canonical_query.h"
 
 #include "mongo/db/jsobj.h"
+#include "mongo/db/matcher/expression_array.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/query/indexability.h"
 #include "mongo/db/query/query_planner_common.h"
 #include "mongo/util/log.h"
 
@@ -100,19 +102,19 @@ bool matchExpressionLessThan(const MatchExpression* lhs, const MatchExpression* 
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
-    OperationContext* txn, const QueryMessage& qm, const ExtensionsCallback& extensionsCallback) {
+    OperationContext* opCtx, const QueryMessage& qm, const ExtensionsCallback& extensionsCallback) {
     // Make QueryRequest.
     auto qrStatus = QueryRequest::fromLegacyQueryMessage(qm);
     if (!qrStatus.isOK()) {
         return qrStatus.getStatus();
     }
 
-    return CanonicalQuery::canonicalize(txn, std::move(qrStatus.getValue()), extensionsCallback);
+    return CanonicalQuery::canonicalize(opCtx, std::move(qrStatus.getValue()), extensionsCallback);
 }
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
-    OperationContext* txn,
+    OperationContext* opCtx,
     std::unique_ptr<QueryRequest> qr,
     const ExtensionsCallback& extensionsCallback) {
     auto qrStatus = qr->validate();
@@ -122,7 +124,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 
     std::unique_ptr<CollatorInterface> collator;
     if (!qr->getCollation().isEmpty()) {
-        auto statusWithCollator = CollatorFactoryInterface::get(txn->getServiceContext())
+        auto statusWithCollator = CollatorFactoryInterface::get(opCtx->getServiceContext())
                                       ->makeFromBSON(qr->getCollation());
         if (!statusWithCollator.isOK()) {
             return statusWithCollator.getStatus();
@@ -152,7 +154,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
-    OperationContext* txn,
+    OperationContext* opCtx,
     const CanonicalQuery& baseQuery,
     MatchExpression* root,
     const ExtensionsCallback& extensionsCallback) {
@@ -249,7 +251,7 @@ bool CanonicalQuery::isSimpleIdQuery(const BSONObj& query) {
                 if (elt.Obj().firstElementFieldName()[0] == '$') {
                     return false;
                 }
-            } else if (!elt.isSimpleType() && BinData != elt.type()) {
+            } else if (!Indexability::isExactBoundsGenerating(elt)) {
                 // The _id fild cannot be something like { _id : { $gt : ...
                 // But it can be BinData.
                 return false;
@@ -334,6 +336,13 @@ MatchExpression* CanonicalQuery::normalizeTree(MatchExpression* root) {
         // normalizeTree(...) takes ownership of 'child', and then
         // transfers ownership of its return value to 'nme'.
         nme->resetChild(normalizeTree(child));
+    } else if (MatchExpression::ELEM_MATCH_OBJECT == root->matchType()) {
+        // Normalize the rest of the tree hanging off this ELEM_MATCH_OBJECT node.
+        ElemMatchObjectMatchExpression* emome = static_cast<ElemMatchObjectMatchExpression*>(root);
+        auto child = emome->releaseChild();
+        // normalizeTree(...) takes ownership of 'child', and then
+        // transfers ownership of its return value to 'emome'.
+        emome->resetChild(std::unique_ptr<MatchExpression>(normalizeTree(child.release())));
     } else if (MatchExpression::ELEM_MATCH_VALUE == root->matchType()) {
         // Just normalize our children.
         for (size_t i = 0; i < root->getChildVector()->size(); ++i) {

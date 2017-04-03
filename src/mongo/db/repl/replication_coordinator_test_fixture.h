@@ -47,7 +47,7 @@ class NetworkInterfaceMock;
 
 namespace repl {
 
-class ReplicaSetConfig;
+class ReplSetConfig;
 class ReplicationCoordinatorExternalStateMock;
 class ReplicationCoordinatorImpl;
 class StorageInterfaceMock;
@@ -73,10 +73,10 @@ public:
                                              Milliseconds millis = Milliseconds(0));
 
     /**
-     * Constructs a ReplicaSetConfig from the given BSON, or raises a test failure exception.
+     * Constructs a ReplSetConfig from the given BSON, or raises a test failure exception.
      */
-    static ReplicaSetConfig assertMakeRSConfig(const BSONObj& configBSON);
-    static ReplicaSetConfig assertMakeRSConfigV0(const BSONObj& configBson);
+    static ReplSetConfig assertMakeRSConfig(const BSONObj& configBSON);
+    static ReplSetConfig assertMakeRSConfigV0(const BSONObj& configBson);
 
     /**
      * Adds { protocolVersion: 0 or 1 } to the config.
@@ -103,9 +103,7 @@ protected:
     /**
      * Gets the replication executor under test.
      */
-    ReplicationExecutor* getReplExec() {
-        return _replExec.get();
-    }
+    ReplicationExecutor* getReplExec();
 
     /**
      * Gets the replication coordinator under test.
@@ -218,7 +216,7 @@ protected:
 
     /**
      * Brings the repl coord from SECONDARY to PRIMARY by simulating the messages required to
-     * elect it.
+     * elect it, after progressing the mocked-out notion of time past the election timeout.
      *
      * Behavior is unspecified if node does not have a clean config, is not in SECONDARY, etc.
      */
@@ -226,25 +224,22 @@ protected:
     void simulateSuccessfulV1Election();
 
     /**
+     * Same as simulateSuccessfulV1Election, but rather than getting the election timeout and
+     * progressing time past that point, takes in what time to expect an election to occur at.
+     * Useful for simulating elections triggered via priority takeover.
+     */
+    void simulateSuccessfulV1ElectionAt(Date_t electionTime);
+
+    /**
      * Shuts down the objects under test.
      */
-    void shutdown(OperationContext* txn);
+    void shutdown(OperationContext* opCtx);
 
     /**
      * Receive the heartbeat request from replication coordinator and reply with a response.
      */
     void replyToReceivedHeartbeat();
     void replyToReceivedHeartbeatV1();
-
-    /**
-     * Sets how the test fixture reports the storage engine's durability feature.
-     */
-    void setStorageEngineDurable(bool val = true) {
-        _isStorageEngineDurable = val;
-    }
-    bool isStorageEngineDurable() const {
-        return _isStorageEngineDurable;
-    }
 
     void simulateEnoughHeartbeatsForAllNodesUp();
 
@@ -269,12 +264,10 @@ private:
     TopologyCoordinatorImpl* _topo = nullptr;
     // Owned by ReplicationExecutor
     executor::NetworkInterfaceMock* _net = nullptr;
-    std::unique_ptr<ReplicationExecutor> _replExec;
     // Owned by ReplicationCoordinatorImpl
     ReplicationCoordinatorExternalStateMock* _externalState = nullptr;
     ReplSettings _settings;
     bool _callShutdown = false;
-    bool _isStorageEngineDurable = true;
     ServiceContext::UniqueClient _client = getGlobalServiceContext()->makeClient("testClient");
 };
 

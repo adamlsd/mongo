@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_merge_cursors.h"
 
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 
@@ -57,7 +57,6 @@ intrusive_ptr<DocumentSource> DocumentSourceMergeCursors::create(
     const intrusive_ptr<ExpressionContext>& pExpCtx) {
     intrusive_ptr<DocumentSourceMergeCursors> source(
         new DocumentSourceMergeCursors(std::move(cursorDescriptors), pExpCtx));
-    source->injectExpressionContext(pExpCtx);
     return source;
 }
 
@@ -87,7 +86,8 @@ intrusive_ptr<DocumentSource> DocumentSourceMergeCursors::createFromBson(
     return new DocumentSourceMergeCursors(std::move(cursorDescriptors), pExpCtx);
 }
 
-Value DocumentSourceMergeCursors::serialize(bool explain) const {
+Value DocumentSourceMergeCursors::serialize(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
     vector<Value> cursors;
     for (size_t i = 0; i < _cursorDescriptors.size(); i++) {
         cursors.push_back(

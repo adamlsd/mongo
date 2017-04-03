@@ -1,5 +1,3 @@
-// kv_storage_engine.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -50,7 +48,7 @@ const std::string catalogInfo = "_mdb_catalog";
 
 class KVStorageEngine::RemoveDBChange : public RecoveryUnit::Change {
 public:
-    RemoveDBChange(KVStorageEngine* engine, StringData db, KVDatabaseCatalogEntry* entry)
+    RemoveDBChange(KVStorageEngine* engine, StringData db, KVDatabaseCatalogEntryBase* entry)
         : _engine(engine), _db(db.toString()), _entry(entry) {}
 
     virtual void commit() {
@@ -64,11 +62,17 @@ public:
 
     KVStorageEngine* const _engine;
     const std::string _db;
-    KVDatabaseCatalogEntry* const _entry;
+    KVDatabaseCatalogEntryBase* const _entry;
 };
 
-KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions& options)
-    : _options(options), _engine(engine), _supportsDocLocking(_engine->supportsDocLocking()) {
+KVStorageEngine::KVStorageEngine(
+    KVEngine* engine,
+    const KVStorageEngineOptions& options,
+    stdx::function<KVDatabaseCatalogEntryFactory> databaseCatalogEntryFactory)
+    : _databaseCatalogEntryFactory(std::move(databaseCatalogEntryFactory)),
+      _options(options),
+      _engine(engine),
+      _supportsDocLocking(_engine->supportsDocLocking()) {
     uassert(28601,
             "Storage engine does not support --directoryperdb",
             !(options.directoryPerDB && !engine->supportsDirectoryPerDB()));
@@ -97,12 +101,10 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
         uow.commit();
     }
 
-    _catalogRecordStore.reset(
-        _engine->getRecordStore(&opCtx, catalogInfo, catalogInfo, CollectionOptions()));
-    _catalog.reset(new KVCatalog(_catalogRecordStore.get(),
-                                 _supportsDocLocking,
-                                 _options.directoryPerDB,
-                                 _options.directoryForIndexes));
+    _catalogRecordStore =
+        _engine->getRecordStore(&opCtx, catalogInfo, catalogInfo, CollectionOptions());
+    _catalog.reset(new KVCatalog(
+        _catalogRecordStore.get(), _options.directoryPerDB, _options.directoryForIndexes));
     _catalog->init(&opCtx);
 
     std::vector<std::string> collections;
@@ -114,9 +116,9 @@ KVStorageEngine::KVStorageEngine(KVEngine* engine, const KVStorageEngineOptions&
         string dbName = nss.db().toString();
 
         // No rollback since this is only for committed dbs.
-        KVDatabaseCatalogEntry*& db = _dbs[dbName];
+        KVDatabaseCatalogEntryBase*& db = _dbs[dbName];
         if (!db) {
-            db = new KVDatabaseCatalogEntry(dbName, this);
+            db = _databaseCatalogEntryFactory(dbName, this).release();
         }
 
         db->initCollection(&opCtx, coll, options.forRepair);
@@ -193,24 +195,24 @@ void KVStorageEngine::listDatabases(std::vector<std::string>* out) const {
     }
 }
 
-DatabaseCatalogEntry* KVStorageEngine::getDatabaseCatalogEntry(OperationContext* opCtx,
-                                                               StringData dbName) {
+KVDatabaseCatalogEntryBase* KVStorageEngine::getDatabaseCatalogEntry(OperationContext* opCtx,
+                                                                     StringData dbName) {
     stdx::lock_guard<stdx::mutex> lk(_dbsLock);
-    KVDatabaseCatalogEntry*& db = _dbs[dbName.toString()];
+    KVDatabaseCatalogEntryBase*& db = _dbs[dbName.toString()];
     if (!db) {
         // Not registering change since db creation is implicit and never rolled back.
-        db = new KVDatabaseCatalogEntry(dbName, this);
+        db = _databaseCatalogEntryFactory(dbName, this).release();
     }
     return db;
 }
 
-Status KVStorageEngine::closeDatabase(OperationContext* txn, StringData db) {
+Status KVStorageEngine::closeDatabase(OperationContext* opCtx, StringData db) {
     // This is ok to be a no-op as there is no database layer in kv.
     return Status::OK();
 }
 
-Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
-    KVDatabaseCatalogEntry* entry;
+Status KVStorageEngine::dropDatabase(OperationContext* opCtx, StringData db) {
+    KVDatabaseCatalogEntryBase* entry;
     {
         stdx::lock_guard<stdx::mutex> lk(_dbsLock);
         DBMap::const_iterator it = _dbs.find(db.toString());
@@ -224,14 +226,14 @@ Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
     // wherever possible. Eventually we want to move this up so that it can include the logOp
     // inside of the WUOW, but that would require making DB dropping happen inside the Dur
     // system for MMAPv1.
-    WriteUnitOfWork wuow(txn);
+    WriteUnitOfWork wuow(opCtx);
 
     std::list<std::string> toDrop;
     entry->getCollectionNamespaces(&toDrop);
 
     for (std::list<std::string>::iterator it = toDrop.begin(); it != toDrop.end(); ++it) {
         string coll = *it;
-        entry->dropCollection(txn, coll);
+        entry->dropCollection(opCtx, coll);
     }
     toDrop.clear();
     entry->getCollectionNamespaces(&toDrop);
@@ -239,7 +241,7 @@ Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
 
     {
         stdx::lock_guard<stdx::mutex> lk(_dbsLock);
-        txn->recoveryUnit()->registerChange(new RemoveDBChange(this, db, entry));
+        opCtx->recoveryUnit()->registerChange(new RemoveDBChange(this, db, entry));
         _dbs.erase(db.toString());
     }
 
@@ -247,24 +249,24 @@ Status KVStorageEngine::dropDatabase(OperationContext* txn, StringData db) {
     return Status::OK();
 }
 
-int KVStorageEngine::flushAllFiles(bool sync) {
-    return _engine->flushAllFiles(sync);
+int KVStorageEngine::flushAllFiles(OperationContext* opCtx, bool sync) {
+    return _engine->flushAllFiles(opCtx, sync);
 }
 
-Status KVStorageEngine::beginBackup(OperationContext* txn) {
+Status KVStorageEngine::beginBackup(OperationContext* opCtx) {
     // We should not proceed if we are already in backup mode
     if (_inBackupMode)
         return Status(ErrorCodes::BadValue, "Already in Backup Mode");
-    Status status = _engine->beginBackup(txn);
+    Status status = _engine->beginBackup(opCtx);
     if (status.isOK())
         _inBackupMode = true;
     return status;
 }
 
-void KVStorageEngine::endBackup(OperationContext* txn) {
+void KVStorageEngine::endBackup(OperationContext* opCtx) {
     // We should never reach here if we aren't already in backup mode
     invariant(_inBackupMode);
-    _engine->endBackup(txn);
+    _engine->endBackup(opCtx);
     _inBackupMode = false;
 }
 
@@ -280,16 +282,16 @@ SnapshotManager* KVStorageEngine::getSnapshotManager() const {
     return _engine->getSnapshotManager();
 }
 
-Status KVStorageEngine::repairRecordStore(OperationContext* txn, const std::string& ns) {
-    Status status = _engine->repairIdent(txn, _catalog->getCollectionIdent(ns));
+Status KVStorageEngine::repairRecordStore(OperationContext* opCtx, const std::string& ns) {
+    Status status = _engine->repairIdent(opCtx, _catalog->getCollectionIdent(ns));
     if (!status.isOK())
         return status;
 
-    _dbs[nsToDatabase(ns)]->reinitCollectionAfterRepair(txn, ns);
+    _dbs[nsToDatabase(ns)]->reinitCollectionAfterRepair(opCtx, ns);
     return Status::OK();
 }
 
 void KVStorageEngine::setJournalListener(JournalListener* jl) {
     _engine->setJournalListener(jl);
 }
-}
+}  // namespace mongo

@@ -102,10 +102,9 @@ public:
 
     /**
      * Idempotent method, which causes the current ongoing migration to abort only if it has the
-     * specified session id, otherwise returns false. If the migration is already aborted, does
-     * nothing.
+     * specified session id. If the migration is already aborted, does nothing.
      */
-    bool abort(const MigrationSessionId& sessionId);
+    Status abort(const MigrationSessionId& sessionId);
 
     /**
      * Same as 'abort' above, but unconditionally aborts the current migration without checking the
@@ -113,7 +112,7 @@ public:
      */
     void abortWithoutSessionIdCheck();
 
-    bool startCommit(const MigrationSessionId& sessionId);
+    Status startCommit(const MigrationSessionId& sessionId);
 
 private:
     /**
@@ -126,7 +125,7 @@ private:
                         OID epoch,
                         WriteConcernOptions writeConcern);
 
-    void _migrateDriver(OperationContext* txn,
+    void _migrateDriver(OperationContext* opCtx,
                         const BSONObj& min,
                         const BSONObj& max,
                         const BSONObj& shardKeyPattern,
@@ -134,15 +133,15 @@ private:
                         const OID& epoch,
                         const WriteConcernOptions& writeConcern);
 
-    bool _applyMigrateOp(OperationContext* txn,
-                         const std::string& ns,
+    bool _applyMigrateOp(OperationContext* opCtx,
+                         const NamespaceString& ns,
                          const BSONObj& min,
                          const BSONObj& max,
                          const BSONObj& shardKeyPattern,
                          const BSONObj& xfer,
                          repl::OpTime* lastOpApplied);
 
-    bool _flushPendingWrites(OperationContext* txn,
+    bool _flushPendingWrites(OperationContext* opCtx,
                              const std::string& ns,
                              BSONObj min,
                              BSONObj max,
@@ -159,7 +158,7 @@ private:
      * TODO: Because migrations may currently be active when a collection drops, an epoch is
      * necessary to ensure the pending metadata change is still applicable.
      */
-    Status _notePending(OperationContext* txn,
+    Status _notePending(OperationContext* opCtx,
                         const NamespaceString& nss,
                         const BSONObj& min,
                         const BSONObj& max,
@@ -175,7 +174,7 @@ private:
      * TODO: Because migrations may currently be active when a collection drops, an epoch is
      * necessary to ensure the pending metadata change is still applicable.
      */
-    Status _forgetPending(OperationContext* txn,
+    Status _forgetPending(OperationContext* opCtx,
                           const NamespaceString& nss,
                           const BSONObj& min,
                           const BSONObj& max,

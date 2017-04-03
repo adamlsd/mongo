@@ -36,6 +36,7 @@
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/util/log.h"
+#include "mongo/util/stacktrace.h"
 
 #include <gperftools/malloc_hook.h>
 #include <third_party/murmurhash3/MurmurHash3.h>
@@ -531,6 +532,9 @@ private:
                   << "maxActiveMemory " << maxActiveMemory / MB << " MB; "
                   << "objTableSize " << objTableSize / MB << " MB; "
                   << "stackTableSize " << stackTableSize / MB << " MB";
+            // print a stack trace to log somap for post-facto symbolization
+            log() << "following stack trace is for heap profiler informational purposes";
+            printStackTrace();
             logGeneralStats = false;
         }
 
@@ -645,7 +649,7 @@ public:
         return HeapProfiler::enabledParameter;
     }
 
-    BSONObj generateSection(OperationContext* txn,
+    BSONObj generateSection(OperationContext* opCtx,
                             const BSONElement& configElement) const override {
         BSONObjBuilder builder;
         HeapProfiler::generateServerStatusSection(builder);

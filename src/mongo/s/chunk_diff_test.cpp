@@ -58,18 +58,17 @@ PseudoRandom rand(1);
  */
 class DefaultDiffAdapter : public ConfigDiffTracker<BSONObj> {
 public:
-    DefaultDiffAdapter() {}
-    virtual ~DefaultDiffAdapter() {}
+    using ConfigDiffTracker<BSONObj>::ConfigDiffTracker;
 
     virtual bool isTracked(const ChunkType& chunk) const {
         return true;
     }
 
-    virtual pair<BSONObj, BSONObj> rangeFor(OperationContext* txn, const ChunkType& chunk) const {
+    virtual pair<BSONObj, BSONObj> rangeFor(OperationContext* opCtx, const ChunkType& chunk) const {
         return make_pair(chunk.getMin(), chunk.getMax());
     }
 
-    virtual ShardId shardFor(OperationContext* txn, const ShardId& name) const {
+    virtual ShardId shardFor(OperationContext* opCtx, const ShardId& name) const {
         return name;
     }
 };
@@ -79,14 +78,13 @@ public:
  */
 class InverseDiffAdapter : public DefaultDiffAdapter {
 public:
-    InverseDiffAdapter() {}
-    virtual ~InverseDiffAdapter() {}
+    using DefaultDiffAdapter::DefaultDiffAdapter;
 
     virtual bool isMinKeyIndexed() const {
         return false;
     }
 
-    virtual pair<BSONObj, BSONObj> rangeFor(OperationContext* txn, const ChunkType& chunk) const {
+    virtual pair<BSONObj, BSONObj> rangeFor(OperationContext* opCtx, const ChunkType& chunk) const {
         return make_pair(chunk.getMax(), chunk.getMin());
     }
 };
@@ -97,7 +95,7 @@ public:
 void convertBSONArrayToChunkTypes(const vector<BSONObj>& chunksArray,
                                   std::vector<ChunkType>* chunksVector) {
     for (const BSONObj& obj : chunksArray) {
-        auto chunkTypeRes = ChunkType::fromBSON(obj);
+        auto chunkTypeRes = ChunkType::fromConfigBSON(obj);
         ASSERT(chunkTypeRes.isOK());
         chunksVector->push_back(chunkTypeRes.getValue());
     }
@@ -169,9 +167,9 @@ protected:
         VersionMap maxShardVersions;
 
         // Create a differ which will track our progress
-        std::shared_ptr<DefaultDiffAdapter> differ(isInverse ? new InverseDiffAdapter()
-                                                             : new DefaultDiffAdapter());
-        differ->attach("test", ranges, maxVersion, maxShardVersions);
+        std::shared_ptr<DefaultDiffAdapter> differ(
+            isInverse ? new InverseDiffAdapter("test", &ranges, &maxVersion, &maxShardVersions)
+                      : new DefaultDiffAdapter("test", &ranges, &maxVersion, &maxShardVersions));
 
         std::vector<ChunkType> chunksVector;
         convertBSONArrayToChunkTypes(chunks, &chunksVector);

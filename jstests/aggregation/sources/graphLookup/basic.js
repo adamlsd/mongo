@@ -1,3 +1,7 @@
+// Cannot implicitly shard accessed collections because unsupported use of sharded collection
+// for target collection of $lookup and $graphLookup.
+// @tags: [assumes_unsharded_collection]
+
 // In MongoDB 3.4, $graphLookup was introduced. In this file, we test basic behavior and correctness
 // of the stage.
 
@@ -6,6 +10,41 @@
 
     var local = db.local;
     var foreign = db.foreign;
+
+    local.drop();
+    foreign.drop();
+
+    // Ensure a $graphLookup works even if one of the involved collections doesn't exist.
+    const basicGraphLookup = {
+        $graphLookup: {
+            from: "foreign",
+            startWith: "$starting",
+            connectFromField: "from",
+            connectToField: "to",
+            as: "results"
+        }
+    };
+
+    assert.eq(
+        local.aggregate([basicGraphLookup]).toArray().length,
+        0,
+        "expected an empty result set for a $graphLookup with non-existent local and foreign " +
+            "collections");
+
+    assert.writeOK(foreign.insert({}));
+
+    assert.eq(local.aggregate([basicGraphLookup]).toArray().length,
+              0,
+              "expected an empty result set for a $graphLookup on a non-existent local collection");
+
+    local.drop();
+    foreign.drop();
+
+    assert.writeOK(local.insert({_id: 0}));
+
+    assert.eq(local.aggregate([basicGraphLookup]).toArray(),
+              [{_id: 0, results: []}],
+              "expected $graphLookup to succeed with a non-existent foreign collection");
 
     local.drop();
     foreign.drop();

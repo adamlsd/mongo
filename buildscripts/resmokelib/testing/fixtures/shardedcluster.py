@@ -17,7 +17,6 @@ from . import replicaset
 from ... import config
 from ... import core
 from ... import errors
-from ... import logging
 from ... import utils
 
 
@@ -170,14 +169,19 @@ class ShardedClusterFixture(interface.Fixture):
                 all(shard.is_running() for shard in self.shards) and
                 self.mongos is not None and self.mongos.is_running())
 
+    def get_connection_string(self):
+        if self.mongos is None:
+            raise ValueError("Must call setup() before calling get_connection_string()")
+
+        return "%s:%d" % (socket.gethostname(), self.mongos.port)
+
     def _new_configsvr(self):
         """
         Returns a replicaset.ReplicaSetFixture configured to be used as
         the config server of a sharded cluster.
         """
 
-        logger_name = "%s:configsvr" % (self.logger.name)
-        mongod_logger = logging.loggers.new_logger(logger_name, parent=self.logger)
+        mongod_logger = self.logger.new_fixture_node_logger("configsvr")
 
         mongod_options = copy.deepcopy(self.mongod_options)
         mongod_options["configsvr"] = ""
@@ -200,8 +204,7 @@ class ShardedClusterFixture(interface.Fixture):
         shard in a sharded cluster.
         """
 
-        logger_name = "%s:shard%d" % (self.logger.name, index)
-        mongod_logger = logging.loggers.new_logger(logger_name, parent=self.logger)
+        mongod_logger = self.logger.new_fixture_node_logger("shard%d" % index)
 
         mongod_options = copy.deepcopy(self.mongod_options)
         mongod_options["shardsvr"] = ""
@@ -219,8 +222,7 @@ class ShardedClusterFixture(interface.Fixture):
         a sharded cluster.
         """
 
-        logger_name = "%s:mongos" % (self.logger.name)
-        mongos_logger = logging.loggers.new_logger(logger_name, parent=self.logger)
+        mongos_logger = self.logger.new_fixture_node_logger("mongos")
 
         mongos_options = copy.deepcopy(self.mongos_options)
         configdb_hostname = socket.gethostname()

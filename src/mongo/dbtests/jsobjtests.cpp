@@ -49,6 +49,7 @@
 #include "mongo/util/embedded_builder.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/util/timer.h"
 
 namespace mongo {
 
@@ -162,7 +163,7 @@ FieldCompareResult compareDottedFieldNames(const string& l, const string& r, con
     verify(0);
     return SAME;  // will never get here
 }
-}
+}  // namespace mongo
 
 namespace JsobjTests {
 

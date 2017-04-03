@@ -100,14 +100,27 @@ bool appendElementsIfRoom(BSONObjBuilder* bob, const BSONObj& toAppend) {
 }  // namespace
 
 // static
+void ClusterExplain::wrapAsExplainForOP_COMMAND(const BSONObj& cmdObj,
+                                                ExplainOptions::Verbosity verbosity,
+                                                BSONObjBuilder* explainBuilder) {
+    explainBuilder->append("explain", cmdObj);
+    explainBuilder->append("verbosity", ExplainOptions::verbosityString(verbosity));
+
+    // Propagate readConcern
+    if (auto readConcern = cmdObj["readConcern"]) {
+        explainBuilder->append(readConcern);
+    }
+}
+
+// static
 void ClusterExplain::wrapAsExplain(const BSONObj& cmdObj,
-                                   ExplainCommon::Verbosity verbosity,
+                                   ExplainOptions::Verbosity verbosity,
                                    const rpc::ServerSelectionMetadata& serverSelectionMetadata,
                                    BSONObjBuilder* out,
                                    int* optionsOut) {
     BSONObjBuilder explainBuilder;
     explainBuilder.append("explain", cmdObj);
-    explainBuilder.append("verbosity", ExplainCommon::verbosityString(verbosity));
+    explainBuilder.append("verbosity", ExplainOptions::verbosityString(verbosity));
 
     // Propagate readConcern
     if (auto readConcern = cmdObj["readConcern"]) {
@@ -201,7 +214,7 @@ const char* ClusterExplain::getStageNameForReadOp(
 }
 
 // static
-void ClusterExplain::buildPlannerInfo(OperationContext* txn,
+void ClusterExplain::buildPlannerInfo(OperationContext* opCtx,
                                       const vector<Strategy::CommandResult>& shardResults,
                                       const char* mongosStageName,
                                       BSONObjBuilder* out) {
@@ -220,8 +233,8 @@ void ClusterExplain::buildPlannerInfo(OperationContext* txn,
 
         singleShardBob.append("shardName", shardResults[i].shardTargetId.toString());
         {
-            const auto shard =
-                uassertStatusOK(grid.shardRegistry()->getShard(txn, shardResults[i].shardTargetId));
+            const auto shard = uassertStatusOK(
+                grid.shardRegistry()->getShard(opCtx, shardResults[i].shardTargetId));
             singleShardBob.append("connectionString", shard->getConnString().toString());
         }
         appendIfRoom(&singleShardBob, serverInfo, "serverInfo");
@@ -343,7 +356,7 @@ void ClusterExplain::buildExecStats(const vector<Strategy::CommandResult>& shard
 }
 
 // static
-Status ClusterExplain::buildExplainResult(OperationContext* txn,
+Status ClusterExplain::buildExplainResult(OperationContext* opCtx,
                                           const vector<Strategy::CommandResult>& shardResults,
                                           const char* mongosStageName,
                                           long long millisElapsed,
@@ -354,7 +367,7 @@ Status ClusterExplain::buildExplainResult(OperationContext* txn,
         return validateStatus;
     }
 
-    buildPlannerInfo(txn, shardResults, mongosStageName, out);
+    buildPlannerInfo(opCtx, shardResults, mongosStageName, out);
     buildExecStats(shardResults, mongosStageName, millisElapsed, out);
 
     return Status::OK();

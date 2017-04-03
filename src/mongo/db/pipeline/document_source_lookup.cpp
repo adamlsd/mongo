@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "document_source.h"
+#include "mongo/db/pipeline/document_source_lookup.h"
 
 #include "mongo/base/init.h"
 #include "mongo/db/jsobj.h"
@@ -54,7 +54,16 @@ DocumentSourceLookUp::DocumentSourceLookUp(NamespaceString fromNs,
       _as(std::move(as)),
       _localField(std::move(localField)),
       _foreignField(foreignField),
-      _foreignFieldFieldName(std::move(foreignField)) {}
+      _foreignFieldFieldName(std::move(foreignField)) {
+    const auto& resolvedNamespace = pExpCtx->getResolvedNamespace(_fromNs);
+    _fromExpCtx = pExpCtx->copyWith(resolvedNamespace.ns);
+    _fromPipeline = resolvedNamespace.pipeline;
+
+    // We append an additional BSONObj to '_fromPipeline' as a placeholder for the $match stage
+    // we'll eventually construct from the input document.
+    _fromPipeline.reserve(_fromPipeline.size() + 1);
+    _fromPipeline.push_back(BSONObj());
+}
 
 std::unique_ptr<LiteParsedDocumentSourceOneForeignCollection> DocumentSourceLookUp::liteParse(
     const AggregationRequest& request, const BSONElement& spec) {
@@ -112,8 +121,6 @@ BSONObj buildEqualityOrQuery(const std::string& fieldName, const vector<Value>& 
 DocumentSource::GetNextResult DocumentSourceLookUp::getNext() {
     pExpCtx->checkForInterrupt();
 
-    uassert(4567, "from collection cannot be sharded", !_mongod->isSharded(_fromExpCtx->ns));
-
     if (!_additionalFilter && _matchSrc) {
         // We have internalized a $match, but have not yet computed the descended $match that should
         // be applied to our queries.
@@ -159,7 +166,18 @@ DocumentSource::GetNextResult DocumentSourceLookUp::getNext() {
     return output.freeze();
 }
 
-Pipeline::SourceContainer::iterator DocumentSourceLookUp::optimizeAt(
+DocumentSource::GetModPathsReturn DocumentSourceLookUp::getModifiedPaths() const {
+    std::set<std::string> modifiedPaths{_as.fullPath()};
+    if (_unwindSrc) {
+        auto pathsModifiedByUnwind = _unwindSrc->getModifiedPaths();
+        invariant(pathsModifiedByUnwind.type == GetModPathsReturn::Type::kFiniteSet);
+        modifiedPaths.insert(pathsModifiedByUnwind.paths.begin(),
+                             pathsModifiedByUnwind.paths.end());
+    }
+    return {GetModPathsReturn::Type::kFiniteSet, std::move(modifiedPaths)};
+}
+
+Pipeline::SourceContainer::iterator DocumentSourceLookUp::doOptimizeAt(
     Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
     invariant(*itr == this);
 
@@ -174,51 +192,12 @@ Pipeline::SourceContainer::iterator DocumentSourceLookUp::optimizeAt(
         return itr;
     }
 
+    // Attempt to internalize any predicates of a $match upon the "_as" field.
     auto nextMatch = dynamic_cast<DocumentSourceMatch*>((*std::next(itr)).get());
 
     if (!nextMatch) {
         return std::next(itr);
     }
-
-    // Attempt to move part of the $match before ourselves, and internalize any predicates upon the
-    // "_as" field.
-    std::string outputPath = _as.fullPath();
-
-    std::set<std::string> fields = {outputPath};
-    if (_handlingUnwind && _unwindSrc->indexPath()) {
-        fields.insert((*_unwindSrc->indexPath()).fullPath());
-    }
-
-    // Attempt to split the $match, putting the independent portion before ourselves.
-    auto splitMatch = nextMatch->splitSourceBy(fields);
-
-    // Remove the original match from the pipeline.
-    container->erase(std::next(itr));
-
-    auto independent = dynamic_cast<DocumentSourceMatch*>(splitMatch.first.get());
-    auto dependent = dynamic_cast<DocumentSourceMatch*>(splitMatch.second.get());
-
-    invariant(independent || dependent);
-
-    auto locationOfNextPossibleOptimization = std::next(itr);
-    if (independent) {
-        // If the $match has an independent portion, insert it before ourselves. Keep track of where
-        // the pipeline should check for the next possible optimization.
-        container->insert(itr, std::move(independent));
-        if (std::prev(itr) == container->begin()) {
-            locationOfNextPossibleOptimization = std::prev(itr);
-        } else {
-            locationOfNextPossibleOptimization = std::prev(std::prev(itr));
-        }
-    }
-
-    if (!dependent) {
-        // Nothing left to do; the entire $match was moved before us.
-        return locationOfNextPossibleOptimization;
-    }
-
-    // Part of the $match was dependent upon us; we must now determine if we need to split the
-    // $match again to obtain a $match that is a predicate only upon the "_as" path.
 
     if (!_handlingUnwind || _unwindSrc->indexPath() || _unwindSrc->preserveNullAndEmptyArrays()) {
         // We must be unwinding our result to internalize a $match. For example, consider the
@@ -248,10 +227,18 @@ Pipeline::SourceContainer::iterator DocumentSourceLookUp::optimizeAt(
         // In addition, we must avoid internalizing a $match if an absorbed $unwind has an
         // "includeArrayIndex" option, since the $match will alter the indices of the returned
         // values.
-        container->insert(std::next(itr), std::move(splitMatch.second));
-        return locationOfNextPossibleOptimization;
+        return std::next(itr);
     }
 
+    auto outputPath = _as.fullPath();
+
+    // Since $match splitting is handled in a generic way, we expect to have already swapped
+    // portions of the $match that do not depend on the 'as' path or on an internalized $unwind's
+    // index path before ourselves. But due to the early return above, we know there is no
+    // internalized $unwind with an index path.
+    //
+    // Therefore, 'nextMatch' should only depend on the 'as' path. We now try to absorb the match on
+    // the 'as' path in order to push down these predicates into the foreign collection.
     bool isMatchOnlyOnAs = true;
     auto computeWhetherMatchOnAs = [&isMatchOnlyOnAs, &outputPath](MatchExpression* expression,
                                                                    std::string path) -> void {
@@ -271,24 +258,26 @@ Pipeline::SourceContainer::iterator DocumentSourceLookUp::optimizeAt(
         }
     };
 
-    expression::mapOver(dependent->getMatchExpression(), computeWhetherMatchOnAs);
+    expression::mapOver(nextMatch->getMatchExpression(), computeWhetherMatchOnAs);
 
     if (!isMatchOnlyOnAs) {
-        // "dependent" is not wholly a predicate upon our "_as" field. We must put it back into the
-        // pipeline as-is.
-        container->insert(std::next(itr), std::move(splitMatch.second));
-        return locationOfNextPossibleOptimization;
+        // "nextMatch" does not contain any predicates that can be absorbed into this stage.
+        return std::next(itr);
     }
 
-    // We can internalize the entire $match.
+    // We can internalize the $match.
     if (!_handlingMatch) {
-        _matchSrc = dependent;
+        _matchSrc = nextMatch;
         _handlingMatch = true;
     } else {
         // We have already absorbed a $match. We need to join it with 'dependent'.
-        _matchSrc->joinMatchWith(dependent);
+        _matchSrc->joinMatchWith(nextMatch);
     }
-    return locationOfNextPossibleOptimization;
+
+    // Remove the original $match. There may be further optimization between this $lookup and the
+    // new neighbor, so we return an iterator pointing to ourself.
+    container->erase(std::next(itr));
+    return itr;
 }
 
 void DocumentSourceLookUp::dispose() {
@@ -425,7 +414,8 @@ DocumentSource::GetNextResult DocumentSourceLookUp::unwindResult() {
     return output.freeze();
 }
 
-void DocumentSourceLookUp::serializeToArray(std::vector<Value>& array, bool explain) const {
+void DocumentSourceLookUp::serializeToArray(
+    std::vector<Value>& array, boost::optional<ExplainOptions::Verbosity> explain) const {
     MutableDocument output(DOC(
         getSourceName() << DOC("from" << _fromNs.coll() << "as" << _as.fullPath() << "localField"
                                       << _localField.fullPath()
@@ -470,19 +460,6 @@ void DocumentSourceLookUp::serializeToArray(std::vector<Value>& array, bool expl
 DocumentSource::GetDepsReturn DocumentSourceLookUp::getDependencies(DepsTracker* deps) const {
     deps->fields.insert(_localField.fullPath());
     return SEE_NEXT;
-}
-
-void DocumentSourceLookUp::doInjectExpressionContext() {
-    auto it = pExpCtx->resolvedNamespaces.find(_fromNs.coll());
-    invariant(it != pExpCtx->resolvedNamespaces.end());
-    const auto& resolvedNamespace = it->second;
-    _fromExpCtx = pExpCtx->copyWith(resolvedNamespace.ns);
-    _fromPipeline = resolvedNamespace.pipeline;
-
-    // We append an additional BSONObj to '_fromPipeline' as a placeholder for the $match stage
-    // we'll eventually construct from the input document.
-    _fromPipeline.reserve(_fromPipeline.size() + 1);
-    _fromPipeline.push_back(BSONObj());
 }
 
 void DocumentSourceLookUp::doDetachFromOperationContext() {

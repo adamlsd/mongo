@@ -35,7 +35,9 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_sample.h"
+#include "mongo/db/pipeline/document_source_sample_from_random_cursor.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/service_context.h"
@@ -138,7 +140,7 @@ private:
      * created with.
      */
     void checkBsonRepresentation(const BSONObj& spec) {
-        Value serialized = static_cast<DocumentSourceSample*>(sample())->serialize(false);
+        Value serialized = static_cast<DocumentSourceSample*>(sample())->serialize();
         auto generatedSpec = serialized.getDocument().toBson();
         ASSERT_BSONOBJ_EQ(spec, generatedSpec);
     }

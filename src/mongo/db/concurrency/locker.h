@@ -33,6 +33,7 @@
 
 #include "mongo/db/concurrency/lock_manager.h"
 #include "mongo/db/concurrency/lock_stats.h"
+#include "mongo/stdx/thread.h"
 
 namespace mongo {
 
@@ -47,6 +48,18 @@ class Locker {
 
 public:
     virtual ~Locker() {}
+
+    /**
+     * Returns true if this is an instance of LockerNoop. Because LockerNoop doesn't implement many
+     * methods, some users may need to check this first to find out what is safe to call. LockerNoop
+     * is only used in unittests and for a brief period at startup, so you can assume you hold the
+     * equivalent of a MODE_X lock when using it.
+     *
+     * TODO get rid of this once we kill LockerNoop.
+     */
+    virtual bool isNoop() const {
+        return false;
+    }
 
     /**
      * Require global lock attempts to obtain tickets from 'reading' (for MODE_S and MODE_IS),
@@ -69,6 +82,12 @@ public:
     virtual ClientState getClientState() const = 0;
 
     virtual LockerId getId() const = 0;
+
+    /**
+     * Get a platform-specific thread identifier of the thread which owns the this locker for
+     * tracing purposes.
+     */
+    virtual stdx::thread::id getThreadId() const = 0;
 
     /**
      * This should be the first method invoked for a particular Locker object. It acquires the
@@ -288,13 +307,6 @@ public:
     virtual bool isLocked() const = 0;
     virtual bool isWriteLocked() const = 0;
     virtual bool isReadLocked() const = 0;
-
-    /**
-     * Asserts that the Locker is effectively not in use and resets the locking statistics.
-     * This means, there should be no locks on it, no WUOW, etc, so it would be safe to call
-     * the destructor or reuse the Locker.
-     */
-    virtual void assertEmptyAndReset() = 0;
 
     /**
      * Pending means we are currently trying to get a lock (could be the parallel batch writer

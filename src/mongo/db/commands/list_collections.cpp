@@ -46,6 +46,7 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/queued_data_stage.h"
 #include "mongo/db/exec/working_set.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/query/cursor_request.h"
 #include "mongo/db/query/cursor_response.h"
@@ -110,7 +111,7 @@ boost::optional<vector<StringData>> _getExactNameMatches(const MatchExpression* 
  *
  * Does not add any information about the system.namespaces collection, or non-existent collections.
  */
-void _addWorkingSetMember(OperationContext* txn,
+void _addWorkingSetMember(OperationContext* opCtx,
                           const BSONObj& maybe,
                           const MatchExpression* matcher,
                           WorkingSet* ws,
@@ -146,7 +147,7 @@ BSONObj buildViewBson(const ViewDefinition& view) {
     return b.obj();
 }
 
-BSONObj buildCollectionBson(OperationContext* txn, const Collection* collection) {
+BSONObj buildCollectionBson(OperationContext* opCtx, const Collection* collection) {
 
     if (!collection) {
         return {};
@@ -161,11 +162,24 @@ BSONObj buildCollectionBson(OperationContext* txn, const Collection* collection)
     b.append("name", collectionName);
     b.append("type", "collection");
 
-    CollectionOptions options = collection->getCatalogEntry()->getCollectionOptions(txn);
+    CollectionOptions options = collection->getCatalogEntry()->getCollectionOptions(opCtx);
+
+    // While the UUID is stored as a collection option, from the user's perspective it is an
+    // unsettable read-only property, so put it in the 'info' section.
+    auto uuid = options.uuid;
+    options.uuid.reset();
     b.append("options", options.toBSON());
 
-    BSONObj info = BSON("readOnly" << storageGlobalParams.readOnly);
-    b.append("info", info);
+    BSONObjBuilder infoBuilder;
+    infoBuilder.append("readOnly", storageGlobalParams.readOnly);
+    if (uuid)
+        infoBuilder.appendElements(uuid->toBSON());
+    b.append("info", infoBuilder.obj());
+
+    auto idIndex = collection->getIndexCatalog()->findIdIndex(opCtx);
+    if (idIndex) {
+        b.append("idIndex", idIndex->infoObj());
+    }
 
     return b.obj();
 }
@@ -210,7 +224,7 @@ public:
 
     CmdListCollections() : Command("listCollections") {}
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& dbname,
              BSONObj& jsobj,
              int,
@@ -241,29 +255,28 @@ public:
             return appendCommandStatus(result, parseCursorStatus);
         }
 
-        ScopedTransaction scopedXact(txn, MODE_IS);
-        AutoGetDb autoDb(txn, dbname, MODE_S);
+        AutoGetDb autoDb(opCtx, dbname, MODE_S);
 
         Database* db = autoDb.getDb();
 
         auto ws = make_unique<WorkingSet>();
-        auto root = make_unique<QueuedDataStage>(txn, ws.get());
+        auto root = make_unique<QueuedDataStage>(opCtx, ws.get());
 
         if (db) {
             if (auto collNames = _getExactNameMatches(matcher.get())) {
                 for (auto&& collName : *collNames) {
                     auto nss = NamespaceString(db->name(), collName);
                     Collection* collection = db->getCollection(nss);
-                    BSONObj collBson = buildCollectionBson(txn, collection);
+                    BSONObj collBson = buildCollectionBson(opCtx, collection);
                     if (!collBson.isEmpty()) {
-                        _addWorkingSetMember(txn, collBson, matcher.get(), ws.get(), root.get());
+                        _addWorkingSetMember(opCtx, collBson, matcher.get(), ws.get(), root.get());
                     }
                 }
             } else {
                 for (auto&& collection : *db) {
-                    BSONObj collBson = buildCollectionBson(txn, collection);
+                    BSONObj collBson = buildCollectionBson(opCtx, collection);
                     if (!collBson.isEmpty()) {
-                        _addWorkingSetMember(txn, collBson, matcher.get(), ws.get(), root.get());
+                        _addWorkingSetMember(opCtx, collBson, matcher.get(), ws.get(), root.get());
                     }
                 }
             }
@@ -273,10 +286,10 @@ public:
                 SimpleBSONObjComparator::kInstance.evaluate(
                     filterElt.Obj() == ListCollectionsFilter::makeTypeCollectionFilter());
             if (!skipViews) {
-                db->getViewCatalog()->iterate(txn, [&](const ViewDefinition& view) {
+                db->getViewCatalog()->iterate(opCtx, [&](const ViewDefinition& view) {
                     BSONObj viewBson = buildViewBson(view);
                     if (!viewBson.isEmpty()) {
-                        _addWorkingSetMember(txn, viewBson, matcher.get(), ws.get(), root.get());
+                        _addWorkingSetMember(opCtx, viewBson, matcher.get(), ws.get(), root.get());
                     }
                 });
             }
@@ -285,7 +298,7 @@ public:
         const NamespaceString cursorNss = NamespaceString::makeListCollectionsNSS(dbname);
 
         auto statusWithPlanExecutor = PlanExecutor::make(
-            txn, std::move(ws), std::move(root), cursorNss.ns(), PlanExecutor::YIELD_MANUAL);
+            opCtx, std::move(ws), std::move(root), cursorNss, PlanExecutor::YIELD_MANUAL);
         if (!statusWithPlanExecutor.isOK()) {
             return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
@@ -314,12 +327,13 @@ public:
         if (!exec->isEOF()) {
             exec->saveState();
             exec->detachFromOperationContext();
-            ClientCursor* cursor =
-                new ClientCursor(CursorManager::getGlobalCursorManager(),
-                                 exec.release(),
-                                 cursorNss.ns(),
-                                 txn->recoveryUnit()->isReadingFromMajorityCommittedSnapshot());
-            cursorId = cursor->cursorid();
+            auto pinnedCursor = CursorManager::getGlobalCursorManager()->registerCursor(
+                {std::move(exec),
+                 cursorNss,
+                 AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
+                 opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot(),
+                 jsobj});
+            cursorId = pinnedCursor.getCursor()->cursorid();
         }
 
         appendCursorResponseObject(cursorId, cursorNss.ns(), firstBatch.arr(), &result);

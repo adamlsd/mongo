@@ -56,9 +56,10 @@ using executor::NetworkInterface;
 using executor::RemoteCommandRequest;
 using executor::RemoteCommandResponse;
 
-ReplicationExecutor::ReplicationExecutor(NetworkInterface* netInterface, int64_t prngSeed)
+ReplicationExecutor::ReplicationExecutor(std::unique_ptr<NetworkInterface> netInterface,
+                                         int64_t prngSeed)
     : _random(prngSeed),
-      _networkInterface(netInterface),
+      _networkInterface(std::move(netInterface)),
       _inShutdown(false),
       _dblockWorkers(OldThreadPool::DoNotStartThreadsTag(), 3, "replExecDBWorker-"),
       _dblockTaskRunner(&_dblockWorkers),
@@ -69,7 +70,7 @@ ReplicationExecutor::~ReplicationExecutor() {
     invariant(!_executorThread.joinable());
 }
 
-BSONObj ReplicationExecutor::getDiagnosticBSON() {
+BSONObj ReplicationExecutor::getDiagnosticBSON() const {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     BSONObjBuilder builder;
 
@@ -104,7 +105,7 @@ BSONObj ReplicationExecutor::getDiagnosticBSON() {
     return builder.obj();
 }
 
-std::string ReplicationExecutor::getDiagnosticString() {
+std::string ReplicationExecutor::getDiagnosticString() const {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     return _getDiagnosticString_inlock();
 }
@@ -403,8 +404,8 @@ StatusWith<ReplicationExecutor::CallbackHandle> ReplicationExecutor::scheduleDBW
                                handle.getValue(),
                                &_dbWorkInProgressQueue,
                                nullptr);
-        auto task = [doOp](OperationContext* txn, const Status& status) {
-            makeNoExcept(stdx::bind(doOp, txn, status))();
+        auto task = [doOp](OperationContext* opCtx, const Status& status) {
+            makeNoExcept(stdx::bind(doOp, opCtx, status))();
             return TaskRunner::NextAction::kDisposeOperationContext;
         };
         if (mode == MODE_NONE && nss.ns().empty()) {
@@ -417,7 +418,7 @@ StatusWith<ReplicationExecutor::CallbackHandle> ReplicationExecutor::scheduleDBW
     return handle;
 }
 
-void ReplicationExecutor::_doOperation(OperationContext* txn,
+void ReplicationExecutor::_doOperation(OperationContext* opCtx,
                                        const Status& taskRunnerStatus,
                                        const CallbackHandle& cbHandle,
                                        WorkQueue* workQueue,
@@ -441,7 +442,7 @@ void ReplicationExecutor::_doOperation(OperationContext* txn,
                          (callback->_isCanceled || !taskRunnerStatus.isOK()
                               ? Status(ErrorCodes::CallbackCanceled, "Callback canceled")
                               : Status::OK()),
-                         txn));
+                         opCtx));
     }
     lk.lock();
     signalEvent_inlock(callback->_finishedEvent);
@@ -460,8 +461,8 @@ ReplicationExecutor::scheduleWorkWithGlobalExclusiveLock(const CallbackFn& work)
                                &_exclusiveLockInProgressQueue,
                                &_terribleExLockSyncMutex);
         _dblockExclusiveLockTaskRunner.schedule(DatabaseTask::makeGlobalExclusiveLockTask(
-            [doOp](OperationContext* txn, const Status& status) {
-                makeNoExcept(stdx::bind(doOp, txn, status))();
+            [doOp](OperationContext* opCtx, const Status& status) {
+                makeNoExcept(stdx::bind(doOp, opCtx, status))();
                 return TaskRunner::NextAction::kDisposeOperationContext;
             }));
     }

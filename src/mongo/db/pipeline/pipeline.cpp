@@ -40,6 +40,11 @@
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_geo_near.h"
+#include "mongo/db/pipeline/document_source_match.h"
+#include "mongo/db/pipeline/document_source_out.h"
+#include "mongo/db/pipeline/document_source_project.h"
+#include "mongo/db/pipeline/document_source_unwind.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/util/mongoutils/str.h"
@@ -157,13 +162,6 @@ void Pipeline::reattachToOperationContext(OperationContext* opCtx) {
 
     for (auto&& source : _sources) {
         source->reattachToOperationContext(opCtx);
-    }
-}
-
-void Pipeline::injectExpressionContext(const intrusive_ptr<ExpressionContext>& expCtx) {
-    pCtx = expCtx;
-    for (auto&& stage : _sources) {
-        stage->injectExpressionContext(pCtx);
     }
 }
 
@@ -312,30 +310,6 @@ void Pipeline::stitch() {
     }
 }
 
-void Pipeline::run(BSONObjBuilder& result) {
-    // We should not get here in the explain case.
-    verify(!pCtx->isExplain);
-
-    // the array in which the aggregation results reside
-    // cant use subArrayStart() due to error handling
-    BSONArrayBuilder resultArray;
-    while (auto next = getNext()) {
-        // Add the document to the result set.
-        BSONObjBuilder documentBuilder(resultArray.subobjStart());
-        next->toBson(&documentBuilder);
-        documentBuilder.doneFast();
-        // Object will be too large, assert. The extra 1KB is for headers.
-        uassert(16389,
-                str::stream() << "aggregation result exceeds maximum document size ("
-                              << BSONObjMaxUserSize / (1024 * 1024)
-                              << "MB)",
-                resultArray.len() < BSONObjMaxUserSize - 1024);
-    }
-
-    resultArray.done();
-    result.appendArray("result", resultArray.arr());
-}
-
 boost::optional<Document> Pipeline::getNext() {
     invariant(!_sources.empty());
     auto nextResult = _sources.back()->getNext();
@@ -346,10 +320,10 @@ boost::optional<Document> Pipeline::getNext() {
                               : boost::optional<Document>{nextResult.releaseDocument()};
 }
 
-vector<Value> Pipeline::writeExplainOps() const {
+vector<Value> Pipeline::writeExplainOps(ExplainOptions::Verbosity verbosity) const {
     vector<Value> array;
     for (SourceContainer::const_iterator it = _sources.begin(); it != _sources.end(); ++it) {
-        (*it)->serializeToArray(array, /*explain=*/true);
+        (*it)->serializeToArray(array, verbosity);
     }
     return array;
 }

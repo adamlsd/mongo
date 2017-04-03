@@ -28,10 +28,6 @@
 
 #include "mongo/db/range_deleter_mock_env.h"
 
-#include "mongo/db/service_context.h"
-#include "mongo/db/service_context_noop.h"
-#include "mongo/stdx/memory.h"
-
 namespace mongo {
 
 using std::set;
@@ -52,9 +48,7 @@ bool DeletedRangeCmp::operator()(const DeletedRange& lhs, const DeletedRange& rh
 }
 
 RangeDeleterMockEnv::RangeDeleterMockEnv()
-    : _pauseDelete(false), _pausedCount(0), _getCursorsCallCount(0) {
-    setGlobalServiceContext(stdx::make_unique<ServiceContextNoop>());
-}
+    : _pauseDelete(false), _pausedCount(0), _getCursorsCallCount(0) {}
 
 void RangeDeleterMockEnv::addCursorId(StringData ns, CursorId id) {
     stdx::lock_guard<stdx::mutex> sl(_cursorMapMutex);
@@ -101,7 +95,7 @@ DeletedRange RangeDeleterMockEnv::getLastDelete() const {
     return _deleteList.back();
 }
 
-bool RangeDeleterMockEnv::deleteRange(OperationContext* txn,
+bool RangeDeleterMockEnv::deleteRange(OperationContext* opCtx,
                                       const RangeDeleteEntry& taskDetails,
                                       long long int* deletedDocs,
                                       string* errMsg) {
@@ -136,7 +130,7 @@ bool RangeDeleterMockEnv::deleteRange(OperationContext* txn,
     return true;
 }
 
-void RangeDeleterMockEnv::getCursorIds(OperationContext* txn, StringData ns, set<CursorId>* in) {
+void RangeDeleterMockEnv::getCursorIds(OperationContext* opCtx, StringData ns, set<CursorId>* in) {
     {
         stdx::lock_guard<stdx::mutex> sl(_cursorMapMutex);
         const set<CursorId>& _cursors = _cursorMap[ns.toString()];

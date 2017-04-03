@@ -53,12 +53,12 @@ public:
     static Status getDetectableErrorStatus();
 
     /**
-     * Validates command name in remote command request.
+     * Validates command name in remote command request. Returns the remote command request from
+     * the network interface for further validation if the command name matches.
      */
-    static void assertRemoteCommandNameEquals(StringData cmdName,
-                                              const RemoteCommandRequest& request);
+    static RemoteCommandRequest assertRemoteCommandNameEquals(StringData cmdName,
+                                                              const RemoteCommandRequest& request);
 
-protected:
     virtual ~TaskExecutorTest();
 
     executor::NetworkInterfaceMock* getNet() {
@@ -85,6 +85,16 @@ protected:
     void joinExecutorThread();
 
 private:
+    /**
+     * Unused implementation of test function. This allows us to instantiate
+     * TaskExecutorTest on its own without the need to inherit from it in a test.
+     * This supports using TaskExecutorTest inside another test fixture and works around the
+     * limitation that tests cannot inherit from multiple test fixtures.
+     *
+     * It is an error to call this implementation of _doTest() directly.
+     */
+    void _doTest() override;
+
     virtual std::unique_ptr<TaskExecutor> makeTaskExecutor(
         std::unique_ptr<NetworkInterfaceMock> net) = 0;
 

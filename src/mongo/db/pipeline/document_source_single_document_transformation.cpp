@@ -28,11 +28,13 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_single_document_transformation.h"
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_limit.h"
+#include "mongo/db/pipeline/document_source_skip.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/value.h"
 
@@ -72,11 +74,12 @@ void DocumentSourceSingleDocumentTransformation::dispose() {
     _parsedTransform.reset();
 }
 
-Value DocumentSourceSingleDocumentTransformation::serialize(bool explain) const {
+Value DocumentSourceSingleDocumentTransformation::serialize(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(Document{{getSourceName(), _parsedTransform->serialize(explain)}});
 }
 
-Pipeline::SourceContainer::iterator DocumentSourceSingleDocumentTransformation::optimizeAt(
+Pipeline::SourceContainer::iterator DocumentSourceSingleDocumentTransformation::doOptimizeAt(
     Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
     invariant(*itr == this);
     auto nextSkip = dynamic_cast<DocumentSourceSkip*>((*std::next(itr)).get());
@@ -96,8 +99,9 @@ DocumentSource::GetDepsReturn DocumentSourceSingleDocumentTransformation::getDep
     return _parsedTransform->addDependencies(deps);
 }
 
-void DocumentSourceSingleDocumentTransformation::doInjectExpressionContext() {
-    _parsedTransform->injectExpressionContext(pExpCtx);
+DocumentSource::GetModPathsReturn DocumentSourceSingleDocumentTransformation::getModifiedPaths()
+    const {
+    return _parsedTransform->getModifiedPaths();
 }
 
 }  // namespace mongo

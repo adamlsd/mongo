@@ -254,6 +254,13 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
                                "Desired format for timestamps in log messages. One of ctime, "
                                "iso8601-utc or iso8601-local");
 
+#if MONGO_ENTERPRISE_VERSION
+    options->addOptionChaining("security.redactClientLogData",
+                               "redactClientLogData",
+                               moe::Switch,
+                               "Redact client data written to the diagnostics log");
+#endif
+
     options->addOptionChaining("processManagement.pidFilePath",
                                "pidfilepath",
                                moe::String,
@@ -569,6 +576,19 @@ Status validateServerOptions(const moe::Environment& params) {
             enableTestCommandsParameter->second.compare("1") == 0) {
             getGlobalFailPointRegistry()->registerAllFailPointsAsServerParameters();
         }
+
+        if (parameters.find("internalValidateFeaturesAsMaster") != parameters.end()) {
+            // Command line options that are disallowed when internalValidateFeaturesAsMaster is
+            // specified.
+            for (const auto& disallowedOption : {"replication.replSet", "master", "slave"}) {
+                if (params.count(disallowedOption)) {
+                    return Status(ErrorCodes::BadValue,
+                                  str::stream()
+                                      << "Cannot specify both internalValidateFeaturesAsMaster and "
+                                      << disallowedOption);
+                }
+            }
+        }
     }
     if ((params.count("security.authorization") &&
          params["security.authorization"].as<std::string>() == "enabled") ||
@@ -844,11 +864,11 @@ Status storeServerOptions(const moe::Environment& params) {
     }
 
     if (params.count("systemLog.quiet")) {
-        serverGlobalParams.quiet = params["systemLog.quiet"].as<bool>();
+        serverGlobalParams.quiet.store(params["systemLog.quiet"].as<bool>());
     }
 
     if (params.count("systemLog.traceAllExceptions")) {
-        DBException::traceExceptions = params["systemLog.traceAllExceptions"].as<bool>();
+        DBException::traceExceptions.store(params["systemLog.traceAllExceptions"].as<bool>());
     }
 
     if (params.count("net.maxIncomingConnections")) {

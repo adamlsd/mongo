@@ -98,15 +98,15 @@ public:
      *
      * Takes ownership of the passed NetworkInterface object.
      */
-    ReplicationExecutor(executor::NetworkInterface* netInterface, int64_t pnrgSeed);
+    ReplicationExecutor(std::unique_ptr<executor::NetworkInterface> netInterface, int64_t pnrgSeed);
 
     /**
      * Destroys an executor.
      */
     virtual ~ReplicationExecutor();
 
-    std::string getDiagnosticString() override;
-    BSONObj getDiagnosticBSON();
+    std::string getDiagnosticString() const override;
+    BSONObj getDiagnosticBSON() const;
     Date_t now() override;
     void startup() override;
     void shutdown() override;
@@ -280,7 +280,7 @@ private:
      * Executes the callback referenced by "cbHandle", and moves the underlying
      * WorkQueue::iterator from "workQueue" into the _freeQueue.
      *
-     * "txn" is a pointer to the OperationContext.
+     * "opCtx" is a pointer to the OperationContext.
      *
      * "status" is the callback status from the task runner. Only possible values are
      * Status::OK and ErrorCodes::CallbackCanceled (when task runner is canceled).
@@ -288,7 +288,7 @@ private:
      * If "terribleExLockSyncMutex" is not null, serializes execution of "cbHandle" with the
      * execution of other callbacks.
      */
-    void _doOperation(OperationContext* txn,
+    void _doOperation(OperationContext* opCtx,
                       const Status& taskRunnerStatus,
                       const CallbackHandle& cbHandle,
                       WorkQueue* workQueue,
@@ -314,7 +314,7 @@ private:
     // Thread which executes the run method. Started by startup and must be jointed after shutdown.
     stdx::thread _executorThread;
 
-    stdx::mutex _mutex;
+    mutable stdx::mutex _mutex;
     stdx::mutex _terribleExLockSyncMutex;
     stdx::condition_variable _noMoreWaitingThreads;
     WorkQueue _freeQueue;

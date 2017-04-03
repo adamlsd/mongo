@@ -30,6 +30,7 @@
 
 #include <boost/optional.hpp>
 
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/s/query/cluster_query_result.h"
 #include "mongo/util/time_support.h"
@@ -64,7 +65,7 @@ public:
      *
      * A non-ok status is returned in case of any error.
      */
-    virtual StatusWith<ClusterQueryResult> next() = 0;
+    virtual StatusWith<ClusterQueryResult> next(OperationContext* opCtx) = 0;
 
     /**
      * Must be called before destruction to abandon a not-yet-exhausted cursor. If next() has
@@ -72,12 +73,17 @@ public:
      *
      * May block waiting for responses from remote hosts.
      */
-    virtual void kill() = 0;
+    virtual void kill(OperationContext* opCtx) = 0;
 
     /**
      * Returns whether or not this cursor is tailing a capped collection on a shard.
      */
     virtual bool isTailable() const = 0;
+
+    /**
+     * Returns the set of authenticated users when this cursor was created.
+     */
+    virtual UserNameIterator getAuthenticatedUsers() const = 0;
 
     /**
      * Returns the number of result documents returned so far by this cursor via the next() method.
@@ -108,13 +114,6 @@ public:
      * the cursor is not tailable + awaitData).
      */
     virtual Status setAwaitDataTimeout(Milliseconds awaitDataTimeout) = 0;
-
-    /**
-     * Update the operation context for remote requests.
-     *
-     * Network requests depend on having a valid operation context for user initiated actions.
-     */
-    virtual void setOperationContext(OperationContext* txn) = 0;
 };
 
 }  // namespace mongo

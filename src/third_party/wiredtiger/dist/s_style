@@ -93,6 +93,14 @@ else
 		cat $t
 	fi
 
+	if ! expr "$f" : 'examples/c/*' > /dev/null &&
+	   ! expr "$f" : 'ext/*' > /dev/null &&
+	   ! expr "$f" : 'src/os_posix/os_snprintf.c' > /dev/null &&
+	    egrep '[^a-z_]snprintf\(|[^a-z_]vsnprintf\(' $f > $t; then
+		echo "$f: snprintf call, use WiredTiger library replacements"
+		cat $t
+	fi
+
 	# Alignment directive before "struct".
 	egrep 'WT_COMPILER_TYPE_ALIGN.*struct' $f > $t
 	test -s $t && {
@@ -108,7 +116,7 @@ else
 	   ! expr "$f" : 'test/.*' > /dev/null &&
 	   ! expr "$f" : '.*/utilities/.*' > /dev/null; then
 		if ! expr "$f" : '.*/os_alloc.c' > /dev/null &&
-		     egrep '[[:space:]]free[(]|[[:space:]]strdup[(]|[[:space:]]strndup[(]|[[:space:]]malloc[(]|[[:space:]]calloc[(]|[[:space:]]realloc[(]' $f > $t; then
+		     egrep '[[:space:]]free[(]|[[:space:]]strdup[(]|[[:space:]]strndup[(]|[[:space:]]malloc[(]|[[:space:]]calloc[(]|[[:space:]]realloc[(]|[[:space:]]sprintf[(]' $f > $t; then
 			test -s $t && {
 				echo "$f: call to illegal function"
 				cat $t

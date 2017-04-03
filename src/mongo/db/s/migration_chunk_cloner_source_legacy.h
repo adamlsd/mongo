@@ -55,25 +55,28 @@ class MigrationChunkClonerSourceLegacy final : public MigrationChunkClonerSource
     MONGO_DISALLOW_COPYING(MigrationChunkClonerSourceLegacy);
 
 public:
-    MigrationChunkClonerSourceLegacy(MoveChunkRequest request, const BSONObj& shardKeyPattern);
+    MigrationChunkClonerSourceLegacy(MoveChunkRequest request,
+                                     const BSONObj& shardKeyPattern,
+                                     ConnectionString donorConnStr,
+                                     HostAndPort recipientHost);
     ~MigrationChunkClonerSourceLegacy();
 
-    Status startClone(OperationContext* txn) override;
+    Status startClone(OperationContext* opCtx) override;
 
-    Status awaitUntilCriticalSectionIsAppropriate(OperationContext* txn,
+    Status awaitUntilCriticalSectionIsAppropriate(OperationContext* opCtx,
                                                   Milliseconds maxTimeToWait) override;
 
-    Status commitClone(OperationContext* txn) override;
+    Status commitClone(OperationContext* opCtx) override;
 
-    void cancelClone(OperationContext* txn) override;
+    void cancelClone(OperationContext* opCtx) override;
 
-    bool isDocumentInMigratingChunk(OperationContext* txn, const BSONObj& doc) override;
+    bool isDocumentInMigratingChunk(OperationContext* opCtx, const BSONObj& doc) override;
 
-    void onInsertOp(OperationContext* txn, const BSONObj& insertedDoc) override;
+    void onInsertOp(OperationContext* opCtx, const BSONObj& insertedDoc) override;
 
-    void onUpdateOp(OperationContext* txn, const BSONObj& updatedDoc) override;
+    void onUpdateOp(OperationContext* opCtx, const BSONObj& updatedDoc) override;
 
-    void onDeleteOp(OperationContext* txn, const BSONObj& deletedDocId) override;
+    void onDeleteOp(OperationContext* opCtx, const BSONObj& deletedDocId) override;
 
     // Legacy cloner specific functionality
 
@@ -105,7 +108,7 @@ public:
      *
      * NOTE: Must be called with the collection lock held in at least IS mode.
      */
-    Status nextCloneBatch(OperationContext* txn,
+    Status nextCloneBatch(OperationContext* opCtx,
                           Collection* collection,
                           BSONArrayBuilder* arrBuilder);
 
@@ -116,17 +119,20 @@ public:
      *
      * NOTE: Must be called with the collection lock held in at least IS mode.
      */
-    Status nextModsBatch(OperationContext* txn, Database* db, BSONObjBuilder* builder);
+    Status nextModsBatch(OperationContext* opCtx, Database* db, BSONObjBuilder* builder);
 
 private:
     friend class DeleteNotificationStage;
     friend class LogOpForShardingHandler;
 
+    // Represents the states in which the cloner can be
+    enum State { kNew, kCloning, kDone };
+
     /**
      * Idempotent method, which cleans up any previously initialized state. It is safe to be called
      * at any time, but no methods should be called after it.
      */
-    void _cleanup(OperationContext* txn);
+    void _cleanup(OperationContext* opCtx);
 
     /**
      * Synchronously invokes the recipient shard with the specified command and either returns the
@@ -140,7 +146,7 @@ private:
      *
      * Returns OK or any error status otherwise.
      */
-    Status _storeCurrentLocs(OperationContext* txn);
+    Status _storeCurrentLocs(OperationContext* opCtx);
 
     /**
      * Insert items from docIdList to a new array with the given fieldName in the given builder. If
@@ -150,7 +156,7 @@ private:
      *
      * Should be holding the collection lock for ns if explode is true.
      */
-    void _xfer(OperationContext* txn,
+    void _xfer(OperationContext* opCtx,
                Database* db,
                std::list<BSONObj>* docIdList,
                BSONObjBuilder* builder,
@@ -168,10 +174,10 @@ private:
     const MigrationSessionId _sessionId;
 
     // The resolved connection string of the donor shard
-    ConnectionString _donorCS;
+    const ConnectionString _donorConnStr;
 
     // The resolved primary of the recipient shard
-    HostAndPort _recipientHost;
+    const HostAndPort _recipientHost;
 
     // Registered deletion notifications plan executor, which will listen for document deletions
     // during the cloning stage
@@ -180,24 +186,24 @@ private:
     // Protects the entries below
     stdx::mutex _mutex;
 
-    // Inidicates whether commit or cancel have already been called and ensures that we do not
-    // double commit or double cancel
-    bool _cloneCompleted{false};
+    // The current state of the cloner
+    State _state{kNew};
 
     // List of record ids that needs to be transferred (initial clone)
     std::set<RecordId> _cloneLocs;
 
     // The estimated average object size during the clone phase. Used for buffer size
-    // pre-allocation.
+    // pre-allocation (initial clone).
     uint64_t _averageObjectSizeForCloneLocs{0};
 
-    // List of _id of documents that were modified that must be re-cloned.
+    // List of _id of documents that were modified that must be re-cloned (xfer mods)
     std::list<BSONObj> _reload;
 
-    // List of _id of documents that were deleted during clone that should be deleted later.
+    // List of _id of documents that were deleted during clone that should be deleted later (xfer
+    // mods)
     std::list<BSONObj> _deleted;
 
-    // Total bytes in _reload + _deleted
+    // Total bytes in _reload + _deleted (xfer mods)
     uint64_t _memoryUsed{0};
 };
 

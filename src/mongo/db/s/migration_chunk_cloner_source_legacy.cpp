@@ -34,7 +34,6 @@
 
 #include "mongo/base/status.h"
 #include "mongo/client/read_preference.h"
-#include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
@@ -49,7 +48,6 @@
 #include "mongo/executor/task_executor.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/chunk.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/elapsed_tracker.h"
@@ -64,6 +62,8 @@ namespace {
 const char kRecvChunkStatus[] = "_recvChunkStatus";
 const char kRecvChunkCommit[] = "_recvChunkCommit";
 const char kRecvChunkAbort[] = "_recvChunkAbort";
+
+const int kMaxObjectPerChunk{250000};
 
 bool isInRange(const BSONObj& obj,
                const BSONObj& min,
@@ -89,10 +89,10 @@ BSONObj createRequestWithSessionId(StringData commandName,
  */
 class DeleteNotificationStage final : public PlanStage {
 public:
-    DeleteNotificationStage(MigrationChunkClonerSourceLegacy* cloner, OperationContext* txn)
-        : PlanStage("SHARDING_NOTIFY_DELETE", txn), _cloner(cloner) {}
+    DeleteNotificationStage(MigrationChunkClonerSourceLegacy* cloner, OperationContext* opCtx)
+        : PlanStage("SHARDING_NOTIFY_DELETE", opCtx), _cloner(cloner) {}
 
-    void doInvalidate(OperationContext* txn, const RecordId& dl, InvalidationType type) override {
+    void doInvalidate(OperationContext* opCtx, const RecordId& dl, InvalidationType type) override {
         if (type == INVALIDATION_DELETION) {
             stdx::lock_guard<stdx::mutex> sl(_cloner->_mutex);
             _cloner->_cloneLocs.erase(dl);
@@ -143,16 +143,14 @@ public:
                 stdx::lock_guard<stdx::mutex> sl(_cloner->_mutex);
                 _cloner->_deleted.push_back(_idObj);
                 _cloner->_memoryUsed += _idObj.firstElement().size() + 5;
-                break;
-            }
+            } break;
 
             case 'i':
             case 'u': {
                 stdx::lock_guard<stdx::mutex> sl(_cloner->_mutex);
                 _cloner->_reload.push_back(_idObj);
                 _cloner->_memoryUsed += _idObj.firstElement().size() + 5;
-                break;
-            }
+            } break;
 
             default:
                 MONGO_UNREACHABLE;
@@ -168,56 +166,29 @@ private:
 };
 
 MigrationChunkClonerSourceLegacy::MigrationChunkClonerSourceLegacy(MoveChunkRequest request,
-                                                                   const BSONObj& shardKeyPattern)
+                                                                   const BSONObj& shardKeyPattern,
+                                                                   ConnectionString donorConnStr,
+                                                                   HostAndPort recipientHost)
     : _args(std::move(request)),
       _shardKeyPattern(shardKeyPattern),
       _sessionId(MigrationSessionId::generate(_args.getFromShardId().toString(),
-                                              _args.getToShardId().toString())) {}
+                                              _args.getToShardId().toString())),
+      _donorConnStr(std::move(donorConnStr)),
+      _recipientHost(std::move(recipientHost)) {}
 
 MigrationChunkClonerSourceLegacy::~MigrationChunkClonerSourceLegacy() {
+    invariant(_state == kDone);
     invariant(!_deleteNotifyExec);
 }
 
-Status MigrationChunkClonerSourceLegacy::startClone(OperationContext* txn) {
-    invariant(!txn->lockState()->isLocked());
+Status MigrationChunkClonerSourceLegacy::startClone(OperationContext* opCtx) {
+    invariant(_state == kNew);
+    invariant(!opCtx->lockState()->isLocked());
 
-    // TODO (Kal): This can be changed to cancelClone after 3.4 is released. The reason to only do
-    // internal cleanup in 3.4 is for backwards compatibility with 3.2 nodes, which cannot
-    // differentiate between cancellations for different migration sessions. It is thus possible
-    // that a second migration from different donor, but the same recipient would certainly abort an
-    // already running migration.
-    auto scopedGuard = MakeGuard([&] { _cleanup(txn); });
-
-    // Resolve the donor and recipient shards and their connection string
-
-    {
-        auto donorShardStatus = grid.shardRegistry()->getShard(txn, _args.getFromShardId());
-        if (!donorShardStatus.isOK()) {
-            return donorShardStatus.getStatus();
-        }
-        _donorCS = donorShardStatus.getValue()->getConnString();
-    }
-
-    {
-        auto recipientShardStatus = grid.shardRegistry()->getShard(txn, _args.getToShardId());
-        if (!recipientShardStatus.isOK()) {
-            return recipientShardStatus.getStatus();
-        }
-        auto recipientShard = recipientShardStatus.getValue();
-
-        auto shardHostStatus = recipientShard->getTargeter()->findHostNoWait(
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly});
-        if (!shardHostStatus.isOK()) {
-            return shardHostStatus.getStatus();
-        }
-
-        _recipientHost = std::move(shardHostStatus.getValue());
-    }
-
-    // Prepare the currently available documents
-    Status status = _storeCurrentLocs(txn);
-    if (!status.isOK()) {
-        return status;
+    // Load the ids of the currently available documents
+    auto storeCurrentLocsStatus = _storeCurrentLocs(opCtx);
+    if (!storeCurrentLocsStatus.isOK()) {
+        return storeCurrentLocsStatus;
     }
 
     // Tell the recipient shard to start cloning
@@ -225,8 +196,7 @@ Status MigrationChunkClonerSourceLegacy::startClone(OperationContext* txn) {
     StartChunkCloneRequest::appendAsCommand(&cmdBuilder,
                                             _args.getNss(),
                                             _sessionId,
-                                            _args.getConfigServerCS(),
-                                            _donorCS,
+                                            _donorConnStr,
                                             _args.getFromShardId(),
                                             _args.getToShardId(),
                                             _args.getMinKey(),
@@ -234,19 +204,27 @@ Status MigrationChunkClonerSourceLegacy::startClone(OperationContext* txn) {
                                             _shardKeyPattern.toBSON(),
                                             _args.getSecondaryThrottle());
 
-    auto responseStatus = _callRecipient(cmdBuilder.obj());
-    if (!responseStatus.isOK()) {
-        return responseStatus.getStatus();
+    auto startChunkCloneResponseStatus = _callRecipient(cmdBuilder.obj());
+    if (!startChunkCloneResponseStatus.isOK()) {
+        return startChunkCloneResponseStatus.getStatus();
     }
 
-    scopedGuard.Dismiss();
+    // TODO (Kal): Setting the state to kCloning below means that if cancelClone was called we will
+    // send a cancellation command to the recipient. The reason to limit the cases when we send
+    // cancellation is for backwards compatibility with 3.2 nodes, which cannot differentiate
+    // between cancellations for different migration sessions. It is thus possible that a second
+    // migration from different donor, but the same recipient would certainly abort an already
+    // running migration.
+    stdx::lock_guard<stdx::mutex> sl(_mutex);
+    _state = kCloning;
+
     return Status::OK();
 }
 
 Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
-    OperationContext* txn, Milliseconds maxTimeToWait) {
-    invariant(!txn->lockState()->isLocked());
-    auto scopedGuard = MakeGuard([&] { cancelClone(txn); });
+    OperationContext* opCtx, Milliseconds maxTimeToWait) {
+    invariant(_state == kCloning);
+    invariant(!opCtx->lockState()->isLocked());
 
     const auto startTime = Date_t::now();
 
@@ -254,10 +232,11 @@ Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
     while ((Date_t::now() - startTime) < maxTimeToWait) {
         // Exponential sleep backoff, up to 1024ms. Don't sleep much on the first few iterations,
         // since we want empty chunk migrations to be fast.
-        sleepmillis(1 << std::min(iteration, 10));
+        sleepmillis(1LL << std::min(iteration, 10));
         iteration++;
 
-        auto responseStatus = _callRecipient(BSON(kRecvChunkStatus << _args.getNss().ns()));
+        auto responseStatus = _callRecipient(
+            createRequestWithSessionId(kRecvChunkStatus, _args.getNss(), _sessionId));
         if (!responseStatus.isOK()) {
             return {responseStatus.getStatus().code(),
                     str::stream()
@@ -265,23 +244,24 @@ Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
                         << responseStatus.getStatus().toString()};
         }
 
-        BSONObj res = std::move(responseStatus.getValue());
+        const BSONObj& res = responseStatus.getValue();
 
-        log() << "moveChunk data transfer progress: " << res << " my mem used: " << _memoryUsed;
+        stdx::lock_guard<stdx::mutex> sl(_mutex);
+
+        const std::size_t cloneLocsRemaining = _cloneLocs.size();
+
+        log() << "moveChunk data transfer progress: " << redact(res) << " mem used: " << _memoryUsed
+              << " documents remaining to clone: " << cloneLocsRemaining;
 
         if (res["state"].String() == "steady") {
-            // Ensure all cloned docs have actually been transferred
-            const std::size_t locsRemaining = _cloneLocs.size();
-            if (locsRemaining != 0) {
-                return {
-                    ErrorCodes::OperationIncomplete,
-                    str::stream()
-                        << "cannot enter critical section before all data is cloned, "
-                        << locsRemaining
-                        << " locs were not transferred but to-shard thinks they are all cloned"};
+            if (cloneLocsRemaining != 0) {
+                return {ErrorCodes::OperationIncomplete,
+                        str::stream() << "Unable to enter critical section because the recipient "
+                                         "shard thinks all data is cloned while there are still "
+                                      << cloneLocsRemaining
+                                      << " documents remaining"};
             }
 
-            scopedGuard.Dismiss();
             return Status::OK();
         }
 
@@ -296,9 +276,10 @@ Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
                                   << migrationSessionIdStatus.getStatus().toString()};
         }
 
-        if (res["ns"].str() != _args.getNss().ns() || res["from"].str() != _donorCS.toString() ||
-            !res["min"].isABSONObj() || res["min"].Obj().woCompare(_args.getMinKey()) != 0 ||
-            !res["max"].isABSONObj() || res["max"].Obj().woCompare(_args.getMaxKey()) != 0 ||
+        if (res["ns"].str() != _args.getNss().ns() ||
+            res["from"].str() != _donorConnStr.toString() || !res["min"].isABSONObj() ||
+            res["min"].Obj().woCompare(_args.getMinKey()) != 0 || !res["max"].isABSONObj() ||
+            res["max"].Obj().woCompare(_args.getMaxKey()) != 0 ||
             !_sessionId.matches(migrationSessionIdStatus.getValue())) {
             // This can happen when the destination aborted the migration and received another
             // recvChunk before this thread sees the transition to the abort state. This is
@@ -315,56 +296,55 @@ Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
                     "Aborting migration because of high memory usage"};
         }
 
-        Status interruptStatus = txn->checkForInterruptNoAssert();
+        Status interruptStatus = opCtx->checkForInterruptNoAssert();
         if (!interruptStatus.isOK()) {
             return interruptStatus;
         }
     }
 
-    scopedGuard.Dismiss();
     return {ErrorCodes::ExceededTimeLimit, "Timed out waiting for the cloner to catch up"};
 }
 
-Status MigrationChunkClonerSourceLegacy::commitClone(OperationContext* txn) {
-    invariant(!txn->lockState()->isLocked());
-
-    {
-        stdx::lock_guard<stdx::mutex> sl(_mutex);
-        invariant(!_cloneCompleted);
-    }
+Status MigrationChunkClonerSourceLegacy::commitClone(OperationContext* opCtx) {
+    invariant(_state == kCloning);
+    invariant(!opCtx->lockState()->isLocked());
 
     auto responseStatus =
         _callRecipient(createRequestWithSessionId(kRecvChunkCommit, _args.getNss(), _sessionId));
     if (responseStatus.isOK()) {
-        _cleanup(txn);
+        _cleanup(opCtx);
         return Status::OK();
     }
 
-    cancelClone(txn);
+    cancelClone(opCtx);
     return responseStatus.getStatus();
 }
 
-void MigrationChunkClonerSourceLegacy::cancelClone(OperationContext* txn) {
-    invariant(!txn->lockState()->isLocked());
+void MigrationChunkClonerSourceLegacy::cancelClone(OperationContext* opCtx) {
+    invariant(!opCtx->lockState()->isLocked());
 
-    {
-        stdx::lock_guard<stdx::mutex> sl(_mutex);
-        if (_cloneCompleted)
-            return;
+    switch (_state) {
+        case kDone:
+            break;
+        case kCloning:
+            _callRecipient(createRequestWithSessionId(kRecvChunkAbort, _args.getNss(), _sessionId));
+        // Intentional fall through
+        case kNew:
+            _cleanup(opCtx);
+            break;
+        default:
+            MONGO_UNREACHABLE;
     }
-
-    _callRecipient(createRequestWithSessionId(kRecvChunkAbort, _args.getNss(), _sessionId));
-    _cleanup(txn);
 }
 
-bool MigrationChunkClonerSourceLegacy::isDocumentInMigratingChunk(OperationContext* txn,
+bool MigrationChunkClonerSourceLegacy::isDocumentInMigratingChunk(OperationContext* opCtx,
                                                                   const BSONObj& doc) {
     return isInRange(doc, _args.getMinKey(), _args.getMaxKey(), _shardKeyPattern);
 }
 
-void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* txn,
+void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* opCtx,
                                                   const BSONObj& insertedDoc) {
-    dassert(txn->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
+    dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
 
     BSONElement idElement = insertedDoc["_id"];
     if (idElement.eoo()) {
@@ -377,12 +357,12 @@ void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* txn,
         return;
     }
 
-    txn->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'i'));
+    opCtx->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'i'));
 }
 
-void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* txn,
+void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* opCtx,
                                                   const BSONObj& updatedDoc) {
-    dassert(txn->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
+    dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
 
     BSONElement idElement = updatedDoc["_id"];
     if (idElement.eoo()) {
@@ -395,12 +375,12 @@ void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* txn,
         return;
     }
 
-    txn->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'u'));
+    opCtx->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'u'));
 }
 
-void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* txn,
+void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* opCtx,
                                                   const BSONObj& deletedDocId) {
-    dassert(txn->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
+    dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IX));
 
     BSONElement idElement = deletedDocId["_id"];
     if (idElement.eoo()) {
@@ -409,7 +389,7 @@ void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* txn,
         return;
     }
 
-    txn->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'd'));
+    opCtx->recoveryUnit()->registerChange(new LogOpForShardingHandler(this, idElement.wrap(), 'd'));
 }
 
 uint64_t MigrationChunkClonerSourceLegacy::getCloneBatchBufferAllocationSize() {
@@ -419,13 +399,13 @@ uint64_t MigrationChunkClonerSourceLegacy::getCloneBatchBufferAllocationSize() {
                     _averageObjectSizeForCloneLocs * _cloneLocs.size());
 }
 
-Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* txn,
+Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* opCtx,
                                                         Collection* collection,
                                                         BSONArrayBuilder* arrBuilder) {
-    dassert(txn->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IS));
+    dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IS));
 
-    ElapsedTracker tracker(txn->getServiceContext()->getFastClockSource(),
-                           internalQueryExecYieldIterations,
+    ElapsedTracker tracker(opCtx->getServiceContext()->getFastClockSource(),
+                           internalQueryExecYieldIterations.load(),
                            Milliseconds(internalQueryExecYieldPeriodMS.load()));
 
     stdx::lock_guard<stdx::mutex> sl(_mutex);
@@ -440,7 +420,7 @@ Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* txn,
         }
 
         Snapshotted<BSONObj> doc;
-        if (collection->findDoc(txn, *it, &doc)) {
+        if (collection->findDoc(opCtx, *it, &doc)) {
             // Use the builder size instead of accumulating the document sizes directly so that we
             // take into consideration the overhead of BSONArray indices.
             if (arrBuilder->arrSize() &&
@@ -454,13 +434,19 @@ Status MigrationChunkClonerSourceLegacy::nextCloneBatch(OperationContext* txn,
 
     _cloneLocs.erase(_cloneLocs.begin(), it);
 
+    // If we have drained all the cloned data, there is no need to keep the delete notify executor
+    // around
+    if (_cloneLocs.empty()) {
+        _deleteNotifyExec.reset();
+    }
+
     return Status::OK();
 }
 
-Status MigrationChunkClonerSourceLegacy::nextModsBatch(OperationContext* txn,
+Status MigrationChunkClonerSourceLegacy::nextModsBatch(OperationContext* opCtx,
                                                        Database* db,
                                                        BSONObjBuilder* builder) {
-    dassert(txn->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IS));
+    dassert(opCtx->lockState()->isCollectionLockedForMode(_args.getNss().ns(), MODE_IS));
 
     stdx::lock_guard<stdx::mutex> sl(_mutex);
 
@@ -469,24 +455,25 @@ Status MigrationChunkClonerSourceLegacy::nextModsBatch(OperationContext* txn,
 
     long long docSizeAccumulator = 0;
 
-    _xfer(txn, db, &_deleted, builder, "deleted", &docSizeAccumulator, false);
-    _xfer(txn, db, &_reload, builder, "reload", &docSizeAccumulator, true);
+    _xfer(opCtx, db, &_deleted, builder, "deleted", &docSizeAccumulator, false);
+    _xfer(opCtx, db, &_reload, builder, "reload", &docSizeAccumulator, true);
 
     builder->append("size", docSizeAccumulator);
 
     return Status::OK();
 }
 
-void MigrationChunkClonerSourceLegacy::_cleanup(OperationContext* txn) {
+void MigrationChunkClonerSourceLegacy::_cleanup(OperationContext* opCtx) {
     {
         stdx::lock_guard<stdx::mutex> sl(_mutex);
-        _cloneCompleted = true;
+        _state = kDone;
+        _reload.clear();
+        _deleted.clear();
     }
 
-    ScopedTransaction scopedXact(txn, MODE_IS);
-    AutoGetCollection autoColl(txn, _args.getNss(), MODE_IS);
-
     if (_deleteNotifyExec) {
+        AutoGetCollection autoColl(opCtx, _args.getNss(), MODE_IS);
+
         _deleteNotifyExec.reset();
     }
 }
@@ -495,7 +482,7 @@ StatusWith<BSONObj> MigrationChunkClonerSourceLegacy::_callRecipient(const BSONO
     executor::RemoteCommandResponse responseStatus(
         Status{ErrorCodes::InternalError, "Uninitialized value"});
 
-    auto executor = grid.getExecutorPool()->getArbitraryExecutor();
+    auto executor = grid.getExecutorPool()->getFixedExecutor();
     auto scheduleStatus = executor->scheduleRemoteCommand(
         executor::RemoteCommandRequest(_recipientHost, "admin", cmdObj, nullptr),
         [&responseStatus](const executor::TaskExecutor::RemoteCommandCallbackArgs& args) {
@@ -521,9 +508,8 @@ StatusWith<BSONObj> MigrationChunkClonerSourceLegacy::_callRecipient(const BSONO
     return responseStatus.data.getOwned();
 }
 
-Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn) {
-    ScopedTransaction scopedXact(txn, MODE_IS);
-    AutoGetCollection autoColl(txn, _args.getNss(), MODE_IS);
+Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* opCtx) {
+    AutoGetCollection autoColl(opCtx, _args.getNss(), MODE_IS);
 
     Collection* const collection = autoColl.getCollection();
     if (!collection) {
@@ -533,8 +519,8 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
 
     // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore, any
     // multi-key index prefixed by shard key cannot be multikey over the shard key fields.
-    IndexDescriptor* idx =
-        collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn,
+    IndexDescriptor* const idx =
+        collection->getIndexCatalog()->findShardKeyPrefixedIndex(opCtx,
                                                                  _shardKeyPattern.toBSON(),
                                                                  false);  // requireSingleKey
     if (!idx) {
@@ -545,23 +531,18 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
     }
 
     // Install the stage, which will listen for notifications on the collection
-    {
-        stdx::lock_guard<stdx::mutex> sl(_mutex);
-
-        invariant(!_deleteNotifyExec);
-
-        // Takes ownership of 'ws' and 'dns'.
-        auto statusWithPlanExecutor =
-            PlanExecutor::make(txn,
-                               stdx::make_unique<WorkingSet>(),
-                               stdx::make_unique<DeleteNotificationStage>(this, txn),
-                               collection,
-                               PlanExecutor::YIELD_MANUAL);
-        invariant(statusWithPlanExecutor.isOK());
-
-        _deleteNotifyExec = std::move(statusWithPlanExecutor.getValue());
-        _deleteNotifyExec->registerExec(collection);
+    auto statusWithDeleteNotificationPlanExecutor =
+        PlanExecutor::make(opCtx,
+                           stdx::make_unique<WorkingSet>(),
+                           stdx::make_unique<DeleteNotificationStage>(this, opCtx),
+                           collection,
+                           PlanExecutor::YIELD_MANUAL);
+    if (!statusWithDeleteNotificationPlanExecutor.isOK()) {
+        return statusWithDeleteNotificationPlanExecutor.getStatus();
     }
+
+    _deleteNotifyExec = std::move(statusWithDeleteNotificationPlanExecutor.getValue());
+    _deleteNotifyExec->registerExec(collection);
 
     // Assume both min and max non-empty, append MinKey's to make them fit chosen index
     const KeyPattern kp(idx->keyPattern());
@@ -570,7 +551,7 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
     BSONObj max = Helpers::toKeyFormat(kp.extendRangeBound(_args.getMaxKey(), false));
 
     std::unique_ptr<PlanExecutor> exec(
-        InternalPlanner::indexScan(txn,
+        InternalPlanner::indexScan(opCtx,
                                    collection,
                                    idx,
                                    min,
@@ -588,15 +569,15 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
     unsigned long long maxRecsWhenFull;
     long long avgRecSize;
 
-    const long long totalRecs = collection->numRecords(txn);
+    const long long totalRecs = collection->numRecords(opCtx);
     if (totalRecs > 0) {
-        avgRecSize = collection->dataSize(txn) / totalRecs;
+        avgRecSize = collection->dataSize(opCtx) / totalRecs;
         maxRecsWhenFull = _args.getMaxChunkSizeBytes() / avgRecSize;
-        maxRecsWhenFull = std::min((unsigned long long)(Chunk::MaxObjectPerChunk + 1),
+        maxRecsWhenFull = std::min((unsigned long long)(kMaxObjectPerChunk + 1),
                                    130 * maxRecsWhenFull / 100 /* slack */);
     } else {
         avgRecSize = 0;
-        maxRecsWhenFull = Chunk::MaxObjectPerChunk + 1;
+        maxRecsWhenFull = kMaxObjectPerChunk + 1;
     }
 
     // Do a full traversal of the chunk and don't stop even if we think it is a large chunk we want
@@ -626,7 +607,7 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
                               << WorkingSetCommon::toStatusString(obj)};
     }
 
-    exec.reset();
+    const uint64_t collectionAverageObjectSize = collection->averageObjectSize(opCtx);
 
     if (isLargeChunk) {
         return {
@@ -648,12 +629,13 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* txn
                           << _args.getMaxKey()};
     }
 
-    _averageObjectSizeForCloneLocs = static_cast<uint64_t>(collection->averageObjectSize(txn) + 12);
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    _averageObjectSizeForCloneLocs = collectionAverageObjectSize + 12;
 
     return Status::OK();
 }
 
-void MigrationChunkClonerSourceLegacy::_xfer(OperationContext* txn,
+void MigrationChunkClonerSourceLegacy::_xfer(OperationContext* opCtx,
                                              Database* db,
                                              std::list<BSONObj>* docIdList,
                                              BSONObjBuilder* builder,
@@ -675,7 +657,7 @@ void MigrationChunkClonerSourceLegacy::_xfer(OperationContext* txn,
         BSONObj idDoc = *docIdIter;
         if (explode) {
             BSONObj fullDoc;
-            if (Helpers::findById(txn, db, ns.c_str(), idDoc, fullDoc)) {
+            if (Helpers::findById(opCtx, db, ns.c_str(), idDoc, fullDoc)) {
                 arr.append(fullDoc);
                 *sizeAccumulator += fullDoc.objsize();
             }

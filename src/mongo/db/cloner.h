@@ -62,14 +62,14 @@ public:
      *              that are cloned.  When opts.createCollections is true, this parameter is
      *              ignored and the collection list is fetched from the remote via _conn.
      */
-    Status copyDb(OperationContext* txn,
+    Status copyDb(OperationContext* opCtx,
                   const std::string& toDBName,
                   const std::string& masterHost,
                   const CloneOptions& opts,
                   std::set<std::string>* clonedColls,
                   std::vector<BSONObj> collectionsToClone = std::vector<BSONObj>());
 
-    bool copyCollection(OperationContext* txn,
+    bool copyCollection(OperationContext* opCtx,
                         const std::string& ns,
                         const BSONObj& query,
                         std::string& errmsg,
@@ -81,28 +81,39 @@ public:
     StatusWith<std::vector<BSONObj>> filterCollectionsForClone(
         const CloneOptions& opts, const std::list<BSONObj>& initialCollections);
 
-    // Executes 'createCollection' for each collection specified in 'collections', in 'dbName'.
-    Status createCollectionsForDb(OperationContext* txn,
-                                  const std::vector<BSONObj>& collections,
+    struct CreateCollectionParams {
+        std::string collectionName;
+        BSONObj collectionInfo;
+        BSONObj idIndexSpec;
+    };
+
+    // Executes 'createCollection' for each collection described in 'createCollectionParams', in
+    // 'dbName'.
+    Status createCollectionsForDb(OperationContext* opCtx,
+                                  const std::vector<CreateCollectionParams>& createCollectionParams,
                                   const std::string& dbName);
 
+    /*
+     * Returns the _id index spec from 'indexSpecs', or an empty BSONObj if none is found.
+     */
+    static BSONObj getIdIndexSpec(const std::list<BSONObj>& indexSpecs);
+
 private:
-    void copy(OperationContext* txn,
+    void copy(OperationContext* opCtx,
               const std::string& toDBName,
               const NamespaceString& from_ns,
               const BSONObj& from_opts,
+              const BSONObj& from_id_index,
               const NamespaceString& to_ns,
-              bool masterSameProcess,
               const CloneOptions& opts,
               Query q);
 
-    void copyIndexes(OperationContext* txn,
+    void copyIndexes(OperationContext* opCtx,
                      const std::string& toDBName,
                      const NamespaceString& from_ns,
                      const BSONObj& from_opts,
-                     const NamespaceString& to_ns,
-                     bool masterSameProcess,
-                     bool slaveOk);
+                     const std::list<BSONObj>& from_indexes,
+                     const NamespaceString& to_ns);
 
     struct Fun;
     std::unique_ptr<DBClientBase> _conn;

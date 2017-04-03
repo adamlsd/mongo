@@ -355,7 +355,7 @@ __wt_cache_eviction_check(WT_SESSION_IMPL *session, bool busy, bool *didworkp)
 	txn_state = WT_SESSION_TXN_STATE(session);
 	busy = busy || txn_state->id != WT_TXN_NONE ||
 	    session->nhazard > 0 ||
-	    (txn_state->snap_min != WT_TXN_NONE &&
+	    (txn_state->pinned_id != WT_TXN_NONE &&
 	    txn_global->current != txn_global->oldest_id);
 
 	/*
@@ -364,7 +364,7 @@ __wt_cache_eviction_check(WT_SESSION_IMPL *session, bool busy, bool *didworkp)
 	 * block eviction), we don't want to highjack the thread for eviction.
 	 */
 	if (F_ISSET(session, WT_SESSION_NO_EVICTION |
-	    WT_SESSION_LOCKED_HANDLE_LIST | WT_SESSION_LOCKED_SCHEMA))
+	    WT_SESSION_LOCKED_HANDLE_LIST_WRITE | WT_SESSION_LOCKED_SCHEMA))
 		return (0);
 
 	/* In memory configurations don't block when the cache is full. */

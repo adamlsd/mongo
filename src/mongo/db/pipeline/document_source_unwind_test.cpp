@@ -39,9 +39,10 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/dependencies.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_unwind.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
-#include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/db/service_context.h"
@@ -69,7 +70,8 @@ public:
     CheckResultsBase()
         : _queryServiceContext(stdx::make_unique<QueryTestServiceContext>()),
           _opCtx(_queryServiceContext->makeOperationContext()),
-          _ctx(new ExpressionContext(_opCtx.get(), AggregationRequest(NamespaceString(ns), {}))) {}
+          _ctx(new ExpressionContextForTest(_opCtx.get(),
+                                            AggregationRequest(NamespaceString(ns), {}))) {}
 
     virtual ~CheckResultsBase() {}
 
@@ -140,7 +142,7 @@ protected:
         return expectedIndexedResultSetString();
     }
 
-    intrusive_ptr<ExpressionContext> ctx() const {
+    intrusive_ptr<ExpressionContextForTest> ctx() const {
         return _ctx;
     }
 
@@ -247,7 +249,7 @@ private:
 
     unique_ptr<QueryTestServiceContext> _queryServiceContext;
     ServiceContext::UniqueOperationContext _opCtx;
-    intrusive_ptr<ExpressionContext> _ctx;
+    intrusive_ptr<ExpressionContextForTest> _ctx;
     intrusive_ptr<DocumentSourceUnwind> _unwind;
 };
 
@@ -472,8 +474,8 @@ class SeveralMoreDocuments : public CheckResultsBase {
     deque<DocumentSource::GetNextResult> inputData() override {
         return {DOC("_id" << 0 << "a" << BSONNULL),
                 DOC("_id" << 1),
-                DOC("_id" << 2 << "a" << DOC_ARRAY("a"
-                                                   << "b")),
+                DOC("_id" << 2 << "a" << DOC_ARRAY("a"_sd
+                                                   << "b"_sd)),
                 DOC("_id" << 3),
                 DOC("_id" << 4 << "a" << DOC_ARRAY(1 << 2 << 3)),
                 DOC("_id" << 5 << "a" << DOC_ARRAY(4 << 5 << 6)),
@@ -715,6 +717,31 @@ TEST_F(UnwindStageTest, ShouldPropagatePauses) {
 
     ASSERT_TRUE(unwind->getNext().isEOF());
     ASSERT_TRUE(unwind->getNext().isEOF());
+}
+
+TEST_F(UnwindStageTest, UnwindOnlyModifiesUnwoundPathWhenNotIncludingIndex) {
+    const bool includeNullIfEmptyOrMissing = false;
+    const boost::optional<std::string> includeArrayIndex = boost::none;
+    auto unwind = DocumentSourceUnwind::create(
+        getExpCtx(), "array", includeNullIfEmptyOrMissing, includeArrayIndex);
+
+    auto modifiedPaths = unwind->getModifiedPaths();
+    ASSERT(modifiedPaths.type == DocumentSource::GetModPathsReturn::Type::kFiniteSet);
+    ASSERT_EQUALS(1U, modifiedPaths.paths.size());
+    ASSERT_EQUALS(1U, modifiedPaths.paths.count("array"));
+}
+
+TEST_F(UnwindStageTest, UnwindIncludesIndexPathWhenIncludingIndex) {
+    const bool includeNullIfEmptyOrMissing = false;
+    const boost::optional<std::string> includeArrayIndex = std::string("arrIndex");
+    auto unwind = DocumentSourceUnwind::create(
+        getExpCtx(), "array", includeNullIfEmptyOrMissing, includeArrayIndex);
+
+    auto modifiedPaths = unwind->getModifiedPaths();
+    ASSERT(modifiedPaths.type == DocumentSource::GetModPathsReturn::Type::kFiniteSet);
+    ASSERT_EQUALS(2U, modifiedPaths.paths.size());
+    ASSERT_EQUALS(1U, modifiedPaths.paths.count("array"));
+    ASSERT_EQUALS(1U, modifiedPaths.paths.count("arrIndex"));
 }
 
 //

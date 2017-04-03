@@ -34,14 +34,15 @@
 
 #include <vector>
 
+#include "mongo/db/assemble_response.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmessage.h"
-#include "mongo/db/instance.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/service_entry_point_utils.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/ticket.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/message.h"
@@ -92,16 +93,19 @@ using transport::TransportLayer;
 
 ServiceEntryPointMongod::ServiceEntryPointMongod(TransportLayer* tl) : _tl(tl) {}
 
-void ServiceEntryPointMongod::startSession(Session&& session) {
-    launchWrappedServiceEntryWorkerThread(std::move(session), [this](Session* session) {
-        _nWorkers.fetchAndAdd(1);
-        auto guard = MakeGuard([&] { _nWorkers.fetchAndSubtract(1); });
+void ServiceEntryPointMongod::startSession(transport::SessionHandle session) {
+    // Pass ownership of the transport::SessionHandle into our worker thread. When this
+    // thread exits, the session will end.
+    launchWrappedServiceEntryWorkerThread(
+        std::move(session), [this](const transport::SessionHandle& session) {
+            _nWorkers.fetchAndAdd(1);
+            auto guard = MakeGuard([&] { _nWorkers.fetchAndSubtract(1); });
 
-        _sessionLoop(session);
-    });
+            _sessionLoop(session);
+        });
 }
 
-void ServiceEntryPointMongod::_sessionLoop(Session* session) {
+void ServiceEntryPointMongod::_sessionLoop(const transport::SessionHandle& session) {
     Message inMessage;
     bool inExhaust = false;
     int64_t counter = 0;
@@ -110,7 +114,10 @@ void ServiceEntryPointMongod::_sessionLoop(Session* session) {
         // 1. Source a Message from the client (unless we are exhausting)
         if (!inExhaust) {
             inMessage.reset();
-            auto status = session->sourceMessage(&inMessage).wait();
+            auto status = [&] {
+                MONGO_IDLE_THREAD_BLOCK;
+                return session->sourceMessage(&inMessage).wait();
+            }();
 
             if (ErrorCodes::isInterruption(status.code()) ||
                 ErrorCodes::isNetworkError(status.code())) {

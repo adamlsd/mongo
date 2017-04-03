@@ -28,7 +28,7 @@
 
 import time
 import wiredtiger, wttest
-from helper import simple_populate
+from wtdataset import SimpleDataSet
 
 # test_reconfig01.py
 #    Smoke-test the connection reconfiguration operations.
@@ -64,13 +64,25 @@ class test_reconfig01(wttest.WiredTigerTestCase):
         # same ops_max of 512 and thread of 8.
         self.conn.reconfigure("async=(enabled=true)")
 
+    def test_reconfig_eviction(self):
+        # Increase the max number of running threads (default 8).
+        self.conn.reconfigure("eviction=(threads_max=10)")
+        # Increase the min number of running threads (default 1).
+        self.conn.reconfigure("eviction=(threads_min=5)")
+        # Decrease the max number of running threads.
+        self.conn.reconfigure("eviction=(threads_max=7)")
+        # Decrease the min number of running threads.
+        self.conn.reconfigure("eviction=(threads_min=2)")
+        # Set min and max the same.
+        self.conn.reconfigure("eviction=(threads_min=6,threads_max=6)")
+
     def test_reconfig_lsm_manager(self):
         # We create and populate a tiny LSM so that we can start off with
         # the LSM threads running and change the numbers of threads.
         # Take all the defaults.
         uri = "lsm:test_reconfig"
         nrecs = 10
-        simple_populate(self, uri, 'key_format=S', nrecs)
+        SimpleDataSet(self, uri, nrecs).populate()
         # Sleep to make sure all threads are started.
         time.sleep(2)
         # Now that an LSM tree exists, reconfigure LSM manager threads.
@@ -78,7 +90,7 @@ class test_reconfig01(wttest.WiredTigerTestCase):
         self.conn.reconfigure("lsm_manager=(worker_thread_max=10)")
         # Generate some work
         nrecs = 20
-        simple_populate(self, uri, 'key_format=S', nrecs)
+        SimpleDataSet(self, uri, nrecs).populate()
         # Now reconfigure fewer threads.
         self.conn.reconfigure("lsm_manager=(worker_thread_max=3)")
 

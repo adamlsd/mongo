@@ -40,14 +40,14 @@ const OperationContext::Decoration<OperationShardingState> shardingMetadataDecor
     OperationContext::declareDecoration<OperationShardingState>();
 
 // Max time to wait for the migration critical section to complete
-const Microseconds kMaxWaitForMigrationCriticalSection = Minutes(5);
+const Milliseconds kMaxWaitForMigrationCriticalSection = Minutes(5);
 
 }  // namespace
 
 OperationShardingState::OperationShardingState() = default;
 
-OperationShardingState& OperationShardingState::get(OperationContext* txn) {
-    return shardingMetadataDecoration(txn);
+OperationShardingState& OperationShardingState::get(OperationContext* opCtx) {
+    return shardingMetadataDecoration(opCtx);
 }
 
 void OperationShardingState::initializeShardVersion(NamespaceString nss,
@@ -63,6 +63,11 @@ void OperationShardingState::initializeShardVersion(NamespaceString nss,
     ChunkVersion newVersion = ChunkVersion::fromBSON(versionArr, &hasVersion);
 
     if (!hasVersion) {
+        return;
+    }
+
+    if (nss.isSystemDotIndexes()) {
+        setShardVersion(std::move(nss), ChunkVersion::IGNORED());
         return;
     }
 
@@ -84,6 +89,7 @@ ChunkVersion OperationShardingState::getShardVersion(const NamespaceString& nss)
 void OperationShardingState::setShardVersion(NamespaceString nss, ChunkVersion newVersion) {
     // This currently supports only setting the shard version for one namespace.
     invariant(!_hasVersion || _ns == nss);
+    invariant(!nss.isSystemDotIndexes() || ChunkVersion::isIgnoredVersion(newVersion));
 
     _ns = std::move(nss);
     _shardVersion = std::move(newVersion);
@@ -95,15 +101,15 @@ void OperationShardingState::unsetShardVersion(NamespaceString nss) {
     _clear();
 }
 
-bool OperationShardingState::waitForMigrationCriticalSectionSignal(OperationContext* txn) {
+bool OperationShardingState::waitForMigrationCriticalSectionSignal(OperationContext* opCtx) {
     // Must not block while holding a lock
-    invariant(!txn->lockState()->isLocked());
+    invariant(!opCtx->lockState()->isLocked());
 
     if (_migrationCriticalSectionSignal) {
         _migrationCriticalSectionSignal->waitFor(
-            txn,
-            txn->hasDeadline()
-                ? std::min(txn->getRemainingMaxTimeMicros(), kMaxWaitForMigrationCriticalSection)
+            opCtx,
+            opCtx->hasDeadline()
+                ? std::min(opCtx->getRemainingMaxTimeMillis(), kMaxWaitForMigrationCriticalSection)
                 : kMaxWaitForMigrationCriticalSection);
         _migrationCriticalSectionSignal = nullptr;
         return true;
@@ -124,10 +130,10 @@ void OperationShardingState::_clear() {
     _ns = NamespaceString();
 }
 
-OperationShardingState::IgnoreVersioningBlock::IgnoreVersioningBlock(OperationContext* txn,
+OperationShardingState::IgnoreVersioningBlock::IgnoreVersioningBlock(OperationContext* opCtx,
                                                                      const NamespaceString& ns)
-    : _txn(txn), _ns(ns) {
-    auto& oss = OperationShardingState::get(txn);
+    : _opCtx(opCtx), _ns(ns) {
+    auto& oss = OperationShardingState::get(opCtx);
     _hadOriginalVersion = oss._hasVersion;
     if (_hadOriginalVersion) {
         _originalVersion = oss.getShardVersion(ns);
@@ -136,7 +142,7 @@ OperationShardingState::IgnoreVersioningBlock::IgnoreVersioningBlock(OperationCo
 }
 
 OperationShardingState::IgnoreVersioningBlock::~IgnoreVersioningBlock() {
-    auto& oss = OperationShardingState::get(_txn);
+    auto& oss = OperationShardingState::get(_opCtx);
     invariant(ChunkVersion::isIgnoredVersion(oss.getShardVersion(_ns)));
     if (_hadOriginalVersion) {
         oss.setShardVersion(_ns, _originalVersion);

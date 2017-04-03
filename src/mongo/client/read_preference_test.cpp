@@ -36,7 +36,7 @@ namespace {
 
 using namespace mongo;
 
-static const Milliseconds minMaxStaleness = ReadPreferenceSetting::kMinimalMaxStalenessValue;
+static const Seconds kMinMaxStaleness = ReadPreferenceSetting::kMinimalMaxStalenessValue;
 
 void checkParse(const BSONObj& rpsObj, const ReadPreferenceSetting& expected) {
     const auto swRps = ReadPreferenceSetting::fromBSON(rpsObj);
@@ -68,27 +68,27 @@ TEST(ReadPreferenceSetting, ParseValid) {
                                                             << "ny")))));
     checkParse(BSON("mode"
                     << "secondary"
-                    << "maxStalenessMS"
-                    << minMaxStaleness.count()),
-               ReadPreferenceSetting(ReadPreference::SecondaryOnly, minMaxStaleness));
+                    << "maxStalenessSeconds"
+                    << kMinMaxStaleness.count()),
+               ReadPreferenceSetting(ReadPreference::SecondaryOnly, kMinMaxStaleness));
 
     checkParse(BSON("mode"
                     << "secondary"
-                    << "maxStalenessMS"
+                    << "maxStalenessSeconds"
                     << 0),
-               ReadPreferenceSetting(ReadPreference::SecondaryOnly, Milliseconds(0)));
+               ReadPreferenceSetting(ReadPreference::SecondaryOnly, Seconds(0)));
 
     checkParse(BSON("mode"
                     << "secondary"
                     << "tags"
                     << BSON_ARRAY(BSON("dc"
                                        << "ny"))
-                    << "maxStalenessMS"
-                    << minMaxStaleness.count()),
+                    << "maxStalenessSeconds"
+                    << kMinMaxStaleness.count()),
                ReadPreferenceSetting(ReadPreference::SecondaryOnly,
                                      TagSet(BSON_ARRAY(BSON("dc"
                                                             << "ny"))),
-                                     minMaxStaleness));
+                                     kMinMaxStaleness));
 }
 
 void checkParseFails(const BSONObj& rpsObj) {
@@ -107,14 +107,14 @@ TEST(ReadPreferenceSetting, NonEquality) {
                                          << "ca")
                                     << BSON("foo"
                                             << "bar")));
-    auto rps = ReadPreferenceSetting(ReadPreference::Nearest, tagSet, minMaxStaleness);
+    auto rps = ReadPreferenceSetting(ReadPreference::Nearest, tagSet, kMinMaxStaleness);
 
     auto unexpected1 =
-        ReadPreferenceSetting(ReadPreference::Nearest, TagSet::primaryOnly(), minMaxStaleness);
+        ReadPreferenceSetting(ReadPreference::Nearest, TagSet::primaryOnly(), kMinMaxStaleness);
     ASSERT_FALSE(rps.equals(unexpected1));
 
     auto unexpected2 = ReadPreferenceSetting(
-        ReadPreference::Nearest, tagSet, Milliseconds(minMaxStaleness.count() + 1));
+        ReadPreference::Nearest, tagSet, Seconds(kMinMaxStaleness.count() + 1));
     ASSERT_FALSE(rps.equals(unexpected2));
 }
 
@@ -139,36 +139,36 @@ TEST(ReadPreferenceSetting, ParseInvalid) {
                          << "tags"
                          << "bad"));
 
-    // maxStalenessMS is negative
+    // maxStalenessSeconds is negative
     checkParseFails(BSON("mode"
                          << "secondary"
-                         << "maxStalenessMS"
+                         << "maxStalenessSeconds"
                          << -1));
 
-    // maxStalenessMS is NaN
+    // maxStalenessSeconds is NaN
     checkParseFails(BSON("mode"
                          << "secondary"
-                         << "maxStalenessMS"
+                         << "maxStalenessSeconds"
                          << "ONE"));
 
-    // maxStalenessMS and primary
+    // maxStalenessSeconds and primary
     checkParseFails(BSON("mode"
                          << "primary"
-                         << "maxStalenessMS"
-                         << minMaxStaleness.count()));
+                         << "maxStalenessSeconds"
+                         << kMinMaxStaleness.count()));
 
-    // maxStalenessMS is less than min
+    // maxStalenessSeconds is less than min
     checkParseFailsWithError(BSON("mode"
                                   << "primary"
-                                  << "maxStalenessMS"
-                                  << Milliseconds(minMaxStaleness.count() - 1).count()),
+                                  << "maxStalenessSeconds"
+                                  << Seconds(kMinMaxStaleness.count() - 1).count()),
                              ErrorCodes::MaxStalenessOutOfRange);
 
-    // maxStalenessMS is greater than max
+    // maxStalenessSeconds is greater than max
     checkParseFails(BSON("mode"
                          << "secondary"
-                         << "maxStalenessMS"
-                         << Milliseconds::max().count()));
+                         << "maxStalenessSeconds"
+                         << Seconds::max().count()));
 }
 
 void checkRoundtrip(const ReadPreferenceSetting& rps) {
@@ -198,7 +198,7 @@ TEST(ReadPreferenceSetting, Roundtrip) {
                                                                 << "ca")
                                                            << BSON("foo"
                                                                    << "bar"))),
-                                         minMaxStaleness));
+                                         kMinMaxStaleness));
 }
 
 }  // namespace

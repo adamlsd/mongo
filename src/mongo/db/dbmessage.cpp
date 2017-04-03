@@ -177,7 +177,7 @@ OpQueryReplyBuilder::OpQueryReplyBuilder() : _buffer(32768) {
     _buffer.skip(sizeof(QueryResult::Value));
 }
 
-void OpQueryReplyBuilder::send(transport::Session* session,
+void OpQueryReplyBuilder::send(const transport::SessionHandle& session,
                                int queryResultFlags,
                                const Message& requestMsg,
                                int nReturned,
@@ -192,7 +192,8 @@ void OpQueryReplyBuilder::send(transport::Session* session,
     uassertStatusOK(session->sinkMessage(response).wait());
 }
 
-void OpQueryReplyBuilder::sendCommandReply(transport::Session* session, const Message& requestMsg) {
+void OpQueryReplyBuilder::sendCommandReply(const transport::SessionHandle& session,
+                                           const Message& requestMsg) {
     send(session, /*queryFlags*/ 0, requestMsg, /*nReturned*/ 1);
 }
 
@@ -209,8 +210,8 @@ void OpQueryReplyBuilder::putInMessage(
 }
 
 void replyToQuery(int queryResultFlags,
-                  transport::Session* session,
-                  Message& requestMsg,
+                  const transport::SessionHandle& session,
+                  const Message& requestMsg,
                   const void* data,
                   int size,
                   int nReturned,
@@ -222,8 +223,8 @@ void replyToQuery(int queryResultFlags,
 }
 
 void replyToQuery(int queryResultFlags,
-                  transport::Session* session,
-                  Message& requestMsg,
+                  const transport::SessionHandle& session,
+                  const Message& requestMsg,
                   const BSONObj& responseObj) {
     replyToQuery(queryResultFlags,
                  session,
@@ -233,7 +234,7 @@ void replyToQuery(int queryResultFlags,
                  1);
 }
 
-void replyToQuery(int queryResultFlags, Message& m, DbResponse& dbresponse, BSONObj obj) {
+void replyToQuery(int queryResultFlags, const Message& m, DbResponse& dbresponse, BSONObj obj) {
     Message resp;
     replyToQuery(queryResultFlags, resp, obj);
     dbresponse.response = std::move(resp);

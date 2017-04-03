@@ -63,17 +63,6 @@ createCollectionWithData = function(db, collectionName, dataGenerator) {
     return db.getCollection(collectionName);
 };
 
-// MongoDB 3.4 introduces new fields into the listCollections result document. This function
-// injects expected 3.4 values into a 3.2 document to allow for object comparison.
-// TODO: Remove this check post-3.4 release.
-var injectExpected34FieldsIf32 = function(collectionInfo, dbVersion) {
-    if (dbVersion.startsWith("3.2")) {
-        return Object.extend({type: "collection", info: {readOnly: false}}, collectionInfo);
-    }
-
-    return collectionInfo;
-};
-
 // Class to save the state of a collection and later compare the current state of a collection to
 // the saved state
 function CollectionDataValidator() {
@@ -126,10 +115,7 @@ function CollectionDataValidator() {
 
         // Get the metadata for this collection
         var newCollectionInfo = this.getCollectionInfo(collection);
-
-        let colInfo1 = injectExpected34FieldsIf32(_collectionInfo, _dbVersion);
-        let colInfo2 = injectExpected34FieldsIf32(newCollectionInfo, dbVersionForCollection);
-        assert.docEq(colInfo1, colInfo2, "collection metadata not equal");
+        assert.docEq(_collectionInfo, newCollectionInfo, "collection metadata not equal");
 
         // Get the indexes for this collection
         var newIndexData = collection.getIndexes().sort(function(a, b) {

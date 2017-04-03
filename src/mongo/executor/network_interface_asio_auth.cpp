@@ -80,12 +80,15 @@ void NetworkInterfaceASIO::_runIsMaster(AsyncOp* op) {
 
     op->connection().getCompressorManager().clientBegin(&bob);
 
+    if (WireSpec::instance().isInternalClient) {
+        WireSpec::appendInternalClientWireVersion(WireSpec::instance().outgoing, &bob);
+    }
+
     requestBuilder.setCommandArgs(bob.done());
     requestBuilder.setMetadata(rpc::makeEmptyMetadata());
 
     // Set current command to ismaster request and run
-    auto beginStatus = op->beginCommand(
-        requestBuilder.done(), AsyncCommand::CommandType::kRPC, op->request().target);
+    auto beginStatus = op->beginCommand(requestBuilder.done(), op->request().target);
     if (!beginStatus.isOK()) {
         return _completeOperation(op, beginStatus);
     }
@@ -215,8 +218,7 @@ void NetworkInterfaceASIO::_authenticate(AsyncOp* op) {
     };
 
     auto params = getInternalUserAuthParams();
-    auth::authenticateClient(
-        params, op->request().target.host(), clientName, runCommandHook, authHook);
+    auth::authenticateClient(params, op->request().target, clientName, runCommandHook, authHook);
 }
 
 }  // namespace executor

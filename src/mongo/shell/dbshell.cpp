@@ -50,6 +50,7 @@
 #include "mongo/logger/console_appender.h"
 #include "mongo/logger/logger.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
+#include "mongo/platform/atomic_word.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/shell/linenoise.h"
 #include "mongo/shell/shell_options.h"
@@ -65,7 +66,6 @@
 #include "mongo/util/signal_handlers.h"
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/startup_test.h"
-#include "mongo/util/static_observer.h"
 #include "mongo/util/stringutils.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
@@ -85,7 +85,7 @@ using namespace mongo;
 string historyFile;
 bool gotInterrupted = false;
 bool inMultiLine = false;
-static volatile bool atPrompt = false;  // can eval before getting to prompt
+static AtomicBool atPrompt(false);  // can eval before getting to prompt
 
 namespace {
 const auto kDefaultMongoURL = "mongodb://127.0.0.1:27017"_sd;
@@ -180,7 +180,7 @@ void killOps() {
     if (mongo::shell_utils::_nokillop)
         return;
 
-    if (atPrompt)
+    if (atPrompt.load())
         return;
 
     sleepmillis(10);  // give current op a chance to finish
@@ -189,25 +189,20 @@ void killOps() {
         !shellGlobalParams.autoKillOp);
 }
 
-// Stubs for signal_handlers.cpp
-namespace mongo {
-void logProcessDetailsForLogRotate() {}
-}
-
 void quitNicely(int sig) {
     shutdown(EXIT_CLEAN);
 }
 
 // the returned string is allocated with strdup() or malloc() and must be freed by calling free()
 char* shellReadline(const char* prompt, int handlesigint = 0) {
-    atPrompt = true;
+    atPrompt.store(true);
 
     char* ret = linenoise(prompt);
     if (!ret) {
         gotInterrupted = true;  // got ^C, break out of multiline
     }
 
-    atPrompt = false;
+    atPrompt.store(false);
     return ret;
 }
 
@@ -228,12 +223,21 @@ string getURIFromArgs(const std::string& url, const std::string& host, const std
     }
 
     bool hostEndsInSock = str::endsWith(host, ".sock");
+    const auto hostHasPort = (host.find(":") != std::string::npos);
 
     // If host looks like a full URI (i.e. has a slash and isn't a unix socket) and the other fields
     // are empty, then just return host.
+    std::string::size_type slashPos;
     if (url.size() == 0 && port.size() == 0 &&
-        (!hostEndsInSock && host.find("/") != string::npos)) {
-        return host;
+        (!hostEndsInSock && ((slashPos = host.find("/")) != string::npos))) {
+        if (str::startsWith(host, "mongodb://")) {
+            return host;
+        }
+        // If there's a slash in the host field, then it's the replica set name, not a database name
+        stringstream ss;
+        ss << "mongodb://" << host.substr(slashPos + 1)
+           << "/?replicaSet=" << host.substr(0, slashPos);
+        return ss.str();
     }
 
     stringstream ss;
@@ -248,8 +252,12 @@ string getURIFromArgs(const std::string& url, const std::string& host, const std
 
     if (!hostEndsInSock) {
         if (port.size() > 0) {
+            if (hostHasPort) {
+                std::cerr << "Cannot specify a port in --host and also with --port" << std::endl;
+                quickExit(-1);
+            }
             ss << ":" << port;
-        } else if (host.find(':') == string::npos || str::endsWith(host, "]")) {
+        } else if (!hostHasPort || str::endsWith(host, "]")) {
             // Default the port to 27017 if the host did not provide one (i.e. the host has no
             // colons or ends in ']' like an IPv6 address).
             ss << ":27017";
@@ -626,7 +634,7 @@ int _main(int argc, char* argv[], char** envp) {
         }
     }
 
-    if (!mongo::serverGlobalParams.quiet)
+    if (!mongo::serverGlobalParams.quiet.load())
         cout << mongoShellVersion(VersionInfoInterface::instance()) << endl;
 
     mongo::StartupTest::runTests();
@@ -639,7 +647,7 @@ int _main(int argc, char* argv[], char** envp) {
 
     if (!shellGlobalParams.nodb) {  // connect to db
         stringstream ss;
-        if (mongo::serverGlobalParams.quiet)
+        if (mongo::serverGlobalParams.quiet.load())
             ss << "__quiet = true;";
         ss << "db = connect( \""
            << getURIFromArgs(
@@ -802,7 +810,8 @@ int _main(int argc, char* argv[], char** envp) {
             f.open(rcLocation.c_str(), false);  // Create empty .mongorc.js file
         }
 
-        if (!shellGlobalParams.nodb && !mongo::serverGlobalParams.quiet && isatty(fileno(stdin))) {
+        if (!shellGlobalParams.nodb && !mongo::serverGlobalParams.quiet.load() &&
+            isatty(fileno(stdin))) {
             scope->exec(
                 "shellHelper( 'show', 'startupWarnings' )", "(shellwarnings)", false, true, false);
 
@@ -843,7 +852,7 @@ int _main(int argc, char* argv[], char** envp) {
             }
 
             if (!linePtr || (strlen(linePtr) == 4 && strstr(linePtr, "exit"))) {
-                if (!mongo::serverGlobalParams.quiet)
+                if (!mongo::serverGlobalParams.quiet.load())
                     cout << "bye" << endl;
                 if (line)
                     free(line);
@@ -949,7 +958,6 @@ int _main(int argc, char* argv[], char** envp) {
 
 #ifdef _WIN32
 int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
-    static mongo::StaticObserver staticObserver;
     int returnCode;
     try {
         WindowsCommandLine wcl(argc, argvW, envpW);
@@ -962,7 +970,6 @@ int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
 }
 #else   // #ifdef _WIN32
 int main(int argc, char* argv[], char** envp) {
-    static mongo::StaticObserver staticObserver;
     int returnCode;
     try {
         returnCode = _main(argc, argv, envp);

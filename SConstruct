@@ -20,7 +20,8 @@ import SCons
 # we are to avoid bulk loading all tools in the DefaultEnvironment.
 DefaultEnvironment(tools=[])
 
-EnsureSConsVersion( 2, 3, 5 )
+EnsurePythonVersion(2, 7)
+EnsureSConsVersion(2, 5)
 
 from buildscripts import utils
 from buildscripts import moduleconfig
@@ -434,7 +435,6 @@ add_option('osx-version-min',
 )
 
 win_version_min_choices = {
-    'vista'   : ('0600', '0000'),
     'win7'    : ('0601', '0000'),
     'ws08r2'  : ('0601', '0000'),
     'win8'    : ('0602', '0000'),
@@ -587,11 +587,11 @@ def variable_arch_converter(val):
 def decide_platform_tools():
     if is_running_os('windows'):
         # we only support MS toolchain on windows
-        return ['msvc', 'mslink', 'mslib', 'masm', 'install']
+        return ['msvc', 'mslink', 'mslib', 'masm']
     elif is_running_os('linux', 'solaris'):
-        return ['gcc', 'g++', 'gnulink', 'ar', 'gas', 'install']
+        return ['gcc', 'g++', 'gnulink', 'ar', 'gas']
     elif is_running_os('darwin'):
-        return ['gcc', 'g++', 'applelink', 'ar', 'as', 'install']
+        return ['gcc', 'g++', 'applelink', 'ar', 'as']
     else:
         return ["default"]
 
@@ -600,6 +600,7 @@ def variable_tools_converter(val):
     return tool_list + [
         "distsrc",
         "gziptool",
+        'idl_tool',
         "jsheader",
         "mergelib",
         "mongo_integrationtest",
@@ -722,9 +723,16 @@ env_vars.Add('MONGO_DISTNAME',
     help='Sets the version string to be used in dist archive naming',
     default='$MONGO_VERSION')
 
+def validate_mongo_version(key, val, env):
+    regex = r'^(\d+)\.(\d+)\.(\d+)-?((?:(rc)(\d+))?.*)?'
+    if not re.match(regex, val):
+        print("Invalid MONGO_VERSION '{}', or could not derive from version.json or git metadata. Please add a conforming MONGO_VERSION=x.y.z[-extra] as an argument to SCons".format(val))
+        Exit(1)
+
 env_vars.Add('MONGO_VERSION',
     help='Sets the version string for MongoDB',
-    default=version_data['version'])
+    default=version_data['version'],
+    validator=validate_mongo_version)
 
 env_vars.Add('MONGO_GIT_HASH',
     help='Sets the githash to store in the MongoDB version information',
@@ -1836,7 +1844,7 @@ def doConfigure(myenv):
             win_version_min = get_option('win-version-min')
         else:
             # If no minimum version has beeen specified, use our default
-            win_version_min = 'vista'
+            win_version_min = 'ws08r2'
 
         env['WIN_VERSION_MIN'] = win_version_min
         win_version_min = win_version_min_choices[win_version_min]

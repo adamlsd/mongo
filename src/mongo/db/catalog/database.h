@@ -103,7 +103,7 @@ public:
                                         StringData toNS,
                                         bool stayTemp) = 0;
 
-        virtual const std::string& getSystemIndexesName() const = 0;
+        virtual const NamespaceString& getSystemIndexesName() const = 0;
 
         virtual const std::string& getSystemViewsName() const = 0;
 
@@ -333,7 +333,7 @@ public:
 
     // static Status validateDBName( StringData dbname );
 
-    inline const std::string& getSystemIndexesName() const {
+    inline const NamespaceString& getSystemIndexesName() const {
         return this->_impl().getSystemIndexesName();
     }
 

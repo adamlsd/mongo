@@ -58,6 +58,8 @@ public:
     public:
         virtual ~Impl() = 0;
 
+        virtual void init(OperationContext* opCtx) = 0;
+
         virtual void close(OperationContext* opCtx) = 0;
 
         virtual const std::string& name() const = 0;
@@ -157,7 +159,7 @@ public:
         using difference_type = ptrdiff_t;
 
         explicit inline iterator() = default;
-        inline iterator(CollectionMap::const_iterator it) : _it(it) {}
+        inline iterator(CollectionMap::const_iterator it) : _it(std::move(it)) {}
 
         inline reference operator*() const {
             return _it->second;
@@ -191,9 +193,11 @@ public:
     };
 
     explicit inline Database(OperationContext* const opCtx,
-                             StringData name,
+                             const StringData name,
                              DatabaseCatalogEntry* const dbEntry)
-        : _pimpl(makeImpl(this, opCtx, name, dbEntry)) {}
+        : _pimpl(makeImpl(this, opCtx, name, dbEntry)) {
+        this->_impl().init(opCtx);
+    }
 
     // must call close first
     inline ~Database() = default;

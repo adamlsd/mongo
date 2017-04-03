@@ -114,6 +114,8 @@ public:
     // must call close first
     ~DatabaseImpl();
 
+    void init(OperationContext*) final;
+
     iterator begin() const {
         return iterator(_collections.begin());
     }
@@ -123,13 +125,13 @@ public:
     }
 
     // closes files and other cleanup see below.
-    void close(OperationContext* opCtx);
+    void close(OperationContext* opCtx) final;
 
-    const std::string& name() const {
+    const std::string& name() const final {
         return _name;
     }
 
-    void clearTmpCollections(OperationContext* opCtx);
+    void clearTmpCollections(OperationContext* opCtx) final;
 
     /**
      * Sets a new profiling level for the database and returns the outcome.
@@ -137,42 +139,42 @@ public:
      * @param opCtx Operation context which to use for creating the profiling collection.
      * @param newLevel New profiling level to use.
      */
-    Status setProfilingLevel(OperationContext* opCtx, int newLevel);
+    Status setProfilingLevel(OperationContext* opCtx, int newLevel) final;
 
-    int getProfilingLevel() const {
+    int getProfilingLevel() const final {
         return _profile;
     }
-    const char* getProfilingNS() const {
+    const char* getProfilingNS() const final {
         return _profileName.c_str();
     }
 
-    void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale = 1);
+    void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale = 1) final;
 
-    const DatabaseCatalogEntry* getDatabaseCatalogEntry() const;
+    const DatabaseCatalogEntry* getDatabaseCatalogEntry() const final;
 
     /**
      * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
      * that is required.
      */
-    Status dropCollection(OperationContext* opCtx, StringData fullns);
-    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns);
+    Status dropCollection(OperationContext* opCtx, StringData fullns) final;
+    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns) final;
 
-    Status dropView(OperationContext* opCtx, StringData fullns);
+    Status dropView(OperationContext* opCtx, StringData fullns) final;
 
     Collection* createCollection(OperationContext* opCtx,
                                  StringData ns,
                                  const CollectionOptions& options = CollectionOptions(),
                                  bool createDefaultIndexes = true,
-                                 const BSONObj& idIndex = BSONObj());
+                                 const BSONObj& idIndex = BSONObj()) final;
 
     Status createView(OperationContext* opCtx,
                       StringData viewName,
-                      const CollectionOptions& options);
+                      const CollectionOptions& options) final;
 
     /**
      * @param ns - this is fully qualified, which is maybe not ideal ???
      */
-    Collection* getCollection(StringData ns) const;
+    Collection* getCollection(StringData ns) const final;
 
     Collection* getCollection(const NamespaceString& ns) const {
         return getCollection(ns.ns());
@@ -182,16 +184,16 @@ public:
      * Get the view catalog, which holds the definition for all views created on this database. You
      * must be holding a database lock to use this accessor.
      */
-    ViewCatalog* getViewCatalog() {
+    ViewCatalog* getViewCatalog() final {
         return &_views;
     }
 
-    Collection* getOrCreateCollection(OperationContext* opCtx, StringData ns);
+    Collection* getOrCreateCollection(OperationContext* opCtx, StringData ns) final;
 
     Status renameCollection(OperationContext* opCtx,
                             StringData fromNS,
                             StringData toNS,
-                            bool stayTemp);
+                            bool stayTemp) final;
 
     /**
      * Physically drops the specified opened database and removes it from the server's metadata. It
@@ -204,11 +206,11 @@ public:
 
     static Status validateDBName(StringData dbname);
 
-    const std::string& getSystemIndexesName() const {
+    const std::string& getSystemIndexesName() const final {
         return _indexesName;
     }
 
-    const std::string& getSystemViewsName() const {
+    const std::string& getSystemViewsName() const final {
         return _viewsName;
     }
 

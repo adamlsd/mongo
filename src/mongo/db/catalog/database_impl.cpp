@@ -215,10 +215,10 @@ Collection* DatabaseImpl::_getOrCreateCollectionInstance(OperationContext* opCtx
     return c;
 }
 
-DatabaseImpl::DatabaseImpl(Database* this_,
-                           OperationContext* opCtx,
-                           StringData name,
-                           DatabaseCatalogEntry* dbEntry)
+DatabaseImpl::DatabaseImpl(Database* const this_,
+                           OperationContext* const opCtx,
+                           const StringData name,
+                           DatabaseCatalogEntry* const dbEntry)
     : _name(name.toString()),
       _dbEntry(dbEntry),
       _profileName(_name + ".system.profile"),
@@ -226,7 +226,9 @@ DatabaseImpl::DatabaseImpl(Database* this_,
       _viewsName(_name + "." + DurableViewCatalog::viewsCollectionName().toString()),
       _durableViews(DurableViewCatalogImpl(this_)),
       _views(&_durableViews),
-      _this(this_) {
+      _this(this_) {}
+
+void DatabaseImpl::init(OperationContext* const opCtx) {
     Status status = validateDBName(_name);
 
     if (!status.isOK()) {
@@ -678,7 +680,8 @@ void mongo::dropAllDatabasesExceptLocalImpl(OperationContext* opCtx) {
                 // This is safe be replaced by "invariant(db);dropDatabase(opCtx, db);" once fixed
                 if (db == nullptr) {
                     log() << "database disappeared after listDatabases but before drop: " << *i;
-                } else { DatabaseImpl::dropDatabase(opCtx, db);
+                } else {
+                    DatabaseImpl::dropDatabase(opCtx, db);
                 }
             }
             MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "dropAllDatabasesExceptLocal", *i);

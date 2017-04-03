@@ -646,6 +646,10 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
 }
 
 namespace {
+MONGO_INITIALIZER(InitializeDropDatabaseImpl)(InitializerContext* const) {
+    Database::registerDropDatabaseImpl(DatabaseImpl::dropDatabase);
+    return Status::OK();
+}
 MONGO_INITIALIZER(InitializeUserCreateNSImpl)(InitializerContext* const) {
     registerUserCreateNSImpl(userCreateNSImpl);
     return Status::OK();

@@ -76,13 +76,16 @@ namespace mongo {
 
 namespace {
 MONGO_INITIALIZER(InitializeCollectionFactory)(InitializerContext* const) {
-    Collection::registerFactory([](OperationContext* const opCtx,
-                                   const StringData fullNS,
-                                   CollectionCatalogEntry* const details,
-                                   RecordStore* const recordStore,
-                                   DatabaseCatalogEntry* const dbce) {
-        return stdx::make_unique<Collection>(opCtx, fullNS, details, recordStore, dbce);
-    });
+    Collection::registerFactory(
+        [](Collection* const _this,
+           OperationContext* const opCtx,
+           const StringData fullNS,
+           CollectionCatalogEntry* const details,
+           RecordStore* const recordStore,
+           DatabaseCatalogEntry* const dbce) -> std::unique_ptr<Collection::Impl> {
+            return stdx::make_unique<CollectionImpl>(
+                _this, opCtx, fullNS, details, recordStore, dbce);
+        });
     return Status::OK();
 }
 
@@ -231,7 +234,8 @@ bool CappedInsertNotifier::isDead() {
 
 // ----
 
-CollectionImpl::CollectionImpl(OperationContext* opCtx,
+CollectionImpl::CollectionImpl(Collection* _this_init,
+                               OperationContext* opCtx,
                                StringData fullNS,
                                CollectionCatalogEntry* details,
                                RecordStore* recordStore,
@@ -241,8 +245,8 @@ CollectionImpl::CollectionImpl(OperationContext* opCtx,
       _recordStore(recordStore),
       _dbce(dbce),
       _needCappedLock(supportsDocLocking() && _recordStore->isCapped() && _ns.db() != "local"),
-      _infoCache(this),
-      _indexCatalog(this),
+      _infoCache(_this_init, _ns),
+      _indexCatalog(_this_init, this->getCatalogEntry()->getMaxAllowedIndexes()),
       _collator(parseCollation(opCtx, _ns, _details->getCollectionOptions(opCtx).collation)),
       _validatorDoc(_details->getCollectionOptions(opCtx).validator.getOwned()),
       _validator(uassertStatusOK(parseValidator(_validatorDoc))),
@@ -253,8 +257,10 @@ CollectionImpl::CollectionImpl(OperationContext* opCtx,
       _cursorManager(_ns),
       _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
                                                : nullptr),
-      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()) {
+      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()),
+      _this(_this_init) {}
 
+void CollectionImpl::init(OperationContext* opCtx) {
     _magic = kMagicNumber;
     _indexCatalog.init(opCtx);
     if (isCapped())
@@ -320,7 +326,7 @@ Status CollectionImpl::checkValidation(OperationContext* opCtx, const BSONObj& d
     if (!_validator)
         return Status::OK();
 
-    if (_validationLevel == OFF)
+    if (_validationLevel == ValidationLevel::OFF)
         return Status::OK();
 
     if (documentValidationDisabled(opCtx))
@@ -329,7 +335,7 @@ Status CollectionImpl::checkValidation(OperationContext* opCtx, const BSONObj& d
     if (_validator->matchesBSON(document))
         return Status::OK();
 
-    if (_validationAction == WARN) {
+    if (_validationAction == ValidationAction::WARN) {
         warning() << "Document would fail validation"
                   << " collection: " << ns() << " doc: " << redact(document);
         return Status::OK();
@@ -632,7 +638,7 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
     {
         auto status = checkValidation(opCtx, newDoc);
         if (!status.isOK()) {
-            if (_validationLevel == STRICT_V) {
+            if (_validationLevel == ValidationLevel::STRICT_V) {
                 return status;
             }
             // moderate means we have to check the old doc
@@ -966,27 +972,27 @@ Status CollectionImpl::setValidator(OperationContext* opCtx, BSONObj validatorDo
 auto CollectionImpl::parseValidationLevel(StringData newLevel) -> StatusWith<ValidationLevel> {
     if (newLevel == "") {
         // default
-        return STRICT_V;
+        return ValidationLevel::STRICT_V;
     } else if (newLevel == "off") {
-        return OFF;
+        return ValidationLevel::OFF;
     } else if (newLevel == "moderate") {
-        return MODERATE;
+        return ValidationLevel::MODERATE;
     } else if (newLevel == "strict") {
-        return STRICT_V;
+        return ValidationLevel::STRICT_V;
     } else {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "invalid validation level: " << newLevel);
     }
 }
 
-auto CollectionImpl::parseValidationAction(StringData newAction) StatusWith<ValidationAction> {
+auto CollectionImpl::parseValidationAction(StringData newAction) -> StatusWith<ValidationAction> {
     if (newAction == "") {
         // default
-        return ERROR_V;
+        return ValidationAction::ERROR_V;
     } else if (newAction == "warn") {
-        return WARN;
+        return ValidationAction::WARN;
     } else if (newAction == "error") {
-        return ERROR_V;
+        return ValidationAction::ERROR_V;
     } else {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "invalid validation action: " << newAction);
@@ -995,11 +1001,11 @@ auto CollectionImpl::parseValidationAction(StringData newAction) StatusWith<Vali
 
 StringData CollectionImpl::getValidationLevel() const {
     switch (_validationLevel) {
-        case STRICT_V:
+        case ValidationLevel::STRICT_V:
             return "strict";
-        case OFF:
+        case ValidationLevel::OFF:
             return "off";
-        case MODERATE:
+        case ValidationLevel::MODERATE:
             return "moderate";
     }
     MONGO_UNREACHABLE;
@@ -1007,9 +1013,9 @@ StringData CollectionImpl::getValidationLevel() const {
 
 StringData CollectionImpl::getValidationAction() const {
     switch (_validationAction) {
-        case ERROR_V:
+        case ValidationAction::ERROR_V:
             return "error";
-        case WARN:
+        case ValidationAction::WARN:
             return "warn";
     }
     MONGO_UNREACHABLE;
@@ -1063,7 +1069,7 @@ public:
                                IndexCatalog* ic,
                                ValidateResultsMap* irm)
         : _opCtx(opCtx), _level(level), _indexCatalog(ic), _indexNsResultsMap(irm) {
-        _ikc = stdx::makeUnique<IndexKeyCountTable>();
+        _ikc = stdx::make_unique<IndexKeyCountTable>();
     }
 
     virtual Status validate(const RecordId& recordId, const RecordData& record, size_t* dataSize) {

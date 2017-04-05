@@ -434,7 +434,7 @@ void Database::_clearCollectionCache(OperationContext* opCtx,
     // Takes ownership of the collection
     opCtx->recoveryUnit()->registerChange(new RemoveCollectionChange(this, it->second));
 
-    it->second->getCursorManager().invalidateAll(false, reason);
+    it->second->getCursorManager()->invalidateAll(false, reason);
     _collections.erase(it);
 }
 

@@ -169,9 +169,11 @@ public:
     enum ValidationAction { WARN, ERROR_V };
     enum ValidationLevel { OFF, MODERATE, STRICT_V };
 
-    class Impl : CappedCallback, UpdateNotifier {
+    class Impl : virtual CappedCallback, virtual UpdateNotifier {
     public:
         virtual ~Impl() = 0;
+
+        virtual void init(OperationContext* opCtx) = 0;
 
     private:
         friend Collection;
@@ -256,7 +258,7 @@ public:
                                                     OpDebug* opDebug,
                                                     OplogUpdateEntryArgs* args) = 0;
 
-        virtual bool updateWithDamagesSupported() const;
+        virtual bool updateWithDamagesSupported() const = 0;
 
         virtual StatusWith<RecordData> updateDocumentWithDamages(
             OperationContext* opCtx,
@@ -339,7 +341,8 @@ private:
         return *this->_pimpl;
     }
 
-    static std::unique_ptr<Impl> makeImpl(OperationContext* opCtx,
+    static std::unique_ptr<Impl> makeImpl(Collection* _this,
+                                          OperationContext* opCtx,
                                           StringData fullNS,
                                           CollectionCatalogEntry* details,
                                           RecordStore* recordStore,
@@ -350,12 +353,14 @@ public:
 
     static void registerFactory(stdx::function<factory_function_type> factory);
 
-    explicit inline Collection(OperationContext* opCtx,
-                               StringData fullNS,
-                               CollectionCatalogEntry* details,  // does not own
-                               RecordStore* recordStore,         // does not own
-                               DatabaseCatalogEntry* dbce)       // does not own
-        : _pimpl(makeImpl(opCtx, fullNS, details, recordStore, dbce)) {}
+    explicit inline Collection(OperationContext* const opCtx,
+                               const StringData fullNS,
+                               CollectionCatalogEntry* const details,  // does not own
+                               RecordStore* const recordStore,         // does not own
+                               DatabaseCatalogEntry* const dbce)       // does not own
+        : _pimpl(makeImpl(this, opCtx, fullNS, details, recordStore, dbce)) {
+        this->_impl().init(opCtx);
+    }
 
     inline ~Collection() = default;
 

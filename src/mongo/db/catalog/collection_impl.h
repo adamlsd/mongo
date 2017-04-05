@@ -31,20 +31,23 @@
 #include "mongo/db/catalog/collection.h"
 
 namespace mongo {
-class CollectionImpl final : virtual Collection::Impl,
+class CollectionImpl final : virtual public Collection::Impl,
                              virtual CappedCallback,
                              virtual UpdateNotifier {
 private:
     static const int kMagicNumber = 1357924;
 
 public:
-    explicit CollectionImpl(OperationContext* opCtx,
+    explicit CollectionImpl(Collection* _this,
+                            OperationContext* opCtx,
                             StringData fullNS,
                             CollectionCatalogEntry* details,  // does not own
                             RecordStore* recordStore,         // does not own
                             DatabaseCatalogEntry* dbce);      // does not own
 
     ~CollectionImpl();
+
+    void init(OperationContext* opCtx) final;
 
     bool ok() const final {
         return _magic == kMagicNumber;
@@ -294,7 +297,7 @@ public:
 
     uint64_t dataSize(OperationContext* opCtx) const final;
 
-    int averageObjectSize(OperationContext* opCtx) const final {
+    inline int averageObjectSize(OperationContext* opCtx) const {
         uint64_t n = numRecords(opCtx);
 
         if (n == 0)
@@ -415,6 +418,8 @@ private:
 
     // The earliest snapshot that is allowed to use this collection.
     boost::optional<SnapshotName> _minVisibleSnapshot;
+
+    Collection* _this;
 
     friend class NamespaceDetails;
 };

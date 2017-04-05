@@ -86,10 +86,10 @@ const BSONObj IndexCatalog::_idObj = BSON("_id" << 1);
 
 // -------------
 
-IndexCatalog::IndexCatalog(Collection* collection)
+IndexCatalog::IndexCatalog(Collection* collection, int maxNumIndexesAllowed)
     : _magic(INDEX_CATALOG_UNINIT),
       _collection(collection),
-      _maxNumIndexesAllowed(_collection->getCatalogEntry()->getMaxAllowedIndexes()) {}
+      _maxNumIndexesAllowed(maxNumIndexesAllowed) {}
 
 IndexCatalog::~IndexCatalog() {
     if (_magic != INDEX_CATALOG_UNINIT) {

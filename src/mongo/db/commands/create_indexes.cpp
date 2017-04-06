@@ -68,6 +68,7 @@ const StringData kIndexesFieldName = "indexes"_sd;
 const StringData kCommandName = "createIndexes"_sd;
 const StringData kWriteConcern = "writeConcern"_sd;
 const StringData kMaxTimeMS = "maxTimeMS"_sd;
+const StringData kShardVersion = "shardVersion"_sd;
 
 /**
  * Parses the index specifications from 'cmdObj', validates them, and returns equivalent index
@@ -125,7 +126,7 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
 
             hasIndexesField = true;
         } else if (kCommandName == cmdElemFieldName || kWriteConcern == cmdElemFieldName ||
-                   kMaxTimeMS == cmdElemFieldName) {
+                   kMaxTimeMS == cmdElemFieldName || kShardVersion == cmdElemFieldName) {
             continue;
         } else {
             return {ErrorCodes::BadValue,
@@ -261,7 +262,7 @@ public:
             db = dbHolder().openDb(opCtx, ns.db());
         }
 
-        Collection* collection = db->getCollection(ns.ns());
+        Collection* collection = db->getCollection(opCtx, ns);
         if (collection) {
             result.appendBool("createdCollectionAutomatically", false);
         } else {
@@ -383,7 +384,7 @@ public:
 
             Database* db = dbHolder().get(opCtx, ns.db());
             uassert(28551, "database dropped during index build", db);
-            uassert(28552, "collection dropped during index build", db->getCollection(ns.ns()));
+            uassert(28552, "collection dropped during index build", db->getCollection(opCtx, ns));
         }
 
         MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {

@@ -57,6 +57,7 @@ class CollectionCatalogEntry;
 class DatabaseCatalogEntry;
 class ExtentManager;
 class IndexCatalog;
+class DatabaseImpl;
 class MatchExpression;
 class MultiIndexBlock;
 class OpDebug;
@@ -733,7 +734,7 @@ private:
         return this->_impl().recordStoreGoingToUpdateInPlace(opCtx, loc);
     }
 
-    friend class Database;
+    friend class DatabaseImpl;
     friend class IndexCatalog;
 };
 }  // namespace mongo

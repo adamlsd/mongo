@@ -28,46 +28,25 @@
 
 #pragma once
 
-#include <vector>
-
-#include "mongo/db/namespace_string.h"
-#include "mongo/s/catalog/sharding_catalog_test_fixture.h"
-#include "mongo/stdx/memory.h"
+#include "mongo/s/catalog_cache_loader.h"
+#include "mongo/util/concurrency/thread_pool.h"
 
 namespace mongo {
 
-class BSONObj;
-class CachedCollectionRoutingInfo;
-class ChunkManager;
-class CollatorInterface;
-class ShardKeyPattern;
+class ConfigServerCatalogCacheLoader final : public CatalogCacheLoader {
+public:
+    ConfigServerCatalogCacheLoader();
+    ~ConfigServerCatalogCacheLoader();
 
-class ChunkManagerTestFixture : public ShardingCatalogTestFixture {
-protected:
-    void setUp() override;
-
-    /**
-     * Returns a chunk manager for the specified namespace with chunks at the specified split
-     * points. Each individual chunk is placed on a separate shard with shard id being a single
-     * number ranging from "0" to the number of chunks.
-     */
-    std::shared_ptr<ChunkManager> makeChunkManager(
+    std::shared_ptr<Notification<void>> getChunksSince(
         const NamespaceString& nss,
-        const ShardKeyPattern& shardKeyPattern,
-        std::unique_ptr<CollatorInterface> defaultCollator,
-        bool unique,
-        const std::vector<BSONObj>& splitPoints);
+        ChunkVersion version,
+        stdx::function<void(OperationContext*, StatusWith<CollectionAndChangedChunks>)> callbackFn)
+        override;
 
-    /**
-     * Invalidates the catalog cache for 'kNss' and schedules a thread to invoke the blocking 'get'
-     * call, returning a future which can be obtained to get the specified routing information.
-     *
-     * NOTE: The returned value is always set. The reason to use optional is a deficiency of
-     * std::future with the MSVC STL library, which requires the templated type to be default
-     * constructible.
-     */
-    executor::NetworkTestEnv::FutureHandle<boost::optional<CachedCollectionRoutingInfo>>
-    scheduleRoutingInfoRefresh(const NamespaceString& nss);
+private:
+    // Thread pool to be used to perform metadata load
+    ThreadPool _threadPool;
 };
 
 }  // namespace mongo

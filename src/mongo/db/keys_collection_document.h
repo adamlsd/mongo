@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2017 MongoDB, Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -28,29 +28,57 @@
 
 #pragma once
 
+#include "mongo/base/status.h"
+#include "mongo/db/logical_time.h"
+#include "mongo/db/time_proof_service.h"
+
 namespace mongo {
 
-class BSONObj;
-class OperationContext;
-class Status;
-template <typename T>
-class StatusWith;
-namespace repl {
-class ReadConcernArgs;
-}
-
-
 /**
- * Given the specified read concern arguments, performs checks that the read concern can actually be
- * satisfied given the current state of the server and if so calls into the replication subsystem to
- * perform the wait.
+ * Class for parsing and serializing a key document stored in admin.system.keys.
+ *
+ * Format:
+ * {
+ *     _id: <long long>,
+ *     purpose: 'signLogicalTime',
+ *     key: <20 byte key generated with secure PRNG in BinData>,
+ *     expiresAt: <LogicalTime, currently in Timestamp format>
+ * }
  */
-Status waitForReadConcern(OperationContext* opCtx, const repl::ReadConcernArgs& readConcernArgs);
+class KeysCollectionDocument {
+public:
+    KeysCollectionDocument(long long keyId,
+                           std::string purpose,
+                           TimeProofService::Key key,
+                           LogicalTime expiresAt)
+        : _keyId(keyId),
+          _purpose(std::move(purpose)),
+          _key(std::move(key)),
+          _expiresAt(std::move(expiresAt)) {}
 
-/*
- * Given a linearizable read command, confirm that
- * current primary is still the true primary of the replica set.
- */
-Status waitForLinearizableReadConcern(OperationContext* opCtx);
+    /**
+     * Parses the key document from BSON.
+     */
+    static StatusWith<KeysCollectionDocument> fromBSON(const BSONObj& source);
+
+    /**
+     * Serialize the key document as BSON.
+     */
+    BSONObj toBSON() const;
+
+    long long getKeyId() const;
+
+    const std::string& getPurpose() const;
+
+    const TimeProofService::Key& getKey() const;
+
+    const LogicalTime& getExpiresAt() const;
+
+private:
+    long long _keyId;
+    std::string _purpose;
+    TimeProofService::Key _key;
+    LogicalTime _expiresAt;
+};
 
 }  // namespace mongo

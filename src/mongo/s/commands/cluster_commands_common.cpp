@@ -34,172 +34,178 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/db/query/cursor_response.h"
+#include "mongo/executor/task_executor_pool.h"
+#include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/rpc/metadata/server_selection_metadata.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/parallel.h"
 #include "mongo/s/client/shard_connection.h"
+#include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/version_manager.h"
+#include "mongo/s/commands/sharded_command_processing.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
 
-using std::shared_ptr;
-using std::string;
-
 namespace {
-
-bool forceRemoteCheckShardVersionCB(OperationContext* opCtx, const string& ns) {
-    const NamespaceString nss(ns);
-
-    if (!nss.isValid()) {
-        return false;
-    }
-
-    // This will force the database catalog entry to be reloaded
-    Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(nss);
-
-    auto routingInfoStatus = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss);
-    if (!routingInfoStatus.isOK()) {
-        return false;
-    }
-
-    auto& routingInfo = routingInfoStatus.getValue();
-
-    return routingInfo.cm() != nullptr;
+BSONObj appendShardVersion(const BSONObj& cmdObj, ChunkVersion version) {
+    BSONObjBuilder cmdWithVersionBob;
+    cmdWithVersionBob.appendElements(cmdObj);
+    version.appendForCommands(&cmdWithVersionBob);
+    return cmdWithVersionBob.obj();
+}
 }
 
-}  // namespace
-
-Future::CommandResult::CommandResult(const string& server,
-                                     const string& db,
-                                     const BSONObj& cmd,
-                                     int options,
-                                     DBClientBase* conn,
-                                     bool useShardedConn)
-    : _server(server),
-      _db(db),
-      _options(options),
-      _cmd(cmd),
-      _conn(conn),
-      _useShardConn(useShardedConn),
-      _done(false) {
-    init();
+std::vector<AsyncRequestsSender::Request> buildRequestsForAllShards(OperationContext* opCtx,
+                                                                    const BSONObj& cmdObj) {
+    std::vector<AsyncRequestsSender::Request> requests;
+    std::vector<ShardId> shardIds;
+    Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
+    for (auto&& shardId : shardIds) {
+        requests.emplace_back(std::move(shardId), cmdObj);
+    }
+    return requests;
 }
 
-void Future::CommandResult::init() {
-    try {
-        if (!_conn) {
-            if (_useShardConn) {
-                _connHolder.reset(new ShardConnection(
-                    uassertStatusOK(ConnectionString::parse(_server)), "", NULL));
-            } else {
-                _connHolder.reset(new ScopedDbConnection(_server));
-            }
-
-            _conn = _connHolder->get();
+std::vector<AsyncRequestsSender::Request> buildRequestsForTargetedShards(
+    OperationContext* opCtx,
+    const CachedCollectionRoutingInfo& routingInfo,
+    const BSONObj& cmdObj) {
+    std::vector<AsyncRequestsSender::Request> requests;
+    if (routingInfo.cm()) {
+        // The collection is sharded. Target all shards that own data for the collection.
+        std::vector<ShardId> shardIds;
+        Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
+        for (const ShardId& shardId : shardIds) {
+            requests.emplace_back(
+                shardId, appendShardVersion(cmdObj, routingInfo.cm()->getVersion(shardId)));
         }
-
-        if (_conn->lazySupported()) {
-            _cursor.reset(
-                new DBClientCursor(_conn, _db + ".$cmd", _cmd, -1 /*limit*/, 0, NULL, _options, 0));
-            _cursor->initLazy();
+    } else {
+        // The collection is unsharded. Target only the primary shard for the database.
+        if (routingInfo.primary()->isConfig()) {
+            // Don't append shard version info when contacting the config servers.
+            requests.emplace_back(routingInfo.primaryId(), cmdObj);
         } else {
-            _done = true;  // we set _done first because even if there is an error we're done
-            _ok = _conn->runCommand(_db, _cmd, _res, _options);
+            requests.emplace_back(routingInfo.primaryId(),
+                                  appendShardVersion(cmdObj, ChunkVersion::UNSHARDED()));
         }
-    } catch (std::exception& e) {
-        error() << "Future::spawnCommand (part 1) exception: " << redact(e.what());
-        _ok = false;
-        _done = true;
     }
+    return requests;
 }
 
-bool Future::CommandResult::join(OperationContext* opCtx, int maxRetries) {
-    if (_done) {
-        return _ok;
+StatusWith<std::vector<AsyncRequestsSender::Response>> gatherResponsesFromShards(
+    OperationContext* opCtx,
+    const std::string& dbName,
+    const BSONObj& cmdObj,
+    int options,
+    const std::vector<AsyncRequestsSender::Request>& requests,
+    BSONObjBuilder* output) {
+    // Extract the readPreference from the command.
+    rpc::ServerSelectionMetadata ssm;
+    BSONObjBuilder unusedCmdBob;
+    BSONObjBuilder upconvertedMetadataBob;
+    uassertStatusOK(rpc::ServerSelectionMetadata::upconvert(
+        cmdObj, options, &unusedCmdBob, &upconvertedMetadataBob));
+    auto upconvertedMetadata = upconvertedMetadataBob.obj();
+    auto ssmElem = upconvertedMetadata.getField(rpc::ServerSelectionMetadata::fieldName());
+    if (!ssmElem.eoo()) {
+        ssm = uassertStatusOK(rpc::ServerSelectionMetadata::readFromMetadata(ssmElem));
     }
+    auto readPref = ssm.getReadPreference();
 
-    _ok = false;
+    // Send the requests.
 
-    for (int i = 1; i <= maxRetries; i++) {
-        try {
-            bool retry = false;
-            bool finished = _cursor->initLazyFinish(retry);
+    AsyncRequestsSender ars(
+        opCtx,
+        Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(),
+        dbName,
+        requests,
+        readPref ? *readPref : ReadPreferenceSetting(ReadPreference::PrimaryOnly, TagSet()));
 
-            // Shouldn't need to communicate with server any more
-            if (_connHolder)
-                _connHolder->done();
+    // Get the responses.
 
-            uassert(
-                14812, str::stream() << "Error running command on server: " << _server, finished);
-            massert(14813, "Command returned nothing", _cursor->more());
+    std::vector<AsyncRequestsSender::Response> responses;  // Stores results by ShardId
+    BSONObjBuilder subobj(output->subobjStart("raw"));     // Stores results by ConnectionString
+    BSONObjBuilder errors;                                 // Stores errors by ConnectionString
+    int commonErrCode = -1;                                // Stores the overall error code
 
-            // Rethrow stale config errors stored in this cursor for correct handling
-            throwCursorStale(_cursor.get());
+    BSONElement wcErrorElem;
+    ShardId wcErrorShardId;
+    bool hasWCError = false;
 
-            _res = _cursor->nextSafe();
-            _ok = _res["ok"].trueValue();
+    while (!ars.done()) {
+        auto response = ars.next();
+        const auto swShard = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, response.shardId);
+        if (!swShard.isOK()) {
+            output->resetToEmpty();
+            return swShard.getStatus();
+        }
+        const auto shard = std::move(swShard.getValue());
 
-            break;
-        } catch (const RecvStaleConfigException& e) {
-            verify(versionManager.isVersionableCB(_conn));
+        auto status = response.swResponse.getStatus();
+        if (status.isOK()) {
+            // We successfully received a response.
 
-            // For legacy reasons, we may not always have a namespace :-(
-            string staleNS = e.getns();
-            if (staleNS.size() == 0)
-                staleNS = _db;
-
-            if (i >= maxRetries) {
-                error() << "Future::spawnCommand (part 2) stale config exception"
-                        << causedBy(redact(e));
-                throw e;
+            status = getStatusFromCommandResult(response.swResponse.getValue().data);
+            if (ErrorCodes::isStaleShardingError(status.code())) {
+                // Do not report any raw results if we fail to establish a shardVersion.
+                output->resetToEmpty();
+                return status;
             }
 
-            if (i >= maxRetries / 2) {
-                if (!forceRemoteCheckShardVersionCB(opCtx, staleNS)) {
-                    error() << "Future::spawnCommand (part 2) no config detected"
-                            << causedBy(redact(e));
-                    throw e;
+            auto result = response.swResponse.getValue().data;
+            if (!hasWCError) {
+                if ((wcErrorElem = result["writeConcernError"])) {
+                    wcErrorShardId = response.shardId;
+                    hasWCError = true;
                 }
             }
 
-            // We may not always have a collection, since we don't know from a generic command what
-            // collection is supposed to be acted on, if any
-            if (nsGetCollection(staleNS).size() == 0) {
-                warning() << "no collection namespace in stale config exception "
-                          << "for lazy command " << redact(_cmd) << ", could not refresh "
-                          << staleNS;
-            } else {
-                versionManager.checkShardVersionCB(opCtx, _conn, staleNS, false, 1);
+            if (status.isOK()) {
+                // The command status was OK.
+                subobj.append(shard->getConnString().toString(), result);
+                responses.push_back(std::move(response));
+                continue;
             }
-
-            LOG(i > 1 ? 0 : 1) << "retrying lazy command" << causedBy(redact(e));
-
-            verify(_conn->lazySupported());
-            _done = false;
-            init();
-            continue;
-        } catch (std::exception& e) {
-            error() << "Future::spawnCommand (part 2) exception: " << causedBy(redact(e.what()));
-            break;
         }
+
+        // Either we failed to get a response, or the command had a non-OK status.
+
+        // Convert the error status back into the format of a command result.
+        BSONObjBuilder resultBob;
+        Command::appendCommandStatus(resultBob, status);
+        auto result = resultBob.obj();
+
+        // Update the data structures that store the results.
+        errors.append(shard->getConnString().toString(), status.reason());
+        if (commonErrCode == -1) {
+            commonErrCode = status.code();
+        } else if (commonErrCode != status.code()) {
+            commonErrCode = 0;
+        }
+        subobj.append(shard->getConnString().toString(), result);
+        responses.push_back(response);
     }
 
-    _done = true;
-    return _ok;
-}
+    subobj.done();
 
-shared_ptr<Future::CommandResult> Future::spawnCommand(const string& server,
-                                                       const string& db,
-                                                       const BSONObj& cmd,
-                                                       int options,
-                                                       DBClientBase* conn,
-                                                       bool useShardConn) {
-    shared_ptr<Future::CommandResult> res(
-        new Future::CommandResult(server, db, cmd, options, conn, useShardConn));
-    return res;
+    if (hasWCError) {
+        appendWriteConcernErrorToCmdResponse(wcErrorShardId, wcErrorElem, *output);
+    }
+
+    BSONObj errobj = errors.done();
+    if (!errobj.isEmpty()) {
+        // If code for all errors is the same, then report the common error code.
+        if (commonErrCode > 0) {
+            return {ErrorCodes::fromInt(commonErrCode), errobj.toString()};
+        }
+        return {ErrorCodes::OperationFailed, errobj.toString()};
+    }
+
+    return responses;
 }
 
 int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& results) {

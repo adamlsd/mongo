@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2016 MongoDB Inc.
+ *    Copyright (C) 2017 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,31 +26,37 @@
  *    it in the license file.
  */
 
-#pragma once
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/repl/rollback_fix_up_info.h"
+
+#include "mongo/db/jsobj.h"
+#include "mongo/db/repl/rollback_fix_up_info_descriptions.h"
+#include "mongo/db/repl/storage_interface.h"
+#include "mongo/util/assert_util.h"
+#include "mongo/util/uuid.h"
 
 namespace mongo {
-
-class BSONObj;
-class OperationContext;
-class Status;
-template <typename T>
-class StatusWith;
 namespace repl {
-class ReadConcernArgs;
+
+const NamespaceString RollbackFixUpInfo::kRollbackDocsNamespace("local.system.rollback.docs");
+
+RollbackFixUpInfo::RollbackFixUpInfo(StorageInterface* storageInterface)
+    : _storageInterface(storageInterface) {
+    invariant(storageInterface);
 }
 
+Status RollbackFixUpInfo::processSingleDocumentOplogEntry(OperationContext* opCtx,
+                                                          const UUID& collectionUuid,
+                                                          const BSONElement& docId,
+                                                          SingleDocumentOpType opType) {
+    SingleDocumentOperationDescription desc(collectionUuid, docId, opType);
+    auto update = desc.toBSON();
+    auto key = update["_id"];
+    return _storageInterface->upsertById(opCtx, kRollbackDocsNamespace, key, update);
+}
 
-/**
- * Given the specified read concern arguments, performs checks that the read concern can actually be
- * satisfied given the current state of the server and if so calls into the replication subsystem to
- * perform the wait.
- */
-Status waitForReadConcern(OperationContext* opCtx, const repl::ReadConcernArgs& readConcernArgs);
-
-/*
- * Given a linearizable read command, confirm that
- * current primary is still the true primary of the replica set.
- */
-Status waitForLinearizableReadConcern(OperationContext* opCtx);
-
+}  // namespace repl
 }  // namespace mongo

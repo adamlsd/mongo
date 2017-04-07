@@ -32,92 +32,49 @@
 #include <vector>
 
 #include "mongo/base/status.h"
+#include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
+#include "mongo/s/async_requests_sender.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
 
-class AScopedConnection;
 class CachedCollectionRoutingInfo;
 class CachedDatabaseInfo;
-class DBClientBase;
-class DBClientCursor;
 class OperationContext;
 
 /**
- * DEPRECATED - do not use in any new code. All new code must use the TaskExecutor interface
- * instead.
+ * Utility function to target all shards for a request that does not have a specific namespace.
  */
-class Future {
-public:
-    class CommandResult {
-    public:
-        std::string getServer() const {
-            return _server;
-        }
+std::vector<AsyncRequestsSender::Request> buildRequestsForAllShards(OperationContext* opCtx,
+                                                                    const BSONObj& cmdObj);
 
-        bool isDone() const {
-            return _done;
-        }
+/**
+ * Utility function to get the set of shards to target for a request on a specific namespace.
+ *
+ * Selects shards to target based on 'routingInfo', and constructs a vector of requests, one per
+ * targeted shard, where the cmdObj to send to each shard has been modified to include the shard's
+ * shardVersion.
+ */
+std::vector<AsyncRequestsSender::Request> buildRequestsForTargetedShards(
+    OperationContext* opCtx, const CachedCollectionRoutingInfo& routingInfo, const BSONObj& cmdObj);
 
-        bool ok() const {
-            verify(_done);
-            return _ok;
-        }
+using ShardAndReply = std::tuple<ShardId, BSONObj>;
 
-        BSONObj result() const {
-            verify(_done);
-            return _res;
-        }
-
-        /**
-           blocks until command is done
-           returns ok()
-         */
-        bool join(OperationContext* opCtx, int maxRetries = 1);
-
-    private:
-        CommandResult(const std::string& server,
-                      const std::string& db,
-                      const BSONObj& cmd,
-                      int options,
-                      DBClientBase* conn,
-                      bool useShardedConn);
-        void init();
-
-        std::string _server;
-        std::string _db;
-        int _options;
-        BSONObj _cmd;
-        DBClientBase* _conn;
-        std::unique_ptr<AScopedConnection> _connHolder;  // used if not provided a connection
-        bool _useShardConn;
-
-        std::unique_ptr<DBClientCursor> _cursor;
-
-        BSONObj _res;
-        bool _ok;
-        bool _done;
-
-        friend class Future;
-    };
-
-
-    /**
-     * @param server server name
-     * @param db db name
-     * @param cmd cmd to exec
-     * @param conn optional connection to use.  will use standard pooled if non-specified
-     * @param useShardConn use ShardConnection
-     */
-    static std::shared_ptr<CommandResult> spawnCommand(const std::string& server,
-                                                       const std::string& db,
-                                                       const BSONObj& cmd,
-                                                       int options,
-                                                       DBClientBase* conn = 0,
-                                                       bool useShardConn = false);
-};
+/**
+ * Logic for commands that simply map out to all shards then fold the results into
+ * a single response.
+ *
+ * All shards are contacted in parallel.
+ */
+StatusWith<std::vector<ShardAndReply>> gatherResults(
+    OperationContext* opCtx,
+    const std::string& dbName,
+    const BSONObj& cmdObj,
+    int options,
+    const std::vector<AsyncRequestsSender::Request>& requests,
+    BSONObjBuilder* output);
 
 /**
  * Utility function to compute a single error code from a vector of command results.

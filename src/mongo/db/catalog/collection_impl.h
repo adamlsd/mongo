@@ -306,7 +306,7 @@ public:
     }
 
     uint64_t getIndexSize(OperationContext* opCtx,
-                          BSONObjBuilder* details = NULL,
+                          BSONObjBuilder* details = nullptr,
                           int scale = 1) final;
 
     /**

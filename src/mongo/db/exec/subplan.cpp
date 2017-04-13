@@ -221,17 +221,16 @@ Status SubplanStage::planSubqueries() {
             // We don't set NO_TABLE_SCAN because peeking at the cache data will keep us from
             // considering any plan that's a collscan.
             invariant(branchResult->solutions.empty());
-            std::vector<QuerySolution*> rawSolutions;
-            Status status =
-                QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams, &rawSolutions);
-            branchResult->solutions = transitional_tools_do_not_use::spool_vector(rawSolutions);
+            auto solnStatus = QueryPlanner::plan(*branchResult->canonicalQuery, _plannerParams);
 
-            if (!status.isOK()) {
+
+            if (!solnStatus.isOK()) {
                 mongoutils::str::stream ss;
                 ss << "Can't plan for subchild " << branchResult->canonicalQuery->toString() << " "
-                   << status.reason();
+                   << solnStatus.getStatus().reason();
                 return Status(ErrorCodes::BadValue, ss);
             }
+            branchResult->solutions = std::move(solnStatus.getValue());
             LOG(5) << "Subplanner: got " << branchResult->solutions.size() << " solutions";
 
             if (0 == branchResult->solutions.size()) {
@@ -409,8 +408,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
     LOG(5) << "Subplanner: fully tagged tree is " << redact(solnRoot->toString());
 
     // Takes ownership of 'solnRoot'
-    _compositeSolution.reset(
-        QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, solnRoot));
+    _compositeSolution= QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, solnRoot);
 
     if (NULL == _compositeSolution.get()) {
         mongoutils::str::stream ss;
@@ -437,15 +435,13 @@ Status SubplanStage::choosePlanWholeQuery(PlanYieldPolicy* yieldPolicy) {
     _ws->clear();
 
     // Use the query planning module to plan the whole query.
-    std::vector<QuerySolution*> rawSolutions;
-    Status status = QueryPlanner::plan(*_query, _plannerParams, &rawSolutions);
-    std::vector<std::unique_ptr<QuerySolution>> solutions =
-        transitional_tools_do_not_use::spool_vector(rawSolutions);
-    if (!status.isOK()) {
+    auto solutionsStatus = QueryPlanner::plan(*_query, _plannerParams);
+    if (!solutionsStatus.isOK()) {
         return Status(ErrorCodes::BadValue,
                       "error processing query: " + _query->toString() +
-                          " planner returned error: " + status.reason());
+                          " planner returned error: " + solutionsStatus.getStatus().reason());
     }
+    std::vector<std::unique_ptr<QuerySolution>> solutions = std::move(solutionsStatus.getValue());
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?

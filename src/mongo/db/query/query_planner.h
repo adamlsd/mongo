@@ -32,6 +32,7 @@
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/query_planner_params.h"
 #include "mongo/db/query/query_solution.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -53,9 +54,8 @@ public:
      *
      * Caller owns pointers in *out.
      */
-    static Status plan(const CanonicalQuery& query,
-                       const QueryPlannerParams& params,
-                       std::vector<QuerySolution*>* out);
+    static StatusWith<std::vector<std::unique_ptr<QuerySolution>>> plan(
+        const CanonicalQuery& query, const QueryPlannerParams& params);
 
     /**
      * Attempt to generate a query solution, given data retrieved

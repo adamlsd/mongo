@@ -62,5 +62,6 @@ inline std::vector<T*> leak_vector(std::vector<std::unique_ptr<T>>& v) noexcept 
         v.begin(), v.end(), std::back_inserter(result), [](auto& p) { return p.release(); });
     return result;
 }
+
 }  // namespace transitional_tools_do_not_use
 }  // namespace mongo

@@ -116,9 +116,10 @@ public:
         plannerParams.options &= ~QueryPlannerParams::KEEP_MUTATIONS;
 
         // Plan.
-        vector<QuerySolution*> solutions;
-        Status status = QueryPlanner::plan(*cq, plannerParams, &solutions);
+        auto status = QueryPlanner::plan(*cq, plannerParams);
         ASSERT(status.isOK());
+        vector<QuerySolution*> solutions =
+            transitional_tools_do_not_use::leak_vector(status.getValue());
 
         ASSERT_GREATER_THAN_OR_EQUALS(solutions.size(), 1U);
 

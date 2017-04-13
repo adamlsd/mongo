@@ -205,17 +205,15 @@ Status CachedPlanStage::replan(PlanYieldPolicy* yieldPolicy, bool shouldCache) {
     _specificStats.replanned = true;
 
     // Use the query planning module to plan the whole query.
-    std::vector<QuerySolution*> rawSolutions;
-    Status status = QueryPlanner::plan(*_canonicalQuery, _plannerParams, &rawSolutions);
-    if (!status.isOK()) {
+    auto solutionsStatus = QueryPlanner::plan(*_canonicalQuery, _plannerParams);
+    if (!solutionsStatus.isOK()) {
         return Status(ErrorCodes::BadValue,
                       str::stream() << "error processing query: " << _canonicalQuery->toString()
                                     << " planner returned error: "
-                                    << status.reason());
+                                    << solutionsStatus.getStatus().reason());
     }
 
-    std::vector<std::unique_ptr<QuerySolution>> solutions =
-        transitional_tools_do_not_use::spool_vector(rawSolutions);
+    std::vector<std::unique_ptr<QuerySolution>> solutions = std::move(solutionsStatus.getValue());
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?

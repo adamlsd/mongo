@@ -251,9 +251,9 @@ public:
         plannerParams.options &= ~QueryPlannerParams::KEEP_MUTATIONS;
 
         // Plan.
-        vector<QuerySolution*> solutions;
-        Status status = QueryPlanner::plan(*cq, plannerParams, &solutions);
+        auto status = QueryPlanner::plan(*cq, plannerParams);
         ASSERT(status.isOK());
+        vector<QuerySolution*> solutions=transitional_tools_do_not_use::leak_vector(status.getValue());
 
         // We expect a plan using index {a: 1} and plan using index {b: 1} and
         // an index intersection plan.

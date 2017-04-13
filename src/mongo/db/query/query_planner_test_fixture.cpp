@@ -254,9 +254,8 @@ void QueryPlannerTest::runQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    std::vector<QuerySolution*> solnsRaw;
-    ASSERT_OK(QueryPlanner::plan(*cq, params, &solnsRaw));
-    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
+    auto status = QueryPlanner::plan(*cq, params);
+    ASSERT_OK(status.getStatus());
 }
 
 void QueryPlannerTest::runInvalidQuery(const BSONObj& query) {
@@ -333,10 +332,8 @@ void QueryPlannerTest::runInvalidQueryFull(const BSONObj& query,
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    std::vector<QuerySolution*> solnsRaw;
-    Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
-    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
-    ASSERT_NOT_OK(s);
+    auto s = QueryPlanner::plan(*cq, params);
+    ASSERT_NOT_OK(s.getStatus());
 }
 
 void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
@@ -354,10 +351,8 @@ void QueryPlannerTest::runQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    std::vector<QuerySolution*> solnsRaw;
-    Status s = QueryPlanner::plan(*cq, params, &solnsRaw);
-    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
-    ASSERT_OK(s);
+    auto s = QueryPlanner::plan(*cq, params);
+    ASSERT_OK(s.getStatus());
 }
 
 void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
@@ -375,10 +370,8 @@ void QueryPlannerTest::runInvalidQueryAsCommand(const BSONObj& cmdObj) {
     ASSERT_OK(statusWithCQ.getStatus());
     cq = std::move(statusWithCQ.getValue());
 
-    std::vector<QuerySolution*> solnsRaw;
-    Status status = QueryPlanner::plan(*cq, params, &solnsRaw);
-    solns = transitional_tools_do_not_use::spool_vector(solnsRaw);
-    ASSERT_NOT_OK(status);
+    auto status = QueryPlanner::plan(*cq, params);
+    ASSERT_NOT_OK(status.getStatus());
 }
 
 size_t QueryPlannerTest::getNumSolutions() const {

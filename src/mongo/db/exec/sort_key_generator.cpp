@@ -258,9 +258,9 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* opCtx,
     verify(statusWithQueryForSort.isOK());
     std::unique_ptr<CanonicalQuery> queryForSort = std::move(statusWithQueryForSort.getValue());
 
-    std::vector<QuerySolution*> solns;
     LOG(5) << "Sort key generation: Planning to obtain bounds for sort.";
-    QueryPlanner::plan(*queryForSort, params, &solns);
+    auto solnsStatus= QueryPlanner::plan(*queryForSort, params);
+    std::vector<std::unique_ptr<QuerySolution>> solns= std::move(solnsStatus.getValue());
 
     // TODO: are there ever > 1 solns?  If so, do we look for a specific soln?
     if (1 == solns.size()) {
@@ -270,7 +270,6 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* opCtx,
         if (rootNode->getType() == STAGE_FETCH) {
             FetchNode* fetchNode = static_cast<FetchNode*>(rootNode);
             if (fetchNode->children[0]->getType() != STAGE_IXSCAN) {
-                delete solns[0];
                 // No bounds.
                 return;
             }
@@ -283,10 +282,6 @@ void SortKeyGenerator::getBoundsForSort(OperationContext* opCtx,
             _bounds.fields.swap(ixScan->bounds.fields);
             _hasBounds = true;
         }
-    }
-
-    for (size_t i = 0; i < solns.size(); ++i) {
-        delete solns[i];
     }
 }
 

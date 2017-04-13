@@ -566,8 +566,9 @@ protected:
         auto statusWithCQ = CanonicalQuery::canonicalize(
             opCtx.get(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
-        Status s = QueryPlanner::plan(*statusWithCQ.getValue(), params, &solns);
-        ASSERT_OK(s);
+        auto s = QueryPlanner::plan(*statusWithCQ.getValue(), params);
+        solns = transitional_tools_do_not_use::leak_vector(s.getValue());
+        ASSERT_OK(s.getStatus());
     }
 
     void runQueryAsCommand(const BSONObj& cmdObj) {
@@ -588,8 +589,9 @@ protected:
         auto statusWithCQ = CanonicalQuery::canonicalize(
             opCtx.get(), std::move(qr), ExtensionsCallbackDisallowExtensions());
         ASSERT_OK(statusWithCQ.getStatus());
-        Status s = QueryPlanner::plan(*statusWithCQ.getValue(), params, &solns);
-        ASSERT_OK(s);
+        auto s = QueryPlanner::plan(*statusWithCQ.getValue(), params);
+        solns = transitional_tools_do_not_use::leak_vector(s.getValue());
+        ASSERT_OK(s.getStatus());
     }
 
     //

@@ -230,15 +230,14 @@ IndexBounds ChunkManager::getIndexBoundsForQuery(const BSONObj& key,
                           NULL /* collator */);
     plannerParams.indices.push_back(indexEntry);
 
-    OwnedPointerVector<QuerySolution> solutions;
-    Status status = QueryPlanner::plan(canonicalQuery, plannerParams, &solutions.mutableVector());
-    uassert(status.code(), status.reason(), status.isOK());
+    StatusWith<std::vector<std::unique_ptr<QuerySolution>>> status =
+        QueryPlanner::plan(canonicalQuery, plannerParams);
+    uassert(status.getStatus().code(), status.getStatus().reason(), status.isOK());
+    std::vector<std::unique_ptr<QuerySolution>> solutions = std::move(status.getValue());
 
     IndexBounds bounds;
 
-    for (std::vector<QuerySolution*>::const_iterator it = solutions.begin();
-         bounds.size() == 0 && it != solutions.end();
-         it++) {
+    for (auto it = solutions.begin(); bounds.size() == 0 && it != solutions.end(); it++) {
         // Try next solution if we failed to generate index bounds, i.e. bounds.size() == 0
         bounds = collapseQuerySolution((*it)->root.get());
     }

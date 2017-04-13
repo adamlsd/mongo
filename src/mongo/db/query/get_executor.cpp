@@ -85,6 +85,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
@@ -376,13 +377,14 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
             std::move(canonicalQuery), std::move(querySolution), std::move(root));
     }
 
-    vector<QuerySolution*> solutions;
-    Status status = QueryPlanner::plan(*canonicalQuery, plannerParams, &solutions);
-    if (!status.isOK()) {
+    auto solutionsStatus = QueryPlanner::plan(*canonicalQuery, plannerParams);
+    if (!solutionsStatus.isOK()) {
         return Status(ErrorCodes::BadValue,
                       "error processing query: " + canonicalQuery->toString() +
-                          " planner returned error: " + status.reason());
+                          " planner returned error: " + solutionsStatus.getStatus().reason());
     }
+    vector<QuerySolution*> solutions =
+        transitional_tools_do_not_use::leak_vector(solutionsStatus.getValue());
 
     // We cannot figure out how to answer the query.  Perhaps it requires an index
     // we do not have?
@@ -1535,11 +1537,12 @@ StatusWith<unique_ptr<PlanExecutor>> getExecutorDistinct(OperationContext* opCtx
     }
 
     // See if we can answer the query in a fast-distinct compatible fashion.
-    vector<QuerySolution*> solutions;
-    Status status = QueryPlanner::plan(*cq, plannerParams, &solutions);
-    if (!status.isOK()) {
+    auto solutionsStatus = QueryPlanner::plan(*cq, plannerParams);
+    if (!solutionsStatus.isOK()) {
         return getExecutor(opCtx, collection, std::move(cq), yieldPolicy);
     }
+    vector<QuerySolution*> solutions =
+        transitional_tools_do_not_use::leak_vector(solutionsStatus.getValue());
 
     // We look for a solution that has an ixscan we can turn into a distinctixscan
     for (size_t i = 0; i < solutions.size(); ++i) {

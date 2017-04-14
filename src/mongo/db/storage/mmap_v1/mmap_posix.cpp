@@ -41,6 +41,7 @@
 #include "mongo/db/storage/mmap_v1/file_allocator.h"
 #include "mongo/db/storage/mmap_v1/mmap.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/processinfo.h"
@@ -325,8 +326,8 @@ public:
     const uint64_t _id;
 };
 
-MemoryMappedFile::Flushable* MemoryMappedFile::prepareFlush() {
-    return new PosixFlushable(this, viewForFlushing(), fd, len);
+std::unique_ptr<MemoryMappedFile::Flushable> MemoryMappedFile::prepareFlush() {
+    return stdx::make_unique<PosixFlushable>(this, viewForFlushing(), fd, len);
 }
 
 }  // namespace mongo

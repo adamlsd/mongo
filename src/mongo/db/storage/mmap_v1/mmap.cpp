@@ -201,12 +201,10 @@ void MongoFile::closeAllFiles(OperationContext* opCtx, stringstream& message) {
 
     // get a thread-safe Flushable object for each file first in a single lock
     // so that we can iterate and flush without doing any locking here
-    OwnedPointerVector<Flushable> thingsToFlushWrapper;
-    vector<Flushable*>& thingsToFlush = thingsToFlushWrapper.mutableVector();
+    std::vector<std::unique_ptr<Flushable>> thingsToFlush;
     {
         LockMongoFilesShared lk(opCtx);
-        for (set<MongoFile*>::iterator i = mmfiles.begin(); i != mmfiles.end(); i++) {
-            MongoFile* mmf = *i;
+        for (MongoFile* mmf : mmfiles) {
             if (!mmf)
                 continue;
             thingsToFlush.push_back(mmf->prepareFlush());

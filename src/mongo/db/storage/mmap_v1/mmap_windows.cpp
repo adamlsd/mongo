@@ -35,6 +35,7 @@
 
 #include "mongo/db/storage/mmap_v1/durable_mapped_file.h"
 #include "mongo/db/storage/mmap_v1/file_allocator.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
@@ -481,7 +482,8 @@ void MemoryMappedFile::flush(bool sync) {
     }
 }
 
-MemoryMappedFile::Flushable* MemoryMappedFile::prepareFlush() {
-    return new WindowsFlushable(this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);
+std::unique_ptr<MemoryMappedFile::Flushable> MemoryMappedFile::prepareFlush() {
+    return stdx::make_unique<WindowsFlushable>(
+        this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);
 }
 }

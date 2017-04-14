@@ -34,7 +34,6 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/repl/replication_executor.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
@@ -425,6 +424,11 @@ public:
      * scheduled.  Returns true if it actually steps down, and false otherwise.
      */
     virtual bool stepDownIfPending() = 0;
+
+    /**
+     * Returns true if a stepdown request is pending on acquisition of the global lock.
+     */
+    virtual bool isStepDownPending() const = 0;
 
     /**
      * Considers whether or not this node should stand for election, and returns true

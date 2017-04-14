@@ -510,7 +510,7 @@ void State::prepTempCollection() {
                 uassertStatusOK(status);
             }
             // Log the createIndex operation.
-            string logNs = _config.tempNamespace.db() + ".system.indexes";
+            NamespaceString logNs{_config.tempNamespace.db(), "system.indexes"};
             getGlobalServiceContext()->getOpObserver()->onCreateIndex(_opCtx, logNs, *it, false);
         }
         wuow.commit();
@@ -630,7 +630,7 @@ unsigned long long _collectionCount(OperationContext* opCtx,
     if (callerHoldsGlobalLock) {
         Database* db = dbHolder().get(opCtx, nss.ns());
         if (db) {
-            coll = db->getCollection(nss);
+            coll = db->getCollection(opCtx, nss);
         }
     } else {
         ctx.emplace(opCtx, nss);
@@ -707,7 +707,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
             {
                 OldClientContext tx(opCtx, _config.outputOptions.finalNamespace.ns());
                 Collection* coll =
-                    getCollectionOrUassert(tx.db(), _config.outputOptions.finalNamespace);
+                    getCollectionOrUassert(opCtx, tx.db(), _config.outputOptions.finalNamespace);
                 found = Helpers::findOne(opCtx, coll, temp["_id"].wrap(), old, true);
             }
 
@@ -742,7 +742,7 @@ void State::insert(const NamespaceString& nss, const BSONObj& o) {
         uassert(ErrorCodes::PrimarySteppedDown,
                 "no longer primary",
                 repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(_opCtx, nss));
-        Collection* coll = getCollectionOrUassert(ctx.db(), nss);
+        Collection* coll = getCollectionOrUassert(_opCtx, ctx.db(), nss);
 
         BSONObjBuilder b;
         if (!o.hasField("_id")) {
@@ -774,7 +774,7 @@ void State::_insertToInc(BSONObj& o) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         OldClientWriteContext ctx(_opCtx, _config.incLong.ns());
         WriteUnitOfWork wuow(_opCtx);
-        Collection* coll = getCollectionOrUassert(ctx.db(), _config.incLong);
+        Collection* coll = getCollectionOrUassert(_opCtx, ctx.db(), _config.incLong);
         repl::UnreplicatedWritesBlock uwb(_opCtx);
 
         // The documents inserted into the incremental collection are of the form
@@ -983,8 +983,10 @@ void State::bailFromJS() {
     _config.reducer->numReduces = _scope->getNumberInt("_redCt");
 }
 
-Collection* State::getCollectionOrUassert(Database* db, const NamespaceString& nss) {
-    Collection* out = db ? db->getCollection(nss) : NULL;
+Collection* State::getCollectionOrUassert(OperationContext* opCtx,
+                                          Database* db,
+                                          const NamespaceString& nss) {
+    Collection* out = db ? db->getCollection(opCtx, nss) : NULL;
     uassert(18697, "Collection unexpectedly disappeared: " + nss.ns(), out);
     return out;
 }
@@ -1062,7 +1064,7 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         OldClientWriteContext incCtx(_opCtx, _config.incLong.ns());
         WriteUnitOfWork wuow(_opCtx);
-        Collection* incColl = getCollectionOrUassert(incCtx.db(), _config.incLong);
+        Collection* incColl = getCollectionOrUassert(_opCtx, incCtx.db(), _config.incLong);
 
         bool foundIndex = false;
         IndexCatalog::IndexIterator ii = incColl->getIndexCatalog()->getIndexIterator(_opCtx, true);
@@ -1105,7 +1107,7 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
     verify(statusWithCQ.isOK());
     std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
-    Collection* coll = getCollectionOrUassert(ctx->getDb(), _config.incLong);
+    Collection* coll = getCollectionOrUassert(opCtx, ctx->getDb(), _config.incLong);
     invariant(coll);
 
     auto statusWithPlanExecutor = getExecutor(
@@ -1436,15 +1438,6 @@ public:
                 Status(ErrorCodes::NamespaceNotFound,
                        str::stream() << "namespace does not exist: " << config.nss.ns()));
         }
-        if (state.isOnDisk()) {
-            // this means that it will be doing a write operation, make sure we are on Master
-            // ideally this check should be in slaveOk(), but at that point config is not known
-            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor_UNSAFE(opCtx,
-                                                                                    config.nss)) {
-                errmsg = "not master";
-                return false;
-            }
-        }
 
         try {
             state.init();
@@ -1485,6 +1478,16 @@ public:
                 // Need lock and context to use it
                 unique_ptr<AutoGetDb> scopedAutoDb(new AutoGetDb(opCtx, config.nss.db(), MODE_S));
 
+                if (state.isOnDisk()) {
+                    // this means that it will be doing a write operation, make sure it is safe to
+                    // do so.
+                    if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx,
+                                                                                     config.nss)) {
+                        uasserted(ErrorCodes::NotMaster, "not master");
+                        return false;
+                    }
+                }
+
                 auto qr = stdx::make_unique<QueryRequest>(config.nss);
                 qr->setFilter(config.filter);
                 qr->setSort(config.sort);
@@ -1503,7 +1506,7 @@ public:
                 unique_ptr<PlanExecutor> exec;
                 {
                     Database* db = scopedAutoDb->getDb();
-                    Collection* coll = State::getCollectionOrUassert(db, config.nss);
+                    Collection* coll = State::getCollectionOrUassert(opCtx, db, config.nss);
                     invariant(coll);
 
                     auto statusWithPlanExecutor =
@@ -1598,7 +1601,7 @@ public:
                 // metrics. There is no harm adding here for the time being.
                 curOp->debug().setPlanSummaryMetrics(stats);
 
-                Collection* coll = scopedAutoDb->getDb()->getCollection(config.nss);
+                Collection* coll = scopedAutoDb->getDb()->getCollection(opCtx, config.nss);
                 invariant(coll);  // 'exec' hasn't been killed, so collection must be alive.
                 coll->infoCache()->notifyOfQuery(opCtx, stats.indexesUsed);
 

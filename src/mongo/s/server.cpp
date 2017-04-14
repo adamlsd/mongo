@@ -89,6 +89,7 @@
 #include "mongo/transport/transport_layer_legacy.h"
 #include "mongo/util/admin_access.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
@@ -287,9 +288,7 @@ static ExitCode runMongosServer() {
 
     auto opCtx = cc().makeOperationContext();
 
-    std::array<std::uint8_t, 20> tempKey = {};
-    TimeProofService::Key key(std::move(tempKey));
-    auto timeProofService = stdx::make_unique<TimeProofService>(std::move(key));
+    auto timeProofService = stdx::make_unique<TimeProofService>();
     auto logicalClock =
         stdx::make_unique<LogicalClock>(opCtx->getServiceContext(), std::move(timeProofService));
     LogicalClock::set(opCtx->getServiceContext(), std::move(logicalClock));
@@ -356,6 +355,7 @@ static ExitCode runMongosServer() {
 #endif
 
     // Block until shutdown.
+    MONGO_IDLE_THREAD_BLOCK;
     return waitForShutdown();
 }
 

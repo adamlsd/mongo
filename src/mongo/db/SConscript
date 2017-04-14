@@ -538,7 +538,7 @@ env.Library(
         '$BUILD_DIR/mongo/rpc/rpc',
         '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
         'audit',
-        'auth/authorization_manager_global',
+        'auth/authcore',
         'commands/server_status_core',
         'commands/test_commands_enabled',
         'service_context',
@@ -566,8 +566,11 @@ env.Library(
         'db_raii.cpp',
     ],
     LIBDEPS=[
+        'curop',
         'stats/top',
         'views/views',
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/s/sharding',
         #'catalog/catalog', # CYCLE
     ],
     LIBDEPS_TAGS=[
@@ -596,7 +599,7 @@ env.Library(
         '$BUILD_DIR/mongo/client/clientdriver',
         'curop',
         'lasterror',
-        # 'assemble_response', # CYCLE
+        #'assemble_response', # CYCLE
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-01-09): See `CYCLE` tags above
@@ -716,7 +719,7 @@ env.Library(
     LIBDEPS=[
         "db_raii",
         "index/index_access_methods",
-        #"catalog/catalog", # CYCYLE
+        #"catalog/catalog", # CYCLE
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-03-10): See `CYCLE` tags above.
@@ -770,9 +773,8 @@ env.Library(
 )
 
 env.Library(
-    target="rw_concern_d",
+    target="write_concern_d",
     source=[
-        "read_concern.cpp",
         "write_concern.cpp",
     ],
     LIBDEPS=[
@@ -938,7 +940,7 @@ env.Library(
         "repl/sync_tail",
         "repl/topology_coordinator_impl",
         "run_commands",
-        "rw_concern_d",
+        "write_concern_d",
         "s/commands",
         "s/metadata",
         "s/sharding",
@@ -959,6 +961,28 @@ env.Library(
         "ttl_d",
         "update_index_data",
         "views/views_mongod",
+    ],
+)
+
+env.Library(
+    target='logical_session_id',
+    source=[
+        'logical_session_id.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/uuid',
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.CppUnitTest(
+    target='logical_session_id_test',
+    source=[
+        'logical_session_id_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        'logical_session_id'
     ],
 )
 
@@ -997,6 +1021,17 @@ env.Library(
 )
 
 env.Library(
+    target='keys_collection_document',
+    source=[
+        'keys_collection_document.cpp',
+    ],
+    LIBDEPS=[
+        'logical_time',
+        'time_proof_service'
+    ],
+)
+
+env.Library(
     target='logical_clock',
     source=[
         'logical_clock.cpp',
@@ -1006,6 +1041,17 @@ env.Library(
         'service_context',
         'signed_logical_time',
         'time_proof_service',
+        '$BUILD_DIR/mongo/util/clock_source_mock'
+    ],
+)
+
+env.CppUnitTest(
+    target='keys_collection_document_test',
+    source=[
+        'keys_collection_document_test.cpp',
+    ],
+    LIBDEPS=[
+        'keys_collection_document',
     ],
 )
 
@@ -1142,5 +1188,18 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+    ],
+)
+
+asioEnv = env.Clone()
+asioEnv.InjectThirdPartyIncludePaths('asio')
+
+asioEnv.CppIntegrationTest(
+    target='nesting_depth_test',
+    source=[
+        'nesting_depth_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/executor/network_interface_asio_fixture',
     ],
 )

@@ -213,7 +213,7 @@ private:
         }
 
         *fromCache = false;
-        Collection* collection = db->getCollection(fullCollectionName);
+        Collection* collection = db->getCollection(opCtx, ns);
         if (!collection)
             return "";
 
@@ -273,9 +273,8 @@ private:
 
 }  // namespace
 
-void logOpForDbHash(OperationContext* opCtx, const char* ns) {
-    NamespaceString nsString(ns);
-    dbhashCmd.wipeCacheForCollection(opCtx, nsString);
+void logOpForDbHash(OperationContext* opCtx, const NamespaceString& nss) {
+    dbhashCmd.wipeCacheForCollection(opCtx, nss);
 }
 
 }  // namespace mongo

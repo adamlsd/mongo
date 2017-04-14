@@ -559,20 +559,6 @@ void assembleResponse(OperationContext* opCtx,
     } else if (op == dbGetMore) {
         if (!receivedGetMore(opCtx, dbresponse, m, currentOp))
             shouldLogOpDebug = true;
-    } else if (op == dbMsg) {
-        // deprecated - replaced by commands
-        const char* p = dbmsg.getns();
-
-        int len = strlen(p);
-        if (len > 400)
-            log() << curTimeMillis64() % 10000 << " long msg received, len:" << len;
-
-        if (strcmp("end", p) == 0)
-            dbresponse.response.setData(opReply, "dbMsg end no longer supported");
-        else
-            dbresponse.response.setData(opReply, "i am fine - dbMsg deprecated");
-
-        dbresponse.responseToMsgId = m.header().getId();
     } else {
         // The remaining operations do not return any response. They are fire-and-forget.
         try {
@@ -642,7 +628,7 @@ void assembleResponse(OperationContext* opCtx,
         log() << debug.report(&c, currentOp, lockerInfo.stats);
     }
 
-    if (shouldSample && currentOp.shouldDBProfile()) {
+    if (currentOp.shouldDBProfile(shouldSample)) {
         // Performance profiling is on
         if (opCtx->lockState()->isReadLocked()) {
             LOG(1) << "note: not profiling because recursive read lock";

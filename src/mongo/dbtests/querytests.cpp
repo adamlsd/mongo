@@ -1,5 +1,3 @@
-// querytests.cpp : query.{h,cpp} unit tests.
-
 /**
  *    Copyright (C) 2008 10gen Inc.
  *
@@ -41,7 +39,6 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/exec/queued_data_stage.h"
-#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/json.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/logical_clock.h"
@@ -61,17 +58,13 @@ using std::endl;
 using std::string;
 using std::vector;
 
-namespace {
-const auto kIndexVersion = IndexDescriptor::IndexVersion::kV2;
-}  // namespace
-
 class Base {
 public:
     Base() : _lk(&_opCtx), _context(&_opCtx, ns()) {
         {
             WriteUnitOfWork wunit(&_opCtx);
             _database = _context.db();
-            _collection = _database->getCollection(ns());
+            _collection = _database->getCollection(&_opCtx, ns());
             if (_collection) {
                 _database->dropCollection(&_opCtx, ns());
             }
@@ -79,7 +72,7 @@ public:
             wunit.commit();
         }
 
-        addIndex(fromjson("{\"a\":1}"));
+        addIndex(IndexSpec().addKey("a").unique(false));
     }
 
     ~Base() {
@@ -97,9 +90,10 @@ protected:
         return "unittests.querytests";
     }
 
-    void addIndex(const BSONObj& key) {
-        Helpers::ensureIndex(
-            &_opCtx, _collection, key, kIndexVersion, false, key.firstElementFieldName());
+    void addIndex(const IndexSpec& spec) {
+        DBDirectClient client(&_opCtx);
+        client.createIndex(ns(), spec);
+        client.getLastError();
     }
 
     void insert(const char* s) {
@@ -135,8 +129,9 @@ protected:
 class FindOneOr : public Base {
 public:
     void run() {
-        addIndex(BSON("b" << 1));
-        addIndex(BSON("c" << 1));
+        addIndex(IndexSpec().addKey("b").unique(false));
+        addIndex(IndexSpec().addKey("c").unique(false));
+
         insert(BSON("b" << 2 << "_id" << 0));
         insert(BSON("c" << 3 << "_id" << 1));
         BSONObj query = fromjson("{$or:[{b:2},{c:3}]}");
@@ -173,7 +168,8 @@ public:
         // Check findOne() returning location, requiring indexed scan without index.
         ASSERT_THROWS(Helpers::findOne(&_opCtx, _collection, query, true), MsgAssertionException);
 
-        addIndex(BSON("b" << 1));
+        addIndex(IndexSpec().addKey("b").unique(false));
+
         // Check findOne() returning object, requiring indexed scan with index.
         ASSERT(Helpers::findOne(&_opCtx, _collection, query, ret, true));
         // Check findOne() returning location, requiring indexed scan with index.
@@ -195,7 +191,7 @@ public:
         {
             WriteUnitOfWork wunit(&_opCtx);
             Database* db = ctx.db();
-            if (db->getCollection(ns())) {
+            if (db->getCollection(&_opCtx, ns())) {
                 _collection = NULL;
                 db->dropCollection(&_opCtx, ns());
             }
@@ -695,7 +691,7 @@ public:
         long long cursorId = c->getCursorId();
 
         auto pinnedCursor = unittest::assertGet(
-            ctx.db()->getCollection(ns)->getCursorManager()->pinCursor(cursorId));
+            ctx.db()->getCollection(&_opCtx, ns)->getCursorManager()->pinCursor(cursorId));
         ASSERT_EQUALS(three.toULL(), pinnedCursor.getCursor()->getSlaveReadTill().asULL());
     }
 };
@@ -1704,7 +1700,7 @@ public:
         {
             OldClientWriteContext ctx(&_opCtx, ns());
             auto pinnedCursor = unittest::assertGet(
-                ctx.db()->getCollection(ns())->getCursorManager()->pinCursor(cursorId));
+                ctx.db()->getCollection(&_opCtx, ns())->getCursorManager()->pinCursor(cursorId));
             string expectedAssertion = str::stream() << "Cannot kill pinned cursor: " << cursorId;
             ASSERT_THROWS_WHAT(CursorManager::eraseCursorGlobal(&_opCtx, cursorId),
                                MsgAssertionException,

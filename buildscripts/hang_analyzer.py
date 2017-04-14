@@ -27,6 +27,12 @@ import tempfile
 import time
 from distutils import spawn
 from optparse import OptionParser
+_is_windows = (sys.platform == "win32")
+
+if _is_windows:
+    import win32event
+    import win32api
+
 
 # Get relative imports to work when the package is not installed on the PYTHONPATH.
 if __name__ == "__main__" and __package__ is None:
@@ -37,7 +43,8 @@ if __name__ == "__main__" and __package__ is None:
 def call(a, logger):
     logger.info(str(a))
 
-    process = subprocess.Popen(a, stdout=subprocess.PIPE)
+    # Use a common pipe for stdout & stderr for logging.
+    process = subprocess.Popen(a, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     logger_pipe = core.pipe.LoggerPipe(logger, logging.INFO, process.stdout)
     logger_pipe.wait_until_started()
 
@@ -73,6 +80,7 @@ def find_program(prog, paths):
 def get_process_logger(debugger_output, pid, process_name):
     """Returns the process logger from options specified."""
     process_logger = logging.Logger("process", level=logging.DEBUG)
+    process_logger.mongo_process_filename = None
 
     if 'stdout' in debugger_output:
         handler = logging.StreamHandler(sys.stdout)
@@ -80,9 +88,9 @@ def get_process_logger(debugger_output, pid, process_name):
         process_logger.addHandler(handler)
 
     if 'file' in debugger_output:
-        handler = logging.FileHandler(
-            filename="debugger_%s_%d.log" % (os.path.splitext(process_name)[0], pid),
-            mode="w")
+        filename = "debugger_%s_%d.log" % (os.path.splitext(process_name)[0], pid)
+        process_logger.mongo_process_filename = filename
+        handler = logging.FileHandler(filename=filename, mode="w")
         handler.setFormatter(logging.Formatter(fmt="%(message)s"))
         process_logger.addHandler(handler)
 
@@ -300,51 +308,70 @@ class GDBDumper(object):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         root_logger.info("dir %s" % script_dir)
         gdb_dir = os.path.join(script_dir, "gdb")
-        printers_script = os.path.join(gdb_dir, "mongo.py")
+        mongo_script = os.path.join(gdb_dir, "mongo.py")
+        mongo_printers_script = os.path.join(gdb_dir, "mongo_printers.py")
         mongo_lock_script = os.path.join(gdb_dir, "mongo_lock.py")
 
-        bt_command = "mongodb-uniqstack bt"
+        source_mongo = "source %s" % mongo_script
+        source_mongo_printers = "source %s" % mongo_printers_script
+        source_mongo_lock = "source %s" % mongo_lock_script
+        mongodb_dump_locks = "mongodb-dump-locks"
         mongodb_show_locks = "mongodb-show-locks"
-        mongodb_deadlock = "mongodb-waitsfor-graph debugger_deadlock_%s_%d.gv" % \
+        mongodb_uniqstack = "mongodb-uniqstack mongodb-bt-if-active"
+        mongodb_waitsfor_graph = "mongodb-waitsfor-graph debugger_waitsfor_%s_%d.gv" % \
             (process_name, pid)
-        if sys.platform.startswith("sunos"):
-            '''
-            On Solaris, currently calling mongo-uniqstack leads to an error:
+        mongodb_javascript_stack = "mongodb-javascript-stack"
 
-            Thread 198 received signal SIGSEGV, Segmentation fault.
-            0x0000000000000000 in ?? ()
-            Python Exception <class 'gdb.error'> The program being debugged was signaled while in a
-            function called from GDB.
-            GDB remains in the frame where the signal was received.
-            To change this behavior use "set unwindonsignal on".
-            Evaluation of the expression containing the function
-            (at 0x0x0) will be abandoned.
-            When the function is done executing, GDB will silently stop.
-            '''
-            bt_command = "thread apply all bt"
+        # The following MongoDB python extensions do not run on Solaris.
+        if sys.platform.startswith("sunos"):
+            source_mongo_lock = ""
+            # SERVER-28234 - GDB frame information not available on Solaris for a templatized
+            # function
+            mongodb_dump_locks = ""
+
+            # SERVER-28373 - GDB thread-local variables not available on Solaris
             mongodb_show_locks = ""
-            mongodb_deadlock = ""
+            mongodb_waitsfor_graph = ""
+            mongodb_javascript_stack = ""
+
+        if not logger.mongo_process_filename:
+            raw_stacks_commands = []
+        else:
+            base, ext = os.path.splitext(logger.mongo_process_filename)
+            raw_stacks_filename = base + '_raw_stacks' + ext
+            raw_stacks_commands = [
+                    'echo \\nWriting raw stacks to %s.\\n' % raw_stacks_filename,
+                    # This sends output to log file rather than stdout until we turn logging off.
+                    'set logging redirect on',
+                    'set logging file ' + raw_stacks_filename,
+                    'set logging on',
+                    'thread apply all bt',
+                    'set logging off',
+                    ]
 
         cmds = [
             "set interactive-mode off",
             "set print thread-events off",  # Python calls to gdb.parse_and_eval may cause threads
                                             # to start and finish. This suppresses those messages
                                             # from appearing in the return output.
-            "file %s" % process_name,  # Solaris must load the process to read the symbols.
+            "file %s" % process_name,       # Solaris must load the process to read the symbols.
             "attach %d" % pid,
             "info sharedlibrary",
-            "info threads",  # Dump a simple list of commands to get the thread name
+            "info threads",                 # Dump a simple list of commands to get the thread name
             "set python print-stack full",
-            "source %s" % printers_script,
-            "source %s" % mongo_lock_script,
-            bt_command,
+            ] + raw_stacks_commands + [
+            source_mongo,
+            source_mongo_printers,
+            source_mongo_lock,
+            mongodb_uniqstack,
+            "set scheduler-locking on",     # Lock the scheduler, before running any of the
+                                            # following commands, which executes code in the
+                                            # attached process.
             dump_command,
-            "mongodb-dump-locks",
+            mongodb_dump_locks,
             mongodb_show_locks,
-            mongodb_deadlock,
-            "mongodb-javascript-stack",  # The mongodb-javascript-stack command executes code in
-                                         # order to dump JavaScript backtraces and should therefore
-                                         # be one of the last analysis commands.
+            mongodb_waitsfor_graph,
+            mongodb_javascript_stack,
             "set confirm off",
             "quit",
             ]
@@ -457,7 +484,7 @@ def get_hang_analyzers():
         dbg = GDBDumper()
         jstack = JstackDumper()
         ps = SolarisProcessList()
-    elif os.name == 'nt' or (os.name == "posix" and sys.platform == "cygwin"):
+    elif _is_windows or sys.platform == "cygwin":
         dbg = WindowsDumper()
         jstack = JstackWindowsDumper()
         ps = WindowsProcessList()
@@ -479,6 +506,33 @@ def check_dump_quota(quota, ext):
         size_sum += os.path.getsize(file_name)
 
     return (size_sum <= quota)
+
+
+def signal_event_object(logger, pid):
+    """Signal the Windows event object"""
+
+    # Use unique event_name created.
+    event_name = "Global\\Mongo_Python_" + str(pid)
+
+    try:
+        desired_access = win32event.EVENT_MODIFY_STATE
+        inherit_handle = False
+        task_timeout_handle = win32event.OpenEvent(desired_access,
+                                                   inherit_handle,
+                                                   event_name)
+    except win32event.error as err:
+        logger.info("Exception from win32event.OpenEvent with error: %s" % err)
+        return
+
+    try:
+        win32event.SetEvent(task_timeout_handle)
+    except win32event.error as err:
+        logger.info("Exception from win32event.SetEvent with error: %s" % err)
+    finally:
+        win32api.CloseHandle(task_timeout_handle)
+
+    logger.info("Waiting for process to report")
+    time.sleep(5)
 
 
 def signal_process(logger, pid, signalnum):
@@ -510,8 +564,13 @@ def main():
     root_logger.info("OS: %s" % platform.platform())
 
     try:
-        distro = platform.linux_distribution()
-        root_logger.info("Linux Distribution: %s" % str(distro))
+        if _is_windows or sys.platform == "cygwin":
+            distro = platform.win32_ver()
+            root_logger.info("Windows Distribution: %s" % str(distro))
+        else:
+            distro = platform.linux_distribution()
+            root_logger.info("Linux Distribution: %s" % str(distro))
+
     except AttributeError:
         root_logger.warning("Cannot determine Linux distro since Python is too old")
 
@@ -586,6 +645,10 @@ def main():
 
     all_processes = ps.dump_processes(root_logger)
 
+    # Canonicalize the process names to lowercase to handle cases where the name of the Python
+    # process is /System/Library/.../Python on OS X and -p python is specified to hang_analyzer.py.
+    all_processes = [(pid, process_name.lower()) for (pid, process_name) in all_processes]
+
     # Find all running interesting processes:
     #   If a list of process_ids is supplied, match on that.
     #   Otherwise, do a substring match on interesting_processes.
@@ -627,20 +690,22 @@ def main():
     # TerminateProcess.
     # Note: The stacktrace output may be captured elsewhere (i.e. resmoke).
     for (pid, process_name) in [(p, pn) for (p, pn) in processes if pn in go_processes]:
-        root_logger.info("Sending signal SIGABRT to go process %s with PID %d" % (process_name, pid))
+        root_logger.info("Sending signal SIGABRT to go process %s with PID %d" %
+            (process_name, pid))
         signal_process(root_logger, pid, signal.SIGABRT)
 
-    # Dump python processes after signalling them.
+    # Dump python processes by signalling them.
     for (pid, process_name) in [(p, pn) for (p, pn) in processes if pn.startswith("python")]:
-        root_logger.info("Sending signal SIGUSR1 to python process %s with PID %d" % (process_name, pid))
-        signal_process(root_logger, pid, signal.SIGUSR1)
-        process_logger = get_process_logger(options.debugger_output, pid, process_name)
-        dbg.dump_info(
-            root_logger,
-            process_logger,
-            pid,
-            process_name,
-            take_dump=False)
+        # On Windows, we set up an event object to wait on a signal. For Cygwin, we register
+        # a signal handler to wait for the signal since it supports POSIX signals.
+        if _is_windows:
+            root_logger.info("Calling SetEvent to signal python process %s with PID %d" %
+                (process_name, pid))
+            signal_event_object(root_logger, pid)
+        else:
+            root_logger.info("Sending signal SIGUSR1 to python process %s with PID %d" %
+                (process_name, pid))
+            signal_process(root_logger, pid, signal.SIGUSR1)
 
     root_logger.info("Done analyzing all processes for hangs")
 

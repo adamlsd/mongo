@@ -83,34 +83,6 @@ using std::stringstream;
 
 using logger::LogComponent;
 
-void Helpers::ensureIndex(OperationContext* opCtx,
-                          Collection* collection,
-                          BSONObj keyPattern,
-                          IndexDescriptor::IndexVersion indexVersion,
-                          bool unique,
-                          const char* name) {
-    BSONObjBuilder b;
-    b.append("name", name);
-    b.append("ns", collection->ns().ns());
-    b.append("key", keyPattern);
-    b.append("v", static_cast<int>(indexVersion));
-    b.appendBool("unique", unique);
-    BSONObj o = b.done();
-
-    MultiIndexBlock indexer(opCtx, collection);
-
-    Status status = indexer.init(o).getStatus();
-    if (status.code() == ErrorCodes::IndexAlreadyExists)
-        return;
-    uassertStatusOK(status);
-
-    uassertStatusOK(indexer.insertAllDocumentsInCollection());
-
-    WriteUnitOfWork wunit(opCtx);
-    indexer.commit();
-    wunit.commit();
-}
-
 /* fetch a single object from collection ns that matches query
    set your db SavedContext first
 */
@@ -167,14 +139,14 @@ RecordId Helpers::findOne(OperationContext* opCtx,
 
 bool Helpers::findById(OperationContext* opCtx,
                        Database* database,
-                       const char* ns,
+                       StringData ns,
                        BSONObj query,
                        BSONObj& result,
                        bool* nsFound,
                        bool* indexFound) {
     invariant(database);
 
-    Collection* collection = database->getCollection(ns);
+    Collection* collection = database->getCollection(opCtx, ns);
     if (!collection) {
         return false;
     }
@@ -493,11 +465,11 @@ long long Helpers::removeRange(OperationContext* opCtx,
     return numDeleted;
 }
 
-void Helpers::emptyCollection(OperationContext* opCtx, const char* ns) {
-    OldClientContext context(opCtx, ns);
+void Helpers::emptyCollection(OperationContext* opCtx, const NamespaceString& nss) {
+    OldClientContext context(opCtx, nss.ns());
     repl::UnreplicatedWritesBlock uwb(opCtx);
-    Collection* collection = context.db() ? context.db()->getCollection(ns) : nullptr;
-    deleteObjects(opCtx, collection, ns, BSONObj(), PlanExecutor::YIELD_MANUAL, false);
+    Collection* collection = context.db() ? context.db()->getCollection(opCtx, nss) : nullptr;
+    deleteObjects(opCtx, collection, nss, BSONObj(), PlanExecutor::YIELD_MANUAL, false);
 }
 
 Helpers::RemoveSaver::RemoveSaver(const string& a, const string& b, const string& why) {

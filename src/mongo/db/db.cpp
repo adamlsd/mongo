@@ -124,7 +124,7 @@
 #include "mongo/transport/transport_layer_legacy.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
-#include "mongo/util/concurrency/task.h"
+#include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/exception_filter_win32.h"
 #include "mongo/util/exit.h"
@@ -200,13 +200,13 @@ void logStartup(OperationContext* opCtx) {
     Lock::GlobalWrite lk(opCtx);
     AutoGetOrCreateDb autoDb(opCtx, startupLogCollectionName.db(), mongo::MODE_X);
     Database* db = autoDb.getDb();
-    Collection* collection = db->getCollection(startupLogCollectionName);
+    Collection* collection = db->getCollection(opCtx, startupLogCollectionName);
     WriteUnitOfWork wunit(opCtx);
     if (!collection) {
         BSONObj options = BSON("capped" << true << "size" << 10 * 1024 * 1024);
         repl::UnreplicatedWritesBlock uwb(opCtx);
         uassertStatusOK(userCreateNS(opCtx, db, startupLogCollectionName.ns(), options));
-        collection = db->getCollection(startupLogCollectionName);
+        collection = db->getCollection(opCtx, startupLogCollectionName);
     }
     invariant(collection);
 
@@ -231,7 +231,7 @@ void checkForIdIndexes(OperationContext* opCtx, Database* db) {
         if (ns.isSystem())
             continue;
 
-        Collection* coll = db->getCollection(collectionName);
+        Collection* coll = db->getCollection(opCtx, collectionName);
         if (!coll)
             continue;
 
@@ -270,7 +270,7 @@ unsigned long long checkIfReplMissingFromCommandLine(OperationContext* opCtx) {
 void checkForCappedOplog(OperationContext* opCtx, Database* db) {
     const NamespaceString oplogNss(repl::rsOplogName);
     invariant(opCtx->lockState()->isDbLockedForMode(oplogNss.db(), MODE_IS));
-    Collection* oplogCollection = db->getCollection(oplogNss);
+    Collection* oplogCollection = db->getCollection(opCtx, oplogNss);
     if (oplogCollection && !oplogCollection->isCapped()) {
         severe() << "The oplog collection " << oplogNss
                  << " is not capped; a capped oplog is a requirement for replication to function.";
@@ -352,7 +352,7 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         // If a valid featureCompatibilityVersion is present, cache it as a server parameter.
         if (dbName == "admin") {
             if (Collection* versionColl =
-                    db->getCollection(FeatureCompatibilityVersion::kCollection)) {
+                    db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection)) {
                 BSONObj featureCompatibilityVersion;
                 if (Helpers::findOne(opCtx,
                                      versionColl,
@@ -369,11 +369,11 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         }
 
         // Major versions match, check indexes
-        const string systemIndexes = db->name() + ".system.indexes";
+        const NamespaceString systemIndexes(db->name(), "system.indexes");
 
-        Collection* coll = db->getCollection(systemIndexes);
+        Collection* coll = db->getCollection(opCtx, systemIndexes);
         unique_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(
-            opCtx, systemIndexes, coll, PlanExecutor::YIELD_MANUAL));
+            opCtx, systemIndexes.ns(), coll, PlanExecutor::YIELD_MANUAL));
 
         BSONObj index;
         PlanExecutor::ExecState state;
@@ -735,6 +735,8 @@ ExitCode _initAndListen(int listenPort) {
         log() << "starting clean exit via failpoint";
         exitCleanly(EXIT_CLEAN);
     }
+
+    MONGO_IDLE_THREAD_BLOCK;
     return waitForShutdown();
 }
 
@@ -892,9 +894,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
     topoCoordOptions.maxSyncSourceLagSecs = Seconds(repl::maxSyncSourceLagSecs);
     topoCoordOptions.clusterRole = serverGlobalParams.clusterRole;
 
-    std::array<std::uint8_t, 20> tempKey = {};
-    TimeProofService::Key key(std::move(tempKey));
-    auto timeProofService = stdx::make_unique<TimeProofService>(std::move(key));
+    auto timeProofService = stdx::make_unique<TimeProofService>();
     auto logicalClock =
         stdx::make_unique<LogicalClock>(serviceContext, std::move(timeProofService));
     LogicalClock::set(serviceContext, std::move(logicalClock));

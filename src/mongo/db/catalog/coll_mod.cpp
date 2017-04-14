@@ -76,6 +76,8 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
             // no-op ignore top-level fields prefixed with $. They are for the command processor
         } else if (QueryRequest::cmdOptionMaxTimeMS == e.fieldNameStringData()) {
             // no-op
+        } else if (str::equals("shardVersion", e.fieldName())) {
+            // no-op
         } else if (str::equals("index", e.fieldName()) && !isView) {
             BSONObj indexObj = e.Obj();
             StringData indexName;
@@ -222,7 +224,7 @@ Status collMod(OperationContext* opCtx,
     StringData dbName = nss.db();
     AutoGetDb autoDb(opCtx, dbName, MODE_X);
     Database* const db = autoDb.getDb();
-    Collection* coll = db ? db->getCollection(nss) : nullptr;
+    Collection* coll = db ? db->getCollection(opCtx, nss) : nullptr;
 
     // May also modify a view instead of a collection.
     boost::optional<ViewDefinition> view;
@@ -345,8 +347,7 @@ Status collMod(OperationContext* opCtx,
 
         // Only observe non-view collMods, as view operations are observed as operations on the
         // system.views collection.
-        getGlobalServiceContext()->getOpObserver()->onCollMod(
-            opCtx, (dbName.toString() + ".$cmd").c_str(), cmdObj);
+        getGlobalServiceContext()->getOpObserver()->onCollMod(opCtx, nss, cmdObj);
     }
 
     wunit.commit();

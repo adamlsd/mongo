@@ -37,6 +37,7 @@
 #include "mongo/db/repl/oplog_buffer.h"
 #include "mongo/db/repl/oplog_fetcher.h"
 #include "mongo/db/repl/optime.h"
+#include "mongo/db/repl/rollback_impl.h"
 #include "mongo/db/repl/sync_source_resolver.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
@@ -53,6 +54,7 @@ namespace repl {
 
 class ReplicationCoordinator;
 class ReplicationCoordinatorExternalState;
+class StorageInterface;
 
 class BackgroundSync {
     MONGO_DISALLOW_COPYING(BackgroundSync);
@@ -160,6 +162,15 @@ private:
                              Fetcher::Documents::const_iterator end,
                              const OplogFetcher::DocumentsInfo& info);
 
+    /**
+     * Executes a rollback.
+     */
+    void _runRollback(OperationContext* opCtx,
+                      const Status& fetcherReturnStatus,
+                      const HostAndPort& source,
+                      int requiredRBID,
+                      StorageInterface* storageInterface);
+
     // restart syncing
     void start(OperationContext* opCtx);
 
@@ -174,34 +185,55 @@ private:
     // A pointer to the replication coordinator external state.
     ReplicationCoordinatorExternalState* _replicationCoordinatorExternalState;
 
-    // _mutex protects all of the class variables declared below.
-    //
-    // Never hold bgsync mutex when trying to acquire the ReplicationCoordinator mutex.
-    mutable stdx::mutex _mutex;
+    /**
+      * All member variables are labeled with one of the following codes indicating the
+      * synchronization rules for accessing them:
+      *
+      * (PR) Completely private to BackgroundSync. Can be read or written to from within the main
+      *      BackgroundSync thread without synchronization. Shouldn't be accessed outside of this
+      *      thread.
+      *
+      * (S)  Self-synchronizing; access in any way from any context.
+      *
+      * (M)  Reads and writes guarded by _mutex
+      *
+     */
 
-    OpTime _lastOpTimeFetched;
+    // Protects member data of BackgroundSync.
+    // Never hold the BackgroundSync mutex when trying to acquire the ReplicationCoordinator mutex.
+    mutable stdx::mutex _mutex;  // (S)
 
-    // lastFetchedHash is used to match ops to determine if we need to rollback, when
-    // a secondary.
-    long long _lastFetchedHash = 0LL;
+    OpTime _lastOpTimeFetched;  // (M)
+
+    // lastFetchedHash is used to match ops to determine if we need to rollback, when a secondary.
+    long long _lastFetchedHash = 0LL;  // (M)
 
     // Thread running producerThread().
-    std::unique_ptr<stdx::thread> _producerThread;
+    std::unique_ptr<stdx::thread> _producerThread;  // (M)
 
     // Set to true if shutdown() has been called.
-    bool _inShutdown = false;
+    bool _inShutdown = false;  // (M)
 
-    ProducerState _state = ProducerState::Starting;
+    // Flag that marks whether a node's oplog has no common point with any
+    // potential sync sources.
+    bool _tooStale = false;  // (PR)
 
-    HostAndPort _syncSourceHost;
+    ProducerState _state = ProducerState::Starting;  // (M)
+
+    HostAndPort _syncSourceHost;  // (M)
 
     // Current sync source resolver validating sync source candidates.
     // Pointer may be read on any thread that locks _mutex or unlocked on the BGSync thread. It can
     // only be written to by the BGSync thread while holding _mutex.
-    std::unique_ptr<SyncSourceResolver> _syncSourceResolver;
+    std::unique_ptr<SyncSourceResolver> _syncSourceResolver;  // (M)
 
     // Current oplog fetcher tailing the oplog on the sync source.
     std::unique_ptr<OplogFetcher> _oplogFetcher;
+
+    // Current rollback process. If this component is active, we are currently reverting local
+    // operations in the local oplog in order to bring this server to a consistent state relative
+    // to the sync source.
+    std::unique_ptr<RollbackImpl> _rollback;
 };
 
 

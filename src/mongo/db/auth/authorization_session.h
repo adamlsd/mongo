@@ -273,7 +273,7 @@ public:
 
     // Returns true if the session and 'userNameIter' share an authenticated user, or if both have
     // no authenticated users. Impersonated users are not considered as 'authenticated' for the
-    // purpose of this check.
+    // purpose of this check. This always returns true if auth is not enabled.
     bool isCoauthorizedWith(UserNameIterator userNameIter);
 
     // Tells whether impersonation is active or not.  This state is set when

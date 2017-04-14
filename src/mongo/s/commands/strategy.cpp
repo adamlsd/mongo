@@ -46,6 +46,7 @@
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/operation_time_tracker.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/query/query_request.h"
@@ -82,8 +83,10 @@ using std::stringstream;
 
 namespace {
 
+const std::string kOperationTime = "operationTime";
+
 void runAgainstRegistered(OperationContext* opCtx,
-                          const char* ns,
+                          const NamespaceString& nss,
                           BSONObj& jsobj,
                           BSONObjBuilder& anObjBuilder,
                           int queryOptions) {
@@ -91,7 +94,7 @@ void runAgainstRegistered(OperationContext* opCtx,
     // into this function with any other collection name.
     uassert(16618,
             "Illegal attempt to run a command against a namespace other than $cmd.",
-            nsToCollectionSubstring(ns) == "$cmd");
+            nss.isCommand());
 
     BSONElement e = jsobj.firstElement();
     std::string commandName = e.fieldName();
@@ -104,7 +107,7 @@ void runAgainstRegistered(OperationContext* opCtx,
         return;
     }
 
-    execCommandClient(opCtx, c, queryOptions, ns, jsobj, anObjBuilder);
+    execCommandClient(opCtx, c, queryOptions, nss.db(), jsobj, anObjBuilder);
 }
 
 /**
@@ -167,6 +170,11 @@ Status processCommandMetadata(OperationContext* opCtx, const BSONObj& cmdObj) {
 void appendRequiredFieldsToResponse(OperationContext* opCtx, BSONObjBuilder* responseBuilder) {
     rpc::LogicalTimeMetadata logicalTimeMetadata(LogicalClock::get(opCtx)->getClusterTime());
     logicalTimeMetadata.writeToMetadata(responseBuilder);
+    auto tracker = OperationTimeTracker::get(opCtx);
+    if (tracker) {
+        auto operationTime = OperationTimeTracker::get(opCtx)->getMaxOperationTime();
+        responseBuilder->append(kOperationTime, operationTime.asTimestamp());
+    }
 }
 
 MONGO_INITIALIZER(InitializeCommandExecCommandHandler)(InitializerContext* const) {
@@ -323,8 +331,7 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
             // Rewrite upgraded pseudoCommands to run on the 'admin' database.
             const NamespaceString interposedNss("admin", "$cmd");
             BSONObjBuilder reply;
-            runAgainstRegistered(
-                opCtx, interposedNss.ns().c_str(), interposedCmd, reply, q.queryOptions);
+            runAgainstRegistered(opCtx, interposedNss, interposedCmd, reply, q.queryOptions);
             replyToQuery(0, client->session(), dbm->msg(), reply.done());
         };
 
@@ -388,7 +395,7 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
             OpQueryReplyBuilder reply;
             {
                 BSONObjBuilder builder(reply.bufBuilderForResults());
-                runAgainstRegistered(opCtx, q.ns, cmdObj, builder, q.queryOptions);
+                runAgainstRegistered(opCtx, NamespaceString(q.ns), cmdObj, builder, q.queryOptions);
             }
             reply.sendCommandReply(client->session(), dbm->msg());
             return;
@@ -581,12 +588,12 @@ void Strategy::writeOp(OperationContext* opCtx, DbMessage* dbm) {
 
             // Adjust namespace for command
             const NamespaceString& fullNS(commandRequest->getNS());
-            const std::string cmdNS = fullNS.getCommandNS();
+            const NamespaceString& cmdNS = fullNS.getCommandNS();
 
             BSONObj commandBSON = commandRequest->toBSON();
 
             BSONObjBuilder builder;
-            runAgainstRegistered(opCtx, cmdNS.c_str(), commandBSON, builder, 0);
+            runAgainstRegistered(opCtx, cmdNS, commandBSON, builder, 0);
 
             bool parsed = commandResponse.parseBSON(builder.done(), nullptr);
             (void)parsed;  // for compile
@@ -650,13 +657,13 @@ Status Strategy::explainFind(OperationContext* opCtx,
 void execCommandClient(OperationContext* opCtx,
                        Command* c,
                        int queryOptions,
-                       const char* ns,
+                       StringData dbname,
                        BSONObj& cmdObj,
                        BSONObjBuilder& result) {
-    const std::string dbname = nsToDatabase(ns);
 
     ON_BLOCK_EXIT([opCtx, &result] { appendRequiredFieldsToResponse(opCtx, &result); });
 
+    dassert(dbname == nsToDatabase(dbname));
     StringMap<int> topLevelFields;
     for (auto&& element : cmdObj) {
         StringData fieldName = element.fieldNameStringData();
@@ -675,7 +682,7 @@ void execCommandClient(OperationContext* opCtx,
                 topLevelFields[fieldName]++ == 0);
     }
 
-    Status status = Command::checkAuthorization(c, opCtx, dbname, cmdObj);
+    Status status = Command::checkAuthorization(c, opCtx, dbname.toString(), cmdObj);
     if (!status.isOK()) {
         Command::appendCommandStatus(result, status);
         return;
@@ -688,7 +695,7 @@ void execCommandClient(OperationContext* opCtx,
     }
 
     StatusWith<WriteConcernOptions> wcResult =
-        WriteConcernOptions::extractWCFromCommand(cmdObj, dbname);
+        WriteConcernOptions::extractWCFromCommand(cmdObj, dbname.toString());
     if (!wcResult.isOK()) {
         Command::appendCommandStatus(result, wcResult.getStatus());
         return;
@@ -719,14 +726,14 @@ void execCommandClient(OperationContext* opCtx,
     bool ok = false;
     try {
         if (!supportsWriteConcern) {
-            ok = c->run(opCtx, dbname, cmdObj, queryOptions, errmsg, result);
+            ok = c->run(opCtx, dbname.toString(), cmdObj, queryOptions, errmsg, result);
         } else {
             // Change the write concern while running the command.
             const auto oldWC = opCtx->getWriteConcern();
             ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
             opCtx->setWriteConcern(wcResult.getValue());
 
-            ok = c->run(opCtx, dbname, cmdObj, queryOptions, errmsg, result);
+            ok = c->run(opCtx, dbname.toString(), cmdObj, queryOptions, errmsg, result);
         }
     } catch (const DBException& e) {
         result.resetToEmpty();

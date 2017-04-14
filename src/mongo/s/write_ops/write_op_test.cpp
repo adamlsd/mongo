@@ -104,11 +104,10 @@ TEST(WriteOpTests, TargetSingle) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 1u);
     assertEndpointsEqual(targeted.front()->endpoint, endpoint);
@@ -128,12 +127,14 @@ BatchedDeleteDocument* buildDeleteDoc(const BSONObj& doc) {
 }
 
 struct EndpointComp {
-    bool operator()(const TargetedWrite* writeA, const TargetedWrite* writeB) const {
+    template <typename TargetedWritePtr>
+    bool operator()(const TargetedWritePtr& writeA, const TargetedWritePtr& writeB) const {
         return writeA->endpoint.shardName.compare(writeB->endpoint.shardName) < 0;
     }
 };
 
-inline void sortByEndpoint(vector<TargetedWrite*>* writes) {
+template <typename TargetedWritePtr>
+inline void sortByEndpoint(std::vector<TargetedWritePtr>* const writes) {
     std::sort(writes->begin(), writes->end(), EndpointComp());
 }
 
@@ -169,11 +170,10 @@ TEST(WriteOpTests, TargetMultiOneShard) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 1u);
     assertEndpointsEqual(targeted.front()->endpoint, endpointA);
@@ -216,11 +216,10 @@ TEST(WriteOpTests, TargetMultiAllShards) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 3u);
     sortByEndpoint(&targeted);
@@ -264,11 +263,10 @@ TEST(WriteOpTests, ErrorSingle) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 1u);
     assertEndpointsEqual(targeted.front()->endpoint, endpoint);
@@ -311,11 +309,10 @@ TEST(WriteOpTests, CancelSingle) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 1u);
     assertEndpointsEqual(targeted.front()->endpoint, endpoint);
@@ -355,11 +352,10 @@ TEST(WriteOpTests, RetrySingleOp) {
     MockNSTargeter targeter;
     targeter.init(std::move(mockRanges));
 
-    OwnedPointerVector<TargetedWrite> targetedOwned;
-    vector<TargetedWrite*>& targeted = targetedOwned.mutableVector();
-    Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
+    auto status = writeOp.targetWrites(&opCtx, targeter);
 
     ASSERT(status.isOK());
+    std::vector<std::unique_ptr<TargetedWrite>> targeted = std::move(status.getValue());
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Pending);
     ASSERT_EQUALS(targeted.size(), 1u);
     assertEndpointsEqual(targeted.front()->endpoint, endpoint);

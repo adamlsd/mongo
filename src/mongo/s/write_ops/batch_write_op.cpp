@@ -286,23 +286,18 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
         // Get TargetedWrites from the targeter for the write operation
         //
 
-        // TargetedWrites need to be owned once returned
-        std::vector<TargetedWrite*> writesUnowned;
-
-        Status targetStatus = writeOp.targetWrites(opCtx, targeter, &writesUnowned);
-        std::vector<std::unique_ptr<TargetedWrite>> writes =
-            transitional_tools_do_not_use::spool_vector(writesUnowned);
+        auto targetStatus = writeOp.targetWrites(opCtx, targeter);
 
         if (!targetStatus.isOK()) {
             WriteErrorDetail targetError;
-            buildTargetError(targetStatus, &targetError);
+            buildTargetError(targetStatus.getStatus(), &targetError);
 
             if (!recordTargetErrors) {
                 // Cancel current batch state with an error
 
                 cancelBatches(targetError, _writeOps, &batchMap);
                 dassert(batchMap.empty());
-                return targetStatus;
+                return targetStatus.getStatus();
             } else if (!ordered || batchMap.empty()) {
                 // Record an error for this batch
 
@@ -323,6 +318,7 @@ Status BatchWriteOp::targetBatch(OperationContext* opCtx,
                 break;
             }
         }
+        std::vector<std::unique_ptr<TargetedWrite>> writes = std::move(targetStatus.getValue());
 
         //
         // If ordered and we have a previous endpoint, make sure we don't need to send these

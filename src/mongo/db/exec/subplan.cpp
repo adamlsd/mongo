@@ -408,7 +408,7 @@ Status SubplanStage::choosePlanForSubqueries(PlanYieldPolicy* yieldPolicy) {
     LOG(5) << "Subplanner: fully tagged tree is " << redact(solnRoot->toString());
 
     // Takes ownership of 'solnRoot'
-    _compositeSolution= QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, solnRoot);
+    _compositeSolution = QueryPlannerAnalysis::analyzeDataAccess(*_query, _plannerParams, solnRoot);
 
     if (NULL == _compositeSolution.get()) {
         mongoutils::str::stream ss;

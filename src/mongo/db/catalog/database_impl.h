@@ -125,7 +125,7 @@ public:
     }
 
     // closes files and other cleanup see below.
-    void close(OperationContext* opCtx) final;
+    void close(OperationContext* opCtx, const std::string& reason) final;
 
     const std::string& name() const final {
         return _name;
@@ -176,9 +176,7 @@ public:
      */
     Collection* getCollection(OperationContext* opCtx, StringData ns) const final;
 
-    Collection* getCollection(OperationContext* opCtx, const NamespaceString& ns) const {
-        return getCollection(opCtx, ns.ns());
-    }
+    Collection* getCollection(OperationContext* opCtx, const NamespaceString& ns) const;
 
     /**
      * Get the view catalog, which holds the definition for all views created on this database. You

@@ -124,10 +124,13 @@ void execCommandHandler(OperationContext* opCtx,
     std::tie(cmdObj, queryFlags) = uassertStatusOK(
         rpc::downconvertRequestMetadata(request.getCommandArgs(), request.getMetadata()));
 
-    std::string db = request.getDatabase().rawData();
-    BSONObjBuilder result;
+    std::string db = request.getDatabase().toString();
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "Invalid database name: '" << db << "'",
+            NamespaceString::validDBName(db, NamespaceString::DollarInDbNameBehavior::Allow));
 
-    execCommandClient(opCtx, command, queryFlags, request.getDatabase().rawData(), cmdObj, result);
+    BSONObjBuilder result;
+    execCommandClient(opCtx, command, queryFlags, db, cmdObj, result);
 
     replyBuilder->setCommandReply(result.done()).setMetadata(rpc::makeEmptyMetadata());
 }
@@ -356,6 +359,7 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
     BSONObj cmdObj = q.query;
 
     {
+        bool haveReadPref = false;
         BSONElement e = cmdObj.firstElement();
         if (e.type() == Object && (e.fieldName()[0] == '$' ? str::equals("query", e.fieldName() + 1)
                                                            : str::equals("query", e.fieldName()))) {
@@ -363,6 +367,7 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
             if (cmdObj.hasField(Query::ReadPrefField.name())) {
                 // The command has a read preference setting. We don't want to lose this information
                 // so we copy this to a new field called $queryOptions.$readPreference
+                haveReadPref = true;
                 BSONObjBuilder finalCmdObjBuilder;
                 finalCmdObjBuilder.appendElements(e.embeddedObject());
 
@@ -374,6 +379,21 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
             } else {
                 cmdObj = e.embeddedObject();
             }
+        }
+
+        if (!haveReadPref && q.queryOptions & QueryOption_SlaveOk) {
+            // If the slaveOK bit is set, behave as-if read preference secondary-preferred was
+            // specified.
+            BSONObjBuilder finalCmdObjBuilder;
+            finalCmdObjBuilder.appendElements(cmdObj);
+
+            BSONObjBuilder queryOptionsBuilder(finalCmdObjBuilder.subobjStart("$queryOptions"));
+            queryOptionsBuilder.append(
+                Query::ReadPrefField.name(),
+                ReadPreferenceSetting(ReadPreference::SecondaryPreferred).toBSON());
+            queryOptionsBuilder.done();
+
+            cmdObj = finalCmdObjBuilder.obj();
         }
     }
 
@@ -432,12 +452,11 @@ void Strategy::clientCommandOp(OperationContext* opCtx,
 void Strategy::commandOp(OperationContext* opCtx,
                          const string& db,
                          const BSONObj& command,
-                         int options,
                          const string& versionedNS,
                          const BSONObj& targetingQuery,
                          const BSONObj& targetingCollation,
                          std::vector<CommandResult>* results) {
-    QuerySpec qSpec(db + ".$cmd", command, BSONObj(), 0, 1, options);
+    QuerySpec qSpec(db + ".$cmd", command, BSONObj(), 0, 1, 0);
 
     ParallelSortClusteredCursor cursor(
         qSpec, CommandInfo(versionedNS, targetingQuery, targetingCollation));
@@ -631,7 +650,6 @@ Status Strategy::explainFind(OperationContext* opCtx,
     Strategy::commandOp(opCtx,
                         qr.nss().db().toString(),
                         explainCmdBob.obj(),
-                        options,
                         qr.nss().toString(),
                         qr.getFilter(),
                         qr.getCollation(),
@@ -726,14 +744,14 @@ void execCommandClient(OperationContext* opCtx,
     bool ok = false;
     try {
         if (!supportsWriteConcern) {
-            ok = c->run(opCtx, dbname.toString(), cmdObj, queryOptions, errmsg, result);
+            ok = c->run(opCtx, dbname.toString(), cmdObj, errmsg, result);
         } else {
             // Change the write concern while running the command.
             const auto oldWC = opCtx->getWriteConcern();
             ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
             opCtx->setWriteConcern(wcResult.getValue());
 
-            ok = c->run(opCtx, dbname.toString(), cmdObj, queryOptions, errmsg, result);
+            ok = c->run(opCtx, dbname.toString(), cmdObj, errmsg, result);
         }
     } catch (const DBException& e) {
         result.resetToEmpty();

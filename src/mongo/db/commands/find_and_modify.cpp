@@ -298,7 +298,7 @@ public:
             if (!statusWithPlanExecutor.isOK()) {
                 return statusWithPlanExecutor.getStatus();
             }
-            const std::unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
+            const auto exec = std::move(statusWithPlanExecutor.getValue());
             Explain::explainStages(exec.get(), collection, verbosity, out);
         } else {
             UpdateRequest request(nsString);
@@ -329,7 +329,7 @@ public:
             if (!statusWithPlanExecutor.isOK()) {
                 return statusWithPlanExecutor.getStatus();
             }
-            const std::unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
+            const auto exec = std::move(statusWithPlanExecutor.getValue());
             Explain::explainStages(exec.get(), collection, verbosity, out);
         }
 
@@ -339,7 +339,6 @@ public:
     bool run(OperationContext* opCtx,
              const std::string& dbName,
              BSONObj& cmdObj,
-             int options,
              std::string& errmsg,
              BSONObjBuilder& result) override {
         // findAndModify command is not replicated directly.
@@ -422,8 +421,7 @@ public:
                 if (!statusWithPlanExecutor.isOK()) {
                     return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
                 }
-                const std::unique_ptr<PlanExecutor> exec =
-                    std::move(statusWithPlanExecutor.getValue());
+                const auto exec = std::move(statusWithPlanExecutor.getValue());
 
                 {
                     stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -528,8 +526,7 @@ public:
                 if (!statusWithPlanExecutor.isOK()) {
                     return appendCommandStatus(result, statusWithPlanExecutor.getStatus());
                 }
-                const std::unique_ptr<PlanExecutor> exec =
-                    std::move(statusWithPlanExecutor.getValue());
+                const auto exec = std::move(statusWithPlanExecutor.getValue());
 
                 {
                     stdx::lock_guard<Client> lk(*opCtx->getClient());

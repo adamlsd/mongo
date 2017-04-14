@@ -231,14 +231,10 @@ env.Library(
         'oplog_interface_local.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/catalog/database',
         '$BUILD_DIR/mongo/db/query/internal_plans',
         '$BUILD_DIR/mongo/db/query/query',
         '$BUILD_DIR/mongo/db/db_raii',
-        #'$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
-    ],
-    LIBDEPS_TAGS=[
-        # TODO(ADAM, 2017-03-28): See `CYCLE` tags above.
-        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
     ],
 )
 

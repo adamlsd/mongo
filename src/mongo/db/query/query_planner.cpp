@@ -528,7 +528,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                 out.push_back(std::move(soln));
             }
         }
-        return Status::OK();
+        return std::move(out);
     }
 
     // The hint or sort can be $natural: 1.  If this happens, output a collscan. If both
@@ -553,7 +553,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                     out.push_back(std::move(soln));
                 }
             }
-            return Status::OK();
+            return std::move(out);
         }
     }
 
@@ -593,7 +593,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
             if (soln) {
                 out.push_back(std::move(soln));
             }
-            return Status::OK();
+            return std::move(out);
         } else {
             // Find the ID index in indexKeyPatterns. It's our hint.
             for (size_t i = 0; i < params.indices.size(); ++i) {
@@ -740,7 +740,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
             out.push_back(std::move(soln));
         }
 
-        return Status::OK();
+        return std::move(out);
     }
 
     for (size_t i = 0; i < relevantIndices.size(); ++i) {
@@ -903,7 +903,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
                 out.push_back(std::move(soln));
             }
         }
-        return Status::OK();
+        return std::move(out);
     }
 
     // If a sort order is requested, there may be an index that provides it, even if that
@@ -1019,7 +1019,7 @@ StatusWith<std::vector<std::unique_ptr<QuerySolution>>> QueryPlanner::plan(
         }
     }
 
-    return Status::OK();
+    return std::move(out);
 }
 
 }  // namespace mongo

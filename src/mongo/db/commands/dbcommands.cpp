@@ -973,9 +973,7 @@ public:
                 return 0;
             }
 
-            unique_ptr<PlanExecutor> exec = std::move(statusWithPlanExecutor.getValue());
-            // Process notifications when the lock is released/reacquired in the loop below
-            exec->registerExec(coll);
+            auto exec = std::move(statusWithPlanExecutor.getValue());
 
             BSONObj obj;
             PlanExecutor::ExecState state;
@@ -1122,7 +1120,7 @@ public:
 
         result.appendBool("estimate", estimate);
 
-        unique_ptr<PlanExecutor> exec;
+        unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec;
         if (min.isEmpty() && max.isEmpty()) {
             if (estimate) {
                 result.appendNumber("size", static_cast<long long>(collection->dataSize(opCtx)));
@@ -1130,8 +1128,7 @@ public:
                 result.append("millis", timer.millis());
                 return 1;
             }
-            exec =
-                InternalPlanner::collectionScan(opCtx, ns, collection, PlanExecutor::YIELD_MANUAL);
+            exec = InternalPlanner::collectionScan(opCtx, ns, collection, PlanExecutor::NO_YIELD);
         } else if (min.isEmpty() || max.isEmpty()) {
             errmsg = "only one of min or max specified";
             return false;
@@ -1161,7 +1158,7 @@ public:
                                               min,
                                               max,
                                               BoundInclusion::kIncludeStartKeyOnly,
-                                              PlanExecutor::YIELD_MANUAL);
+                                              PlanExecutor::NO_YIELD);
         }
 
         long long avgObjSize = collection->dataSize(opCtx) / numRecords;
@@ -1853,8 +1850,10 @@ void mongo::execCommandDatabase(OperationContext* opCtx,
             auto sce = dynamic_cast<const StaleConfigException*>(&e);
             invariant(sce);  // do not upcasts from DBException created by uassert variants.
 
-            ShardingState::get(opCtx)->onStaleShardVersion(
-                opCtx, NamespaceString(sce->getns()), sce->getVersionReceived());
+            if (!opCtx->getClient()->isInDirectClient()) {
+                ShardingState::get(opCtx)->onStaleShardVersion(
+                    opCtx, NamespaceString(sce->getns()), sce->getVersionReceived());
+            }
         }
 
         BSONObjBuilder metadataBob;

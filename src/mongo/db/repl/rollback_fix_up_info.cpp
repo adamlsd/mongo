@@ -33,6 +33,7 @@
 #include "mongo/db/repl/rollback_fix_up_info.h"
 
 #include "mongo/db/jsobj.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/repl/rollback_fix_up_info_descriptions.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/util/assert_util.h"
@@ -41,7 +42,19 @@
 namespace mongo {
 namespace repl {
 
-const NamespaceString RollbackFixUpInfo::kRollbackDocsNamespace("local.system.rollback.docs");
+namespace {
+
+const auto kRollbackNamespacePrefix = "local.system.rollback."_sd;
+
+}  // namespace
+
+const NamespaceString RollbackFixUpInfo::kRollbackDocsNamespace(kRollbackNamespacePrefix + "docs");
+
+const NamespaceString RollbackFixUpInfo::kRollbackCollectionUuidNamespace(kRollbackNamespacePrefix +
+                                                                          "collectionUuid");
+
+const NamespaceString RollbackFixUpInfo::kRollbackCollectionOptionsNamespace(
+    kRollbackNamespacePrefix + "collectionOptions");
 
 RollbackFixUpInfo::RollbackFixUpInfo(StorageInterface* storageInterface)
     : _storageInterface(storageInterface) {
@@ -53,9 +66,68 @@ Status RollbackFixUpInfo::processSingleDocumentOplogEntry(OperationContext* opCt
                                                           const BSONElement& docId,
                                                           SingleDocumentOpType opType) {
     SingleDocumentOperationDescription desc(collectionUuid, docId, opType);
-    auto update = desc.toBSON();
+    return _upsertById(opCtx, kRollbackDocsNamespace, desc.toBSON());
+}
+
+Status RollbackFixUpInfo::processCreateCollectionOplogEntry(OperationContext* opCtx,
+                                                            const UUID& collectionUuid) {
+    // TODO: Remove references to this collection UUID from other rollback fix up info collections.
+
+    CollectionUuidDescription desc(collectionUuid, {});
+    return _upsertById(opCtx, kRollbackCollectionUuidNamespace, desc.toBSON());
+}
+
+Status RollbackFixUpInfo::processDropCollectionOplogEntry(OperationContext* opCtx,
+                                                          const UUID& collectionUuid,
+                                                          const NamespaceString& nss) {
+    CollectionUuidDescription desc(collectionUuid, nss);
+    return _upsertById(opCtx, kRollbackCollectionUuidNamespace, desc.toBSON());
+}
+
+Status RollbackFixUpInfo::processRenameCollectionOplogEntry(
+    OperationContext* opCtx,
+    const UUID& sourceCollectionUuid,
+    const NamespaceString& sourceNss,
+    boost::optional<CollectionUuidAndNss> targetCollectionUuidAndNss) {
+    CollectionUuidDescription sourceDesc(sourceCollectionUuid, sourceNss);
+
+    auto status = _upsertById(opCtx, kRollbackCollectionUuidNamespace, sourceDesc.toBSON());
+    if (!status.isOK()) {
+        return status;
+    }
+
+    // If target collection is not dropped during the rename operation, there is nothing further to
+    // do.
+    if (!targetCollectionUuidAndNss) {
+        return Status::OK();
+    }
+
+    CollectionUuidDescription targetDesc(targetCollectionUuidAndNss->first,
+                                         targetCollectionUuidAndNss->second);
+    return _upsertById(opCtx, kRollbackCollectionUuidNamespace, targetDesc.toBSON());
+}
+
+Status RollbackFixUpInfo::processCollModOplogEntry(OperationContext* opCtx,
+                                                   const UUID& collectionUuid,
+                                                   const BSONObj& optionsObj) {
+    // If validation is enabled for the collection, the collection options document may contain
+    // dollar ($) prefixed field in the "validator" field. Normally, the update operator in the
+    // query execution framework disallows such fields (see validateDollarPrefixElement() in
+    // exec/update.cpp). To disable this check when upserting the collection options document into
+    // the "kRollbackCollectionOptionsNamespace", we have to disable replicated writes in the
+    // OperationContext during the update operation.
+    UnreplicatedWritesBlock uwb(opCtx);
+
+    CollectionOptionsDescription desc(collectionUuid, optionsObj);
+    return _upsertById(opCtx, kRollbackCollectionOptionsNamespace, desc.toBSON());
+}
+
+Status RollbackFixUpInfo::_upsertById(OperationContext* opCtx,
+                                      const NamespaceString& nss,
+                                      const BSONObj& update) {
     auto key = update["_id"];
-    return _storageInterface->upsertById(opCtx, kRollbackDocsNamespace, key, update);
+    invariant(!key.eoo());
+    return _storageInterface->upsertById(opCtx, nss, key, update);
 }
 
 }  // namespace repl

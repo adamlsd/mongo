@@ -89,5 +89,27 @@ BSONObj RollbackFixUpInfo::SingleDocumentOperationDescription::toBSON() const {
     return bob.obj();
 }
 
+RollbackFixUpInfo::CollectionUuidDescription::CollectionUuidDescription(const UUID& collectionUuid,
+                                                                        const NamespaceString& nss)
+    : _collectionUuid(collectionUuid), _nss(nss) {}
+
+BSONObj RollbackFixUpInfo::CollectionUuidDescription::toBSON() const {
+    BSONObjBuilder bob;
+    _collectionUuid.appendToBuilder(&bob, "_id");
+    bob.append("ns", _nss.ns());
+    return bob.obj();
+}
+
+RollbackFixUpInfo::CollectionOptionsDescription::CollectionOptionsDescription(
+    const UUID& collectionUuid, const BSONObj& optionsObj)
+    : _collectionUuid(collectionUuid), _optionsObj(optionsObj) {}
+
+BSONObj RollbackFixUpInfo::CollectionOptionsDescription::toBSON() const {
+    BSONObjBuilder bob;
+    _collectionUuid.appendToBuilder(&bob, "_id");
+    bob.append("options", _optionsObj);
+    return bob.obj();
+}
+
 }  // namespace repl
 }  // namespace mongo

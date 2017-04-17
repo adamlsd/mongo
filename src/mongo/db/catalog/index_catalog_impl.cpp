@@ -860,7 +860,8 @@ Status IndexCatalogImpl::dropAllIndexes(OperationContext* opCtx,
 
     // there may be pointers pointing at keys in the btree(s).  kill them.
     // TODO: can this can only clear cursors on this index?
-    _collection->getCursorManager()->invalidateAll(false, "all indexes on collection dropped");
+    _collection->getCursorManager()->invalidateAll(
+        opCtx, false, "all indexes on collection dropped");
 
     // make sure nothing in progress
     massert(17348,
@@ -1001,7 +1002,7 @@ Status IndexCatalogImpl::_dropIndex(OperationContext* opCtx, IndexCatalogEntry* 
     // collection.
     if (entry->isReady(opCtx)) {
         _collection->getCursorManager()->invalidateAll(
-            false, str::stream() << "index '" << indexName << "' dropped");
+            opCtx, false, str::stream() << "index '" << indexName << "' dropped");
     }
 
     // --------- START REAL WORK ----------
@@ -1274,7 +1275,9 @@ const IndexDescriptor* IndexCatalogImpl::refreshEntry(OperationContext* opCtx,
     // Notify other users of the IndexCatalog that we're about to invalidate 'oldDesc'.
     const bool collectionGoingAway = false;
     _collection->getCursorManager()->invalidateAll(
-        collectionGoingAway, str::stream() << "definition of index '" << indexName << "' changed");
+        opCtx,
+        collectionGoingAway,
+        str::stream() << "definition of index '" << indexName << "' changed");
 
     // Delete the IndexCatalogEntry that owns this descriptor.  After deletion, 'oldDesc' is
     // invalid and should not be dereferenced.

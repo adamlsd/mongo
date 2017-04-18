@@ -72,44 +72,15 @@ public:
             virtual bool more() = 0;
             virtual IndexDescriptor* next() = 0;
 
-            // returns the access method for the last return IndexDescriptor
             virtual IndexAccessMethod* accessMethod(const IndexDescriptor* desc) = 0;
 
-            // returns the IndexCatalogEntry for the last return IndexDescriptor
             virtual IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) = 0;
         };
 
     private:
-        clonable_ptr<Impl> _pimpl;
-
-        // This structure exists to give us a customization point to decide how to force users of
-        // this
-        // class to depend upon the corresponding `index_catalog.cpp` Translation Unit (TU).  All
-        // public
-        // forwarding functions call `_impl(), and `_impl` creates an instance of this structure.
-        struct TUHook {
-            static void hook() noexcept;
-
-            explicit inline TUHook() noexcept {
-                if (kDebugBuild)
-                    this->hook();
-            }
-        };
-
-        inline const Impl& _impl() const {
-            TUHook{};
-            return *this->_pimpl;
-        }
-        inline Impl& _impl() {
-            TUHook{};
-            return *this->_pimpl;
-        }
-
         static std::unique_ptr<Impl> makeImpl(OperationContext* opCtx,
                                               const IndexCatalog* cat,
                                               bool includeUnfinishedIndexes);
-
-        friend IndexCatalog;
 
         explicit inline IndexIterator(OperationContext* const opCtx,
                                       const IndexCatalog* const cat,
@@ -131,19 +102,48 @@ public:
         inline bool more() {
             return this->_impl().more();
         }
+
         inline IndexDescriptor* next() {
             return this->_impl().next();
         }
 
-        // returns the access method for the last return IndexDescriptor
+        // Returns the access method for the last return IndexDescriptor.
         inline IndexAccessMethod* accessMethod(const IndexDescriptor* const desc) {
             return this->_impl().accessMethod(desc);
         }
 
-        // returns the IndexCatalogEntry for the last return IndexDescriptor
+        // Returns the IndexCatalogEntry for the last return IndexDescriptor.
         inline IndexCatalogEntry* catalogEntry(const IndexDescriptor* const desc) {
             return this->_impl().catalogEntry(desc);
         }
+
+    private:
+        // This structure exists to give us a customization point to decide how to force users of
+        // this class to depend upon the corresponding `index_catalog.cpp` Translation Unit (TU).
+        // All public forwarding functions call `_impl(), and `_impl` creates an instance of this
+        // structure.
+        struct TUHook {
+            static void hook() noexcept;
+
+            explicit inline TUHook() noexcept {
+                if (kDebugBuild)
+                    this->hook();
+            }
+        };
+
+        inline const Impl& _impl() const {
+            TUHook{};
+            return *this->_pimpl;
+        }
+
+        inline Impl& _impl() {
+            TUHook{};
+            return *this->_pimpl;
+        }
+
+        clonable_ptr<Impl> _pimpl;
+
+        friend IndexCatalog;
     };
 
     class Impl {
@@ -258,29 +258,6 @@ public:
     };
 
 private:
-    std::unique_ptr<Impl> _pimpl;
-
-    // This structure exists to give us a customization point to decide how to force users of this
-    // class to depend upon the corresponding `index_catalog.cpp` Translation Unit (TU).  All public
-    // forwarding functions call `_impl(), and `_impl` creates an instance of this structure.
-    struct TUHook {
-        static void hook() noexcept;
-
-        explicit inline TUHook() noexcept {
-            if (kDebugBuild)
-                this->hook();
-        }
-    };
-
-    inline const Impl& _impl() const {
-        TUHook{};
-        return *this->_pimpl;
-    }
-    inline Impl& _impl() {
-        TUHook{};
-        return *this->_pimpl;
-    }
-
     static std::unique_ptr<Impl> makeImpl(IndexCatalog* this_,
                                           Collection* collection,
                                           int maxNumIndexesAllowed);
@@ -294,7 +271,10 @@ public:
     explicit inline IndexCatalog(Collection* const collection, const int maxNumIndexesAllowed)
         : _pimpl(makeImpl(this, collection, maxNumIndexesAllowed)) {}
 
-    // must be called before used
+    inline IndexCatalog(IndexCatalog&&) = delete;
+    inline IndexCatalog& operator=(IndexCatalog&&) = delete;
+
+    // Must be called before used.
     inline Status init(OperationContext* const opCtx) {
         return this->_impl().init(opCtx);
     }
@@ -570,6 +550,7 @@ private:
     inline const Collection* _getCollection() const {
         return this->_impl()._getCollection();
     }
+
     inline Collection* _getCollection() {
         return this->_impl()._getCollection();
     }
@@ -590,6 +571,7 @@ private:
     inline const IndexCatalogEntryContainer& _getEntries() const {
         return this->_impl()._getEntries();
     }
+
     inline IndexCatalogEntryContainer& _getEntries() {
         return this->_impl()._getEntries();
     }
@@ -614,6 +596,29 @@ private:
                                             const std::string& indexNamespace) {
         return this_->_deleteIndexFromDisk(opCtx, indexName, indexNamespace);
     }
+
+    // This structure exists to give us a customization point to decide how to force users of this
+    // class to depend upon the corresponding `index_catalog.cpp` Translation Unit (TU).  All public
+    // forwarding functions call `_impl(), and `_impl` creates an instance of this structure.
+    struct TUHook {
+        static void hook() noexcept;
+
+        explicit inline TUHook() noexcept {
+            if (kDebugBuild)
+                this->hook();
+        }
+    };
+
+    inline const Impl& _impl() const {
+        TUHook{};
+        return *this->_pimpl;
+    }
+    inline Impl& _impl() {
+        TUHook{};
+        return *this->_pimpl;
+    }
+
+    std::unique_ptr<Impl> _pimpl;
 
     friend IndexCatalogEntry;
     friend class IndexCatalogImpl;

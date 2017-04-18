@@ -42,7 +42,6 @@
 #include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/storage_interface_mock.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
-#include "mongo/db/time_proof_service.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
@@ -124,8 +123,7 @@ void ReplCoordTest::init() {
     // PRNG seed for tests.
     const int64_t seed = 0;
 
-    auto timeProofService = stdx::make_unique<TimeProofService>();
-    auto logicalClock = stdx::make_unique<LogicalClock>(service, std::move(timeProofService));
+    auto logicalClock = stdx::make_unique<LogicalClock>(service);
     LogicalClock::set(service, std::move(logicalClock));
 
     TopologyCoordinatorImpl::Options settings;
@@ -197,16 +195,17 @@ void ReplCoordTest::assertStartSuccess(const BSONObj& configDoc, const HostAndPo
     ASSERT_NE(MemberState::RS_STARTUP, getReplCoord()->getMemberState().s);
 }
 
-ResponseStatus ReplCoordTest::makeResponseStatus(const BSONObj& doc, Milliseconds millis) {
+executor::RemoteCommandResponse ReplCoordTest::makeResponseStatus(const BSONObj& doc,
+                                                                  Milliseconds millis) {
     return makeResponseStatus(doc, BSONObj(), millis);
 }
 
-ResponseStatus ReplCoordTest::makeResponseStatus(const BSONObj& doc,
-                                                 const BSONObj& metadata,
-                                                 Milliseconds millis) {
+executor::RemoteCommandResponse ReplCoordTest::makeResponseStatus(const BSONObj& doc,
+                                                                  const BSONObj& metadata,
+                                                                  Milliseconds millis) {
     log() << "Responding with " << doc << " (metadata: " << metadata << "; elapsed: " << millis
           << ")";
-    return ResponseStatus(RemoteCommandResponse(doc, metadata, millis));
+    return RemoteCommandResponse(doc, metadata, millis);
 }
 
 void ReplCoordTest::simulateEnoughHeartbeatsForAllNodesUp() {

@@ -35,6 +35,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/s/async_requests_sender.h"
+#include "mongo/s/chunk_version.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/stdx/memory.h"
 
@@ -45,33 +46,57 @@ class CachedDatabaseInfo;
 class OperationContext;
 
 /**
- * Utility function to target all shards for a request that does not have a specific namespace.
+ * Broadcasts 'cmdObj' to all shards and returns the responses as a vector.
+ *
+ * Returns a non-OK status if a failure occurs on *this* node during execution.
+ * Otherwise, returns success and a list of responses from shards (including errors from the shards
+ * or errors reaching the shards).
  */
-std::vector<AsyncRequestsSender::Request> buildRequestsForAllShards(OperationContext* opCtx,
-                                                                    const BSONObj& cmdObj);
+StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGather(OperationContext* opCtx,
+                                                                     const std::string& dbName,
+                                                                     const BSONObj& cmdObj);
 
 /**
- * Utility function to get the set of shards to target for a request on a specific namespace.
+ * Uses the routing table cache to broadcast a command on a namespace. By default, attaches
+ * shardVersions to the outgoing requests to shards, and retargets and retries if it receives a
+ * stale shardVersion error from any shard.
  *
- * Selects shards to target based on 'routingInfo', and constructs a vector of requests, one per
- * targeted shard, where the cmdObj to send to each shard has been modified to include the shard's
- * shardVersion.
- */
-std::vector<AsyncRequestsSender::Request> buildRequestsForTargetedShards(
-    OperationContext* opCtx, const CachedCollectionRoutingInfo& routingInfo, const BSONObj& cmdObj);
-
-/**
- * Utility function to scatter 'requests' to shards and fold the responses into a single response.
+ * If 'query' is specified, only shards that own data for the namespace are targeted. Otherwise,
+ * all shards are targeted.
  *
- * Places the raw responses from shards into a field 'raw' in 'output', and also returns the raw
- * responses as a vector so that additional aggregate logic can be applied to them.
+ * Returns a non-OK status if a failure occurs on *this* node during execution or on seeing an error
+ * from a shard that means the operation as a whole should fail, such as a exceeding retries for
+ * stale shardVersion errors.
+ * Otherwise, returns success and a list of responses from shards (including errors from the shards
+ * or errors reaching the shards).
+ *
+ * @appendShardVersion: if false, does not attach shardVersions to the outgoing requests.
+ * @viewDefinition: if a shard returns an error saying that the request was on a view, the shard
+ *                  will also return a view definition. The returned viewDefinition is stored in
+ *                  this parameter, so that the caller can re-run the operation as an aggregation.
  */
-StatusWith<std::vector<AsyncRequestsSender::Response>> gatherResponsesFromShards(
+StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherForNamespace(
     OperationContext* opCtx,
-    const std::string& dbName,
+    const NamespaceString& nss,
     const BSONObj& cmdObj,
-    const std::vector<AsyncRequestsSender::Request>& requests,
-    BSONObjBuilder* output);
+    const boost::optional<BSONObj> query,
+    const boost::optional<BSONObj> collation,
+    const bool appendShardVersion = true,
+    BSONObj* viewDefinition = nullptr);
+
+/**
+ * Attaches each shard's response or error status by the shard's connection string in a top-level
+ * field called 'raw' in 'output'.
+ *
+ * If all shards that errored had the same error, writes the common error code to 'output'. Writes a
+ * string representation of all errors to 'errmsg.'
+ *
+ * Returns true if all the shards reported success.
+ */
+bool appendRawResponses(OperationContext* opCtx,
+                        std::string* errmsg,
+                        BSONObjBuilder* output,
+                        std::vector<AsyncRequestsSender::Response> shardResponses);
 
 /**
  * Utility function to compute a single error code from a vector of command results.

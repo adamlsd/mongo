@@ -35,6 +35,7 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/util/duration.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
@@ -76,6 +77,18 @@ public:
      * should be dropped.
      */
     static const NamespaceString kRollbackCollectionUuidNamespace;
+
+    /**
+     * Contains mappings of collection UUID -> collection options.
+     * This collection is used to roll back non-TTL collMod changes to collections.
+     */
+    static const NamespaceString kRollbackCollectionOptionsNamespace;
+
+    /**
+     * Contains mappings of (collection UUID, index name) -> index info.
+     * This collection is used to roll back create, drop and TTL changes to indexes.
+     */
+    static const NamespaceString kRollbackIndexNamespace;
 
     /**
      * Creates an instance of RollbackFixUpInfo.
@@ -147,11 +160,61 @@ public:
         const NamespaceString& sourceNss,
         boost::optional<CollectionUuidAndNss> targetCollectionUuidAndNss);
 
+    /**
+     * Processes an oplog entry representing a non-TTL collMod command. Stores information about
+     * this operation into "kRollbackCollectionOptionsNamespace" to allow us to roll back this
+     * operation later by restoring the collection options in the catalog.
+     */
+    class CollectionOptionsDescription;
+    Status processCollModOplogEntry(OperationContext* opCtx,
+                                    const UUID& collectionUuid,
+                                    const BSONObj& optionsObj);
+
+    /**
+     * Processes an oplog entry representing a createIndex command. Stores information about
+     * this operation into "kRollbackIndexNamespace" to allow us to roll back this
+     * operation later by dropping the index from the catalog by UUID/index name.
+     *
+     * The mapping in the "kRollbackCollectionUuidNamespace" collection will contain the
+     * empty namespace.
+     */
+    Status processCreateIndexOplogEntry(OperationContext* opCtx,
+                                        const UUID& collectionUuid,
+                                        const std::string& indexName);
+    enum class IndexOpType { kCreate, kDrop, kUpdateTTL };
+    class IndexDescription;
+
+    /**
+     * Processes an oplog entry representing a collMod command that updates the expiration setting
+     * on a TTL index. Stores information about this operation into "kRollbackIndexNamespace" to
+     * allow us to roll back this operation later by updating the TTL expiration to the previous
+     * value.
+     */
+    Status processUpdateIndexTTLOplogEntry(OperationContext* opCtx,
+                                           const UUID& collectionUuid,
+                                           const std::string& indexName,
+                                           Seconds expireAfterSeconds);
+
+    /**
+     * Processes an oplog entry representing a dropIndexes command with a single index. Stores
+     * information about this operation into "kRollbackIndexNamespace" to allow us to roll back this
+     * operation later by recreating the index.
+     */
+    Status processDropIndexOplogEntry(OperationContext* opCtx,
+                                      const UUID& collectionUuid,
+                                      const std::string& indexName,
+                                      const BSONObj& infoObj);
+
 private:
     /**
      * Upserts a single document using the _id field of the document in "update".
      */
     Status _upsertById(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& update);
+
+    /**
+     * Upserts an IndexDescription.
+     */
+    Status _upsertIndexDescription(OperationContext* opCtx, const IndexDescription& description);
 
     StorageInterface* const _storageInterface;
 };

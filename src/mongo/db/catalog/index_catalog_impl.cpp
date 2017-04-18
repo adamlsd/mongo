@@ -80,15 +80,12 @@ MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
 }
 
 MONGO_INITIALIZER(InitializeIndexCatalogIndexIteratorFactory)(InitializerContext* const) {
-    IndexCatalog::IndexIterator::registerFactory(
-        []
-
-        (OperationContext* const opCtx,
-         const IndexCatalog* const cat,
-         const bool includeUnfinishedIndexes) {
-            return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
-                opCtx, cat, includeUnfinishedIndexes);
-        });
+    IndexCatalog::IndexIterator::registerFactory([](OperationContext* const opCtx,
+                                                    const IndexCatalog* const cat,
+                                                    const bool includeUnfinishedIndexes) {
+        return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
+            opCtx, cat, includeUnfinishedIndexes);
+    });
     return Status::OK();
 }
 

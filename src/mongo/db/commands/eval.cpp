@@ -47,6 +47,7 @@
 #include "mongo/s/stale_exception.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -193,6 +194,8 @@ public:
         // shardVersion is set on the OperationContext, a check for a different namespace will
         // default to UNSHARDED.
         oss.setShardVersion(NamespaceString(dbname), ChunkVersion::UNSHARDED());
+        const auto shardVersionGuard =
+            MakeGuard([&]() { oss.unsetShardVersion(NamespaceString(dbname)); });
 
         try {
             if (cmdObj["nolock"].trueValue()) {

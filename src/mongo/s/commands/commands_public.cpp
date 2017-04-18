@@ -189,12 +189,19 @@ protected:
     }
 };
 
+/**
+ * Base class for commands on collections that simply need to broadcast the command to shards that
+ * own data for the collection and aggregate the raw results.
+ */
 class AllShardsCollectionCommand : public Command {
 protected:
     AllShardsCollectionCommand(const char* name,
                                const char* oldname = NULL,
-                               bool implicitCreateDb = false)
-        : Command(name, false, oldname), _implicitCreateDb(implicitCreateDb) {}
+                               bool implicitCreateDb = false,
+                               bool appendShardVersion = true)
+        : Command(name, false, oldname),
+          _implicitCreateDb(implicitCreateDb),
+          _appendShardVersion(appendShardVersion) {}
 
     bool slaveOk() const override {
         return true;
@@ -215,34 +222,21 @@ protected:
             uassertStatusOK(createShardDatabase(opCtx, dbName));
         }
 
-        int numAttempts = 0;
-        Status status = Status::OK();
-        do {
-            auto routingInfo = uassertStatusOK(
-                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-            auto requests = buildRequestsForShardsThatHaveCollection(opCtx, routingInfo, cmdObj);
-
-            status = gatherResponsesFromShards(opCtx, dbName, cmdObj, requests, &output, nullptr)
-                         .getStatus();
-
-            if (ErrorCodes::isStaleShardingError(status.code())) {
-                Grid::get(opCtx)->catalogCache()->onStaleConfigError(std::move(routingInfo));
-            }
-
-            ++numAttempts;
-        } while (numAttempts < kMaxNumStaleVersionRetries && !status.isOK());
-
-        // We don't uassertStatusOK(), because that causes 'output' to be cleared, but we want to
-        // report the raw results even if there was an error.
-        if (!status.isOK()) {
-            return appendCommandStatus(output, status);
-        }
-        return true;
+        auto shardResponses = uassertStatusOK(scatterGatherForNamespace(opCtx,
+                                                                        nss,
+                                                                        cmdObj,
+                                                                        boost::none,  // filter
+                                                                        boost::none,  // collation
+                                                                        _appendShardVersion));
+        return appendRawResponses(opCtx, &errmsg, &output, std::move(shardResponses));
     }
 
 private:
     // Whether the requested database should be created implicitly
     const bool _implicitCreateDb;
+
+    // Whether the shardVersion will be included in the requests to shards.
+    const bool _appendShardVersion;
 };
 
 class NotAllowedOnShardedCollectionCmd : public PublicGridCommand {
@@ -270,7 +264,7 @@ protected:
 
 class DropIndexesCmd : public AllShardsCollectionCommand {
 public:
-    DropIndexesCmd() : AllShardsCollectionCommand("dropIndexes", "deleteIndexes") {}
+    DropIndexesCmd() : AllShardsCollectionCommand("dropIndexes", "deleteIndexes", false, false) {}
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {
@@ -1415,10 +1409,10 @@ public:
         cm->getShardIdsForQuery(opCtx, query, collation.getValue(), &shardIds);
 
         // We support both "num" and "limit" options to control limit
-        int limit = 100;
+        long long limit = 100;
         const char* limitName = cmdObj["num"].isNumber() ? "num" : "limit";
         if (cmdObj[limitName].isNumber())
-            limit = cmdObj[limitName].numberInt();
+            limit = cmdObj[limitName].safeNumberLong();
 
         // Construct the requests.
         vector<AsyncRequestsSender::Request> requests;
@@ -1487,7 +1481,7 @@ public:
         result.append("ns", nss.ns());
         result.append("near", nearStr);
 
-        int outCount = 0;
+        long long outCount = 0;
         double totalDistance = 0;
         double maxDistance = 0;
         {

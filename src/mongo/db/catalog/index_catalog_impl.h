@@ -177,6 +177,10 @@ public:
 
     class IndexIteratorImpl : public IndexCatalog::IndexIterator::Impl {
     public:
+        IndexIteratorImpl(OperationContext* opCtx,
+                          const IndexCatalog* cat,
+                          bool includeUnfinishedIndexes);
+
         bool more() override;
         IndexDescriptor* next() override;
 
@@ -185,10 +189,6 @@ public:
 
         // returns the IndexCatalogEntry for the last return IndexDescriptor
         IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) override;
-
-        IndexIteratorImpl(OperationContext* opCtx,
-                          const IndexCatalog* cat,
-                          bool includeUnfinishedIndexes);
 
     private:
         IndexIteratorImpl* clone_impl() const override;
@@ -393,6 +393,7 @@ private:
     inline const IndexCatalogEntryContainer& _getEntries() const override {
         return this->_entries;
     }
+
     inline IndexCatalogEntryContainer& _getEntries() override {
         return this->_entries;
     }
@@ -448,7 +449,7 @@ private:
     // Retrieve by calling getAndClearUnfinishedIndexes().
     std::vector<BSONObj> _unfinishedIndexes;
 
-    IndexCatalog* _this;
+    IndexCatalog* const _this;
 
 
     inline static IndexCatalogEntry* _setupInMemoryStructures(

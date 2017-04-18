@@ -613,6 +613,7 @@ private:
         TUHook{};
         return *this->_pimpl;
     }
+
     inline Impl& _impl() {
         TUHook{};
         return *this->_pimpl;

@@ -48,7 +48,7 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-MONGO_INITIALIZER(InitializeDatabaseFactory)(InitializerContext* const) {
+MONGO_INITIALIZER(InitializeCollectionInfoCacheFactory)(InitializerContext* const) {
     CollectionInfoCache::registerFactory(
         [](Collection* const collection, const NamespaceString& ns) {
             return stdx::make_unique<CollectionInfoCacheImpl>(collection, ns);

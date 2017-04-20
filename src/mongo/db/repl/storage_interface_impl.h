@@ -117,10 +117,22 @@ public:
                                                      BoundInclusion boundInclusion,
                                                      std::size_t limit) override;
 
+    StatusWith<BSONObj> findById(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const BSONElement& idKey) override;
+
+    StatusWith<BSONObj> deleteById(OperationContext* opCtx,
+                                   const NamespaceString& nss,
+                                   const BSONElement& idKey) override;
+
     Status upsertById(OperationContext* opCtx,
                       const NamespaceString& nss,
                       const BSONElement& idKey,
                       const BSONObj& update) override;
+
+    Status deleteByFilter(OperationContext* opCtx,
+                          const NamespaceString& nss,
+                          const BSONObj& filter) override;
 
     StatusWith<StorageInterface::CollectionSize> getCollectionSize(
         OperationContext* opCtx, const NamespaceString& nss) override;

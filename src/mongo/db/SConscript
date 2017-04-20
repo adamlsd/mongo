@@ -33,6 +33,7 @@ env.SConscript(
         'sorter',
         'stats',
         'storage',
+        'update',
         'views',
     ],
     exports=[
@@ -366,35 +367,6 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'server_options',
-    ],
-)
-
-env.Library(
-    target='range_deleter',
-    source=[
-        'range_deleter.cpp',
-        'range_deleter_mock_env.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/common',
-        '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
-        '$BUILD_DIR/mongo/db/service_context',
-        'range_arithmetic',
-    ],
-)
-
-env.CppUnitTest(
-    target='range_deleter_test',
-    source=[
-        'range_deleter_test.cpp',
-    ],
-    LIBDEPS=[
-        'common',
-        'range_deleter',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/db/repl/replmocks',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
     ],
 )
 
@@ -752,24 +724,6 @@ env.Library(
 )
 
 env.Library(
-    target="range_deleter_d",
-    source=[
-        "range_deleter_db_env.cpp",
-        "range_deleter_service.cpp",
-    ],
-    LIBDEPS=[
-        "dbhelpers",
-        "db_raii",
-        "range_deleter",
-        #"catalog/catalog", # CYCLE
-    ],
-    LIBDEPS_TAGS=[
-        # TODO(ADAM, 2017-03-10): See `CYCLE` tags above.
-        'illegal_cyclic_or_unresolved_dependencies_whitelisted',
-    ],
-)
-
-env.Library(
     target="rw_concern_d",
     source=[
         "read_concern.cpp",
@@ -919,14 +873,11 @@ env.Library(
         "matcher/expressions_mongod_only",
         "op_observer_d",
         "ops/write_ops",
-        "ops/update_driver",
         "ops/write_ops_parsers",
         "pipeline/aggregation",
         "pipeline/serveronly",
         "prefetch",
         "query/query",
-        "range_deleter",
-        "range_deleter_d",
         "repair_database",
         "repl/bgsync",
         "repl/oplog_buffer_collection",
@@ -961,6 +912,7 @@ env.Library(
         "storage/storage_options",
         "storage/wiredtiger/storage_wiredtiger" if wiredtiger else [],
         "ttl_d",
+        "update/update_driver",
         "update_index_data",
         "views/views_mongod",
     ],
@@ -1135,6 +1087,17 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'time_proof_service',
+    ],
+)
+
+env.CppUnitTest(
+    target='keys_collection_cache_reader_test',
+    source=[
+        'keys_collection_cache_reader_test.cpp',
+    ],
+    LIBDEPS=[
+        'keys_collection_manager',
+        '$BUILD_DIR/mongo/s/config_server_test_fixture',
     ],
 )
 

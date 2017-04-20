@@ -199,11 +199,29 @@ public:
             opCtx, nss, indexName, scanDirection, startKey, boundInclusion, limit);
     }
 
+    StatusWith<BSONObj> findById(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 const BSONElement& idKey) override {
+        return Status{ErrorCodes::IllegalOperation, "findById not implemented."};
+    }
+
+    StatusWith<BSONObj> deleteById(OperationContext* opCtx,
+                                   const NamespaceString& nss,
+                                   const BSONElement& idKey) override {
+        return Status{ErrorCodes::IllegalOperation, "deleteById not implemented."};
+    }
+
     Status upsertById(OperationContext* opCtx,
                       const NamespaceString& nss,
                       const BSONElement& idKey,
                       const BSONObj& update) override {
         return Status{ErrorCodes::IllegalOperation, "upsertbyId not implemented."};
+    }
+
+    Status deleteByFilter(OperationContext* opCtx,
+                          const NamespaceString& nss,
+                          const BSONObj& filter) override {
+        return Status{ErrorCodes::IllegalOperation, "deleteByFilter not implemented."};
     }
 
     StatusWith<StorageInterface::CollectionSize> getCollectionSize(

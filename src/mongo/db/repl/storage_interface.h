@@ -263,6 +263,25 @@ public:
                                                              std::size_t limit) = 0;
 
     /**
+     * Finds a single document in the collection referenced by the specified _id.
+     *
+     * Not supported on collections with a default collation.
+     */
+    virtual StatusWith<BSONObj> findById(OperationContext* opCtx,
+                                         const NamespaceString& nss,
+                                         const BSONElement& idKey) = 0;
+
+    /**
+     * Deletes a single document in the collection referenced by the specified _id.
+     * Returns deleted document on success.
+     *
+     * Not supported on collections with a default collation.
+     */
+    virtual StatusWith<BSONObj> deleteById(OperationContext* opCtx,
+                                           const NamespaceString& nss,
+                                           const BSONElement& idKey) = 0;
+
+    /**
      * Updates a single document in the collection referenced by the specified _id.
      * The document is located by looking up "idKey" in the id index.
      * "update" represents the replacement document or list of requested modifications to be applied
@@ -274,6 +293,15 @@ public:
                               const NamespaceString& nss,
                               const BSONElement& idKey,
                               const BSONObj& update) = 0;
+
+    /**
+     * Removes all documents that match the "filter" from a collection.
+     * "filter" specifies the deletion criteria using query operators. Pass in an empty document to
+     * delete all documents in a collection.
+     */
+    virtual Status deleteByFilter(OperationContext* opCtx,
+                                  const NamespaceString& nss,
+                                  const BSONObj& filter) = 0;
 
     using CollectionSize = uint64_t;
     using CollectionCount = uint64_t;

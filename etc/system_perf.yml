@@ -771,50 +771,6 @@ tasks:
     - func: "make test log artifact"
     - func: "analyze"
 
-- name: initialsync_WT_dr
-  depends_on:
-    - name: compile
-      variant: linux-standalone
-  commands:
-    - func: "prepare environment"
-      vars:
-        storageEngine: "wiredTiger"
-        setup: "replica-2node.dr"
-        test: "initialSync"
-    - func: "infrastructure provisioning"
-    - func: "configure mongodb cluster"
-      vars:
-        storageEngine: "wiredTiger"
-        setup: "replica-2node.dr"
-    - func: "run test"
-      vars:
-        storageEngine: "wiredTiger"
-        test: "initialSync"
-    - func: "make test log artifact"
-    - func: "analyze"
-
-- name: initialsync_MMAPv1_dr
-  depends_on:
-    - name: compile
-      variant: linux-standalone
-  commands:
-    - func: "prepare environment"
-      vars:
-        storageEngine: "mmapv1"
-        setup: "replica-2node.dr"
-        test: "initialSync"
-    - func: "infrastructure provisioning"
-    - func: "configure mongodb cluster"
-      vars:
-        storageEngine: "mmapv1"
-        setup: "replica-2node.dr"
-    - func: "run test"
-      vars:
-        storageEngine: "mmapv1"
-        test: "initialSync"
-    - func: "make test log artifact"
-    - func: "analyze"
-
 - name: initialsync-logkeeper_WT
   depends_on:
     - name: compile
@@ -938,7 +894,7 @@ buildvariants:
 
 - name: linux-3-node-replSet
   display_name: Linux 3-Node ReplSet
-  batchtime: 10080 # 7 days
+  batchtime: 1440 # 24 hours
   modules: *modules
   expansions:
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ OBJCOPY=/opt/mongodbtoolchain/v2/bin/objcopy
@@ -960,7 +916,7 @@ buildvariants:
 
 - name: linux-3-node-replSet-initialsync
   display_name: Linux 3-Node ReplSet Initial Sync
-  batchtime: 10080 # 7 days
+  batchtime: 1440 # 24 hours
   modules: *modules
   expansions:
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ OBJCOPY=/opt/mongodbtoolchain/v2/bin/objcopy
@@ -974,8 +930,6 @@ buildvariants:
   tasks:
     - name: initialsync_WT
     - name: initialsync_MMAPv1
-    - name: initialsync_WT_dr
-    - name: initialsync_MMAPv1_dr
 
 - name: linux-replSet-initialsync-logkeeper
   display_name: Linux ReplSet Initial Sync LogKeeper
@@ -995,7 +949,7 @@ buildvariants:
 
 - name: linux-oplog-compare
   display_name: Linux Oplog Compare
-  batchtime: 10080 # 7 days
+  batchtime: 1440 # 24 hours
   modules: *modules
   expansions:
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ OBJCOPY=/opt/mongodbtoolchain/v2/bin/objcopy

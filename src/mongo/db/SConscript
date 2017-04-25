@@ -115,6 +115,17 @@ env.CppUnitTest(
     ],
 )
 
+env.CppUnitTest(
+    target= 'op_observer_impl_test',
+    source= 'op_observer_impl_test.cpp',
+    LIBDEPS=[
+        'common',
+        'op_observer_d',
+        'service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/repl/replmocks',
+    ],
+)
+
 env.Library(
     target="dbmessage",
     source=[
@@ -967,6 +978,7 @@ env.Library(
 env.Library(
     target='keys_collection_manager',
     source=[
+        'keys_collection_manager.cpp',
         'keys_collection_cache_reader.cpp',
         'keys_collection_cache_reader_and_updater.cpp',
     ],
@@ -1084,6 +1096,17 @@ env.CppUnitTest(
     target='keys_collection_cache_reader_and_updater_test',
     source=[
         'keys_collection_cache_reader_and_updater_test.cpp',
+    ],
+    LIBDEPS=[
+        'keys_collection_manager',
+        '$BUILD_DIR/mongo/s/config_server_test_fixture',
+    ],
+)
+
+env.CppUnitTest(
+    target='keys_collection_manager_test',
+    source=[
+        'keys_collection_manager_test.cpp',
     ],
     LIBDEPS=[
         'keys_collection_manager',

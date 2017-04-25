@@ -284,43 +284,44 @@ TEST(IDLStructTests, TestNonStrictStruct) {
 
     // Positive: Just 3 required fields
     {
-        auto testDoc = BSON("field1" << 12 << "field2" << 123 << "field3" << 1234);
-        RequiredNonStrictField3::parse(ctxt, testDoc);
+        auto testDoc = BSON("1" << 12 << "2" << 123 << "3" << 1234);
+        auto testStruct = RequiredNonStrictField3::parse(ctxt, testDoc);
+
+        assert_same_types<decltype(testStruct.getField1()), std::int32_t>();
+        assert_same_types<decltype(testStruct.getField2()), std::int32_t>();
+        assert_same_types<decltype(testStruct.getField3()), std::int32_t>();
     }
 
     // Negative: Missing 1 required field
     {
-        auto testDoc = BSON("field2" << 123 << "field3" << 1234);
+        auto testDoc = BSON("2" << 123 << "3" << 1234);
         ASSERT_THROWS(RequiredNonStrictField3::parse(ctxt, testDoc), UserException);
     }
     {
-        auto testDoc = BSON("field1" << 12 << "field3" << 1234);
+        auto testDoc = BSON("1" << 12 << "3" << 1234);
         ASSERT_THROWS(RequiredNonStrictField3::parse(ctxt, testDoc), UserException);
     }
     {
-        auto testDoc = BSON("field1" << 12 << "field2" << 123);
+        auto testDoc = BSON("1" << 12 << "2" << 123);
         ASSERT_THROWS(RequiredNonStrictField3::parse(ctxt, testDoc), UserException);
     }
 
     // Positive: Extra field
     {
-        auto testDoc =
-            BSON("field1" << 12 << "field2" << 123 << "field3" << 1234 << "field4" << 1234);
+        auto testDoc = BSON("1" << 12 << "2" << 123 << "3" << 1234 << "field4" << 1234);
         RequiredNonStrictField3::parse(ctxt, testDoc);
     }
 
     // Negative: Duplicate field
     {
-        auto testDoc =
-            BSON("field1" << 12 << "field2" << 123 << "field3" << 1234 << "field2" << 12345);
+        auto testDoc = BSON("1" << 12 << "2" << 123 << "3" << 1234 << "2" << 12345);
         ASSERT_THROWS(RequiredNonStrictField3::parse(ctxt, testDoc), UserException);
     }
 
     // Negative: Duplicate extra field
     {
-        auto testDoc = BSON(
-            "field4" << 1234 << "field1" << 12 << "field2" << 123 << "field3" << 1234 << "field4"
-                     << 1234);
+        auto testDoc =
+            BSON("field4" << 1234 << "1" << 12 << "2" << 123 << "3" << 1234 << "field4" << 1234);
         ASSERT_THROWS(RequiredNonStrictField3::parse(ctxt, testDoc), UserException);
     }
 }
@@ -707,6 +708,65 @@ TEST(IDLArrayTests, TestArraysOfComplexTypes) {
     ASSERT_TRUE(field1 == testStruct.getField1());
     std::vector<NamespaceString> field2{{"a", "b"}, {"c", "d"}};
     ASSERT_TRUE(field2 == testStruct.getField2());
+}
+
+/**
+ * A simple class that derives from an IDL generated class
+ */
+class ClassDerivedFromStruct : public DerivedBaseStruct {
+public:
+    static ClassDerivedFromStruct parse(const IDLParserErrorContext& ctxt,
+                                        const BSONObj& bsonObject) {
+        ClassDerivedFromStruct o;
+        o.parseProtected(ctxt, bsonObject);
+        o._done = true;
+        return o;
+    }
+
+    bool aRandomAdditionalMethod() {
+        return true;
+    }
+
+    bool getDone() const {
+        return _done;
+    }
+
+private:
+    bool _done = false;
+};
+
+// Positive: demonstrate a class derived from an IDL parser.
+TEST(IDLCustomType, TestDerivedParser) {
+    IDLParserErrorContext ctxt("root");
+
+    auto testDoc = BSON("field1" << 3 << "field2" << 5);
+
+    auto testStruct = ClassDerivedFromStruct::parse(ctxt, testDoc);
+    ASSERT_EQUALS(testStruct.getField1(), 3);
+    ASSERT_EQUALS(testStruct.getField2(), 5);
+
+    ASSERT_EQUALS(testStruct.getDone(), true);
+
+    // Positive: Test we can roundtrip from the just parsed document
+    {
+        BSONObjBuilder builder;
+        testStruct.serialize(&builder);
+        auto loopbackDoc = builder.obj();
+
+        ASSERT_BSONOBJ_EQ(testDoc, loopbackDoc);
+    }
+
+    // Positive: Test we can serialize from nothing the same document
+    {
+        BSONObjBuilder builder;
+        ClassDerivedFromStruct one_new;
+        one_new.setField1(3);
+        one_new.setField2(5);
+        testStruct.serialize(&builder);
+
+        auto serializedDoc = builder.obj();
+        ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
+    }
 }
 
 }  // namespace mongo

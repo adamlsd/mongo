@@ -134,7 +134,7 @@ void prefetchRecordPages(OperationContext* opCtx,
                 volatile char _dummy_char = '\0';  // NOLINT
 
                 // Touch the first word on every page in order to fault it into memory
-                for (int i = 0; i < result.objsize(); i += g_minOSPageSizeBytes) {
+                for (int i = 0; i < result.objsize(); i += fetchMinOSPageSizeBytes()) {
                     _dummy_char += *(result.objdata() + i);
                 }
                 // hit the last page, in case we missed it above

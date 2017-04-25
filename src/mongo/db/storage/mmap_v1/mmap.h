@@ -44,7 +44,7 @@ namespace mongo {
 typedef int HANDLE;
 #endif
 
-extern const size_t g_minOSPageSizeBytes;
+extern std::size_t fetchMinOSPageSizeBytes();
 void minOSPageSizeBytesTest(size_t minOSPageSizeBytes);  // lame-o
 
 // call this if syncing data fails

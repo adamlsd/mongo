@@ -1,5 +1,3 @@
-// mmap_posix.cpp
-
 /*    Copyright 2009 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -52,6 +50,18 @@ using std::vector;
 
 using namespace mongoutils;
 
+namespace {
+std::size_t fetchMinOSPageSizeBytes_impl() {
+    std::size_t minOSPageSizeBytes = sysconf(_SC_PAGESIZE);
+    mongo::minOSPageSizeBytesTest(minOSPageSizeBytes);
+    return minOSPageSizeBytes;
+}
+}  // namespace
+
+std::size_t mongo::fetchMinOSPageSizeBytes() {
+    static const std::size_t cachedSize = fetchMinOSPageSizeBytes_impl();
+    return cachedSize;
+}
 
 namespace mongo {
 
@@ -70,13 +80,6 @@ void printMemInfo() {
         << " mapped: " << MemoryMappedFile::totalMappedLengthInMB();
 }
 }  // namespace
-
-static size_t fetchMinOSPageSizeBytes() {
-    size_t minOSPageSizeBytes = sysconf(_SC_PAGESIZE);
-    minOSPageSizeBytesTest(minOSPageSizeBytes);
-    return minOSPageSizeBytes;
-}
-const size_t g_minOSPageSizeBytes = fetchMinOSPageSizeBytes();
 
 
 void MemoryMappedFile::close(OperationContext* opCtx) {
@@ -104,21 +107,21 @@ void MemoryMappedFile::close(OperationContext* opCtx) {
 
 namespace {
 void* _pageAlign(void* p) {
-    return (void*)((int64_t)p & ~(g_minOSPageSizeBytes - 1));
+    return (void*)((int64_t)p & ~(fetchMinOSPageSizeBytes() - 1));
 }
 
 class PageAlignTest : public StartupTest {
 public:
     void run() {
         {
-            int64_t x = g_minOSPageSizeBytes + 123;
+            int64_t x = fetchMinOSPageSizeBytes() + 123;
             void* y = _pageAlign(reinterpret_cast<void*>(x));
-            invariant(g_minOSPageSizeBytes == reinterpret_cast<size_t>(y));
+            invariant(fetchMinOSPageSizeBytes() == reinterpret_cast<size_t>(y));
         }
         {
             int64_t a = static_cast<uint64_t>(numeric_limits<int>::max());
-            a = a / g_minOSPageSizeBytes;
-            a = a * g_minOSPageSizeBytes;
+            a = a / fetchMinOSPageSizeBytes();
+            a = a * fetchMinOSPageSizeBytes();
             // a should now be page aligned
 
             // b is not page aligned

@@ -46,8 +46,8 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/stdx/mutex.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/util/fail_point.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -55,27 +55,22 @@
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/quick_exit.h"
 
-namespace mongo
-{
-	MultiIndexBlock::Impl::~Impl()= default;
+namespace mongo {
+MultiIndexBlock::Impl::~Impl() = default;
 
-	namespace
-	{
-		stdx::function< MultiIndexBlock::factory_function_type > factory;
-	}//namespace
+namespace {
+stdx::function<MultiIndexBlock::factory_function_type> factory;
+}  // namespace
 
-	void MultiIndexBlock::registerFactory( decltype( factory ) newFactory )
-	{
-		factory= std::move( newFactory );
-	}
+void MultiIndexBlock::registerFactory(decltype(factory) newFactory) {
+    factory = std::move(newFactory);
+}
 
-	auto
-	MultiIndexBlock::makeImpl( OperationContext *const opCtx, Collection *const collection )
-			-> std::unique_ptr< Impl >
-	{
-		return factory( opCtx, collection );
-	}
+auto MultiIndexBlock::makeImpl(OperationContext* const opCtx, Collection* const collection)
+    -> std::unique_ptr<Impl> {
+    return factory(opCtx, collection);
+}
 
 
-	void MultiIndexBlock::TUHook::hook() noexcept {}
+void MultiIndexBlock::TUHook::hook() noexcept {}
 }  // namespace mongo

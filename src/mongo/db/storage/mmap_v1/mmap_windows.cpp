@@ -43,7 +43,7 @@ using std::endl;
 using std::string;
 using std::vector;
 
-std::size_t mongo::fetchMinOSPageSizeBytes() {
+std::size_t mongo::getMinOSPageSizeBytes() {
     static const std::size_t cachedSize = [] {
         SYSTEM_INFO si;
         GetSystemInfo(&si);

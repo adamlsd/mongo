@@ -39,26 +39,22 @@
 #include "mongo/util/text.h"
 #include "mongo/util/timer.h"
 
-namespace {
-std::size_t fetchMinOSPageSizeBytes_impl() {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    std::size_t minOSPageSizeBytes = si.dwPageSize;
-    mongo::minOSPageSizeBytesTest(minOSPageSizeBytes);
-    return minOSPageSizeBytes;
-}
-}  // namespace
+using std::endl;
+using std::string;
+using std::vector;
 
 std::size_t mongo::fetchMinOSPageSizeBytes() {
-    static const std::size_t cachedSize = fetchMinOSPageSizeBytes_impl();
+    static const std::size_t cachedSize = [] {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        std::size_t minOSPageSizeBytes = si.dwPageSize;
+        minOSPageSizeBytesTest(minOSPageSizeBytes);
+        return minOSPageSizeBytes;
+    }();
     return cachedSize;
 }
 
 namespace mongo {
-
-using std::endl;
-using std::string;
-using std::vector;
 
 // MapViewMutex
 //

@@ -50,19 +50,6 @@ using std::vector;
 
 using namespace mongoutils;
 
-namespace {
-std::size_t fetchMinOSPageSizeBytes_impl() {
-    std::size_t minOSPageSizeBytes = sysconf(_SC_PAGESIZE);
-    mongo::minOSPageSizeBytesTest(minOSPageSizeBytes);
-    return minOSPageSizeBytes;
-}
-}  // namespace
-
-std::size_t mongo::fetchMinOSPageSizeBytes() {
-    static const std::size_t cachedSize = fetchMinOSPageSizeBytes_impl();
-    return cachedSize;
-}
-
 namespace mongo {
 
 namespace {
@@ -80,7 +67,18 @@ void printMemInfo() {
         << " mapped: " << MemoryMappedFile::totalMappedLengthInMB();
 }
 }  // namespace
+}  // namespace mongo
 
+std::size_t mongo::fetchMinOSPageSizeBytes() {
+    static const std::size_t cachedSize = [] {
+        std::size_t minOSPageSizeBytes = sysconf(_SC_PAGESIZE);
+        minOSPageSizeBytesTest(minOSPageSizeBytes);
+        return minOSPageSizeBytes;
+    }();
+    return cachedSize;
+}
+
+namespace mongo {
 
 void MemoryMappedFile::close(OperationContext* opCtx) {
     for (vector<void*>::iterator i = views.begin(); i != views.end(); i++) {

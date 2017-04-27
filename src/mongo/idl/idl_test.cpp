@@ -71,7 +71,7 @@ void TestLoopback(TestT test_value) {
         BSONObjBuilder builder;
         ParserT one_new;
         one_new.setValue(test_value);
-        testStruct.serialize(&builder);
+        one_new.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
@@ -89,6 +89,43 @@ TEST(IDLOneTypeTests, TestLoopbackTest) {
     TestLoopback<One_objectid, const OID&, jstOID>(OID::max());
     TestLoopback<One_date, const Date_t&, Date>(Date_t::now());
     TestLoopback<One_timestamp, const Timestamp&, bsonTimestamp>(Timestamp::max());
+}
+
+// Test a BSONObj can be passed through an IDL type
+TEST(IDLOneTypeTests, TestObjectLoopbackTest) {
+    IDLParserErrorContext ctxt("root");
+
+    auto testValue = BSON("Hello"
+                          << "World");
+    auto testDoc = BSON("value" << testValue);
+
+    auto element = testDoc.firstElement();
+    ASSERT_EQUALS(element.type(), Object);
+
+    auto testStruct = One_plain_object::parse(ctxt, testDoc);
+    assert_same_types<decltype(testStruct.getValue()), const BSONObj&>();
+
+    ASSERT_BSONOBJ_EQ(testStruct.getValue(), testValue);
+
+    // Positive: Test we can roundtrip from the just parsed document
+    {
+        BSONObjBuilder builder;
+        testStruct.serialize(&builder);
+        auto loopbackDoc = builder.obj();
+
+        ASSERT_BSONOBJ_EQ(testDoc, loopbackDoc);
+    }
+
+    // Positive: Test we can serialize from nothing the same document
+    {
+        BSONObjBuilder builder;
+        One_plain_object one_new;
+        one_new.setValue(testValue);
+        one_new.serialize(&builder);
+
+        auto serializedDoc = builder.obj();
+        ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
+    }
 }
 
 // Test if a given value for a given bson document parses successfully or fails if the bson types
@@ -173,7 +210,7 @@ TEST(IDLOneTypeTests, TestNamespaceString) {
         BSONObjBuilder builder;
         One_namespacestring one_new;
         one_new.setValue(NamespaceString("foo.bar"));
-        testStruct.serialize(&builder);
+        one_new.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
@@ -383,6 +420,8 @@ TEST(IDLFieldTests, TestOptionalFields) {
         assert_same_types<decltype(testStruct.getField2()), const boost::optional<std::int32_t>>();
         assert_same_types<decltype(testStruct.getField1()),
                           const boost::optional<mongo::StringData>>();
+        assert_same_types<decltype(testStruct.getField3()),
+                          const boost::optional<mongo::BSONObj>>();
 
         ASSERT_EQUALS("Foo", testStruct.getField1().get());
         ASSERT_FALSE(testStruct.getField2().is_initialized());
@@ -467,15 +506,15 @@ TEST(IDLNestedStruct, TestDuplicatTypes) {
         NestedWithDuplicateTypes nested_structs;
         RequiredStrictField3 f1;
         f1.setField1(1);
-        f1.setField1(2);
-        f1.setField1(3);
+        f1.setField2(2);
+        f1.setField3(3);
         nested_structs.setField1(f1);
         RequiredStrictField3 f3;
         f3.setField1(4);
-        f3.setField1(5);
-        f3.setField1(6);
+        f3.setField2(5);
+        f3.setField3(6);
         nested_structs.setField3(f3);
-        testStruct.serialize(&builder);
+        nested_structs.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
@@ -525,7 +564,7 @@ TEST(IDLArrayTests, TestSimpleArrays) {
         array_fields.setField1(field1);
         array_fields.setField2(field2);
         array_fields.setField3(field3);
-        testStruct.serialize(&builder);
+        array_fields.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
@@ -578,7 +617,7 @@ TEST(IDLArrayTests, TestSimpleOptionalArrays) {
         array_fields.setField1(field1);
         array_fields.setField2(field2);
         array_fields.setField3(field3);
-        testStruct.serialize(&builder);
+        array_fields.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);
@@ -677,6 +716,8 @@ TEST(IDLArrayTests, TestArraysOfComplexTypes) {
                                  << BSON_ARRAY(1 << "2")
                                  << "field4"
                                  << BSON_ARRAY(BSONObj() << BSONObj())
+                                 << "field5"
+                                 << BSON_ARRAY(BSONObj() << BSONObj() << BSONObj())
                                  << "field1o"
                                  << BSON_ARRAY(1 << 2 << 3)
                                  << "field2o"
@@ -694,6 +735,7 @@ TEST(IDLArrayTests, TestArraysOfComplexTypes) {
     assert_same_types<decltype(testStruct.getField3()), const std::vector<mongo::AnyBasicType>&>();
     assert_same_types<decltype(testStruct.getField4()),
                       const std::vector<mongo::ObjectBasicType>&>();
+    assert_same_types<decltype(testStruct.getField5()), const std::vector<mongo::BSONObj>&>();
 
     assert_same_types<decltype(testStruct.getField1o()),
                       const boost::optional<std::vector<std::int64_t>>>();
@@ -703,6 +745,8 @@ TEST(IDLArrayTests, TestArraysOfComplexTypes) {
                       const boost::optional<std::vector<mongo::AnyBasicType>>>();
     assert_same_types<decltype(testStruct.getField4o()),
                       const boost::optional<std::vector<mongo::ObjectBasicType>>>();
+    assert_same_types<decltype(testStruct.getField5o()),
+                      const boost::optional<std::vector<mongo::BSONObj>>>();
 
     std::vector<std::int64_t> field1{1, 2, 3};
     ASSERT_TRUE(field1 == testStruct.getField1());
@@ -762,7 +806,7 @@ TEST(IDLCustomType, TestDerivedParser) {
         ClassDerivedFromStruct one_new;
         one_new.setField1(3);
         one_new.setField2(5);
-        testStruct.serialize(&builder);
+        one_new.serialize(&builder);
 
         auto serializedDoc = builder.obj();
         ASSERT_BSONOBJ_EQ(testDoc, serializedDoc);

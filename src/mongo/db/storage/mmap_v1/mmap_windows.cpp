@@ -1,5 +1,3 @@
-// mmap_win.cpp
-
 /*    Copyright 2009 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -41,20 +39,26 @@
 #include "mongo/util/text.h"
 #include "mongo/util/timer.h"
 
+namespace {
+std::size_t fetchMinOSPageSizeBytes_impl() {
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    std::size_t minOSPageSizeBytes = si.dwPageSize;
+    mongo::minOSPageSizeBytesTest(minOSPageSizeBytes);
+    return minOSPageSizeBytes;
+}
+}  // namespace
+
+std::size_t mongo::fetchMinOSPageSizeBytes() {
+    static const std::size_t cachedSize = fetchMinOSPageSizeBytes_impl();
+    return cachedSize;
+}
+
 namespace mongo {
 
 using std::endl;
 using std::string;
 using std::vector;
-
-static size_t fetchMinOSPageSizeBytes() {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    size_t minOSPageSizeBytes = si.dwPageSize;
-    minOSPageSizeBytesTest(minOSPageSizeBytes);
-    return minOSPageSizeBytes;
-}
-const size_t g_minOSPageSizeBytes = fetchMinOSPageSizeBytes();
 
 // MapViewMutex
 //
@@ -484,4 +488,4 @@ void MemoryMappedFile::flush(bool sync) {
 MemoryMappedFile::Flushable* MemoryMappedFile::prepareFlush() {
     return new WindowsFlushable(this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);
 }
-}
+}  // namespace mongo

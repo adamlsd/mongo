@@ -578,9 +578,12 @@ env.Library(
     source=[
         "operation_context_impl.cpp",
         "service_context_d.cpp",
+        "service_entry_point_mongod.cpp",
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/transport/service_entry_point_utils',
+        'assemble_response',
         'concurrency/lock_manager',
         'curop',
         'storage/storage_engine_lock_file',

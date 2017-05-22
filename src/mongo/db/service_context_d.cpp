@@ -44,6 +44,7 @@
 #include "mongo/db/storage/storage_engine_lock_file.h"
 #include "mongo/db/storage/storage_engine_metadata.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
@@ -72,7 +73,7 @@ ServiceContextMongoD::ServiceContextMongoD()
     // Evil:
     : ServiceContext(nullptr) {
     // Have to set the context after knowing where the transport layer is.
-    setServiceContext(stdx::make_unique<ServiceEntryPointMongod>(this->getTransportLayer());
+    setServiceEntryPoint(stdx::make_unique<ServiceEntryPointMongod>(this->getTransportLayer()));
 }
 
 ServiceContextMongoD::~ServiceContextMongoD() = default;

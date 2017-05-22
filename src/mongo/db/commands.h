@@ -48,9 +48,6 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/util/string_map.h"
 
-// Included for the purpose of granting friendship to `execCommandClient` and `execCommandDatabase`
-#include "mongo/db/commands_helpers.h"
-
 namespace mongo {
 
 class BSONObj;
@@ -89,10 +86,9 @@ public:
      * Constructs a new command and causes it to be registered with the global commands list. It is
      * not safe to construct commands other than when the server is starting up.
      *
-     * @param webUI expose the command in the web ui as localhost:28017/<name>
      * @param oldName an optional old, deprecated name for the command
      */
-    Command(StringData name, bool webUI = false, StringData oldName = StringData());
+    Command(StringData name, StringData oldName = StringData());
 
     // NOTE: Do not remove this declaration, or relocate it in this class. We
     // are using this method to control where the vtable is emitted.
@@ -103,13 +99,6 @@ public:
      */
     const std::string& getName() const {
         return _name;
-    }
-
-    /**
-     * Returns whether this command is visible in the Web UI.
-     */
-    bool isWebUI() const {
-        return _webUI;
     }
 
     // Return the namespace for the command. If the first field in 'cmdObj' is of type
@@ -135,19 +124,9 @@ public:
     */
     virtual bool run(OperationContext* opCtx,
                      const std::string& db,
-                     BSONObj& cmdObj,
+                     const BSONObj& cmdObj,
                      std::string& errmsg,
                      BSONObjBuilder& result) = 0;
-
-    /**
-     * Translation point between the new request/response types and the legacy types.
-     *
-     * Then we won't need to mutate the command object. At that point we can also make
-     * this method virtual so commands can override it directly.
-     */
-    bool run(OperationContext* opCtx,
-             const rpc::RequestInterface& request,
-             rpc::ReplyBuilderInterface* replyBuilder);
 
     /**
      * supportsWriteConcern returns true if this command should be parsed for a writeConcern
@@ -279,13 +258,17 @@ public:
         return ReadWriteType::kCommand;
     }
 
+    void incrementCommandsExecuted() {
+        _commandsExecuted.increment();
+    }
+
+    void incrementCommandsFailed() {
+        _commandsFailed.increment();
+    }
+
 protected:
     static CommandMap* _commands;
     static CommandMap* _commandsByBestName;
-
-    // Counters for how many times this command has been executed and failed
-    Counter64 _commandsExecuted;
-    Counter64 _commandsFailed;
 
 public:
     static const CommandMap* commandsByBestName() {
@@ -296,28 +279,6 @@ public:
     static Counter64 unknownCommands;
 
     static Command* findCommand(StringData name);
-
-    /**
-     * Executes a command after stripping metadata, performing authorization checks,
-     * handling audit impersonation, and (potentially) setting maintenance mode. This method
-     * also checks that the command is permissible to run on the node given its current
-     * replication state. All the logic here is independent of any particular command; any
-     * functionality relevant to a specific command should be confined to its run() method.
-     *
-     * This is currently used by mongod and dbwebserver.
-     */
-    static void execCommand(OperationContext* opCtx,
-                            Command* command,
-                            const rpc::RequestInterface& request,
-                            rpc::ReplyBuilderInterface* replyBuilder);
-
-    using ExecCommandHandler = decltype(Command::execCommand);
-
-    /**
-     * Registers the implementation of the `registerExecCommand` function. This must be called from
-     * a MONGO_INITIALIZER context and/or a single-threaded context.
-     */
-    static void registerExecCommand(stdx::function<ExecCommandHandler> handler);
 
     // Helper for setting errmsg and ok field in command result object.
     static void appendCommandStatus(BSONObjBuilder& result, bool ok, const std::string& errmsg);
@@ -387,66 +348,6 @@ public:
                                      const Command& command);
 
     /**
-     * When an assertion is hit during command execution, this method is used to fill the fields
-     * of the command reply with the information from the error. In addition, information about
-     * the command is logged. This function does not return anything, because there is typically
-     * already an active exception when this function is called, so there
-     * is little that can be done if it fails.
-     */
-    static void generateErrorResponse(OperationContext* opCtx,
-                                      rpc::ReplyBuilderInterface* replyBuilder,
-                                      const DBException& exception,
-                                      const rpc::RequestInterface& request,
-                                      Command* command,
-                                      const BSONObj& metadata);
-
-    /**
-     * Generates a command error response. This overload of generateErrorResponse is intended
-     * to also add an operationTime.
-     */
-    static void generateErrorResponse(OperationContext* opCtx,
-                                      rpc::ReplyBuilderInterface* replyBuilder,
-                                      const DBException& exception,
-                                      const rpc::RequestInterface& request,
-                                      Command* command,
-                                      const BSONObj& metadata,
-                                      LogicalTime operationTime);
-    /**
-     * Generates a command error response. This overload of generateErrorResponse is intended
-     * to be called if the command is successfully parsed, but there is an error before we have
-     * a handle to the actual Command object. This can happen, for example, when the command
-     * is not found.
-     */
-    static void generateErrorResponse(OperationContext* opCtx,
-                                      rpc::ReplyBuilderInterface* replyBuilder,
-                                      const DBException& exception,
-                                      const rpc::RequestInterface& request);
-
-    /**
-     * Generates a command error response. Similar to other overloads of generateErrorResponse,
-     * but doesn't print any information about the specific command being executed. This is
-     * neccessary, for example, if there is
-     * an assertion hit while parsing the command.
-     */
-    static void generateErrorResponse(OperationContext* opCtx,
-                                      rpc::ReplyBuilderInterface* replyBuilder,
-                                      const DBException& exception);
-
-    /**
-     * Records the error on to the OperationContext. This hook is needed because mongos
-     * does not have CurOp linked in to it.
-     */
-    static void registerError(OperationContext* opCtx, const DBException& exception);
-
-    /**
-     * Registers the implementation of the `registerError` function. This hook is needed because
-     * mongos does not have CurOp linked in to it. This must be called from a MONGO_INITIALIZER
-     * context and/or a single-threaded context.
-     */
-    static void registerRegisterError(
-        stdx::function<void(OperationContext*, const DBException&)> registerErrorHandler);
-
-    /**
      * This function checks if a command is a user management command by name.
      */
     static bool isUserManagementCommand(const std::string& name);
@@ -482,7 +383,7 @@ public:
             arg == "$queryOptions" ||       //
             arg == "$readPreference" ||     //
             arg == "$replData" ||           //
-            arg == "logicalTime" ||         //
+            arg == "$logicalTime" ||        //
             arg == "maxTimeMS" ||           //
             arg == "readConcern" ||         //
             arg == "shardVersion" ||        //
@@ -514,27 +415,16 @@ private:
         fassertFailed(16940);
     }
 
-private:
+    // Counters for how many times this command has been executed and failed
+    Counter64 _commandsExecuted;
+    Counter64 _commandsFailed;
+
     // The full name of the command
     const std::string _name;
-
-    // Whether the command is available in the web UI
-    const bool _webUI;
 
     // Pointers to hold the metrics tree references
     ServerStatusMetricField<Counter64> _commandsExecutedMetric;
     ServerStatusMetricField<Counter64> _commandsFailedMetric;
-
-    friend void mongo::execCommandClient(OperationContext* opCtx,
-                                         Command* c,
-                                         StringData dbname,
-                                         BSONObj& cmdObj,
-                                         BSONObjBuilder& result);
-
-    friend void mongo::execCommandDatabase(OperationContext* opCtx,
-                                           Command* command,
-                                           const rpc::RequestInterface& request,
-                                           rpc::ReplyBuilderInterface* replyBuilder);
 };
 
 }  // namespace mongo

@@ -75,6 +75,7 @@
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time_metadata_hook.h"
+#include "mongo/db/logical_time_validator.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/db/op_observer_impl.h"
 #include "mongo/db/operation_context.h"
@@ -618,6 +619,7 @@ ExitCode _initAndListen(int listenPort) {
               << startupWarningsLog;
     }
 
+    // This function may take the global lock.
     auto shardingInitialized =
         uassertStatusOK(ShardingState::get(startupOpCtx.get())
                             ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
@@ -852,6 +854,21 @@ static void startupConfigActions(const std::vector<std::string>& args) {
 #endif
 }
 
+auto makeReplicationExecutor(ServiceContext* serviceContext) {
+    ThreadPool::Options tpOptions;
+    tpOptions.poolName = "replexec";
+    tpOptions.maxThreads = 50;
+    tpOptions.onCreateThread = [](const std::string& threadName) {
+        Client::initThread(threadName.c_str());
+    };
+    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+    hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(serviceContext));
+    return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
+        stdx::make_unique<ThreadPool>(tpOptions),
+        executor::makeNetworkInterface(
+            "NetworkInterfaceASIO-Replication", nullptr, std::move(hookList)));
+}
+
 MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
                                      ("SetGlobalEnvironment", "SSLManager", "default"))
 (InitializerContext* context) {
@@ -870,16 +887,12 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
     auto logicalClock = stdx::make_unique<LogicalClock>(serviceContext);
     LogicalClock::set(serviceContext, std::move(logicalClock));
 
-    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
-    hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(serviceContext));
-
     auto replCoord = stdx::make_unique<repl::ReplicationCoordinatorImpl>(
         serviceContext,
         getGlobalReplSettings(),
         stdx::make_unique<repl::ReplicationCoordinatorExternalStateImpl>(serviceContext,
                                                                          storageInterface),
-        executor::makeNetworkInterface(
-            "NetworkInterfaceASIO-Replication", nullptr, std::move(hookList)),
+        makeReplicationExecutor(serviceContext),
         stdx::make_unique<repl::TopologyCoordinatorImpl>(topoCoordOptions),
         replicationProcess,
         storageInterface,
@@ -935,6 +948,12 @@ static void shutdownTask() {
     ReplicaSetMonitor::shutdown();
     if (auto sr = grid.shardRegistry()) {  // TODO: race: sr is a naked pointer
         sr->shutdown();
+    }
+
+    // Validator shutdown must be called after setKillAllOperations is called. Otherwise, this can
+    // deadlock.
+    if (auto validator = LogicalTimeValidator::get(serviceContext)) {
+        validator->shutDown();
     }
 
 #if __has_feature(address_sanitizer)

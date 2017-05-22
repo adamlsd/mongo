@@ -48,6 +48,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/logical_time_metadata_hook.h"
+#include "mongo/db/logical_time_validator.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/repair_database.h"
 #include "mongo/db/repl/bgsync.h"
@@ -79,6 +80,7 @@
 #include "mongo/rpc/metadata/egress_metadata_hook_list.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
@@ -681,9 +683,25 @@ void ReplicationCoordinatorExternalStateImpl::killAllUserOperations(OperationCon
 void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         Balancer::get(_service)->interruptBalancer();
+    } else if (ShardingState::get(_service)->enabled()) {
+        invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
+        Grid::get(_service)->catalogCache()->onStepDown();
     }
 
     ShardingState::get(_service)->markCollectionsNotShardedAtStepdown();
+
+    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        if (auto validator = LogicalTimeValidator::get(_service)) {
+            auto opCtx = cc().getOperationContext();
+
+            if (opCtx != nullptr) {
+                validator->enableKeyGenerator(opCtx, false);
+            } else {
+                auto opCtxPtr = cc().makeOperationContext();
+                validator->enableKeyGenerator(opCtxPtr.get(), false);
+            }
+        }
+    }
 }
 
 void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook(
@@ -739,7 +757,13 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
 
         // If this is a config server node becoming a primary, start the balancer
         Balancer::get(opCtx)->initiateBalancer(opCtx);
+
+        if (auto validator = LogicalTimeValidator::get(_service)) {
+            validator->enableKeyGenerator(opCtx, true);
+        }
     } else if (ShardingState::get(opCtx)->enabled()) {
+        invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
+
         const auto configsvrConnStr =
             Grid::get(opCtx)->shardRegistry()->getConfigShard()->getConnString();
         auto status = ShardingState::get(opCtx)->updateShardIdentityConfigString(
@@ -748,6 +772,8 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
             warning() << "error encountered while trying to update config connection string to "
                       << configsvrConnStr << causedBy(status);
         }
+
+        Grid::get(_service)->catalogCache()->onStepUp();
     }
 
     // There is a slight chance that some stale metadata might have been loaded before the latest
@@ -823,7 +849,8 @@ bool ReplicationCoordinatorExternalStateImpl::snapshotsEnabled() const {
     return _snapshotThread != nullptr;
 }
 
-void ReplicationCoordinatorExternalStateImpl::notifyOplogMetadataWaiters() {
+void ReplicationCoordinatorExternalStateImpl::notifyOplogMetadataWaiters(
+    const OpTime& committedOpTime) {
     signalOplogWaiters();
 }
 

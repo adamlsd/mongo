@@ -262,6 +262,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/repl/optime',
     ],
 )
 
@@ -538,17 +539,6 @@ env.Library(
 )
 
 env.Library(
-    target='run_commands',
-    source=[
-        'run_commands.cpp',
-    ],
-    LIBDEPS=[
-        "commands",
-        "curop",
-    ],
-)
-
-env.Library(
     target='dbdirectclient',
     source=[
         'dbdirectclient.cpp',
@@ -599,7 +589,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        'commands/dcommands',
         'repl/serveronly',
         'views/views_mongod',
         '$BUILD_DIR/mongo/util/uuid_catalog',
@@ -625,7 +614,7 @@ env.Library(
         "$BUILD_DIR/mongo/base",
         "$BUILD_DIR/mongo/util/background_job",
         "query/query",
-        #"catalog/catalog", # CYCLE
+        #"catalog/catalog", # CYCLE (CursorManager)
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-03-10): See `CYCLE` tags above
@@ -703,6 +692,7 @@ env.Library(
     ],
     LIBDEPS=[
         "concurrency/lock_manager",
+        "concurrency/write_conflict_exception",
         "curop",
         "repl/read_concern_args",
         "repl/repl_coordinator_impl",
@@ -733,9 +723,10 @@ env.Library(
         "ttl.cpp",
     ],
     LIBDEPS=[
-        "catalog/catalog",
-        "commands/dcommands",
+        "commands/dcommands_fsync",
         "db_raii",
+        "ops/write_ops",
+        "query/query",
         "ttl_collection_cache",
     ],
 )
@@ -754,6 +745,7 @@ env.Library(
     target="assemble_response",
     source=[
         "assemble_response.cpp",
+        "run_commands.cpp",
     ],
     LIBDEPS=[
         "curop",
@@ -761,12 +753,11 @@ env.Library(
         "diag_log",
         "lasterror",
         "ops/write_ops_parsers",
-        "run_commands",
         "storage/storage_options",
         #'introspect', # CYCLE
         #'$BUILD_DIR/mongo/db/ops/write_ops', # CYCLE
         #'$BUILD_DIR/mongo/db/catalog/catalog', # CYCLE
-        #'$BUILD_DIR/mongo/db/commands/dcommands', # CYCLE
+        #'$BUILD_DIR/mongo/db/commands/dcommands_fsync', # CYCLE
     ],
     LIBDEPS_TAGS=[
         # TODO(ADAM, 2017-05-16): See `CYCLE` tags above
@@ -859,7 +850,6 @@ env.Library(
         "repl/storage_interface",
         "repl/sync_tail",
         "repl/topology_coordinator_impl",
-        "run_commands",
         "rw_concern_d",
         "s/commands",
         "s/collection_metadata",
@@ -1017,6 +1007,7 @@ env.Library(
         'service_context',
         'signed_logical_time',
         'time_proof_service',
+        '$BUILD_DIR/mongo/db/auth/authcore',
     ],
 )
 
@@ -1028,6 +1019,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'keys_collection_document',
         '$BUILD_DIR/mongo/s/coreshard',
+        '$BUILD_DIR/mongo/s/client/sharding_client',
     ],
 )
 
@@ -1070,6 +1062,8 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'logical_time_validator',
+        '$BUILD_DIR/mongo/s/config_server_test_fixture',
+        '$BUILD_DIR/mongo/s/coreshard',
     ],
 )
 

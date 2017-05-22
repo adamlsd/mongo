@@ -228,7 +228,7 @@ public:
                 "Output is in the \"value\" field\n";
     }
 
-    CmdFindAndModify() : Command("findAndModify", false, "findandmodify") {}
+    CmdFindAndModify() : Command("findAndModify", "findandmodify") {}
 
     bool slaveOk() const override {
         return false;
@@ -337,7 +337,7 @@ public:
 
     bool run(OperationContext* opCtx,
              const std::string& dbName,
-             BSONObj& cmdObj,
+             const BSONObj& cmdObj,
              std::string& errmsg,
              BSONObjBuilder& result) override {
         // findAndModify command is not replicated directly.

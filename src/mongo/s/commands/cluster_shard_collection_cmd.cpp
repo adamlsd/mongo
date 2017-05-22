@@ -121,7 +121,7 @@ BSONObj makeCreateIndexesCmd(const NamespaceString& nss,
 
 class ShardCollectionCmd : public Command {
 public:
-    ShardCollectionCmd() : Command("shardCollection", false, "shardcollection") {}
+    ShardCollectionCmd() : Command("shardCollection", "shardcollection") {}
 
     bool slaveOk() const override {
         return true;
@@ -159,7 +159,7 @@ public:
 
     bool run(OperationContext* opCtx,
              const std::string& dbname,
-             BSONObj& cmdObj,
+             const BSONObj& cmdObj,
              std::string& errmsg,
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbname, cmdObj));

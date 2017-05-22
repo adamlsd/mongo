@@ -60,7 +60,7 @@ using std::vector;
 
 class FindAndModifyCmd : public Command {
 public:
-    FindAndModifyCmd() : Command("findAndModify", false, "findandmodify") {}
+    FindAndModifyCmd() : Command("findAndModify", "findandmodify") {}
 
     bool slaveOk() const override {
         return true;
@@ -156,7 +156,7 @@ public:
 
     bool run(OperationContext* opCtx,
              const std::string& dbName,
-             BSONObj& cmdObj,
+             const BSONObj& cmdObj,
              std::string& errmsg,
              BSONObjBuilder& result) override {
         const NamespaceString nss = parseNsCollectionRequired(dbName, cmdObj);

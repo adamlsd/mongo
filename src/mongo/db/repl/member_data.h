@@ -37,12 +37,12 @@ namespace mongo {
 namespace repl {
 
 /**
- * This class contains the data returned from a heartbeat command for one member
- * of a replica set.
+ * This class contains the data from heartbeat responses and replSetUpdatePosition commands for one
+ * member of a replica set.
  **/
-class MemberHeartbeatData {
+class MemberData {
 public:
-    MemberHeartbeatData();
+    MemberData();
 
     MemberState getState() const {
         return _lastResponse.getState();
@@ -147,7 +147,7 @@ public:
      * Sets values in this object from the results of a successful heartbeat command.
      * Returns whether or not the optimes advanced as a result of this heartbeat response.
      */
-    bool setUpValues(Date_t now, const HostAndPort& host, ReplSetHeartbeatResponse&& hbResponse);
+    bool setUpValues(Date_t now, ReplSetHeartbeatResponse&& hbResponse);
 
     /**
      * Sets values in this object from the results of a erroring/failed heartbeat command.
@@ -267,7 +267,7 @@ private:
     // Last known OpTime that the replica has applied, whether journaled or unjournaled.
     OpTime _lastAppliedOpTime;
 
-    // TODO(russotto): Since memberHeartbeatData is kept in config order, _configIndex
+    // TODO(russotto): Since memberData is kept in config order, _configIndex
     // and _isSelf may not be necessary.
     // Index of this member in the replica set configuration.
     int _configIndex;

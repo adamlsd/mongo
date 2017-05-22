@@ -755,6 +755,9 @@ void InitialSyncer::_oplogFetcherCallback(const Status& oplogFetcherFinishStatus
 
 void InitialSyncer::_databasesClonerCallback(const Status& databaseClonerFinishStatus,
                                              std::shared_ptr<OnCompletionGuard> onCompletionGuard) {
+    log() << "Finished cloning data: " << redact(databaseClonerFinishStatus)
+          << ". Beginning oplog replay.";
+
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     auto status = _checkForShutdownAndConvertStatus_inlock(databaseClonerFinishStatus,
                                                            "error cloning databases");
@@ -1394,7 +1397,7 @@ StatusWith<Operations> InitialSyncer::_getNextApplierBatch_inlock() {
             // Index builds are achieved through the use of an insert op, not a command op.
             // The following line is the same as what the insert code uses to detect an index
             // build.
-            (entry.hasNamespace() && entry.getCollectionName() == "system.indexes")) {
+            (entry.getNamespace().isSystemDotIndexes())) {
             if (ops.empty()) {
                 // Apply commands one-at-a-time.
                 ops.push_back(std::move(entry));

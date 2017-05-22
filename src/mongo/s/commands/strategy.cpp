@@ -87,44 +87,6 @@ namespace {
 
 const std::string kOperationTime = "operationTime";
 
-void runAgainstRegistered(OperationContext* opCtx,
-                          StringData db,
-                          BSONObj& jsobj,
-                          BSONObjBuilder& anObjBuilder) {
-    BSONElement e = jsobj.firstElement();
-    const auto commandName = e.fieldNameStringData();
-    Command* c = e.type() ? Command::findCommand(commandName) : NULL;
-    if (!c) {
-        Command::appendCommandStatus(
-            anObjBuilder, false, str::stream() << "no such cmd: " << commandName);
-        anObjBuilder.append("code", ErrorCodes::CommandNotFound);
-        Command::unknownCommands.increment();
-        return;
-    }
-
-    execCommandClient(opCtx, c, db, jsobj, anObjBuilder);
-}
-
-/**
- * Called into by the web server. For now we just translate the parameters to their old style
- * equivalents.
- */
-void execCommandHandler(OperationContext* opCtx,
-                        Command* command,
-                        const rpc::RequestInterface& request,
-                        rpc::ReplyBuilderInterface* replyBuilder) {
-    int queryFlags = 0;
-    BSONObj cmdObj;
-
-    std::tie(cmdObj, queryFlags) =
-        rpc::downconvertRequestMetadata(request.getCommandArgs(), request.getMetadata());
-
-    BSONObjBuilder result;
-    execCommandClient(opCtx, command, request.getDatabase(), cmdObj, result);
-
-    replyBuilder->setCommandReply(result.done()).setMetadata(rpc::makeEmptyMetadata());
-}
-
 /**
  * Extract and process metadata from the command request body.
  */
@@ -150,13 +112,11 @@ Status processCommandMetadata(OperationContext* opCtx, const BSONObj& cmdObj) {
     }
 
     if (authSession->getAuthorizationManager().isAuthEnabled()) {
-        auto advanceClockStatus = logicalTimeValidator->validate(signedTime);
+        auto advanceClockStatus = logicalTimeValidator->validate(opCtx, signedTime);
 
         if (!advanceClockStatus.isOK()) {
             return advanceClockStatus;
         }
-    } else {
-        logicalTimeValidator->updateCacheTrustedSource(signedTime);
     }
 
     return logicalClock->advanceClusterTime(signedTime.getTime());
@@ -167,7 +127,8 @@ Status processCommandMetadata(OperationContext* opCtx, const BSONObj& cmdObj) {
  */
 void appendRequiredFieldsToResponse(OperationContext* opCtx, BSONObjBuilder* responseBuilder) {
     auto validator = LogicalTimeValidator::get(opCtx);
-    auto currentTime = validator->signLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+    auto currentTime =
+        validator->signLogicalTime(opCtx, LogicalClock::get(opCtx)->getClusterTime());
     rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
     logicalTimeMetadata.writeToMetadata(responseBuilder);
     auto tracker = OperationTimeTracker::get(opCtx);
@@ -177,18 +138,163 @@ void appendRequiredFieldsToResponse(OperationContext* opCtx, BSONObjBuilder* res
     }
 }
 
-MONGO_INITIALIZER(InitializeCommandExecCommandHandler)(InitializerContext* const) {
-    Command::registerExecCommand(execCommandHandler);
-    return Status::OK();
+/**
+ * Rewrites cmdObj into the format expected by mongos Command::run() implementations.
+ *
+ * This performs 2 transformations:
+ * 1) $readPreference fields are moved into a subobject called $queryOptions. This matches the
+ *    "wrapped" format historically used internally by mongos. Moving off of that format will be
+ *    done as SERVER-29091.
+ *
+ * 2) Filter out generic arguments that shouldn't be blindly passed to the shards.  This is
+ *    necessary because many mongos implementations of Command::run() just pass cmdObj through
+ *    directly to the shards. However, some of the generic arguments fields are automatically
+ *    appended in the egress layer. Removing them here ensures that they don't get duplicated.
+ *
+ * Ideally this function can be deleted once mongos run() implementations are more careful about
+ * what they send to the shards.
+ */
+BSONObj filterCommandRequestForPassthrough(const BSONObj& cmdObj) {
+    BSONObjBuilder bob;
+    for (auto elem : cmdObj) {
+        const auto name = elem.fieldNameStringData();
+        if (name == "$readPreference") {
+            BSONObjBuilder(bob.subobjStart("$queryOptions")).append(elem);
+        } else if (!Command::isGenericArgument(name) || name == "maxTimeMS" ||
+                   name == "readConcern" || name == "writeConcern") {
+            // This is the whitelist of generic arguments that commands can be trusted to blindly
+            // forward to the shards.
+            bob.append(elem);
+        }
+    }
+    return bob.obj();
 }
 
-void registerErrorImpl(OperationContext* opCtx, const DBException& exception) {}
+void execCommandClient(OperationContext* opCtx,
+                       Command* c,
+                       StringData dbname,
+                       BSONObj& cmdObj,
+                       BSONObjBuilder& result) {
+    ON_BLOCK_EXIT([opCtx, &result] { appendRequiredFieldsToResponse(opCtx, &result); });
 
-MONGO_INITIALIZER(InitializeRegisterErrorHandler)(InitializerContext* const) {
-    Command::registerRegisterError(registerErrorImpl);
-    return Status::OK();
+    uassert(ErrorCodes::IllegalOperation,
+            "Can't use 'local' database through mongos",
+            dbname != NamespaceString::kLocalDb);
+
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "Invalid database name: '" << dbname << "'",
+            NamespaceString::validDBName(dbname, NamespaceString::DollarInDbNameBehavior::Allow));
+
+    dassert(dbname == nsToDatabase(dbname));
+    StringMap<int> topLevelFields;
+    for (auto&& element : cmdObj) {
+        StringData fieldName = element.fieldNameStringData();
+        if (fieldName == "help" && element.type() == Bool && element.Bool()) {
+            std::stringstream help;
+            help << "help for: " << c->getName() << " ";
+            c->help(help);
+            result.append("help", help.str());
+            Command::appendCommandStatus(result, true, "");
+            return;
+        }
+
+        uassert(ErrorCodes::FailedToParse,
+                str::stream() << "Parsed command object contains duplicate top level key: "
+                              << fieldName,
+                topLevelFields[fieldName]++ == 0);
+    }
+
+    Status status = Command::checkAuthorization(c, opCtx, dbname.toString(), cmdObj);
+    if (!status.isOK()) {
+        Command::appendCommandStatus(result, status);
+        return;
+    }
+
+    c->incrementCommandsExecuted();
+
+    if (c->shouldAffectCommandCounter()) {
+        globalOpCounters.gotCommand();
+    }
+
+    StatusWith<WriteConcernOptions> wcResult =
+        WriteConcernOptions::extractWCFromCommand(cmdObj, dbname.toString());
+    if (!wcResult.isOK()) {
+        Command::appendCommandStatus(result, wcResult.getStatus());
+        return;
+    }
+
+    bool supportsWriteConcern = c->supportsWriteConcern(cmdObj);
+    if (!supportsWriteConcern && !wcResult.getValue().usedDefault) {
+        // This command doesn't do writes so it should not be passed a writeConcern.
+        // If we did not use the default writeConcern, one was provided when it shouldn't have
+        // been by the user.
+        Command::appendCommandStatus(
+            result, Status(ErrorCodes::InvalidOptions, "Command does not support writeConcern"));
+        return;
+    }
+
+    // attach tracking
+    rpc::TrackingMetadata trackingMetadata;
+    trackingMetadata.initWithOperName(c->getName());
+    rpc::TrackingMetadata::get(opCtx) = trackingMetadata;
+
+    auto metadataStatus = processCommandMetadata(opCtx, cmdObj);
+    if (!metadataStatus.isOK()) {
+        Command::appendCommandStatus(result, metadataStatus);
+        return;
+    }
+
+    auto filteredCmdObj = filterCommandRequestForPassthrough(cmdObj);
+    std::string errmsg;
+    bool ok = false;
+    try {
+        if (!supportsWriteConcern) {
+            ok = c->run(opCtx, dbname.toString(), filteredCmdObj, errmsg, result);
+        } else {
+            // Change the write concern while running the command.
+            const auto oldWC = opCtx->getWriteConcern();
+            ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
+            opCtx->setWriteConcern(wcResult.getValue());
+
+            ok = c->run(opCtx, dbname.toString(), filteredCmdObj, errmsg, result);
+        }
+    } catch (const DBException& e) {
+        result.resetToEmpty();
+        const int code = e.getCode();
+
+        // Codes for StaleConfigException
+        if (code == ErrorCodes::RecvStaleConfig || code == ErrorCodes::SendStaleConfig) {
+            throw;
+        }
+
+        errmsg = e.what();
+        result.append("code", code);
+    }
+
+    if (!ok) {
+        c->incrementCommandsFailed();
+    }
+
+    Command::appendCommandStatus(result, ok, errmsg);
 }
 
+void runAgainstRegistered(OperationContext* opCtx,
+                          StringData db,
+                          BSONObj& jsobj,
+                          BSONObjBuilder& anObjBuilder) {
+    BSONElement e = jsobj.firstElement();
+    const auto commandName = e.fieldNameStringData();
+    Command* c = e.type() ? Command::findCommand(commandName) : NULL;
+    if (!c) {
+        Command::appendCommandStatus(
+            anObjBuilder, false, str::stream() << "no such cmd: " << commandName);
+        anObjBuilder.append("code", ErrorCodes::CommandNotFound);
+        Command::unknownCommands.increment();
+        return;
+    }
+
+    execCommandClient(opCtx, c, db, jsobj, anObjBuilder);
+}
 }  // namespace
 
 DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss, DbMessage* dbm) {
@@ -654,152 +760,4 @@ Status Strategy::explainFind(OperationContext* opCtx,
                                               millisElapsed,
                                               out);
 }
-
-
-namespace {
-/**
- * Rewrites cmdObj into the format expected by mongos Command::run() implementations.
- *
- * This performs 2 transformations:
- * 1) $readPreference fields are moved into a subobject called $queryOptions. This matches the
- *    "wrapped" format historically used internally by mongos. Moving off of that format will be
- *    done as SERVER-29091.
- *
- * 2) Filter out generic arguments that shouldn't be blindly passed to the shards.  This is
- *    necessary because many mongos implementations of Command::run() just pass cmdObj through
- *    directly to the shards. However, some of the generic arguments fields are automatically
- *    appended in the egress layer. Removing them here ensures that they don't get duplicated.
- *
- * Ideally this function can be deleted once mongos run() implementations are more careful about
- * what they send to the shards.
- */
-BSONObj filterCommandRequestForPassthrough(const BSONObj& cmdObj) {
-    BSONObjBuilder bob;
-    for (auto elem : cmdObj) {
-        const auto name = elem.fieldNameStringData();
-        if (name == "$readPreference") {
-            BSONObjBuilder(bob.subobjStart("$queryOptions")).append(elem);
-        } else if (!Command::isGenericArgument(name) || name == "maxTimeMS" ||
-                   name == "readConcern" || name == "writeConcern") {
-            // This is the whitelist of generic arguments that commands can be trusted to blindly
-            // forward to the shards.
-            bob.append(elem);
-        }
-    }
-    return bob.obj();
-}
-}
-
-/**
- * Called into by the commands infrastructure.
- */
-void execCommandClient(OperationContext* opCtx,
-                       Command* c,
-                       StringData dbname,
-                       BSONObj& cmdObj,
-                       BSONObjBuilder& result) {
-
-    ON_BLOCK_EXIT([opCtx, &result] { appendRequiredFieldsToResponse(opCtx, &result); });
-
-    uassert(ErrorCodes::IllegalOperation,
-            "Can't use 'local' database through mongos",
-            dbname != NamespaceString::kLocalDb);
-
-    uassert(ErrorCodes::InvalidNamespace,
-            str::stream() << "Invalid database name: '" << dbname << "'",
-            NamespaceString::validDBName(dbname, NamespaceString::DollarInDbNameBehavior::Allow));
-
-    dassert(dbname == nsToDatabase(dbname));
-    StringMap<int> topLevelFields;
-    for (auto&& element : cmdObj) {
-        StringData fieldName = element.fieldNameStringData();
-        if (fieldName == "help" && element.type() == Bool && element.Bool()) {
-            std::stringstream help;
-            help << "help for: " << c->getName() << " ";
-            c->help(help);
-            result.append("help", help.str());
-            Command::appendCommandStatus(result, true, "");
-            return;
-        }
-
-        uassert(ErrorCodes::FailedToParse,
-                str::stream() << "Parsed command object contains duplicate top level key: "
-                              << fieldName,
-                topLevelFields[fieldName]++ == 0);
-    }
-
-    Status status = Command::checkAuthorization(c, opCtx, dbname.toString(), cmdObj);
-    if (!status.isOK()) {
-        Command::appendCommandStatus(result, status);
-        return;
-    }
-
-    c->_commandsExecuted.increment();
-
-    if (c->shouldAffectCommandCounter()) {
-        globalOpCounters.gotCommand();
-    }
-
-    StatusWith<WriteConcernOptions> wcResult =
-        WriteConcernOptions::extractWCFromCommand(cmdObj, dbname.toString());
-    if (!wcResult.isOK()) {
-        Command::appendCommandStatus(result, wcResult.getStatus());
-        return;
-    }
-
-    bool supportsWriteConcern = c->supportsWriteConcern(cmdObj);
-    if (!supportsWriteConcern && !wcResult.getValue().usedDefault) {
-        // This command doesn't do writes so it should not be passed a writeConcern.
-        // If we did not use the default writeConcern, one was provided when it shouldn't have
-        // been by the user.
-        Command::appendCommandStatus(
-            result, Status(ErrorCodes::InvalidOptions, "Command does not support writeConcern"));
-        return;
-    }
-
-    // attach tracking
-    rpc::TrackingMetadata trackingMetadata;
-    trackingMetadata.initWithOperName(c->getName());
-    rpc::TrackingMetadata::get(opCtx) = trackingMetadata;
-
-    auto metadataStatus = processCommandMetadata(opCtx, cmdObj);
-    if (!metadataStatus.isOK()) {
-        Command::appendCommandStatus(result, metadataStatus);
-        return;
-    }
-
-    auto filteredCmdObj = filterCommandRequestForPassthrough(cmdObj);
-    std::string errmsg;
-    bool ok = false;
-    try {
-        if (!supportsWriteConcern) {
-            ok = c->run(opCtx, dbname.toString(), filteredCmdObj, errmsg, result);
-        } else {
-            // Change the write concern while running the command.
-            const auto oldWC = opCtx->getWriteConcern();
-            ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
-            opCtx->setWriteConcern(wcResult.getValue());
-
-            ok = c->run(opCtx, dbname.toString(), filteredCmdObj, errmsg, result);
-        }
-    } catch (const DBException& e) {
-        result.resetToEmpty();
-        const int code = e.getCode();
-
-        // Codes for StaleConfigException
-        if (code == ErrorCodes::RecvStaleConfig || code == ErrorCodes::SendStaleConfig) {
-            throw;
-        }
-
-        errmsg = e.what();
-        result.append("code", code);
-    }
-
-    if (!ok) {
-        c->_commandsFailed.increment();
-    }
-
-    Command::appendCommandStatus(result, ok, errmsg);
-}
-
 }  // namespace mongo

@@ -389,12 +389,12 @@ public:
     void setPreciseClockSource(std::unique_ptr<ClockSource> newSource);
 
     /**
-     * Binds the service entry point implementation to the service context
+     * Binds the service entry point implementation to the service context.
      */
     void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
 
 protected:
-    ServiceContext();
+    ServiceContext(std::unique_ptr<ServiceEntryPoint> sep);
 
     /**
      * Mutex used to synchronize access to mutable state of this ServiceContext instance,

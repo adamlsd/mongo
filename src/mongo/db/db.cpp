@@ -474,9 +474,6 @@ ExitCode _initAndListen(int listenPort) {
     options.port = listenPort;
     options.ipList = serverGlobalParams.bind_ip;
 
-    globalServiceContext->setServiceEntryPoint(
-        stdx::make_unique<ServiceEntryPointMongod>(globalServiceContext->getTransportLayer()));
-
     // Create, start, and attach the TL
     auto transportLayer = stdx::make_unique<transport::TransportLayerLegacy>(
         options, globalServiceContext->getServiceEntryPoint());

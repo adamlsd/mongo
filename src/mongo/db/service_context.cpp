@@ -118,8 +118,9 @@ Status validateStorageOptions(
     return Status::OK();
 }
 
-ServiceContext::ServiceContext()
+ServiceContext::ServiceContext(std::unique_ptr<ServiceEntryPoint> sep)
     : _transportLayerManager(stdx::make_unique<transport::TransportLayerManager>()),
+      _serviceEntryPoint(std::move(sep)),
       _tickSource(stdx::make_unique<SystemTickSource>()),
       _fastClockSource(stdx::make_unique<SystemClockSource>()),
       _preciseClockSource(stdx::make_unique<SystemClockSource>()) {}

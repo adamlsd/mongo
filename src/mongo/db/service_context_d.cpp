@@ -68,7 +68,12 @@ MONGO_INITIALIZER(SetGlobalEnvironment)(InitializerContext* context) {
 }
 }  // namespace
 
-ServiceContextMongoD::ServiceContextMongoD() = default;
+ServiceContextMongoD::ServiceContextMongoD()
+    // Evil:
+    : ServiceContext(nullptr) {
+    // Have to set the context after knowing where the transport layer is.
+    setServiceContext(stdx::make_unique<ServiceEntryPointMongod>(this->getTransportLayer());
+}
 
 ServiceContextMongoD::~ServiceContextMongoD() = default;
 

@@ -33,8 +33,26 @@
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/transport/service_entry_point.h"
 
 namespace mongo {
+
+namespace
+{
+	class ServiceEntryPointNoop : public ServiceEntryPoint
+	{
+		public:
+			void startSession( transport::SessionHandle ) override {}
+
+			DbResponse
+			handleRequest( OperationContext *, const Message &, const HostAndPort & ) override
+			{
+				return DbResponse{};
+			}
+	};
+}//namespace
+
+ServiceContextNoop::ServiceContextNoop() : ServiceContext( stdx::make_unique<ServiceEntryPointNoop>() ) {}
 
 StorageEngine* ServiceContextNoop::getGlobalStorageEngine() {
     return NULL;

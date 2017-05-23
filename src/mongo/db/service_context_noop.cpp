@@ -37,22 +37,19 @@
 
 namespace mongo {
 
-namespace
-{
-	class ServiceEntryPointNoop : public ServiceEntryPoint
-	{
-		public:
-			void startSession( transport::SessionHandle ) override {}
+namespace {
+class ServiceEntryPointNoop : public ServiceEntryPoint {
+public:
+    void startSession(transport::SessionHandle) override {}
 
-			DbResponse
-			handleRequest( OperationContext *, const Message &, const HostAndPort & ) override
-			{
-				return DbResponse{};
-			}
-	};
-}//namespace
+    DbResponse handleRequest(OperationContext*, const Message&, const HostAndPort&) override {
+        return DbResponse{};
+    }
+};
+}  // namespace
 
-ServiceContextNoop::ServiceContextNoop() : ServiceContext( stdx::make_unique<ServiceEntryPointNoop>() ) {}
+ServiceContextNoop::ServiceContextNoop()
+    : ServiceContext(stdx::make_unique<ServiceEntryPointNoop>()) {}
 
 StorageEngine* ServiceContextNoop::getGlobalStorageEngine() {
     return NULL;

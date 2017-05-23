@@ -39,7 +39,7 @@ namespace mongo {
 
 class ServiceContextNoop : public ServiceContext {
 public:
-	explicit ServiceContextNoop();
+    explicit ServiceContextNoop();
 
     StorageEngine* getGlobalStorageEngine() override;
 

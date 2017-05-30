@@ -79,12 +79,6 @@ public:
      */
     bool shouldWaitForOtherNodes() const;
 
-    /**
-     * Returns true if this is a {w:majority} write concern, which is the only valid write concern
-     * to use against a config server.
-     */
-    bool validForConfigServers() const;
-
     void reset() {
         syncMode = SyncMode::UNSET;
         wNumNodes = 0;
@@ -105,6 +99,9 @@ public:
 
     // Timeout in milliseconds.
     int wTimeout;
+    // Deadline. If this is set to something other than Date_t::max(), this takes precedence over
+    // wTimeout.
+    Date_t wDeadline = Date_t::max();
 
     // True if the default write concern was used.
     bool usedDefault = false;

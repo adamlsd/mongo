@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_limit.h"
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
@@ -85,7 +85,7 @@ DocumentSource::GetNextResult DocumentSourceLimit::getNext() {
     return nextInput;
 }
 
-Value DocumentSourceLimit::serialize(bool explain) const {
+Value DocumentSourceLimit::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(Document{{getSourceName(), _limit}});
 }
 
@@ -93,7 +93,6 @@ intrusive_ptr<DocumentSourceLimit> DocumentSourceLimit::create(
     const intrusive_ptr<ExpressionContext>& pExpCtx, long long limit) {
     uassert(15958, "the limit must be positive", limit > 0);
     intrusive_ptr<DocumentSourceLimit> source(new DocumentSourceLimit(pExpCtx, limit));
-    source->injectExpressionContext(pExpCtx);
     return source;
 }
 

@@ -39,7 +39,7 @@ namespace mongo {
 
 class PoolFlushCmd : public Command {
 public:
-    PoolFlushCmd() : Command("connPoolSync", false, "connpoolsync") {}
+    PoolFlushCmd() : Command("connPoolSync", "connpoolsync") {}
     virtual void help(std::stringstream& help) const {
         help << "internal";
     }
@@ -54,10 +54,9 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string&,
-                     mongo::BSONObj&,
-                     int,
+                     const mongo::BSONObj&,
                      std::string&,
                      mongo::BSONObjBuilder& result) {
         shardConnectionPool.flush();

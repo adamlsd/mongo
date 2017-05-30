@@ -60,9 +60,29 @@ struct InsertOp : ParsedWriteOp {
  */
 struct UpdateOp : ParsedWriteOp {
     struct SingleUpdate {
+        BSONObj toBSON() const {
+            BSONObjBuilder builder;
+            builder << "q" << query;
+            builder << "u" << update;
+            builder << "multi" << multi;
+            builder << "upsert" << upsert;
+            if (!collation.isEmpty()) {
+                builder << "collation" << collation;
+            }
+            if (!arrayFilters.empty()) {
+                BSONArrayBuilder arrayBuilder(builder.subarrayStart("arrayFilters"));
+                for (auto arrayFilter : arrayFilters) {
+                    arrayBuilder.append(arrayFilter);
+                }
+                arrayBuilder.doneFast();
+            }
+            return builder.obj();
+        }
+
         BSONObj query;
         BSONObj update;
         BSONObj collation;
+        std::vector<BSONObj> arrayFilters;
         bool multi = false;
         bool upsert = false;
     };
@@ -75,6 +95,16 @@ struct UpdateOp : ParsedWriteOp {
  */
 struct DeleteOp : ParsedWriteOp {
     struct SingleDelete {
+        BSONObj toBSON() const {
+            BSONObjBuilder builder;
+            builder << "q" << query;
+            builder << "limit" << (multi ? 0 : 1);
+            if (!collation.isEmpty()) {
+                builder << "collation" << collation;
+            }
+            return builder.obj();
+        }
+
         BSONObj query;
         BSONObj collation;
         bool multi = true;

@@ -2,9 +2,12 @@
 
 Import('env')
 
+env = env.Clone()
+
 env.Library(
     target='aggregation',
     source=[
+        'aggregation.cpp',
     ],
     LIBDEPS=[
         'aggregation_request',
@@ -22,7 +25,7 @@ env.Library(
         'field_path.cpp',
         ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/util/foundation',
+        '$BUILD_DIR/mongo/base',
         ]
     )
 
@@ -39,13 +42,13 @@ env.Library(
     source=[
         'document.cpp',
         'document_comparator.cpp',
+        'document_path_support.cpp',
         'value.cpp',
         'value_comparator.cpp',
         ],
     LIBDEPS=[
         'field_path',
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/intrusive_counter',
         ]
     )
@@ -66,6 +69,7 @@ env.CppUnitTest(
     source=[
         'document_comparator_test.cpp',
         'document_value_test.cpp',
+        'document_path_support_test.cpp',
         'document_value_test_util_self_test.cpp',
         'value_comparator_test.cpp',
     ],
@@ -82,13 +86,15 @@ env.Library(
         'aggregation_request.cpp',
     ],
     LIBDEPS=[
-        'document_value',
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/query/command_request_response',
         '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/query/command_request_response',
+        '$BUILD_DIR/mongo/db/query/explain_options',
         '$BUILD_DIR/mongo/db/query/query_request',
         '$BUILD_DIR/mongo/db/repl/read_concern_args',
         '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/db/write_concern_options',
+        'document_value',
     ]
 )
 
@@ -105,6 +111,7 @@ env.Library(
     target='expression_context',
     source=[
         'expression_context.cpp',
+        'variables.cpp',
     ],
     LIBDEPS=[
         'aggregation_request',
@@ -144,6 +151,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/s/is_mongos',
         '$BUILD_DIR/mongo/util/clock_source_mock',
     ],
 )
@@ -184,6 +192,7 @@ env.Library(
         'accumulator_push.cpp',
         'accumulator_std_dev.cpp',
         'accumulator_sum.cpp',
+        'accumulator_merge_objects.cpp'
         ],
     LIBDEPS=[
         'document_value',
@@ -251,14 +260,10 @@ docSourceEnv.Library(
         '$BUILD_DIR/mongo/db/matcher/expression_algo',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/stats/top',
+        '$BUILD_DIR/mongo/db/storage/encryption_hooks',
         '$BUILD_DIR/mongo/db/storage/storage_options',
-        '$BUILD_DIR/mongo/db/storage/wiredtiger/storage_wiredtiger_customization_hooks',
+        '$BUILD_DIR/mongo/s/is_mongos',
         '$BUILD_DIR/third_party/shim_snappy',
-    ],
-    LIBDEPS_TAGS=[
-        # Inclusion of sorter.cpp causes a dependency on mongo::isMongos,
-        # which is not uniquely defined
-        'incomplete'
     ],
 )
 
@@ -303,6 +308,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/is_mongos',
     ],
 )
 
@@ -326,6 +332,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/is_mongos',
         'document_source_facet',
         'document_value_test_util',
     ],
@@ -337,6 +344,7 @@ env.CppUnitTest(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/is_mongos',
         'document_source_facet',
         'document_value_test_util',
     ],
@@ -374,6 +382,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/is_mongos',
         'document_value_test_util',
         'document_source_lookup',
         'pipeline',
@@ -462,6 +471,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/catalog/document_validation',
+        '$BUILD_DIR/mongo/db/catalog/index_catalog',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/dbdirectclient',
         '$BUILD_DIR/mongo/db/index/index_access_methods',

@@ -143,7 +143,8 @@ __wt_cache_config(WT_SESSION_IMPL *session, bool reconfigure, const char *cfg[])
 	if (reconfigure)
 		WT_RET(__wt_thread_group_resize(
 		    session, &conn->evict_threads,
-		    conn->evict_threads_min, conn->evict_threads_max,
+		    conn->evict_threads_min,
+		    conn->evict_threads_max,
 		    WT_THREAD_CAN_WAIT | WT_THREAD_PANIC_FAIL));
 
 	return (0);
@@ -183,26 +184,26 @@ __wt_cache_create(WT_SESSION_IMPL *session, const char *cfg[])
 	 * get any work done.
 	 */
 	if (cache->eviction_target >= cache->eviction_trigger)
-		WT_ERR_MSG(session, EINVAL,
+		WT_RET_MSG(session, EINVAL,
 		    "eviction target must be lower than the eviction trigger");
 
-	WT_ERR(__wt_cond_auto_alloc(session, "cache eviction server",
-	    false, 10000, WT_MILLION, &cache->evict_cond));
-	WT_ERR(__wt_spin_init(session, &cache->evict_pass_lock, "evict pass"));
-	WT_ERR(__wt_spin_init(session,
+	WT_RET(__wt_cond_auto_alloc(session,
+	    "cache eviction server", 10000, WT_MILLION, &cache->evict_cond));
+	WT_RET(__wt_spin_init(session, &cache->evict_pass_lock, "evict pass"));
+	WT_RET(__wt_spin_init(session,
 	    &cache->evict_queue_lock, "cache eviction queue"));
-	WT_ERR(__wt_spin_init(session, &cache->evict_walk_lock, "cache walk"));
+	WT_RET(__wt_spin_init(session, &cache->evict_walk_lock, "cache walk"));
 	if ((ret = __wt_open_internal_session(conn, "evict pass",
 	    false, WT_SESSION_NO_DATA_HANDLES, &cache->walk_session)) != 0)
-		WT_ERR_MSG(NULL, ret,
+		WT_RET_MSG(NULL, ret,
 		    "Failed to create session for eviction walks");
 
 	/* Allocate the LRU eviction queue. */
 	cache->evict_slots = WT_EVICT_WALK_BASE + WT_EVICT_WALK_INCR;
 	for (i = 0; i < WT_EVICT_QUEUE_MAX; ++i) {
-		WT_ERR(__wt_calloc_def(session,
+		WT_RET(__wt_calloc_def(session,
 		    cache->evict_slots, &cache->evict_queues[i].evict_queue));
-		WT_ERR(__wt_spin_init(session,
+		WT_RET(__wt_spin_init(session,
 		    &cache->evict_queues[i].evict_lock, "cache eviction"));
 	}
 
@@ -218,9 +219,6 @@ __wt_cache_create(WT_SESSION_IMPL *session, const char *cfg[])
 	 */
 	__wt_cache_stats_update(session);
 	return (0);
-
-err:	WT_RET(__wt_cache_destroy(session));
-	return (ret);
 }
 
 /*
@@ -314,7 +312,7 @@ __wt_cache_destroy(WT_SESSION_IMPL *session)
 		    cache->bytes_dirty_intl + cache->bytes_dirty_leaf,
 		    cache->pages_dirty_intl + cache->pages_dirty_leaf);
 
-	WT_TRET(__wt_cond_auto_destroy(session, &cache->evict_cond));
+	WT_TRET(__wt_cond_destroy(session, &cache->evict_cond));
 	__wt_spin_destroy(session, &cache->evict_pass_lock);
 	__wt_spin_destroy(session, &cache->evict_queue_lock);
 	__wt_spin_destroy(session, &cache->evict_walk_lock);

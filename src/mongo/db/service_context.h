@@ -28,15 +28,18 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
 #include <memory>
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/unordered_set.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/tick_source.h"
@@ -50,7 +53,6 @@ class OpObserver;
 class ServiceEntryPoint;
 
 namespace transport {
-class Session;
 class TransportLayer;
 class TransportLayerManager;
 }  // namespace transport
@@ -216,14 +218,17 @@ public:
      *
      * If supplied, "session" is the transport::Session used for communicating with the client.
      */
-    UniqueClient makeClient(std::string desc, transport::Session* session = nullptr);
+    UniqueClient makeClient(std::string desc, transport::SessionHandle session = nullptr);
 
     /**
      * Creates a new OperationContext on "client".
      *
      * "client" must not have an active operation context.
+     *
+     * If provided, the LogicalSessionId links this operation to a logical session.
      */
-    UniqueOperationContext makeOperationContext(Client* client);
+    UniqueOperationContext makeOperationContext(
+        Client* client, boost::optional<LogicalSessionId> lsid = boost::none);
 
     //
     // Storage
@@ -286,17 +291,19 @@ public:
     }
 
     /**
-     * Kills the operation "txn" with the code "killCode", if txn has not already been killed.
-     * Caller must own the lock on txn->getClient, and txn->getServiceContext() must be the same as
+     * Kills the operation "opCtx" with the code "killCode", if opCtx has not already been killed.
+     * Caller must own the lock on opCtx->getClient, and opCtx->getServiceContext() must be the same
+     *as
      * this service context.
      **/
-    void killOperation(OperationContext* txn, ErrorCodes::Error killCode = ErrorCodes::Interrupted);
+    void killOperation(OperationContext* opCtx,
+                       ErrorCodes::Error killCode = ErrorCodes::Interrupted);
 
     /**
      * Kills all operations that have a Client that is associated with an incoming user
-     * connection, except for the one associated with txn.
+     * connection, except for the one associated with opCtx.
      */
-    void killAllUserOperations(const OperationContext* txn, ErrorCodes::Error killCode);
+    void killAllUserOperations(const OperationContext* opCtx, ErrorCodes::Error killCode);
 
     /**
      * Registers a listener to be notified each time an op is killed.
@@ -399,7 +406,9 @@ private:
     /**
      * Returns a new OperationContext. Private, for use by makeOperationContext.
      */
-    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client, unsigned opId) = 0;
+    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client,
+                                                        unsigned opId,
+                                                        boost::optional<LogicalSessionId>) = 0;
 
     /**
      * Kills the given operation.

@@ -53,6 +53,7 @@ public:
         kNetwork,
         kQuery,
         kReplication,
+        kReplicationHeartbeats,
         kSharding,
         kStorage,
         kJournal,
@@ -60,6 +61,7 @@ public:
         kFTDC,
         kASIO,
         kBridge,
+        kTracking,
         kNumLogComponents
     };
 

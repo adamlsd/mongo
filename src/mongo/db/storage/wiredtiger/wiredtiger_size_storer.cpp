@@ -31,6 +31,8 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
+#include "mongo/platform/basic.h"
+
 #include <wiredtiger.h>
 
 #include "mongo/bson/bsonobj.h"
@@ -59,8 +61,8 @@ WiredTigerSizeStorer::WiredTigerSizeStorer(WT_CONNECTION* conn, const std::strin
     int ret = session->open_cursor(session, storageUri.c_str(), NULL, "overwrite=true", &_cursor);
     if (ret == ENOENT) {
         // Need to create table.
-        std::string config =
-            WiredTigerCustomizationHooks::get(getGlobalServiceContext())->getOpenConfig(storageUri);
+        std::string config = WiredTigerCustomizationHooks::get(getGlobalServiceContext())
+                                 ->getTableCreateConfig(storageUri);
         invariantWTOK(session->create(session, storageUri.c_str(), config.c_str()));
         ret = session->open_cursor(session, storageUri.c_str(), NULL, "overwrite=true", &_cursor);
     }

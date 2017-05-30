@@ -37,6 +37,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/transport/message_compressor_registry.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/message.h"
 
@@ -69,6 +70,9 @@ struct CompressionHeader {
         return sizeof(originalOpCode) + sizeof(uncompressedSize) + sizeof(compressorId);
     }
 };
+
+const transport::Session::Decoration<MessageCompressorManager> getForSession =
+    transport::Session::declareDecoration<MessageCompressorManager>();
 }  // namespace
 
 MessageCompressorManager::MessageCompressorManager()
@@ -132,6 +136,8 @@ StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& m
                 "Compression algorithm specified in message is not available"};
     }
 
+    LOG(3) << "Decompressing message with " << compressor->getName();
+
     auto bufferSize = compressionHeader.uncompressedSize + MsgData::MsgDataHeaderSize;
     auto outputMessageBuffer = SharedBuffer::allocate(bufferSize);
     MsgData::View outMessage(outputMessageBuffer.get());
@@ -159,6 +165,9 @@ StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& m
 void MessageCompressorManager::clientBegin(BSONObjBuilder* output) {
     LOG(3) << "Starting client-side compression negotiation";
 
+    // We're about to update the compressor list with the negotiation result from the server.
+    _negotiated.clear();
+
     auto& compressorList = _registry->getCompressorNames();
     if (compressorList.size() == 0)
         return;
@@ -175,8 +184,8 @@ void MessageCompressorManager::clientFinish(const BSONObj& input) {
     auto elem = input.getField("compression");
     LOG(3) << "Finishing client-side compreession negotiation";
 
-    // We're about to update the compressor list with the negotiation result from the server.
-    _negotiated.clear();
+    // We've just called clientBegin, so the list of compressors should be empty.
+    invariant(_negotiated.empty());
 
     // If the server didn't send back a "compression" array, then we assume compression is not
     // supported by this server and just return. We've already disabled compression by clearing
@@ -244,6 +253,11 @@ void MessageCompressorManager::serverNegotiate(const BSONObj& input, BSONObjBuil
         }
         sub.doneFast();
     }
+}
+
+MessageCompressorManager& MessageCompressorManager::forSession(
+    const transport::SessionHandle& session) {
+    return getForSession(session.get());
 }
 
 }  // namespace mongo

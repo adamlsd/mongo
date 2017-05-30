@@ -128,7 +128,11 @@ public:
     }
 
     /**
-     * Get all the children of a node
+     * Returns the underlying vector storing the children of a logical node. Note that this is not
+     * guaranteed to return all children. It can be used to modify the children of logical nodes
+     * like AND/OR, but it cannot be used to traverse the MatchExpression tree. Traversing the
+     * MatchExpression tree should instead be achieved using numChildren() and getChild(), which are
+     * guaranteed to be accurate.
      */
     virtual std::vector<MatchExpression*>* getChildVector() {
         return NULL;
@@ -189,17 +193,22 @@ public:
     // XXX document
     virtual bool equivalent(const MatchExpression* other) const = 0;
 
-    /**
-    * Determine if a document satisfies the tree-predicate.
-    *
-    * The caller may optionally provide a non-null MatchDetails as an out-parameter. For matching
-    *documents, the MatchDetails provide further info on how the document was
-    *matched---specifically, which array element matched an array predicate.
-    *
-    * The caller must check that the MatchDetails is valid via the isValid() method before using.
-    */
+    //
+    // Determine if a document satisfies the tree-predicate.
+    //
+
     virtual bool matches(const MatchableDocument* doc, MatchDetails* details = 0) const = 0;
+
     virtual bool matchesBSON(const BSONObj& doc, MatchDetails* details = 0) const;
+
+    /**
+     * Determines if 'elem' would satisfy the predicate if wrapped with the top-level field name of
+     * the predicate. Does not check that the predicate has a single top-level field name. For
+     * example, given the object obj={a: [5]}, the predicate {i: {$gt: 0}} would match the element
+     * obj["a"]["0"] because it performs the match as if the element at "a.0" were the BSONObj {i:
+     * 5}.
+     */
+    virtual bool matchesBSONElement(BSONElement elem, MatchDetails* details = nullptr) const;
 
     /**
      * Determines if the element satisfies the tree-predicate.
@@ -213,9 +222,11 @@ public:
 
     class TagData {
     public:
+        enum class Type { IndexTag, RelevantTag, OrPushdownTag };
         virtual ~TagData() {}
         virtual void debugString(StringBuilder* builder) const = 0;
         virtual TagData* clone() const = 0;
+        virtual Type getType() const = 0;
     };
 
     /**

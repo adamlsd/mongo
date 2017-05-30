@@ -44,6 +44,8 @@ public:
 
     void asyncWait(AsyncTimerInterface::Handler handler) override;
 
+    void expireAfter(Milliseconds expiration) override;
+
 private:
     asio::io_service::strand* const _strand;
     asio::system_timer _timer;
@@ -55,6 +57,8 @@ public:
 
     std::unique_ptr<AsyncTimerInterface> make(asio::io_service::strand* strand,
                                               Milliseconds expiration) override;
+
+    Date_t now() override;
 };
 
 }  // namespace executor

@@ -35,7 +35,10 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/document.h"
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_bucket.h"
+#include "mongo/db/pipeline/document_source_group.h"
+#include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
@@ -63,7 +66,7 @@ public:
 
         // Serialize the DocumentSourceGroup and DocumentSourceSort from $bucket so that we can
         // check the explain output to make sure $group and $sort have the correct fields.
-        const bool explain = true;
+        auto explain = ExplainOptions::Verbosity::kQueryPlanner;
         vector<Value> explainedStages;
         groupStage->serializeToArray(explainedStages, explain);
         sortStage->serializeToArray(explainedStages, explain);
@@ -153,9 +156,6 @@ class InvalidBucketSpec : public AggregationContextFixture {
 public:
     vector<intrusive_ptr<DocumentSource>> createBucket(BSONObj bucketSpec) {
         auto sources = DocumentSourceBucket::createFromBson(bucketSpec.firstElement(), getExpCtx());
-        for (auto&& source : sources) {
-            source->injectExpressionContext(getExpCtx());
-        }
         return sources;
     }
 };

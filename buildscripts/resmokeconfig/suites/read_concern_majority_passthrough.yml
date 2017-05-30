@@ -1,7 +1,7 @@
 selector:
   js_test:
     roots:
-    - jstests/core/*.js
+    - jstests/core/**/*.js
     exclude_files:
     # Tests that won't work with an injected 'majority' readConcern
     # and/or an injected 'majority' writeConcern. Where a function is
@@ -38,6 +38,9 @@ selector:
     - jstests/core/mr_outreduce2.js # mr temp tables aren't replicated
     - jstests/core/opcounters_active.js  # off by n problem with opcounters
     - jstests/core/opcounters_write_cmd.js # off by n problem with opcounters
+    - jstests/core/profile1.js # system.profile not replicated
+    - jstests/core/profile2.js # system.profile not replicated
+    - jstests/core/profile3.js # system.profile not replicated
     - jstests/core/profile_agg.js # system.profile not replicated
     - jstests/core/profile_count.js # system.profile not replicated
     - jstests/core/profile_delete.js # system.profile not replicated
@@ -48,11 +51,13 @@ selector:
     - jstests/core/profile_getmore.js # system.profile not replicated
     - jstests/core/profile_group.js # system.profile not replicated
     - jstests/core/profile_insert.js # system.profile not replicated
+    - jstests/core/profile_list_collections.js # system.profile not replicated
+    - jstests/core/profile_list_indexes.js # system.profile not replicated
     - jstests/core/profile_mapreduce.js # system.profile not replicated
+    - jstests/core/profile_parallel_collection_scan.js # system.profile not replicated
+    - jstests/core/profile_repair_cursor.js # system.profile not replicated
+    - jstests/core/profile_sampling.js # system.profile not replicated
     - jstests/core/profile_update.js # system.profile not replicated
-    - jstests/core/profile1.js # system.profile not replicated
-    - jstests/core/profile2.js # system.profile not replicated
-    - jstests/core/profile3.js # system.profile not replicated
     - jstests/core/read_after_optime.js # verifies read after optime fails on standalone
     - jstests/core/remove8.js # db.eval() used
     - jstests/core/rename4.js # db.eval() used
@@ -64,14 +69,16 @@ selector:
     # Tests that need triaging & remediation | blacklist decision
     # Comments list possible problem point under review.
     - jstests/core/capped6.js # Uses captrunc test command.
-    - jstests/core/convert_to_capped_nonexistant.js # Uses convertToCapped and captrunc command.
     - jstests/core/stages_delete.js # Uses stageDebug command for deletes.
 
 executor:
   js_test:
     config:
       shell_options:
-        eval: "var testingReplication = true; load('jstests/libs/override_methods/set_majority_read_and_write_concerns.js');"
+        global_vars:
+          TestData:
+            defaultReadConcernLevel: majority
+        eval: "var testingReplication = true; load('jstests/libs/override_methods/set_read_and_write_concerns.js');"
         readMode: commands
     hooks:
     - class: ValidateCollections
@@ -82,6 +89,7 @@ executor:
     fixture:
       class: ReplicaSetFixture
       mongod_options:
+        bind_ip_all: ''
         set_parameters:
           enableTestCommands: 1
           numInitialSyncAttempts: 1

@@ -44,7 +44,7 @@ using namespace mongo;
 
 class TopCommand : public Command {
 public:
-    TopCommand() : Command("top", true) {}
+    TopCommand() : Command("top") {}
 
     virtual bool slaveOk() const {
         return true;
@@ -65,16 +65,15 @@ public:
         actions.addAction(ActionType::top);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& db,
-                     BSONObj& cmdObj,
-                     int options,
+                     const BSONObj& cmdObj,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         {
             BSONObjBuilder b(result.subobjStart("totals"));
             b.append("note", "all times in microseconds");
-            Top::get(txn->getClient()->getServiceContext()).append(b);
+            Top::get(opCtx->getClient()->getServiceContext()).append(b);
             b.done();
         }
         return true;

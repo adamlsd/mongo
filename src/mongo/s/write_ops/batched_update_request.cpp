@@ -29,6 +29,7 @@
 #include "mongo/s/write_ops/batched_update_request.h"
 
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/commands.h"
 #include "mongo/db/field_parser.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -122,6 +123,9 @@ bool BatchedUpdateRequest::parseBSON(StringData dbName, const BSONObj& source, s
             if (fieldState == FieldParser::FIELD_INVALID)
                 return false;
             _ns = NamespaceString(dbName, collNameTemp);
+            uassert(ErrorCodes::InvalidNamespace,
+                    str::stream() << "Invalid namespace: " << _ns.ns(),
+                    _ns.isValid());
             _isNSSet = fieldState == FieldParser::FIELD_SET;
         } else if (fieldName == updates.name()) {
             fieldState = FieldParser::extract(elem, updates, &_updates, errMsg);
@@ -140,13 +144,9 @@ bool BatchedUpdateRequest::parseBSON(StringData dbName, const BSONObj& source, s
             _isOrderedSet = fieldState == FieldParser::FIELD_SET;
         } else if (fieldName == bypassDocumentValidationCommandOption()) {
             _shouldBypassValidation = elem.trueValue();
-        } else if (fieldName[0] != '$') {
-            std::initializer_list<StringData> ignoredFields = {"maxTimeMS", "shardVersion"};
-            if (std::find(ignoredFields.begin(), ignoredFields.end(), fieldName) ==
-                ignoredFields.end()) {
-                *errMsg = str::stream() << "Unknown option to update command: " << fieldName;
-                return false;
-            }
+        } else if (!Command::isGenericArgument(fieldName)) {
+            *errMsg = str::stream() << "Unknown option to update command: " << fieldName;
+            return false;
         }
     }
     return true;

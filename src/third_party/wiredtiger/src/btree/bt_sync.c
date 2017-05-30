@@ -9,6 +9,59 @@
 #include "wt_internal.h"
 
 /*
+ * __sync_checkpoint_can_skip --
+ *	There are limited conditions under which we can skip writing a dirty
+ * page during checkpoint.
+ */
+static inline bool
+__sync_checkpoint_can_skip(WT_SESSION_IMPL *session, WT_PAGE *page)
+{
+	WT_PAGE_MODIFY *mod;
+	WT_MULTI *multi;
+	WT_TXN *txn;
+	u_int i;
+
+	mod = page->modify;
+	txn = &session->txn;
+
+	/*
+	 * We can skip some dirty pages during a checkpoint. The requirements:
+	 *
+	 * 1. they must be leaf pages,
+	 * 2. there is a snapshot transaction active (which is the case in
+	 *    ordinary application checkpoints but not all internal cases),
+	 * 3. the first dirty update on the page is sufficiently recent the
+	 *    checkpoint transaction would skip them,
+	 * 4. there's already an address for every disk block involved.
+	 */
+	if (WT_PAGE_IS_INTERNAL(page))
+		return (false);
+	if (!F_ISSET(txn, WT_TXN_HAS_SNAPSHOT))
+		return (false);
+	if (!WT_TXNID_LT(txn->snap_max, mod->first_dirty_txn))
+		return (false);
+
+	/*
+	 * The problematic case is when a page was evicted but when there were
+	 * unresolved updates and not every block associated with the page has
+	 * a disk address. We can't skip such pages because we need a checkpoint
+	 * write with valid addresses.
+	 *
+	 * The page's modification information can change underfoot if the page
+	 * is being reconciled, so we'd normally serialize with reconciliation
+	 * before reviewing page-modification information. However, checkpoint
+	 * is the only valid writer of dirty leaf pages at this point, we skip
+	 * the lock.
+	 */
+	if (mod->rec_result == WT_PM_REC_MULTIBLOCK)
+		for (multi = mod->mod_multi,
+		    i = 0; i < mod->mod_multi_entries; ++multi, ++i)
+			if (multi->addr.addr == NULL)
+				return (false);
+	return (true);
+}
+
+/*
  * __sync_file --
  *	Flush pages for a specific file.
  */
@@ -20,12 +73,12 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
 	WT_PAGE *page;
-	WT_PAGE_MODIFY *mod;
 	WT_REF *walk;
 	WT_TXN *txn;
 	uint64_t internal_bytes, internal_pages, leaf_bytes, leaf_pages;
 	uint64_t oldest_id, saved_pinned_id;
 	uint32_t flags;
+	bool timer;
 
 	conn = S2C(session);
 	btree = S2BT(session);
@@ -36,7 +89,8 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 
 	internal_bytes = leaf_bytes = 0;
 	internal_pages = leaf_pages = 0;
-	if (WT_VERBOSE_ISSET(session, WT_VERB_CHECKPOINT))
+	timer = WT_VERBOSE_ISSET(session, WT_VERB_CHECKPOINT);
+	if (timer)
 		__wt_epoch(session, &start);
 
 	switch (syncop) {
@@ -81,11 +135,11 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 			if (__wt_page_is_modified(page) &&
 			    WT_TXNID_LT(page->modify->update_txn, oldest_id)) {
 				if (txn->isolation == WT_ISO_READ_COMMITTED)
-					WT_ERR(__wt_txn_get_snapshot(session));
+					__wt_txn_get_snapshot(session);
 				leaf_bytes += page->memory_footprint;
 				++leaf_pages;
-				WT_ERR(__wt_reconcile(
-				    session, walk, NULL, WT_CHECKPOINTING));
+				WT_ERR(__wt_reconcile(session,
+				    walk, NULL, WT_CHECKPOINTING, NULL));
 			}
 		}
 		break;
@@ -103,7 +157,7 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 		 * the checkpoint are included.
 		 */
 		if (txn->isolation == WT_ISO_READ_COMMITTED)
-			WT_ERR(__wt_txn_get_snapshot(session));
+			__wt_txn_get_snapshot(session);
 
 		/*
 		 * We cannot check the tree modified flag in the case of a
@@ -134,9 +188,9 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 		 * to grow significantly larger than the configured maximum
 		 * size.
 		 */
-		F_SET(btree, WT_BTREE_NO_RECONCILE);
+		F_SET(btree, WT_BTREE_ALLOW_SPLITS);
 		ret = __wt_evict_file_exclusive_on(session);
-		F_CLR(btree, WT_BTREE_NO_RECONCILE);
+		F_CLR(btree, WT_BTREE_ALLOW_SPLITS);
 		WT_ERR(ret);
 		__wt_evict_file_exclusive_off(session);
 
@@ -161,29 +215,15 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 			 * reference and checking modified.
 			 */
 			page = walk->page;
-			mod = page->modify;
 
 			/*
-			 * Write dirty pages, unless we can be sure they only
-			 * became dirty after the checkpoint started.
-			 *
-			 * We can skip dirty pages if:
-			 * (1) they are leaf pages;
-			 * (2) there is a snapshot transaction active (which
-			 *     is the case in ordinary application checkpoints
-			 *     but not all internal cases); and
-			 * (3) the first dirty update on the page is
-			 *     sufficiently recent that the checkpoint
-			 *     transaction would skip them.
-			 *
-			 * Mark the tree dirty: the checkpoint marked it clean
-			 * and we can't skip future checkpoints until this page
-			 * is written.
+			 * Write dirty pages, if we can't skip them. If we skip
+			 * a page, mark the tree dirty. The checkpoint marked it
+			 * clean and we can't skip future checkpoints until this
+			 * page is written.
 			 */
-			if (!WT_PAGE_IS_INTERNAL(page) &&
-			    F_ISSET(txn, WT_TXN_HAS_SNAPSHOT) &&
-			    WT_TXNID_LT(txn->snap_max, mod->first_dirty_txn)) {
-				__wt_page_modify_set(session, page);
+			if (__sync_checkpoint_can_skip(session, page)) {
+				__wt_tree_modify_set(session);
 				continue;
 			}
 
@@ -195,7 +235,7 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 				++leaf_pages;
 			}
 			WT_ERR(__wt_reconcile(
-			    session, walk, NULL, WT_CHECKPOINTING));
+			    session, walk, NULL, WT_CHECKPOINTING, NULL));
 		}
 		break;
 	case WT_SYNC_CLOSE:
@@ -204,7 +244,7 @@ __sync_file(WT_SESSION_IMPL *session, WT_CACHE_OP syncop)
 		break;
 	}
 
-	if (WT_VERBOSE_ISSET(session, WT_VERB_CHECKPOINT)) {
+	if (timer) {
 		__wt_epoch(session, &end);
 		__wt_verbose(session, WT_VERB_CHECKPOINT,
 		    "__sync_file WT_SYNC_%s wrote: %" PRIu64

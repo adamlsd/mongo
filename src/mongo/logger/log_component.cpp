@@ -75,6 +75,7 @@ LogComponent LogComponent::parent() const {
             DECLARE_LOG_COMPONENT_PARENT(kJournal, kStorage);
             DECLARE_LOG_COMPONENT_PARENT(kASIO, kNetwork);
             DECLARE_LOG_COMPONENT_PARENT(kBridge, kNetwork);
+            DECLARE_LOG_COMPONENT_PARENT(kReplicationHeartbeats, kReplication);
         case kNumLogComponents:
             return kNumLogComponents;
         default:
@@ -105,6 +106,8 @@ StringData LogComponent::toStringData() const {
             return "query"_sd;
         case kReplication:
             return "replication"_sd;
+        case kReplicationHeartbeats:
+            return "heartbeats"_sd;
         case kSharding:
             return "sharding"_sd;
         case kStorage:
@@ -119,6 +122,8 @@ StringData LogComponent::toStringData() const {
             return "asio"_sd;
         case kBridge:
             return "bridge"_sd;
+        case kTracking:
+            return "tracking"_sd;
         case kNumLogComponents:
             return "total"_sd;
             // No default. Compiler should complain if there's a log component that's not handled.
@@ -175,6 +180,8 @@ StringData LogComponent::getNameForLog() const {
             return "QUERY   "_sd;
         case kReplication:
             return "REPL    "_sd;
+        case kReplicationHeartbeats:
+            return "REPL_HB "_sd;
         case kSharding:
             return "SHARDING"_sd;
         case kStorage:
@@ -189,6 +196,8 @@ StringData LogComponent::getNameForLog() const {
             return "ASIO    "_sd;
         case kBridge:
             return "BRIDGE  "_sd;
+        case kTracking:
+            return "TRACKING"_sd;
         case kNumLogComponents:
             return "TOTAL   "_sd;
             // No default. Compiler should complain if there's a log component that's not handled.

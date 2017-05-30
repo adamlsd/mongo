@@ -40,7 +40,9 @@
 #include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/repl/base_cloner.h"
+#include "mongo/db/repl/callback_completion_guard.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/task_runner.h"
 #include "mongo/executor/task_executor.h"
@@ -63,6 +65,11 @@ class CollectionCloner : public BaseCloner {
     MONGO_DISALLOW_COPYING(CollectionCloner);
 
 public:
+    /**
+     * Callback completion guard for CollectionCloner.
+     */
+    using OnCompletionGuard = CallbackCompletionGuard<Status>;
+
     struct Stats {
         static constexpr StringData kDocumentsToCopyFieldName = "documentsToCopy"_sd;
         static constexpr StringData kDocumentsCopiedFieldName = "documentsCopied"_sd;
@@ -108,11 +115,9 @@ public:
 
     const NamespaceString& getSourceNamespace() const;
 
-    std::string getDiagnosticString() const override;
-
     bool isActive() const override;
 
-    Status startup() override;
+    Status startup() noexcept override;
 
     void shutdown() override;
 
@@ -140,6 +145,19 @@ public:
     void setScheduleDbWorkFn_forTest(const ScheduleDbWorkFn& scheduleDbWorkFn);
 
 private:
+    bool _isActive_inlock() const;
+
+    /**
+     * Returns whether the CollectionCloner is in shutdown.
+     */
+    bool _isShuttingDown() const;
+
+    /**
+     * Cancels all outstanding work.
+     * Used by shutdown() and CompletionGuard::setResultAndCancelRemainingWork().
+     */
+    void _cancelRemainingWork_inlock();
+
     /**
      * Read number of documents in collection from count result.
      */
@@ -157,7 +175,8 @@ private:
      */
     void _findCallback(const StatusWith<Fetcher::QueryResponse>& fetchResult,
                        Fetcher::NextAction* nextAction,
-                       BSONObjBuilder* getMoreBob);
+                       BSONObjBuilder* getMoreBob,
+                       std::shared_ptr<OnCompletionGuard> onCompletionGuard);
 
     /**
      * Request storage interface to create collection.
@@ -178,7 +197,8 @@ private:
      * interface.
      */
     void _insertDocumentsCallback(const executor::TaskExecutor::CallbackArgs& callbackData,
-                                  bool lastBatch);
+                                  bool lastBatch,
+                                  std::shared_ptr<OnCompletionGuard> onCompletionGuard);
 
     /**
      * Reports completion status.
@@ -205,12 +225,11 @@ private:
     NamespaceString _destNss;                           // (R)
     CollectionOptions _options;                         // (R)
     std::unique_ptr<CollectionBulkLoader> _collLoader;  // (M)
-    CallbackFn _onCompletion;             // (R) Invoked once when cloning completes or fails.
+    CallbackFn _onCompletion;             // (M) Invoked once when cloning completes or fails.
     StorageInterface* _storageInterface;  // (R) Not owned by us.
-    bool _active;                         // (M) true when Collection Cloner is started.
     RemoteCommandRetryScheduler _countScheduler;  // (S)
     Fetcher _listIndexesFetcher;                  // (S)
-    Fetcher _findFetcher;                         // (S)
+    std::unique_ptr<Fetcher> _findFetcher;        // (M)
     std::vector<BSONObj> _indexSpecs;             // (M)
     BSONObj _idIndexSpec;                         // (M)
     std::vector<BSONObj> _documents;              // (M) Documents read from fetcher to insert.
@@ -219,6 +238,14 @@ private:
         _scheduleDbWorkFn;         // (RT) Function for scheduling database work using the executor.
     Stats _stats;                  // (M) stats for this instance.
     ProgressMeter _progressMeter;  // (M) progress meter for this instance.
+
+    // State transitions:
+    // PreStart --> Running --> ShuttingDown --> Complete
+    // It is possible to skip intermediate states. For example,
+    // Calling shutdown() when the cloner has not started will transition from PreStart directly
+    // to Complete.
+    enum class State { kPreStart, kRunning, kShuttingDown, kComplete };
+    State _state = State::kPreStart;  // (M)
 };
 
 }  // namespace repl

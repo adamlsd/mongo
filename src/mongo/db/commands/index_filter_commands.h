@@ -63,10 +63,9 @@ public:
      * implement plan cache command functionality.
      */
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const std::string& dbname,
-             BSONObj& cmdObj,
-             int options,
+             const BSONObj& cmdObj,
              std::string& errmsg,
              BSONObjBuilder& result);
 
@@ -92,9 +91,9 @@ public:
      * Should contain just enough logic to invoke run*Command() function
      * in query_settings.h
      */
-    virtual Status runIndexFilterCommand(OperationContext* txn,
+    virtual Status runIndexFilterCommand(OperationContext* opCtx,
                                          const std::string& ns,
-                                         BSONObj& cmdObj,
+                                         const BSONObj& cmdObj,
                                          BSONObjBuilder* bob) = 0;
 
 private:
@@ -111,9 +110,9 @@ class ListFilters : public IndexFilterCommand {
 public:
     ListFilters();
 
-    virtual Status runIndexFilterCommand(OperationContext* txn,
+    virtual Status runIndexFilterCommand(OperationContext* opCtx,
                                          const std::string& ns,
-                                         BSONObj& cmdObj,
+                                         const BSONObj& cmdObj,
                                          BSONObjBuilder* bob);
 
     /**
@@ -133,9 +132,9 @@ class ClearFilters : public IndexFilterCommand {
 public:
     ClearFilters();
 
-    virtual Status runIndexFilterCommand(OperationContext* txn,
+    virtual Status runIndexFilterCommand(OperationContext* opCtx,
                                          const std::string& ns,
-                                         BSONObj& cmdObj,
+                                         const BSONObj& cmdObj,
                                          BSONObjBuilder* bob);
 
     /**
@@ -144,7 +143,7 @@ public:
      * Namespace argument ns is ignored if we are clearing the entire cache.
      * Removes corresponding entries from plan cache.
      */
-    static Status clear(OperationContext* txn,
+    static Status clear(OperationContext* opCtx,
                         QuerySettings* querySettings,
                         PlanCache* planCache,
                         const std::string& ns,
@@ -167,16 +166,16 @@ class SetFilter : public IndexFilterCommand {
 public:
     SetFilter();
 
-    virtual Status runIndexFilterCommand(OperationContext* txn,
+    virtual Status runIndexFilterCommand(OperationContext* opCtx,
                                          const std::string& ns,
-                                         BSONObj& cmdObj,
+                                         const BSONObj& cmdObj,
                                          BSONObjBuilder* bob);
 
     /**
      * Sets index filter for a query shape.
      * Removes entry for query shape from plan cache.
      */
-    static Status set(OperationContext* txn,
+    static Status set(OperationContext* opCtx,
                       QuerySettings* querySettings,
                       PlanCache* planCache,
                       const std::string& ns,

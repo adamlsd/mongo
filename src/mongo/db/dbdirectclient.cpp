@@ -32,9 +32,10 @@
 
 #include "mongo/db/dbdirectclient.h"
 
+#include "mongo/db/assemble_response.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/instance.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/wire_version.h"
@@ -52,24 +53,24 @@ class DirectClientScope {
     MONGO_DISALLOW_COPYING(DirectClientScope);
 
 public:
-    explicit DirectClientScope(OperationContext* txn)
-        : _txn(txn), _prev(_txn->getClient()->isInDirectClient()) {
-        _txn->getClient()->setInDirectClient(true);
+    explicit DirectClientScope(OperationContext* opCtx)
+        : _opCtx(opCtx), _prev(_opCtx->getClient()->isInDirectClient()) {
+        _opCtx->getClient()->setInDirectClient(true);
     }
 
     ~DirectClientScope() {
-        _txn->getClient()->setInDirectClient(_prev);
+        _opCtx->getClient()->setInDirectClient(_prev);
     }
 
 private:
-    OperationContext* const _txn;
+    OperationContext* const _opCtx;
     const bool _prev;
 };
 
 }  // namespace
 
 
-DBDirectClient::DBDirectClient(OperationContext* txn) : _txn(txn) {}
+DBDirectClient::DBDirectClient(OperationContext* opCtx) : _opCtx(opCtx) {}
 
 bool DBDirectClient::isFailed() const {
     return false;
@@ -109,8 +110,8 @@ bool DBDirectClient::lazySupported() const {
     return true;
 }
 
-void DBDirectClient::setOpCtx(OperationContext* txn) {
-    _txn = txn;
+void DBDirectClient::setOpCtx(OperationContext* opCtx) {
+    _opCtx = opCtx;
 }
 
 QueryOptions DBDirectClient::_lookupAvailableOptions() {
@@ -119,25 +120,24 @@ QueryOptions DBDirectClient::_lookupAvailableOptions() {
 }
 
 bool DBDirectClient::call(Message& toSend, Message& response, bool assertOk, string* actualServer) {
-    DirectClientScope directClientScope(_txn);
-    LastError::get(_txn->getClient()).startRequest();
+    DirectClientScope directClientScope(_opCtx);
+    LastError::get(_opCtx->getClient()).startRequest();
 
-    DbResponse dbResponse;
-    CurOp curOp(_txn);
-    assembleResponse(_txn, toSend, dbResponse, dummyHost);
-    verify(!dbResponse.response.empty());
+    CurOp curOp(_opCtx);
+    auto dbResponse = assembleResponse(_opCtx, toSend, kHostAndPortForDirectClient);
+    invariant(!dbResponse.response.empty());
     response = std::move(dbResponse.response);
 
     return true;
 }
 
 void DBDirectClient::say(Message& toSend, bool isRetry, string* actualServer) {
-    DirectClientScope directClientScope(_txn);
-    LastError::get(_txn->getClient()).startRequest();
+    DirectClientScope directClientScope(_opCtx);
+    LastError::get(_opCtx->getClient()).startRequest();
 
-    DbResponse dbResponse;
-    CurOp curOp(_txn);
-    assembleResponse(_txn, toSend, dbResponse, dummyHost);
+    CurOp curOp(_opCtx);
+    auto dbResponse = assembleResponse(_opCtx, toSend, kHostAndPortForDirectClient);
+    invariant(dbResponse.response.empty());
 }
 
 unique_ptr<DBClientCursor> DBDirectClient::query(const string& ns,
@@ -151,8 +151,6 @@ unique_ptr<DBClientCursor> DBDirectClient::query(const string& ns,
         ns, query, nToReturn, nToSkip, fieldsToReturn, queryOptions, batchSize);
 }
 
-const HostAndPort DBDirectClient::dummyHost("0.0.0.0", 0);
-
 unsigned long long DBDirectClient::count(
     const string& ns, const BSONObj& query, int options, int limit, int skip) {
     BSONObj cmdObj = _countCmd(ns, query, options, limit, skip);
@@ -165,7 +163,7 @@ unsigned long long DBDirectClient::count(
 
     std::string errmsg;
     BSONObjBuilder result;
-    bool runRetval = countCmd->run(_txn, dbname, cmdObj, options, errmsg, result);
+    bool runRetval = countCmd->run(_opCtx, dbname, cmdObj, errmsg, result);
     if (!runRetval) {
         Command::appendCommandStatus(result, runRetval, errmsg);
         Status commandStatus = getStatusFromCommandResult(result.obj());

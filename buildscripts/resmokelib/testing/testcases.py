@@ -47,6 +47,9 @@ class TestCase(unittest.TestCase):
         if not isinstance(test_name, basestring):
             raise TypeError("test_name must be a string")
 
+        # When the TestCase is created by the TestGroupExecutor (through a call to make_test_case())
+        # logger is an instance of TestQueueLogger. When the TestCase is created by a hook
+        # implementation it is an instance of BaseLogger.
         self.logger = logger
         self.test_kind = test_kind
         self.test_name = test_name
@@ -296,7 +299,8 @@ class JSTestCase(TestCase):
         def run(self):
             try:
                 threading.Thread.run(self)
-            except Exception as self.err:
+            except Exception as e1:
+                self.err = e1
                 raise
             else:
                 self.err = None
@@ -312,7 +316,7 @@ class JSTestCase(TestCase):
                  shell_executable=None,
                  shell_options=None,
                  test_kind="JSTest"):
-        "Initializes the JSTestCase with the JS file to run."
+        """Initializes the JSTestCase with the JS file to run."""
 
         TestCase.__init__(self, logger, test_kind, js_filename)
 
@@ -342,12 +346,19 @@ class JSTestCase(TestCase):
         global_vars["MongoRunner.dataDir"] = data_dir
         global_vars["MongoRunner.dataPath"] = data_path
 
+        # Don't set the path to the executables when the user didn't specify them via the command
+        # line. The functions in the mongo shell for spawning processes have their own logic for
+        # determining the default path to use.
+        if config.MONGOD_EXECUTABLE is not None:
+            global_vars["MongoRunner.mongodPath"] = config.MONGOD_EXECUTABLE
+        if config.MONGOS_EXECUTABLE is not None:
+            global_vars["MongoRunner.mongosPath"] = config.MONGOS_EXECUTABLE
+        if self.shell_executable is not None:
+            global_vars["MongoRunner.mongoShellPath"] = self.shell_executable
+
         test_data = global_vars.get("TestData", {}).copy()
         test_data["minPort"] = core.network.PortAllocator.min_test_port(fixture.job_num)
         test_data["maxPort"] = core.network.PortAllocator.max_test_port(fixture.job_num)
-        # Marks the main test when multiple test clients are run concurrently, to notify the test
-        # of any code that should only be run once. If there is only one client, it is the main one.
-        test_data["isMainTest"] = True
 
         global_vars["TestData"] = test_data
         self.shell_options["global_vars"] = global_vars
@@ -402,22 +413,36 @@ class JSTestCase(TestCase):
                     raise t._get_exception()
 
     def _make_process(self, logger=None, thread_id=0):
+        # Since _make_process() is called by each thread, we make a shallow copy of the mongo shell
+        # options to avoid modifying the shared options for the JSTestCase.
+        shell_options = self.shell_options.copy()
+        global_vars = shell_options["global_vars"].copy()
+        test_data = global_vars["TestData"].copy()
+
+        # We set a property on TestData to mark the main test when multiple clients are going to run
+        # concurrently in case there is logic within the test that must execute only once. We also
+        # set a property on TestData to indicate how many clients are going to run the test so they
+        # can avoid executing certain logic when there may be other operations running concurrently.
+        is_main_test = thread_id == 0
+        test_data["isMainTest"] = is_main_test
+        test_data["numTestClients"] = self.num_clients
+
+        global_vars["TestData"] = test_data
+        shell_options["global_vars"] = global_vars
+
         # If logger is none, it means that it's not running in a thread and thus logger should be
         # set to self.logger.
         logger = utils.default_if_none(logger, self.logger)
-        is_main_test = True
-        if thread_id > 0:
-            is_main_test = False
+
         return core.programs.mongo_shell_program(logger,
                                                  executable=self.shell_executable,
                                                  filename=self.js_filename,
-                                                 isMainTest=is_main_test,
-                                                 **self.shell_options)
+                                                 **shell_options)
 
     def _run_test_in_thread(self, thread_id):
-        # Make a logger for each thread.
-        logger = logging.loggers.new_logger(self.test_kind + ':' + str(thread_id),
-                                            parent=self.logger)
+        # Make a logger for each thread. When this method gets called self.logger has been
+        # overridden with a TestLogger instance by the TestReport in the startTest() method.
+        logger = self.logger.new_test_thread_logger(self.test_kind, str(thread_id))
         shell = self._make_process(logger, thread_id)
         self._execute(shell)
 

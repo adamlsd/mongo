@@ -4,6 +4,7 @@
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
+ *    GNU Affero General Public License for more details.
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -45,6 +46,7 @@ const BSONObj kMin = BSON("a" << 10);
 const BSONObj kMax = BSON("a" << 20);
 const ShardId kFromShard("shard0000");
 const ShardId kToShard("shard0001");
+const bool kWaitForDelete{true};
 
 TEST(MigrationTypeTest, ConvertFromMigrationInfo) {
     const ChunkVersion version(1, 2, OID::gen());
@@ -57,11 +59,11 @@ TEST(MigrationTypeTest, ConvertFromMigrationInfo) {
     version.appendForChunk(&chunkBuilder);
     chunkBuilder.append(ChunkType::shard(), kFromShard.toString());
 
-    ChunkType chunkType = assertGet(ChunkType::fromBSON(chunkBuilder.obj()));
+    ChunkType chunkType = assertGet(ChunkType::fromConfigBSON(chunkBuilder.obj()));
     ASSERT_OK(chunkType.validate());
 
-    MigrateInfo migrateInfo(kNs, kToShard, chunkType);
-    MigrationType migrationType(migrateInfo);
+    MigrateInfo migrateInfo(kToShard, chunkType);
+    MigrationType migrationType(migrateInfo, kWaitForDelete);
 
     BSONObjBuilder builder;
     builder.append(MigrationType::name(), kName);
@@ -70,6 +72,8 @@ TEST(MigrationTypeTest, ConvertFromMigrationInfo) {
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
+    builder.append(MigrationType::waitForDelete(), kWaitForDelete);
 
     BSONObj obj = builder.obj();
 
@@ -77,6 +81,8 @@ TEST(MigrationTypeTest, ConvertFromMigrationInfo) {
 }
 
 TEST(MigrationTypeTest, FromAndToBSON) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::name(), kName);
     builder.append(MigrationType::ns(), kNs);
@@ -84,6 +90,8 @@ TEST(MigrationTypeTest, FromAndToBSON) {
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
+    builder.append(MigrationType::waitForDelete(), kWaitForDelete);
 
     BSONObj obj = builder.obj();
 
@@ -92,11 +100,14 @@ TEST(MigrationTypeTest, FromAndToBSON) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredNamespaceField) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
 
     BSONObj obj = builder.obj();
 
@@ -106,11 +117,14 @@ TEST(MigrationTypeTest, MissingRequiredNamespaceField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredMinField) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
 
     BSONObj obj = builder.obj();
 
@@ -120,11 +134,14 @@ TEST(MigrationTypeTest, MissingRequiredMinField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredMaxField) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
 
     BSONObj obj = builder.obj();
 
@@ -134,11 +151,14 @@ TEST(MigrationTypeTest, MissingRequiredMaxField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredFromShardField) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::toShard(), kToShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
 
     BSONObj obj = builder.obj();
 
@@ -148,17 +168,36 @@ TEST(MigrationTypeTest, MissingRequiredFromShardField) {
 }
 
 TEST(MigrationTypeTest, MissingRequiredToShardField) {
+    const ChunkVersion version(1, 2, OID::gen());
+
     BSONObjBuilder builder;
     builder.append(MigrationType::ns(), kNs);
     builder.append(MigrationType::min(), kMin);
     builder.append(MigrationType::max(), kMax);
     builder.append(MigrationType::fromShard(), kFromShard.toString());
+    version.appendWithFieldForCommands(&builder, "chunkVersion");
 
     BSONObj obj = builder.obj();
 
     StatusWith<MigrationType> migrationType = MigrationType::fromBSON(obj);
     ASSERT_EQUALS(migrationType.getStatus(), ErrorCodes::NoSuchKey);
     ASSERT_STRING_CONTAINS(migrationType.getStatus().reason(), MigrationType::toShard.name());
+}
+
+TEST(MigrationTypeTest, MissingRequiredVersionField) {
+    BSONObjBuilder builder;
+    builder.append(MigrationType::name(), kName);
+    builder.append(MigrationType::ns(), kNs);
+    builder.append(MigrationType::min(), kMin);
+    builder.append(MigrationType::max(), kMax);
+    builder.append(MigrationType::fromShard(), kFromShard.toString());
+    builder.append(MigrationType::toShard(), kToShard.toString());
+
+    BSONObj obj = builder.obj();
+
+    StatusWith<MigrationType> migrationType = MigrationType::fromBSON(obj);
+    ASSERT_EQUALS(migrationType.getStatus(), ErrorCodes::NoSuchKey);
+    ASSERT_STRING_CONTAINS(migrationType.getStatus().reason(), "chunkVersion");
 }
 
 }  // namespace

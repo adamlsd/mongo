@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_out.h"
 
 #include "mongo/stdx/memory.h"
 #include "mongo/util/destructor_guard.h"
@@ -220,7 +220,7 @@ intrusive_ptr<DocumentSource> DocumentSourceOut::createFromBson(
     return new DocumentSourceOut(outputNs, pExpCtx);
 }
 
-Value DocumentSourceOut::serialize(bool explain) const {
+Value DocumentSourceOut::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
     massert(
         17000, "$out shouldn't have different db than input", _outputNs.db() == pExpCtx->ns.db());
 

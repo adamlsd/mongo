@@ -11,6 +11,7 @@
 #include "jsfriendapi.h"
 
 #include "gc/Marking.h"
+#include "vm/Shape.h"
 
 #include "jsgcinlines.h"
 
@@ -27,15 +28,15 @@ namespace {
 
 class AutoEntryHolder {
     typedef WatchpointMap::Map Map;
+    Generation gen;
     Map& map;
     Map::Ptr p;
-    uint32_t gen;
     RootedObject obj;
     RootedId id;
 
   public:
     AutoEntryHolder(JSContext* cx, Map& map, Map::Ptr p)
-      : map(map), p(p), gen(map.generation()), obj(cx, p->key().object), id(cx, p->key().id)
+      : gen(map.generation()), map(map), p(p), obj(cx, p->key().object), id(cx, p->key().id)
     {
         MOZ_ASSERT(!p->value().held);
         p->value().held = true;
@@ -153,7 +154,7 @@ WatchpointMap::markIteratively(JSTracer* trc)
         JSObject* priorKeyObj = entry.key().object;
         jsid priorKeyId(entry.key().id.get());
         bool objectIsLive =
-            IsMarked(const_cast<PreBarrieredObject*>(&entry.key().object));
+            IsMarked(trc->runtime(), const_cast<PreBarrieredObject*>(&entry.key().object));
         if (objectIsLive || entry.value().held) {
             if (!objectIsLive) {
                 TraceEdge(trc, const_cast<PreBarrieredObject*>(&entry.key().object),
@@ -166,7 +167,7 @@ WatchpointMap::markIteratively(JSTracer* trc)
                        JSID_IS_SYMBOL(priorKeyId));
             TraceEdge(trc, const_cast<PreBarrieredId*>(&entry.key().id), "WatchKey::id");
 
-            if (entry.value().closure && !IsMarked(&entry.value().closure)) {
+            if (entry.value().closure && !IsMarked(trc->runtime(), &entry.value().closure)) {
                 TraceEdge(trc, &entry.value().closure, "Watchpoint::closure");
                 marked = true;
             }

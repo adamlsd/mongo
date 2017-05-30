@@ -43,20 +43,21 @@
 #include "mongo/db/query/collation/collator_factory_mock.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/s/sharding_task_executor.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
-#include "mongo/rpc/metadata/server_selection_metadata.h"
+#include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/catalog_cache.h"
 #include "mongo/s/catalog/dist_lock_manager_mock.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_shard.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/shard_remote.h"
@@ -67,6 +68,7 @@
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/transport/mock_session.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/transport/transport_layer_mock.h"
 #include "mongo/util/clock_source_mock.h"
@@ -78,12 +80,21 @@ using executor::NetworkInterfaceMock;
 using executor::NetworkTestEnv;
 using executor::RemoteCommandRequest;
 using executor::RemoteCommandResponse;
+using executor::ShardingTaskExecutor;
 using rpc::ShardingEgressMetadataHookForMongos;
 using unittest::assertGet;
 
 using std::string;
 using std::vector;
 using unittest::assertGet;
+
+namespace {
+std::unique_ptr<ShardingTaskExecutor> makeShardingTestExecutor(
+    std::unique_ptr<NetworkInterfaceMock> net) {
+    auto testExecutor = makeThreadPoolTestExecutor(std::move(net));
+    return stdx::make_unique<ShardingTaskExecutor>(std::move(testExecutor));
+}
+}
 
 ShardingTestFixture::ShardingTestFixture() = default;
 
@@ -92,30 +103,39 @@ ShardingTestFixture::~ShardingTestFixture() = default;
 const Seconds ShardingTestFixture::kFutureTimeout{5};
 
 void ShardingTestFixture::setUp() {
-    _service = stdx::make_unique<ServiceContextNoop>();
-    _service->setFastClockSource(stdx::make_unique<ClockSourceMock>());
-    _service->setPreciseClockSource(stdx::make_unique<ClockSourceMock>());
-    _service->setTickSource(stdx::make_unique<TickSourceMock>());
-    auto tlMock = stdx::make_unique<transport::TransportLayerMock>();
-    _transportLayer = tlMock.get();
-    _service->addAndStartTransportLayer(std::move(tlMock));
-    CollatorFactoryInterface::set(_service.get(), stdx::make_unique<CollatorFactoryMock>());
-    _transportSession =
-        stdx::make_unique<transport::Session>(HostAndPort{}, HostAndPort{}, _transportLayer);
-    _client = _service->makeClient("ShardingTestFixture", _transportSession.get());
+    {
+        auto service = stdx::make_unique<ServiceContextNoop>();
+        service->setFastClockSource(stdx::make_unique<ClockSourceMock>());
+        service->setPreciseClockSource(stdx::make_unique<ClockSourceMock>());
+        service->setTickSource(stdx::make_unique<TickSourceMock>());
+        auto tlMock = stdx::make_unique<transport::TransportLayerMock>();
+        _transportLayer = tlMock.get();
+        service->addAndStartTransportLayer(std::move(tlMock));
+
+        // Set the newly created service context to be the current global context so that tests,
+        // which invoke code still referencing getGlobalServiceContext will work properly.
+        setGlobalServiceContext(std::move(service));
+    }
+
+    CollatorFactoryInterface::set(serviceContext(), stdx::make_unique<CollatorFactoryMock>());
+    _transportSession = transport::MockSession::create(_transportLayer);
+    _client = serviceContext()->makeClient("ShardingTestFixture", _transportSession);
     _opCtx = _client->makeOperationContext();
 
     // Set up executor pool used for most operations.
     auto fixedNet = stdx::make_unique<executor::NetworkInterfaceMock>();
     fixedNet->setEgressMetadataHook(stdx::make_unique<ShardingEgressMetadataHookForMongos>());
     _mockNetwork = fixedNet.get();
-    auto fixedExec = makeThreadPoolTestExecutor(std::move(fixedNet));
+    auto fixedExec = makeShardingTestExecutor(std::move(fixedNet));
     _networkTestEnv = stdx::make_unique<NetworkTestEnv>(fixedExec.get(), _mockNetwork);
     _executor = fixedExec.get();
 
     auto netForPool = stdx::make_unique<executor::NetworkInterfaceMock>();
     netForPool->setEgressMetadataHook(stdx::make_unique<ShardingEgressMetadataHookForMongos>());
-    auto execForPool = makeThreadPoolTestExecutor(std::move(netForPool));
+    auto _mockNetworkForPool = netForPool.get();
+    auto execForPool = makeShardingTestExecutor(std::move(netForPool));
+    _networkTestEnvForPool =
+        stdx::make_unique<NetworkTestEnv>(execForPool.get(), _mockNetworkForPool);
     std::vector<std::unique_ptr<executor::TaskExecutor>> executorsForPool;
     executorsForPool.emplace_back(std::move(execForPool));
 
@@ -170,7 +190,7 @@ void ShardingTestFixture::setUp() {
                nullptr,
                stdx::make_unique<CatalogCache>(),
                std::move(shardRegistry),
-               stdx::make_unique<ClusterCursorManager>(_service->getPreciseClockSource()),
+               stdx::make_unique<ClusterCursorManager>(serviceContext()->getPreciseClockSource()),
                stdx::make_unique<BalancerConfiguration>(),
                std::move(executorPool),
                _mockNetwork);
@@ -184,7 +204,6 @@ void ShardingTestFixture::tearDown() {
     _transportSession.reset();
     _opCtx.reset();
     _client.reset();
-    _service.reset();
 }
 
 void ShardingTestFixture::shutdownExecutor() {
@@ -230,7 +249,12 @@ executor::TaskExecutor* ShardingTestFixture::executor() const {
 
 DistLockManagerMock* ShardingTestFixture::distLock() const {
     invariant(_distLockManager);
+
     return _distLockManager;
+}
+
+ServiceContext* ShardingTestFixture::serviceContext() const {
+    return getGlobalServiceContext();
 }
 
 OperationContext* ShardingTestFixture::operationContext() const {
@@ -255,6 +279,10 @@ void ShardingTestFixture::onFindCommand(NetworkTestEnv::OnFindCommandFunction fu
 void ShardingTestFixture::onFindWithMetadataCommand(
     NetworkTestEnv::OnFindCommandWithMetadataFunction func) {
     _networkTestEnv->onFindWithMetadataCommand(func);
+}
+
+void ShardingTestFixture::onCommandForPoolExecutor(NetworkTestEnv::OnCommandFunction func) {
+    _networkTestEnvForPool->onCommand(func);
 }
 
 void ShardingTestFixture::setupShards(const std::vector<ShardType>& shards) {
@@ -410,10 +438,12 @@ void ShardingTestFixture::expectChangeLogInsert(const HostAndPort& configHost,
 }
 
 void ShardingTestFixture::expectUpdateCollection(const HostAndPort& expectedHost,
-                                                 const CollectionType& coll) {
+                                                 const CollectionType& coll,
+                                                 bool expectUpsert) {
     onCommand([&](const RemoteCommandRequest& request) {
         ASSERT_EQUALS(expectedHost, request.target);
-        ASSERT_BSONOBJ_EQ(BSON(rpc::kReplSetMetadataFieldName << 1), request.metadata);
+        ASSERT_BSONOBJ_EQ(BSON(rpc::kReplSetMetadataFieldName << 1),
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
         ASSERT_EQUALS("config", request.dbname);
 
         BatchedUpdateRequest actualBatchedUpdate;
@@ -424,7 +454,7 @@ void ShardingTestFixture::expectUpdateCollection(const HostAndPort& expectedHost
         ASSERT_EQUALS(1U, updates.size());
         auto update = updates.front();
 
-        ASSERT_TRUE(update->getUpsert());
+        ASSERT_EQ(expectUpsert, update->getUpsert());
         ASSERT_FALSE(update->getMulti());
         ASSERT_BSONOBJ_EQ(update->getQuery(),
                           BSON(CollectionType::fullNs(coll.getNs().toString())));
@@ -444,15 +474,14 @@ void ShardingTestFixture::expectSetShardVersion(const HostAndPort& expectedHost,
                                                 const ChunkVersion& expectedChunkVersion) {
     onCommand([&](const RemoteCommandRequest& request) {
         ASSERT_EQ(expectedHost, request.target);
-        ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(), request.metadata);
+        ASSERT_BSONOBJ_EQ(rpc::makeEmptyMetadata(),
+                          rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
         SetShardVersionRequest ssv =
             assertGet(SetShardVersionRequest::parseFromBSON(request.cmdObj));
 
         ASSERT(!ssv.isInit());
         ASSERT(ssv.isAuthoritative());
-        ASSERT_EQ(shardRegistry()->getConfigServerConnectionString().toString(),
-                  ssv.getConfigServer().toString());
         ASSERT_EQ(expectedShard.getHost(), ssv.getShardConnectionString().toString());
         ASSERT_EQ(expectedNs.toString(), ssv.getNS().ns());
         ASSERT_EQ(expectedChunkVersion.toString(), ssv.getNSVersion().toString());
@@ -492,7 +521,7 @@ void ShardingTestFixture::expectCount(const HostAndPort& configHost,
 }
 
 void ShardingTestFixture::setRemote(const HostAndPort& remote) {
-    *_transportSession = transport::Session{remote, HostAndPort{}, _transportLayer};
+    _transportSession = transport::MockSession::create(remote, HostAndPort{}, _transportLayer);
 }
 
 void ShardingTestFixture::checkReadConcern(const BSONObj& cmdObj,

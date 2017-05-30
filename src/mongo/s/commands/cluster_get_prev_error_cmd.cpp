@@ -40,7 +40,7 @@ namespace {
 
 class GetPrevErrorCmd : public Command {
 public:
-    GetPrevErrorCmd() : Command("getPrevError", false, "getpreverror") {}
+    GetPrevErrorCmd() : Command("getPrevError", "getpreverror") {}
 
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -61,10 +61,9 @@ public:
         // No auth required
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& dbname,
-                     BSONObj& cmdObj,
-                     int options,
+                     const BSONObj& cmdObj,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         errmsg += "getpreverror not supported for sharded environments";

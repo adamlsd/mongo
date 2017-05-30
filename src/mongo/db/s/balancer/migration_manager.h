@@ -36,6 +36,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/balancer/balancer_policy.h"
+#include "mongo/db/s/balancer/type_migration.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/migration_secondary_throttle_options.h"
@@ -47,6 +48,7 @@
 namespace mongo {
 
 class OperationContext;
+class ScopedMigrationRequest;
 class ServiceContext;
 class Status;
 template <typename T>
@@ -58,8 +60,6 @@ typedef std::map<MigrationIdentifier, Status> MigrationStatuses;
 
 /**
  * Manages and executes parallel migrations for the balancer.
- *
- * TODO: for v3.6, remove code making compatible with v3.2 shards that take distlock.
  */
 class MigrationManager {
     MONGO_DISALLOW_COPYING(MigrationManager);
@@ -79,7 +79,7 @@ public:
      * Returns a map of migration Status objects to indicate the success/failure of each migration.
      */
     MigrationStatuses executeMigrationsForAutoBalance(
-        OperationContext* txn,
+        OperationContext* opCtx,
         const std::vector<MigrateInfo>& migrateInfos,
         uint64_t maxChunkSizeBytes,
         const MigrationSecondaryThrottleOptions& secondaryThrottle,
@@ -92,7 +92,7 @@ public:
      *
      * Returns the status of the migration.
      */
-    Status executeManualMigration(OperationContext* txn,
+    Status executeManualMigration(OperationContext* opCtx,
                                   const MigrateInfo& migrateInfo,
                                   uint64_t maxChunkSizeBytes,
                                   const MigrationSecondaryThrottleOptions& secondaryThrottle,
@@ -100,12 +100,13 @@ public:
 
     /**
      * Non-blocking method that puts the migration manager in the kRecovering state, in which
-     * new migration requests will block until finishRecovery is called. Then does local writes to
-     * reacquire the distributed locks for active migrations.
+     * new migration requests will block until finishRecovery is called. Then reacquires distributed
+     * locks for the balancer and any active migrations. The distributed locks are taken with local
+     * write concern, since this is called in drain mode where majority writes are not yet possible.
      *
      * The active migration recovery may fail and be abandoned, setting the state to kEnabled.
      */
-    void startRecoveryAndAcquireDistLocks(OperationContext* txn);
+    void startRecoveryAndAcquireDistLocks(OperationContext* opCtx);
 
     /**
      * Blocking method that must only be called after startRecovery has been called. Recovers the
@@ -117,10 +118,9 @@ public:
      * The active migration recovery may fail and be abandoned, setting the state to kEnabled and
      * unblocking any process waiting on the recovery state.
      */
-    void finishRecovery(OperationContext* txn,
+    void finishRecovery(OperationContext* opCtx,
                         uint64_t maxChunkSizeBytes,
-                        const MigrationSecondaryThrottleOptions& secondaryThrottle,
-                        bool waitForDelete);
+                        const MigrationSecondaryThrottleOptions& secondaryThrottle);
 
     /**
      * Non-blocking method that should never be called concurrently with finishRecovery. Puts the
@@ -164,7 +164,7 @@ private:
         boost::optional<executor::TaskExecutor::CallbackHandle> callbackHandle;
 
         // Notification, which will be signaled when the migration completes
-        std::shared_ptr<Notification<Status>> completionNotification;
+        std::shared_ptr<Notification<executor::RemoteCommandResponse>> completionNotification;
     };
 
     // Used as a type in which to store a list of active migrations. The reason to choose list is
@@ -172,37 +172,17 @@ private:
     // O(1) removal time.
     using MigrationsList = std::list<Migration>;
 
-    /**
-     * Contains the runtime state for a single collection. This class does not have concurrency
-     * control of its own and relies on the migration manager's mutex.
-     */
-    struct CollectionMigrationsState {
-        CollectionMigrationsState(DistLockHandle distLockHandle);
-        ~CollectionMigrationsState();
-
-        // Dist lock handle, which must be released at destruction time.
-        const DistLockHandle distLockHandle;
-
-        // Contains a set of migrations which are currently active for this namespace.
-        MigrationsList migrations;
-    };
-
-    using CollectionMigrationsStateMap =
-        stdx::unordered_map<NamespaceString, CollectionMigrationsState>;
+    using CollectionMigrationsStateMap = stdx::unordered_map<NamespaceString, MigrationsList>;
 
     /**
      * Optionally takes the collection distributed lock and schedules a chunk migration with the
      * specified parameters. May block for distributed lock acquisition. If dist lock acquisition is
      * successful (or not done), schedules the migration request and returns a notification which
      * can be used to obtain the outcome of the operation.
-     *
-     * The 'shardTakesCollectionDistLock' parameter controls whether the distributed lock is
-     * acquired by the migration manager or by the shard executing the migration request.
      */
-    std::shared_ptr<Notification<Status>> _schedule(
-        OperationContext* txn,
+    std::shared_ptr<Notification<executor::RemoteCommandResponse>> _schedule(
+        OperationContext* opCtx,
         const MigrateInfo& migrateInfo,
-        bool shardTakesCollectionDistLock,
         uint64_t maxChunkSizeBytes,
         const MigrationSecondaryThrottleOptions& secondaryThrottle,
         bool waitForDelete);
@@ -214,9 +194,9 @@ private:
      * The distributed lock is acquired before scheduling the first migration for the collection and
      * is only released when all active migrations on the collection have finished.
      */
-    void _scheduleWithDistLock_inlock(OperationContext* txn,
-                                      const HostAndPort& targetHost,
-                                      Migration migration);
+    void _schedule_inlock(OperationContext* opCtx,
+                          const HostAndPort& targetHost,
+                          Migration migration);
 
     /**
      * Used internally for migrations scheduled with the distributed lock acquired by the config
@@ -224,21 +204,9 @@ private:
      * passed iterator and if this is the last migration for the collection will free the collection
      * distributed lock.
      */
-    void _completeWithDistLock_inlock(OperationContext* txn,
-                                      MigrationsList::iterator itMigration,
-                                      Status status);
-
-    /**
-     * Immediately schedules the specified migration without attempting to acquire the collection
-     * distributed lock or checking that it is not being held.
-     *
-     * This method is only used for retrying migrations that have failed with LockBusy errors
-     * returned by the shard, which only happens with legacy 3.2 shards that take the collection
-     * distributed lock themselves.
-     */
-    void _scheduleWithoutDistLock_inlock(OperationContext* txn,
-                                         const HostAndPort& targetHost,
-                                         Migration migration);
+    void _complete_inlock(OperationContext* opCtx,
+                          MigrationsList::iterator itMigration,
+                          const executor::RemoteCommandResponse& remoteCommandResponse);
 
     /**
      * If the state of the migration manager is kStopping, checks whether there are any outstanding
@@ -258,7 +226,22 @@ private:
      * that the balancer holds, clears the config.migrations collection, changes the state of the
      * migration manager to kEnabled. Then unblocks all processes waiting for kEnabled state.
      */
-    void _abandonActiveMigrationsAndEnableManager(OperationContext* txn);
+    void _abandonActiveMigrationsAndEnableManager(OperationContext* opCtx);
+
+    /**
+     * Parses a moveChunk RemoteCommandResponse's two levels of Status objects and distiguishes
+     * between errors generated by this config server and the shard primary to which the moveChunk
+     * command was sent.
+     *
+     * If the command failed because of stepdown of this config server, the migration document
+     * managed by 'scopedMigrationRequest' is saved for later balancer recovery and a
+     * BalancerInterrupted error is returned. If the command failed because the shard to which the
+     * command was sent returned an error, the migration document is not saved and the error is
+     * returned without conversion.
+     */
+    Status _processRemoteCommandResponse(
+        const executor::RemoteCommandResponse& remoteCommandResponse,
+        ScopedMigrationRequest* scopedMigrationRequest);
 
     // The service context under which this migration manager runs.
     ServiceContext* const _serviceContext;
@@ -266,11 +249,11 @@ private:
     // Used as a constant session ID for all distributed locks that this MigrationManager holds.
     // Currently required so that locks can be reacquired for the balancer in startRecovery and then
     // overtaken in later operations.
-    OID _lockSessionID;
+    const OID _lockSessionID{OID::gen()};
 
     // Carries migration information over from startRecovery to finishRecovery. Should only be set
     // in startRecovery and then accessed in finishRecovery.
-    stdx::unordered_map<NamespaceString, std::list<MigrateInfo>> _migrationRecoveryMap;
+    stdx::unordered_map<NamespaceString, std::list<MigrationType>> _migrationRecoveryMap;
 
     // Protects the class state below.
     stdx::mutex _mutex;
@@ -282,13 +265,8 @@ private:
     // signaled when the state change is complete.
     stdx::condition_variable _condVar;
 
-    // Holds information about each collection's distributed lock and active migrations via a
-    // CollectionMigrationState object.
-    CollectionMigrationsStateMap _activeMigrationsWithDistLock;
-
-    // Holds information about migrations, which have been scheduled without the collection
-    // distributed lock acquired (i.e., the shard is asked to acquire it).
-    MigrationsList _activeMigrationsWithoutDistLock;
+    // Maps collection namespaces to that collection's active migrations.
+    CollectionMigrationsStateMap _activeMigrations;
 };
 
 }  // namespace mongo

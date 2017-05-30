@@ -66,8 +66,9 @@ public:
      *
      * The destructor will handle removing the document when it is no longer needed.
      */
-    static StatusWith<ScopedMigrationRequest> writeMigration(OperationContext* txn,
-                                                             const MigrateInfo& migrate);
+    static StatusWith<ScopedMigrationRequest> writeMigration(OperationContext* opCtx,
+                                                             const MigrateInfo& migrate,
+                                                             bool waitForDelete);
 
     /**
      * Creates a ScopedMigrationRequest object without inserting a document into config.migrations.
@@ -76,11 +77,22 @@ public:
      * This should only be used on Balancer recovery when a config.migrations document already
      * exists for the migration.
      */
-    static ScopedMigrationRequest createForRecovery(OperationContext* txn,
+    static ScopedMigrationRequest createForRecovery(OperationContext* opCtx,
                                                     const NamespaceString& nss,
                                                     const BSONObj& minKey);
 
     /**
+     * Do not call if keepDocumentOnDestruct has been called previously: it will invariant.
+     *
+     * Attempts to delete this migration's entry in the config.migrations collection using majority
+     * write concern. If successful, clears the operation context so that the destructor will not
+     * redundantly try to remove an already successfully deleted document.
+     */
+    Status tryToRemoveMigration();
+
+    /**
+     * Do not call if tryToRemoveMigration has been called previously: it may invariant.
+     *
      * Clears the operation context so that the destructor will not remove the config.migrations
      * document for the migration.
      *
@@ -90,12 +102,12 @@ public:
     void keepDocumentOnDestruct();
 
 private:
-    ScopedMigrationRequest(OperationContext* txn,
+    ScopedMigrationRequest(OperationContext* opCtx,
                            const NamespaceString& nss,
                            const BSONObj& minKey);
 
     // Need an operation context with which to do a write in the destructor.
-    OperationContext* _txn;
+    OperationContext* _opCtx;
 
     // ns and minkey are needed to identify the migration document when it is removed from
     // config.migrations by the destructor.

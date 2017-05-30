@@ -37,14 +37,8 @@
 
 namespace mongo {
 
-class ChunkManager;
-class OperationContext;
-
 struct ZoneRange {
-    ZoneRange() = default;
-
-    ZoneRange(const BSONObj& a_min, const BSONObj& a_max, const std::string& _zone)
-        : min(a_min.getOwned()), max(a_max.getOwned()), zone(_zone) {}
+    ZoneRange(const BSONObj& a_min, const BSONObj& a_max, const std::string& _zone);
 
     std::string toString() const;
 
@@ -54,21 +48,10 @@ struct ZoneRange {
 };
 
 struct MigrateInfo {
-    MigrateInfo(const std::string& a_ns, const ShardId& a_to, const ChunkType& a_chunk)
-        : ns(a_ns),
-          to(a_to),
-          from(a_chunk.getShard()),
-          minKey(a_chunk.getMin()),
-          maxKey(a_chunk.getMax()) {}
-
-    MigrateInfo(const std::string& a_ns,
-                const ShardId& a_to,
-                const ShardId& a_from,
-                const BSONObj& a_minKey,
-                const BSONObj& a_maxKey)
-        : ns(a_ns), to(a_to), from(a_from), minKey(a_minKey), maxKey(a_maxKey) {}
+    MigrateInfo(const ShardId& a_to, const ChunkType& a_chunk);
 
     std::string getName() const;
+
     std::string toString() const;
 
     std::string ns;
@@ -76,6 +59,7 @@ struct MigrateInfo {
     ShardId from;
     BSONObj minKey;
     BSONObj maxKey;
+    ChunkVersion version;
 };
 
 typedef std::vector<ClusterStatistics::ShardStatistics> ShardStatisticsVector;
@@ -230,7 +214,11 @@ private:
     /**
      * Selects one chunk for the specified zone (if appropriate) to be moved in order to bring the
      * deviation of the shards chunk contents closer to even across all shards in the specified
-     * zone. Takes into account the shards, which have already been used for migrations.
+     * zone. Takes into account and updates the shards, which have already been used for migrations.
+     *
+     * The 'idealNumberOfChunksPerShardForTag' indicates what is the ideal number of chunks which
+     * each shard must have and is used to determine the imbalance and also to prevent chunks from
+     * moving when not necessary.
      *
      * Returns true if a migration was suggested, false otherwise. This method is intented to be
      * called multiple times until all posible migrations for a zone have been selected.
@@ -238,6 +226,7 @@ private:
     static bool _singleZoneBalance(const ShardStatisticsVector& shardStats,
                                    const DistributionStatus& distribution,
                                    const std::string& tag,
+                                   size_t idealNumberOfChunksPerShardForTag,
                                    size_t imbalanceThreshold,
                                    std::vector<MigrateInfo>* migrations,
                                    std::set<ShardId>* usedShards);

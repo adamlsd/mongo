@@ -32,6 +32,7 @@
 
 #include "mongo/db/service_context.h"
 #include "mongo/executor/network_test_env.h"
+#include "mongo/transport/session.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/net/message_port_mock.h"
 
@@ -97,9 +98,9 @@ protected:
 
     executor::TaskExecutor* executor() const;
 
-    transport::Session* getTransportSession() const;
-
     DistLockManagerMock* distLock() const;
+
+    ServiceContext* serviceContext() const;
 
     OperationContext* operationContext() const;
 
@@ -113,6 +114,12 @@ protected:
     void onFindCommand(executor::NetworkTestEnv::OnFindCommandFunction func);
     void onFindWithMetadataCommand(
         executor::NetworkTestEnv::OnFindCommandWithMetadataFunction func);
+
+    /**
+     * Same as the onCommand* variants, but expects the request to be placed on the arbitrary
+     * executor of the Grid's executorPool.
+     */
+    void onCommandForPoolExecutor(executor::NetworkTestEnv::OnCommandFunction func);
 
     /**
      * Setup the shard registry to contain the given shards until the next reload.
@@ -174,11 +181,12 @@ protected:
                                const BSONObj& detail);
 
     /**
-     * Expects an update call, which changes the specified collection's namespace contents to
-     * match
+     * Expects an update call, which changes the specified collection's namespace contents to match
      * those of the input argument.
      */
-    void expectUpdateCollection(const HostAndPort& expectedHost, const CollectionType& coll);
+    void expectUpdateCollection(const HostAndPort& expectedHost,
+                                const CollectionType& coll,
+                                bool expectUpsert = true);
 
     /**
      * Expects a setShardVersion command to be executed on the specified shard.
@@ -204,18 +212,22 @@ protected:
                           long long expectedTerm) const;
 
 private:
-    std::unique_ptr<ServiceContext> _service;
     ServiceContext::UniqueClient _client;
     ServiceContext::UniqueOperationContext _opCtx;
     transport::TransportLayerMock* _transportLayer;
-    std::unique_ptr<transport::Session> _transportSession;
+    transport::SessionHandle _transportSession;
 
     RemoteCommandTargeterFactoryMock* _targeterFactory;
     RemoteCommandTargeterMock* _configTargeter;
 
+    // For the Grid's fixed executor.
     executor::NetworkInterfaceMock* _mockNetwork;
     executor::TaskExecutor* _executor;
     std::unique_ptr<executor::NetworkTestEnv> _networkTestEnv;
+
+    // For the Grid's arbitrary executor in its executorPool.
+    std::unique_ptr<executor::NetworkTestEnv> _networkTestEnvForPool;
+
     DistLockManagerMock* _distLockManager = nullptr;
     ShardingCatalogClientImpl* _catalogClient = nullptr;
 };

@@ -2,9 +2,14 @@
 
 Import("env")
 
+env = env.Clone()
+
 env.SConscript(
     dirs=[
         'unicode',
+    ],
+    exports=[
+        'env',
     ],
 )
 
@@ -55,7 +60,6 @@ baseEnv.Library('base', [
                     "$BUILD_DIR/mongo/db/bson/dotted_path_support",
                     "$BUILD_DIR/mongo/db/common",
                     "$BUILD_DIR/mongo/db/fts/unicode/unicode",
-                    "$BUILD_DIR/mongo/platform/platform",
                     "$BUILD_DIR/mongo/util/md5",
                     "$BUILD_DIR/third_party/shim_stemmer",
                     ])
@@ -71,12 +75,8 @@ env.Library(
 )
 
 env.Library('ftsmongod', [
+    'ftsmongod.cpp',
         ], LIBDEPS=["base","$BUILD_DIR/mongo/base"])
-
-
-env.Library('ftsmongos', [
-        ], LIBDEPS=["$BUILD_DIR/mongo/base"])
-
 
 env.CppUnitTest( "fts_basic_phrase_matcher_test", "fts_basic_phrase_matcher_test.cpp",
                  LIBDEPS=["base"] )

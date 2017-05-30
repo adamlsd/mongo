@@ -32,7 +32,11 @@
 
 #include <exception>
 
+#include "mongo/base/string_data.h"
+#include "mongo/db/curop.h"
 #include "mongo/util/assert_util.h"
+
+// Use of this macro is deprecated.  Prefer the writeConflictRetry template, below, instead.
 
 #define MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN \
     do {                                      \
@@ -79,6 +83,23 @@ public:
      * If true, will call printStackTrace on every WriteConflictException created.
      * Can be set via setParameter named traceWriteConflictExceptions.
      */
-    static std::atomic<bool> trace;  // NOLINT
+    static AtomicBool trace;
 };
+
+template <typename F>
+void writeConflictRetry(OperationContext* opCtx, StringData opStr, StringData ns, F&& f) {
+    int attempts = 0;
+    while (true) {
+        try {
+            f();
+            break;
+        } catch (WriteConflictException const& wce) {
+            ++CurOp::get(opCtx)->debug().writeConflicts;
+            wce.logAndBackoff(attempts, opStr, ns);
+            ++attempts;
+            opCtx->recoveryUnit()->abandonSnapshot();
+        }
+    }
 }
+
+}  // namespace mongo

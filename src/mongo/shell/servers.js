@@ -6,6 +6,11 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
 
     var shellVersion = version;
 
+    // Record the exit codes of mongod and mongos processes that crashed during startup keyed by
+    // pid. This map is cleared when MongoRunner._startWithArgs and MongoRunner.stopMongod/s are
+    // called.
+    var serverExitCodeMap = {};
+
     var _parsePath = function() {
         var dbpath = "";
         for (var i = 0; i < arguments.length; ++i)
@@ -70,6 +75,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     MongoRunner.dataDir = "/data/db";
     MongoRunner.dataPath = "/data/db/";
 
+    MongoRunner.mongodPath = "mongod";
+    MongoRunner.mongosPath = "mongos";
+    MongoRunner.mongoShellPath = "mongo";
+
     MongoRunner.VersionSub = function(pattern, version) {
         this.pattern = pattern;
         this.version = version;
@@ -114,14 +123,12 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         new MongoRunner.VersionSub(extractMajorVersionFromVersionString(shellVersion()),
                                    shellVersion()),
         // To-be-updated when we branch for the next release.
-        new MongoRunner.VersionSub("last-stable", "3.2")
+        new MongoRunner.VersionSub("last-stable", "3.4")
     ];
 
     MongoRunner.getBinVersionFor = function(version) {
-
-        // If this is a version iterator, iterate the version via toString()
         if (version instanceof MongoRunner.versionIterator.iterator) {
-            version = version.toString();
+            version = version.current();
         }
 
         if (version == null)
@@ -227,11 +234,11 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     MongoRunner.toRealFile = MongoRunner.toRealDir;
 
     /**
-     * Returns an iterator object which yields successive versions on toString(), starting from a
-     * random initial position, from an array of versions.
+     * Returns an iterator object which yields successive versions on calls to advance(), starting
+     * from a random initial position, from an array of versions.
      *
      * If passed a single version string or an already-existing version iterator, just returns the
-     * object itself, since it will yield correctly on toString()
+     * object itself, since it will yield correctly on calls to advance().
      *
      * @param {Array.<String>}|{String}|{versionIterator}
      */
@@ -253,12 +260,21 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     };
 
     MongoRunner.versionIterator.iterator = function(i, arr) {
+        if (!Array.isArray(arr)) {
+            throw new Error("Expected an array for the second argument, but got: " + tojson(arr));
+        }
 
-        this.toString = function() {
-            i = i % arr.length;
-            print("Returning next version : " + i + " (" + arr[i] + ") from " + tojson(arr) +
-                  "...");
-            return arr[i++];
+        this.current = function current() {
+            return arr[i];
+        };
+
+        // We define the toString() method as an alias for current() so that concatenating a version
+        // iterator with a string returns the next version in the list without introducing any
+        // side-effects.
+        this.toString = this.current;
+
+        this.advance = function advance() {
+            i = (i + 1) % arr.length;
         };
 
         this.isVersionIterator = true;
@@ -428,6 +444,13 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
 
         // Normalize and get the binary version to use
         if (opts.hasOwnProperty('binVersion')) {
+            if (opts.binVersion instanceof MongoRunner.versionIterator.iterator) {
+                // Advance the version iterator so that subsequent calls to
+                // MongoRunner.mongoOptions() use the next version in the list.
+                const iterator = opts.binVersion;
+                opts.binVersion = iterator.current();
+                iterator.advance();
+            }
             opts.binVersion = MongoRunner.getBinVersionFor(opts.binVersion);
         }
 
@@ -448,6 +471,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
 
         if (jsTestOptions().networkMessageCompressors) {
             opts.networkMessageCompressors = jsTestOptions().networkMessageCompressors;
+        }
+
+        if (!opts.bind_ip) {
+            opts.bind_ip = "0.0.0.0";
         }
 
         return opts;
@@ -708,7 +735,8 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 resetDbpath(opts.dbpath);
             }
 
-            opts = MongoRunner.arrOptions("mongod", opts);
+            var mongodProgram = MongoRunner.mongodPath;
+            opts = MongoRunner.arrOptions(mongodProgram, opts);
         }
 
         var mongod = MongoRunner._startWithArgs(opts, env, waitForConnect);
@@ -745,8 +773,8 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             runId = opts.runId;
             waitForConnect = opts.waitForConnect;
             env = opts.env;
-
-            opts = MongoRunner.arrOptions("mongos", opts);
+            var mongosProgram = MongoRunner.mongosPath;
+            opts = MongoRunner.arrOptions(mongosProgram, opts);
         }
 
         var mongos = MongoRunner._startWithArgs(opts, env, waitForConnect);
@@ -765,10 +793,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         return mongos;
     };
 
-    MongoRunner.StopError = function(message, returnCode) {
+    MongoRunner.StopError = function(returnCode) {
         this.name = "StopError";
-        this.returnCode = returnCode || "non-zero";
-        this.message = message || "MongoDB process stopped with exit code: " + this.returnCode;
+        this.returnCode = returnCode;
+        this.message = "MongoDB process stopped with exit code: " + this.returnCode;
         this.stack = this.toString() + "\n" + (new Error()).stack;
     };
 
@@ -782,6 +810,9 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     MongoRunner.EXIT_REPLICATION_ERROR = 3;
     MongoRunner.EXIT_NEED_UPGRADE = 4;
     MongoRunner.EXIT_SHARDING_ERROR = 5;
+    // SIGKILL is translated to TerminateProcess() on Windows, which causes the program to
+    // terminate with exit code 1.
+    MongoRunner.EXIT_SIGKILL = _isWindows() ? 1 : -9;
     MongoRunner.EXIT_KILL = 12;
     MongoRunner.EXIT_ABRUPT = 14;
     MongoRunner.EXIT_NTSERVICE_ERROR = 20;
@@ -799,7 +830,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     /**
      * Kills a mongod process.
      *
-     * @param {number} port the port of the process to kill
+     * @param {Mongo} conn the connection object to the process to kill
      * @param {number} signal The signal number to use for killing
      * @param {Object} opts Additional options. Format:
      *    {
@@ -812,44 +843,38 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
      * Note: The auth option is required in a authenticated mongod running in Windows since
      *  it uses the shutdown command, which requires admin credentials.
      */
-    MongoRunner.stopMongod = function(port, signal, opts) {
-
-        if (!port) {
-            print("Cannot stop mongo process " + port);
-            return null;
+    MongoRunner.stopMongod = function(conn, signal, opts) {
+        if (!conn.pid) {
+            throw new Error("first arg must have a `pid` property; " +
+                            "it is usually the object returned from MongoRunner.runMongod/s");
         }
 
         signal = parseInt(signal) || 15;
         opts = opts || {};
 
-        var allowedExitCodes = [MongoRunner.EXIT_CLEAN];
+        var allowedExitCode = MongoRunner.EXIT_CLEAN;
 
-        if (_isWindows()) {
-            // Return code of processes killed with TerminateProcess on Windows
-            allowedExitCodes.push(1);
+        if (opts.allowedExitCode) {
+            allowedExitCode = opts.allowedExitCode;
+        }
+
+        var port = parseInt(conn.port);
+
+        var pid = conn.pid;
+        // If the return code is in the serverExitCodeMap, it means the server crashed on startup.
+        // We just use the recorded return code instead of stopping the program.
+        var returnCode;
+        if (pid in serverExitCodeMap) {
+            returnCode = serverExitCodeMap[pid];
+            delete serverExitCodeMap[pid];
         } else {
-            // Return code of processes killed with SIGKILL on POSIX systems
-            allowedExitCodes.push(-9);
+            returnCode = _stopMongoProgram(port, signal, opts);
         }
-
-        if (opts.allowedExitCodes) {
-            allowedExitCodes = allowedExitCodes.concat(opts.allowedExitCodes);
-        }
-
-        if (port.port)
-            port = parseInt(port.port);
-
-        if (port instanceof ObjectId) {
-            var opts = MongoRunner.savedOptions(port);
-            if (opts)
-                port = parseInt(opts.port);
-        }
-
-        var returnCode = _stopMongoProgram(parseInt(port), signal, opts);
-
-        if (!Array.contains(allowedExitCodes, returnCode)) {
-            throw new MongoRunner.StopError(
-                `MongoDB process on port ${port} exited with error code ${returnCode}`, returnCode);
+        if (allowedExitCode !== returnCode) {
+            throw new MongoRunner.StopError(returnCode);
+        } else if (returnCode !== MongoRunner.EXIT_CLEAN) {
+            print("MongoDB process on port " + port + " intentionally exited with error code ",
+                  returnCode);
         }
 
         return returnCode;
@@ -874,7 +899,15 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     MongoRunner.runMongoTool = function(binaryName, opts, ...positionalArgs) {
 
         var opts = opts || {};
+
         // Normalize and get the binary version to use
+        if (opts.binVersion instanceof MongoRunner.versionIterator.iterator) {
+            // Advance the version iterator so that subsequent calls to MongoRunner.runMongoTool()
+            // use the next version in the list.
+            const iterator = opts.binVersion;
+            opts.binVersion = iterator.current();
+            iterator.advance();
+        }
         opts.binVersion = MongoRunner.getBinVersionFor(opts.binVersion);
 
         // Recent versions of the mongo tools support a --dialTimeout flag to set for how
@@ -958,13 +991,31 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
      * Returns a new argArray with any test-specific arguments added.
      */
     function appendSetParameterArgs(argArray) {
+        function argArrayContains(key) {
+            return (argArray
+                        .filter((val) => {
+                            return typeof val === "string" && val.indexOf(key) === 0;
+                        })
+                        .length > 0);
+        }
+
         // programName includes the version, e.g., mongod-3.2.
         // baseProgramName is the program name without any version information, e.g., mongod.
         var programName = argArray[0];
+
+        // Object containing log component levels for the "logComponentVerbosity" parameter
+        var logComponentVerbosity = {};
+
         var [baseProgramName, programVersion] = programName.split("-");
         if (baseProgramName === 'mongod' || baseProgramName === 'mongos') {
             if (jsTest.options().enableTestCommands) {
                 argArray.push(...['--setParameter', "enableTestCommands=1"]);
+                if (!programVersion || (parseInt(programVersion.split(".")[0]) >= 3 &&
+                                        parseInt(programVersion.split(".")[1]) >= 3)) {
+                    if (!argArrayContains("logComponentVerbosity")) {
+                        logComponentVerbosity["tracking"] = 0;
+                    }
+                }
             }
             if (jsTest.options().authMechanism && jsTest.options().authMechanism != "SCRAM-SHA-1") {
                 var hasAuthMechs = false;
@@ -984,7 +1035,6 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             if (jsTest.options().auth) {
                 argArray.push(...['--setParameter', "enableLocalhostAuthBypass=false"]);
             }
-
             // Since options may not be backward compatible, mongos options are not
             // set on older versions, e.g., mongos-3.0.
             if (programName.endsWith('mongos')) {
@@ -1006,9 +1056,15 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                         argArray.push(...['--storageEngine', jsTest.options().storageEngine]);
                     }
                 }
+
                 // Since options may not be backward compatible, mongod options are not
                 // set on older versions, e.g., mongod-3.0.
                 if (programName.endsWith('mongod')) {
+                    // Enable heartbeat logging for replica set nodes.
+                    if (!argArrayContains("logComponentVerbosity")) {
+                        logComponentVerbosity["replication"] = {"heartbeats": 2};
+                    }
+
                     if (jsTest.options().storageEngine === "wiredTiger" ||
                         !jsTest.options().storageEngine) {
                         if (jsTest.options().storageEngineCacheSizeGB) {
@@ -1045,7 +1101,15 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                     }
                 }
             }
+
+            // Add any enabled log components.
+            if (Object.keys(logComponentVerbosity).length > 0) {
+                argArray.push(
+                    ...['--setParameter',
+                        "logComponentVerbosity=" + JSON.stringify(logComponentVerbosity)]);
+            }
         }
+
         return argArray;
     }
 
@@ -1068,6 +1132,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             pid = _startMongoProgram({args: argArray, env: env});
         }
 
+        delete serverExitCodeMap[pid];
         if (!waitForConnect) {
             return {
                 pid: pid,
@@ -1081,10 +1146,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 conn.pid = pid;
                 return true;
             } catch (e) {
-                if (!checkProgram(pid)) {
+                var res = checkProgram(pid);
+                if (!res.alive) {
                     print("Could not start mongo program at " + port + ", process ended");
-
-                    // Break out
+                    serverExitCodeMap[pid] = res.exitCode;
                     return true;
                 }
             }
@@ -1116,9 +1181,10 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         assert.soon(function() {
             try {
                 m = new Mongo("127.0.0.1:" + port);
+                m.pid = pid;
                 return true;
             } catch (e) {
-                if (!checkProgram(pid)) {
+                if (!checkProgram(pid).alive) {
                     print("Could not start mongo program at " + port + ", process ended");
 
                     // Break out

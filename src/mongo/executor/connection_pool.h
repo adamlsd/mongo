@@ -68,9 +68,11 @@ public:
 
     using GetConnectionCallback = stdx::function<void(StatusWith<ConnectionHandle>)>;
 
-    static const Milliseconds kDefaultRefreshTimeout;
-    static const Milliseconds kDefaultRefreshRequirement;
-    static const Milliseconds kDefaultHostTimeout;
+    static constexpr Milliseconds kDefaultHostTimeout = Milliseconds(300000);  // 5mins
+    static const size_t kDefaultMaxConns;
+    static const size_t kDefaultMinConns;
+    static constexpr Milliseconds kDefaultRefreshRequirement = Milliseconds(60000);  // 1min
+    static constexpr Milliseconds kDefaultRefreshTimeout = Milliseconds(20000);      // 20secs
 
     static const Status kConnectionStateUnknown;
 
@@ -81,14 +83,14 @@ public:
          * The minimum number of connections to keep alive while the pool is in
          * operation
          */
-        size_t minConnections = 1;
+        size_t minConnections = kDefaultMinConns;
 
         /**
          * The maximum number of connections to spawn for a host. This includes
          * pending connections in setup and connections checked out of the pool
          * as well as the obvious live connections in the pool.
          */
-        size_t maxConnections = std::numeric_limits<size_t>::max();
+        size_t maxConnections = kDefaultMaxConns;
 
         /**
          * Amount of time to wait before timing out a refresh attempt
@@ -120,6 +122,8 @@ public:
     void get(const HostAndPort& hostAndPort, Milliseconds timeout, GetConnectionCallback cb);
 
     void appendConnectionStats(ConnectionPoolStats* stats) const;
+
+    size_t getNumConnectionsPerHost(const HostAndPort& hostAndPort) const;
 
 private:
     void returnConnection(ConnectionInterface* connection);
@@ -192,7 +196,6 @@ class ConnectionPool::ConnectionInterface : public TimerInterface {
 
 public:
     ConnectionInterface() = default;
-
     virtual ~ConnectionInterface() = default;
 
     /**

@@ -45,11 +45,12 @@
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/run_aggregate.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/instance.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/query/find_common.h"
@@ -111,17 +112,15 @@ public:
         help << "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
     }
 
-    virtual Status explain(OperationContext* txn,
+    virtual Status explain(OperationContext* opCtx,
                            const std::string& dbname,
                            const BSONObj& cmdObj,
-                           ExplainCommon::Verbosity verbosity,
-                           const rpc::ServerSelectionMetadata&,
+                           ExplainOptions::Verbosity verbosity,
                            BSONObjBuilder* out) const {
-        const string ns = parseNs(dbname, cmdObj);
-        const NamespaceString nss(ns);
+        const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
 
-        const ExtensionsCallbackReal extensionsCallback(txn, &nss);
-        auto parsedDistinct = ParsedDistinct::parse(txn, nss, cmdObj, extensionsCallback, true);
+        const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
+        auto parsedDistinct = ParsedDistinct::parse(opCtx, nss, cmdObj, extensionsCallback, true);
         if (!parsedDistinct.isOK()) {
             return parsedDistinct.getStatus();
         }
@@ -134,7 +133,7 @@ public:
                           "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
         }
 
-        AutoGetCollectionOrViewForRead ctx(txn, ns);
+        AutoGetCollectionOrViewForReadCommand ctx(opCtx, nss);
         Collection* collection = ctx.getCollection();
 
         if (ctx.getView()) {
@@ -144,14 +143,19 @@ public:
             if (!viewAggregation.isOK()) {
                 return viewAggregation.getStatus();
             }
-            std::string errmsg;
-            (void)Command::findCommand("aggregate")
-                ->run(txn, dbname, viewAggregation.getValue(), 0, errmsg, *out);
-            return Status::OK();
+
+            auto viewAggRequest =
+                AggregationRequest::parseFromBSON(nss, viewAggregation.getValue(), verbosity);
+            if (!viewAggRequest.isOK()) {
+                return viewAggRequest.getStatus();
+            }
+
+            return runAggregate(
+                opCtx, nss, viewAggRequest.getValue(), viewAggregation.getValue(), *out);
         }
 
         auto executor = getExecutorDistinct(
-            txn, collection, ns, &parsedDistinct.getValue(), PlanExecutor::YIELD_AUTO);
+            opCtx, collection, nss.ns(), &parsedDistinct.getValue(), PlanExecutor::YIELD_AUTO);
         if (!executor.isOK()) {
             return executor.getStatus();
         }
@@ -160,17 +164,15 @@ public:
         return Status::OK();
     }
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& dbname,
-             BSONObj& cmdObj,
-             int options,
+             const BSONObj& cmdObj,
              string& errmsg,
              BSONObjBuilder& result) {
-        const string ns = parseNs(dbname, cmdObj);
-        const NamespaceString nss(ns);
+        const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
 
-        const ExtensionsCallbackReal extensionsCallback(txn, &nss);
-        auto parsedDistinct = ParsedDistinct::parse(txn, nss, cmdObj, extensionsCallback, false);
+        const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
+        auto parsedDistinct = ParsedDistinct::parse(opCtx, nss, cmdObj, extensionsCallback, false);
         if (!parsedDistinct.isOK()) {
             return appendCommandStatus(result, parsedDistinct.getStatus());
         }
@@ -185,7 +187,7 @@ public:
                        "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
         }
 
-        AutoGetCollectionOrViewForRead ctx(txn, ns);
+        AutoGetCollectionOrViewForReadCommand ctx(opCtx, nss);
         Collection* collection = ctx.getCollection();
 
         if (ctx.getView()) {
@@ -198,7 +200,7 @@ public:
             BSONObjBuilder aggResult;
 
             (void)Command::findCommand("aggregate")
-                ->run(txn, dbname, viewAggregation.getValue(), options, errmsg, aggResult);
+                ->run(opCtx, dbname, viewAggregation.getValue(), errmsg, aggResult);
 
             if (ResolvedView::isResolvedViewErrorResponse(aggResult.asTempObj())) {
                 result.appendElements(aggResult.obj());
@@ -214,14 +216,14 @@ public:
         }
 
         auto executor = getExecutorDistinct(
-            txn, collection, ns, &parsedDistinct.getValue(), PlanExecutor::YIELD_AUTO);
+            opCtx, collection, nss.ns(), &parsedDistinct.getValue(), PlanExecutor::YIELD_AUTO);
         if (!executor.isOK()) {
             return appendCommandStatus(result, executor.getStatus());
         }
 
         {
-            stdx::lock_guard<Client>(*txn->getClient());
-            CurOp::get(txn)->setPlanSummary_inlock(
+            stdx::lock_guard<Client> lk(*opCtx->getClient());
+            CurOp::get(opCtx)->setPlanSummary_inlock(
                 Explain::getPlanSummary(executor.getValue().get()));
         }
 
@@ -276,17 +278,17 @@ public:
         }
 
 
-        auto curOp = CurOp::get(txn);
+        auto curOp = CurOp::get(opCtx);
 
         // Get summary information about the plan.
         PlanSummaryStats stats;
         Explain::getSummaryStats(*executor.getValue(), &stats);
         if (collection) {
-            collection->infoCache()->notifyOfQuery(txn, stats.indexesUsed);
+            collection->infoCache()->notifyOfQuery(opCtx, stats.indexesUsed);
         }
         curOp->debug().setPlanSummaryMetrics(stats);
 
-        if (curOp->shouldDBProfile(curOp->elapsedMillis())) {
+        if (curOp->shouldDBProfile()) {
             BSONObjBuilder execStatsBob;
             Explain::getWinningPlanStats(executor.getValue().get(), &execStatsBob);
             curOp->debug().execStats = execStatsBob.obj();

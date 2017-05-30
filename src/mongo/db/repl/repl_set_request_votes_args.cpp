@@ -49,6 +49,7 @@ const std::string kReasonFieldName = "reason";
 const std::string kSetNameFieldName = "setName";
 const std::string kTermFieldName = "term";
 const std::string kVoteGrantedFieldName = "voteGranted";
+const std::string kOperationTime = "operationTime";
 
 const std::string kLegalArgsFieldNames[] = {
     kCandidateIndexFieldName,
@@ -58,17 +59,26 @@ const std::string kLegalArgsFieldNames[] = {
     kLastDurableOpTimeFieldName,
     kSetNameFieldName,
     kTermFieldName,
+    kOperationTime,
 };
 
 const std::string kLegalResponseFieldNames[] = {
-    kOkFieldName, kReasonFieldName, kTermFieldName, kVoteGrantedFieldName,
+    kOkFieldName,
+    kReasonFieldName,
+    kTermFieldName,
+    kVoteGrantedFieldName,
+    kOperationTime,
+    "$gleStats",
+    "$logicalTime",
+    "$configServerState",
 };
 
 }  // namespace
 
 
 Status ReplSetRequestVotesArgs::initialize(const BSONObj& argsObj) {
-    Status status = bsonCheckOnlyHasFields("ReplSetRequestVotes", argsObj, kLegalArgsFieldNames);
+    Status status =
+        bsonCheckOnlyHasFieldsForCommand("ReplSetRequestVotes", argsObj, kLegalArgsFieldNames);
     if (!status.isOK())
         return status;
 

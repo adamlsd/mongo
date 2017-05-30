@@ -1,4 +1,7 @@
+# -*- mode: python -*-
 Import("env")
+
+env = env.Clone()
 
 env.SConscript(
     dirs=[
@@ -8,8 +11,10 @@ env.SConscript(
         'mmap_v1',
         'wiredtiger',
     ],
+    exports=[
+        'env'
+    ],
 )
-
 
 env.Library(
     target='journal_listener',
@@ -40,7 +45,6 @@ env.Library(
         ],
     )
 
-
 env.Library(
     target='bson_collection_catalog_entry',
     source=[
@@ -50,6 +54,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/catalog/collection_options',
         '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/storage/kv/kv_prefix',
         ],
     )
 
@@ -64,16 +69,6 @@ env.Library(
     )
 
 env.Library(
-    target='paths',
-    source=[
-        'paths.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-    ],
-)
-
-env.Library(
     target='storage_options',
     source=[
         'storage_options.cpp',
@@ -81,6 +76,31 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/server_parameters',
     ],
+)
+
+env.Library(
+    target='encryption_hooks',
+    source= [
+        'encryption_hooks.cpp',
+        ],
+    LIBDEPS= ['$BUILD_DIR/mongo/base',
+              '$BUILD_DIR/mongo/db/service_context'],
+    PROGDEPS_DEPENDENTS=[
+        '$BUILD_DIR/mongo/mongod',
+        '$BUILD_DIR/mongo/mongos',
+        ],
+    )
+
+env.Library(
+    target='test_harness_helper',
+    source=[
+        'test_harness_helper.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/db/service_context',
+    ],
+
 )
 
 env.Library(
@@ -109,10 +129,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/unittest/unittest',
         'index_entry_comparison',
-    ],
-    LIBDEPS_TAGS=[
-        # Depends on newHarnessHelper, which does not have a unique definition
-        'incomplete',
+        'test_harness_helper',
     ],
 
 )
@@ -142,11 +159,8 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/unittest/unittest',
+        'test_harness_helper',
         ],
-    LIBDEPS_TAGS=[
-        # Depends on newHarnessHelper, which does not have a unique definition
-        'incomplete',
-    ],
     )
 
 env.Library(
@@ -155,10 +169,20 @@ env.Library(
         'storage_engine_lock_file_${TARGET_OS_FAMILY}.cpp',
         ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/platform/platform',
-        'paths',
+        '$BUILD_DIR/mongo/base',
         ]
     )
+
+env.Library(
+    target="storage_init_d",
+    source=[
+        "storage_init.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands/server_status',
+        "storage_options",
+    ],
+)
 
 env.CppUnitTest(
     target= 'storage_engine_lock_file_test',

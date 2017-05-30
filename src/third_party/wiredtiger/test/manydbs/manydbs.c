@@ -32,7 +32,6 @@
 #define	HOME_BASE	"WT_TEST"
 static char home[HOME_SIZE];		/* Base home directory */
 static char hometmp[HOME_SIZE];		/* Each conn home directory */
-static const char *progname;		/* Program name */
 static const char * const uri = "table:main";
 
 #define	WTOPEN_CFG_COMMON					\
@@ -67,8 +66,6 @@ usage(void)
 
 extern int __wt_optind;
 extern char *__wt_optarg;
-
-void (*custom_die)(void) = NULL;
 
 static WT_CONNECTION **connections = NULL;
 static WT_CURSOR **cursors = NULL;
@@ -131,10 +128,8 @@ main(int argc, char *argv[])
 	const char *working_dir, *wt_cfg;
 	char cmd[128];
 
-	if ((progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		progname = argv[0];
-	else
-		++progname;
+	(void)testutil_set_progname(argv);
+
 	dbs = MAX_DBS;
 	working_dir = HOME_BASE;
 	idle = false;
@@ -173,7 +168,8 @@ main(int argc, char *argv[])
 	testutil_make_work_dir(home);
 	__wt_random_init(&rnd);
 	for (i = 0; i < dbs; ++i) {
-		snprintf(hometmp, HOME_SIZE, "%s/%s.%d", home, HOME_BASE, i);
+		testutil_check(__wt_snprintf(
+		    hometmp, HOME_SIZE, "%s/%s.%d", home, HOME_BASE, i));
 		testutil_make_work_dir(hometmp);
 		/*
 		 * Open each database.  Rotate different configurations

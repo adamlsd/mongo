@@ -27,16 +27,16 @@
  */
 #pragma once
 
+#include <boost/optional.hpp>
 #include <string>
 
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 
 namespace mongo {
 
 class OperationContextImpl final : public OperationContext {
 public:
-    virtual ~OperationContextImpl();
-
     virtual ProgressMeter* setMessage_inlock(const char* msg,
                                              const std::string& name,
                                              unsigned long long progressMeterTotal,
@@ -45,7 +45,7 @@ public:
 private:
     friend class ServiceContextMongoD;
 
-    OperationContextImpl(Client* client, unsigned opId);
+    OperationContextImpl(Client* client, unsigned opId, boost::optional<LogicalSessionId> lsid);
 };
 
 }  // namespace mongo

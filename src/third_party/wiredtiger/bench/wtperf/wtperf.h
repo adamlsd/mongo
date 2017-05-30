@@ -54,6 +54,9 @@ typedef struct __truncate_queue_entry TRUNCATE_QUEUE_ENTRY;
 #define	ZLIB_BLK BLKCMP_PFX "zlib"
 #define	ZLIB_EXT							\
 	EXT_PFX EXTPATH "zlib/.libs/libwiredtiger_zlib.so" EXT_SFX
+#define	ZSTD_BLK BLKCMP_PFX "zstd"
+#define	ZSTD_EXT							\
+	EXT_PFX EXTPATH "zstd/.libs/libwiredtiger_zstd.so" EXT_SFX
 
 typedef struct {
 	int64_t threads;		/* Thread count */
@@ -63,6 +66,9 @@ typedef struct {
 	uint64_t throttle;		/* Maximum operations/second */
 		/* Number of operations per transaction. Zero for autocommit */
 	int64_t ops_per_txn;
+	int64_t pause;			/* Time between scans */
+	int64_t read_range;		/* Range of reads */
+	int32_t table_index;		/* Table to focus ops on */
 	int64_t truncate;		/* Truncate ratio */
 	uint64_t truncate_pct;		/* Truncate Percent */
 	uint64_t truncate_count;	/* Truncate Count */
@@ -222,6 +228,7 @@ typedef struct {
 
 struct __wtperf_thread {		/* Per-thread structure */
 	WTPERF *wtperf;			/* Enclosing configuration */
+	WT_CURSOR *rand_cursor;		/* Random key cursor */
 
 	WT_RAND_STATE rnd;		/* Random number generation state */
 

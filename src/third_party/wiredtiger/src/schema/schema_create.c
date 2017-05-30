@@ -35,7 +35,7 @@ __wt_direct_io_size_check(WT_SESSION_IMPL *session,
 	 * units of its happy place.
 	 */
 	if (FLD_ISSET(conn->direct_io,
-	   WT_DIRECT_IO_CHECKPOINT | WT_DIRECT_IO_DATA)) {
+	    WT_DIRECT_IO_CHECKPOINT | WT_DIRECT_IO_DATA)) {
 		align = (int64_t)conn->buffer_alignment;
 		if (align != 0 && (cval.val < align || cval.val % align != 0))
 			WT_RET_MSG(session, EINVAL,
@@ -70,7 +70,7 @@ __create_file(WT_SESSION_IMPL *session,
 
 	filename = uri;
 	if (!WT_PREFIX_SKIP(filename, "file:"))
-		WT_RET_MSG(session, EINVAL, "Expected a 'file:' URI: %s", uri);
+		return (__wt_unexpected_object_type(session, uri, "file:"));
 
 	/* Check if the file already exists. */
 	if (!is_metadata && (ret =
@@ -193,7 +193,8 @@ __create_colgroup(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "colgroup:"))
-		return (EINVAL);
+		return (
+		    __wt_unexpected_object_type(session, name, "colgroup:"));
 	cgname = strchr(tablename, ':');
 	if (cgname != NULL) {
 		tlen = (size_t)(cgname - tablename);
@@ -384,7 +385,7 @@ __create_index(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "index:"))
-		return (EINVAL);
+		return (__wt_unexpected_object_type(session, name, "index:"));
 	idxname = strchr(tablename, ':');
 	if (idxname == NULL)
 		WT_RET_MSG(session, EINVAL, "Invalid index name, "
@@ -570,7 +571,7 @@ __create_table(WT_SESSION_IMPL *session,
 
 	tablename = name;
 	if (!WT_PREFIX_SKIP(tablename, "table:"))
-		return (EINVAL);
+		return (__wt_unexpected_object_type(session, name, "table:"));
 
 	if ((ret = __wt_schema_get_table(session,
 	    tablename, strlen(tablename), false, &table)) == 0) {
@@ -600,7 +601,8 @@ __create_table(WT_SESSION_IMPL *session,
 		if (ncolgroups == 0) {
 			cgsize = strlen("colgroup:") + strlen(tablename) + 1;
 			WT_ERR(__wt_calloc_def(session, cgsize, &cgname));
-			snprintf(cgname, cgsize, "colgroup:%s", tablename);
+			WT_ERR(__wt_snprintf(
+			    cgname, cgsize, "colgroup:%s", tablename));
 			WT_ERR(__create_colgroup(
 			    session, cgname, exclusive, config));
 		}

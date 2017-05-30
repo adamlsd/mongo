@@ -36,8 +36,6 @@
  * Failure mode: Check that the data is correct at the end of the run.
  */
 
-void (*custom_die)(void) = NULL;
-
 void *thread_insert_race(void *);
 
 int
@@ -51,9 +49,10 @@ main(int argc, char *argv[])
 	uint64_t current_value;
 	int i;
 
+	if (!testutil_enable_long_tests())	/* Ignore unless requested */
+		return (EXIT_SUCCESS);
+
 	opts = &_opts;
-	if (testutil_disable_long_tests())
-		return (0);
 	memset(opts, 0, sizeof(*opts));
 	opts->nthreads = 10;
 	opts->nrecords = 1000;

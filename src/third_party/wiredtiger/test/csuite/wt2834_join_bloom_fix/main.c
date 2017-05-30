@@ -39,8 +39,6 @@
  *
  * Failure mode: We get results back from our join.
  */
-void (*custom_die)(void) = NULL;
-
 #define	N_RECORDS	100000
 #define	N_INSERT	1000000
 
@@ -61,11 +59,11 @@ main(int argc, char *argv[])
 	char flaguri[256];
 	char joinuri[256];
 
-	opts = &_opts;
-	if (testutil_disable_long_tests())
-		return (0);
-	memset(opts, 0, sizeof(*opts));
+	if (!testutil_enable_long_tests())	/* Ignore unless requested */
+		return (EXIT_SUCCESS);
 
+	opts = &_opts;
+	memset(opts, 0, sizeof(*opts));
 	testutil_check(testutil_parse_opts(argc, argv, opts));
 	testutil_make_work_dir(opts->home);
 
@@ -85,10 +83,14 @@ main(int argc, char *argv[])
 	tablename = strchr(opts->uri, ':');
 	testutil_assert(tablename != NULL);
 	tablename++;
-	snprintf(posturi, sizeof(posturi), "index:%s:post", tablename);
-	snprintf(balanceuri, sizeof(balanceuri), "index:%s:balance", tablename);
-	snprintf(flaguri, sizeof(flaguri), "index:%s:flag", tablename);
-	snprintf(joinuri, sizeof(joinuri), "join:%s", opts->uri);
+	testutil_check(__wt_snprintf(
+	    posturi, sizeof(posturi), "index:%s:post", tablename));
+	testutil_check(__wt_snprintf(
+	    balanceuri, sizeof(balanceuri), "index:%s:balance", tablename));
+	testutil_check(__wt_snprintf(
+	    flaguri, sizeof(flaguri), "index:%s:flag", tablename));
+	testutil_check(__wt_snprintf(
+	    joinuri, sizeof(joinuri), "join:%s", opts->uri));
 
 	testutil_check(session->create(session, posturi, "columns=(post)"));
 	testutil_check(session->create(session, balanceuri,
@@ -103,8 +105,8 @@ main(int argc, char *argv[])
 	    &maincur));
 	maincur->set_key(maincur, N_RECORDS);
 	maincur->set_value(maincur, 54321, 0, "", 0, N_RECORDS);
-	maincur->insert(maincur);
-	maincur->close(maincur);
+	testutil_check(maincur->insert(maincur));
+	testutil_check(maincur->close(maincur));
 	testutil_check(session->close(session, NULL));
 
 	populate(opts);
@@ -128,14 +130,14 @@ main(int argc, char *argv[])
 
 	balancecur->set_key(balancecur, 0);
 	testutil_check(balancecur->search(balancecur));
-	sprintf(cfg, "compare=lt,strategy=bloom,count=%d",
-	    N_RECORDS / 100);
+	testutil_check(__wt_snprintf(cfg, sizeof(cfg),
+	    "compare=lt,strategy=bloom,count=%d", N_RECORDS / 100));
 	testutil_check(session->join(session, joincur, balancecur, cfg));
 
 	flagcur->set_key(flagcur, 0);
 	testutil_check(flagcur->search(flagcur));
-	sprintf(cfg, "compare=eq,strategy=bloom,count=%d",
-	    N_RECORDS / 100);
+	testutil_check(__wt_snprintf(cfg, sizeof(cfg),
+	    "compare=eq,strategy=bloom,count=%d", N_RECORDS / 100));
 	testutil_check(session->join(session, joincur, flagcur, cfg));
 
 	/* Expect no values returned */
@@ -153,6 +155,7 @@ main(int argc, char *argv[])
 		    key, key2, post, balance, flag);
 		count++;
 	}
+	testutil_assert(ret == WT_NOTFOUND);
 	testutil_assert(count == 0);
 
 	testutil_cleanup(opts);
@@ -197,6 +200,6 @@ populate(TEST_OPTS *opts)
 		testutil_check(maincur->insert(maincur));
 		testutil_check(session->commit_transaction(session, NULL));
 	}
-	maincur->close(maincur);
-	session->close(session, NULL);
+	testutil_check(maincur->close(maincur));
+	testutil_check(session->close(session, NULL));
 }

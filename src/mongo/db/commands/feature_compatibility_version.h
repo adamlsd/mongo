@@ -39,15 +39,20 @@ namespace mongo {
 class BSONObj;
 class OperationContext;
 
+/**
+ * Startup parameter to ignore featureCompatibilityVersion checks. This parameter cannot be set if
+ * the node is started with --replSet, --master, or --slave. This should never be set by end users.
+ */
+extern bool internalValidateFeaturesAsMaster;
+
 class FeatureCompatibilityVersion {
 public:
     static constexpr StringData k32IncompatibleIndexName = "incompatible_with_version_32"_sd;
     static constexpr StringData kCollection = "admin.system.version"_sd;
     static constexpr StringData kCommandName = "setFeatureCompatibilityVersion"_sd;
+    static constexpr StringData kDatabase = "admin"_sd;
     static constexpr StringData kParameterName = "featureCompatibilityVersion"_sd;
     static constexpr StringData kVersionField = "version"_sd;
-    static constexpr StringData kVersion34 = "3.4"_sd;
-    static constexpr StringData kVersion32 = "3.2"_sd;
 
     /**
      * Parses the featureCompatibilityVersion document from admin.system.version, and returns the
@@ -61,13 +66,14 @@ public:
      * available.
      * 'version' should be '3.4' or '3.2'.
      */
-    static void set(OperationContext* txn, StringData version);
+    static void set(OperationContext* opCtx, StringData version);
 
     /**
      * If there are no non-local databases and we are not running with --shardsvr, set
      * featureCompatibilityVersion to 3.4.
      */
-    static void setIfCleanStartup(OperationContext* txn, repl::StorageInterface* storageInterface);
+    static void setIfCleanStartup(OperationContext* opCtx,
+                                  repl::StorageInterface* storageInterface);
 
     /**
      * Examines a document inserted or updated in admin.system.version. If it is the
@@ -81,6 +87,11 @@ public:
      * featureCompatibilityVersion document, resets the server parameter to its default value (3.2).
      */
     static void onDelete(const BSONObj& doc);
+
+    /**
+     * Resets the server parameter to its default value (3.2).
+     */
+    static void onDropCollection();
 };
 
 }  // namespace mongo

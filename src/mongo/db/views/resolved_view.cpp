@@ -1,30 +1,30 @@
 /**
-*    Copyright (C) 2016 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2016 MongoDB Inc.
+ *
+ *    This program is free software: you can redistribute it and/or  modify
+ *    it under the terms of the GNU Affero General Public License, version 3,
+ *    as published by the Free Software Foundation.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU Affero General Public License for more details.
+ *
+ *    You should have received a copy of the GNU Affero General Public License
+ *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #include "mongo/platform/basic.h"
 
@@ -65,46 +65,34 @@ ResolvedView ResolvedView::fromBSON(BSONObj commandResponseObj) {
     return {ResolvedView(NamespaceString(viewDef["ns"].valueStringData()), pipeline)};
 }
 
-StatusWith<BSONObj> ResolvedView::asExpandedViewAggregation(
+AggregationRequest ResolvedView::asExpandedViewAggregation(
     const AggregationRequest& request) const {
-    BSONObjBuilder aggregationBuilder;
-    // Perform the aggregation on the resolved namespace.
-    aggregationBuilder.append("aggregate", _namespace.coll());
+    // Perform the aggregation on the resolved namespace.  The new pipeline consists of two parts:
+    // first, 'pipeline' in this ResolvedView; then, the pipeline in 'request'.
+    std::vector<BSONObj> resolvedPipeline;
+    resolvedPipeline.reserve(_pipeline.size() + request.getPipeline().size());
+    resolvedPipeline.insert(resolvedPipeline.end(), _pipeline.begin(), _pipeline.end());
+    resolvedPipeline.insert(
+        resolvedPipeline.end(), request.getPipeline().begin(), request.getPipeline().end());
 
-    // The new pipeline consists of two parts: first, 'pipeline' in this ResolvedView;
-    // then, the pipeline in 'request'.
-    BSONArrayBuilder pipelineBuilder(aggregationBuilder.subarrayStart("pipeline"));
-    for (auto&& item : _pipeline) {
-        pipelineBuilder.append(item);
-    }
+    AggregationRequest expandedRequest{_namespace, resolvedPipeline};
 
-    for (auto&& item : request.getPipeline()) {
-        pipelineBuilder.append(item);
-    }
-    pipelineBuilder.doneFast();
-
-    // The cursor option is always specified regardless of the presence of batchSize.
-    if (request.getBatchSize()) {
-        BSONObjBuilder batchSizeBuilder(aggregationBuilder.subobjStart("cursor"));
-        batchSizeBuilder.append(AggregationRequest::kBatchSizeName, *request.getBatchSize());
-        batchSizeBuilder.doneFast();
+    if (request.getExplain()) {
+        expandedRequest.setExplain(request.getExplain());
     } else {
-        aggregationBuilder.append("cursor", BSONObj());
+        expandedRequest.setBatchSize(request.getBatchSize());
     }
 
-    if (request.isExplain())
-        aggregationBuilder.append("explain", true);
+    expandedRequest.setHint(request.getHint());
+    expandedRequest.setComment(request.getComment());
+    expandedRequest.setMaxTimeMS(request.getMaxTimeMS());
+    expandedRequest.setReadConcern(request.getReadConcern());
+    expandedRequest.setUnwrappedReadPref(request.getUnwrappedReadPref());
+    expandedRequest.setBypassDocumentValidation(request.shouldBypassDocumentValidation());
+    expandedRequest.setAllowDiskUse(request.shouldAllowDiskUse());
+    expandedRequest.setCollation(request.getCollation());
 
-    return aggregationBuilder.obj();
-}
-
-StatusWith<BSONObj> ResolvedView::asExpandedViewAggregation(const BSONObj& aggCommand) const {
-    auto aggRequest = AggregationRequest::parseFromBSON(_namespace, aggCommand);
-    if (!aggRequest.isOK()) {
-        return aggRequest.getStatus();
-    }
-
-    return asExpandedViewAggregation(aggRequest.getValue());
+    return expandedRequest;
 }
 
 }  // namespace mongo

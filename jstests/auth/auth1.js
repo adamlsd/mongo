@@ -5,8 +5,7 @@ function setupTest() {
     print("START auth1.js");
     baseName = "jstests_auth_auth1";
 
-    m = MongoRunner.runMongod(
-        {auth: "", nohttpinterface: "", bind_ip: "127.0.0.1", useHostname: false});
+    m = MongoRunner.runMongod({auth: "", bind_ip: "127.0.0.1", useHostname: false});
     return m;
 }
 
@@ -94,7 +93,7 @@ function runTest(m) {
 
     assert.throws(function() {
         return t.group(p);
-    }, null, "write reduce didn't fail");
+    }, [], "write reduce didn't fail");
     assert.eq(1000, dbRO.jstests_auth_auth1.count(), "C3");
 
     db.getSiblingDB('admin').auth('super', 'super');

@@ -62,20 +62,23 @@ public:
     /**
      * Advance current time. If the given interval is greater than or equal to the
      * time left on the timer, expire and call callbacks now.
-     *
-     * Returns true if the timer is still active, false if it has now expired.
      */
-    bool fastForward(Milliseconds time);
+    void fastForward(Milliseconds time);
 
     /**
      * Return the amount of time left on this timer.
      */
     Milliseconds timeLeft();
 
+    /**
+     * Reset the timer.
+     */
+    void expireAfter(Milliseconds expiration);
+
 private:
     void _callAllHandlers(std::error_code ec);
-    void _expire();
 
+    stdx::mutex _mutex;
     Milliseconds _timeLeft;
     std::vector<AsyncTimerInterface::Handler> _handlers;
 };
@@ -95,6 +98,8 @@ public:
     void cancel() override;
 
     void asyncWait(AsyncTimerInterface::Handler handler) override;
+
+    void expireAfter(Milliseconds expiration) override;
 
 private:
     // Unfortunate, but it makes the ownership model sane.
@@ -127,9 +132,15 @@ public:
      */
     void fastForward(Milliseconds time);
 
+    /**
+     * This will start at 0ms since the epoch and increment when fastForward is called.
+     */
+    Date_t now() override;
+
 private:
-    stdx::mutex _timersMutex;
+    stdx::recursive_mutex _timersMutex;
     stdx::unordered_set<std::shared_ptr<AsyncTimerMockImpl>> _timers;
+    Milliseconds _curTime;
 };
 
 }  // namespace executor

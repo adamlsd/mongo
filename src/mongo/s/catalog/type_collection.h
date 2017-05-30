@@ -43,9 +43,26 @@ class StatusWith;
 
 
 /**
- * This class represents the layout and contents of documents contained in the
+ * This class represents the layout and contents of documents contained in the config server's
  * config.collections collection. All manipulation of documents coming from that collection
  * should be done with this class.
+ *
+ * Expected config server config.collections collection format:
+ *   {
+ *      "_id" : "foo.bar",
+ *      "lastmodEpoch" : ObjectId("58b6fd76132358839e409e47"),
+ *      "lastmod" : ISODate("1970-02-19T17:02:47.296Z"),
+ *      "dropped" : false,
+ *      "key" : {
+ *          "_id" : 1
+ *      },
+ *      "defaultCollation" : {
+ *          "locale" : "fr_CA"
+ *      },
+ *      "unique" : false,
+ *      "noBalance" : false
+ *   }
+ *
  */
 class CollectionType {
 public:
@@ -61,6 +78,10 @@ public:
 
     /**
      * Constructs a new DatabaseType object from BSON. Also does validation of the contents.
+     *
+     * Dropped collections accumulate in the collections list, through 3.6, so that
+     * mongos <= 3.4.x, when it retrieves the list from the config server, can delete its
+     * cache entries for dropped collections.  See SERVER-27475, SERVER-27474
      */
     static StatusWith<CollectionType> fromBSON(const BSONObj& source);
 

@@ -86,6 +86,9 @@ class MathCache
 extern JSObject*
 InitMathClass(JSContext* cx, HandleObject obj);
 
+extern uint64_t
+GenerateRandomSeed();
+
 // Fill |seed[0]| and |seed[1]| with random bits, suitable for
 // seeding a XorShift128+ random number generator.
 extern void
@@ -137,6 +140,9 @@ math_sincos_impl(MathCache* mathCache, double x, double *sin, double *cos);
 
 extern bool
 math_sqrt_handle(JSContext* cx, js::HandleValue number, js::MutableHandleValue result);
+
+extern bool
+math_imul_handle(JSContext* cx, HandleValue lhs, HandleValue rhs, MutableHandleValue res);
 
 extern bool
 math_imul(JSContext* cx, unsigned argc, js::Value* vp);

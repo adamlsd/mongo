@@ -28,11 +28,13 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_single_document_transformation.h"
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source_limit.h"
+#include "mongo/db/pipeline/document_source_skip.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/value.h"
 
@@ -68,11 +70,12 @@ intrusive_ptr<DocumentSource> DocumentSourceSingleDocumentTransformation::optimi
     return this;
 }
 
-void DocumentSourceSingleDocumentTransformation::dispose() {
+void DocumentSourceSingleDocumentTransformation::doDispose() {
     _parsedTransform.reset();
 }
 
-Value DocumentSourceSingleDocumentTransformation::serialize(bool explain) const {
+Value DocumentSourceSingleDocumentTransformation::serialize(
+    boost::optional<ExplainOptions::Verbosity> explain) const {
     return Value(Document{{getSourceName(), _parsedTransform->serialize(explain)}});
 }
 
@@ -94,10 +97,6 @@ DocumentSource::GetDepsReturn DocumentSourceSingleDocumentTransformation::getDep
     // Each parsed transformation is responsible for adding its own dependencies, and returning
     // the correct dependency return type for that transformation.
     return _parsedTransform->addDependencies(deps);
-}
-
-void DocumentSourceSingleDocumentTransformation::doInjectExpressionContext() {
-    _parsedTransform->injectExpressionContext(pExpCtx);
 }
 
 DocumentSource::GetModPathsReturn DocumentSourceSingleDocumentTransformation::getModifiedPaths()

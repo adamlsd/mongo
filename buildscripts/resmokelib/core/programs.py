@@ -32,6 +32,10 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
     if config.MONGOD_SET_PARAMETERS is not None:
         suite_set_parameters.update(utils.load_yaml(config.MONGOD_SET_PARAMETERS))
 
+    # Turn on replication heartbeat logging.
+    if "replSet" in kwargs and "logComponentVerbosity" not in suite_set_parameters:
+        suite_set_parameters["logComponentVerbosity"] = {"replication": {"heartbeats": 2}}
+
     _apply_set_parameters(args, suite_set_parameters)
 
     shortcut_opts = {
@@ -115,8 +119,7 @@ def mongos_program(logger, executable=None, process_kwargs=None, **kwargs):
     return _process.Process(logger, args, **process_kwargs)
 
 
-def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=None,
-                        isMainTest=True, **kwargs):
+def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=None, **kwargs):
     """
     Returns a Process instance that starts a mongo shell with arguments
     constructed from 'kwargs'.
@@ -148,7 +151,6 @@ def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=N
             # Only use 'opt_default' if the property wasn't set in the YAML configuration.
             test_data[opt_name] = opt_default
 
-    test_data["isMainTest"] = isMainTest
     global_vars["TestData"] = test_data
 
     # Pass setParameters for mongos and mongod through TestData. The setParameter parsing in
@@ -167,6 +169,9 @@ def mongo_shell_program(logger, executable=None, filename=None, process_kwargs=N
                              " the command line or the suite YAML, not both")
         mongos_set_parameters = utils.load_yaml(config.MONGOS_SET_PARAMETERS)
         test_data["setParametersMongos"] = _format_test_data_set_parameters(mongos_set_parameters)
+
+    if "eval_prepend" in kwargs:
+        eval_sb.append(str(kwargs.pop("eval_prepend")))
 
     for var_name in global_vars:
         _format_shell_vars(eval_sb, var_name, global_vars[var_name])

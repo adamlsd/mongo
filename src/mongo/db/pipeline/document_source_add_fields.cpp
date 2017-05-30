@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_add_fields.h"
 
 #include <boost/optional.hpp>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
@@ -49,8 +49,7 @@ intrusive_ptr<DocumentSource> DocumentSourceAddFields::create(
     BSONObj addFieldsSpec, const intrusive_ptr<ExpressionContext>& expCtx) {
     intrusive_ptr<DocumentSourceSingleDocumentTransformation> addFields(
         new DocumentSourceSingleDocumentTransformation(
-            expCtx, ParsedAddFields::create(addFieldsSpec), "$addFields"));
-    addFields->injectExpressionContext(expCtx);
+            expCtx, ParsedAddFields::create(expCtx, addFieldsSpec), "$addFields"));
     return addFields;
 }
 

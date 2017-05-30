@@ -21,17 +21,19 @@
     }
     assert.commandWorked(coll.createIndex({a: 1}));
 
-    assert.writeOK(
-        coll.update({a: {$gte: 2}},
-                    {$set: {c: 1}, $inc: {a: -10}},
-                    db.getMongo().writeMode() === "commands" ? {collation: {locale: "fr"}} : {}));
+    assert.writeOK(coll.update({a: {$gte: 2}},
+                               {$set: {c: 1}, $inc: {a: -10}},
+                               db.getMongo().writeMode() === "commands"
+                                   ? {collation: {locale: "fr"}, arrayFilters: [{i: 0}]}
+                                   : {}));
 
     var profileObj = getLatestProfilerEntry(testDB);
 
     assert.eq(profileObj.ns, coll.getFullName(), tojson(profileObj));
     assert.eq(profileObj.op, "update", tojson(profileObj));
     if (db.getMongo().writeMode() === "commands") {
-        assert.eq(profileObj.collation, {locale: "fr"}, tojson(profileObj));
+        assert.eq(profileObj.command.collation, {locale: "fr"}, tojson(profileObj));
+        assert.eq(profileObj.command.arrayFilters, [{i: 0}], tojson(profileObj));
     }
     assert.eq(profileObj.keysExamined, 1, tojson(profileObj));
     assert.eq(profileObj.docsExamined, 1, tojson(profileObj));
@@ -39,7 +41,7 @@
     assert.eq(profileObj.keysDeleted, 1, tojson(profileObj));
     assert.eq(profileObj.nMatched, 1, tojson(profileObj));
     assert.eq(profileObj.nModified, 1, tojson(profileObj));
-    assert.eq(profileObj.planSummary, "IXSCAN { a: 1.0 }", tojson(profileObj));
+    assert.eq(profileObj.planSummary, "IXSCAN { a: 1 }", tojson(profileObj));
     assert(profileObj.execStats.hasOwnProperty("stage"), tojson(profileObj));
     assert(profileObj.hasOwnProperty("millis"), tojson(profileObj));
     assert(profileObj.hasOwnProperty("numYield"), tojson(profileObj));
@@ -64,7 +66,7 @@
     assert.eq(profileObj.keysDeleted, 5, tojson(profileObj));
     assert.eq(profileObj.nMatched, 5, tojson(profileObj));
     assert.eq(profileObj.nModified, 5, tojson(profileObj));
-    assert.eq(profileObj.planSummary, "IXSCAN { a: 1.0 }", tojson(profileObj));
+    assert.eq(profileObj.planSummary, "IXSCAN { a: 1 }", tojson(profileObj));
     assert(profileObj.execStats.hasOwnProperty("stage"), tojson(profileObj));
     assert.eq(profileObj.appName, "MongoDB Shell", tojson(profileObj));
 
@@ -80,8 +82,9 @@
     assert.writeOK(coll.update({_id: "new value", a: 4}, {$inc: {b: 1}}, {upsert: true}));
     profileObj = getLatestProfilerEntry(testDB);
 
-    assert.eq(profileObj.query, {_id: "new value", a: 4}, tojson(profileObj));
-    assert.eq(profileObj.updateobj, {$inc: {b: 1}}, tojson(profileObj));
+    assert.eq(profileObj.command,
+              {q: {_id: "new value", a: 4}, u: {$inc: {b: 1}}, multi: false, upsert: true},
+              tojson(profileObj));
     assert.eq(profileObj.keysExamined, 0, tojson(profileObj));
     assert.eq(profileObj.docsExamined, 0, tojson(profileObj));
     assert.eq(profileObj.keysInserted, 2, tojson(profileObj));

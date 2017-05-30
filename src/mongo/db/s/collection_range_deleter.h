@@ -29,7 +29,9 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/executor/task_executor.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/util/concurrency/notification.h"
 
 namespace mongo {
 
@@ -41,37 +43,141 @@ class CollectionRangeDeleter {
     MONGO_DISALLOW_COPYING(CollectionRangeDeleter);
 
 public:
-    CollectionRangeDeleter(NamespaceString nss);
+    /**
+      * This is an object n that asynchronously changes state when a scheduled range deletion
+      * completes or fails. Call n.ready() to discover if the event has already occurred.  Call
+      * n.waitStatus(opCtx) to sleep waiting for the event, and get its result.
+      *
+      * It is an error to destroy a returned CleanupNotification object n unless either n.ready()
+      * is true or n.abandon() has been called.  After n.abandon(), n is in a moved-from state.
+      */
+    struct DeleteNotification {
+        DeleteNotification();
+        DeleteNotification(Status status);
+
+        // The following default declarations are needed because the presence of a non-trivial
+        // destructor forbids the compiler to generate the declarations itself, but the definitions
+        // it generates are fine.
+        DeleteNotification(DeleteNotification&& notifn) = default;
+        DeleteNotification& operator=(DeleteNotification&& notifn) = default;
+        DeleteNotification(DeleteNotification const& notifn) = default;
+        DeleteNotification& operator=(DeleteNotification const& notifn) = default;
+
+        ~DeleteNotification() {
+            // can be null only if moved from
+            dassert(!notification || *notification || notification.use_count() == 1);
+        }
+
+        void notify(Status status) const {
+            notification->set(status);
+        }
+        Status waitStatus(OperationContext* opCtx) const {
+            return notification->get(opCtx);
+        }
+        bool ready() const {
+            return bool(*notification);
+        }
+        void abandon() {
+            notification = nullptr;
+        }
+        bool operator==(DeleteNotification const& other) const {
+            return notification == other.notification;
+        }
+
+    private:
+        std::shared_ptr<Notification<Status>> notification;
+    };
+
+    struct Deletion {
+        Deletion(ChunkRange r) : range(std::move(r)) {}
+        ChunkRange range;
+        DeleteNotification notification{};
+    };
+
+    CollectionRangeDeleter() = default;
+    ~CollectionRangeDeleter();
+
+    //
+    // All of the following members must be called only while the containing MetadataManager's lock
+    // is held (or in its destructor), except cleanUpNextRange.
+    //
 
     /**
-     * Starts deleting ranges and cleans up this object when it is finished.
+     * Splices range's elements to the list to be cleaned up by the deleter thread. Returns true
+     * if the list is newly non-empty, so the caller knows to schedule a deletion task.
      */
-    void run();
+    bool add(std::list<Deletion> ranges);
 
     /**
-     * Acquires the collection IX lock and checks whether there are new entries for the collection's
-     * rangesToClean structure.  If there are, deletes some small amount of entries and yields using
-     * the standard query yielding logic.
+     * Reports whether the argument range overlaps any of the ranges to clean.  If there is overlap,
+     * it returns a notification that will be signaled when the currently newest overlapping range
+     * completes or fails. If there is no overlap, the result is boost::none.  After a successful
+     * removal, the caller should call again to ensure no other range overlaps the argument.
+     * (See CollectionShardingState::waitForClean and MetadataManager::trackOrphanedDataCleanup for
+     * an example use.)
+     */
+    boost::optional<DeleteNotification> overlaps(ChunkRange const& range) const;
+
+    /**
+     * Reports the number of ranges remaining to be cleaned up.
+     */
+    size_t size() const;
+
+    bool isEmpty() const;
+
+    /*
+     * Notify with the specified status anything waiting on ranges scheduled, before discarding the
+     * ranges and notifications.
+     */
+    void clear(Status);
+
+    /*
+     * Append a representation of self to the specified builder.
+     */
+    void append(BSONObjBuilder* builder) const;
+
+    /**
+     * If any ranges are scheduled to clean, deletes up to maxToDelete documents, notifying watchers
+     * of ranges as they are done being deleted. It performs its own collection locking so it must
+     * be called without locks.
      *
-     * Returns true if there are more entries in rangesToClean, false if there is no more progress
-     * to be made.
+     * The 'rangeDeleterForTestOnly' is used as a utility for unit-tests that directly test the
+     * CollectionRangeDeleter class so they do not need to set up CollectionShardingState and
+     * MetadataManager objects.
+     *
+     * Returns true if it should be scheduled to run again because there might be more documents to
+     * delete, or false otherwise.
      */
-    bool cleanupNextRange(OperationContext* txn);
+    static bool cleanUpNextRange(OperationContext*,
+                                 NamespaceString const& nss,
+                                 int maxToDelete,
+                                 CollectionRangeDeleter* rangeDeleterForTestOnly = nullptr);
 
 private:
     /**
-     * Performs the deletion of a small amount of entries within the range in progress.
-     * This function will invariant if called while _rangeInProgress is not set.
+     * Performs the deletion of up to maxToDelete entries within the range in progress. Must be
+     * called under the collection lock.
      *
-     * Returns the number of documents deleted (0 if deletion is finished), or -1 for error.
+     * Returns the number of documents deleted, 0 if done with the range, or bad status if deleting
+     * the range failed.
      */
-    int _doDeletion(OperationContext* txn, Collection* collection, const BSONObj& keyPattern);
+    StatusWith<int> _doDeletion(OperationContext* opCtx,
+                                Collection* collection,
+                                const BSONObj& keyPattern,
+                                ChunkRange const& range,
+                                int maxToDelete);
 
-    NamespaceString _nss;
+    /**
+     * Removes the latest-scheduled range from the ranges to be cleaned up, and notifies any
+     * interested callers of this->overlaps(range) with specified status.
+     */
+    void _pop(Status status);
 
-    // Holds a range for which deletion has begun. If empty, then a new range
-    // must be requested from rangesToClean
-    boost::optional<ChunkRange> _rangeInProgress;
+    /**
+     * Ranges scheduled for deletion.  The front of the list will be in active process of deletion.
+     * As each range is completed, its notification is signaled before it is popped.
+     */
+    std::list<Deletion> _orphans;
 };
 
 }  // namespace mongo

@@ -27,10 +27,6 @@
  */
 #include "test_util.h"
 
-extern int   __wt_opterr;		/* if error message should be printed */
-extern int   __wt_optind;		/* index into parent argv vector */
-extern int   __wt_optopt;		/* character checked for validity */
-extern int   __wt_optreset;		/* reset getopt */
 extern char *__wt_optarg;		/* argument associated with option */
 
 /*
@@ -47,10 +43,7 @@ testutil_parse_opts(int argc, char * const *argv, TEST_OPTS *opts)
 	opts->running = true;
 	opts->verbose = false;
 
-	if ((opts->progname = strrchr(argv[0], DIR_DELIM)) == NULL)
-		opts->progname = argv[0];
-	else
-		++opts->progname;
+	opts->progname = testutil_set_progname(argv);
 
 	while ((ch = __wt_getopt(opts->progname,
 		argc, argv, "A:h:n:o:pR:T:t:vW:")) != EOF)
@@ -59,7 +52,7 @@ testutil_parse_opts(int argc, char * const *argv, TEST_OPTS *opts)
 			opts->n_append_threads = (uint64_t)atoll(__wt_optarg);
 			break;
 		case 'h': /* Home directory */
-			opts->home = __wt_optarg;
+			opts->home = dstrdup(__wt_optarg);
 			break;
 		case 'n': /* Number of records */
 			opts->nrecords = (uint64_t)atoll(__wt_optarg);
@@ -116,17 +109,21 @@ testutil_parse_opts(int argc, char * const *argv, TEST_OPTS *opts)
 		}
 
 	/*
-	 * Setup the home directory. It needs to be unique for every test
-	 * or the auto make parallel tester gets upset.
+	 * Setup the home directory if not explicitly specified. It needs to be
+	 * unique for every test or the auto make parallel tester gets upset.
 	 */
-	len = strlen("WT_TEST.")  + strlen(opts->progname) + 10;
-	opts->home = dmalloc(len);
-	snprintf(opts->home, len, "WT_TEST.%s", opts->progname);
+	if (opts->home == NULL) {
+		len = strlen("WT_TEST.")  + strlen(opts->progname) + 10;
+		opts->home = dmalloc(len);
+		testutil_check(__wt_snprintf(
+		    opts->home, len, "WT_TEST.%s", opts->progname));
+	}
 
 	/* Setup the default URI string */
 	len = strlen("table:") + strlen(opts->progname) + 10;
 	opts->uri = dmalloc(len);
-	snprintf(opts->uri, len, "table:%s", opts->progname);
+	testutil_check(__wt_snprintf(
+	    opts->uri, len, "table:%s", opts->progname));
 
 	return (0);
 }

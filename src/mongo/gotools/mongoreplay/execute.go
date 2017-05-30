@@ -153,6 +153,7 @@ func (context *ExecutionContext) newExecutionSession(url string, start time.Time
 		if err == nil {
 			userInfoLogger.Logvf(Info, "(Connection %v) New connection CREATED.", connectionNum)
 			connected = true
+			defer session.Close()
 		} else {
 			userInfoLogger.Logvf(Info, "(Connection %v) New Connection FAILED: %v", connectionNum, err)
 		}

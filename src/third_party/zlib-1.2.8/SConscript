@@ -2,6 +2,7 @@
 Import("env")
 
 env = env.Clone()
+
 env.Append(CPPDEFINES=["HAVE_STDARG_H"])
 if not env.TargetOSIs('windows'):
     env.Append(CPPDEFINES=["HAVE_UNISTD_H"])
@@ -18,5 +19,8 @@ env.Library(
         'inftrees.c',
         'trees.c',
         'zutil.c',
-    ])
-
+    ],
+    LIBDEPS_TAGS=[
+        'init-no-global-side-effects',
+    ],
+)

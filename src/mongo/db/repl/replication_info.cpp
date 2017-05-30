@@ -40,12 +40,15 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/is_master_response.h"
 #include "mongo/db/repl/master_slave.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/storage/storage_options.h"
@@ -65,7 +68,7 @@ using std::stringstream;
 
 namespace repl {
 
-void appendReplicationInfo(OperationContext* txn, BSONObjBuilder& result, int level) {
+void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int level) {
     ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
     if (replCoord->getSettings().usingReplSets()) {
         IsMasterResponse isMasterResponse;
@@ -93,10 +96,10 @@ void appendReplicationInfo(OperationContext* txn, BSONObjBuilder& result, int le
         int n = 0;
         list<BSONObj> src;
         {
-            const char* localSources = "local.sources";
-            AutoGetCollectionForRead ctx(txn, localSources);
-            unique_ptr<PlanExecutor> exec(InternalPlanner::collectionScan(
-                txn, localSources, ctx.getCollection(), PlanExecutor::YIELD_MANUAL));
+            const NamespaceString localSources{"local.sources"};
+            AutoGetCollectionForReadCommand ctx(opCtx, localSources);
+            auto exec = InternalPlanner::collectionScan(
+                opCtx, localSources.ns(), ctx.getCollection(), PlanExecutor::NO_YIELD);
             BSONObj obj;
             PlanExecutor::ExecState state;
             while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, NULL))) {
@@ -123,7 +126,7 @@ void appendReplicationInfo(OperationContext* txn, BSONObjBuilder& result, int le
             }
 
             if (level > 1) {
-                wassert(!txn->lockState()->isLocked());
+                wassert(!opCtx->lockState()->isLocked());
                 // note: there is no so-style timeout on this connection; perhaps we should have
                 // one.
                 ScopedDbConnection conn(s["host"].valuestr());
@@ -158,7 +161,7 @@ public:
         return true;
     }
 
-    BSONObj generateSection(OperationContext* txn, const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
         if (!getGlobalReplicationCoordinator()->isReplEnabled()) {
             return BSONObj();
         }
@@ -166,8 +169,12 @@ public:
         int level = configElement.numberInt();
 
         BSONObjBuilder result;
-        appendReplicationInfo(txn, result, level);
-        getGlobalReplicationCoordinator()->processReplSetGetRBID(&result);
+        appendReplicationInfo(opCtx, result, level);
+
+        auto rbid = ReplicationProcess::get(opCtx)->getRollbackID(opCtx);
+        if (rbid.isOK()) {
+            result.append("rbid", rbid.getValue());
+        }
 
         return result.obj();
     }
@@ -181,7 +188,7 @@ public:
         return false;
     }
 
-    BSONObj generateSection(OperationContext* txn, const BSONElement& configElement) const {
+    BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
         if (!replCoord->isReplEnabled()) {
             return BSONObj();
@@ -198,7 +205,7 @@ public:
         BSONObj o;
         uassert(17347,
                 "Problem reading earliest entry from oplog",
-                Helpers::getSingleton(txn, oplogNS.c_str(), o));
+                Helpers::getSingleton(opCtx, oplogNS.c_str(), o));
         result.append("earliestOptime", o["ts"].timestamp());
         return result.obj();
     }
@@ -223,31 +230,30 @@ public:
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}  // No auth required
-    CmdIsMaster() : Command("isMaster", true, "ismaster") {}
-    virtual bool run(OperationContext* txn,
+    CmdIsMaster() : Command("isMaster", "ismaster") {}
+    virtual bool run(OperationContext* opCtx,
                      const string&,
-                     BSONObj& cmdObj,
-                     int,
+                     const BSONObj& cmdObj,
                      string& errmsg,
                      BSONObjBuilder& result) {
         /* currently request to arbiter is (somewhat arbitrarily) an ismaster request that is not
            authenticated.
         */
         if (cmdObj["forShell"].trueValue()) {
-            LastError::get(txn->getClient()).disable();
+            LastError::get(opCtx->getClient()).disable();
         }
 
         // Tag connections to avoid closing them on stepdown.
         auto hangUpElement = cmdObj["hangUpOnStepDown"];
         if (!hangUpElement.eoo() && !hangUpElement.trueValue()) {
-            auto session = txn->getClient()->session();
+            auto session = opCtx->getClient()->session();
             if (session) {
                 session->replaceTags(session->getTags() |
                                      executor::NetworkInterface::kMessagingPortKeepOpen);
             }
         }
 
-        auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(txn->getClient());
+        auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(opCtx->getClient());
         bool seenIsMaster = clientMetadataIsMasterState.hasSeenIsMaster();
         if (!seenIsMaster) {
             clientMetadataIsMasterState.setSeenIsMaster();
@@ -270,13 +276,13 @@ public:
 
             invariant(swParseClientMetadata.getValue());
 
-            swParseClientMetadata.getValue().get().logClientMetadata(txn->getClient());
+            swParseClientMetadata.getValue().get().logClientMetadata(opCtx->getClient());
 
             clientMetadataIsMasterState.setClientMetadata(
-                txn->getClient(), std::move(swParseClientMetadata.getValue()));
+                opCtx->getClient(), std::move(swParseClientMetadata.getValue()));
         }
 
-        appendReplicationInfo(txn, result, 0);
+        appendReplicationInfo(opCtx, result, 0);
 
         if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
             // If we have feature compatibility version 3.4, use a config server mode that 3.2
@@ -301,9 +307,12 @@ public:
                                                   "automationServiceDescriptor",
                                                   static_cast<ServerParameter*>(nullptr));
         if (parameter)
-            parameter->append(txn, result, "automationServiceDescriptor");
+            parameter->append(opCtx, result, "automationServiceDescriptor");
 
-        txn->getClient()->session()->getCompressorManager().serverNegotiate(cmdObj, &result);
+        if (opCtx->getClient()->session()) {
+            MessageCompressorManager::forSession(opCtx->getClient()->session())
+                .serverNegotiate(cmdObj, &result);
+        }
 
         return true;
     }

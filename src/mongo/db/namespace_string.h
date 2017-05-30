@@ -31,10 +31,13 @@
 #pragma once
 
 #include <algorithm>
+#include <boost/optional.hpp>
 #include <iosfwd>
 #include <string>
 
+#include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
+#include "mongo/db/repl/optime.h"
 #include "mongo/platform/hash_namespace.h"
 #include "mongo/util/assert_util.h"
 
@@ -63,6 +66,9 @@ public:
     // Namespace for the local database
     static constexpr StringData kLocalDb = "local"_sd;
 
+    // Namespace for the sharding config database
+    static constexpr StringData kConfigDb = "config"_sd;
+
     // Name for the system views collection
     static constexpr StringData kSystemDotViewsCollectionName = "system.views"_sd;
 
@@ -90,13 +96,13 @@ public:
     NamespaceString(StringData dbName, StringData collectionName);
 
     /**
-     * Contructs a NamespaceString representing a listCollections namespace. The format for this
+     * Constructs a NamespaceString representing a listCollections namespace. The format for this
      * namespace is "<dbName>.$cmd.listCollections".
      */
     static NamespaceString makeListCollectionsNSS(StringData dbName);
 
     /**
-     * Contructs a NamespaceString representing a listIndexes namespace. The format for this
+     * Constructs a NamespaceString representing a listIndexes namespace. The format for this
      * namespace is "<dbName>.$cmd.listIndexes.<collectionName>".
      */
     static NamespaceString makeListIndexesNSS(StringData dbName, StringData collectionName);
@@ -141,6 +147,10 @@ public:
 
     size_t size() const {
         return _ns.size();
+    }
+
+    bool isEmpty() const {
+        return _ns.empty();
     }
 
     struct Hasher {
@@ -195,8 +205,51 @@ public:
     bool isVirtualized() const {
         return virtualized(_ns);
     }
+
+    /**
+     * Returns true if cursors for this namespace are registered with the global cursor manager.
+     */
+    bool isGloballyManagedNamespace() const {
+        return coll().startsWith("$cmd."_sd);
+    }
+
     bool isListCollectionsCursorNS() const;
     bool isListIndexesCursorNS() const;
+
+    /**
+     * Given a NamespaceString for which isGloballyManagedNamespace() returns true, returns the
+     * namespace the command targets, or boost::none for commands like 'listCollections' which
+     * do not target a collection.
+     */
+    boost::optional<NamespaceString> getTargetNSForGloballyManagedNamespace() const;
+
+    /**
+     * Returns true if this namespace refers to a drop-pending collection.
+     */
+    bool isDropPendingNamespace() const;
+
+    /**
+     * Returns the drop-pending namespace name for this namespace, provided the given optime.
+     *
+     * Example:
+     *     test.foo -> test.system.drop.<timestamp seconds>i<timestamp increment>t<term>.foo
+     *
+     * Original collection name may be truncated so that the generated namespace length does not
+     * exceed MaxNsCollectionLen.
+     */
+    NamespaceString makeDropPendingNamespace(const repl::OpTime& opTime) const;
+
+    /**
+     * Returns the optime used to generate the drop-pending namespace.
+     * Returns an error if this namespace is not drop-pending.
+     */
+    StatusWith<repl::OpTime> getDropPendingNamespaceOpTime() const;
+
+    /**
+     * Checks if this namespace is valid as a target namespace for a rename operation, given
+     * the length of the longest index name in the source collection.
+     */
+    Status checkLengthForRename(const std::string::size_type longestIndexNameLength) const;
 
     /**
      * Given a NamespaceString for which isListIndexesCursorNS() returns true, returns the
@@ -240,8 +293,8 @@ public:
     // @return db() + ".system.indexes"
     std::string getSystemIndexesCollection() const;
 
-    // @return db() + ".$cmd"
-    std::string getCommandNS() const;
+    // @return {db(), "$cmd"}
+    NamespaceString getCommandNS() const;
 
     /**
      * Function to escape most non-alpha characters from file names

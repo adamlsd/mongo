@@ -48,15 +48,17 @@ StatusWith<HostAndPort> RemoteCommandTargeterStandalone::findHostWithMaxWait(
 }
 
 StatusWith<HostAndPort> RemoteCommandTargeterStandalone::findHost(
-    OperationContext* txn, const ReadPreferenceSetting& readPref) {
+    OperationContext* opCtx, const ReadPreferenceSetting& readPref) {
     return _hostAndPort;
 }
 
-void RemoteCommandTargeterStandalone::markHostNotMaster(const HostAndPort& host) {
+void RemoteCommandTargeterStandalone::markHostNotMaster(const HostAndPort& host,
+                                                        const Status& status) {
     dassert(host == _hostAndPort);
 }
 
-void RemoteCommandTargeterStandalone::markHostUnreachable(const HostAndPort& host) {
+void RemoteCommandTargeterStandalone::markHostUnreachable(const HostAndPort& host,
+                                                          const Status& status) {
     dassert(host == _hostAndPort);
 }
 

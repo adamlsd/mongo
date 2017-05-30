@@ -43,7 +43,8 @@ if (jsTest.options().storageEngine && jsTest.options().storageEngine !== "wiredT
 
     // make sure node 0 becomes primary initially
     var config = replTest.getReplSetConfig();
-    config.members[0].priority = 1;
+    config.members[1].priority = 0;
+    config.members[2].priority = 0;
     replTest.initiate(config);
 
     var masterDB = replTest.getPrimary().getDB("test");
@@ -60,7 +61,7 @@ if (jsTest.options().storageEngine && jsTest.options().storageEngine !== "wiredT
     assert.commandWorked(secondary1.getDB("admin").runCommand({fsync: 1}));
 
     jsTestLog("kill -9 secondary 1");
-    MongoRunner.stopMongod(secondary1.port, /*signal*/ 9);
+    MongoRunner.stopMongod(secondary1, 9, {allowedExitCode: MongoRunner.EXIT_SIGKILL});
 
     jsTestLog("add some data to a new collection bar");
     for (var i = 0; i < 100; i++) {

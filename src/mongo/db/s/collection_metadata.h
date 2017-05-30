@@ -28,17 +28,15 @@
 
 #pragma once
 
-#include "mongo/base/disallow_copying.h"
-#include "mongo/base/owned_pointer_vector.h"
-#include "mongo/db/field_ref_set.h"
-#include "mongo/db/jsobj.h"
 #include "mongo/db/range_arithmetic.h"
+#include "mongo/db/s/collection_range_deleter.h"
+#include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/chunk_version.h"
+#include "mongo/s/shard_key_pattern.h"
 
 namespace mongo {
 
 class ChunkType;
-class MetadataLoader;
 
 /**
  * The collection metadata has metadata information about a collection, in particular the
@@ -50,37 +48,25 @@ class MetadataLoader;
  * here allow building a new incarnation of a collection's metadata based on an existing
  * one (e.g, we're splitting in a given collection.).
  *
- * This class is immutable once constructed.
+ * This class's chunk mapping is immutable once constructed.
  */
 class CollectionMetadata {
-    MONGO_DISALLOW_COPYING(CollectionMetadata);
 
 public:
     /**
-     * The main way to construct CollectionMetadata is through MetadataLoader or the clone*()
-     * methods.
-     *
-     * The constructors should not be used directly outside of tests.
+     * The main way to construct CollectionMetadata is through MetadataLoader or clone() methods.
      */
-    CollectionMetadata();
-    CollectionMetadata(const BSONObj& keyPattern, ChunkVersion collectionVersion);
+    CollectionMetadata(const BSONObj& keyPattern,
+                       ChunkVersion collectionVersion,
+                       ChunkVersion shardVersion,
+                       RangeMap shardChunksMap);
+
     ~CollectionMetadata();
 
     /**
-     * Returns a new metadata's instance based on 'this's state by removing a 'pending' chunk.
-     *
-     * The shard and collection version of the new metadata are unaffected.  The caller owns the
-     * new metadata.
+     * Returns a new metadata's instance based on 'this's state;
      */
-    std::unique_ptr<CollectionMetadata> cloneMinusPending(const ChunkType& chunk) const;
-
-    /**
-     * Returns a new metadata's instance based on 'this's state by adding a 'pending' chunk.
-     *
-     * The shard and collection version of the new metadata are unaffected.  The caller owns the
-     * new metadata.
-     */
-    std::unique_ptr<CollectionMetadata> clonePlusPending(const ChunkType& chunk) const;
+    std::unique_ptr<CollectionMetadata> clone() const;
 
     /**
      * Returns true if the document key 'key' is a valid instance of a shard key for this
@@ -96,12 +82,6 @@ public:
     bool keyBelongsToMe(const BSONObj& key) const;
 
     /**
-     * Returns true if the document key 'key' is or has been migrated to this shard, and may
-     * belong to us after a subsequent config reload.  Key must be the full shard key.
-     */
-    bool keyIsPending(const BSONObj& key) const;
-
-    /**
      * Given a key 'lookupKey' in the shard key range, get the next chunk which overlaps or is
      * greater than this key.  Returns true if a chunk exists, false otherwise.
      *
@@ -115,6 +95,16 @@ public:
     bool getDifferentChunk(const BSONObj& chunkMinKey, ChunkType* differentChunk) const;
 
     /**
+     * Validates that the passed-in chunk's bounds exactly match a chunk in the metadata cache.
+     */
+    Status checkChunkIsValid(const ChunkType& chunk);
+
+    /**
+     * Returns true if the argument range overlaps any chunk.
+     */
+    bool rangeOverlapsChunk(ChunkRange const& range);
+
+    /**
      * Given a key in the shard key range, get the next range which overlaps or is greater than
      * this key.
      *
@@ -122,15 +112,17 @@ public:
      *
      * KeyRange range;
      * BSONObj lookupKey = metadata->getMinKey();
-     * while( metadata->getNextOrphanRange( lookupKey, &orphanRange ) ) {
-     *   // Do stuff with range
-     *   lookupKey = orphanRange.maxKey;
+     * boost::optional<KeyRange> range;
+     * while((range = metadata->getNextOrphanRange(receiveMap, lookupKey))) {
+     *     lookupKey = range->maxKey;
      * }
      *
      * @param lookupKey passing a key that does not belong to this metadata is undefined.
+     * @param receiveMap is an extra set of chunks not considered orphaned.
      * @param orphanRange the output range. Note that the NS is not set.
      */
-    bool getNextOrphanRange(const BSONObj& lookupKey, KeyRange* orphanRange) const;
+    boost::optional<KeyRange> getNextOrphanRange(RangeMap const& receiveMap,
+                                                 BSONObj const& lookupKey) const;
 
     ChunkVersion getCollVersion() const {
         return _collVersion;
@@ -144,12 +136,12 @@ public:
         return _chunksMap;
     }
 
-    BSONObj getKeyPattern() const {
-        return _keyPattern;
+    const BSONObj& getKeyPattern() const {
+        return _shardKeyPattern.toBSON();
     }
 
-    const std::vector<FieldRef*>& getKeyPatternFields() const {
-        return _keyFields.vector();
+    const std::vector<std::unique_ptr<FieldRef>>& getKeyPatternFields() const {
+        return _shardKeyPattern.getKeyPatternFields();
     }
 
     BSONObj getMinKey() const;
@@ -158,10 +150,6 @@ public:
 
     std::size_t getNumChunks() const {
         return _chunksMap.size();
-    }
-
-    std::size_t getNumPending() const {
-        return _pendingMap.size();
     }
 
     /**
@@ -175,77 +163,42 @@ public:
     void toBSONChunks(BSONArrayBuilder& bb) const;
 
     /**
-     * BSON output of the pending metadata into a BSONArray
-     */
-    void toBSONPending(BSONArrayBuilder& bb) const;
-
-    /**
      * String output of the collection and shard versions.
      */
     std::string toStringBasic() const;
 
-    /**
-     * This method is used only for unit-tests and it returns a new metadata's instance based on
-     * 'this's state by adding 'chunk'. The new metadata can never be zero.
-     *
-     * It will fassert if the chunk bounds are incorrect or overlap an existing chunk.
-     */
-    std::unique_ptr<CollectionMetadata> clonePlusChunk(const BSONObj& minKey,
-                                                       const BSONObj& maxKey,
-                                                       const ChunkVersion& newShardVersion) const;
-
-    /**
-     * Returns true if this metadata was loaded with all necessary information.
-     */
-    bool isValid() const;
-
 private:
-    // Effectively, the MetadataLoader is this class's builder. So we open an exception and grant it
-    // friendship.
-    friend class MetadataLoader;
+    struct Tracker {
+        uint32_t usageCounter{0};
+        std::list<CollectionRangeDeleter::Deletion> orphans;
+    };
+    Tracker _tracker;
+
+    /**
+     * Builds _rangesMap from the contents of _chunksMap.
+     */
+    void _buildRangesMap();
+
+    // Shard key pattern for the collection
+    ShardKeyPattern _shardKeyPattern;
 
     // a version for this collection that identifies the collection incarnation (ie, a
     // dropped and recreated collection with the same name would have a different version)
     ChunkVersion _collVersion;
 
-    //
-    // sharded state below, for when the collection gets sharded
-    //
-
     // highest ChunkVersion for which this metadata's information is accurate
     ChunkVersion _shardVersion;
-
-    // key pattern for chunks under this range
-    BSONObj _keyPattern;
-
-    // A vector owning the FieldRefs parsed from the shard-key pattern of field names.
-    OwnedPointerVector<FieldRef> _keyFields;
-
-    //
-    // RangeMaps represent chunks by mapping the min key to the chunk's max key, allowing
-    // efficient lookup and intersection.
-    //
-
-    // Map of ranges of chunks that are migrating but have not been confirmed added yet
-    RangeMap _pendingMap;
 
     // Map of chunks tracked by this shard
     RangeMap _chunksMap;
 
-    // A second map from a min key into a range or contiguous chunks. The map is redundant
+    // A second map from a min key into a range of contiguous chunks. The map is redundant
     // w.r.t. _chunkMap but we expect high chunk contiguity, especially in small
     // installations.
     RangeMap _rangesMap;
 
-    /**
-     * Try to find chunks that are adjacent and record these intervals in the _rangesMap
-     */
-    void fillRanges();
-
-    /**
-     * Creates the _keyField* local data
-     */
-    void fillKeyPatternFields();
+    friend class ScopedCollectionMetadata;
+    friend class MetadataManager;
 };
 
 }  // namespace mongo

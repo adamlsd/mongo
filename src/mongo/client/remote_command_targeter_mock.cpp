@@ -52,7 +52,7 @@ ConnectionString RemoteCommandTargeterMock::connectionString() {
     return _connectionStringReturnValue;
 }
 
-StatusWith<HostAndPort> RemoteCommandTargeterMock::findHost(OperationContext* txn,
+StatusWith<HostAndPort> RemoteCommandTargeterMock::findHost(OperationContext* opCtx,
                                                             const ReadPreferenceSetting& readPref) {
     return _findHostReturnValue;
 }
@@ -63,9 +63,10 @@ StatusWith<HostAndPort> RemoteCommandTargeterMock::findHostWithMaxWait(
     return _findHostReturnValue;
 }
 
-void RemoteCommandTargeterMock::markHostNotMaster(const HostAndPort& host) {}
+void RemoteCommandTargeterMock::markHostNotMaster(const HostAndPort& host, const Status& status) {}
 
-void RemoteCommandTargeterMock::markHostUnreachable(const HostAndPort& host) {}
+void RemoteCommandTargeterMock::markHostUnreachable(const HostAndPort& host, const Status& status) {
+}
 
 void RemoteCommandTargeterMock::setConnectionStringReturnValue(const ConnectionString returnValue) {
     _connectionStringReturnValue = std::move(returnValue);

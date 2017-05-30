@@ -34,7 +34,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/thread/recursive_mutex.hpp>
-#include <boost/thread/tss.hpp>
+#include <boost/thread/thread.hpp>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -43,9 +43,12 @@
 #include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/config.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/transport/session.h"
 #include "mongo/util/concurrency/mutex.h"
+#include "mongo/util/concurrency/threadlocal.h"
 #include "mongo/util/debug_util.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
@@ -54,6 +57,7 @@
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl_expiration.h"
 #include "mongo/util/net/ssl_options.h"
+#include "mongo/util/net/ssl_types.h"
 #include "mongo/util/scopeguard.h"
 #include "mongo/util/text.h"
 
@@ -72,11 +76,32 @@
 
 namespace mongo {
 
+namespace {
+
+const transport::Session::Decoration<SSLPeerInfo> peerInfoForSession =
+    transport::Session::declareDecoration<SSLPeerInfo>();
+
+}  // namespace
+
+SSLPeerInfo& SSLPeerInfo::forSession(const transport::SessionHandle& session) {
+    return peerInfoForSession(session.get());
+}
+
 SSLParams sslGlobalParams;
 
 const SSLParams& getSSLGlobalParams() {
     return sslGlobalParams;
 }
+
+/**
+ * Configurable via --setParameter disableNonSSLConnectionLogging=true. If false (default)
+ * if the sslMode is set to preferSSL, we will log connections that are not using SSL.
+ * If true, such log messages will be suppressed.
+ */
+ExportedServerParameter<bool, ServerParameterType::kStartupOnly>
+    disableNonSSLConnectionLoggingParameter(ServerParameterSet::getGlobal(),
+                                            "disableNonSSLConnectionLogging",
+                                            &sslGlobalParams.disableNonSSLConnectionLogging);
 
 #ifdef MONGO_CONFIG_SSL
 // Old copies of OpenSSL will not have constants to disable protocols they don't support.
@@ -113,35 +138,45 @@ IMPLEMENT_ASN1_ENCODE_FUNCTIONS_const_fname(ASN1_SEQUENCE_ANY, ASN1_SET_ANY, ASN
 #endif // MONGO_CONFIG_NEEDS_ASN1_ANY_DEFINITIONS
 // clang-format on
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+// Copies of OpenSSL after 1.1.0 define new functions for interaction with
+// X509 structure. We must polyfill used definitions to interact with older
+// OpenSSL versions.
+const STACK_OF(X509_EXTENSION) * X509_get0_extensions(const X509* peerCert) {
+    return peerCert->cert_info->extensions;
+}
+#endif
+
 /**
  * Multithreaded Support for SSL.
  *
  * In order to allow OpenSSL to work in a multithreaded environment, you
- * must provide some callbacks for it to use for locking.  The following code
- * sets up a vector of mutexes and uses thread-local storage to assign an id
- * to each thread.
+ * may need to provide some callbacks for it to use for locking. The following code
+ * sets up a vector of mutexes and provides a thread unique ID number.
  * The so-called SSLThreadInfo class encapsulates most of the logic required for
  * OpenSSL multithreaded support.
+ *
+ * OpenSSL before version 1.1.0 requires applications provide a callback which emits a thread
+ * identifier. This ID is used to store thread specific ERR information. When a thread is
+ * terminated, it must call ERR_remove_state or ERR_remove_thread_state. These functions may
+ * themselves invoke the application provided callback.
  */
-
-unsigned long _ssl_id_callback();
-void _ssl_locking_callback(int mode, int type, const char* file, int line);
-
 class SSLThreadInfo {
 public:
-    SSLThreadInfo() {
-        _id = _next.fetchAndAdd(1);
+    static unsigned long getID() {
+        enforceCleanupOnShutdown();
+
+#ifdef _WIN32
+        return GetCurrentThreadId();
+#else
+        static_assert(sizeof(void*) == sizeof(unsigned long),
+                      "OpenSSL needs the address of a thread-unique object to be castable to"
+                      "unsigned long");
+        return reinterpret_cast<unsigned long>(&errno);
+#endif
     }
 
-    ~SSLThreadInfo() {
-        ERR_remove_state(0);
-    }
-
-    unsigned long id() const {
-        return _id;
-    }
-
-    void lock_callback(int mode, int type, const char* file, int line) {
+    static void lockingCallback(int mode, int type, const char* file, int line) {
         if (mode & CRYPTO_LOCK) {
             _mutex[type]->lock();
         } else {
@@ -150,38 +185,32 @@ public:
     }
 
     static void init() {
+        CRYPTO_set_id_callback(&SSLThreadInfo::getID);
+        CRYPTO_set_locking_callback(&SSLThreadInfo::lockingCallback);
+
         while ((int)_mutex.size() < CRYPTO_num_locks()) {
             _mutex.emplace_back(stdx::make_unique<stdx::recursive_mutex>());
         }
     }
 
-    static SSLThreadInfo* get() {
-        SSLThreadInfo* me = _thread.get();
-        if (!me) {
-            me = new SSLThreadInfo();
-            _thread.reset(me);
+private:
+    SSLThreadInfo() = delete;
+
+    // When called, ensures that this thread will, on termination, call ERR_remove_state.
+    static void enforceCleanupOnShutdown() {
+        static MONGO_TRIVIALLY_CONSTRUCTIBLE_THREAD_LOCAL bool firstCall = true;
+        if (firstCall) {
+            boost::this_thread::at_thread_exit([] { ERR_remove_state(0); });
+            firstCall = false;
         }
-        return me;
     }
 
-private:
-    unsigned _id;
-
-    static AtomicUInt32 _next;
     // Note: see SERVER-8734 for why we are using a recursive mutex here.
     // Once the deadlock fix in OpenSSL is incorporated into most distros of
     // Linux, this can be changed back to a nonrecursive mutex.
     static std::vector<std::unique_ptr<stdx::recursive_mutex>> _mutex;
-    static boost::thread_specific_ptr<SSLThreadInfo> _thread;
 };
-
-unsigned long _ssl_id_callback() {
-    return SSLThreadInfo::get()->id();
-}
-
-void _ssl_locking_callback(int mode, int type, const char* file, int line) {
-    SSLThreadInfo::get()->lock_callback(mode, type, file, line);
-}
+std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
 
 // We only want to free SSL_CTX objects if they have been populated. OpenSSL seems to perform this
 // check before freeing them, but because it does not document this, we should protect ourselves.
@@ -190,10 +219,6 @@ void _free_ssl_context(SSL_CTX* ctx) {
         SSL_CTX_free(ctx);
     }
 }
-
-AtomicUInt32 SSLThreadInfo::_next;
-std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
-boost::thread_specific_ptr<SSLThreadInfo> SSLThreadInfo::_thread;
 
 ////////////////////////////////////////////////////////////////
 
@@ -249,7 +274,6 @@ private:
                                      mongodbRolesOID.longDescription.c_str());
     UniqueSSLContext _serverContext;  // SSL context for incoming connections
     UniqueSSLContext _clientContext;  // SSL context for outgoing connections
-    std::string _password;
     bool _weakValidation;
     bool _allowInvalidCertificates;
     bool _allowInvalidHostnames;
@@ -292,6 +316,7 @@ private:
      * @return bool showing if the function was successful.
      */
     bool _parseAndValidateCertificate(const std::string& keyFile,
+                                      const std::string& keyPassword,
                                       std::string* subjectName,
                                       Date_t* serverNotAfter);
 
@@ -354,6 +379,7 @@ void setupFIPS() {
     fassertFailedNoTrace(17089);
 #endif
 }
+
 }  // namespace
 
 // Global variable indicating if this is a server or a client instance
@@ -373,19 +399,15 @@ MONGO_INITIALIZER(SetupOpenSSL)(InitializerContext*) {
     // so that encryption/decryption is backwards compatible
     OpenSSL_add_all_algorithms();
 
-    // Setup OpenSSL multithreading callbacks
-    CRYPTO_set_id_callback(_ssl_id_callback);
-    CRYPTO_set_locking_callback(_ssl_locking_callback);
-
+    // Setup OpenSSL multithreading callbacks and mutexes
     SSLThreadInfo::init();
-    SSLThreadInfo::get();
 
     return Status::OK();
 }
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SSLManager, ("SetupOpenSSL"))(InitializerContext*) {
     stdx::lock_guard<SimpleMutex> lck(sslManagerMtx);
-    if (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled) {
+    if (!isSSLServer || (sslGlobalParams.sslMode.load() != SSLParams::SSLMode_disabled)) {
         theSSLManager = new SSLManager(sslGlobalParams, isSSLServer);
     }
     return Status::OK();
@@ -424,10 +446,6 @@ std::string getCertificateSubjectName(X509* cert) {
 
 SSLConnection::SSLConnection(SSL_CTX* context, Socket* sock, const char* initialBytes, int len)
     : socket(sock) {
-    // This just ensures that SSL multithreading support is set up for this thread,
-    // if it's not already.
-    SSLThreadInfo::get();
-
     ssl = SSL_new(context);
 
     std::string sslErr =
@@ -512,18 +530,21 @@ SSLManager::SSLManager(const SSLParams& params, bool isServer)
     }
 
     // pick the certificate for use in outgoing connections,
-    std::string clientPEM;
+    std::string clientPEM, clientPassword;
     if (!isServer || params.sslClusterFile.empty()) {
         // We are either a client, or a server without a cluster key,
         // so use the PEM key file, if specified
         clientPEM = params.sslPEMKeyFile;
+        clientPassword = params.sslPEMKeyPassword;
     } else {
         // We are a server with a cluster key, so use the cluster key file
         clientPEM = params.sslClusterFile;
+        clientPassword = params.sslClusterPassword;
     }
 
     if (!clientPEM.empty()) {
-        if (!_parseAndValidateCertificate(clientPEM, &_sslConfiguration.clientSubjectName, NULL)) {
+        if (!_parseAndValidateCertificate(
+                clientPEM, clientPassword, &_sslConfiguration.clientSubjectName, NULL)) {
             uasserted(16941, "ssl initialization problem");
         }
     }
@@ -534,6 +555,7 @@ SSLManager::SSLManager(const SSLParams& params, bool isServer)
         }
 
         if (!_parseAndValidateCertificate(params.sslPEMKeyFile,
+                                          params.sslPEMKeyPassword,
                                           &_sslConfiguration.serverSubjectName,
                                           &_sslConfiguration.serverCertificateExpirationDate)) {
             uasserted(16942, "ssl initialization problem");
@@ -547,8 +569,10 @@ SSLManager::SSLManager(const SSLParams& params, bool isServer)
 int SSLManager::password_cb(char* buf, int num, int rwflag, void* userdata) {
     // Unless OpenSSL misbehaves, num should always be positive
     fassert(17314, num > 0);
-    SSLManager* sm = static_cast<SSLManager*>(userdata);
-    const size_t copied = sm->_password.copy(buf, num - 1);
+    invariant(userdata);
+    auto pw = static_cast<const std::string*>(userdata);
+
+    const size_t copied = pw->copy(buf, num - 1);
     buf[copied] = '\0';
     return copied;
 }
@@ -732,9 +756,10 @@ unsigned long long SSLManager::_convertASN1ToMillis(ASN1_TIME* asn1time) {
 }
 
 bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
+                                              const std::string& keyPassword,
                                               std::string* subjectName,
                                               Date_t* serverCertificateExpirationDate) {
-    BIO* inBIO = BIO_new(BIO_s_file_internal());
+    BIO* inBIO = BIO_new(BIO_s_file());
     if (inBIO == NULL) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
         return false;
@@ -747,7 +772,11 @@ bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
         return false;
     }
 
-    X509* x509 = PEM_read_bio_X509(inBIO, NULL, &SSLManager::password_cb, this);
+    // Callback will not manipulate the password, so const_cast is safe.
+    X509* x509 = PEM_read_bio_X509(inBIO,
+                                   NULL,
+                                   &SSLManager::password_cb,
+                                   const_cast<void*>(static_cast<const void*>(&keyPassword)));
     if (x509 == NULL) {
         error() << "cannot retrieve certificate from keyfile: " << keyFile << ' '
                 << getSSLErrorMessage(ERR_get_error());
@@ -783,23 +812,44 @@ bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
 bool SSLManager::_setupPEM(SSL_CTX* context,
                            const std::string& keyFile,
                            const std::string& password) {
-    _password = password;
-
     if (SSL_CTX_use_certificate_chain_file(context, keyFile.c_str()) != 1) {
         error() << "cannot read certificate file: " << keyFile << ' '
                 << getSSLErrorMessage(ERR_get_error());
         return false;
     }
 
-    // If password is empty, use default OpenSSL callback, which uses the terminal
-    // to securely request the password interactively from the user.
-    if (!password.empty()) {
-        SSL_CTX_set_default_passwd_cb_userdata(context, this);
-        SSL_CTX_set_default_passwd_cb(context, &SSLManager::password_cb);
+    BIO* inBio = BIO_new(BIO_s_file());
+    if (!inBio) {
+        error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
+        return false;
+    }
+    const auto bioGuard = MakeGuard([&inBio]() { BIO_free(inBio); });
+
+    if (BIO_read_filename(inBio, keyFile.c_str()) <= 0) {
+        error() << "cannot read PEM key file: " << keyFile << ' '
+                << getSSLErrorMessage(ERR_get_error());
+        return false;
     }
 
-    if (SSL_CTX_use_PrivateKey_file(context, keyFile.c_str(), SSL_FILETYPE_PEM) != 1) {
+    // If password is empty, use default OpenSSL callback, which uses the terminal
+    // to securely request the password interactively from the user.
+    decltype(&SSLManager::password_cb) password_cb = nullptr;
+    void* userdata = nullptr;
+    if (!password.empty()) {
+        password_cb = &SSLManager::password_cb;
+        // SSLManager::password_cb will not manipulate the password, so const_cast is safe.
+        userdata = const_cast<void*>(static_cast<const void*>(&password));
+    }
+    EVP_PKEY* privateKey = PEM_read_bio_PrivateKey(inBio, nullptr, password_cb, userdata);
+    if (!privateKey) {
         error() << "cannot read PEM key file: " << keyFile << ' '
+                << getSSLErrorMessage(ERR_get_error());
+        return false;
+    }
+    const auto privateKeyGuard = MakeGuard([&privateKey]() { EVP_PKEY_free(privateKey); });
+
+    if (SSL_CTX_use_PrivateKey(context, privateKey) != 1) {
+        error() << "cannot use PEM key file: " << keyFile << ' '
                 << getSSLErrorMessage(ERR_get_error());
         return false;
     }
@@ -851,9 +901,11 @@ inline Status checkX509_STORE_error() {
 #if defined(_WIN32)
 // This imports the certificates in a given Windows certificate store into an X509_STORE for
 // openssl to use during certificate validation.
-Status importCertStoreToX509_STORE(LPWSTR storeName, DWORD storeLocation, X509_STORE* verifyStore) {
-    HCERTSTORE systemStore =
-        CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, NULL, storeLocation, storeName);
+Status importCertStoreToX509_STORE(const wchar_t* storeName,
+                                   DWORD storeLocation,
+                                   X509_STORE* verifyStore) {
+    HCERTSTORE systemStore = CertOpenStore(
+        CERT_STORE_PROV_SYSTEM_W, 0, NULL, storeLocation, const_cast<LPWSTR>(storeName));
     if (systemStore == NULL) {
         return {ErrorCodes::InvalidSSLConfiguration,
                 str::stream() << "error opening system CA store: " << errnoWithDescription()};
@@ -1244,7 +1296,7 @@ SSLPeerInfo SSLManager::parseAndValidatePeerCertificateDeprecated(const SSLConne
 
 StatusWith<stdx::unordered_set<RoleName>> SSLManager::_parsePeerRoles(X509* peerCert) const {
     // exts is owned by the peerCert
-    STACK_OF(X509_EXTENSION)* exts = peerCert->cert_info->extensions;
+    const STACK_OF(X509_EXTENSION)* exts = X509_get0_extensions(peerCert);
 
     int extCount = 0;
     if (exts) {

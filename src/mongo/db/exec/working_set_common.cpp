@@ -41,7 +41,7 @@
 namespace mongo {
 
 // static
-bool WorkingSetCommon::fetchAndInvalidateRecordId(OperationContext* txn,
+bool WorkingSetCommon::fetchAndInvalidateRecordId(OperationContext* opCtx,
                                                   WorkingSetMember* member,
                                                   const Collection* collection) {
     // Already in our desired state.
@@ -55,7 +55,7 @@ bool WorkingSetCommon::fetchAndInvalidateRecordId(OperationContext* txn,
     }
 
     // Do the fetch, invalidate the DL.
-    member->obj = collection->docFor(txn, member->recordId);
+    member->obj = collection->docFor(opCtx, member->recordId);
     member->obj.setValue(member->obj.value().getOwned());
     member->recordId = RecordId();
     member->transitionToOwnedObj();
@@ -86,7 +86,7 @@ void WorkingSetCommon::prepareForSnapshotChange(WorkingSet* workingSet) {
 }
 
 // static
-bool WorkingSetCommon::fetch(OperationContext* txn,
+bool WorkingSetCommon::fetch(OperationContext* opCtx,
                              WorkingSet* workingSet,
                              WorkingSetID id,
                              unowned_ptr<SeekableRecordCursor> cursor) {
@@ -105,7 +105,7 @@ bool WorkingSetCommon::fetch(OperationContext* txn,
         return false;
     }
 
-    member->obj = {txn->recoveryUnit()->getSnapshotId(), record->data.releaseToBson()};
+    member->obj = {opCtx->recoveryUnit()->getSnapshotId(), record->data.releaseToBson()};
 
     if (member->isSuspicious) {
         // Make sure that all of the keyData is still valid for this copy of the document.
@@ -118,7 +118,10 @@ bool WorkingSetCommon::fetch(OperationContext* txn,
             // There's no need to compute the prefixes of the indexed fields that cause the index to
             // be multikey when ensuring the keyData is still valid.
             MultikeyPaths* multikeyPaths = nullptr;
-            member->keyData[i].index->getKeys(member->obj.value(), &keys, multikeyPaths);
+            member->keyData[i].index->getKeys(member->obj.value(),
+                                              IndexAccessMethod::GetKeysMode::kEnforceConstraints,
+                                              &keys,
+                                              multikeyPaths);
             if (!keys.count(member->keyData[i].keyData)) {
                 // document would no longer be at this position in the index.
                 return false;

@@ -132,10 +132,11 @@ public:
                         RemoteCommandRequest& request,
                         const RemoteCommandCompletionFn& onFinish) override;
     void cancelCommand(const TaskExecutor::CallbackHandle& cbHandle) override;
-    void cancelAllCommands() override;
     Status setAlarm(Date_t when, const stdx::function<void()>& action) override;
 
     bool onNetworkThread() override;
+
+    void dropConnections(const HostAndPort& hostAndPort) override;
 
 private:
     using ResponseStatus = TaskExecutor::ResponseStatus;
@@ -183,28 +184,7 @@ private:
      */
     class AsyncCommand {
     public:
-        /**
-         * Describes the variant of AsyncCommand this object represents.
-         */
-        enum class CommandType {
-            /**
-             * An ordinary command of an unspecified Protocol.
-             */
-            kRPC,
-
-            /**
-             * A 'find' command that has been downconverted to an OP_QUERY.
-             */
-            kDownConvertedFind,
-
-            /**
-             * A 'getMore' command that has been downconverted to an OP_GET_MORE.
-             */
-            kDownConvertedGetMore,
-        };
-
         AsyncCommand(AsyncConnection* conn,
-                     CommandType type,
                      Message&& command,
                      Date_t now,
                      const HostAndPort& target);
@@ -222,8 +202,6 @@ private:
 
     private:
         NetworkInterfaceASIO::AsyncConnection* const _conn;
-
-        const CommandType _type;
 
         Message _toSend;
         Message _toRecv;
@@ -305,13 +283,11 @@ private:
 
         // This form of beginCommand takes a raw message. It is needed if the caller
         // has to form the command manually (e.g. to use a specific requestBuilder).
-        Status beginCommand(Message&& newCommand,
-                            AsyncCommand::CommandType,
-                            const HostAndPort& target);
+        Status beginCommand(Message&& newCommand, const HostAndPort& target);
 
         AsyncCommand* command();
 
-        void finish(const TaskExecutor::ResponseStatus& status);
+        void finish(TaskExecutor::ResponseStatus&& status);
 
         const RemoteCommandRequest& request() const;
 
@@ -452,7 +428,8 @@ private:
             str::stream msg;
             msg << "Operation timed out"
                 << ", request was " << op->_request.toString();
-            auto rs = ResponseStatus(ErrorCodes::ExceededTimeLimit, msg, now() - op->start());
+            auto rs = ResponseStatus(
+                ErrorCodes::NetworkInterfaceExceededTimeLimit, msg, now() - op->start());
             return _completeOperation(op, rs);
         } else if (ec)
             return _networkErrorCallback(op, ec);

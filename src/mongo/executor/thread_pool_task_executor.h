@@ -68,7 +68,7 @@ public:
     void startup() override;
     void shutdown() override;
     void join() override;
-    std::string getDiagnosticString() override;
+    void appendDiagnosticBSON(BSONObjBuilder* b) const;
     Date_t now() override;
     StatusWith<EventHandle> makeEvent() override;
     void signalEvent(const EventHandle& event) override;
@@ -84,9 +84,9 @@ public:
     void appendConnectionStats(ConnectionPoolStats* stats) const override;
 
     /**
-     * Cancels all commands on the network interface.
+     * Drops all connections to the given host on the network interface.
      */
-    void cancelAllCommands();
+    void dropConnections(const HostAndPort& hostAndPort);
 
 private:
     class CallbackState;
@@ -154,7 +154,7 @@ private:
     std::unique_ptr<ThreadPoolInterface> _pool;
 
     // Mutex guarding all remaining fields.
-    stdx::mutex _mutex;
+    mutable stdx::mutex _mutex;
 
     // Queue containing all items currently scheduled into the thread pool but not yet completed.
     WorkQueue _poolInProgressQueue;

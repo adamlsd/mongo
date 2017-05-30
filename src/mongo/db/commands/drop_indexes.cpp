@@ -83,15 +83,14 @@ public:
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    CmdDropIndexes() : Command("dropIndexes", false, "deleteIndexes") {}
-    bool run(OperationContext* txn,
+    CmdDropIndexes() : Command("dropIndexes", "deleteIndexes") {}
+    bool run(OperationContext* opCtx,
              const string& dbname,
-             BSONObj& jsobj,
-             int,
+             const BSONObj& jsobj,
              string& errmsg,
              BSONObjBuilder& result) {
         const NamespaceString nss = parseNsCollectionRequired(dbname, jsobj);
-        return appendCommandStatus(result, dropIndexes(txn, nss, jsobj, &result));
+        return appendCommandStatus(result, dropIndexes(opCtx, nss, jsobj, &result));
     }
 
 } cmdDropIndexes;
@@ -102,7 +101,7 @@ public:
         return true;
     }  // can reindex on a secondary
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return true;
+        return false;
     }
     virtual void help(stringstream& help) const {
         help << "re-index a collection";
@@ -116,25 +115,23 @@ public:
     }
     CmdReIndex() : Command("reIndex") {}
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& dbname,
-             BSONObj& jsobj,
-             int,
+             const BSONObj& jsobj,
              string& errmsg,
              BSONObjBuilder& result) {
-        DBDirectClient db(txn);
+        DBDirectClient db(opCtx);
 
         const NamespaceString toReIndexNs = parseNsCollectionRequired(dbname, jsobj);
 
         LOG(0) << "CMD: reIndex " << toReIndexNs;
 
-        ScopedTransaction transaction(txn, MODE_IX);
-        Lock::DBLock dbXLock(txn->lockState(), dbname, MODE_X);
-        OldClientContext ctx(txn, toReIndexNs.ns());
+        Lock::DBLock dbXLock(opCtx, dbname, MODE_X);
+        OldClientContext ctx(opCtx, toReIndexNs.ns());
 
-        Collection* collection = ctx.db()->getCollection(toReIndexNs.ns());
+        Collection* collection = ctx.db()->getCollection(opCtx, toReIndexNs);
         if (!collection) {
-            if (ctx.db()->getViewCatalog()->lookup(txn, toReIndexNs.ns()))
+            if (ctx.db()->getViewCatalog()->lookup(opCtx, toReIndexNs.ns()))
                 return appendCommandStatus(
                     result, {ErrorCodes::CommandNotSupportedOnView, "can't re-index a view"});
             else
@@ -152,12 +149,12 @@ public:
         vector<BSONObj> all;
         {
             vector<string> indexNames;
-            collection->getCatalogEntry()->getAllIndexes(txn, &indexNames);
+            collection->getCatalogEntry()->getAllIndexes(opCtx, &indexNames);
             all.reserve(indexNames.size());
 
             for (size_t i = 0; i < indexNames.size(); i++) {
                 const string& name = indexNames[i];
-                BSONObj spec = collection->getCatalogEntry()->getIndexSpec(txn, name);
+                BSONObj spec = collection->getCatalogEntry()->getIndexSpec(opCtx, name);
 
                 {
                     BSONObjBuilder bob;
@@ -178,7 +175,8 @@ public:
                 }
 
                 const BSONObj key = spec.getObjectField("key");
-                const Status keyStatus = validateKeyPattern(key);
+                const Status keyStatus =
+                    index_key_validate::validateKeyPattern(key, defaultIndexVersion);
                 if (!keyStatus.isOK()) {
                     errmsg = str::stream()
                         << "Cannot rebuild index " << spec << ": " << keyStatus.reason()
@@ -191,16 +189,12 @@ public:
         result.appendNumber("nIndexesWas", all.size());
 
         {
-            WriteUnitOfWork wunit(txn);
-            Status s = collection->getIndexCatalog()->dropAllIndexes(txn, true);
-            if (!s.isOK()) {
-                errmsg = "dropIndexes failed";
-                return appendCommandStatus(result, s);
-            }
+            WriteUnitOfWork wunit(opCtx);
+            collection->getIndexCatalog()->dropAllIndexes(opCtx, true);
             wunit.commit();
         }
 
-        MultiIndexBlock indexer(txn, collection);
+        MultiIndexBlock indexer(opCtx, collection);
         // do not want interruption as that will leave us without indexes.
 
         auto indexInfoObjs = indexer.init(all);
@@ -214,7 +208,7 @@ public:
         }
 
         {
-            WriteUnitOfWork wunit(txn);
+            WriteUnitOfWork wunit(opCtx);
             indexer.commit();
             wunit.commit();
         }
@@ -223,8 +217,8 @@ public:
         // This was also done when dropAllIndexes() committed, but we need to ensure that no one
         // tries to read in the intermediate state where all indexes are newer than the current
         // snapshot so are unable to be used.
-        auto replCoord = repl::ReplicationCoordinator::get(txn);
-        auto snapshotName = replCoord->reserveSnapshotName(txn);
+        auto replCoord = repl::ReplicationCoordinator::get(opCtx);
+        auto snapshotName = replCoord->reserveSnapshotName(opCtx);
         replCoord->forceSnapshotCreation();  // Ensures a newer snapshot gets created even if idle.
         collection->setMinimumVisibleSnapshot(snapshotName);
 

@@ -12,6 +12,7 @@
 #include "mozilla/MemoryReporting.h"
 
 #include "js/TraceableVector.h"
+#include "js/Utility.h"
 #include "js/Vector.h"
 #include "vm/Runtime.h"
 
@@ -51,11 +52,11 @@ class MOZ_RAII AutoCycleDetector
     bool foundCycle() { return cyclic; }
 
   private:
+    Generation hashsetGenerationAtInit;
     JSContext* cx;
     RootedObject obj;
-    bool cyclic;
-    uint32_t hashsetGenerationAtInit;
     Set::AddPtr hashsetAddPointer;
+    bool cyclic;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
@@ -146,6 +147,10 @@ class ExclusiveContext : public ContextFriendFields,
     bool shouldBeJSContext() const {
         MOZ_ASSERT(isJSContext());
         return isJSContext();
+    }
+
+    bool runtimeMatches(JSRuntime* rt) const {
+        return runtime_ == rt;
     }
 
   protected:

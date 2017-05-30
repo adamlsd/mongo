@@ -29,6 +29,8 @@
 
 namespace mongo {
 
+class Command;
+class DBException;
 class OperationContext;
 
 namespace rpc {
@@ -36,7 +38,18 @@ class ReplyBuilderInterface;
 class RequestInterface;
 }  // namespace rpc
 
-void runCommands(OperationContext* txn,
+
+/**
+ * Generates a command error response. Similar to other overloads of generateErrorResponse,
+ * but doesn't print any information about the specific command being executed. This is
+ * neccessary, for example, if there is
+ * an assertion hit while parsing the command.
+ */
+void generateErrorResponse(OperationContext* opCtx,
+                           rpc::ReplyBuilderInterface* replyBuilder,
+                           const DBException& exception);
+
+void runCommands(OperationContext* opCtx,
                  const rpc::RequestInterface& request,
                  rpc::ReplyBuilderInterface* replyBuilder);
 

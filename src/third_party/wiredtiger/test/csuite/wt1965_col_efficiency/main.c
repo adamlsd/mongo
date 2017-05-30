@@ -35,8 +35,6 @@
  * it is demonstrating an inefficiency rather than a correctness bug.
  */
 
-void (*custom_die)(void) = NULL;
-
 /* If changing field count also need to change set_value and get_value calls */
 #define	NR_FIELDS 8
 #define	NR_OBJECTS 100
@@ -134,7 +132,8 @@ main(int argc, char *argv[])
 	testutil_check(opts->conn->open_session(
 	    opts->conn, NULL, NULL, &session));
 
-	sprintf(table_format, "key_format=r,value_format=");
+	testutil_check(__wt_snprintf(
+	    table_format, sizeof(table_format), "key_format=r,value_format="));
 	for (i = 0; i < NR_FIELDS; i++)
 		strcat(table_format, "Q");
 

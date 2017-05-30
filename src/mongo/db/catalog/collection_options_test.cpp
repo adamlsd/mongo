@@ -57,20 +57,12 @@ TEST(CollectionOptions, SimpleRoundTrip) {
     checkRoundTrip(options);
 }
 
-TEST(CollectionOptions, IsValid) {
-    CollectionOptions options;
-    ASSERT_TRUE(options.isValid());
-
-    options.storageEngine = fromjson("{storageEngine1: 1}");
-    ASSERT_FALSE(options.isValid());
-}
-
 TEST(CollectionOptions, Validate) {
     CollectionOptions options;
-    ASSERT_OK(options.validate());
+    ASSERT_OK(options.validateForStorage());
 
     options.storageEngine = fromjson("{storageEngine1: 1}");
-    ASSERT_NOT_OK(options.validate());
+    ASSERT_NOT_OK(options.validateForStorage());
 }
 
 TEST(CollectionOptions, Validator) {
@@ -84,9 +76,9 @@ TEST(CollectionOptions, Validator) {
     options.validator = fromjson("{b: 1}");
     ASSERT_BSONOBJ_EQ(options.toBSON()["validator"].Obj(), fromjson("{b: 1}"));
 
-    options.reset();
-    ASSERT_BSONOBJ_EQ(options.validator, BSONObj());
-    ASSERT(!options.toBSON()["validator"]);
+    CollectionOptions defaultOptions;
+    ASSERT_BSONOBJ_EQ(defaultOptions.validator, BSONObj());
+    ASSERT(!defaultOptions.toBSON()["validator"]);
 }
 
 TEST(CollectionOptions, ErrorBadSize) {
@@ -171,9 +163,8 @@ TEST(CollectionOptions, ResetStorageEngineField) {
     ASSERT_OK(opts.parse(fromjson("{storageEngine: {storageEngine1: {x: 1}}}")));
     checkRoundTrip(opts);
 
-    opts.reset();
-
-    ASSERT_TRUE(opts.storageEngine.isEmpty());
+    CollectionOptions defaultOpts;
+    ASSERT_TRUE(defaultOpts.storageEngine.isEmpty());
 }
 
 TEST(CollectionOptions, ModifyStorageEngineField) {
@@ -211,8 +202,7 @@ TEST(CollectionOptions, CollationFieldParsesCorrectly) {
     CollectionOptions options;
     ASSERT_OK(options.parse(fromjson("{collation: {locale: 'en'}}")));
     ASSERT_BSONOBJ_EQ(options.collation, fromjson("{locale: 'en'}"));
-    ASSERT_TRUE(options.isValid());
-    ASSERT_OK(options.validate());
+    ASSERT_OK(options.validateForStorage());
 }
 
 TEST(CollectionOptions, ParsedCollationObjShouldBeOwned) {
@@ -224,10 +214,9 @@ TEST(CollectionOptions, ParsedCollationObjShouldBeOwned) {
 
 TEST(CollectionOptions, ResetClearsCollationField) {
     CollectionOptions options;
+    ASSERT_TRUE(options.collation.isEmpty());
     ASSERT_OK(options.parse(fromjson("{collation: {locale: 'en'}}")));
     ASSERT_FALSE(options.collation.isEmpty());
-    options.reset();
-    ASSERT_TRUE(options.collation.isEmpty());
 }
 
 TEST(CollectionOptions, CollationFieldLeftEmptyWhenOmitted) {
@@ -268,5 +257,80 @@ TEST(CollectionOptions, UnknownTopLevelOptionFailsToParse) {
     auto status = options.parse(fromjson("{invalidOption: 1}"));
     ASSERT_NOT_OK(status);
     ASSERT_EQ(status.code(), ErrorCodes::InvalidOptions);
+}
+
+TEST(CollectionOptions, CreateOptionIgnoredIfFirst) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{create: 1}"));
+    ASSERT_OK(status);
+}
+
+TEST(CollectionOptions, CreateOptionIgnoredIfNotFirst) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{capped: true, create: 1, size: 1024}"));
+    ASSERT_OK(status);
+    ASSERT_EQ(options.capped, true);
+    ASSERT_EQ(options.cappedSize, 1024L);
+}
+
+TEST(CollectionOptions, UnknownOptionIgnoredIfCreateOptionFirst) {
+    CollectionOptions options;
+    ASSERT_OK(options.parse(fromjson("{create: 1, invalidOption: 1}")));
+}
+
+TEST(CollectionOptions, UnknownOptionIgnoredIfCreateOptionPresent) {
+    CollectionOptions options;
+    ASSERT_OK(options.parse(fromjson("{invalidOption: 1, create: 1}")));
+}
+
+TEST(CollectionOptions, UnknownOptionRejectedIfCreateOptionNotPresent) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{invalidOption: 1}"));
+    ASSERT_NOT_OK(status);
+    ASSERT_EQ(status.code(), ErrorCodes::InvalidOptions);
+}
+
+TEST(CollectionOptions, DuplicateCreateOptionIgnoredIfCreateOptionFirst) {
+    CollectionOptions options;
+    auto status = options.parse(BSON("create" << 1 << "create" << 1));
+    ASSERT_OK(status);
+}
+
+TEST(CollectionOptions, DuplicateCreateOptionIgnoredIfCreateOptionNotFirst) {
+    CollectionOptions options;
+    auto status =
+        options.parse(BSON("capped" << true << "create" << 1 << "create" << 1 << "size" << 1024));
+    ASSERT_OK(status);
+}
+
+TEST(CollectionOptions, MaxTimeMSWhitelistedOptionIgnored) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{maxTimeMS: 1}"));
+    ASSERT_OK(status);
+}
+
+TEST(CollectionOptions, WriteConcernWhitelistedOptionIgnored) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{writeConcern: 1}"));
+    ASSERT_OK(status);
+}
+
+TEST(CollectionOptions, ParseUUID) {
+    CollectionOptions options;
+    CollectionUUID uuid = CollectionUUID::gen();
+
+    // Check required parse failures
+    ASSERT_FALSE(options.uuid);
+    ASSERT_NOT_OK(options.parse(uuid.toBSON()));
+    ASSERT_NOT_OK(options.parse(BSON("uuid" << 1)));
+    ASSERT_NOT_OK(options.parse(BSON("uuid" << 1), CollectionOptions::parseForStorage));
+    ASSERT_FALSE(options.uuid);
+
+    // Check successful parse and roundtrip.
+    ASSERT_OK(options.parse(uuid.toBSON(), CollectionOptions::parseForStorage));
+    ASSERT(options.uuid.get() == uuid);
+
+    // Check that a collection options containing a UUID passes validation.
+    ASSERT_OK(options.validateForStorage());
 }
 }  // namespace mongo

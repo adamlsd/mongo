@@ -557,6 +557,12 @@ session_ops(WT_SESSION *session)
 	/*! [Create a column-store table] */
 	ret = session->create(session,
 	    "table:mytable", "key_format=r,value_format=S");
+
+	/*! [Alter a table] */
+	ret = session->alter(session,
+	    "table:mytable", "access_pattern_hint=random");
+	/*! [Alter a table] */
+
 	/*! [Create a column-store table] */
 	ret = session->drop(session, "table:mytable", NULL);
 
@@ -610,6 +616,13 @@ session_ops(WT_SESSION *session)
 	    "table:mytable",
 	    "block_compressor=zlib,key_format=S,value_format=S");
 	/*! [Create a zlib compressed table] */
+	ret = session->drop(session, "table:mytable", NULL);
+
+	/*! [Create a zstd compressed table] */
+	ret = session->create(session,
+	    "table:mytable",
+	    "block_compressor=zstd,key_format=S,value_format=S");
+	/*! [Create a zstd compressed table] */
 	ret = session->drop(session, "table:mytable", NULL);
 #endif
 
@@ -835,8 +848,8 @@ my_compare(WT_COLLATOR *collator, WT_SESSION *session,
 
 	p1 = (const char *)value1->data;
 	p2 = (const char *)value2->data;
-	while (*p1 != '\0' && *p1 == *p2)
-		p1++, p2++;
+	for (; *p1 != '\0' && *p1 == *p2; ++p1, ++p2)
+		;
 
 	*cmp = (int)*p2 - (int)*p1;
 	return (0);
@@ -1105,6 +1118,32 @@ main(void)
 	    "create,"
 	    "extensions=[/usr/local/lib/libwiredtiger_zlib.so]", &conn);
 	/*! [Configure zlib extension] */
+	if (ret == 0)
+		(void)conn->close(conn, NULL);
+
+	/*! [Configure zlib extension with compression level] */
+	ret = wiredtiger_open(home, NULL,
+	    "create,"
+	    "extensions=[/usr/local/lib/"
+	    "libwiredtiger_zlib.so=[config=[compression_level=3]]]", &conn);
+	/*! [Configure zlib extension with compression level] */
+	if (ret == 0)
+		(void)conn->close(conn, NULL);
+
+	/*! [Configure zstd extension] */
+	ret = wiredtiger_open(home, NULL,
+	    "create,"
+	    "extensions=[/usr/local/lib/libwiredtiger_zstd.so]", &conn);
+	/*! [Configure zstd extension] */
+	if (ret == 0)
+		(void)conn->close(conn, NULL);
+
+	/*! [Configure zstd extension with compression level] */
+	ret = wiredtiger_open(home, NULL,
+	    "create,"
+	    "extensions=[/usr/local/lib/"
+	    "libwiredtiger_zstd.so=[config=[compression_level=9]]]", &conn);
+	/*! [Configure zstd extension with compression level] */
 	if (ret == 0)
 		(void)conn->close(conn, NULL);
 

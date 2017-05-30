@@ -35,7 +35,7 @@ namespace {
 
 class ProfileCmd : public Command {
 public:
-    ProfileCmd() : Command("profile", false) {}
+    ProfileCmd() : Command("profile") {}
 
     virtual bool slaveOk() const {
         return true;
@@ -58,10 +58,9 @@ public:
         out->push_back(Privilege(ResourcePattern::forDatabaseName(dbname), actions));
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& dbname,
-                     BSONObj& cmdObj,
-                     int options,
+                     const BSONObj& cmdObj,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
         errmsg = "profile currently not supported via mongos";

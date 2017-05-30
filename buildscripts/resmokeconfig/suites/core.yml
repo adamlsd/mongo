@@ -1,7 +1,7 @@
 selector:
   js_test:
     roots:
-    - jstests/core/*.js
+    - jstests/core/**/*.js
 
 executor:
   js_test:
@@ -15,5 +15,6 @@ executor:
     fixture:
       class: MongoDFixture
       mongod_options:
+        bind_ip_all: ''
         set_parameters:
           enableTestCommands: 1

@@ -178,6 +178,10 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
             str::stream() << "Database name '" << database << "' is not valid.",
             NamespaceString::validDBName(database, NamespaceString::DollarInDbNameBehavior::Allow));
 
+    // Make sure to reconnect if needed before building our request, since the request depends on
+    // the negotiated protocol which can change due to a reconnect.
+    checkConnection();
+
     // call() oddly takes this by pointer, so we need to put it on the stack.
     auto host = getServerAddress();
 
@@ -185,8 +189,8 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
     metadataBob.appendElements(metadata);
 
     if (_metadataWriter) {
-        uassertStatusOK(_metadataWriter(
-            (haveClient() ? cc().getOperationContext() : nullptr), &metadataBob, host));
+        uassertStatusOK(
+            _metadataWriter((haveClient() ? cc().getOperationContext() : nullptr), &metadataBob));
     }
 
     auto requestBuilder = rpc::makeRequestBuilder(getClientRPCProtocols(), getServerRPCProtocols());
@@ -223,14 +227,14 @@ rpc::UniqueReply DBClientWithCommands::runCommandWithMetadata(StringData databas
                           << "' ",
             requestBuilder->getProtocol() == commandReply->getProtocol());
 
+    if (_metadataReader) {
+        uassertStatusOK(_metadataReader(commandReply->getMetadata(), host));
+    }
+
     if (ErrorCodes::SendStaleConfig ==
         getStatusFromCommandResult(commandReply->getCommandReply())) {
         throw RecvStaleConfigException("stale config in runCommand",
                                        commandReply->getCommandReply());
-    }
-
-    if (_metadataReader) {
-        uassertStatusOK(_metadataReader(commandReply->getMetadata(), host));
     }
 
     return rpc::UniqueReply(std::move(replyMsg), std::move(commandReply));
@@ -252,8 +256,7 @@ std::tuple<bool, DBClientWithCommands*> DBClientWithCommands::runCommandWithTarg
     // TODO: This will be downconverted immediately if the underlying
     // requestBuilder is a legacyRequest builder. Not sure what the best
     // way to get around that is without breaking the abstraction.
-    std::tie(upconvertedCmd, upconvertedMetadata) =
-        uassertStatusOK(rpc::upconvertRequestMetadata(cmd, options));
+    std::tie(upconvertedCmd, upconvertedMetadata) = rpc::upconvertRequestMetadata(cmd, options);
 
     auto commandName = upconvertedCmd.firstElementFieldName();
 
@@ -447,7 +450,7 @@ void DBClientWithCommands::_auth(const BSONObj& params) {
 
     auth::authenticateClient(
         params,
-        HostAndPort(getServerAddress()).host(),
+        HostAndPort(getServerAddress()),
         clientName,
         [this](RemoteCommandRequest request, auth::AuthCompletionHandler handler) {
             BSONObj info;
@@ -474,7 +477,7 @@ void DBClientWithCommands::_auth(const BSONObj& params) {
 
 bool DBClientWithCommands::authenticateInternalUser() {
     if (!isInternalAuthSet()) {
-        if (!serverGlobalParams.quiet) {
+        if (!serverGlobalParams.quiet.load()) {
             log() << "ERROR: No authentication parameters set for internal user";
         }
         return false;
@@ -484,7 +487,7 @@ bool DBClientWithCommands::authenticateInternalUser() {
         auth(getInternalUserAuthParams());
         return true;
     } catch (const UserException& ex) {
-        if (!serverGlobalParams.quiet) {
+        if (!serverGlobalParams.quiet.load()) {
             log() << "can't authenticate to " << toString()
                   << " as internal user, error: " << ex.what();
         }
@@ -581,23 +584,6 @@ bool DBClientWithCommands::eval(const string& dbname, const string& jscode) {
     BSONObj info;
     BSONElement retValue;
     return eval(dbname, jscode, info, retValue);
-}
-
-list<string> DBClientWithCommands::getDatabaseNames() {
-    BSONObj info;
-    uassert(10005,
-            "listdatabases failed",
-            runCommand("admin", BSON("listDatabases" << 1), info, QueryOption_SlaveOk));
-    uassert(10006, "listDatabases.databases not array", info["databases"].type() == Array);
-
-    list<string> names;
-
-    BSONObjIterator i(info["databases"].embeddedObjectUserCheck());
-    while (i.more()) {
-        names.push_back(i.next().embeddedObjectUserCheck()["name"].valuestr());
-    }
-
-    return names;
 }
 
 list<BSONObj> DBClientWithCommands::getCollectionInfos(const string& db, const BSONObj& filter) {
@@ -751,6 +737,10 @@ executor::RemoteCommandResponse initWireVersion(DBClientConnection* conn,
         }
 
         conn->getCompressorManager().clientBegin(&bob);
+
+        if (WireSpec::instance().isInternalClient) {
+            WireSpec::appendInternalClientWireVersion(WireSpec::instance().outgoing, &bob);
+        }
 
         Date_t start{Date_t::now()};
         auto result =
@@ -1430,12 +1420,13 @@ void DBClientConnection::handleNotMasterResponse(const BSONElement& elemToCheck)
         return;
     }
 
-    MONGO_LOG_COMPONENT(1, logger::LogComponent::kReplication)
-        << "got not master from: " << _serverAddress << " of repl set: " << _parentReplSetName;
-
     ReplicaSetMonitorPtr monitor = ReplicaSetMonitor::get(_parentReplSetName);
     if (monitor) {
-        monitor->failedHost(_serverAddress);
+        monitor->failedHost(_serverAddress,
+                            {ErrorCodes::NotMaster,
+                             str::stream() << "got not master from: " << _serverAddress
+                                           << " of repl set: "
+                                           << _parentReplSetName});
     }
 
     _failed = true;

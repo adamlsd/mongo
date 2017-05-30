@@ -29,8 +29,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/commands.h"
-#include "mongo/s/catalog/catalog_cache.h"
-#include "mongo/s/config.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
 
 namespace mongo {
@@ -38,7 +37,7 @@ namespace {
 
 class FlushRouterConfigCmd : public Command {
 public:
-    FlushRouterConfigCmd() : Command("flushRouterConfig", false, "flushrouterconfig") {}
+    FlushRouterConfigCmd() : Command("flushRouterConfig", "flushrouterconfig") {}
 
     virtual bool slaveOk() const {
         return true;
@@ -65,13 +64,12 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const std::string& dbname,
-                     BSONObj& cmdObj,
-                     int options,
+                     const BSONObj& cmdObj,
                      std::string& errmsg,
                      BSONObjBuilder& result) {
-        grid.catalogCache()->invalidateAll();
+        Grid::get(opCtx)->catalogCache()->purgeAllDatabases();
 
         result.appendBool("flushed", true);
         return true;

@@ -77,31 +77,30 @@ public:
         return isAuthorized ? Status::OK() : Status(ErrorCodes::Unauthorized, "Unauthorized");
     }
 
-    CmdLockInfo() : Command("lockInfo", true) {}
+    CmdLockInfo() : Command("lockInfo") {}
 
-    bool run(OperationContext* txn,
+    bool run(OperationContext* opCtx,
              const string& dbname,
-             BSONObj& jsobj,
-             int,
+             const BSONObj& jsobj,
              string& errmsg,
              BSONObjBuilder& result) {
         std::map<LockerId, BSONObj> lockToClientMap;
 
-        for (ServiceContext::LockedClientsCursor cursor(txn->getClient()->getServiceContext());
+        for (ServiceContext::LockedClientsCursor cursor(opCtx->getClient()->getServiceContext());
              Client* client = cursor.next();) {
             invariant(client);
 
             stdx::lock_guard<Client> lk(*client);
-            const OperationContext* opCtx = client->getOperationContext();
+            const OperationContext* clientOpCtx = client->getOperationContext();
 
             // Operation context specific information
-            if (opCtx) {
+            if (clientOpCtx) {
                 BSONObjBuilder infoBuilder;
                 // The client information
                 client->reportState(infoBuilder);
 
-                infoBuilder.append("opid", opCtx->getOpID());
-                LockerId lockerId = opCtx->lockState()->getId();
+                infoBuilder.append("opid", clientOpCtx->getOpID());
+                LockerId lockerId = clientOpCtx->lockState()->getId();
                 lockToClientMap.insert({lockerId, infoBuilder.obj()});
             }
         }

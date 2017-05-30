@@ -109,6 +109,31 @@ inline int pipe(int fds[2]) {
 namespace shell_utils {
 
 namespace {
+void safeClose(int fd) {
+#ifndef _WIN32
+    struct ScopedSignalBlocker {
+        ScopedSignalBlocker() {
+            sigset_t mask;
+            sigfillset(&mask);
+            pthread_sigmask(SIG_SETMASK, &mask, &_oldMask);
+        }
+
+        ~ScopedSignalBlocker() {
+            pthread_sigmask(SIG_SETMASK, &_oldMask, NULL);
+        }
+
+    private:
+        sigset_t _oldMask;
+    };
+    const ScopedSignalBlocker block;
+#endif
+    if (close(fd) != 0) {
+        const auto ewd = errnoWithDescription();
+        error() << "failed to close fd " << fd << ": " << ewd;
+        fassertFailed(40318);
+    }
+}
+
 stdx::mutex _createProcessMtx;
 }  // namespace
 
@@ -127,36 +152,32 @@ ProcessId ProgramRegistry::pidForPort(int port) const {
 
 int ProgramRegistry::portForPid(ProcessId pid) const {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
-    for (auto&& it = _portToPidMap.begin(); it != _portToPidMap.end(); ++it) {
-        if (it->second == pid)
-            return it->first;
+    for (const auto& portPid : _portToPidMap) {
+        if (portPid.second == pid)
+            return portPid.first;
     }
     return -1;
 }
 
-void ProgramRegistry::registerProgram(ProcessId pid, int output, int port) {
+void ProgramRegistry::registerProgram(ProcessId pid, int port) {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
     invariant(!isPidRegistered(pid));
-    _portToPidMap.emplace(port, pid);
-    _outputs.emplace(pid, output);
+    _registeredPids.emplace(pid);
+    if (port != -1) {
+        _portToPidMap.emplace(port, pid);
+    }
 }
 
 void ProgramRegistry::unregisterProgram(ProcessId pid) {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
     invariant(isPidRegistered(pid));
 
-    int ret = close(_outputs[pid]);
-    if (ret != 0) {
-        const auto ewd = errnoWithDescription();
-        error() << "failed to close pipe " << _outputs.find(pid)->second << " for process "
-                << pid.toString() << " " << ewd;
-    }
     _outputReaderThreads[pid].join();
 
     // Remove the PID from the registry.
-    _outputs.erase(pid);
     _outputReaderThreads.erase(pid);
     _portToPidMap.erase(portForPid(pid));
+    _registeredPids.erase(pid);
 }
 
 void ProgramRegistry::registerReaderThread(ProcessId pid, stdx::thread reader) {
@@ -168,20 +189,20 @@ void ProgramRegistry::registerReaderThread(ProcessId pid, stdx::thread reader) {
 
 void ProgramRegistry::getRegisteredPorts(vector<int>& ports) {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
-    for (auto&& it = _portToPidMap.begin(); it != _portToPidMap.end(); ++it) {
-        ports.push_back(it->first);
+    for (const auto& portPid : _portToPidMap) {
+        ports.push_back(portPid.first);
     }
 }
 
 bool ProgramRegistry::isPidRegistered(ProcessId pid) const {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
-    return _outputs.count(pid) == 1;
+    return _registeredPids.count(pid) == 1;
 }
 
 void ProgramRegistry::getRegisteredPids(vector<ProcessId>& pids) {
     stdx::lock_guard<stdx::recursive_mutex> lk(_mutex);
-    for (auto&& v : _outputs) {
-        pids.emplace_back(v.first);
+    for (const auto& pid : _registeredPids) {
+        pids.emplace_back(pid);
     }
 }
 
@@ -239,24 +260,29 @@ void ProgramOutputMultiplexer::clear() {
 }
 
 ProgramRunner::ProgramRunner(const BSONObj& args, const BSONObj& env) {
-    verify(!args.isEmpty());
+    uassert(ErrorCodes::FailedToParse,
+            "cannot pass an empty argument to ProgramRunner",
+            !args.isEmpty());
 
     string program(args.firstElement().valuestrsafe());
-    verify(!program.empty());
+    uassert(ErrorCodes::FailedToParse,
+            "invalid program name passed to ProgramRunner",
+            !program.empty());
     boost::filesystem::path programPath = findProgram(program);
+    boost::filesystem::path programName = programPath.stem();
 
     string prefix("mongod-");
-    bool isMongodProgram =
-        string("mongod") == program || program.compare(0, prefix.size(), prefix) == 0;
+    bool isMongodProgram = string("mongod") == programName ||
+        programName.string().compare(0, prefix.size(), prefix) == 0;
     prefix = "mongos-";
-    bool isMongosProgram =
-        string("mongos") == program || program.compare(0, prefix.size(), prefix) == 0;
+    bool isMongosProgram = string("mongos") == programName ||
+        programName.string().compare(0, prefix.size(), prefix) == 0;
 
     if (isMongodProgram) {
         _name = "d";
     } else if (isMongosProgram) {
         _name = "s";
-    } else if (program == "mongobridge") {
+    } else if (programName == "mongobridge") {
         _name = "b";
     } else {
         _name = "sh";
@@ -335,59 +361,81 @@ ProgramRunner::ProgramRunner(const BSONObj& args, const BSONObj& env) {
         ++environEntry;
     }
 #endif
+    bool needsPort = isMongodProgram || isMongosProgram || (programName == "mongobridge");
+    if (!needsPort) {
+        _port = -1;
+    }
+    uassert(ErrorCodes::FailedToParse,
+            str::stream() << "a port number is expected when running " << program
+                          << " from the shell",
+            !needsPort || _port >= 0);
 
-    if (!isMongodProgram && !isMongosProgram && program != "mongobridge")
-        _port = 0;
-    else {
-        if (_port <= 0)
-            log() << "error: a port number is expected when running " << program
-                  << " from the shell";
-        verify(_port > 0);
-    }
-    if (_port > 0) {
-        bool haveDbForPort = registry.isPortRegistered(_port);
-        if (haveDbForPort) {
-            log() << "already have db for port: " << _port;
-            verify(!haveDbForPort);
-        }
-    }
+    uassert(ErrorCodes::BadValue,
+            str::stream() << "can't start " << program << ", port " << _port << " already in use",
+            _port < 0 || !registry.isPortRegistered(_port));
 }
 
 void ProgramRunner::start() {
     int pipeEnds[2];
-    int status = pipe(pipeEnds);
-    if (status != 0) {
-        const auto ewd = errnoWithDescription();
-        error() << "failed to create pipe: " << ewd;
-        fassertFailed(16701);
-    }
+
+    {
+        // NOTE(JCAREY):
+        //
+        // We take this lock from before our call to pipe until after we close the write side (in
+        // the parent) to avoid leaking fds from threads racing around fork().  I.e.
+        //
+        // Thread A: calls pipe()
+        // Thread B: calls fork()
+        // A: sets cloexec on read and write sides
+        // B: has a forked child with open fds
+        // A: spawns a child thread to read it's child process's stdout
+        // A: A's child process exits
+        // A: wait's on A's reader thread in de-register
+        // A: deadlocks forever (because the child reader thread stays in read() because of the open
+        //    fd in B)
+        //
+        // Holding the lock for the duration of those events prevents the leaks and thus the
+        // associated deadlocks.
+        stdx::lock_guard<stdx::mutex> lk(_createProcessMtx);
+        int status = pipe(pipeEnds);
+        if (status != 0) {
+            const auto ewd = errnoWithDescription();
+            error() << "failed to create pipe: " << ewd;
+            fassertFailed(16701);
+        }
 #ifndef _WIN32
-    // The calls to fcntl to set CLOEXEC ensure that processes started by the process we are about
-    // to fork do *not* inherit the file descriptors for the pipe. If grandchild processes could
-    // inherit the FD for the pipe, than the pipe wouldn't close on child process exit. On windows,
-    // instead the handle inherit flag is turned off after the call to CreateProcess.
-    status = fcntl(pipeEnds[0], F_SETFD, FD_CLOEXEC);
-    if (status != 0) {
-        const auto ewd = errnoWithDescription();
-        error() << "failed to set FD_CLOEXEC on pipe end 0: " << ewd;
-        fassertFailed(40308);
-    }
-    status = fcntl(pipeEnds[1], F_SETFD, FD_CLOEXEC);
-    if (status != 0) {
-        const auto ewd = errnoWithDescription();
-        error() << "failed to set FD_CLOEXEC on pipe end 1: " << ewd;
-        fassertFailed(40317);
-    }
+        // The calls to fcntl to set CLOEXEC ensure that processes started by the process we are
+        // about to fork do *not* inherit the file descriptors for the pipe. If grandchild processes
+        // could inherit the FD for the pipe, than the pipe wouldn't close on child process exit. On
+        // windows, instead the handle inherit flag is turned off after the call to CreateProcess.
+        status = fcntl(pipeEnds[0], F_SETFD, FD_CLOEXEC);
+        if (status != 0) {
+            const auto ewd = errnoWithDescription();
+            error() << "failed to set FD_CLOEXEC on pipe end 0: " << ewd;
+            fassertFailed(40308);
+        }
+        status = fcntl(pipeEnds[1], F_SETFD, FD_CLOEXEC);
+        if (status != 0) {
+            const auto ewd = errnoWithDescription();
+            error() << "failed to set FD_CLOEXEC on pipe end 1: " << ewd;
+            fassertFailed(40317);
+        }
 #endif
 
-    fflush(0);
+        fflush(0);
 
-    launchProcess(pipeEnds[1]);  // sets _pid
+        launchProcess(pipeEnds[1]);  // sets _pid
 
-    if (_port > 0)
-        registry.registerProgram(_pid, pipeEnds[1], _port);
-    else
-        registry.registerProgram(_pid, pipeEnds[1]);
+        // Close the write end of the pipe.
+        safeClose(pipeEnds[1]);
+    }
+
+    if (_port >= 0) {
+        registry.registerProgram(_pid, _port);
+    } else {
+        registry.registerProgram(_pid);
+    }
+
     _pipe = pipeEnds[0];
 
     {
@@ -401,8 +449,9 @@ void ProgramRunner::start() {
 }
 
 void ProgramRunner::operator()() {
+    // Send the never_close_handle flag so that we can handle closing the fd below with safeClose.
     boost::iostreams::stream_buffer<boost::iostreams::file_descriptor_source> fdBuf(
-        _pipe, boost::iostreams::file_descriptor_flags::close_handle);
+        _pipe, boost::iostreams::file_descriptor_flags::never_close_handle);
     std::istream fdStream(&fdBuf);
 
     std::string line;
@@ -413,6 +462,9 @@ void ProgramRunner::operator()() {
         }
         programOutputLogger.appendLine(_port, _pid, _name, line);
     }
+
+    // Close the read end of the pipe.
+    safeClose(_pipe);
 }
 
 boost::filesystem::path ProgramRunner::findProgram(const string& prog) {
@@ -427,6 +479,11 @@ boost::filesystem::path ProgramRunner::findProgram(const string& prog) {
         p = prog + ".exe";
     }
 #endif
+
+    // The file could exist if it is specified as a full path.
+    if (p.is_absolute() && boost::filesystem::exists(p)) {
+        return p;
+    }
 
     // Check if the binary exists in the current working directory
     boost::filesystem::path t = boost::filesystem::current_path() / p;
@@ -523,47 +580,44 @@ void ProgramRunner::launchProcess(int child_stdout) {
     }
     std::memset(lpEnvironment.get() + environmentOffset, 0, sizeof(wchar_t));
 
-    {
-        stdx::lock_guard<stdx::mutex> lk(_createProcessMtx);
-        HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(child_stdout));
-        invariant(h != INVALID_HANDLE_VALUE);
-        invariant(SetHandleInformation(h, HANDLE_FLAG_INHERIT, 1));
+    HANDLE h = reinterpret_cast<HANDLE>(_get_osfhandle(child_stdout));
+    invariant(h != INVALID_HANDLE_VALUE);
+    invariant(SetHandleInformation(h, HANDLE_FLAG_INHERIT, 1));
 
-        STARTUPINFO si;
-        ZeroMemory(&si, sizeof(si));
-        si.cb = sizeof(si);
-        si.hStdError = h;
-        si.hStdOutput = h;
-        si.dwFlags |= STARTF_USESTDHANDLES;
+    STARTUPINFO si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.hStdError = h;
+    si.hStdOutput = h;
+    si.dwFlags |= STARTF_USESTDHANDLES;
 
-        PROCESS_INFORMATION pi;
-        ZeroMemory(&pi, sizeof(pi));
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
 
-        DWORD dwCreationFlags = 0;
-        dwCreationFlags |= CREATE_UNICODE_ENVIRONMENT;
+    DWORD dwCreationFlags = 0;
+    dwCreationFlags |= CREATE_UNICODE_ENVIRONMENT;
 
-        bool success = CreateProcessW(nullptr,
-                                      const_cast<LPWSTR>(args.c_str()),
-                                      nullptr,
-                                      nullptr,
-                                      true,
-                                      dwCreationFlags,
-                                      lpEnvironment.get(),
-                                      nullptr,
-                                      &si,
-                                      &pi) != 0;
-        if (!success) {
-            const auto ewd = errnoWithDescription();
-            ss << "couldn't start process " << _argv[0] << "; " << ewd;
-            uasserted(14042, ss.str());
-        }
-
-        CloseHandle(pi.hThread);
-        invariant(SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0));
-
-        _pid = ProcessId::fromNative(pi.dwProcessId);
-        registry.insertHandleForPid(_pid, pi.hProcess);
+    bool success = CreateProcessW(nullptr,
+                                  const_cast<LPWSTR>(args.c_str()),
+                                  nullptr,
+                                  nullptr,
+                                  true,
+                                  dwCreationFlags,
+                                  lpEnvironment.get(),
+                                  nullptr,
+                                  &si,
+                                  &pi) != 0;
+    if (!success) {
+        const auto ewd = errnoWithDescription();
+        ss << "couldn't start process " << _argv[0] << "; " << ewd;
+        uasserted(14042, ss.str());
     }
+
+    CloseHandle(pi.hThread);
+    invariant(SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0));
+
+    _pid = ProcessId::fromNative(pi.dwProcessId);
+    registry.insertHandleForPid(_pid, pi.hProcess);
 #else
 
     std::string execErrMsg = str::stream() << "Unable to start program " << _argv[0];
@@ -587,7 +641,7 @@ void ProgramRunner::launchProcess(int child_stdout) {
         // Fork failed so it is time for the process to exit
         const auto ewd = errnoWithDescription();
         cout << "ProgramRunner is unable to fork child process: " << ewd << endl;
-        fassert(34363, false);
+        fassertFailed(34363);
     }
 
     if (nativePid == 0) {
@@ -691,8 +745,12 @@ BSONObj ClearRawMongoProgramOutput(const BSONObj& args, void* data) {
 
 BSONObj CheckProgram(const BSONObj& args, void* data) {
     ProcessId pid = ProcessId::fromNative(singleArg(args).numberInt());
-    bool isDead = wait_for_pid(pid, false);
-    return BSON(string("") << (!isDead));
+    int exit_code = -123456;  // sentinel value
+    bool isDead = wait_for_pid(pid, false, &exit_code);
+    if (!isDead) {
+        return BSON("" << BSON("alive" << true));
+    }
+    return BSON("" << BSON("alive" << false << "exitCode" << exit_code));
 }
 
 BSONObj WaitProgram(const BSONObj& a, void* data) {
@@ -948,8 +1006,8 @@ BSONObj getStopMongodOpts(const BSONObj& a) {
 /** stopMongoProgram(port[, signal]) */
 BSONObj StopMongoProgram(const BSONObj& a, void* data) {
     int nFields = a.nFields();
-    verify(nFields >= 1 && nFields <= 3);
-    uassert(15853, "stopMongo needs a number", a.firstElement().isNumber());
+    uassert(ErrorCodes::FailedToParse, "wrong number of arguments", nFields >= 1 && nFields <= 3);
+    uassert(ErrorCodes::BadValue, "stopMongoProgram needs a number", a.firstElement().isNumber());
     int port = int(a.firstElement().number());
     int code = killDb(port, ProcessId::fromNative(0), getSignal(a), getStopMongodOpts(a));
     log() << "shell: stopped mongo program on port " << port;
@@ -957,11 +1015,13 @@ BSONObj StopMongoProgram(const BSONObj& a, void* data) {
 }
 
 BSONObj StopMongoProgramByPid(const BSONObj& a, void* data) {
-    verify(a.nFields() == 1 || a.nFields() == 2);
-    uassert(15852, "stopMongoByPid needs a number", a.firstElement().isNumber());
+    int nFields = a.nFields();
+    uassert(ErrorCodes::FailedToParse, "wrong number of arguments", nFields >= 1 && nFields <= 3);
+    uassert(
+        ErrorCodes::BadValue, "stopMongoProgramByPid needs a number", a.firstElement().isNumber());
     ProcessId pid = ProcessId::fromNative(int(a.firstElement().number()));
-    int code = killDb(0, pid, getSignal(a));
-    log() << "shell: stopped mongo program on pid " << pid;
+    int code = killDb(0, pid, getSignal(a), getStopMongodOpts(a));
+    log() << "shell: stopped mongo program with pid " << pid;
     return BSON("" << (double)code);
 }
 

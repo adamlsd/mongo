@@ -99,11 +99,11 @@ public:
     explicit Value(const OID& value) : _storage(jstOID, value) {}
     explicit Value(StringData value) : _storage(String, value) {}
     explicit Value(const std::string& value) : _storage(String, StringData(value)) {}
-    explicit Value(const char* value) : _storage(String, StringData(value)) {}
     explicit Value(const Document& doc) : _storage(Object, doc) {}
     explicit Value(const BSONObj& obj);
     explicit Value(const BSONArray& arr);
-    explicit Value(const std::vector<BSONObj>& arr);
+    explicit Value(const std::vector<BSONObj>& vec);
+    explicit Value(const std::vector<Document>& vec);
     explicit Value(std::vector<Value> vec) : _storage(Array, new RCVector(std::move(vec))) {}
     explicit Value(const BSONBinData& bd) : _storage(BinData, bd) {}
     explicit Value(const BSONRegEx& re) : _storage(RegEx, re) {}
@@ -195,11 +195,20 @@ public:
     /// Access a field of a subdocument. Returns Value() if missing or getType() != Object
     Value operator[](StringData name) const;
 
-    /// Add this value to the BSON object under construction.
-    void addToBsonObj(BSONObjBuilder* pBuilder, StringData fieldName) const;
+    /**
+     * Recursively serializes this value as a field in the object in 'builder' with the field name
+     * 'fieldName'. This function throws a UserException if the recursion exceeds the server's BSON
+     * depth limit.
+     */
+    void addToBsonObj(BSONObjBuilder* builder,
+                      StringData fieldName,
+                      size_t recursionLevel = 1) const;
 
-    /// Add this field to the BSON array under construction.
-    void addToBsonArray(BSONArrayBuilder* pBuilder) const;
+    /**
+     * Recursively serializes this value as an element in the array in 'builder'. This function
+     * throws a UserException if the recursion exceeds the server's BSON depth limit.
+     */
+    void addToBsonArray(BSONArrayBuilder* builder, size_t recursionLevel = 1) const;
 
     // Support BSONObjBuilder and BSONArrayBuilder "stream" API
     friend BSONObjBuilder& operator<<(BSONObjBuilderValueStream& builder, const Value& val);
@@ -349,6 +358,16 @@ class ImplicitValue : public Value {
 public:
     template <typename T>
     ImplicitValue(T arg) : Value(std::move(arg)) {}
+
+    /**
+     * Converts a vector of Implicit values to a single Value object.
+     */
+    static Value convertToValue(const std::vector<ImplicitValue>& vec) {
+        std::vector<Value> values;
+        for_each(
+            vec.begin(), vec.end(), ([&](const ImplicitValue& val) { values.push_back(val); }));
+        return Value(values);
+    }
 };
 }
 

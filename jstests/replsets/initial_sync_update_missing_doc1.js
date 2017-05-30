@@ -11,6 +11,8 @@
  */
 
 (function() {
+    load("jstests/libs/check_log.js");
+
     var name = 'initial_sync_update_missing_doc1';
     var replSet = new ReplSetTest({
         name: name,
@@ -31,21 +33,13 @@
 
     assert.commandWorked(secondary.getDB('admin').runCommand(
         {configureFailPoint: 'initialSyncHangBeforeCopyingDatabases', mode: 'alwaysOn'}));
+    assert.commandWorked(secondary.getDB('admin').runCommand(
+        {configureFailPoint: 'initialSyncHangBeforeGettingMissingDocument', mode: 'alwaysOn'}));
     replSet.reInitiate();
 
     // Wait for fail point message to be logged.
-    var checkLog = function(node, msg) {
-        assert.soon(function() {
-            var logMessages = assert.commandWorked(node.adminCommand({getLog: 'global'})).log;
-            for (var i = 0; i < logMessages.length; i++) {
-                if (logMessages[i].indexOf(msg) != -1) {
-                    return true;
-                }
-            }
-            return false;
-        }, 'Did not see a log entry containing the following message: ' + msg, 60000, 1000);
-    };
-    checkLog(secondary, 'initial sync - initialSyncHangBeforeCopyingDatabases fail point enabled');
+    checkLog.contains(secondary,
+                      'initial sync - initialSyncHangBeforeCopyingDatabases fail point enabled');
 
     assert.writeOK(coll.update({_id: 0}, {x: 2}, {upsert: false, writeConcern: {w: 1}}));
     assert.writeOK(coll.remove({_id: 0}, {justOne: true, writeConcern: {w: 1}}));
@@ -53,10 +47,23 @@
     assert.commandWorked(secondary.getDB('admin').runCommand(
         {configureFailPoint: 'initialSyncHangBeforeCopyingDatabases', mode: 'off'}));
 
-    checkLog(secondary, 'update of non-mod failed');
-    checkLog(secondary, 'adding missing object');
-    checkLog(secondary, 'missing object not found on source. presumably deleted later in oplog');
-    checkLog(secondary, 'initial sync done');
+    checkLog.contains(secondary, 'update of non-mod failed');
+    checkLog.contains(secondary, 'adding missing object');
+    checkLog.contains(
+        secondary, 'initial sync - initialSyncHangBeforeGettingMissingDocument fail point enabled');
+
+    var res = assert.commandWorked(secondary.adminCommand({replSetGetStatus: 1, initialSync: 1}));
+    assert.eq(res.initialSyncStatus.fetchedMissingDocs, 0);
+    var firstOplogEnd = res.initialSyncStatus.initialSyncOplogEnd;
+
+    // Insert a document to move forward minValid, even though the document was not found.
+    assert.writeOK(primary.getDB('test').getCollection(name + 'b').insert({_id: 1, y: 1}));
+
+    assert.commandWorked(secondary.getDB('admin').runCommand(
+        {configureFailPoint: 'initialSyncHangBeforeGettingMissingDocument', mode: 'off'}));
+    checkLog.contains(secondary,
+                      'missing object not found on source. presumably deleted later in oplog');
+    checkLog.contains(secondary, 'initial sync done');
 
     replSet.awaitReplication();
     replSet.awaitSecondaryNodes();
@@ -64,6 +71,16 @@
     assert.eq(0,
               secondary.getDB('test').getCollection(name).find().itcount(),
               'collection successfully synced to secondary');
+
+    res = assert.commandWorked(secondary.adminCommand({replSetGetStatus: 1, initialSync: 1}));
+    assert.eq(res.initialSyncStatus.fetchedMissingDocs, 1);
+    var finalOplogEnd = res.initialSyncStatus.initialSyncOplogEnd;
+    assert(!friendlyEqual(firstOplogEnd, finalOplogEnd),
+           "minValid was not moved forward when missing document was fetched");
+
+    assert.eq(0,
+              secondary.getDB('local')['temp_oplog_buffer'].find().itcount(),
+              "Oplog buffer was not dropped after initial sync");
 
     replSet.stopSet();
 })();

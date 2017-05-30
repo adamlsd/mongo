@@ -30,12 +30,15 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
 
+#include "mongo/base/init.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/json.h"
 #include "mongo/db/operation_context_noop.h"
+#include "mongo/db/storage/kv/kv_prefix.h"
 #include "mongo/db/storage/sorted_data_interface_test_harness.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_index.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
@@ -47,10 +50,11 @@
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
+namespace {
 
 using std::string;
 
-class MyHarnessHelper final : public HarnessHelper {
+class MyHarnessHelper final : public SortedDataInterfaceHarnessHelper {
 public:
     MyHarnessHelper() : _dbpath("wt_test"), _conn(NULL) {
         const char* config = "create,cache_size=1G,";
@@ -67,7 +71,7 @@ public:
 
     std::unique_ptr<SortedDataInterface> newSortedDataInterface(bool unique) final {
         std::string ns = "test.wt";
-        OperationContextNoop txn(newRecoveryUnit().release());
+        OperationContextNoop opCtx(newRecoveryUnit().release());
 
         BSONObj spec = BSON("key" << BSON("a" << 1) << "name"
                                   << "testIndex"
@@ -81,11 +85,13 @@ public:
         ASSERT_OK(result.getStatus());
 
         string uri = "table:" + ns;
-        invariantWTOK(WiredTigerIndex::Create(&txn, uri, result.getValue()));
+        invariantWTOK(WiredTigerIndex::Create(&opCtx, uri, result.getValue()));
 
         if (unique)
-            return stdx::make_unique<WiredTigerIndexUnique>(&txn, uri, &desc);
-        return stdx::make_unique<WiredTigerIndexStandard>(&txn, uri, &desc);
+            return stdx::make_unique<WiredTigerIndexUnique>(
+                &opCtx, uri, &desc, KVPrefix::kNotPrefixed);
+        return stdx::make_unique<WiredTigerIndexStandard>(
+            &opCtx, uri, &desc, KVPrefix::kNotPrefixed);
     }
 
     std::unique_ptr<RecoveryUnit> newRecoveryUnit() final {
@@ -98,8 +104,13 @@ private:
     WiredTigerSessionCache* _sessionCache;
 };
 
-std::unique_ptr<HarnessHelper> newHarnessHelper() {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<MyHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
 }
 
 TEST(WiredTigerIndexTest, GenerateCreateStringEmptyDocument) {
@@ -142,4 +153,5 @@ TEST(WiredTigerIndexTest, GenerateCreateStringValidConfigStringOption) {
     ASSERT_EQ(WiredTigerIndex::parseIndexOptions(spec), std::string("prefix_compression=true,"));
 }
 
+}  // namespace
 }  // namespace mongo

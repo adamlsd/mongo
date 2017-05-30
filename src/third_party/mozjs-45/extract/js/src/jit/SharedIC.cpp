@@ -8,6 +8,7 @@
 
 #include "mozilla/Casting.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/SizePrintfMacros.h"
 
 #include "jslibmath.h"
@@ -2194,10 +2195,10 @@ UpdateExistingGenerationalDOMProxyStub(ICGetProp_Fallback* stub,
                 iter->toGetProp_CallDOMProxyWithGenerationNative();
             if (updateStub->expandoAndGeneration() == expandoAndGeneration) {
                 // Update generation
-                uint32_t generation = expandoAndGeneration->generation;
+                uint64_t generation = expandoAndGeneration->generation;
                 JitSpew(JitSpew_BaselineIC,
                         "  Updating existing stub with generation, old value: %i, "
-                        "new value: %i", updateStub->generation(),
+                        "new value: %" PRIu64 "", updateStub->generation(),
                         generation);
                 updateStub->setGeneration(generation);
                 return true;
@@ -2447,6 +2448,14 @@ IsCacheableGetPropCall(JSContext* cx, JSObject* obj, JSObject* holder, Shape* sh
         return false;
 
     JSFunction* func = &shape->getterObject()->as<JSFunction>();
+    if (IsWindow(obj)) {
+        if (!func->isNative())
+            return false;
+
+        if (!func->jitInfo() || func->jitInfo()->needsOuterizedThisObject())
+            return false;
+    }
+
     if (func->isNative()) {
         *isScripted = false;
         return true;
@@ -3821,9 +3830,9 @@ CheckDOMProxyExpandoDoesNotShadow(JSContext* cx, MacroAssembler& masm, Register 
         masm.branchPrivatePtr(Assembler::NotEqual, expandoAddr, tempVal.scratchReg(),
                               &failDOMProxyCheck);
 
-        masm.load32(*generationAddr, scratch);
-        masm.branch32(Assembler::NotEqual,
-                      Address(tempVal.scratchReg(), offsetof(ExpandoAndGeneration, generation)),
+        masm.branch64(Assembler::NotEqual,
+                      Address(tempVal.scratchReg(), ExpandoAndGeneration::offsetOfGeneration()),
+                      *generationAddr,
                       scratch, &failDOMProxyCheck);
 
         masm.loadValue(Address(tempVal.scratchReg(), 0), tempVal);
@@ -3951,7 +3960,7 @@ ICGetPropCallDOMProxyNativeCompiler::getStub(ICStubSpace* space)
     Value expandoSlot = GetProxyExtra(proxy_, GetDOMProxyExpandoSlot());
     RootedShape expandoShape(cx, nullptr);
     ExpandoAndGeneration* expandoAndGeneration;
-    int32_t generation;
+    uint64_t generation;
     Value expandoVal;
     if (kind == ICStub::GetProp_CallDOMProxyNative) {
         expandoVal = expandoSlot;

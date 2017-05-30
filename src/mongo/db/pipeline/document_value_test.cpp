@@ -30,6 +30,9 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/bson/bson_depth.h"
+#include "mongo/db/jsobj.h"
+#include "mongo/db/json.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_comparator.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
@@ -37,11 +40,9 @@
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/dbtests/dbtests.h"
-#include "mongo/util/print.h"
 
 namespace DocumentTests {
 
-using std::endl;
 using std::numeric_limits;
 using std::string;
 using std::vector;
@@ -96,12 +97,54 @@ TEST(DocumentConstruction, FromNonEmptyBson) {
 }
 
 TEST(DocumentConstruction, FromInitializerList) {
-    auto document = Document{{"a", 1}, {"b", "q"}};
+    auto document = Document{{"a", 1}, {"b", "q"_sd}};
     ASSERT_EQUALS(2U, document.size());
     ASSERT_EQUALS("a", getNthField(document, 0).first.toString());
     ASSERT_EQUALS(1, getNthField(document, 0).second.getInt());
     ASSERT_EQUALS("b", getNthField(document, 1).first.toString());
     ASSERT_EQUALS("q", getNthField(document, 1).second.getString());
+}
+
+TEST(DocumentConstruction, FromEmptyDocumentClone) {
+    Document document;
+    ASSERT_EQUALS(0U, document.size());
+    // Prior to SERVER-26462, cloning an empty document would cause a segmentation fault.
+    Document documentClone = document.clone();
+    ASSERT_DOCUMENT_EQ(document, documentClone);
+}
+
+/**
+ * Appends to 'builder' an object nested 'depth' levels deep.
+ */
+void appendNestedObject(size_t depth, BSONObjBuilder* builder) {
+    if (depth == 1U) {
+        builder->append("a", 1);
+    } else {
+        BSONObjBuilder subobj(builder->subobjStart("a"));
+        appendNestedObject(depth - 1, &subobj);
+        subobj.doneFast();
+    }
+}
+
+TEST(DocumentSerialization, CanSerializeDocumentExactlyAtDepthLimit) {
+    BSONObjBuilder builder;
+    appendNestedObject(BSONDepth::getMaxAllowableDepth(), &builder);
+    BSONObj originalBSONObj = builder.obj();
+
+    Document doc(originalBSONObj);
+    BSONObjBuilder serializationResult;
+    doc.toBson(&serializationResult);
+    ASSERT_BSONOBJ_EQ(originalBSONObj, serializationResult.obj());
+}
+
+TEST(DocumentSerialization, CannotSerializeDocumentThatExceedsDepthLimit) {
+    BSONObjBuilder builder;
+    appendNestedObject(BSONDepth::getMaxAllowableDepth() + 1, &builder);
+
+    Document doc(builder.obj());
+    BSONObjBuilder throwaway;
+    ASSERT_THROWS_CODE(doc.toBson(&throwaway), UserException, ErrorCodes::Overflow);
+    throwaway.abandon();
 }
 
 /** Add Document fields. */
@@ -154,13 +197,13 @@ public:
         MutableDocument md(original);
 
         // Set the first field.
-        md.setField("a", Value("foo"));
+        md.setField("a", Value("foo"_sd));
         ASSERT_EQUALS(3U, md.peek().size());
         ASSERT_EQUALS("foo", md.peek()["a"].getString());
         ASSERT_EQUALS("foo", getNthField(md.peek(), 0).second.getString());
         assertRoundTrips(md.peek());
         // Set the second field.
-        md["b"] = Value("bar");
+        md["b"] = Value("bar"_sd);
         ASSERT_EQUALS(3U, md.peek().size());
         ASSERT_EQUALS("bar", md.peek()["b"].getString());
         ASSERT_EQUALS("bar", getNthField(md.peek(), 1).second.getString());
@@ -168,7 +211,7 @@ public:
 
         // Remove the second field.
         md.setField("b", Value());
-        PRINT(md.peek().toString());
+        log() << md.peek().toString();
         ASSERT_EQUALS(2U, md.peek().size());
         ASSERT(md.peek()["b"].missing());
         ASSERT_EQUALS("a", getNthField(md.peek(), 0).first.toString());
@@ -194,20 +237,20 @@ public:
         assertRoundTrips(md.peek());
 
         // Set a nested field using []
-        md["x"]["y"]["z"] = Value("nested");
-        ASSERT_VALUE_EQ(md.peek()["x"]["y"]["z"], Value("nested"));
+        md["x"]["y"]["z"] = Value("nested"_sd);
+        ASSERT_VALUE_EQ(md.peek()["x"]["y"]["z"], Value("nested"_sd));
 
         // Set a nested field using setNestedField
-        FieldPath xxyyzz = string("xx.yy.zz");
-        md.setNestedField(xxyyzz, Value("nested"));
-        ASSERT_VALUE_EQ(md.peek().getNestedField(xxyyzz), Value("nested"));
+        FieldPath xxyyzz("xx.yy.zz");
+        md.setNestedField(xxyyzz, Value("nested"_sd));
+        ASSERT_VALUE_EQ(md.peek().getNestedField(xxyyzz), Value("nested"_sd));
 
         // Set a nested fields through an existing empty document
         md["xxx"] = Value(Document());
         md["xxx"]["yyy"] = Value(Document());
-        FieldPath xxxyyyzzz = string("xxx.yyy.zzz");
-        md.setNestedField(xxxyyyzzz, Value("nested"));
-        ASSERT_VALUE_EQ(md.peek().getNestedField(xxxyyyzzz), Value("nested"));
+        FieldPath xxxyyyzzz("xxx.yyy.zzz");
+        md.setNestedField(xxxyyyzzz, Value("nested"_sd));
+        ASSERT_VALUE_EQ(md.peek().getNestedField(xxxyyyzzz), Value("nested"_sd));
 
         // Make sure nothing moved
         ASSERT_EQUALS(apos, md.peek().positionOf("a"));
@@ -362,7 +405,6 @@ public:
         append("minkey", MINKEY);
         // EOO not valid in middle of BSONObj
         append("double", 1.0);
-        append("c-string", "string\0after NUL");  // after NULL is ignored
         append("c++", "string\0after NUL"_sd);
         append("StringData", "string\0after NUL"_sd);
         append("emptyObj", BSONObj());
@@ -620,7 +662,7 @@ public:
 class String {
 public:
     void run() {
-        Value value = Value("foo");
+        Value value = Value("foo"_sd);
         ASSERT_EQUALS("foo", value.getString());
         ASSERT_EQUALS(mongo::String, value.getType());
         assertRoundTrips(value);
@@ -685,7 +727,7 @@ public:
     void run() {
         mongo::MutableDocument md;
         md.addField("a", Value(5));
-        md.addField("apple", Value("rrr"));
+        md.addField("apple", Value("rrr"_sd));
         md.addField("banana", Value(-.3));
         mongo::Document document = md.freeze();
 
@@ -722,7 +764,7 @@ public:
     void run() {
         vector<Value> array;
         array.push_back(Value(5));
-        array.push_back(Value("lala"));
+        array.push_back(Value("lala"_sd));
         array.push_back(Value(3.14));
         Value value = Value(array);
         const vector<Value>& array2 = value.getArray();
@@ -928,7 +970,7 @@ class NonZeroDoubleToBool : public ToBoolTrue {
 /** Coerce "" to bool. */
 class StringToBool : public ToBoolTrue {
     Value value() {
-        return Value("");
+        return Value(StringData());
     }
 };
 
@@ -1062,7 +1104,7 @@ class UndefinedToInt : public ToIntBase {
 class StringToInt {
 public:
     void run() {
-        ASSERT_THROWS(Value("").coerceToInt(), UserException);
+        ASSERT_THROWS(Value(StringData()).coerceToInt(), UserException);
     }
 };
 
@@ -1140,7 +1182,7 @@ class UndefinedToLong : public ToLongBase {
 class StringToLong {
 public:
     void run() {
-        ASSERT_THROWS(Value("").coerceToLong(), UserException);
+        ASSERT_THROWS(Value(StringData()).coerceToLong(), UserException);
     }
 };
 
@@ -1219,7 +1261,7 @@ class UndefinedToDouble : public ToDoubleBase {
 class StringToDouble {
 public:
     void run() {
-        ASSERT_THROWS(Value("").coerceToDouble(), UserException);
+        ASSERT_THROWS(Value(StringData()).coerceToDouble(), UserException);
     }
 };
 
@@ -1262,7 +1304,7 @@ class TimestampToDate : public ToDateBase {
 class StringToDate {
 public:
     void run() {
-        ASSERT_THROWS(Value("").coerceToDate(), UserException);
+        ASSERT_THROWS(Value(StringData()).coerceToDate(), UserException);
     }
 };
 
@@ -1313,7 +1355,7 @@ class LongToString : public ToStringBase {
 /** Coerce string to string. */
 class StringToString : public ToStringBase {
     Value value() {
-        return Value("fO_o");
+        return Value("fO_o"_sd);
     }
     string expected() {
         return "fO_o";
@@ -1427,7 +1469,7 @@ public:
         BSONObjBuilder bob;
         Value(4.4).addToBsonObj(&bob, "a");
         Value(22).addToBsonObj(&bob, "b");
-        Value("astring").addToBsonObj(&bob, "c");
+        Value("astring"_sd).addToBsonObj(&bob, "c");
         ASSERT_BSONOBJ_EQ(BSON("a" << 4.4 << "b" << 22 << "c"
                                    << "astring"),
                           bob.obj());
@@ -1441,7 +1483,7 @@ public:
         BSONArrayBuilder bab;
         Value(4.4).addToBsonArray(&bab);
         Value(22).addToBsonArray(&bab);
-        Value("astring").addToBsonArray(&bab);
+        Value("astring"_sd).addToBsonArray(&bab);
         ASSERT_BSONOBJ_EQ(BSON_ARRAY(4.4 << 22 << "astring"), bab.arr());
     }
 };
@@ -1549,9 +1591,9 @@ public:
         assertComparison(-1, Value(BSONNULL), Value(1));
         assertComparison(0, Value(1), Value(1LL));
         assertComparison(0, Value(1), Value(1.0));
-        assertComparison(-1, Value(1), Value("string"));
-        assertComparison(0, Value("string"), Value(BSONSymbol("string")));
-        assertComparison(-1, Value("string"), Value(mongo::Document()));
+        assertComparison(-1, Value(1), Value("string"_sd));
+        assertComparison(0, Value("string"_sd), Value(BSONSymbol("string")));
+        assertComparison(-1, Value("string"_sd), Value(mongo::Document()));
         assertComparison(-1, Value(mongo::Document()), Value(vector<Value>()));
         assertComparison(-1, Value(vector<Value>()), Value(BSONBinData("", 0, MD5Type)));
         assertComparison(-1, Value(BSONBinData("", 0, MD5Type)), Value(mongo::OID()));
@@ -1592,7 +1634,8 @@ private:
         assertComparison(expectedResult, fromBson(a), fromBson(b));
     }
     void assertComparison(int expectedResult, const Value& a, const Value& b) {
-        mongo::unittest::log() << "testing " << a.toString() << " and " << b.toString() << endl;
+        mongo::unittest::log() << "testing " << a.toString() << " and " << b.toString();
+
         // reflexivity
         ASSERT_EQUALS(0, cmp(a, a));
         ASSERT_EQUALS(0, cmp(b, b));

@@ -66,4 +66,20 @@ TEST(Builder, StringBuilderAddress) {
     sb << nullPtr;
     ASSERT_EQUALS("0x0", sb.str());
 }
+
+TEST(Builder, BooleanOstreamOperator) {
+    StringBuilder sb;
+    sb << true << false << true;
+    ASSERT_EQUALS("101", sb.str());
+
+    sb.reset();
+    sb << "{abc: " << true << ", def: " << false << "}";
+    ASSERT_EQUALS("{abc: 1, def: 0}", sb.str());
+}
+
+TEST(Builder, StackAllocatorShouldNotLeak) {
+    StackAllocator stackAlloc;
+    stackAlloc.malloc(StackAllocator::SZ + 1);  // Force heap allocation.
+    // Let the builder go out of scope. If this leaks, it will trip the ASAN leak detector.
+}
 }

@@ -52,15 +52,15 @@ public:
 
     ConnectionString connectionString() override;
 
-    StatusWith<HostAndPort> findHost(OperationContext* txn,
+    StatusWith<HostAndPort> findHost(OperationContext* opCtx,
                                      const ReadPreferenceSetting& readPref) override;
 
     StatusWith<HostAndPort> findHostWithMaxWait(const ReadPreferenceSetting& readPref,
                                                 Milliseconds maxWait) override;
 
-    void markHostNotMaster(const HostAndPort& host) override;
+    void markHostNotMaster(const HostAndPort& host, const Status& status) override;
 
-    void markHostUnreachable(const HostAndPort& host) override;
+    void markHostUnreachable(const HostAndPort& host, const Status& status) override;
 
 private:
     // Name of the replica set which this targeter maintains

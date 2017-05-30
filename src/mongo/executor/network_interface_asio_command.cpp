@@ -40,7 +40,6 @@
 #include "mongo/executor/async_stream_interface.h"
 #include "mongo/executor/async_stream_interface.h"
 #include "mongo/executor/connection_pool_asio.h"
-#include "mongo/executor/downconvert_find_and_getmore_commands.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/rpc/protocol.h"
@@ -160,8 +159,10 @@ ResponseStatus decodeRPC(Message* received,
 
         // Handle incoming reply metadata.
         if (metadataHook) {
-            auto listenStatus = callNoexcept(
-                *metadataHook, &rpc::EgressMetadataHook::readReplyMetadata, source, replyMetadata);
+            auto listenStatus = callNoexcept(*metadataHook,
+                                             &rpc::EgressMetadataHook::readReplyMetadata,
+                                             source.toString(),
+                                             replyMetadata);
             if (!listenStatus.isOK()) {
                 return {listenStatus, elapsed};
             }
@@ -177,11 +178,10 @@ ResponseStatus decodeRPC(Message* received,
 }  // namespace
 
 NetworkInterfaceASIO::AsyncCommand::AsyncCommand(AsyncConnection* conn,
-                                                 CommandType type,
                                                  Message&& command,
                                                  Date_t now,
                                                  const HostAndPort& target)
-    : _conn(conn), _type(type), _toSend(std::move(command)), _start(now), _target(target) {
+    : _conn(conn), _toSend(std::move(command)), _start(now), _target(target) {
     _toSend.header().setResponseToMsgId(0);
 }
 
@@ -214,23 +214,10 @@ ResponseStatus NetworkInterfaceASIO::AsyncCommand::response(AsyncOp* op,
         received = std::move(swm.getValue());
     }
 
-    switch (_type) {
-        case CommandType::kRPC: {
-            auto rs = decodeRPC(&received, protocol, now - _start, _target, metadataHook);
-            if (rs.isOK())
-                op->setResponseMetadata(rs.metadata);
-            return rs;
-        }
-        case CommandType::kDownConvertedFind: {
-            auto ns = DbMessage(_toSend).getns();
-            return upconvertLegacyQueryResponse(_toSend.header().getId(), ns, received);
-        }
-        case CommandType::kDownConvertedGetMore: {
-            auto ns = DbMessage(_toSend).getns();
-            return upconvertLegacyGetMoreResponse(_toSend.header().getId(), ns, received);
-        }
-    }
-    MONGO_UNREACHABLE;
+    auto rs = decodeRPC(&received, protocol, now - _start, _target, metadataHook);
+    if (rs.isOK())
+        op->setResponseMetadata(rs.metadata);
+    return rs;
 }
 
 void NetworkInterfaceASIO::_startCommand(AsyncOp* op) {
@@ -253,7 +240,11 @@ void NetworkInterfaceASIO::_beginCommunication(AsyncOp* op) {
     // so we can proceed with user operations after they return to this
     // codepath.
     if (op->_inSetup) {
-        log() << "Successfully connected to " << op->request().target.toString();
+        auto host = op->request().target;
+        auto getConnectionDuration = now() - op->start();
+        log() << "Successfully connected to " << host << ", took " << getConnectionDuration << " ("
+              << _connectionPool.getNumConnectionsPerHost(host) << " connections now open to "
+              << host << ")";
         op->_inSetup = false;
         op->finish(RemoteCommandResponse());
         return;
@@ -298,7 +289,8 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         op->_timeoutAlarm->cancel();
     }
 
-    if (resp.status.code() == ErrorCodes::ExceededTimeLimit) {
+    if (resp.status.code() == ErrorCodes::ExceededTimeLimit ||
+        resp.status.code() == ErrorCodes::NetworkInterfaceExceededTimeLimit) {
         _numTimedOutOps.fetchAndAdd(1);
     }
 
@@ -308,7 +300,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         // If we fail during connection, we won't be able to access any of op's members after
         // calling finish(), so we return here.
         log() << "Failed to connect to " << op->request().target << " - " << resp.status;
-        op->finish(resp);
+        op->finish(std::move(resp));
         return;
     }
 
@@ -320,7 +312,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         log() << "Failed asio heartbeat to " << op->request().target << " - "
               << redact(resp.status);
         _numFailedOps.fetchAndAdd(1);
-        op->finish(resp);
+        op->finish(std::move(resp));
         return;
     }
 
@@ -352,7 +344,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         _inProgress.erase(iter);
     }
 
-    op->finish(resp);
+    op->finish(std::move(resp));
 
     MONGO_ASIO_INVARIANT(static_cast<bool>(ownedOp), "Invalid AsyncOp", op);
 

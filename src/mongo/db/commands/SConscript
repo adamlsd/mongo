@@ -3,6 +3,8 @@
 Import("env")
 Import("has_option")
 
+env = env.Clone()
+
 env.Library(
     target="test_commands_enabled",
     source=[
@@ -15,12 +17,22 @@ env.Library(
     source=[
         'server_status_internal.cpp',
         'server_status_metric.cpp',
-        ],
+    ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
-        '$BUILD_DIR/mongo/base'
-        ]
-    )
+    ]
+)
+
+env.Library(
+    target='server_status',
+    source=[
+        'server_status.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands',
+    ]
+)
 
 env.Library(
     target="core",
@@ -31,16 +43,16 @@ env.Library(
         "connection_status.cpp",
         "copydb_common.cpp",
         "fail_point_cmd.cpp",
+        "feature_compatibility_version_command_parser.cpp",
         "find_and_modify_common.cpp",
+        "generic.cpp",
         "hashcmd.cpp",
         "isself.cpp",
         "mr_common.cpp",
-        "rename_collection_common.cpp",
-        "server_status.cpp",
         "parameters.cpp",
+        "rename_collection_common.cpp",
         "user_management_commands_common.cpp",
         "write_commands/write_commands_common.cpp",
-        "generic.cpp",
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/clientdriver',
@@ -75,10 +87,35 @@ env.Library(
         '$BUILD_DIR/mongo/transport/message_compressor',
         '$BUILD_DIR/mongo/transport/transport_layer_common',
         '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
-        '$BUILD_DIR/mongo/util/foundation',
         '$BUILD_DIR/mongo/util/ntservice',
         '$BUILD_DIR/mongo/util/processinfo',
         'server_status_core',
+    ],
+)
+
+env.Library(
+    target="dcommands_fsync",
+    source=[
+        "fsync.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/concurrency/write_conflict_exception',
+        '$BUILD_DIR/mongo/db/curop',
+        '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
+    ],
+)
+
+env.Library(
+    target="dcommands_fcv",
+    source=[
+        "feature_compatibility_version.cpp",
+    ],
+    LIBDEPS=[
+        'core',
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/index_d',
     ],
 )
 
@@ -90,23 +127,22 @@ env.Library(
         "clone.cpp",
         "clone_collection.cpp",
         "collection_to_capped.cpp",
-        "dbcommands.cpp",
         "compact.cpp",
         "copydb.cpp",
         "copydb_start_commands.cpp",
         "count_cmd.cpp",
+        "cpuload.cpp",
         "create_indexes.cpp",
         "current_op.cpp",
+        "dbcommands.cpp",
         "dbhash.cpp",
         "distinct.cpp",
         "driverHelpers.cpp",
         "drop_indexes.cpp",
         "eval.cpp",
         "explain_cmd.cpp",
-        "feature_compatibility_version.cpp",
         "find_and_modify.cpp",
         "find_cmd.cpp",
-        "fsync.cpp",
         "geo_near_cmd.cpp",
         "get_last_error.cpp",
         "getmore_cmd.cpp",
@@ -126,6 +162,7 @@ env.Library(
         "plan_cache_commands.cpp",
         "rename_collection_cmd.cpp",
         "repair_cursor.cpp",
+        "run_aggregate.cpp",
         "set_feature_compatibility_version_command.cpp",
         "snapshot_management.cpp",
         "test_commands.cpp",
@@ -136,30 +173,39 @@ env.Library(
         "write_commands/write_commands.cpp",
     ],
     LIBDEPS=[
-        'apply_ops_cmd_common',
-        'core',
-        'killcursors_common',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/client/clientdriver',
-        '$BUILD_DIR/mongo/client/parallel',
         '$BUILD_DIR/mongo/db/auth/authmongod',
+        '$BUILD_DIR/mongo/db/background',
+        '$BUILD_DIR/mongo/db/catalog/catalog',
+        '$BUILD_DIR/mongo/db/catalog/collection',
         '$BUILD_DIR/mongo/db/catalog/index_key_validate',
+        '$BUILD_DIR/mongo/db/catalog/catalog_helpers',
+        '$BUILD_DIR/mongo/db/clientcursor',
+        '$BUILD_DIR/mongo/db/cloner',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/index/index_access_methods',
+        '$BUILD_DIR/mongo/db/index_d',
         '$BUILD_DIR/mongo/db/lasterror',
         '$BUILD_DIR/mongo/db/ops/write_ops',
         '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
         '$BUILD_DIR/mongo/db/pipeline/serveronly',
+        '$BUILD_DIR/mongo/db/repair_database',
+        '$BUILD_DIR/mongo/db/repl/oplog',
         '$BUILD_DIR/mongo/db/repl/isself',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_impl',
+        '$BUILD_DIR/mongo/db/rw_concern_d',
         '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/stats/serveronly',
         '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
+        '$BUILD_DIR/mongo/db/views/views_mongod',
+        '$BUILD_DIR/mongo/s/client/parallel',
+        'apply_ops_cmd_common',
+        'core',
+        'dcommands_fcv',
+        'dcommands_fsync',
+        'killcursors_common',
     ],
-    LIBDEPS_TAGS=[
-        # TODO: There are many libraries missing from LIBDEPS
-        'incomplete'
-    ]
 )
 
 env.Library(
@@ -253,6 +299,6 @@ if has_option('use-cpu-profiler'):
         LIBDEPS=[
         ],
         LIBDEPS_TAGS=[
-            'incomplete'
+            'illegal_cyclic_or_unresolved_dependencies_whitelisted',
         ],
     )

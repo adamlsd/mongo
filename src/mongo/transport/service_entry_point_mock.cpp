@@ -42,8 +42,50 @@ namespace mongo {
 
 using namespace transport;
 
-namespace {
-void setOkResponse(Message* m) {
+ServiceEntryPointMock::ServiceEntryPointMock(transport::TransportLayer* tl)
+    : _tl(tl), _inShutdown(false) {}
+
+ServiceEntryPointMock::~ServiceEntryPointMock() {
+    {
+        stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
+        _inShutdown = true;
+    }
+
+    for (auto& t : _threads) {
+        t.join();
+    }
+}
+
+void ServiceEntryPointMock::startSession(transport::SessionHandle session) {
+    _threads.emplace_back(&ServiceEntryPointMock::run, this, std::move(session));
+}
+
+void ServiceEntryPointMock::run(transport::SessionHandle session) {
+    Message inMessage;
+    while (true) {
+        {
+            stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
+            if (_inShutdown)
+                break;
+        }
+
+        // sourceMessage()
+        if (!session->sourceMessage(&inMessage).wait().isOK()) {
+            break;
+        }
+
+        auto resp = handleRequest(nullptr, inMessage, session->remote());
+
+        // sinkMessage()
+        if (!session->sinkMessage(resp.response).wait().isOK()) {
+            break;
+        }
+    }
+}
+
+DbResponse ServiceEntryPointMock::handleRequest(OperationContext* opCtx,
+                                                const Message& request,
+                                                const HostAndPort& client) {
     // Need to set up our { ok : 1 } response.
     BufBuilder b{};
 
@@ -63,52 +105,7 @@ void setOkResponse(Message* m) {
     msg.setLen(b.len());
     msg.setOperation(dbCommandReply);
 
-    // Set the message, transfer buffer ownership to Message
-    m->reset();
-    m->setData(b.release());
-}
-
-}  // namespace
-
-ServiceEntryPointMock::ServiceEntryPointMock(transport::TransportLayer* tl)
-    : _tl(tl), _outMessage(), _inShutdown(false) {
-    setOkResponse(&_outMessage);
-}
-
-ServiceEntryPointMock::~ServiceEntryPointMock() {
-    {
-        stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
-        _inShutdown = true;
-    }
-
-    for (auto& t : _threads) {
-        t.join();
-    }
-}
-
-void ServiceEntryPointMock::startSession(transport::Session&& session) {
-    _threads.emplace_back(&ServiceEntryPointMock::run, this, std::move(session));
-}
-
-void ServiceEntryPointMock::run(transport::Session&& session) {
-    Message inMessage;
-    while (true) {
-        {
-            stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
-            if (_inShutdown)
-                break;
-        }
-
-        // sourceMessage()
-        if (!session.sourceMessage(&inMessage).wait().isOK()) {
-            break;
-        }
-
-        // sinkMessage()
-        if (!session.sinkMessage(_outMessage).wait().isOK()) {
-            break;
-        }
-    }
+    return {Message(b.release()), ""};
 }
 
 }  // namespace mongo

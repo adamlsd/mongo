@@ -27,12 +27,17 @@
 
 #include "mongo/platform/basic.h"
 
+#include <algorithm>
+#include <random>
+#include <stack>
+
 #include "mongo/executor/connection_pool_test_fixture.h"
 
 #include "mongo/executor/connection_pool.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 namespace executor {
@@ -92,6 +97,175 @@ TEST_F(ConnectionPoolTest, SameConn) {
     ASSERT(conn1Id);
     ASSERT(conn2Id);
     ASSERT_EQ(conn1Id, conn2Id);
+}
+
+/**
+ * Verify that connections are obtained in MRU order.
+ */
+TEST_F(ConnectionPoolTest, ConnectionsAreAcquiredInMRUOrder) {
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool");
+
+    // Obtain a set of connections
+    constexpr size_t kSize = 100;
+    std::vector<ConnectionPool::ConnectionHandle> connections;
+
+    // Ensure that no matter how we leave the test, we mark any
+    // checked out connections as OK before implicity returning them
+    // to the pool by destroying the 'connections' vector. Otherwise,
+    // this test would cause an invariant failure instead of a normal
+    // test failure if it fails, which would be confusing.
+    const auto guard = MakeGuard([&] {
+        while (!connections.empty()) {
+            try {
+                ConnectionPool::ConnectionHandle conn = std::move(connections.back());
+                connections.pop_back();
+                conn->indicateSuccess();
+            } catch (...) {
+            }
+        }
+    });
+
+    for (size_t i = 0; i != kSize; ++i) {
+        ConnectionImpl::pushSetup(Status::OK());
+        pool.get(HostAndPort(),
+                 Milliseconds(5000),
+                 [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                     ASSERT(swConn.isOK());
+                     connections.push_back(std::move(swConn.getValue()));
+                 });
+    }
+
+    // Shuffle them into a random order
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::shuffle(connections.begin(), connections.end(), rng);
+
+    // Return them to the pool in that random order, recording IDs in a stack
+    std::stack<size_t> ids;
+    while (!connections.empty()) {
+        ConnectionPool::ConnectionHandle conn = std::move(connections.back());
+        connections.pop_back();
+        ids.push(static_cast<ConnectionImpl*>(conn.get())->id());
+        conn->indicateSuccess();
+    }
+
+    // Re-obtain the connections. They should come back in the same order
+    // as the IDs in the stack, since the pool returns them in MRU order.
+    for (size_t i = 0; i != kSize; ++i) {
+        ConnectionImpl::pushSetup(Status::OK());
+        pool.get(HostAndPort(),
+                 Milliseconds(5000),
+                 [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                     ASSERT(swConn.isOK());
+                     const auto id = CONN2ID(swConn);
+                     connections.push_back(std::move(swConn.getValue()));
+                     ASSERT(id == ids.top());
+                     ids.pop();
+                 });
+    }
+}
+
+/**
+ * Verify that recently used connections are not purged.
+ */
+TEST_F(ConnectionPoolTest, ConnectionsNotUsedRecentlyArePurged) {
+    ConnectionPool::Options options;
+    options.minConnections = 0;
+    options.refreshRequirement = Milliseconds(1000);
+    options.refreshTimeout = Milliseconds(5000);
+    options.hostTimeout = Minutes(1);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), 0U);
+
+    // Obtain a set of connections
+    constexpr size_t kSize = 100;
+    std::vector<ConnectionPool::ConnectionHandle> connections;
+
+    // Ensure that no matter how we leave the test, we mark any
+    // checked out connections as OK before implicity returning them
+    // to the pool by destroying the 'connections' vector. Otherwise,
+    // this test would cause an invariant failure instead of a normal
+    // test failure if it fails, which would be confusing.
+    const auto guard = MakeGuard([&] {
+        while (!connections.empty()) {
+            try {
+                ConnectionPool::ConnectionHandle conn = std::move(connections.back());
+                connections.pop_back();
+                conn->indicateSuccess();
+            } catch (...) {
+            }
+        }
+    });
+
+    auto now = Date_t::now();
+    PoolImpl::setNow(now);
+
+    // Check out kSize connections from the pool, and record their IDs in a set.
+    std::set<size_t> original_ids;
+    for (size_t i = 0; i != kSize; ++i) {
+        ConnectionImpl::pushSetup(Status::OK());
+        pool.get(HostAndPort(),
+                 Milliseconds(5000),
+                 [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                     ASSERT(swConn.isOK());
+                     original_ids.insert(CONN2ID(swConn));
+                     connections.push_back(std::move(swConn.getValue()));
+                 });
+    }
+
+    ASSERT_EQ(original_ids.size(), kSize);
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+
+    // Shuffle them into a random order
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::shuffle(connections.begin(), connections.end(), rng);
+
+    // Return them to the pool in that random order.
+    while (!connections.empty()) {
+        ConnectionPool::ConnectionHandle conn = std::move(connections.back());
+        connections.pop_back();
+        conn->indicateSuccess();
+    }
+
+    // Advance the time, but not enough to age out connections. We should still have them all.
+    PoolImpl::setNow(now + Milliseconds(500));
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+
+    // Re-obtain a quarter of the connections, and record their IDs in a set.
+    std::set<size_t> reacquired_ids;
+    for (size_t i = 0; i < kSize / 4; ++i) {
+        ConnectionImpl::pushSetup(Status::OK());
+        pool.get(HostAndPort(),
+                 Milliseconds(5000),
+                 [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                     ASSERT(swConn.isOK());
+                     reacquired_ids.insert(CONN2ID(swConn));
+                     connections.push_back(std::move(swConn.getValue()));
+                 });
+    }
+
+    ASSERT_EQ(reacquired_ids.size(), kSize / 4);
+    ASSERT(std::includes(
+        original_ids.begin(), original_ids.end(), reacquired_ids.begin(), reacquired_ids.end()));
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+
+    // Put them right back in.
+    while (!connections.empty()) {
+        ConnectionPool::ConnectionHandle conn = std::move(connections.back());
+        connections.pop_back();
+        conn->indicateSuccess();
+    }
+
+    // We should still have all of them in the pool
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize);
+
+    // Advance across the host timeout for the 75 connections we
+    // didn't use. Afterwards, the pool should contain only those
+    // kSize/4 connections we used above.
+    PoolImpl::setNow(now + Milliseconds(1000));
+    ASSERT_EQ(pool.getNumConnectionsPerHost(HostAndPort()), kSize / 4);
 }
 
 /**
@@ -308,13 +482,14 @@ TEST_F(ConnectionPoolTest, refreshTimeoutHappens) {
     // see if that pans out. In this case, we'll get a failure on timeout.
     ConnectionImpl::pushSetup(Status::OK());
     pool.get(HostAndPort(),
-             Milliseconds(10000),
+             Milliseconds(1000),
              [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
                  ASSERT(!swConn.isOK());
 
                  reachedA = true;
              });
     ASSERT(!reachedA);
+    PoolImpl::setNow(now + Milliseconds(3000));
 
     // Let the refresh timeout
     PoolImpl::setNow(now + Milliseconds(4000));
@@ -638,8 +813,21 @@ TEST_F(ConnectionPoolTest, hostTimeoutHappensMoreGetsDelay) {
              });
     ASSERT(reachedB);
 
-    // Now we've timed out
-    PoolImpl::setNow(now + Milliseconds(2000));
+    // Now our timeout should be 1999 ms from 'now' instead of 1000 ms
+    // if we do another 'get' we should still get the original connection
+    PoolImpl::setNow(now + Milliseconds(1500));
+    bool reachedB2 = false;
+    pool.get(HostAndPort(),
+             Milliseconds(5000),
+             [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+                 ASSERT_EQ(connId, CONN2ID(swConn));
+                 reachedB2 = true;
+                 doneWith(swConn.getValue());
+             });
+    ASSERT(reachedB2);
+
+    // We should time out when we get to 'now' + 2500 ms
+    PoolImpl::setNow(now + Milliseconds(2500));
 
     bool reachedC = false;
     // Different id
@@ -828,6 +1016,100 @@ TEST_F(ConnectionPoolTest, dropConnections) {
              });
 
     ASSERT(reachedB);
+}
+
+/**
+ * Verify that timeouts during setup don't prematurely time out unrelated requests
+ */
+TEST_F(ConnectionPoolTest, SetupTimeoutsDontTimeoutUnrelatedRequests) {
+    ConnectionPool::Options options;
+
+    options.maxConnections = 1;
+    options.refreshTimeout = Seconds(2);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+
+    auto now = Date_t::now();
+    PoolImpl::setNow(now);
+
+    boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn1;
+    pool.get(HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn1 = std::move(swConn);
+    });
+
+    // initially we haven't called our callback
+    ASSERT(!conn1);
+
+    PoolImpl::setNow(now + Seconds(1));
+
+    // Still haven't fired on conn1
+    ASSERT(!conn1);
+
+    // Get conn2 (which should have an extra second before the timeout)
+    boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn2;
+    pool.get(HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn2 = std::move(swConn);
+    });
+
+    PoolImpl::setNow(now + Seconds(2));
+
+    ASSERT(conn1);
+    ASSERT(!conn1->isOK());
+    ASSERT(conn1->getStatus().code() == ErrorCodes::NetworkInterfaceExceededTimeLimit);
+
+    ASSERT(!conn2);
+}
+
+/**
+ * Verify that timeouts during refresh don't prematurely time out unrelated requests
+ */
+TEST_F(ConnectionPoolTest, RefreshTimeoutsDontTimeoutRequests) {
+    ConnectionPool::Options options;
+
+    options.maxConnections = 1;
+    options.refreshTimeout = Seconds(2);
+    options.refreshRequirement = Seconds(3);
+    ConnectionPool pool(stdx::make_unique<PoolImpl>(), "test pool", options);
+
+    auto now = Date_t::now();
+    PoolImpl::setNow(now);
+
+    // Successfully get a new connection
+    size_t conn1Id = 0;
+    ConnectionImpl::pushSetup(Status::OK());
+    pool.get(HostAndPort(), Seconds(1), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn1Id = CONN2ID(swConn);
+        doneWith(swConn.getValue());
+    });
+    ASSERT(conn1Id);
+
+    // Force it into refresh
+    PoolImpl::setNow(now + Seconds(3));
+
+    boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn1;
+    pool.get(HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn1 = std::move(swConn);
+    });
+
+    // initially we haven't called our callback
+    ASSERT(!conn1);
+
+    // 1 second later we've triggered a refresh and still haven't called the callback
+    PoolImpl::setNow(now + Seconds(4));
+    ASSERT(!conn1);
+
+    // Get conn2 (which should have an extra second before the timeout)
+    boost::optional<StatusWith<ConnectionPool::ConnectionHandle>> conn2;
+    pool.get(HostAndPort(), Seconds(10), [&](StatusWith<ConnectionPool::ConnectionHandle> swConn) {
+        conn2 = std::move(swConn);
+    });
+
+    PoolImpl::setNow(now + Seconds(5));
+
+    ASSERT(conn1);
+    ASSERT(!conn1->isOK());
+    ASSERT(conn1->getStatus().code() == ErrorCodes::NetworkInterfaceExceededTimeLimit);
+
+    ASSERT(!conn2);
 }
 
 }  // namespace connection_pool_test_details

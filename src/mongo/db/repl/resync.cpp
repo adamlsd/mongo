@@ -72,10 +72,9 @@ public:
     }
 
     CmdResync() : Command(kResyncFieldName) {}
-    virtual bool run(OperationContext* txn,
+    virtual bool run(OperationContext* opCtx,
                      const string& dbname,
-                     BSONObj& cmdObj,
-                     int,
+                     const BSONObj& cmdObj,
                      string& errmsg,
                      BSONObjBuilder& result) {
         bool waitForResync = !cmdObj.hasField(kWaitFieldName) || cmdObj[kWaitFieldName].trueValue();
@@ -83,6 +82,14 @@ public:
         // Replica set resync.
         ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
         if (getGlobalReplicationCoordinator()->getSettings().usingReplSets()) {
+            // Resync is disabled in production on replica sets until it stabilizes (SERVER-27081).
+            if (!Command::testCommandsEnabled) {
+                return appendCommandStatus(
+                    result,
+                    Status(ErrorCodes::OperationFailed,
+                           "Replica sets do not support the resync command"));
+            }
+
             const MemberState memberState = replCoord->getMemberState();
             if (memberState.startup()) {
                 return appendCommandStatus(
@@ -92,16 +99,15 @@ public:
                 return appendCommandStatus(
                     result, Status(ErrorCodes::NotSecondary, "primaries cannot resync"));
             }
-            uassertStatusOKWithLocation(replCoord->resyncData(txn, waitForResync), "resync", 0);
+            uassertStatusOKWithLocation(replCoord->resyncData(opCtx, waitForResync), "resync", 0);
             return true;
         }
 
         // Master/Slave resync.
-        ScopedTransaction transaction(txn, MODE_X);
-        Lock::GlobalWrite globalWriteLock(txn->lockState());
+        Lock::GlobalWrite globalWriteLock(opCtx);
         // below this comment pertains only to master/slave replication
         if (cmdObj.getBoolField("force")) {
-            if (!waitForSyncToFinish(txn, errmsg))
+            if (!waitForSyncToFinish(opCtx, errmsg))
                 return false;
             replAllDead = "resync forced";
         }
@@ -110,29 +116,29 @@ public:
             errmsg = "not dead, no need to resync";
             return false;
         }
-        if (!waitForSyncToFinish(txn, errmsg))
+        if (!waitForSyncToFinish(opCtx, errmsg))
             return false;
 
-        ReplSource::forceResyncDead(txn, "client");
+        ReplSource::forceResyncDead(opCtx, "client");
         result.append("info", "triggered resync for all sources");
 
         return true;
     }
 
-    bool waitForSyncToFinish(OperationContext* txn, string& errmsg) const {
+    bool waitForSyncToFinish(OperationContext* opCtx, string& errmsg) const {
         // Wait for slave thread to finish syncing, so sources will be be
         // reloaded with new saved state on next pass.
         Timer t;
         while (1) {
-            if (syncing == 0 || t.millis() > 30000)
+            if (syncing.load() == 0 || t.millis() > 30000)
                 break;
             {
-                Lock::TempRelease t(txn->lockState());
-                relinquishSyncingSome = 1;
+                Lock::TempRelease t(opCtx->lockState());
+                relinquishSyncingSome.store(1);
                 sleepmillis(1);
             }
         }
-        if (syncing) {
+        if (syncing.load()) {
             errmsg = "timeout waiting for sync() to finish";
             return false;
         }

@@ -302,7 +302,7 @@ void NetworkInterfaceMock::scheduleResponse(NetworkOperationIterator noi,
     // If no RemoteCommandResponse was returned (for example, on a simulated network error), then
     // do not attempt to run the metadata hook, since there is no returned metadata.
     if (_metadataHook && response.isOK()) {
-        _metadataHook->readReplyMetadata(noi->getRequest().target, response.metadata);
+        _metadataHook->readReplyMetadata(noi->getRequest().target.toString(), response.metadata);
     }
 
     noi->setResponse(when, response);
@@ -662,6 +662,15 @@ void NetworkInterfaceMock::InNetworkGuard::dismiss() {
 NetworkInterfaceMock::InNetworkGuard::~InNetworkGuard() {
     if (_callExitNetwork)
         _net->exitNetwork();
+}
+
+NetworkInterfaceMock* NetworkInterfaceMock::InNetworkGuard::operator->() const {
+    return _net;
+}
+
+NetworkInterfaceMockClockSource::NetworkInterfaceMockClockSource(NetworkInterfaceMock* net)
+    : _net(net) {
+    _tracksSystemClock = false;
 }
 
 }  // namespace executor

@@ -78,7 +78,7 @@ bool checkIfSingleDoc(OperationContext* txn,
                                                              idx,
                                                              newmin,
                                                              newmax,
-                                                             false,  // endKeyInclusive
+                                                             BoundInclusion::kIncludeStartKeyOnly,
                                                              PlanExecutor::YIELD_MANUAL));
     // check if exactly one document found
     PlanExecutor::ExecState state;
@@ -240,11 +240,8 @@ public:
             }
 
             const string configdb = cmdObj["configdb"].String();
-            shardingState->initializeFromConfigConnString(txn, configdb);
+            shardingState->initializeFromConfigConnString(txn, configdb, shardName);
         }
-
-        // Initialize our current shard name in the shard state if needed
-        shardingState->setShardName(shardName);
 
         log() << "received splitChunk request: " << redact(cmdObj);
 
@@ -255,7 +252,7 @@ public:
         const string whyMessage(str::stream() << "splitting chunk [" << min << ", " << max
                                               << ") in "
                                               << nss.toString());
-        auto scopedDistLock = grid.catalogClient(txn)->distLock(
+        auto scopedDistLock = grid.catalogClient(txn)->getDistLockManager()->lock(
             txn, nss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
         if (!scopedDistLock.isOK()) {
             errmsg = str::stream() << "could not acquire collection lock for " << nss.toString()
@@ -267,7 +264,7 @@ public:
 
         // Always check our version remotely
         ChunkVersion shardVersion;
-        Status refreshStatus = shardingState->refreshMetadataNow(txn, nss.ns(), &shardVersion);
+        Status refreshStatus = shardingState->refreshMetadataNow(txn, nss, &shardVersion);
 
         if (!refreshStatus.isOK()) {
             errmsg = str::stream() << "splitChunk cannot split chunk "
@@ -333,18 +330,6 @@ public:
                 nss.toString(), msg, expectedCollectionVersion, shardVersion);
         }
 
-        auto newShardVersion = collVersion;
-        // Increment the minor verison once. cloneSplit will increment the minor verison
-        // once per every split point past the first.
-        //
-        // TODO: Revisit this interface, it's a bit clunky
-        newShardVersion.incMinor();
-
-        // Ensure that the newly applied chunks would result in a correct metadata state
-        uassertStatusOK(collMetadata->cloneSplit(min, max, splitKeys, newShardVersion));
-
-        log() << "splitChunk accepted at version " << shardVersion;
-
         auto request = SplitChunkRequest(
             nss, shardName, expectedCollectionVersion.epoch(), chunkRange, splitKeys);
 
@@ -363,9 +348,8 @@ public:
         // Refresh chunk metadata regardless of whether or not the split succeeded
         //
         {
-            ChunkVersion shardVersionAfterSplit;
-            refreshStatus =
-                shardingState->refreshMetadataNow(txn, nss.ns(), &shardVersionAfterSplit);
+            ChunkVersion unusedShardVersion;
+            refreshStatus = shardingState->refreshMetadataNow(txn, nss, &unusedShardVersion);
 
             if (!refreshStatus.isOK()) {
                 errmsg = str::stream() << "failed to refresh metadata for split chunk ["
@@ -402,10 +386,10 @@ public:
         }
 
         //
-        // If _configsvrSplitChunk returned an error, look at this shard's metadata to determine if
-        // the split actually did happen. This can happen if there's a network error getting the
-        // response from the first call to _configsvrSplitChunk, but it actually succeeds, thus the
-        // automatic retry fails with a precondition violation, for example.
+        // If _configsvrCommitChunkSplit returned an error, look at this shard's metadata to
+        // determine if  the split actually did happen. This can happen if there's a network error
+        // getting the response from the first call to _configsvrCommitChunkSplit, but it actually
+        // succeeds, thus the automatic retry fails with a precondition violation, for example.
         //
         if ((!commandStatus.isOK() || !writeConcernStatus.isOK()) &&
             _checkMetadataForSuccess(txn, nss, chunkRange, splitKeys)) {
@@ -418,46 +402,42 @@ public:
             return appendCommandStatus(result, writeConcernStatus);
         }
 
-        {
-            // Select chunk to move out for "top chunk optimization".
-            KeyPattern shardKeyPattern(collMetadata->getKeyPattern());
+        // Select chunk to move out for "top chunk optimization".
+        KeyPattern shardKeyPattern(collMetadata->getKeyPattern());
 
-            AutoGetCollection autoColl(txn, nss, MODE_IS);
+        AutoGetCollection autoColl(txn, nss, MODE_IS);
 
-            Collection* const collection = autoColl.getCollection();
-            if (!collection) {
-                warning() << "will not perform top-chunk checking since " << nss.toString()
-                          << " does not exist after splitting";
-                return true;
-            }
+        Collection* const collection = autoColl.getCollection();
+        if (!collection) {
+            warning() << "will not perform top-chunk checking since " << nss.toString()
+                      << " does not exist after splitting";
+            return true;
+        }
 
-            // Allow multiKey based on the invariant that shard keys must be
-            // single-valued. Therefore, any multi-key index prefixed by shard
-            // key cannot be multikey over the shard key fields.
-            IndexDescriptor* idx =
-                collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn, keyPatternObj, false);
+        // Allow multiKey based on the invariant that shard keys must be single-valued. Therefore,
+        // any multi-key index prefixed by shard key cannot be multikey over the shard key fields.
+        IndexDescriptor* idx =
+            collection->getIndexCatalog()->findShardKeyPrefixedIndex(txn, keyPatternObj, false);
+        if (!idx) {
+            return true;
+        }
 
-            if (idx == NULL) {
-                return true;
-            }
+        auto backChunk = ChunkType();
+        backChunk.setMin(splitKeys.back());
+        backChunk.setMax(max);
 
-            auto backChunk = ChunkType();
-            backChunk.setMin(splitKeys.back());
-            backChunk.setMax(max);
+        auto frontChunk = ChunkType();
+        frontChunk.setMin(min);
+        frontChunk.setMax(splitKeys.front());
 
-            auto frontChunk = ChunkType();
-            frontChunk.setMin(min);
-            frontChunk.setMax(splitKeys.front());
-
-            if (shardKeyPattern.globalMax().woCompare(backChunk.getMax()) == 0 &&
-                checkIfSingleDoc(txn, collection, idx, &backChunk)) {
-                result.append("shouldMigrate",
-                              BSON("min" << backChunk.getMin() << "max" << backChunk.getMax()));
-            } else if (shardKeyPattern.globalMin().woCompare(frontChunk.getMin()) == 0 &&
-                       checkIfSingleDoc(txn, collection, idx, &frontChunk)) {
-                result.append("shouldMigrate",
-                              BSON("min" << frontChunk.getMin() << "max" << frontChunk.getMax()));
-            }
+        if (shardKeyPattern.globalMax().woCompare(backChunk.getMax()) == 0 &&
+            checkIfSingleDoc(txn, collection, idx, &backChunk)) {
+            result.append("shouldMigrate",
+                          BSON("min" << backChunk.getMin() << "max" << backChunk.getMax()));
+        } else if (shardKeyPattern.globalMin().woCompare(frontChunk.getMin()) == 0 &&
+                   checkIfSingleDoc(txn, collection, idx, &frontChunk)) {
+            result.append("shouldMigrate",
+                          BSON("min" << frontChunk.getMin() << "max" << frontChunk.getMax()));
         }
 
         return true;

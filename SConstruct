@@ -384,6 +384,11 @@ add_option('use-new-tools',
     nargs=0,
 )
 
+add_option('build-mongoreplay',
+    help='when building with --use-new-tools, build mongoreplay ( requires pcap dev )',
+    nargs=1,
+)
+
 add_option('use-cpu-profiler',
     help='Link against the google-perftools profiler library',
     nargs=0,
@@ -557,11 +562,11 @@ def variable_arch_converter(val):
 def decide_platform_tools():
     if is_running_os('windows'):
         # we only support MS toolchain on windows
-        return ['msvc', 'mslink', 'mslib']
+        return ['msvc', 'mslink', 'mslib', 'masm']
     elif is_running_os('linux', 'solaris'):
-        return ['gcc', 'g++', 'gnulink', 'ar']
+        return ['gcc', 'g++', 'gnulink', 'ar', 'gas']
     elif is_running_os('osx'):
-        return ['gcc', 'g++', 'applelink', 'ar']
+        return ['gcc', 'g++', 'applelink', 'ar', 'as']
     else:
         return ["default"]
 
@@ -813,7 +818,7 @@ def printLocalInfo():
 
 printLocalInfo()
 
-boostLibs = [ "thread" , "filesystem" , "program_options", "system", "regex", "chrono" ]
+boostLibs = [ "thread" , "filesystem" , "program_options", "system", "regex", "chrono", "iostreams" ]
 
 onlyServer = len( COMMAND_LINE_TARGETS ) == 0 or ( len( COMMAND_LINE_TARGETS ) == 1 and str( COMMAND_LINE_TARGETS[0] ) in [ "mongod" , "mongos" , "test" ] )
 
@@ -1327,6 +1332,9 @@ if env['_LIBDEPS'] == '$_LIBDEPS_OBJS':
     env['ARCOMSTR'] = 'Generating placeholder library $TARGET'
     env['RANLIBCOM'] = noop_action
     env['RANLIBCOMSTR'] = 'Skipping ranlib for $TARGET'
+elif env['_LIBDEPS'] == '$_LIBDEPS_LIBS':
+    env.Tool('thin_archive')
+
 
 libdeps.setup_environment(env, emitting_shared=(link_model.startswith("dynamic")))
 
@@ -1915,11 +1923,10 @@ def doConfigure(myenv):
         conf.Finish()
 
     if get_option('runtime-hardening') == "on":
-        # Clang honors these flags, but doesn't actually do anything with them for compatibility, so we
-        # need to only do this for GCC. On clang, we do things differently. Note that we need to add
-        # these to the LINKFLAGS as well, since otherwise we might not link libssp when we need to (see
-        # SERVER-12456).
-        if myenv.ToolchainIs('gcc'):
+        # Enable 'strong' stack protection preferentially, but fall back to 'all' if it is not
+        # available. Note that we need to add these to the LINKFLAGS as well, since otherwise we
+        # might not link libssp when we need to (see SERVER-12456).
+        if myenv.ToolchainIs('gcc', 'clang'):
             if AddToCCFLAGSIfSupported(myenv, '-fstack-protector-strong'):
                 myenv.Append(
                     LINKFLAGS=[
@@ -1932,10 +1939,10 @@ def doConfigure(myenv):
                         '-fstack-protector-all',
                     ]
                 )
-        elif myenv.ToolchainIs('clang'):
-            # TODO: Clang stack hardening. There are several interesting
-            # things to try here, but they each have consequences we need
-            # to investigate.
+
+        if myenv.ToolchainIs('clang'):
+            # TODO: There are several interesting things to try here, but they each have
+            # consequences we need to investigate.
             #
             # - fsanitize=bounds: This does static bounds checking. We can
             #   probably turn this on along with fsanitize-trap so that we
@@ -2322,15 +2329,6 @@ def doConfigure(myenv):
             # have renamed the flag.
             if not AddToCCFLAGSIfSupported(myenv, "-fno-sanitize-recover"):
                 AddToCCFLAGSIfSupported(myenv, "-fno-sanitize-recover=undefined")
-
-            # Ideally, we would apply this only in the WiredTiger
-            # directory until WT-2631 is resolved, but we can't rely
-            # on the flag being supported until clang-3.6, which isn't
-            # our minimum, and we don't have access to
-            # AddToCCFFLAGSIfSupported in the scope of the WT
-            # Sconscript.
-            #
-            AddToCCFLAGSIfSupported(myenv, "-fno-sanitize=nonnull-attribute")
 
     if myenv.ToolchainIs('msvc') and optBuild:
         # http://blogs.msdn.com/b/vcblog/archive/2013/09/11/introducing-gw-compiler-switch.aspx
@@ -2852,9 +2850,6 @@ env = doConfigure( env )
 # compilation database entries for the configure tests, which is weird.
 env.Tool("compilation_db")
 
-# Load the dagger tool for build dependency graph introspection
-env.Tool("dagger")
-
 def checkErrorCodes():
     import buildscripts.errorcodes as x
     if x.checkErrorCodes() == False:
@@ -2955,7 +2950,6 @@ def injectMongoIncludePaths(thisEnv):
 env.AddMethod(injectMongoIncludePaths, 'InjectMongoIncludePaths')
 
 compileDb = env.Alias("compiledb", env.CompilationDatabase('compile_commands.json'))
-dependencyDb = env.Alias("dagger", env.Dagger('library_dependency_graph.json'))
 
 env.Alias("distsrc-tar", env.DistSrc("mongodb-src-${MONGO_VERSION}.tar"))
 env.Alias("distsrc-tgz", env.GZip(
@@ -2969,8 +2963,14 @@ env.SConscript('src/SConscript', variant_dir='$BUILD_DIR', duplicate=False)
 
 all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests'])
 
-# Require everything to be built before trying to extract build dependency information
-env.Requires(dependencyDb, all)
+# If we can, load the dagger tool for build dependency graph introspection.
+# Dagger is only supported on Linux and OSX (not Windows or Solaris).
+if is_running_os('osx') or is_running_os('linux'):
+    env.Tool("dagger")
+    dependencyDb = env.Alias("dagger", env.Dagger('library_dependency_graph.json'))
+
+    # Require everything to be built before trying to extract build dependency information
+    env.Requires(dependencyDb, all)
 
 # We don't want installing files to cause them to flow into the cache,
 # since presumably we can re-install them from the origin if needed.

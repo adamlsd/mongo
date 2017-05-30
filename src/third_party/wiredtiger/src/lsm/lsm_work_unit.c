@@ -358,7 +358,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	WT_ERR(__wt_lsm_tree_set_chunk_size(session, chunk));
 
 	/* Update the flush timestamp to help track ongoing progress. */
-	WT_ERR(__wt_epoch(session, &lsm_tree->last_flush_ts));
+	__wt_epoch(session, &lsm_tree->last_flush_ts);
 	++lsm_tree->chunks_flushed;
 
 	/* Lock the tree, mark the chunk as on disk and update the metadata. */
@@ -447,7 +447,7 @@ __lsm_bloom_create(WT_SESSION_IMPL *session,
 	F_SET(session, WT_SESSION_NO_CACHE | WT_SESSION_NO_EVICTION);
 	for (insert_count = 0; (ret = src->next(src)) == 0; insert_count++) {
 		WT_ERR(src->get_key(src, &key));
-		WT_ERR(__wt_bloom_insert(bloom, &key));
+		__wt_bloom_insert(bloom, &key);
 	}
 	WT_ERR_NOTFOUND_OK(ret);
 	WT_TRET(src->close(src));

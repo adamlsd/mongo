@@ -11,13 +11,14 @@ var conns = replTest.startSet();
 var config = {
     "_id": testName,
     "members": [
-        {"_id": 0, "host": nodes[0], priority: 4},
-        {"_id": 1, "host": nodes[1]},
-        {"_id": 2, "host": nodes[2]}
-    ]
+        {"_id": 0, "host": nodes[0]},
+        {"_id": 1, "host": nodes[1], priority: 0},
+        {"_id": 2, "host": nodes[2], priority: 0}
+    ],
+    settings: {chainingAllowed: false}
 };
 var r = replTest.initiate(config);
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 // Make sure we have a master
 var master = replTest.getPrimary();
 var a_conn = conns[0];
@@ -33,7 +34,7 @@ assert(master == conns[0], "conns[0] assumed to be master");
 assert(a_conn.host == master.host);
 
 // create an oplog entry with an insert
-assert.writeOK(A.foo.insert({x: 1}, {writeConcern: {w: 1, wtimeout: 60000}}));
+assert.writeOK(A.foo.insert({x: 1}, {writeConcern: {w: 3, wtimeout: 60000}}));
 
 print("******************** starting load for 30 secs *********************");
 var work = function() {
@@ -76,18 +77,10 @@ assert.commandWorked(B.adminCommand("resync"));
 print("waiting for load generation to finish");
 loadGen();
 
-// load must stop before we await replication.
-replTest.awaitReplication(240 * 1000);
+// Make sure oplogs & dbHashes match
+replTest.checkOplogs(testName);
+replTest.checkReplicatedDataHashes(testName);
 
-// Make sure oplogs match
-try {
-    replTest.ensureOplogsMatch();
-} catch (e) {
-    var aDBHash = A.runCommand("dbhash");
-    var bDBHash = B.runCommand("dbhash");
-    assert.eq(
-        aDBHash.md5, bDBHash.md5, "hashes differ: " + tojson(aDBHash) + " to " + tojson(bDBHash));
-}
 replTest.stopSet();
 
 print("*****test done******");

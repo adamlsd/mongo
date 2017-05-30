@@ -85,10 +85,9 @@ __lsm_tree_discard(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
  * __lsm_tree_close --
  *	Close an LSM tree structure.
  */
-static int
+static void
 __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 {
-	WT_DECL_RET;
 	int i;
 
 	/*
@@ -97,7 +96,7 @@ __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 	 * the tree queue state.
 	 */
 	lsm_tree->active = false;
-	WT_READ_BARRIER();
+	WT_FULL_BARRIER();
 
 	/*
 	 * Wait for all LSM operations to drain. If WiredTiger is shutting
@@ -120,17 +119,11 @@ __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 		 * other schema level operations will return EBUSY, even though
 		 * we're dropping the schema lock here.
 		 */
-		if (i % WT_THOUSAND == 0) {
-			WT_WITHOUT_LOCKS(session, ret =
+		if (i % WT_THOUSAND == 0)
+			WT_WITHOUT_LOCKS(session,
 			    __wt_lsm_manager_clear_tree(session, lsm_tree));
-			WT_ERR(ret);
-		}
 		__wt_yield();
 	}
-	return (0);
-
-err:	lsm_tree->active = true;
-	return (ret);
 }
 
 /*
@@ -154,7 +147,7 @@ __wt_lsm_tree_close_all(WT_SESSION_IMPL *session)
 		 * is unconditional.
 		 */
 		(void)__wt_atomic_add32(&lsm_tree->refcnt, 1);
-		WT_TRET(__lsm_tree_close(session, lsm_tree, true));
+		__lsm_tree_close(session, lsm_tree, true);
 		WT_TRET(__lsm_tree_discard(session, lsm_tree, true));
 	}
 
@@ -272,7 +265,7 @@ __wt_lsm_tree_setup_chunk(
     WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, WT_LSM_CHUNK *chunk)
 {
 	WT_ASSERT(session, F_ISSET(session, WT_SESSION_LOCKED_SCHEMA));
-	WT_RET(__wt_epoch(session, &chunk->create_ts));
+	__wt_epoch(session, &chunk->create_ts);
 
 	WT_RET(__wt_lsm_tree_chunk_name(
 	    session, lsm_tree, chunk->id, &chunk->uri));
@@ -390,9 +383,8 @@ __lsm_tree_find(WT_SESSION_IMPL *session,
 				 * spurious busy returns.
 				 */
 				(void)__wt_atomic_add32(&lsm_tree->refcnt, 1);
-				if (__lsm_tree_close(
-				    session, lsm_tree, false) != 0 ||
-				    lsm_tree->refcnt != 1) {
+				__lsm_tree_close(session, lsm_tree, false);
+				if (lsm_tree->refcnt != 1) {
 					__wt_lsm_tree_release(
 					    session, lsm_tree);
 					return (EBUSY);
@@ -504,7 +496,7 @@ __lsm_tree_open(WT_SESSION_IMPL *session,
 	lsm_tree->queue_ref = 0;
 
 	/* Set a flush timestamp as a baseline. */
-	WT_ERR(__wt_epoch(session, &lsm_tree->last_flush_ts));
+	__wt_epoch(session, &lsm_tree->last_flush_ts);
 
 	/* Now the tree is setup, make it visible to others. */
 	TAILQ_INSERT_HEAD(&S2C(session)->lsmqh, lsm_tree, q);
@@ -1147,7 +1139,7 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 		return (0);
 	}
 
-	WT_ERR(__wt_seconds(session, &begin));
+	__wt_seconds(session, &begin);
 
 	/*
 	 * Compacting has two distinct phases.
@@ -1275,7 +1267,7 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 				break;
 		}
 		__wt_sleep(1, 0);
-		WT_ERR(__wt_seconds(session, &end));
+		__wt_seconds(session, &end);
 		if (session->compact->max_time > 0 &&
 		    session->compact->max_time < (uint64_t)(end - begin)) {
 			WT_ERR(ETIMEDOUT);

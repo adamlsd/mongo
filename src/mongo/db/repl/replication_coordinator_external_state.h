@@ -29,6 +29,7 @@
 #pragma once
 
 #include <boost/optional.hpp>
+#include <cstddef>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/timestamp.h"
@@ -59,7 +60,7 @@ class ReplSettings;
 class ReplicationCoordinator;
 class ReplicationExecutor;
 
-using OnInitialSyncFinishedFn = stdx::function<void()>;
+using OnInitialSyncFinishedFn = stdx::function<void(OperationContext* txn)>;
 using StartInitialSyncFn = stdx::function<void(OnInitialSyncFinishedFn callback)>;
 using StartSteadyReplicationFn = stdx::function<void()>;
 /**
@@ -132,13 +133,29 @@ public:
     virtual OldThreadPool* getDbWorkThreadPool() const = 0;
 
     /**
+     * Runs the repair database command on the "local" db, if the storage engine is MMapV1.
+     * Note: Used after initial sync to compact the database files.
+     */
+    virtual Status runRepairOnLocalDB(OperationContext* txn) = 0;
+
+    /**
      * Creates the oplog, writes the first entry and stores the replica set config document.
      */
     virtual Status initializeReplSetStorage(OperationContext* txn, const BSONObj& config) = 0;
 
     /**
-     * Called as part of the process of transitioning to primary. See the call site in
-     * ReplicationCoordinatorImpl for details about when and how it is called.
+     * Called when a node on way to becoming a primary is ready to leave drain mode. It is called
+     * outside of the global X lock and the replication coordinator mutex.
+     *
+     * Throws on errors.
+     */
+    virtual void onDrainComplete(OperationContext* txn) = 0;
+
+    /**
+     * Called as part of the process of transitioning to primary and run with the global X lock and
+     * the replication coordinator mutex acquired, so no majoirty writes are allowed while in this
+     * state. See the call site in ReplicationCoordinatorImpl for details about when and how it is
+     * called.
      *
      * Among other things, this writes a message about our transition to primary to the oplog if
      * isV1 and and returns the optime of that message. If !isV1, returns the optime of the last op
@@ -291,14 +308,14 @@ public:
     /**
      * Used by multiApply() to writes operations to database during steady state replication.
      */
-    virtual void multiSyncApply(MultiApplier::OperationPtrs* ops) = 0;
+    virtual Status multiSyncApply(MultiApplier::OperationPtrs* ops) = 0;
 
     /**
      * Used by multiApply() to writes operations to database during initial sync.
      * Fetches missing documents from "source".
      */
-    virtual void multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
-                                       const HostAndPort& source) = 0;
+    virtual Status multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
+                                         const HostAndPort& source) = 0;
 
     /**
      * This function creates an oplog buffer of the type specified at server startup.
@@ -317,6 +334,12 @@ public:
      */
     virtual bool shouldUseDataReplicatorInitialSync() const = 0;
 
+    /**
+     * Returns maximum number of times that the oplog fetcher will consecutively restart the oplog
+     * tailing query on non-cancellation errors.
+     */
+    virtual std::size_t getOplogFetcherMaxFetcherRestarts() const = 0;
+
     /*
      * Creates noop writer instance. Setting the _noopWriter member is not protected by a guard,
      * hence it must be called before multi-threaded operations start.
@@ -332,6 +355,11 @@ public:
      * Stops periodic noop writes to oplog.
      */
     virtual void stopNoopWriter() = 0;
+
+    /**
+     * Returns true if linearizable read concern is supported.
+     */
+    virtual bool isLinearizableReadConcernEnabled() const = 0;
 };
 
 }  // namespace repl

@@ -165,8 +165,7 @@ __clsm_enter(WT_CURSOR_LSM *clsm, bool reset, bool update)
 	WT_LSM_TREE *lsm_tree;
 	WT_SESSION_IMPL *session;
 	WT_TXN *txn;
-	uint64_t *switch_txnp;
-	uint64_t snap_min;
+	uint64_t pinned_id, *switchp;
 
 	lsm_tree = clsm->lsm_tree;
 	session = (WT_SESSION_IMPL *)clsm->iface.session;
@@ -226,8 +225,8 @@ __clsm_enter(WT_CURSOR_LSM *clsm, bool reset, bool update)
 			 * that overlaps with our snapshot is a potential
 			 * conflict.
 			 *
-			 * Note that the global snap_min is correct here: it
-			 * tracks concurrent transactions excluding special
+			 * Note that the pinned ID is correct here: it tracks
+			 * concurrent transactions excluding special
 			 * transactions such as checkpoint (which we can't
 			 * conflict with because checkpoint only writes the
 			 * metadata, which is not an LSM tree).
@@ -237,17 +236,17 @@ __clsm_enter(WT_CURSOR_LSM *clsm, bool reset, bool update)
 			    F_ISSET(clsm, WT_CLSM_OPEN_SNAPSHOT)) {
 				WT_ASSERT(session,
 				    F_ISSET(txn, WT_TXN_HAS_SNAPSHOT));
-				snap_min =
-				    WT_SESSION_TXN_STATE(session)->snap_min;
-				for (switch_txnp =
+				pinned_id =
+				    WT_SESSION_TXN_STATE(session)->pinned_id;
+				for (switchp =
 				    &clsm->switch_txn[clsm->nchunks - 2];
 				    clsm->nupdates < clsm->nchunks;
-				    clsm->nupdates++, switch_txnp--) {
-					if (WT_TXNID_LT(*switch_txnp, snap_min))
+				    clsm->nupdates++, switchp--) {
+					if (WT_TXNID_LT(*switchp, pinned_id))
 						break;
 					WT_ASSERT(session,
 					    !__wt_txn_visible_all(
-					    session, *switch_txnp));
+					    session, *switchp));
 				}
 			}
 		}
@@ -668,7 +667,7 @@ retry:	if (F_ISSET(clsm, WT_CLSM_MERGE)) {
 
 	clsm->dsk_gen = lsm_tree->dsk_gen;
 
-err:	
+err:
 #ifdef HAVE_DIAGNOSTIC
 	/* Check that all cursors are open as expected. */
 	if (ret == 0 && F_ISSET(clsm, WT_CLSM_OPEN_READ)) {
@@ -1074,8 +1073,7 @@ __clsm_lookup(WT_CURSOR_LSM *clsm, WT_ITEM *value)
 		bloom = NULL;
 		if ((bloom = clsm->blooms[i]) != NULL) {
 			if (!have_hash) {
-				WT_ERR(__wt_bloom_hash(
-				    bloom, &cursor->key, &bhash));
+				__wt_bloom_hash(bloom, &cursor->key, &bhash);
 				have_hash = true;
 			}
 
@@ -1349,11 +1347,11 @@ __clsm_put(WT_SESSION_IMPL *session, WT_CURSOR_LSM *clsm,
 		clsm->update_count = 0;
 		WT_LSM_TREE_STAT_INCRV(session,
 		    lsm_tree->lsm_checkpoint_throttle, lsm_tree->ckpt_throttle);
-		WT_STAT_FAST_CONN_INCRV(session,
+		WT_STAT_CONN_INCRV(session,
 		    lsm_checkpoint_throttle, lsm_tree->ckpt_throttle);
 		WT_LSM_TREE_STAT_INCRV(session,
 		    lsm_tree->lsm_merge_throttle, lsm_tree->merge_throttle);
-		WT_STAT_FAST_CONN_INCRV(session,
+		WT_STAT_CONN_INCRV(session,
 		    lsm_merge_throttle, lsm_tree->merge_throttle);
 		__wt_sleep(0,
 		    lsm_tree->ckpt_throttle + lsm_tree->merge_throttle);

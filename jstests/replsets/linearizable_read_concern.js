@@ -1,6 +1,5 @@
 /*
- * This test creates a 3 node replica set and then performs a write
- * with write concern majority to create a committed snapshot. The test first sends
+ * This test creates a 3 node replica set. The test first sends
  * a regular linearizable read command which should succeed. Then the test
  * examines linearizable read parsing abilities by sending a linearizable
  * read command to a secondary and then to the primary with an 'afterOpTime'
@@ -32,24 +31,46 @@ load('jstests/libs/write_concern_util.js');
             ErrorCodes.InterruptedDueToReplStateChange);
     };
 
+    // Linearizable read concern is an opt-in feature. Replica sets started with the startup
+    // parameter --setParameter enableLinearizableReadConcern=true should error on receiving a
+    // linearizable read command.
+    {
+        jsTestLog('Testing that linearizable read is disabled by default');
+        let replTest = new ReplSetTest({nodes: 1});
+        replTest.startSet();
+        replTest.initiate();
+        let primary = replTest.getPrimary();
+
+        // Linearizable read concern is a startup-only server parameter.
+        assert.commandFailed(
+            primary.adminCommand({setParameter: 1, enableLinearizableReadConcern: true}));
+        assert.commandFailed(
+            primary.adminCommand({setParameter: 1, enableLinearizableReadConcern: false}));
+
+        let coll = primary.getDB('test').foo;
+        assert.writeOK(coll.insert({x: 1}));
+        assert.commandFailedWithCode(
+            coll.runCommand(
+                {'find': coll.getName(), readConcern: {level: "linearizable"}, maxTimeMS: 60000}),
+            ErrorCodes.LinearizableReadConcernNotEnabled);
+        replTest.stopSet();
+    }
+
     var num_nodes = 3;
     var name = 'linearizable_read_concern';
     var replTest = new ReplSetTest({
         name: name,
         nodes: num_nodes,
+        nodeOptions: {setParameter: 'enableLinearizableReadConcern=true'},
         useBridge: true,
-        nodeOptions: {enableMajorityReadConcern: ''}
     });
-    if (!startSetIfSupportsReadMajority(replTest)) {
-        jsTest.log("skipping test since storage engine doesn't support committed reads");
-        return;
-    }
     var config = replTest.getReplSetConfig();
 
     // Increased election timeout to avoid having the primary step down while we are
     // testing linearizable functionality on an isolated primary.
     config.settings = {electionTimeoutMillis: 60000};
     updateConfigIfNotDurable(config);
+    replTest.startSet();
     replTest.initiate(config);
 
     // We increase the awaitReplication timeout because without a sync source the heartbeat
@@ -59,8 +80,7 @@ load('jstests/libs/write_concern_util.js');
     var primary = replTest.getPrimary();
     var secondaries = replTest.getSecondaries();
 
-    // We should have at least one successful write with write concern majority
-    // to get a committed snapshot.
+    // Do a write to have something to read.
     assert.writeOK(primary.getDB("test").foo.insert(
         {"number": 7}, {"writeConcern": {"w": "majority", "wtimeout": 60000}}));
 
@@ -93,11 +113,6 @@ load('jstests/libs/write_concern_util.js');
         "Setting up partitions such that the primary is isolated: [Secondary-Secondary] [Primary]");
     secondaries[0].disconnect(primary);
     secondaries[1].disconnect(primary);
-
-    jsTestLog("Read with readConcern majority should still work when sent to the old primary");
-    var res = assert.writeOK(primary.getDB("test").runCommand(
-        {"find": "foo", readConcern: {level: "majority"}, "maxTimeMS": 60000}));
-    assert.eq(res.cursor.firstBatch[0].number, 7);
 
     var result = primary.getDB("test").runCommand(
         {"find": "foo", "readConcern": {level: "linearizable"}, "maxTimeMS": 3000});

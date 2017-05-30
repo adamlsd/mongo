@@ -251,6 +251,7 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
 
     // Setup cond_var for signalling when done.
     std::unique_ptr<CollectionBulkLoader> loaderToReturn;
+    Collection* collection;
 
     auto status = runner->runSynchronousTask([&](OperationContext* txn) -> Status {
         // We are not replicating nor validating writes under this OperationContext*.
@@ -264,7 +265,7 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
             ScopedTransaction transaction(txn, MODE_IX);
             auto db = stdx::make_unique<AutoGetOrCreateDb>(txn, nss.db(), MODE_IX);
             auto coll = stdx::make_unique<AutoGetCollection>(txn, nss, MODE_X);
-            Collection* collection = coll->getCollection();
+            collection = coll->getCollection();
 
             if (collection) {
                 return {ErrorCodes::NamespaceExists, "Collection already exists."};
@@ -285,11 +286,6 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
                                                                       std::move(runner),
                                                                       std::move(db),
                                                                       std::move(coll));
-            invariant(collection);
-            auto status = loader->init(txn, collection, secondaryIndexSpecs);
-            if (!status.isOK()) {
-                return status;
-            }
 
             // Move the loader into the StatusWith.
             loaderToReturn = std::move(loader);
@@ -303,6 +299,11 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
         return status;
     }
 
+    invariant(collection);
+    status = loaderToReturn->init(collection, secondaryIndexSpecs);
+    if (!status.isOK()) {
+        return status;
+    }
     return std::move(loaderToReturn);
 }
 
@@ -422,7 +423,11 @@ Status StorageInterfaceImpl::createCollection(OperationContext* txn,
 Status StorageInterfaceImpl::dropCollection(OperationContext* txn, const NamespaceString& nss) {
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         ScopedTransaction transaction(txn, MODE_IX);
-        AutoGetOrCreateDb autoDB(txn, nss.db(), MODE_X);
+        AutoGetDb autoDB(txn, nss.db(), MODE_X);
+        if (!autoDB.getDb()) {
+            // Database does not exist - nothing to do.
+            return Status::OK();
+        }
         WriteUnitOfWork wunit(txn);
         const auto status = autoDB.getDb()->dropCollection(txn, nss.ns());
         if (status.isOK()) {
@@ -453,6 +458,8 @@ StatusWith<BSONObj> _findOrDeleteOne(OperationContext* txn,
                                      const NamespaceString& nss,
                                      boost::optional<StringData> indexName,
                                      StorageInterface::ScanDirection scanDirection,
+                                     const BSONObj& startKey,
+                                     BoundInclusion boundInclusion,
                                      FindDeleteMode mode) {
     auto isFind = mode == FindDeleteMode::kFind;
     auto opStr = isFind ? "StorageInterfaceImpl::findOne" : "StorageInterfaceImpl::deleteOne";
@@ -472,6 +479,15 @@ StatusWith<BSONObj> _findOrDeleteOne(OperationContext* txn,
 
         std::unique_ptr<PlanExecutor> planExecutor;
         if (!indexName) {
+            if (!startKey.isEmpty()) {
+                return {ErrorCodes::NoSuchKey,
+                        "non-empty startKey not allowed for collection scan"};
+            }
+            if (boundInclusion != BoundInclusion::kIncludeStartKeyOnly) {
+                return {ErrorCodes::InvalidOptions,
+                        "bound inclusion must be BoundInclusion::kIncludeStartKeyOnly for "
+                        "collection scan"};
+            }
             // Use collection scan.
             planExecutor = isFind
                 ? InternalPlanner::collectionScan(
@@ -506,15 +522,16 @@ StatusWith<BSONObj> _findOrDeleteOne(OperationContext* txn,
             auto maxKey = Helpers::toKeyFormat(keyPattern.extendRangeBound({}, true));
             auto bounds =
                 isForward ? std::make_pair(minKey, maxKey) : std::make_pair(maxKey, minKey);
-            bool endKeyInclusive = false;
-
+            if (!startKey.isEmpty()) {
+                bounds.first = startKey;
+            }
             planExecutor = isFind
                 ? InternalPlanner::indexScan(txn,
                                              collection,
                                              indexDescriptor,
                                              bounds.first,
                                              bounds.second,
-                                             endKeyInclusive,
+                                             boundInclusion,
                                              PlanExecutor::YIELD_MANUAL,
                                              direction,
                                              InternalPlanner::IXSCAN_FETCH)
@@ -524,7 +541,7 @@ StatusWith<BSONObj> _findOrDeleteOne(OperationContext* txn,
                                                        indexDescriptor,
                                                        bounds.first,
                                                        bounds.second,
-                                                       endKeyInclusive,
+                                                       boundInclusion,
                                                        PlanExecutor::YIELD_MANUAL,
                                                        direction);
         }
@@ -547,15 +564,21 @@ StatusWith<BSONObj> _findOrDeleteOne(OperationContext* txn,
 StatusWith<BSONObj> StorageInterfaceImpl::findOne(OperationContext* txn,
                                                   const NamespaceString& nss,
                                                   boost::optional<StringData> indexName,
-                                                  ScanDirection scanDirection) {
-    return _findOrDeleteOne(txn, nss, indexName, scanDirection, FindDeleteMode::kFind);
+                                                  ScanDirection scanDirection,
+                                                  const BSONObj& startKey,
+                                                  BoundInclusion boundInclusion) {
+    return _findOrDeleteOne(
+        txn, nss, indexName, scanDirection, startKey, boundInclusion, FindDeleteMode::kFind);
 }
 
 StatusWith<BSONObj> StorageInterfaceImpl::deleteOne(OperationContext* txn,
                                                     const NamespaceString& nss,
                                                     boost::optional<StringData> indexName,
-                                                    ScanDirection scanDirection) {
-    return _findOrDeleteOne(txn, nss, indexName, scanDirection, FindDeleteMode::kDelete);
+                                                    ScanDirection scanDirection,
+                                                    const BSONObj& startKey,
+                                                    BoundInclusion boundInclusion) {
+    return _findOrDeleteOne(
+        txn, nss, indexName, scanDirection, startKey, boundInclusion, FindDeleteMode::kDelete);
 }
 
 Status StorageInterfaceImpl::isAdminDbValid(OperationContext* txn) {

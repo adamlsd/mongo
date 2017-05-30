@@ -43,19 +43,18 @@ __wt_lsm_merge_update_tree(WT_SESSION_IMPL *session,
  * __lsm_merge_aggressive_clear --
  *	We found a merge to do - clear the aggressive timer.
  */
-static int
+static void
 __lsm_merge_aggressive_clear(WT_LSM_TREE *lsm_tree)
 {
 	F_CLR(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER);
 	lsm_tree->merge_aggressiveness = 0;
-	return (0);
 }
 
 /*
  * __lsm_merge_aggressive_update --
  *	Update the merge aggressiveness for an LSM tree.
  */
-static int
+static void
 __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 {
 	struct timespec now;
@@ -73,15 +72,17 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	if (!lsm_tree->modified ||
 	    F_ISSET(lsm_tree, WT_LSM_TREE_COMPACTING)) {
 		lsm_tree->merge_aggressiveness = 10;
-		return (0);
+		return;
 	}
 
 	/*
 	 * Only get aggressive if a reasonable number of flushes have been
 	 * completed since opening the tree.
 	 */
-	if (lsm_tree->chunks_flushed <= lsm_tree->merge_min)
-		return (__lsm_merge_aggressive_clear(lsm_tree));
+	if (lsm_tree->chunks_flushed <= lsm_tree->merge_min) {
+		__lsm_merge_aggressive_clear(lsm_tree);
+		return;
+	}
 
 	/*
 	 * Start the timer if it isn't running. Use a flag to define whether
@@ -90,10 +91,10 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 */
 	if (!F_ISSET(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER)) {
 		F_SET(lsm_tree, WT_LSM_TREE_AGGRESSIVE_TIMER);
-		return (__wt_epoch(session, &lsm_tree->merge_aggressive_ts));
+		__wt_epoch(session, &lsm_tree->merge_aggressive_ts);
 	}
 
-	WT_RET(__wt_epoch(session, &now));
+	__wt_epoch(session, &now);
 	msec_since_last_merge =
 	    WT_TIMEDIFF_MS(now, lsm_tree->merge_aggressive_ts);
 
@@ -112,7 +113,7 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 * generates a variable load.
 	 */
 	if (msec_since_last_merge < msec_to_create_merge)
-		return (0);
+		return;
 
 	/*
 	 * Bump how aggressively we look for merges based on how long since
@@ -133,7 +134,6 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 		    msec_since_last_merge, lsm_tree->chunk_fill_ms);
 		lsm_tree->merge_aggressiveness = new_aggressive;
 	}
-	return (0);
 }
 
 /*
@@ -325,11 +325,11 @@ retry_find:
 			goto retry_find;
 		}
 		/* Consider getting aggressive if no merge was found */
-		WT_RET(__lsm_merge_aggressive_update(session, lsm_tree));
+		__lsm_merge_aggressive_update(session, lsm_tree);
 		return (WT_NOTFOUND);
 	}
 
-	WT_RET(__lsm_merge_aggressive_clear(lsm_tree));
+	__lsm_merge_aggressive_clear(lsm_tree);
 	*records = record_count;
 	*start = start_chunk;
 	*end = end_chunk;
@@ -460,7 +460,7 @@ __wt_lsm_merge(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, u_int id)
 			if (!lsm_tree->active)
 				WT_ERR(EINTR);
 
-			WT_STAT_FAST_CONN_INCRV(session,
+			WT_STAT_CONN_INCRV(session,
 			    lsm_rows_merged, LSM_MERGE_CHECK_INTERVAL);
 			++lsm_tree->merge_progressing;
 		}
@@ -471,11 +471,11 @@ __wt_lsm_merge(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, u_int id)
 		dest->set_value(dest, &value);
 		WT_ERR(dest->insert(dest));
 		if (create_bloom)
-			WT_ERR(__wt_bloom_insert(bloom, &key));
+			__wt_bloom_insert(bloom, &key);
 	}
 	WT_ERR_NOTFOUND_OK(ret);
 
-	WT_STAT_FAST_CONN_INCRV(session,
+	WT_STAT_CONN_INCRV(session,
 	    lsm_rows_merged, insert_count % LSM_MERGE_CHECK_INTERVAL);
 	++lsm_tree->merge_progressing;
 	__wt_verbose(session, WT_VERB_LSM,

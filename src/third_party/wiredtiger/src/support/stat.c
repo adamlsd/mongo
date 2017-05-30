@@ -559,13 +559,14 @@ static const char * const __stats_connection_desc[] = {
 	"cache: eviction calls to get a page found queue empty",
 	"cache: eviction calls to get a page found queue empty after locking",
 	"cache: eviction currently operating in aggressive mode",
+	"cache: eviction empty score",
 	"cache: eviction server candidate queue empty when topping up",
 	"cache: eviction server candidate queue not empty when topping up",
 	"cache: eviction server evicting pages",
-	"cache: eviction server skipped very large page",
 	"cache: eviction server slept, because we did not make progress with eviction",
 	"cache: eviction server unable to reach eviction goal",
 	"cache: eviction state",
+	"cache: eviction walks abandoned",
 	"cache: eviction worker thread evicting pages",
 	"cache: failed eviction of pages that exceeded the in-memory maximum",
 	"cache: files with active eviction walks",
@@ -705,6 +706,8 @@ static const char * const __stats_connection_desc[] = {
 	"thread-state: active filesystem fsync calls",
 	"thread-state: active filesystem read calls",
 	"thread-state: active filesystem write calls",
+	"thread-yield: application thread time evicting (usecs)",
+	"thread-yield: application thread time waiting for cache (usecs)",
 	"thread-yield: page acquire busy blocked",
 	"thread-yield: page acquire eviction blocked",
 	"thread-yield: page acquire locked blocked",
@@ -722,6 +725,7 @@ static const char * const __stats_connection_desc[] = {
 	"transaction: transaction checkpoint scrub time (msecs)",
 	"transaction: transaction checkpoint total time (msecs)",
 	"transaction: transaction checkpoints",
+	"transaction: transaction checkpoints skipped because database was clean",
 	"transaction: transaction failures due to cache overflow",
 	"transaction: transaction fsync calls for checkpoint after allocating the transaction ID",
 	"transaction: transaction fsync duration for checkpoint after allocating the transaction ID (usecs)",
@@ -802,13 +806,14 @@ __wt_stat_connection_clear_single(WT_CONNECTION_STATS *stats)
 	stats->cache_eviction_get_ref_empty = 0;
 	stats->cache_eviction_get_ref_empty2 = 0;
 		/* not clearing cache_eviction_aggressive_set */
+		/* not clearing cache_eviction_empty_score */
 	stats->cache_eviction_queue_empty = 0;
 	stats->cache_eviction_queue_not_empty = 0;
 	stats->cache_eviction_server_evicting = 0;
-	stats->cache_eviction_server_toobig = 0;
 	stats->cache_eviction_server_slept = 0;
 	stats->cache_eviction_slow = 0;
 		/* not clearing cache_eviction_state */
+	stats->cache_eviction_walks_abandoned = 0;
 	stats->cache_eviction_worker_evicting = 0;
 	stats->cache_eviction_force_fail = 0;
 		/* not clearing cache_eviction_walks_active */
@@ -948,6 +953,8 @@ __wt_stat_connection_clear_single(WT_CONNECTION_STATS *stats)
 		/* not clearing thread_fsync_active */
 		/* not clearing thread_read_active */
 		/* not clearing thread_write_active */
+	stats->application_evict_time = 0;
+	stats->application_cache_time = 0;
 	stats->page_busy_blocked = 0;
 	stats->page_forcible_evict_blocked = 0;
 	stats->page_locked_blocked = 0;
@@ -965,6 +972,7 @@ __wt_stat_connection_clear_single(WT_CONNECTION_STATS *stats)
 		/* not clearing txn_checkpoint_scrub_time */
 		/* not clearing txn_checkpoint_time_total */
 	stats->txn_checkpoint = 0;
+	stats->txn_checkpoint_skipped = 0;
 	stats->txn_fail_cache = 0;
 	stats->txn_checkpoint_fsync_post = 0;
 		/* not clearing txn_checkpoint_fsync_post_duration */
@@ -1043,18 +1051,20 @@ __wt_stat_connection_aggregate(
 	    WT_STAT_READ(from, cache_eviction_get_ref_empty2);
 	to->cache_eviction_aggressive_set +=
 	    WT_STAT_READ(from, cache_eviction_aggressive_set);
+	to->cache_eviction_empty_score +=
+	    WT_STAT_READ(from, cache_eviction_empty_score);
 	to->cache_eviction_queue_empty +=
 	    WT_STAT_READ(from, cache_eviction_queue_empty);
 	to->cache_eviction_queue_not_empty +=
 	    WT_STAT_READ(from, cache_eviction_queue_not_empty);
 	to->cache_eviction_server_evicting +=
 	    WT_STAT_READ(from, cache_eviction_server_evicting);
-	to->cache_eviction_server_toobig +=
-	    WT_STAT_READ(from, cache_eviction_server_toobig);
 	to->cache_eviction_server_slept +=
 	    WT_STAT_READ(from, cache_eviction_server_slept);
 	to->cache_eviction_slow += WT_STAT_READ(from, cache_eviction_slow);
 	to->cache_eviction_state += WT_STAT_READ(from, cache_eviction_state);
+	to->cache_eviction_walks_abandoned +=
+	    WT_STAT_READ(from, cache_eviction_walks_abandoned);
 	to->cache_eviction_worker_evicting +=
 	    WT_STAT_READ(from, cache_eviction_worker_evicting);
 	to->cache_eviction_force_fail +=
@@ -1238,6 +1248,10 @@ __wt_stat_connection_aggregate(
 	to->thread_fsync_active += WT_STAT_READ(from, thread_fsync_active);
 	to->thread_read_active += WT_STAT_READ(from, thread_read_active);
 	to->thread_write_active += WT_STAT_READ(from, thread_write_active);
+	to->application_evict_time +=
+	    WT_STAT_READ(from, application_evict_time);
+	to->application_cache_time +=
+	    WT_STAT_READ(from, application_cache_time);
 	to->page_busy_blocked += WT_STAT_READ(from, page_busy_blocked);
 	to->page_forcible_evict_blocked +=
 	    WT_STAT_READ(from, page_forcible_evict_blocked);
@@ -1266,6 +1280,8 @@ __wt_stat_connection_aggregate(
 	to->txn_checkpoint_time_total +=
 	    WT_STAT_READ(from, txn_checkpoint_time_total);
 	to->txn_checkpoint += WT_STAT_READ(from, txn_checkpoint);
+	to->txn_checkpoint_skipped +=
+	    WT_STAT_READ(from, txn_checkpoint_skipped);
 	to->txn_fail_cache += WT_STAT_READ(from, txn_fail_cache);
 	to->txn_checkpoint_fsync_post +=
 	    WT_STAT_READ(from, txn_checkpoint_fsync_post);

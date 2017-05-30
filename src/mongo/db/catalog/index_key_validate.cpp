@@ -30,28 +30,34 @@
 
 #include "mongo/db/catalog/index_key_validate.h"
 
+#include <boost/optional.hpp>
 #include <cmath>
 #include <limits>
+#include <set>
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/field_ref.h"
+#include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/represent_as.h"
 
 namespace mongo {
 
 using std::string;
 
-namespace {
-const int kIndexVersionV0 = 0;
+using IndexVersion = IndexDescriptor::IndexVersion;
 
-const StringData kKeyPatternFieldName = "key"_sd;
-const StringData kNamespaceFieldName = "ns"_sd;
-const StringData kVersionFieldName = "v"_sd;
-}  // namespace
+namespace {
+// When the skipIndexCreateFieldNameValidation failpoint is enabled, validation for index field
+// names will be disabled. This will allow for creation of indexes with invalid field names in their
+// specification.
+MONGO_FP_DECLARE(skipIndexCreateFieldNameValidation);
+}
 
 Status validateKeyPattern(const BSONObj& key) {
     const ErrorCodes::Error code = ErrorCodes::CannotCreateIndex;
@@ -141,17 +147,28 @@ Status validateKeyPattern(const BSONObj& key) {
     return Status::OK();
 }
 
-StatusWith<BSONObj> validateIndexSpec(const BSONObj& indexSpec,
-                                      const NamespaceString& expectedNamespace) {
+StatusWith<BSONObj> validateIndexSpec(
+    const BSONObj& indexSpec,
+    const NamespaceString& expectedNamespace,
+    ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion) {
     bool hasKeyPatternField = false;
     bool hasNamespaceField = false;
+    bool hasVersionField = false;
+    bool hasCollationField = false;
+
+    auto fieldNamesValidStatus = validateIndexSpecFieldNames(indexSpec);
+    if (!fieldNamesValidStatus.isOK()) {
+        return fieldNamesValidStatus;
+    }
+
+    boost::optional<IndexVersion> resolvedIndexVersion;
 
     for (auto&& indexSpecElem : indexSpec) {
         auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
-        if (kKeyPatternFieldName == indexSpecElemFieldName) {
+        if (IndexDescriptor::kKeyPatternFieldName == indexSpecElemFieldName) {
             if (indexSpecElem.type() != BSONType::Object) {
                 return {ErrorCodes::TypeMismatch,
-                        str::stream() << "The field '" << kKeyPatternFieldName
+                        str::stream() << "The field '" << IndexDescriptor::kKeyPatternFieldName
                                       << "' must be an object, but got "
                                       << typeName(indexSpecElem.type())};
             }
@@ -169,10 +186,10 @@ StatusWith<BSONObj> validateIndexSpec(const BSONObj& indexSpec,
             }
 
             hasKeyPatternField = true;
-        } else if (kNamespaceFieldName == indexSpecElemFieldName) {
+        } else if (IndexDescriptor::kNamespaceFieldName == indexSpecElemFieldName) {
             if (indexSpecElem.type() != BSONType::String) {
                 return {ErrorCodes::TypeMismatch,
-                        str::stream() << "The field '" << kNamespaceFieldName
+                        str::stream() << "The field '" << IndexDescriptor::kNamespaceFieldName
                                       << "' must be a string, but got "
                                       << typeName(indexSpecElem.type())};
             }
@@ -180,13 +197,15 @@ StatusWith<BSONObj> validateIndexSpec(const BSONObj& indexSpec,
             StringData ns = indexSpecElem.valueStringData();
             if (ns.empty()) {
                 return {ErrorCodes::BadValue,
-                        str::stream() << "The field '" << kNamespaceFieldName
+                        str::stream() << "The field '" << IndexDescriptor::kNamespaceFieldName
                                       << "' cannot be an empty string"};
             }
 
             if (ns != expectedNamespace.ns()) {
                 return {ErrorCodes::BadValue,
-                        str::stream() << "The value of the field '" << kNamespaceFieldName << "' ("
+                        str::stream() << "The value of the field '"
+                                      << IndexDescriptor::kNamespaceFieldName
+                                      << "' ("
                                       << ns
                                       << ") doesn't match the namespace '"
                                       << expectedNamespace.ns()
@@ -194,43 +213,141 @@ StatusWith<BSONObj> validateIndexSpec(const BSONObj& indexSpec,
             }
 
             hasNamespaceField = true;
-        } else if (kVersionFieldName == indexSpecElemFieldName) {
+        } else if (IndexDescriptor::kIndexVersionFieldName == indexSpecElemFieldName) {
             if (!indexSpecElem.isNumber()) {
                 return {ErrorCodes::TypeMismatch,
-                        str::stream() << "The field '" << kVersionFieldName
+                        str::stream() << "The field '" << IndexDescriptor::kIndexVersionFieldName
                                       << "' must be a number, but got "
                                       << typeName(indexSpecElem.type())};
             }
 
-            if (kIndexVersionV0 == indexSpecElem.numberInt()) {
-                return {ErrorCodes::CannotCreateIndex,
-                        str::stream() << "Invalid index specification " << indexSpec
-                                      << "; cannot create an index with "
-                                      << kVersionFieldName
-                                      << "="
-                                      << kIndexVersionV0};
+            auto requestedIndexVersionAsInt = representAs<int>(indexSpecElem.number());
+            if (!requestedIndexVersionAsInt) {
+                return {ErrorCodes::BadValue,
+                        str::stream()
+                            << "Index version must be representable as a 32-bit integer, but got "
+                            << indexSpecElem.toString(false, false)};
             }
+
+            const IndexVersion requestedIndexVersion =
+                static_cast<IndexVersion>(*requestedIndexVersionAsInt);
+            auto creationAllowedStatus = IndexDescriptor::isIndexVersionAllowedForCreation(
+                requestedIndexVersion, featureCompatibilityVersion, indexSpec);
+            if (!creationAllowedStatus.isOK()) {
+                return creationAllowedStatus;
+            }
+
+            hasVersionField = true;
+            resolvedIndexVersion = requestedIndexVersion;
+        } else if (IndexDescriptor::kCollationFieldName == indexSpecElemFieldName) {
+            if (indexSpecElem.type() != BSONType::Object) {
+                return {ErrorCodes::TypeMismatch,
+                        str::stream() << "The field '" << IndexDescriptor::kNamespaceFieldName
+                                      << "' must be an object, but got "
+                                      << typeName(indexSpecElem.type())};
+            }
+
+            hasCollationField = true;
         } else {
-            // TODO SERVER-769: Validate index options specified in the "createIndexes" command.
+            // We can assume field name is valid at this point. Validation of fieldname is handled
+            // prior to this in validateIndexSpecFieldNames().
             continue;
         }
     }
 
+    if (!resolvedIndexVersion) {
+        resolvedIndexVersion = IndexDescriptor::getDefaultIndexVersion(featureCompatibilityVersion);
+    }
+
     if (!hasKeyPatternField) {
         return {ErrorCodes::FailedToParse,
-                str::stream() << "The '" << kKeyPatternFieldName
+                str::stream() << "The '" << IndexDescriptor::kKeyPatternFieldName
                               << "' field is a required property of an index specification"};
     }
 
-    if (!hasNamespaceField) {
-        // We create a new index specification with the 'ns' field set as 'expectedNamespace' if the
-        // field was omitted.
+    if (hasCollationField && *resolvedIndexVersion < IndexVersion::kV2) {
+        return {ErrorCodes::CannotCreateIndex,
+                str::stream() << "Invalid index specification " << indexSpec
+                              << "; cannot create an index with the '"
+                              << IndexDescriptor::kCollationFieldName
+                              << "' option and "
+                              << IndexDescriptor::kIndexVersionFieldName
+                              << "="
+                              << static_cast<int>(*resolvedIndexVersion)};
+    }
+
+    if (!hasNamespaceField || !hasVersionField) {
         BSONObjBuilder bob;
-        bob.append(kNamespaceFieldName, expectedNamespace.ns());
+
+        if (!hasNamespaceField) {
+            // We create a new index specification with the 'ns' field set as 'expectedNamespace' if
+            // the field was omitted.
+            bob.append(IndexDescriptor::kNamespaceFieldName, expectedNamespace.ns());
+        }
+
+        if (!hasVersionField) {
+            // We create a new index specification with the 'v' field set as 'defaultIndexVersion'
+            // if the field was omitted.
+            bob.append(IndexDescriptor::kIndexVersionFieldName,
+                       static_cast<int>(*resolvedIndexVersion));
+        }
+
         bob.appendElements(indexSpec);
         return bob.obj();
     }
 
     return indexSpec;
 }
+
+/**
+ * Top-level index spec field names are validated here. When adding a new field with a document as
+ * value, is the the sub-module's responsibility to ensure that the content is valid and that only
+ * expected fields are present at creation time
+ */
+Status validateIndexSpecFieldNames(const BSONObj& indexSpec) {
+    if (MONGO_FAIL_POINT(skipIndexCreateFieldNameValidation)) {
+        return Status::OK();
+    }
+
+    const std::set<StringData> allowedFieldNames = {
+        IndexDescriptor::k2dIndexMaxFieldName,
+        IndexDescriptor::k2dIndexBitsFieldName,
+        IndexDescriptor::k2dIndexMaxFieldName,
+        IndexDescriptor::k2dIndexMinFieldName,
+        IndexDescriptor::k2dsphereCoarsestIndexedLevel,
+        IndexDescriptor::k2dsphereFinestIndexedLevel,
+        IndexDescriptor::k2dsphereVersionFieldName,
+        IndexDescriptor::kBackgroundFieldName,
+        IndexDescriptor::kCollationFieldName,
+        IndexDescriptor::kDefaultLanguageFieldName,
+        IndexDescriptor::kDropDuplicatesFieldName,
+        IndexDescriptor::kExpireAfterSecondsFieldName,
+        IndexDescriptor::kGeoHaystackBucketSize,
+        IndexDescriptor::kIndexNameFieldName,
+        IndexDescriptor::kIndexVersionFieldName,
+        IndexDescriptor::kKeyPatternFieldName,
+        IndexDescriptor::kLanguageOverrideFieldName,
+        IndexDescriptor::kNamespaceFieldName,
+        IndexDescriptor::kPartialFilterExprFieldName,
+        IndexDescriptor::kSparseFieldName,
+        IndexDescriptor::kStorageEngineFieldName,
+        IndexDescriptor::kTextVersionFieldName,
+        IndexDescriptor::kUniqueFieldName,
+        IndexDescriptor::kWeightsFieldName,
+        // Index creation under legacy writeMode can result in an index spec with an _id field.
+        "_id"};
+
+    for (auto&& indexSpecElem : indexSpec) {
+        auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
+        if (!allowedFieldNames.count(indexSpecElemFieldName)) {
+            return {ErrorCodes::InvalidIndexSpecificationOption,
+                    str::stream() << "The field '" << indexSpecElemFieldName
+                                  << "' is not valid for an index specification. Specification: "
+                                  << indexSpec};
+        }
+    }
+
+    return Status::OK();
+}
+
 }  // namespace mongo

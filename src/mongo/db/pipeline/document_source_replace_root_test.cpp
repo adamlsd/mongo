@@ -182,6 +182,27 @@ TEST_F(ReplaceRootBasics, SystemVariableForNewRootReplacesRootWithThatObject) {
     assertExhausted(replaceRoot);
 }
 
+TEST_F(ReplaceRootBasics, ShouldPropagatePauses) {
+    auto replaceRoot = createReplaceRoot(BSON("newRoot"
+                                              << "$$ROOT"));
+    auto mock = DocumentSourceMock::create({Document(),
+                                            DocumentSource::GetNextResult::makePauseExecution(),
+                                            Document(),
+                                            Document(),
+                                            DocumentSource::GetNextResult::makePauseExecution(),
+                                            DocumentSource::GetNextResult::makePauseExecution()});
+    replaceRoot->setSource(mock.get());
+
+    ASSERT_TRUE(replaceRoot->getNext().isAdvanced());
+    ASSERT_TRUE(replaceRoot->getNext().isPaused());
+    ASSERT_TRUE(replaceRoot->getNext().isAdvanced());
+    ASSERT_TRUE(replaceRoot->getNext().isAdvanced());
+    ASSERT_TRUE(replaceRoot->getNext().isPaused());
+    ASSERT_TRUE(replaceRoot->getNext().isPaused());
+
+    assertExhausted(replaceRoot);
+}
+
 // Verify that when the expression at newRoot does not resolve to an object, as per the spec we
 // throw a user assertion.
 TEST_F(ReplaceRootBasics, ErrorsWhenNewRootDoesNotEvaluateToAnObject) {
@@ -247,6 +268,14 @@ TEST_F(ReplaceRootBasics, OnlyDependentFieldIsNewRoot) {
     // Should not need any other fields.
     ASSERT_EQUALS(false, dependencies.needWholeDocument);
     ASSERT_EQUALS(false, dependencies.getNeedTextScore());
+}
+
+TEST_F(ReplaceRootBasics, ReplaceRootModifiesAllFields) {
+    auto replaceRoot = createReplaceRoot(BSON("newRoot"
+                                              << "$a"));
+    auto modifiedPaths = replaceRoot->getModifiedPaths();
+    ASSERT(modifiedPaths.type == DocumentSource::GetModPathsReturn::Type::kAllPaths);
+    ASSERT_EQUALS(0U, modifiedPaths.paths.size());
 }
 
 /**

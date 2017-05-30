@@ -37,7 +37,7 @@ retry:
 	 */
 	while (last_consume == async->head &&
 	    async->flush_state != WT_ASYNC_FLUSHING) {
-		WT_STAT_FAST_CONN_INCR(session, async_nowork);
+		WT_STAT_CONN_INCR(session, async_nowork);
 		if (++tries < MAX_ASYNC_YIELD)
 			/*
 			 * Initially when we find no work, allow other
@@ -216,7 +216,7 @@ __async_worker_execop(WT_SESSION_IMPL *session, WT_ASYNC_OP_IMPL *op,
 			break;
 		case WT_AOP_NONE:
 			WT_RET_MSG(session, EINVAL,
-			    "Unknown async optype %d\n", op->optype);
+			    "Unknown async optype %d", op->optype);
 	}
 	return (0);
 }

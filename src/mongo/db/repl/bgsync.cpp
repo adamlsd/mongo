@@ -68,7 +68,7 @@ namespace {
 const char kHashFieldName[] = "h";
 const int kSleepToAllowBatchingMillis = 2;
 const int kSmallBatchLimitBytes = 40000;
-const Milliseconds kOplogSocketTimeout(30000);
+const Milliseconds kRollbackOplogSocketTimeout(10 * 60 * 1000);
 
 /**
  * Extends DataReplicatorExternalStateImpl to be member state aware.
@@ -363,19 +363,20 @@ void BackgroundSync::_produce(OperationContext* txn) {
             };
 
         stdx::lock_guard<stdx::mutex> lock(_mutex);
-        _oplogFetcher =
-            stdx::make_unique<OplogFetcher>(executor,
-                                            OpTimeWithHash(lastHashFetched, lastOpTimeFetched),
-                                            source,
-                                            NamespaceString(rsOplogName),
-                                            config,
-                                            &dataReplicatorExternalState,
-                                            stdx::bind(&BackgroundSync::_enqueueDocuments,
-                                                       this,
-                                                       stdx::placeholders::_1,
-                                                       stdx::placeholders::_2,
-                                                       stdx::placeholders::_3),
-                                            onOplogFetcherShutdownCallbackFn);
+        _oplogFetcher = stdx::make_unique<OplogFetcher>(
+            executor,
+            OpTimeWithHash(lastHashFetched, lastOpTimeFetched),
+            source,
+            NamespaceString(rsOplogName),
+            config,
+            _replicationCoordinatorExternalState->getOplogFetcherMaxFetcherRestarts(),
+            &dataReplicatorExternalState,
+            stdx::bind(&BackgroundSync::_enqueueDocuments,
+                       this,
+                       stdx::placeholders::_1,
+                       stdx::placeholders::_2,
+                       stdx::placeholders::_3),
+            onOplogFetcherShutdownCallbackFn);
         oplogFetcher = _oplogFetcher.get();
     } catch (const mongo::DBException& ex) {
         fassertFailedWithStatus(34440, exceptionToStatus());
@@ -423,7 +424,7 @@ void BackgroundSync::_produce(OperationContext* txn) {
         auto getConnection = [&connection, &connectionPool, source]() -> DBClientBase* {
             if (!connection.get()) {
                 connection.reset(new ConnectionPool::ConnectionPtr(
-                    &connectionPool, source, Date_t::now(), kOplogSocketTimeout));
+                    &connectionPool, source, Date_t::now(), kRollbackOplogSocketTimeout));
             };
             return connection->get();
         };
@@ -468,7 +469,8 @@ void BackgroundSync::_produce(OperationContext* txn) {
                   << source << " for " << blacklistDuration << ".";
         _replCoord->blacklistSyncSource(source, Date_t::now() + blacklistDuration);
     } else if (!fetcherReturnStatus.isOK()) {
-        warning() << "Fetcher error querying oplog: " << redact(fetcherReturnStatus);
+        warning() << "Fetcher stopped querying remote oplog with error: "
+                  << redact(fetcherReturnStatus);
     }
 }
 
@@ -529,19 +531,24 @@ bool BackgroundSync::peek(OperationContext* txn, BSONObj* op) {
     return _oplogBuffer->peek(txn, op);
 }
 
-void BackgroundSync::waitForMore(OperationContext* txn) {
-    BSONObj op;
+void BackgroundSync::waitForMore() {
     // Block for one second before timing out.
-    // Ignore the value of the op we peeked at.
-    _oplogBuffer->blockingPeek(txn, &op, Seconds(1));
+    _oplogBuffer->waitForData(Seconds(1));
 }
 
 void BackgroundSync::consume(OperationContext* txn) {
     // this is just to get the op off the queue, it's been peeked at
     // and queued for application already
-    BSONObj op = _oplogBuffer->blockingPop(txn);
-    bufferCountGauge.decrement(1);
-    bufferSizeGauge.decrement(getSize(op));
+    BSONObj op;
+    if (_oplogBuffer->tryPop(txn, &op)) {
+        bufferCountGauge.decrement(1);
+        bufferSizeGauge.decrement(getSize(op));
+    } else {
+        invariant(inShutdown());
+        // This means that shutdown() was called between the consumer's calls to peek() and
+        // consume(). shutdown() cleared the buffer so there is nothing for us to consume here.
+        // Since our postcondition is already met, it is safe to return successfully.
+    }
 }
 
 void BackgroundSync::_rollback(OperationContext* txn,

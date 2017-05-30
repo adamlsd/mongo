@@ -53,9 +53,7 @@ class CollectionBulkLoaderMock : public CollectionBulkLoader {
 public:
     CollectionBulkLoaderMock(CollectionMockStats* collStats) : stats(collStats){};
     virtual ~CollectionBulkLoaderMock() = default;
-    virtual Status init(OperationContext* txn,
-                        Collection* coll,
-                        const std::vector<BSONObj>& secondaryIndexSpecs) override;
+    virtual Status init(Collection* coll, const std::vector<BSONObj>& secondaryIndexSpecs) override;
 
     virtual Status insertDocuments(const std::vector<BSONObj>::const_iterator begin,
                                    const std::vector<BSONObj>::const_iterator end) override;
@@ -77,11 +75,8 @@ public:
                           const std::vector<BSONObj>::const_iterator) { return Status::OK(); };
     stdx::function<Status()> abortFn = []() { return Status::OK(); };
     stdx::function<Status()> commitFn = []() { return Status::OK(); };
-    stdx::function<Status(
-        OperationContext* txn, Collection* coll, const std::vector<BSONObj>& secondaryIndexSpecs)>
-        initFn = [](OperationContext*, Collection*, const std::vector<BSONObj>&) {
-            return Status::OK();
-        };
+    stdx::function<Status(Collection* coll, const std::vector<BSONObj>& secondaryIndexSpecs)>
+        initFn = [](Collection*, const std::vector<BSONObj>&) { return Status::OK(); };
 };
 
 class StorageInterfaceMock : public StorageInterface {
@@ -109,11 +104,15 @@ public:
     using FindOneFn = stdx::function<StatusWith<BSONObj>(OperationContext* txn,
                                                          const NamespaceString& nss,
                                                          boost::optional<StringData> indexName,
-                                                         ScanDirection scanDirection)>;
+                                                         ScanDirection scanDirection,
+                                                         const BSONObj& startKey,
+                                                         BoundInclusion boundInclusion)>;
     using DeleteOneFn = stdx::function<StatusWith<BSONObj>(OperationContext* txn,
                                                            const NamespaceString& nss,
                                                            boost::optional<StringData> indexName,
-                                                           ScanDirection scanDirection)>;
+                                                           ScanDirection scanDirection,
+                                                           const BSONObj& startKey,
+                                                           BoundInclusion boundInclusion)>;
     using IsAdminDbValidFn = stdx::function<Status(OperationContext* txn)>;
 
     StorageInterfaceMock() = default;
@@ -178,15 +177,19 @@ public:
     StatusWith<BSONObj> findOne(OperationContext* txn,
                                 const NamespaceString& nss,
                                 boost::optional<StringData> indexName,
-                                ScanDirection scanDirection) override {
-        return findOneFn(txn, nss, indexName, scanDirection);
+                                ScanDirection scanDirection,
+                                const BSONObj& startKey,
+                                BoundInclusion boundInclusion) override {
+        return findOneFn(txn, nss, indexName, scanDirection, startKey, boundInclusion);
     }
 
     StatusWith<BSONObj> deleteOne(OperationContext* txn,
                                   const NamespaceString& nss,
                                   boost::optional<StringData> indexName,
-                                  ScanDirection scanDirection) override {
-        return deleteOneFn(txn, nss, indexName, scanDirection);
+                                  ScanDirection scanDirection,
+                                  const BSONObj& startKey,
+                                  BoundInclusion boundInclusion) override {
+        return deleteOneFn(txn, nss, indexName, scanDirection, startKey, boundInclusion);
     }
 
     Status isAdminDbValid(OperationContext* txn) override {
@@ -227,13 +230,17 @@ public:
     FindOneFn findOneFn = [](OperationContext* txn,
                              const NamespaceString& nss,
                              boost::optional<StringData> indexName,
-                             ScanDirection scanDirection) {
+                             ScanDirection scanDirection,
+                             const BSONObj& startKey,
+                             BoundInclusion boundInclusion) {
         return Status{ErrorCodes::IllegalOperation, "FindOneFn not implemented."};
     };
     DeleteOneFn deleteOneFn = [](OperationContext* txn,
                                  const NamespaceString& nss,
                                  boost::optional<StringData> indexName,
-                                 ScanDirection scanDirection) {
+                                 ScanDirection scanDirection,
+                                 const BSONObj& startKey,
+                                 BoundInclusion boundInclusion) {
         return Status{ErrorCodes::IllegalOperation, "DeleteOneFn not implemented."};
     };
     IsAdminDbValidFn isAdminDbValidFn = [](OperationContext*) {

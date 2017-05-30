@@ -21,7 +21,7 @@ __txn_next_op(WT_SESSION_IMPL *session, WT_TXN_OP **opp)
 	txn = &session->txn;
 	*opp = NULL;
 
-	/* 
+	/*
 	 * We're about to perform an update.
 	 * Make sure we have allocated a transaction ID.
 	 */
@@ -309,7 +309,7 @@ __wt_txn_idle_cache_check(WT_SESSION_IMPL *session)
 	 * WT_TXN_HAS_SNAPSHOT.
 	 */
 	if (F_ISSET(txn, WT_TXN_RUNNING) &&
-	    !F_ISSET(txn, WT_TXN_HAS_ID) && txn_state->snap_min == WT_TXN_NONE)
+	    !F_ISSET(txn, WT_TXN_HAS_ID) && txn_state->pinned_id == WT_TXN_NONE)
 		WT_RET(__wt_cache_eviction_check(session, false, NULL));
 
 	return (0);
@@ -414,7 +414,7 @@ __wt_txn_update_check(WT_SESSION_IMPL *session, WT_UPDATE *upd)
 	if (txn->isolation == WT_ISO_SNAPSHOT)
 		while (upd != NULL && !__wt_txn_visible(session, upd->txnid)) {
 			if (upd->txnid != WT_TXN_ABORTED) {
-				WT_STAT_FAST_DATA_INCR(
+				WT_STAT_DATA_INCR(
 				    session, txn_update_conflict);
 				return (WT_ROLLBACK);
 			}
@@ -480,8 +480,8 @@ __wt_txn_cursor_op(WT_SESSION_IMPL *session)
 	 * positioned on a value, it can't be freed.
 	 */
 	if (txn->isolation == WT_ISO_READ_UNCOMMITTED) {
-		if (txn_state->snap_min == WT_TXN_NONE)
-			txn_state->snap_min = txn_global->last_running;
+		if (txn_state->pinned_id == WT_TXN_NONE)
+			txn_state->pinned_id = txn_global->last_running;
 	} else if (!F_ISSET(txn, WT_TXN_HAS_SNAPSHOT))
 		WT_RET(__wt_txn_get_snapshot(session));
 

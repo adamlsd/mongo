@@ -33,8 +33,6 @@
 #include "mongo/transport/service_entry_point_test_suite.h"
 
 #include <boost/optional.hpp>
-#include <unordered_map>
-#include <unordered_set>
 
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobjbuilder.h"
@@ -44,6 +42,8 @@
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
+#include "mongo/stdx/unordered_set.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/ticket.h"
@@ -91,6 +91,7 @@ void setPingCommand(Message* m) {
 
 // Some default method implementations
 const auto kDefaultEnd = [](const Session& session) { return; };
+const auto kDefaultDestroyHook = [](Session& session) { return; };
 const auto kDefaultAsyncWait = [](Ticket, TicketCallback cb) { cb(Status::OK()); };
 const auto kNoopFunction = [] { return; };
 
@@ -151,7 +152,7 @@ void ServiceEntryPointTestSuite::MockTLHarness::asyncWait(Ticket&& ticket,
 
 SSLPeerInfo ServiceEntryPointTestSuite::MockTLHarness::getX509PeerInfo(
     const Session& session) const {
-    return SSLPeerInfo("mock", {});
+    return SSLPeerInfo("mock", stdx::unordered_set<RoleName>{});
 }
 
 void ServiceEntryPointTestSuite::MockTLHarness::registerTags(const Session& session) {}
@@ -218,11 +219,16 @@ void ServiceEntryPointTestSuite::MockTLHarness::_resetHooks() {
     _wait = stdx::bind(&ServiceEntryPointTestSuite::MockTLHarness::_defaultWait, this, _1);
     _asyncWait = kDefaultAsyncWait;
     _end = kDefaultEnd;
+    _destroy_hook = kDefaultDestroyHook;
 }
 
 ServiceEntryPointTestSuite::MockTicket* ServiceEntryPointTestSuite::MockTLHarness::getMockTicket(
     const transport::Ticket& ticket) {
     return dynamic_cast<ServiceEntryPointTestSuite::MockTicket*>(getTicketImpl(ticket));
+}
+
+void ServiceEntryPointTestSuite::MockTLHarness::_destroy(Session& session) {
+    return _destroy_hook(session);
 }
 
 void ServiceEntryPointTestSuite::setUp() {
@@ -245,7 +251,7 @@ void ServiceEntryPointTestSuite::noLifeCycleTest() {
     _tl->_wait = stdx::bind(&ServiceEntryPointTestSuite::MockTLHarness::_waitError, _tl.get(), _1);
 
     // Step 3: SEP destroys the session, which calls end()
-    _tl->_end = [&testComplete](const Session&) { testComplete.set_value(); };
+    _tl->_destroy_hook = [&testComplete](const Session&) { testComplete.set_value(); };
 
     // Kick off the SEP
     Session s(HostAndPort(), HostAndPort(), _tl.get());
@@ -274,7 +280,7 @@ void ServiceEntryPointTestSuite::halfLifeCycleTest() {
     };
 
     // Step 5: SEP destroys the session, which calls end()
-    _tl->_end = [&testComplete](const Session&) { testComplete.set_value(); };
+    _tl->_destroy_hook = [&testComplete](const Session&) { testComplete.set_value(); };
 
     // Kick off the SEP
     Session s(HostAndPort(), HostAndPort(), _tl.get());
@@ -300,7 +306,7 @@ void ServiceEntryPointTestSuite::fullLifeCycleTest() {
     // Step 5: SEP gets a ticket to source a Message
     // Step 6: SEP calls wait() on the ticket and receives and error
     // Step 7: SEP destroys the session, which calls end()
-    _tl->_end = [&testComplete](const Session& session) { testComplete.set_value(); };
+    _tl->_destroy_hook = [&testComplete](const Session& session) { testComplete.set_value(); };
 
     // Kick off the SEP
     Session s(HostAndPort(), HostAndPort(), _tl.get());
@@ -314,6 +320,7 @@ void ServiceEntryPointTestSuite::interruptingSessionTest() {
     Session sB(HostAndPort(), HostAndPort(), _tl.get());
     auto idA = sA.id();
     auto idB = sB.id();
+    int waitCountB = 0;
 
     stdx::promise<void> startB;
     auto startBFuture = startB.get_future();
@@ -322,7 +329,6 @@ void ServiceEntryPointTestSuite::interruptingSessionTest() {
     auto resumeAFuture = resumeA.get_future();
 
     stdx::promise<void> testComplete;
-
     auto testFuture = testComplete.get_future();
 
     _tl->_resetHooks();
@@ -331,15 +337,24 @@ void ServiceEntryPointTestSuite::interruptingSessionTest() {
     // Step 1: SEP calls sourceMessage() for A
     // Step 2: SEP calls wait() for A and we block...
     // Start Session B
-    _tl->_wait = [this, idA, &startB, &resumeAFuture](Ticket t) {
+    _tl->_wait = [this, idA, &startB, &resumeAFuture, &waitCountB](Ticket t) -> Status {
         // If we're handling B, just do a default wait
         if (t.sessionId() != idA) {
-            return _tl->_defaultWait(std::move(t));
+            if (waitCountB < 2) {
+                ++waitCountB;
+                return _tl->_defaultWait(std::move(t));
+            } else {
+                //  If we've done a full round trip, time to end session B
+                return kEndConnectionStatus;
+            }
         }
 
         // Otherwise, we need to start B and block A
         startB.set_value();
         resumeAFuture.wait();
+
+        _tl->_wait = stdx::bind(
+            &ServiceEntryPointTestSuite::MockTLHarness::_waitOnceThenError, _tl.get(), _1);
 
         return Status::OK();
     };
@@ -347,20 +362,13 @@ void ServiceEntryPointTestSuite::interruptingSessionTest() {
     // Step 3: SEP calls sourceMessage() for B, gets tB
     // Step 4: SEP calls wait() for tB, gets { ping : 1 }
     // Step 5: SEP calls sinkMessage() for B, gets tB2
-    _tl->_sinkMessage = stdx::bind(
-        &ServiceEntryPointTestSuite::MockTLHarness::_sinkThenErrorOnWait, _tl.get(), _1, _2, _3);
-
     // Step 6: SEP calls wait() for tB2, gets Status::OK()
     // Step 7: SEP calls sourceMessage() for B, gets tB3
     // Step 8: SEP calls wait() for tB3, gets an error
     // Step 9: SEP calls end(B)
-    _tl->_end = [this, idA, idB, &resumeA, &testComplete](const Session& session) {
-
+    _tl->_destroy_hook = [this, idA, idB, &resumeA, &testComplete](const Session& session) {
         // When end(B) is called, time to resume session A
         if (session.id() == idB) {
-            _tl->_wait =
-                stdx::bind(&ServiceEntryPointTestSuite::MockTLHarness::_defaultWait, _tl.get(), _1);
-
             // Resume session A
             resumeA.set_value();
         } else {
@@ -395,7 +403,7 @@ void ServiceEntryPointTestSuite::burstStressTest(int numSessions,
     auto allCompleteFuture = allSessionsComplete.get_future();
 
     stdx::mutex cyclesLock;
-    std::unordered_map<Session::Id, int> completedCycles;
+    stdx::unordered_map<Session::Id, int> completedCycles;
 
     _tl->_resetHooks();
 
@@ -442,7 +450,7 @@ void ServiceEntryPointTestSuite::burstStressTest(int numSessions,
     };
 
     // When we end the last session, end the test.
-    _tl->_end = [&allSessionsComplete, numSessions, &ended](const Session& session) {
+    _tl->_destroy_hook = [&allSessionsComplete, numSessions, &ended](const Session& session) {
         if (ended.fetchAndAdd(1) == (numSessions - 1)) {
             allSessionsComplete.set_value();
         }

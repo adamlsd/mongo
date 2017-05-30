@@ -179,17 +179,16 @@ __compact_handle_append(WT_SESSION_IMPL *session, const char *cfg[])
  *	Check if the timeout has been exceeded.
  */
 static int
-__session_compact_check_timeout(
-    WT_SESSION_IMPL *session, struct timespec begin)
+__session_compact_check_timeout(WT_SESSION_IMPL *session, struct timespec begin)
 {
 	struct timespec end;
 
 	if (session->compact->max_time == 0)
 		return (0);
 
-	WT_RET(__wt_epoch(session, &end));
+	__wt_epoch(session, &end);
 	if (session->compact->max_time < WT_TIMEDIFF_SEC(end, begin))
-		WT_RET(ETIMEDOUT);
+		return (ETIMEDOUT);
 	return (0);
 }
 
@@ -219,7 +218,7 @@ __compact_file(WT_SESSION_IMPL *session, const char *cfg[])
 	    session, t, "target=(\"%s\"),force=1", dhandle->name));
 	checkpoint_cfg[1] = t->data;
 
-	WT_ERR(__wt_epoch(session, &start_time));
+	__wt_epoch(session, &start_time);
 
 	/*
 	 * We compact 10% of the file on each pass (but the overall size of the
@@ -334,9 +333,9 @@ err:	session->compact = NULL;
 	WT_TRET(__wt_session_release_resources(session));
 
 	if (ret != 0)
-		WT_STAT_FAST_CONN_INCR(session, session_table_compact_fail);
+		WT_STAT_CONN_INCR(session, session_table_compact_fail);
 	else
-		WT_STAT_FAST_CONN_INCR(session, session_table_compact_success);
+		WT_STAT_CONN_INCR(session, session_table_compact_success);
 	API_END_RET_NOTFOUND_MAP(session, ret);
 }
 
@@ -357,7 +356,7 @@ __wt_session_compact_readonly(
 	session = (WT_SESSION_IMPL *)wt_session;
 	SESSION_API_CALL_NOCONF(session, compact);
 
-	WT_STAT_FAST_CONN_INCR(session, session_table_compact_fail);
+	WT_STAT_CONN_INCR(session, session_table_compact_fail);
 	ret = __wt_session_notsup(session);
 err:	API_END_RET(session, ret);
 }

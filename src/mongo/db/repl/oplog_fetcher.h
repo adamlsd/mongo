@@ -28,6 +28,9 @@
 
 #pragma once
 
+#include <cstddef>
+#include <memory>
+
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/timestamp.h"
@@ -36,7 +39,9 @@
 #include "mongo/db/repl/data_replicator_external_state.h"
 #include "mongo/db/repl/optime_with.h"
 #include "mongo/db/repl/replica_set_config.h"
+#include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/mutex.h"
 
 namespace mongo {
 namespace repl {
@@ -121,11 +126,12 @@ public:
      *
      * Throws a UserException if validation fails on any of the provided arguments.
      */
-    OplogFetcher(executor::TaskExecutor* exec,
+    OplogFetcher(executor::TaskExecutor* executor,
                  OpTimeWithHash lastFetched,
                  HostAndPort source,
                  NamespaceString nss,
                  ReplicaSetConfig config,
+                 std::size_t maxFetcherRestarts,
                  DataReplicatorExternalState* dataReplicatorExternalState,
                  EnqueueDocumentsFn enqueueDocumentsFn,
                  OnShutdownCallbackFn onShutdownCallbackFn);
@@ -184,7 +190,19 @@ public:
      */
     Milliseconds getAwaitDataTimeout_forTest() const;
 
+    /**
+     * Returns whether the oplog fetcher is in shutdown.
+     *
+     * For testing only.
+     */
+    bool inShutdown_forTest() const;
+
 private:
+    /**
+     * Schedules fetcher and updates counters.
+     */
+    Status _scheduleFetcher_inlock();
+
     /**
      * Processes each batch of results from the tailable cursor started by the fetcher on the sync
      * source.
@@ -198,13 +216,34 @@ private:
      * Notifies caller that the oplog fetcher has completed processing operations from
      * the remote oplog.
      */
-    void _onShutdown(Status status);
-    void _onShutdown(Status status, OpTimeWithHash opTimeWithHash);
+    void _finishCallback(Status status);
+    void _finishCallback(Status status, OpTimeWithHash opTimeWithHash);
+
+    /**
+     * Creates a new instance of the fetcher to tail the remote oplog starting at the given optime.
+     */
+    std::unique_ptr<Fetcher> _makeFetcher(OpTime lastFetchedOpTime);
+
+    /**
+     * Returns whether the oplog fetcher is in shutdown.
+     */
+    bool _isInShutdown() const;
 
     // Protects member data of this OplogFetcher.
     mutable stdx::mutex _mutex;
 
-    DataReplicatorExternalState* _dataReplicatorExternalState;
+    mutable stdx::condition_variable _condition;
+
+    executor::TaskExecutor* const _executor;
+    const HostAndPort _source;
+    const NamespaceString _nss;
+    const BSONObj _metadataObject;
+    const Milliseconds _remoteCommandTimeout;
+
+    // Maximum number of times to consecutively restart the fetcher on non-cancellation errors.
+    const std::size_t _maxFetcherRestarts;
+
+    DataReplicatorExternalState* const _dataReplicatorExternalState;
     const EnqueueDocumentsFn _enqueueDocumentsFn;
     const Milliseconds _awaitDataTimeout;
     const OnShutdownCallbackFn _onShutdownCallbackFn;
@@ -214,7 +253,17 @@ private:
     // "_enqueueDocumentsFn".
     OpTimeWithHash _lastFetched;
 
-    Fetcher _fetcher;
+    // _active is true when a fetcher is scheduled to be run by the executor.
+    bool _active = false;
+
+    // _inShutdown is true after shutdown() is called.
+    bool _inShutdown = false;
+
+    // Fetcher restarts since the last successful oplog query response.
+    std::size_t _fetcherRestarts = 0;
+
+    std::unique_ptr<Fetcher> _fetcher;
+    std::unique_ptr<Fetcher> _shuttingDownFetcher;
 };
 
 }  // namespace repl

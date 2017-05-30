@@ -18,6 +18,7 @@ ASYNC
 Addr
 Ailamaki
 Alakuijala
+Alexandrescu's
 Alloc
 Async
 Athanassoulis
@@ -328,6 +329,7 @@ StoreLoad
 StoreStore
 TAILQ
 TCMalloc
+TESTUTIL
 TODO
 TORTIOUS
 TSO
@@ -371,6 +373,7 @@ WILLNEED
 WIREDTIGER
 WRLSN
 WRNOLOCK
+WTPERF
 WaitForSingleObject
 WakeAllConditionVariable
 Wconditional
@@ -472,6 +475,7 @@ call's
 calloc
 cas
 catfmt
+cb
 ccr
 cd
 centric
@@ -550,6 +554,7 @@ curtable
 cust
 customp
 cv
+cx
 cxa
 dT
 data's
@@ -643,6 +648,7 @@ extlist
 fadvise
 fallocate
 fblocks
+fc
 fclose
 fcntl
 fd
@@ -1218,6 +1224,7 @@ xxxx
 xxxxx
 xxxxxx
 zalloc
+zf
 zfree
 zlib
 zu

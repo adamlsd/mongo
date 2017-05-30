@@ -538,6 +538,18 @@ public:
             warning() << deprecationWarning;
             result.append("note", deprecationWarning);
         }
+
+        auto featureCompatibilityVersion = serverGlobalParams.featureCompatibility.version.load();
+        if (ServerGlobalParams::FeatureCompatibility::Version::k32 == featureCompatibilityVersion &&
+            cmdObj.hasField("collation")) {
+            return appendCommandStatus(
+                result,
+                {ErrorCodes::InvalidOptions,
+                 "The featureCompatibilityVersion must be 3.4 to create a collection or "
+                 "view with a default collation. See "
+                 "http://dochub.mongodb.org/core/3.4-feature-compatibility."});
+        }
+
         return appendCommandStatus(result, createCollection(txn, dbname, cmdObj));
     }
 } cmdCreate;
@@ -822,7 +834,7 @@ public:
                                               idx,
                                               min,
                                               max,
-                                              false,  // endKeyInclusive
+                                              BoundInclusion::kIncludeStartKeyOnly,
                                               PlanExecutor::YIELD_MANUAL);
         }
 
@@ -1026,6 +1038,7 @@ public:
             // is not needed for the missing DB case, we can just do the same that's done in
             // CollectionStats.
             result.appendNumber("collections", 0);
+            result.appendNumber("views", 0);
             result.appendNumber("objects", 0);
             result.append("avgObjSize", 0);
             result.appendNumber("dataSize", 0);
@@ -1218,8 +1231,7 @@ void Command::execCommand(OperationContext* txn,
         }
 
         ImpersonationSessionGuard guard(txn);
-        uassertStatusOK(
-            _checkAuthorization(command, txn->getClient(), dbname, request.getCommandArgs()));
+        uassertStatusOK(checkAuthorization(command, txn, dbname, request.getCommandArgs()));
 
         repl::ReplicationCoordinator* replCoord =
             repl::ReplicationCoordinator::get(txn->getClient()->getServiceContext());
@@ -1304,14 +1316,14 @@ void Command::execCommand(OperationContext* txn,
             if (oss.hasShardVersion()) {
                 if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
                     uassertStatusOK(
-                        {ErrorCodes::IllegalOperation,
+                        {ErrorCodes::NoShardingEnabled,
                          "Cannot accept sharding commands if not started with --shardsvr"});
                 } else if (!shardingState->enabled()) {
                     // TODO(esha): Once 3.4 ships, we no longer need to support initializing
                     // sharding awareness through commands, so just reject all sharding commands.
                     if (!shardingState->commandInitializesShardingAwareness(
                             request.getCommandName().toString())) {
-                        uassertStatusOK({ErrorCodes::IllegalOperation,
+                        uassertStatusOK({ErrorCodes::NoShardingEnabled,
                                          str::stream()
                                              << "Received a command with sharding chunk version "
                                                 "information but this node is not sharding aware: "
@@ -1390,6 +1402,22 @@ bool Command::run(OperationContext* txn,
         replyBuilder->setMetadata(rpc::makeEmptyMetadata());
         return result;
     }
+
+    if (readConcernArgsStatus.getValue().getLevel() ==
+        repl::ReadConcernLevel::kLinearizableReadConcern) {
+        auto replCoord = repl::ReplicationCoordinator::get(txn);
+        if (!replCoord->isLinearizableReadConcernEnabled()) {
+            Status status(ErrorCodes::LinearizableReadConcernNotEnabled,
+                          "Linearizable read concern requested, but server was not started with "
+                          "--setParameter enableLinearizableReadConcern=true");
+            inPlaceReplyBob.resetToEmpty();
+            auto result = appendCommandStatus(inPlaceReplyBob, status);
+            inPlaceReplyBob.doneFast();
+            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            return result;
+        }
+    }
+
 
     Status rcStatus = waitForReadConcern(txn, readConcernArgsStatus.getValue());
     if (!rcStatus.isOK()) {

@@ -94,6 +94,12 @@ public:
              int options,
              string& errmsg,
              BSONObjBuilder& result) {
+
+        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+            uassertStatusOK({ErrorCodes::NoShardingEnabled,
+                             "Cannot accept sharding commands if not started with --shardsvr"});
+        }
+
         // Steps
         // 1. check basic config
         // 2. extract params from command
@@ -132,11 +138,6 @@ public:
                 return false;
             }
         }
-
-        // check shard name is correct
-        // The shard host is also sent when using setShardVersion, report this host if there is
-        // an error or mismatch.
-        shardingState->setShardName(shardName);
 
         if (!_checkConfigOrInit(txn, configDBStr, shardName, authoritative, errmsg, result)) {
             return false;
@@ -437,7 +438,7 @@ private:
             return false;
         }
 
-        ShardingState::get(txn)->initializeFromConfigConnString(txn, configdb);
+        ShardingState::get(txn)->initializeFromConfigConnString(txn, configdb, shardName);
         return true;
     }
 

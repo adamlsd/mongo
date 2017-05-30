@@ -66,6 +66,7 @@
 #include "mongo/util/stacktrace.h"
 #include "mongo/util/startup_test.h"
 #include "mongo/util/static_observer.h"
+#include "mongo/util/stringutils.h"
 #include "mongo/util/text.h"
 #include "mongo/util/version.h"
 
@@ -93,8 +94,8 @@ const auto kDefaultMongoURL = "mongodb://127.0.0.1:27017"_sd;
 // uses BSONVersion::kLatest.
 MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion34, ("EndStartupOptionSetup"))
 (InitializerContext* context) {
-    mongo::serverGlobalParams.featureCompatibilityVersion.store(
-        ServerGlobalParams::FeatureCompatibilityVersion_34);
+    mongo::serverGlobalParams.featureCompatibility.version.store(
+        ServerGlobalParams::FeatureCompatibility::Version::k34);
     return Status::OK();
 }
 }
@@ -707,13 +708,15 @@ int _main(int argc, char* argv[], char** envp) {
 
     mongo::ScriptEngine::setConnectCallback(mongo::shell_utils::onConnect);
     mongo::ScriptEngine::setup();
-    mongo::globalScriptEngine->setScopeInitCallback(mongo::shell_utils::initScope);
-    mongo::globalScriptEngine->enableJIT(!shellGlobalParams.nojit);
-    mongo::globalScriptEngine->enableJavaScriptProtection(shellGlobalParams.javascriptProtection);
+    mongo::getGlobalScriptEngine()->setJSHeapLimitMB(shellGlobalParams.jsHeapLimitMB);
+    mongo::getGlobalScriptEngine()->setScopeInitCallback(mongo::shell_utils::initScope);
+    mongo::getGlobalScriptEngine()->enableJIT(!shellGlobalParams.nojit);
+    mongo::getGlobalScriptEngine()->enableJavaScriptProtection(
+        shellGlobalParams.javascriptProtection);
 
     auto poolGuard = MakeGuard([] { ScriptEngine::dropScopeCache(); });
 
-    unique_ptr<mongo::Scope> scope(mongo::globalScriptEngine->newScope());
+    unique_ptr<mongo::Scope> scope(mongo::getGlobalScriptEngine()->newScopeForCurrentThread());
     shellMainScope = scope.get();
 
     if (shellGlobalParams.runShell)
@@ -751,6 +754,9 @@ int _main(int argc, char* argv[], char** envp) {
 
         if (!scope->execFile(shellGlobalParams.files[i], false, true)) {
             cout << "failed to load: " << shellGlobalParams.files[i] << endl;
+            return -3;
+        }
+        if (mongo::shell_utils::KillMongoProgramInstances() != EXIT_SUCCESS) {
             return -3;
         }
     }

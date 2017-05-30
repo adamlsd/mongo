@@ -29,12 +29,12 @@
 
 #include <memory>
 #include <queue>
-#include <unordered_map>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/stdx/chrono.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/time_support.h"
 
@@ -110,6 +110,7 @@ public:
     };
 
     explicit ConnectionPool(std::unique_ptr<DependentTypeFactoryInterface> impl,
+                            std::string name,
                             Options options = Options{});
 
     ~ConnectionPool();
@@ -123,6 +124,8 @@ public:
 private:
     void returnConnection(ConnectionInterface* connection);
 
+    std::string _name;
+
     // Options are set at startup and never changed at run time, so these are
     // accessed outside the lock
     const Options _options;
@@ -131,7 +134,7 @@ private:
 
     // The global mutex for specific pool access and the generation counter
     mutable stdx::mutex _mutex;
-    std::unordered_map<HostAndPort, std::unique_ptr<SpecificPool>> _pools;
+    stdx::unordered_map<HostAndPort, std::unique_ptr<SpecificPool>> _pools;
 };
 
 class ConnectionPool::ConnectionHandleDeleter {

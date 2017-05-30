@@ -33,17 +33,26 @@ __wt_strdup(WT_SESSION_IMPL *session, const char *str, void *retp)
  * __wt_seconds --
  *	Return the seconds since the Epoch.
  */
-static inline int
+static inline void
 __wt_seconds(WT_SESSION_IMPL *session, time_t *timep)
 {
 	struct timespec t;
 
-	WT_RET(__wt_epoch(session, &t));
+	__wt_epoch(session, &t);
 
 	*timep = t.tv_sec;
-
-	return (0);
 }
+
+/*
+ * __wt_verbose --
+ * 	Verbose message.
+ *
+ * Inline functions are not parsed for external prototypes, so in cases where we
+ * want GCC attributes attached to the functions, we have to do so explicitly.
+ */
+static inline void
+__wt_verbose(WT_SESSION_IMPL *session, int flag, const char *fmt, ...)
+WT_GCC_FUNC_DECL_ATTRIBUTE((format (printf, 3, 4)));
 
 /*
  * __wt_verbose --
@@ -51,8 +60,6 @@ __wt_seconds(WT_SESSION_IMPL *session, time_t *timep)
  */
 static inline void
 __wt_verbose(WT_SESSION_IMPL *session, int flag, const char *fmt, ...)
-    WT_GCC_FUNC_ATTRIBUTE((format (printf, 2, 3)))
-    WT_GCC_FUNC_ATTRIBUTE((cold))
 {
 #ifdef HAVE_VERBOSE
 	va_list ap;

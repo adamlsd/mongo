@@ -156,6 +156,16 @@ env.Library(
     ],
 )
 
+env.Library(
+    target='oplog_buffer_proxy',
+    source=[
+        'oplog_buffer_proxy.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
 env.CppUnitTest(
     target='oplog_buffer_collection_test',
     source=[
@@ -170,6 +180,16 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/unittest/concurrency',
     ],
     NO_CRUTCH = True,
+)
+
+env.CppUnitTest(
+    target='oplog_buffer_proxy_test',
+    source=[
+        'oplog_buffer_proxy_test.cpp',
+    ],
+    LIBDEPS=[
+        'oplog_buffer_proxy',
+    ],
 )
 
 env.Library(
@@ -701,6 +721,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'oplog_fetcher',
         'data_replicator_external_state_mock',
+        '$BUILD_DIR/mongo/unittest/task_executor_proxy',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
     ],
 )
@@ -739,10 +760,7 @@ env.Library(
     ],
     LIBDEPS=[
         'replmocks',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
-        '$BUILD_DIR/mongo/db/commands_test_crutch',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
     ],
 )
 
@@ -755,9 +773,12 @@ env.Library(
         'task_runner',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/client/fetcher',
+        '$BUILD_DIR/mongo/client/remote_command_retry_scheduler',
         '$BUILD_DIR/mongo/db/catalog/collection_options',
         '$BUILD_DIR/mongo/db/catalog/document_validation',
         '$BUILD_DIR/mongo/executor/task_executor_interface',
+        '$BUILD_DIR/mongo/rpc/command_status',
+        '$BUILD_DIR/mongo/util/progress_meter',
     ],
 )
 
@@ -767,6 +788,10 @@ env.CppUnitTest(
     LIBDEPS=[
         'collection_cloner',
         'base_cloner_test_fixture',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/commands_test_crutch',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/unittest/task_executor_proxy',
     ],
 )
 
@@ -788,6 +813,9 @@ env.CppUnitTest(
     LIBDEPS=[
         'database_cloner',
         'base_cloner_test_fixture',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/commands_test_crutch',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
     ],
 )
 
@@ -982,6 +1010,7 @@ env.CppUnitTest(
         'data_replicator_test.cpp',
     ],
     LIBDEPS=[
+        'base_cloner_test_fixture',
         'data_replicator',
         'data_replicator_external_state_mock',
         'replication_executor_test_fixture',
@@ -1083,6 +1112,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/lasterror',
         '$BUILD_DIR/mongo/db/query/query',
+        '$BUILD_DIR/mongo/db/s/balancer',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/stats/counters',
     ],

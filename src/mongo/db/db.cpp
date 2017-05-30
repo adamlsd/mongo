@@ -89,6 +89,7 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/topology_coordinator_impl.h"
 #include "mongo/db/restapi.h"
+#include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
@@ -110,7 +111,6 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/network_interface_factory.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/balancer/balancer.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/sharding_initialization.h"
@@ -274,11 +274,20 @@ unsigned long long checkIfReplMissingFromCommandLine(OperationContext* txn) {
  * these versions.
  */
 bool isSubjectToSERVER23299(OperationContext* txn) {
+    // We are already called under global X lock as part of the startup sequence
+    invariant(txn->lockState()->isW());
+
     if (storageGlobalParams.readOnly) {
         return false;
     }
+
+    // Ensure that the local database is open since we are still early in the server startup
+    // sequence
     dbHolder().openDb(txn, startupLogCollectionName.db());
-    AutoGetCollectionForRead autoColl(txn, startupLogCollectionName);
+
+    // Only used as a shortcut to obtain a reference to the startup log collection
+    AutoGetCollection autoColl(txn, startupLogCollectionName, MODE_IS);
+
     // No startup log or an empty one means either that the user was not running an affected
     // version, or that they manually deleted the startup collection since they last started an
     // affected version.
@@ -431,7 +440,7 @@ void repairDatabasesAndCheckVersion(OperationContext* txn) {
                         severe() << version.getStatus();
                         fassertFailedNoTrace(40283);
                     }
-                    serverGlobalParams.featureCompatibilityVersion.store(version.getValue());
+                    serverGlobalParams.featureCompatibility.version.store(version.getValue());
                 }
             }
         }
@@ -690,9 +699,6 @@ ExitCode _initAndListen(int listenPort) {
         web.detach();
     }
 
-#ifndef _WIN32
-    mongo::signalForkSuccess();
-#endif
     AuthorizationManager* globalAuthzManager = getGlobalAuthorizationManager();
     if (globalAuthzManager->shouldValidateAuthSchemaOnStartup()) {
         Status status = authindex::verifySystemIndexes(startupOpCtx.get());
@@ -736,8 +742,12 @@ ExitCode _initAndListen(int listenPort) {
               << startupWarningsLog;
     }
 
-    uassertStatusOK(ShardingState::get(startupOpCtx.get())
-                        ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
+    auto shardingInitialized =
+        uassertStatusOK(ShardingState::get(startupOpCtx.get())
+                            ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
+    if (shardingInitialized) {
+        reloadShardRegistryUntilSuccess(startupOpCtx.get());
+    }
 
     if (!storageGlobalParams.readOnly) {
         logStartup(startupOpCtx.get());
@@ -787,6 +797,10 @@ ExitCode _initAndListen(int listenPort) {
             FeatureCompatibilityVersion::setIfCleanStartup(
                 startupOpCtx.get(), repl::StorageInterface::get(getGlobalServiceContext()));
         }
+
+        if (replSettings.usingReplSets() || (!replSettings.isMaster() && replSettings.isSlave())) {
+            serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
+        }
     }
 
     startClientCursorMonitor();
@@ -802,6 +816,10 @@ ExitCode _initAndListen(int listenPort) {
         error() << "Failed to start the listener: " << start.toString();
         return EXIT_NET_ERROR;
     }
+
+#ifndef _WIN32
+    mongo::signalForkSuccess();
+#endif
 
     return waitForShutdown();
 }

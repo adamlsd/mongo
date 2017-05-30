@@ -86,7 +86,7 @@ Status mergeChunks(OperationContext* txn,
     // TODO(SERVER-25086): Remove distLock acquisition from merge chunk
     const string whyMessage = stream() << "merging chunks in " << nss.ns() << " from " << minKey
                                        << " to " << maxKey;
-    auto scopedDistLock = grid.catalogClient(txn)->distLock(
+    auto scopedDistLock = grid.catalogClient(txn)->getDistLockManager()->lock(
         txn, nss.ns(), whyMessage, DistLockManager::kSingleLockAttemptTimeout);
 
     if (!scopedDistLock.isOK()) {
@@ -106,7 +106,7 @@ Status mergeChunks(OperationContext* txn,
     //
 
     ChunkVersion shardVersion;
-    Status refreshStatus = shardingState->refreshMetadataNow(txn, nss.ns(), &shardVersion);
+    Status refreshStatus = shardingState->refreshMetadataNow(txn, nss, &shardVersion);
 
     if (!refreshStatus.isOK()) {
         std::string errmsg = str::stream()
@@ -254,16 +254,8 @@ Status mergeChunks(OperationContext* txn,
         }
     }
 
-    {
-        // Ensure that the newly applied chunks would result in a correct metadata state
-        ChunkVersion mergeVersion = metadata->getCollVersion();
-        mergeVersion.incMinor();
-
-        uassertStatusOK(metadata->cloneMerge(minKey, maxKey, mergeVersion));
-    }
-
     //
-    // Run _configsvrMergeChunks.
+    // Run _configsvrCommitChunkMerge.
     //
     MergeChunkRequest request{
         nss, shardingState->getShardName(), shardVersion.epoch(), chunkBoundaries};
@@ -279,11 +271,11 @@ Status mergeChunks(OperationContext* txn,
 
     //
     // Refresh metadata to pick up new chunk definitions (regardless of the results returned from
-    // running _configsvrMergeChunk).
+    // running _configsvrCommitChunkMerge).
     //
     {
         ChunkVersion shardVersionAfterMerge;
-        refreshStatus = shardingState->refreshMetadataNow(txn, nss.ns(), &shardVersionAfterMerge);
+        refreshStatus = shardingState->refreshMetadataNow(txn, nss, &shardVersionAfterMerge);
 
         if (!refreshStatus.isOK()) {
             std::string errmsg = str::stream() << "failed to refresh metadata for merge chunk ["
@@ -301,10 +293,10 @@ Status mergeChunks(OperationContext* txn,
         return cmdResponseStatus.getStatus();
     }
 
-    // If _configsvrMergeChunk returned an error, look at this shard's metadata to determine if
-    // the merge actually did happen. This can happen if there's a network error getting the
-    // response from the first call to _configsvrMergeChunk, but it actually succeeds, thus the
-    // automatic retry fails with a precondition violation, for example.
+    // If _configsvrCommitChunkMerge returned an error, look at this shard's metadata to determine
+    // if the merge actually did happen. This can happen if there's a network error getting the
+    // response from the first call to _configsvrCommitChunkMerge, but it actually succeeds, thus
+    // the automatic retry fails with a precondition violation, for example.
     auto commandStatus = std::move(cmdResponseStatus.getValue().commandStatus);
     auto writeConcernStatus = std::move(cmdResponseStatus.getValue().writeConcernStatus);
 
@@ -418,11 +410,10 @@ public:
         //
 
         ShardingState* gss = ShardingState::get(txn);
-
-        string config;
-        FieldParser::FieldState extracted =
-            FieldParser::extract(cmdObj, configField, &config, &errmsg);
         if (!gss->enabled()) {
+            string configConnString;
+            FieldParser::FieldState extracted =
+                FieldParser::extract(cmdObj, configField, &configConnString, &errmsg);
             if (!extracted || extracted == FieldParser::FIELD_NONE) {
                 errmsg =
                     "sharding state must be enabled or "
@@ -430,17 +421,15 @@ public:
                 return false;
             }
 
-            gss->initializeFromConfigConnString(txn, config);
-        }
+            string shardName;
+            extracted = FieldParser::extract(cmdObj, shardNameField, &shardName, &errmsg);
+            if (!extracted) {
+                errmsg =
+                    "shard name must be specified to merge chunks if sharding state not enabled";
+                return false;
+            }
 
-        // ShardName is optional, but might not be set yet
-        string shardName;
-        extracted = FieldParser::extract(cmdObj, shardNameField, &shardName, &errmsg);
-
-        if (!extracted)
-            return false;
-        if (extracted != FieldParser::FIELD_NONE) {
-            gss->setShardName(shardName);
+            gss->initializeFromConfigConnString(txn, configConnString, shardName);
         }
 
         //
@@ -455,7 +444,6 @@ public:
         auto mergeStatus = mergeChunks(txn, NamespaceString(ns), minKey, maxKey, epoch);
         return appendCommandStatus(result, mergeStatus);
     }
-
 } mergeChunksCmd;
 
 BSONField<string> MergeChunksCommand::nsField("mergeChunks");

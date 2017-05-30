@@ -25,6 +25,10 @@ struct __wt_process {
 					/* Locked: connection queue */
 	TAILQ_HEAD(__wt_connection_impl_qh, __wt_connection_impl) connqh;
 	WT_CACHE_POOL *cache_pool;
+
+					/* Checksum function */
+#define	__wt_checksum(chunk, len)	__wt_process.checksum(chunk, len)
+	uint32_t (*checksum)(const void *, size_t);
 };
 extern WT_PROCESS __wt_process;
 
@@ -273,7 +277,7 @@ struct __wt_connection_impl {
 	WT_CONDVAR	*ckpt_cond;	/* Checkpoint wait mutex */
 #define	WT_CKPT_LOGSIZE(conn)	((conn)->ckpt_logsize != 0)
 	wt_off_t	 ckpt_logsize;	/* Checkpoint log size period */
-	uint32_t	 ckpt_signalled;/* Checkpoint signalled */
+	bool		 ckpt_signalled;/* Checkpoint signalled */
 
 	uint64_t  ckpt_usecs;		/* Checkpoint timer */
 	uint64_t  ckpt_time_max;	/* Checkpoint time min/max */
@@ -285,9 +289,8 @@ struct __wt_connection_impl {
 #define	WT_CONN_STAT_CLEAR	0x02	/* clear after gathering */
 #define	WT_CONN_STAT_FAST	0x04	/* "fast" statistics configured */
 #define	WT_CONN_STAT_JSON	0x08	/* output JSON format */
-#define	WT_CONN_STAT_NONE	0x10	/* don't gather statistics */
-#define	WT_CONN_STAT_ON_CLOSE	0x20	/* output statistics on close */
-#define	WT_CONN_STAT_SIZE	0x40	/* "size" statistics configured */
+#define	WT_CONN_STAT_ON_CLOSE	0x10	/* output statistics on close */
+#define	WT_CONN_STAT_SIZE	0x20	/* "size" statistics configured */
 	uint32_t stat_flags;
 
 					/* Connection statistics */
@@ -348,6 +351,12 @@ struct __wt_connection_impl {
 	uint32_t	 txn_logsync;	/* Log sync configuration */
 
 	WT_SESSION_IMPL *meta_ckpt_session;/* Metadata checkpoint session */
+
+	/*
+	 * Is there a data/schema change that needs to be the part of a
+	 * checkpoint.
+	 */
+	bool modified;
 
 	WT_SESSION_IMPL *sweep_session;	   /* Handle sweep session */
 	wt_thread_t	 sweep_tid;	   /* Handle sweep thread */

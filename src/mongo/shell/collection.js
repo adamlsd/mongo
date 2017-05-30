@@ -1319,7 +1319,10 @@ DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
     assert.commandWorked(res, "aggregate failed");
 
     if ("cursor" in res) {
-        return new DBCommandCursor(res._mongo, res);
+        if (cmd["cursor"]["batchSize"] > 0) {
+            var batchSizeValue = cmd["cursor"]["batchSize"];
+        }
+        return new DBCommandCursor(res._mongo, res, batchSizeValue);
     }
 
     return res;
@@ -1691,35 +1694,10 @@ DBCollection.prototype.unsetWriteConcern = function() {
 * @return {number}
 */
 DBCollection.prototype.count = function(query, options) {
-    var opts = Object.extend({}, options || {});
+    query = this.find(query);
 
-    var query = this.find(query);
-    if (typeof opts.skip == 'number') {
-        query.skip(opts.skip);
-    }
-
-    if (typeof opts.limit == 'number') {
-        query.limit(opts.limit);
-    }
-
-    if (typeof opts.maxTimeMS == 'number') {
-        query.maxTimeMS(opts.maxTimeMS);
-    }
-
-    if (opts.hint) {
-        query.hint(opts.hint);
-    }
-
-    if (typeof opts.readConcern == 'string') {
-        query.readConcern(opts.readConcern);
-    }
-
-    if (typeof opts.collation == 'object') {
-        query.collation(opts.collation);
-    }
-
-    // Return the result of the find
-    return query.count(true);
+    // Apply options and return the result of the find
+    return QueryHelpers._applyCountOptions(query, options).count(true);
 };
 
 /**

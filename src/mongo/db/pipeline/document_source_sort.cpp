@@ -30,11 +30,11 @@
 
 #include "mongo/db/pipeline/document_source.h"
 
-
 #include "mongo/db/jsobj.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/pipeline/value.h"
 
 namespace mongo {
@@ -48,7 +48,9 @@ using std::vector;
 DocumentSourceSort::DocumentSourceSort(const intrusive_ptr<ExpressionContext>& pExpCtx)
     : DocumentSource(pExpCtx), _mergingPresorted(false) {}
 
-REGISTER_DOCUMENT_SOURCE(sort, DocumentSourceSort::createFromBson);
+REGISTER_DOCUMENT_SOURCE(sort,
+                         LiteParsedDocumentSourceDefault::parse,
+                         DocumentSourceSort::createFromBson);
 
 const char* DocumentSourceSort::getSourceName() const {
     return "$sort";
@@ -107,10 +109,10 @@ long long DocumentSourceSort::getLimit() const {
     return limitSrc ? limitSrc->getLimit() : -1;
 }
 
-void DocumentSourceSort::addKey(const string& fieldPath, bool ascending) {
+void DocumentSourceSort::addKey(StringData fieldPath, bool ascending) {
     VariablesIdGenerator idGenerator;
     VariablesParseState vps(&idGenerator);
-    vSortKey.push_back(ExpressionFieldPath::parse("$$ROOT." + fieldPath, vps));
+    vSortKey.push_back(ExpressionFieldPath::parse("$$ROOT." + fieldPath.toString(), vps));
     vAscending.push_back(ascending);
 }
 
@@ -136,11 +138,10 @@ Document DocumentSourceSort::serializeSortKey(bool explain) const {
     return keyObj.freeze();
 }
 
-Pipeline::SourceContainer::iterator DocumentSourceSort::optimizeAt(
+Pipeline::SourceContainer::iterator DocumentSourceSort::doOptimizeAt(
     Pipeline::SourceContainer::iterator itr, Pipeline::SourceContainer* container) {
     invariant(*itr == this);
 
-    auto nextMatch = dynamic_cast<DocumentSourceMatch*>((*std::next(itr)).get());
     auto nextLimit = dynamic_cast<DocumentSourceLimit*>((*std::next(itr)).get());
 
     if (nextLimit) {
@@ -148,11 +149,6 @@ Pipeline::SourceContainer::iterator DocumentSourceSort::optimizeAt(
         setLimitSrc(nextLimit);
         container->erase(std::next(itr));
         return itr;
-    } else if (nextMatch && !nextMatch->isTextQuery()) {
-        // Swap the $match before the $sort, thus reducing the number of documents that pass into
-        // this stage.
-        std::swap(*itr, *std::next(itr));
-        return itr == container->begin() ? itr : std::prev(itr);
     }
     return std::next(itr);
 }
@@ -173,16 +169,19 @@ intrusive_ptr<DocumentSource> DocumentSourceSort::createFromBson(
 }
 
 intrusive_ptr<DocumentSourceSort> DocumentSourceSort::create(
-    const intrusive_ptr<ExpressionContext>& pExpCtx, BSONObj sortOrder, long long limit) {
-    intrusive_ptr<DocumentSourceSort> pSort = new DocumentSourceSort(pExpCtx);
+    const intrusive_ptr<ExpressionContext>& pExpCtx,
+    BSONObj sortOrder,
+    long long limit,
+    uint64_t maxMemoryUsageBytes) {
+    intrusive_ptr<DocumentSourceSort> pSort(new DocumentSourceSort(pExpCtx));
+    pSort->_maxMemoryUsageBytes = maxMemoryUsageBytes;
     pSort->injectExpressionContext(pExpCtx);
     pSort->_sort = sortOrder.getOwned();
 
-    /* check for then iterate over the sort object */
-    BSONForEach(keyField, sortOrder) {
-        const char* fieldName = keyField.fieldName();
+    for (auto&& keyField : sortOrder) {
+        auto fieldName = keyField.fieldNameStringData();
 
-        if (str::equals(fieldName, "$mergePresorted")) {
+        if ("$mergePresorted" == fieldName) {
             verify(keyField.Bool());
             pSort->_mergingPresorted = true;
             continue;
@@ -235,7 +234,7 @@ SortOptions DocumentSourceSort::makeSortOptions() const {
     if (limitSrc)
         opts.limit = limitSrc->getLimit();
 
-    opts.maxMemoryUsageBytes = 100 * 1024 * 1024;
+    opts.maxMemoryUsageBytes = _maxMemoryUsageBytes;
     if (pExpCtx->extSortAllowed && !pExpCtx->inRouter) {
         opts.extSortAllowed = true;
         opts.tempDir = pExpCtx->tempDir;

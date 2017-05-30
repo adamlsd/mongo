@@ -35,7 +35,8 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/index/multikey_paths.h"
 #include "mongo/db/jsobj.h"
-
+#include "mongo/db/server_options.h"
+#include "mongo/util/assert_util.h"
 #include "mongo/util/stacktrace.h"
 
 namespace mongo {
@@ -53,6 +54,32 @@ class IndexCatalogEntryContainer;
  */
 class IndexDescriptor {
 public:
+    enum class IndexVersion { kV0 = 0, kV1 = 1, kV2 = 2 };
+
+    static constexpr StringData k2dIndexBitsFieldName = "bits"_sd;
+    static constexpr StringData k2dIndexMinFieldName = "min"_sd;
+    static constexpr StringData k2dIndexMaxFieldName = "max"_sd;
+    static constexpr StringData k2dsphereCoarsestIndexedLevel = "coarsestIndexedLevel"_sd;
+    static constexpr StringData k2dsphereFinestIndexedLevel = "finestIndexedLevel"_sd;
+    static constexpr StringData k2dsphereVersionFieldName = "2dsphereIndexVersion"_sd;
+    static constexpr StringData kBackgroundFieldName = "background"_sd;
+    static constexpr StringData kCollationFieldName = "collation"_sd;
+    static constexpr StringData kDefaultLanguageFieldName = "default_language"_sd;
+    static constexpr StringData kDropDuplicatesFieldName = "dropDups"_sd;
+    static constexpr StringData kExpireAfterSecondsFieldName = "expireAfterSeconds"_sd;
+    static constexpr StringData kGeoHaystackBucketSize = "bucketSize"_sd;
+    static constexpr StringData kIndexNameFieldName = "name"_sd;
+    static constexpr StringData kIndexVersionFieldName = "v"_sd;
+    static constexpr StringData kKeyPatternFieldName = "key"_sd;
+    static constexpr StringData kLanguageOverrideFieldName = "language_override"_sd;
+    static constexpr StringData kNamespaceFieldName = "ns"_sd;
+    static constexpr StringData kPartialFilterExprFieldName = "partialFilterExpression"_sd;
+    static constexpr StringData kSparseFieldName = "sparse"_sd;
+    static constexpr StringData kStorageEngineFieldName = "storageEngine"_sd;
+    static constexpr StringData kTextVersionFieldName = "textIndexVersion"_sd;
+    static constexpr StringData kUniqueFieldName = "unique"_sd;
+    static constexpr StringData kWeightsFieldName = "weights"_sd;
+
     /**
      * OnDiskIndexData is a pointer to the memory mapped per-index data.
      * infoObj is a copy of the index-describing BSONObj contained in the OnDiskIndexData.
@@ -61,24 +88,44 @@ public:
         : _collection(collection),
           _accessMethodName(accessMethodName),
           _infoObj(infoObj.getOwned()),
-          _numFields(infoObj.getObjectField("key").nFields()),
-          _keyPattern(infoObj.getObjectField("key").getOwned()),
-          _indexName(infoObj.getStringField("name")),
-          _parentNS(infoObj.getStringField("ns")),
+          _numFields(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).nFields()),
+          _keyPattern(infoObj.getObjectField(IndexDescriptor::kKeyPatternFieldName).getOwned()),
+          _indexName(infoObj.getStringField(IndexDescriptor::kIndexNameFieldName)),
+          _parentNS(infoObj.getStringField(IndexDescriptor::kNamespaceFieldName)),
           _isIdIndex(isIdIndexPattern(_keyPattern)),
-          _sparse(infoObj["sparse"].trueValue()),
-          _unique(_isIdIndex || infoObj["unique"].trueValue()),
-          _partial(!infoObj["partialFilterExpression"].eoo()),
+          _sparse(infoObj[IndexDescriptor::kSparseFieldName].trueValue()),
+          _unique(_isIdIndex || infoObj[kUniqueFieldName].trueValue()),
+          _partial(!infoObj[kPartialFilterExprFieldName].eoo()),
           _cachedEntry(NULL) {
         _indexNamespace = makeIndexNamespace(_parentNS, _indexName);
 
-        _version = 0;
-        BSONElement e = _infoObj["v"];
+        _version = IndexVersion::kV0;
+        BSONElement e = _infoObj[IndexDescriptor::kIndexVersionFieldName];
         if (e.isNumber()) {
-            _version = e.numberInt();
+            _version = static_cast<IndexVersion>(e.numberInt());
         }
     }
 
+
+    /**
+     * Returns true if the specified index version is supported, and returns false otherwise.
+     */
+    static bool isIndexVersionSupported(IndexVersion indexVersion);
+
+    /**
+     * Returns Status::OK() if indexes of version 'indexVersion' are allowed to be created, and
+     * returns ErrorCodes::CannotCreateIndex otherwise.
+     */
+    static Status isIndexVersionAllowedForCreation(
+        IndexVersion indexVersion,
+        ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion,
+        const BSONObj& indexSpec);
+
+    /**
+     * Returns the index version to use if it isn't specified in the index specification.
+     */
+    static IndexVersion getDefaultIndexVersion(
+        ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion);
 
     //
     // Information about the key pattern.
@@ -135,7 +182,7 @@ public:
     //
 
     // Return what version of index this is.
-    int version() const {
+    IndexVersion version() const {
         return _version;
     }
 
@@ -237,7 +284,7 @@ private:
     bool _sparse;
     bool _unique;
     bool _partial;
-    int _version;
+    IndexVersion _version;
 
     // only used by IndexCatalogEntryContainer to do caching for perf
     // users not allowed to touch, and not part of API

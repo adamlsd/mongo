@@ -406,7 +406,7 @@ __wt_cache_page_evict(WT_SESSION_IMPL *session, WT_PAGE *page)
 
 	/* Update pages and bytes evicted. */
 	(void)__wt_atomic_add64(&cache->bytes_evict, page->memory_footprint);
-	(void)__wt_atomic_add64(&cache->pages_evict, 1);
+	(void)__wt_atomic_addv64(&cache->pages_evict, 1);
 }
 
 /*
@@ -522,13 +522,21 @@ __wt_page_modify_set(WT_SESSION_IMPL *session, WT_PAGE *page)
 	 * might result in an extra checkpoint that doesn't do any work but it
 	 * shouldn't cause problems; regardless, let's play it safe.)
 	 */
-	if (S2BT(session)->modified == 0) {
+	if (!S2BT(session)->modified) {
 		/* Assert we never dirty a checkpoint handle. */
 		WT_ASSERT(session, session->dhandle->checkpoint == NULL);
 
-		S2BT(session)->modified = 1;
+		S2BT(session)->modified = true;
 		WT_FULL_BARRIER();
 	}
+
+	/*
+	 * There is a possibility of btree being dirty whereas connection being
+	 * clean when entering this function. So make sure to update connection
+	 * to dirty outside a condition on btree modified flag.
+	 */
+	if (!S2C(session)->modified)
+		S2C(session)->modified = true;
 
 	__wt_page_only_modify_set(session, page);
 }
@@ -1183,8 +1191,8 @@ __wt_leaf_page_can_split(WT_SESSION_IMPL *session, WT_PAGE *page)
 		    (WT_INSERT_KEY_SIZE(ins) + WT_UPDATE_MEMSIZE(ins->upd));
 		if (count > WT_MIN_SPLIT_COUNT &&
 		    size > (size_t)btree->maxleafpage) {
-			WT_STAT_FAST_CONN_INCR(session, cache_inmem_splittable);
-			WT_STAT_FAST_DATA_INCR(session, cache_inmem_splittable);
+			WT_STAT_CONN_INCR(session, cache_inmem_splittable);
+			WT_STAT_DATA_INCR(session, cache_inmem_splittable);
 			return (true);
 		}
 	}
@@ -1233,8 +1241,8 @@ __wt_page_can_evict(
 	 * been written in the checkpoint, leaving the checkpoint inconsistent.
 	 */
 	if (modified && btree->checkpointing != WT_CKPT_OFF) {
-		WT_STAT_FAST_CONN_INCR(session, cache_eviction_checkpoint);
-		WT_STAT_FAST_DATA_INCR(session, cache_eviction_checkpoint);
+		WT_STAT_CONN_INCR(session, cache_eviction_checkpoint);
+		WT_STAT_DATA_INCR(session, cache_eviction_checkpoint);
 		return (false);
 	}
 
@@ -1260,11 +1268,10 @@ __wt_page_can_evict(
 		return (false);
 
 	/*
-	 * If the page is clean but has modifications that
-	 * appear too new to evict, skip it.
+	 * If the page is clean but has modifications that appear too new to
+	 * evict, skip it.
 	 */
-	if (!modified && mod != NULL &&
-	    !__wt_txn_visible_all(session, mod->rec_max_txn))
+	if (!modified && !__wt_txn_visible_all(session, mod->rec_max_txn))
 		return (false);
 
 	return (true);
@@ -1412,7 +1419,7 @@ __wt_page_hazard_check(WT_SESSION_IMPL *session, WT_PAGE *page)
 	 * come or go, we'll check the slots for all of the sessions that could
 	 * have been active when we started our check.
 	 */
-	WT_STAT_FAST_CONN_INCR(session, cache_hazard_checks);
+	WT_STAT_CONN_INCR(session, cache_hazard_checks);
 	WT_ORDERED_READ(session_cnt, conn->session_cnt);
 	for (s = conn->sessions, i = 0, j = 0, max = 0;
 	    i < session_cnt; ++s, ++i) {
@@ -1421,19 +1428,19 @@ __wt_page_hazard_check(WT_SESSION_IMPL *session, WT_PAGE *page)
 		WT_ORDERED_READ(hazard_size, s->hazard_size);
 		if (s->hazard_size > max) {
 			max = s->hazard_size;
-			WT_STAT_FAST_CONN_SET(session,
+			WT_STAT_CONN_SET(session,
 			    cache_hazard_max, max);
 		}
 		for (hp = s->hazard; hp < s->hazard + hazard_size; ++hp) {
 			++j;
 			if (hp->page == page) {
-				WT_STAT_FAST_CONN_INCRV(session,
+				WT_STAT_CONN_INCRV(session,
 				    cache_hazard_walks, j);
 				return (hp);
 			}
 		}
 	}
-	WT_STAT_FAST_CONN_INCRV(session, cache_hazard_walks, j);
+	WT_STAT_CONN_INCRV(session, cache_hazard_walks, j);
 	return (NULL);
 }
 

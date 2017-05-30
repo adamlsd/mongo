@@ -67,13 +67,6 @@ const char* const MozJSImplScope::kInvokeResult = "__returnValue";
 namespace {
 
 /**
- * The maximum amount of memory to be given out per thread to mozilla. We
- * manage this by trapping all calls to malloc, free, etc. and keeping track of
- * counts in some thread locals
- */
-const size_t kMallocMemoryLimit = 1024ul * 1024 * 1024 * 1.1;
-
-/**
  * The threshold (as a fraction of the max) after which garbage collection will be run during
  * interrupts.
  */
@@ -251,7 +244,13 @@ void MozJSImplScope::_gcCallback(JSRuntime* rt, JSGCStatus status, void* data) {
 }
 
 MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
-    mongo::sm::reset(kMallocMemoryLimit);
+    /**
+     * The maximum amount of memory to be given out per thread to mozilla. We
+     * manage this by trapping all calls to malloc, free, etc. and keeping track of
+     * counts in some thread locals
+     */
+    size_t mallocMemoryLimit = 1024ul * 1024 * engine->getJSHeapLimitMB();
+    mongo::sm::reset(mallocMemoryLimit);
 
     // If this runtime isn't running on an NSPR thread, then it is
     // running on a mongo thread. In that case, we need to insert a
@@ -318,7 +317,7 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
         }
 
         // The memory limit is in megabytes
-        JS_SetGCParametersBasedOnAvailableMemory(_runtime, kMallocMemoryLimit / (1024 * 1024));
+        JS_SetGCParametersBasedOnAvailableMemory(_runtime, engine->getJSHeapLimitMB());
     }
 
     _context = JS_NewContext(_runtime, kStackChunkSize);
@@ -688,7 +687,7 @@ bool MozJSImplScope::exec(StringData code,
 
     JS::CompileOptions co(_context);
     setCompileOptions(&co);
-    co.setFile(name.c_str());
+    co.setFileAndLine(name.c_str(), 1);
     JS::RootedScript script(_context);
 
     bool success = JS::Compile(_context, co, code.rawData(), code.size(), &script);
@@ -780,8 +779,6 @@ void MozJSImplScope::externalSetup() {
     if (_connectState == ConnectState::Local)
         uasserted(12512, "localConnect already called, can't call externalSetup");
 
-    mongo::sm::reset(0);
-
     // install db access functions in the global object
     installDBAccess();
 
@@ -850,12 +847,18 @@ bool MozJSImplScope::_checkErrorState(bool success, bool reportError, bool asser
         if (JS_GetPendingException(_context, &excn) && excn.isObject()) {
             str::stream ss;
 
-            JS::RootedValue stack(_context);
+            auto stackStr = ObjectWrapper(_context, excn).getString(InternedString::stack);
+            auto fnameStr = ObjectWrapper(_context, excn).getString(InternedString::fileName);
+            auto lineNum = ObjectWrapper(_context, excn).getNumberInt(InternedString::lineNumber);
+            auto colNum = ObjectWrapper(_context, excn).getNumberInt(InternedString::columnNumber);
 
-            ObjectWrapper(_context, excn).getValue("stack", &stack);
-
-            ss << ValueWriter(_context, excn).toString() << " :\n"
-               << ValueWriter(_context, stack).toString();
+            if (fnameStr != "") {
+                ss << "[" << fnameStr << ":" << lineNum << ":" << colNum << "] ";
+            }
+            ss << ValueWriter(_context, excn).toString();
+            if (stackStr != "") {
+                ss << "\nStack trace:\n" << stackStr << "----------\n";
+            }
             _status = Status(ErrorCodes::JSInterpreterFailure, ss);
         } else {
             _status = Status(ErrorCodes::UnknownError, "Unknown Failure from JSInterpreter");

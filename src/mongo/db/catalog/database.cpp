@@ -56,6 +56,7 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d.h"
@@ -321,7 +322,8 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
     list<string> collections;
     _dbEntry->getCollectionNamespaces(&collections);
 
-    long long ncollections = 0;
+    long long nCollections = 0;
+    long long nViews = 0;
     long long objects = 0;
     long long size = 0;
     long long storageSize = 0;
@@ -336,7 +338,7 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
         if (!collection)
             continue;
 
-        ncollections += 1;
+        nCollections += 1;
         objects += collection->numRecords(opCtx);
         size += collection->dataSize(opCtx);
 
@@ -348,7 +350,10 @@ void Database::getStats(OperationContext* opCtx, BSONObjBuilder* output, double 
         indexSize += collection->getIndexSize(opCtx);
     }
 
-    output->appendNumber("collections", ncollections);
+    getViewCatalog()->iterate(opCtx, [&](const ViewDefinition& view) { nViews += 1; });
+
+    output->appendNumber("collections", nCollections);
+    output->appendNumber("views", nViews);
     output->appendNumber("objects", objects);
     output->append("avgObjSize", objects == 0 ? 0 : double(size) / double(objects));
     output->appendNumber("dataSize", size / scale);
@@ -388,8 +393,8 @@ Status Database::dropCollection(OperationContext* txn, StringData fullns) {
                     return Status(ErrorCodes::IllegalOperation,
                                   "turn off profiling before dropping system.profile collection");
             } else if (nss.isSystemDotViews()) {
-                if (serverGlobalParams.featureCompatibilityVersion.load() !=
-                    ServerGlobalParams::FeatureCompatibilityVersion_32) {
+                if (serverGlobalParams.featureCompatibility.version.load() !=
+                    ServerGlobalParams::FeatureCompatibility::Version::k32) {
                     return Status(ErrorCodes::IllegalOperation,
                                   "The featureCompatibilityVersion must be 3.2 to drop the "
                                   "system.views collection. See "
@@ -576,8 +581,19 @@ Collection* Database::createCollection(OperationContext* txn,
         if (collection->requiresIdIndex()) {
             if (options.autoIndexId == CollectionOptions::YES ||
                 options.autoIndexId == CollectionOptions::DEFAULT) {
+                // The creation of the _id index isn't replicated and is instead implicit in the
+                // creation of the collection. This means that the version of the _id index to build
+                // is technically unspecified. However, we're able to use the
+                // featureCompatibilityVersion of this server to determine the default index version
+                // to use because we apply commands (opType == 'c') in their own batch. This
+                // guarantees the write to the admin.system.version collection from the
+                // "setFeatureCompatibilityVersion" command either happens entirely before the
+                // collection creation or it happens entirely after.
+                const auto featureCompatibilityVersion =
+                    serverGlobalParams.featureCompatibility.version.load();
                 IndexCatalog* ic = collection->getIndexCatalog();
-                uassertStatusOK(ic->createIndexOnEmptyCollection(txn, ic->getDefaultIdIndexSpec()));
+                uassertStatusOK(ic->createIndexOnEmptyCollection(
+                    txn, ic->getDefaultIdIndexSpec(featureCompatibilityVersion)));
             }
         }
 

@@ -36,6 +36,7 @@
 #include "mongo/bson/oid.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/s/active_migrations_registry.h"
 #include "mongo/db/s/migration_session_id.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/stdx/condition_variable.h"
@@ -87,7 +88,8 @@ public:
     /**
      * Returns OK if migration started successfully.
      */
-    Status start(const std::string& ns,
+    Status start(const NamespaceString& nss,
+                 ScopedRegisterReceiveChunk scopedRegisterReceiveChunk,
                  const MigrationSessionId& sessionId,
                  const ConnectionString& fromShardConnString,
                  const ShardId& fromShard,
@@ -98,7 +100,18 @@ public:
                  const OID& epoch,
                  const WriteConcernOptions& writeConcern);
 
-    void abort();
+    /**
+     * Idempotent method, which causes the current ongoing migration to abort only if it has the
+     * specified session id, otherwise returns false. If the migration is already aborted, does
+     * nothing.
+     */
+    bool abort(const MigrationSessionId& sessionId);
+
+    /**
+     * Same as 'abort' above, but unconditionally aborts the current migration without checking the
+     * session id. Only used for backwards compatibility.
+     */
+    void abortWithoutSessionIdCheck();
 
     bool startCommit(const MigrationSessionId& sessionId);
 
@@ -106,9 +119,7 @@ private:
     /**
      * Thread which drives the migration apply process on the recipient side.
      */
-    void _migrateThread(std::string ns,
-                        MigrationSessionId sessionId,
-                        BSONObj min,
+    void _migrateThread(BSONObj min,
                         BSONObj max,
                         BSONObj shardKeyPattern,
                         ConnectionString fromShardConnString,
@@ -116,8 +127,6 @@ private:
                         WriteConcernOptions writeConcern);
 
     void _migrateDriver(OperationContext* txn,
-                        const std::string& ns,
-                        const MigrationSessionId& sessionId,
                         const BSONObj& min,
                         const BSONObj& max,
                         const BSONObj& shardKeyPattern,
@@ -185,7 +194,9 @@ private:
 
     // Migration session ID uniquely identifies the migration and indicates whether the prepare
     // method has been called.
-    boost::optional<MigrationSessionId> _sessionId{boost::none};
+    boost::optional<MigrationSessionId> _sessionId;
+    boost::optional<ScopedRegisterReceiveChunk> _scopedRegisterReceiveChunk;
+
     // A condition variable on which to wait for the prepare method to be called.
     stdx::condition_variable _isActiveCV;
 

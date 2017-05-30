@@ -30,6 +30,8 @@
 
 #include "mongo/db/catalog/collection_options.h"
 
+#include <limits>
+
 #include "mongo/db/json.h"
 #include "mongo/unittest/unittest.h"
 
@@ -90,10 +92,27 @@ TEST(CollectionOptions, Validator) {
 TEST(CollectionOptions, ErrorBadSize) {
     ASSERT_NOT_OK(CollectionOptions().parse(fromjson("{capped: true, size: -1}")));
     ASSERT_NOT_OK(CollectionOptions().parse(fromjson("{capped: false, size: -1}")));
+    ASSERT_NOT_OK(CollectionOptions().parse(
+        BSON("capped" << true << "size" << std::numeric_limits<long long>::min())));
+    ASSERT_NOT_OK(CollectionOptions().parse(BSON("capped" << true << "size" << (1LL << 62))));
+    ASSERT_NOT_OK(CollectionOptions().parse(
+        BSON("capped" << true << "size" << std::numeric_limits<long long>::max())));
 }
 
 TEST(CollectionOptions, ErrorBadMax) {
     ASSERT_NOT_OK(CollectionOptions().parse(BSON("capped" << true << "max" << (1LL << 31))));
+}
+
+TEST(CollectionOptions, CappedSizeRoundsUpForAlignment) {
+    const long long kUnalignedCappedSize = 1000;
+    const long long kAlignedCappedSize = 1024;
+    CollectionOptions options;
+
+    // Check size rounds up to multiple of alignment.
+    ASSERT_OK(options.parse(BSON("capped" << true << "size" << kUnalignedCappedSize)));
+    ASSERT_EQUALS(options.capped, true);
+    ASSERT_EQUALS(options.cappedSize, kAlignedCappedSize);
+    ASSERT_EQUALS(options.cappedMaxDocs, 0);
 }
 
 TEST(CollectionOptions, IgnoreSizeWrongType) {
@@ -111,13 +130,6 @@ TEST(CollectionOptions, IgnoreMaxWrongType) {
     ASSERT_EQUALS(options.cappedMaxDocs, 0);
 }
 
-TEST(CollectionOptions, IgnoreUnregisteredFields) {
-    ASSERT_OK(CollectionOptions().parse(BSON("create"
-                                             << "c")));
-    ASSERT_OK(CollectionOptions().parse(BSON("foo"
-                                             << "bar")));
-}
-
 TEST(CollectionOptions, InvalidStorageEngineField) {
     // "storageEngine" field has to be an object if present.
     ASSERT_NOT_OK(CollectionOptions().parse(fromjson("{storageEngine: 1}")));
@@ -132,13 +144,10 @@ TEST(CollectionOptions, InvalidStorageEngineField) {
 TEST(CollectionOptions, ParseEngineField) {
     CollectionOptions opts;
     ASSERT_OK(opts.parse(
-        fromjson("{unknownField: 1, "
-                 "storageEngine: {storageEngine1: {x: 1, y: 2}, storageEngine2: {a: 1, b:2}}}")));
+        fromjson("{storageEngine: {storageEngine1: {x: 1, y: 2}, storageEngine2: {a: 1, b:2}}}")));
     checkRoundTrip(opts);
 
-    // Unrecognized field should not be present in BSON representation.
     BSONObj obj = opts.toBSON();
-    ASSERT_FALSE(obj.hasField("unknownField"));
 
     // Check "storageEngine" field.
     ASSERT_TRUE(obj.hasField("storageEngine"));
@@ -253,4 +262,11 @@ TEST(CollectionOptions, PipelineFieldRequiresViewOn) {
     CollectionOptions options;
     ASSERT_NOT_OK(options.parse(fromjson("{pipeline: [{$match: {}}]}")));
 }
+
+TEST(CollectionOptions, UnknownTopLevelOptionFailsToParse) {
+    CollectionOptions options;
+    auto status = options.parse(fromjson("{invalidOption: 1}"));
+    ASSERT_NOT_OK(status);
+    ASSERT_EQ(status.code(), ErrorCodes::InvalidOptions);
 }
+}  // namespace mongo

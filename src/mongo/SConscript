@@ -69,6 +69,7 @@ baseSource=[
     'base/status.cpp',
     'base/string_data.cpp',
     'base/validate_locale.cpp',
+    'bson/bson_comparator_interface_base.cpp',
     'bson/bson_validate.cpp',
     'bson/bsonelement.cpp',
     'bson/bsonmisc.cpp',
@@ -127,6 +128,7 @@ baseLibDeps=[
     '$BUILD_DIR/third_party/shim_pcrecpp',
     '$BUILD_DIR/third_party/shim_intel_decimal128',
     '$BUILD_DIR/third_party/shim_tz',
+    'logger/max_log_size',
     'util/debugger',
     'util/quick_exit',
 ]
@@ -249,21 +251,23 @@ generateConfigHeaderFile = env.Substfile(
 env.Alias('generated-sources', generateConfigHeaderFile)
 
 mongodLibDeps = [
-    "db/commands/core",
-    "db/conn_pool_options",
-    "db/mongod_options",
-    "db/mongodandmongos",
-    "db/mongodwebserver",
-    "db/serveronly",
-    "db/repl/replset_commands",
-    "db/repl/storage_interface_impl",
-    "executor/network_interface_factory",
+    'db/commands/core',
+    'db/conn_pool_options',
+    'db/mongod_options',
+    'db/mongodandmongos',
+    'db/mongodwebserver',
+    'db/repl/replset_commands',
+    'db/repl/storage_interface_impl',
+    'db/s/balancer',
+    'db/serveronly',
+    'executor/network_interface_factory',
     's/commands/shared_cluster_commands',
-    "transport/transport_layer_legacy",
-    "transport/service_entry_point_utils",
-    "util/clock_sources",
-    "util/ntservice",
-    "util/version_impl",
+    'transport/service_entry_point_utils',
+    'transport/transport_layer_legacy',
+    'util/clock_sources',
+    'util/fail_point',
+    'util/ntservice',
+    'util/version_impl',
 ]
 
 if has_option('use-cpu-profiler'):
@@ -322,6 +326,7 @@ env.Install(
             'transport/service_entry_point_utils',
             'transport/transport_layer_legacy',
             'util/clock_sources',
+            'util/fail_point',
             'util/ntservice',
             'util/options_parser/options_parser_init',
             'util/version_impl',
@@ -331,23 +336,6 @@ env.Library("linenoise_utf8",
     source=[
         "shell/linenoise_utf8.cpp",
     ])
-
-# --- sniffer ---
-mongosniff_built = False
-if env.TargetOSIs('osx') or env["_HAVEPCAP"]:
-    mongosniff_built = True
-    sniffEnv = env.Clone()
-    sniffEnv.Append( CPPDEFINES="MONGO_EXPOSE_MACROS" )
-
-    if not env.TargetOSIs('windows'):
-        sniffEnv.Append( LIBS=[ "pcap" ] )
-    else:
-        sniffEnv.Append( LIBS=[ "wpcap" ] )
-
-    sniffEnv.Install( '#/', sniffEnv.Program( "mongosniff", "tools/sniffer.cpp",
-                                              LIBDEPS = [
-                                                 "db/serveronly",
-                                              ] ) )
 
 # --- shell ---
 
@@ -482,16 +470,14 @@ if has_option("use-new-tools"):
     toolsRoot = "src/mongo-tools"
     for t in rewrittenTools:
         installExternalBinary(env, "%s/%s" % (toolsRoot, t))
+    if has_option("build-mongoreplay") and get_option("build-mongoreplay") == "true":
+        installExternalBinary(env, "%s/%s" % (toolsRoot, "mongoreplay"))
 
 # legacy tools
 installBinary(env, "mongoperf")
 env.Alias("tools", '#/' + add_exe("mongoperf"))
 
 env.Alias("tools", "#/" + add_exe("mongobridge"))
-
-if mongosniff_built:
-    installBinary(env, "mongosniff")
-    env.Alias("tools", '#/' + add_exe("mongosniff"))
 
 installBinary( env, "mongod" )
 installBinary( env, "mongos" )

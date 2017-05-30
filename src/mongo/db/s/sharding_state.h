@@ -29,7 +29,6 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
@@ -43,6 +42,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 #include "mongo/util/concurrency/ticketholder.h"
 #include "mongo/util/time_support.h"
 
@@ -115,7 +115,9 @@ public:
      * Note that this will also try to connect to the config servers and will block until it
      * succeeds.
      */
-    void initializeFromConfigConnString(OperationContext* txn, const std::string& configSvr);
+    void initializeFromConfigConnString(OperationContext* txn,
+                                        const std::string& configSvr,
+                                        const std::string shardName);
 
     /**
      * Initializes the sharding state of this server from the shard identity document argument.
@@ -133,18 +135,6 @@ public:
      * ConfigServerMetadata decoration attached to the OperationContext.
      */
     Status updateConfigServerOpTimeFromMetadata(OperationContext* txn);
-
-    /**
-     * Assigns a shard name to this MongoD instance.
-     * TODO: The only reason we need this method and cannot merge it together with the initialize
-     * call is the setShardVersion request being sent by the config coordinator to the config server
-     * instances. This is the only command, which does not include shard name and once we get rid of
-     * the legacy style config servers, we can merge these methods.
-     *
-     * Throws an error if shard name has always been set and the newly specified value does not
-     * match what was previously installed.
-     */
-    void setShardName(const std::string& shardName);
 
     CollectionShardingState* getNS(const std::string& ns, OperationContext* txn);
 
@@ -185,7 +175,7 @@ public:
      * @return latestShardVersion the version that is now stored for this collection
      */
     Status refreshMetadataNow(OperationContext* txn,
-                              const std::string& ns,
+                              const NamespaceString& nss,
                               ChunkVersion* latestShardVersion);
 
     void appendInfo(OperationContext* txn, BSONObjBuilder& b);
@@ -203,24 +193,35 @@ public:
 
     /**
      * If there are no migrations running on this shard, registers an active migration with the
-     * specified arguments and returns a ScopedRegisterMigration, which must be signaled by the
+     * specified arguments and returns a ScopedRegisterDonateChunk, which must be signaled by the
      * caller before it goes out of scope.
      *
      * If there is an active migration already running on this shard and it has the exact same
-     * arguments, returns a ScopedRegisterMigration, which can be used to join the existing one.
+     * arguments, returns a ScopedRegisterDonateChunk, which can be used to join the existing one.
      *
      * Othwerwise returns a ConflictingOperationInProgress error.
      */
-    StatusWith<ScopedRegisterMigration> registerMigration(const MoveChunkRequest& args);
+    StatusWith<ScopedRegisterDonateChunk> registerDonateChunk(const MoveChunkRequest& args);
 
     /**
-     * If a migration has been previously registered through a call to registerMigration returns
+     * If there are no migrations running on this shard, registers an active receive operation with
+     * the specified session id and returns a ScopedRegisterReceiveChunk, which will unregister it
+     * when it goes out of scope.
+     *
+     * Otherwise returns a ConflictingOperationInProgress error.
+     */
+    StatusWith<ScopedRegisterReceiveChunk> registerReceiveChunk(const NamespaceString& nss,
+                                                                const ChunkRange& chunkRange,
+                                                                const ShardId& fromShardId);
+
+    /**
+     * If a migration has been previously registered through a call to registerDonateChunk returns
      * that namespace. Otherwise returns boost::none.
      *
      * This method can be called without any locks, but once the namespace is fetched it needs to be
      * re-checked after acquiring some intent lock on that namespace.
      */
-    boost::optional<NamespaceString> getActiveMigrationNss();
+    boost::optional<NamespaceString> getActiveDonateChunkNss();
 
     /**
      * Get a migration status report from the migration registry. If no migration is active, this
@@ -259,8 +260,13 @@ public:
      * on disk, if there is one.
      * If started with --shardsvr in queryableBackupMode, initializes sharding awareness from the
      * shardIdentity document passed through the --overrideShardIdentity startup parameter.
+     *
+     * If returns true, the ShardingState::_globalInit method was called, meaning all the core
+     * classes for sharding were initialized, but no networking calls were made yet (with the
+     * exception of the duplicate ShardRegistry reload in ShardRegistry::startup() (see
+     * SERVER-26123). Outgoing networking calls to cluster members can now be made.
      */
-    Status initializeShardingAwarenessIfNeeded(OperationContext* txn);
+    StatusWith<bool> initializeShardingAwarenessIfNeeded(OperationContext* txn);
 
     /**
      * Check if a command is one of the whitelisted commands that can be accepted with shardVersion
@@ -273,10 +279,8 @@ public:
     }
 
 private:
-    friend class ScopedRegisterMigration;
-
     // Map from a namespace into the sharding state for each collection we have
-    typedef std::unordered_map<std::string, std::unique_ptr<CollectionShardingState>>
+    typedef stdx::unordered_map<std::string, std::unique_ptr<CollectionShardingState>>
         CollectionShardingStateMap;
 
     // Progress of the sharding state initialization
@@ -311,8 +315,9 @@ private:
      * terminated.
      *
      * @param configSvr Connection string of the config server to use.
+     * @param shardName the name of the shard in config.shards
      */
-    void _initializeImpl(ConnectionString configSvr);
+    void _initializeImpl(ConnectionString configSvr, std::string shardName);
 
     /**
      * Must be called only when the current state is kInitializing. Sets the current state to

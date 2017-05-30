@@ -62,7 +62,7 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/platform/process_id.h"
-#include "mongo/s/balancer/balancer_configuration.h"
+#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/client/shard_connection.h"
@@ -284,10 +284,6 @@ static ExitCode runMongosServer() {
         Grid::get(opCtx.get())->getBalancerConfiguration()->refreshAndCheck(opCtx.get());
     }
 
-#if !defined(_WIN32)
-    mongo::signalForkSuccess();
-#endif
-
     if (serverGlobalParams.isHttpInterfaceEnabled) {
         std::shared_ptr<DbWebServer> dbWebServer(new DbWebServer(serverGlobalParams.bind_ip,
                                                                  serverGlobalParams.port + 1000,
@@ -325,6 +321,10 @@ static ExitCode runMongosServer() {
         return EXIT_NET_ERROR;
     }
 
+#if !defined(_WIN32)
+    mongo::signalForkSuccess();
+#endif
+
     // Block until shutdown.
     return waitForShutdown();
 }
@@ -339,8 +339,8 @@ MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 // BSONVersion::kLatest.
 MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion34, ("EndStartupOptionStorage"))
 (InitializerContext* context) {
-    mongo::serverGlobalParams.featureCompatibilityVersion.store(
-        ServerGlobalParams::FeatureCompatibilityVersion_34);
+    mongo::serverGlobalParams.featureCompatibility.version.store(
+        ServerGlobalParams::FeatureCompatibility::Version::k34);
     return Status::OK();
 }
 

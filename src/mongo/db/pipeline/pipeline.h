@@ -59,6 +59,10 @@ public:
      * Parses a Pipeline from a BSONElement representing a list of DocumentSources. Returns a non-OK
      * status if it failed to parse. The returned pipeline is not optimized, but the caller may
      * convert it to an optimized pipeline by calling optimizePipeline().
+     *
+     * It is illegal to create a pipeline using an ExpressionContext which contains a collation that
+     * will not be used during execution of the pipeline. Doing so may cause comparisons made during
+     * parse-time to return the wrong results.
      */
     static StatusWith<boost::intrusive_ptr<Pipeline>> parse(
         const std::vector<BSONObj>& rawPipeline,
@@ -186,14 +190,12 @@ public:
 private:
     class Optimizations {
     public:
-        // These contain static functions that optimize pipelines in various ways.
-        // They are classes rather than namespaces so that they can be friends of Pipeline.
-        // Classes are defined in pipeline_optimizations.h.
-        class Local;
+        // This contains static functions that optimize pipelines in various ways.
+        // This is a class rather than a namespace so that it can be a friend of Pipeline.
+        // It is defined in pipeline_optimizations.h.
         class Sharded;
     };
 
-    friend class Optimizations::Local;
     friend class Optimizations::Sharded;
 
     Pipeline(const boost::intrusive_ptr<ExpressionContext>& pCtx);

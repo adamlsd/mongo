@@ -57,5 +57,24 @@ TEST_F(DocumentSourceRedactTest, ShouldCopyRedactSafePartOfMatchBeforeItself) {
     ASSERT_EQUALS(pipeline.size(), 3U);
     ASSERT(dynamic_cast<DocumentSourceMatch*>(pipeline.front().get()));
 }
+
+TEST_F(DocumentSourceRedactTest, ShouldPropagatePauses) {
+    auto redactSpec = BSON("$redact"
+                           << "$$KEEP");
+    auto redact = DocumentSourceRedact::createFromBson(redactSpec.firstElement(), getExpCtx());
+    auto mock = DocumentSourceMock::create({Document{{"_id", 0}},
+                                            DocumentSource::GetNextResult::makePauseExecution(),
+                                            Document{{"_id", 1}},
+                                            DocumentSource::GetNextResult::makePauseExecution()});
+    redact->setSource(mock.get());
+
+    // The $redact is keeping everything, so we should see everything from the mock, then EOF.
+    ASSERT_TRUE(redact->getNext().isAdvanced());
+    ASSERT_TRUE(redact->getNext().isPaused());
+    ASSERT_TRUE(redact->getNext().isAdvanced());
+    ASSERT_TRUE(redact->getNext().isPaused());
+    ASSERT_TRUE(redact->getNext().isEOF());
+    ASSERT_TRUE(redact->getNext().isEOF());
+}
 }  // namespace
 }  // namespace mongo

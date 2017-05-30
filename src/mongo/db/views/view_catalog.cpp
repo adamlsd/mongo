@@ -37,6 +37,7 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
+#include "mongo/bson/util/builder.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/aggregation_request.h"
@@ -48,6 +49,7 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/db/views/view.h"
+#include "mongo/db/views/view_graph.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -156,11 +158,11 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
         // Parse the pipeline for this view to get the namespaces it references.
         AggregationRequest request(viewDef.viewOn(), viewDef.pipeline());
         boost::intrusive_ptr<ExpressionContext> expCtx = new ExpressionContext(txn, request);
+        expCtx->setCollator(CollatorInterface::cloneCollator(viewDef.defaultCollator()));
         auto pipelineStatus = Pipeline::parse(viewDef.pipeline(), expCtx);
         if (!pipelineStatus.isOK()) {
             uassert(40255,
-                    str::stream() << "Invalid pipeline for existing view " << viewDef.name().ns()
-                                  << "; "
+                    str::stream() << "Invalid pipeline for view " << viewDef.name().ns() << "; "
                                   << pipelineStatus.getStatus().reason(),
                     !needsValidation);
             return pipelineStatus.getStatus();
@@ -169,15 +171,20 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
         std::vector<NamespaceString> refs = pipelineStatus.getValue()->getInvolvedCollections();
         refs.push_back(viewDef.viewOn());
 
+        int pipelineSize = 0;
+        for (auto obj : viewDef.pipeline()) {
+            pipelineSize += obj.objsize();
+        }
+
         if (needsValidation) {
             // Check the collation of all the dependent namespaces before updating the graph.
             auto collationStatus = _validateCollation_inlock(txn, viewDef, refs);
             if (!collationStatus.isOK()) {
                 return collationStatus;
             }
-            return _viewGraph.insertAndValidate(viewDef.name(), refs);
+            return _viewGraph.insertAndValidate(viewDef.name(), refs, pipelineSize);
         } else {
-            _viewGraph.insertWithoutValidating(viewDef.name(), refs);
+            _viewGraph.insertWithoutValidating(viewDef.name(), refs, pipelineSize);
             return Status::OK();
         }
     };
@@ -192,6 +199,7 @@ Status ViewCatalog::_upsertIntoGraph(OperationContext* txn, const ViewDefinition
             }
         }
         // Only if the inserts completed without error will we no longer need a refresh.
+        txn->recoveryUnit()->onRollback([this]() { this->_viewGraphNeedsRefresh = true; });
         _viewGraphNeedsRefresh = false;
     }
 
@@ -226,8 +234,8 @@ Status ViewCatalog::createView(OperationContext* txn,
                                const BSONObj& collation) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
-    if (serverGlobalParams.featureCompatibilityVersion.load() ==
-        ServerGlobalParams::FeatureCompatibilityVersion_32) {
+    if (serverGlobalParams.featureCompatibility.version.load() ==
+        ServerGlobalParams::FeatureCompatibility::Version::k32) {
         return Status(ErrorCodes::CommandNotSupported,
                       "Cannot create view when the featureCompatibilityVersion is 3.2. See "
                       "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
@@ -244,6 +252,11 @@ Status ViewCatalog::createView(OperationContext* txn,
         return Status(ErrorCodes::InvalidNamespace,
                       str::stream() << "invalid name for 'viewOn': " << viewOn.coll());
 
+    if (viewName.isSystem())
+        return Status(
+            ErrorCodes::InvalidNamespace,
+            "View name cannot start with 'system.', which is reserved for system namespaces");
+
     auto collator = parseCollator(txn, collation);
     if (!collator.isOK())
         return collator.getStatus();
@@ -258,8 +271,8 @@ Status ViewCatalog::modifyView(OperationContext* txn,
                                const BSONArray& pipeline) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
-    if (serverGlobalParams.featureCompatibilityVersion.load() ==
-        ServerGlobalParams::FeatureCompatibilityVersion_32) {
+    if (serverGlobalParams.featureCompatibility.version.load() ==
+        ServerGlobalParams::FeatureCompatibility::Version::k32) {
         return Status(ErrorCodes::CommandNotSupported,
                       "Cannot modify view when the featureCompatibilityVersion is 3.2. See "
                       "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
@@ -354,8 +367,19 @@ StatusWith<ResolvedView> ViewCatalog::resolveView(OperationContext* txn,
 
     for (int i = 0; i < ViewGraph::kMaxViewDepth; i++) {
         auto view = _lookup_inlock(txn, resolvedNss->ns());
-        if (!view)
+        if (!view) {
+            // Return error status if pipeline is too large.
+            int pipelineSize = 0;
+            for (auto obj : resolvedPipeline) {
+                pipelineSize += obj.objsize();
+            }
+            if (pipelineSize > ViewGraph::kMaxViewPipelineSizeBytes) {
+                return {ErrorCodes::ViewPipelineMaxSizeExceeded,
+                        str::stream() << "View pipeline exceeds maximum size; maximum size is "
+                                      << ViewGraph::kMaxViewPipelineSizeBytes};
+            }
             return StatusWith<ResolvedView>({*resolvedNss, resolvedPipeline});
+        }
 
         resolvedNss = &(view->viewOn());
 

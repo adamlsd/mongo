@@ -19,7 +19,7 @@ var config = {
     ]
 };
 var r = replTest.initiate(config);
-replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY, 60 * 1000);
+replTest.waitForState(replTest.nodes[0], ReplSetTest.State.PRIMARY);
 // Make sure we have a master
 var master = replTest.getPrimary();
 var a_conn = conns[0];
@@ -58,7 +58,7 @@ var work = function() {
         else
             sleep(1);
     }
-    print("finshing loadgen");
+    print("finishing loadgen");
 };
 // insert enough that resync node has to go through oplog replay in each step
 var loadGen = startParallelShell(work, replTest.ports[0]);
@@ -89,18 +89,10 @@ assert.soon(function() {
 print("waiting for load generation to finish");
 loadGen();
 
-// load must stop before we await replication.
-replTest.awaitReplication(240 * 1000);
+// Make sure oplogs & dbHashes match
+replTest.checkOplogs(testName);
+replTest.checkReplicatedDataHashes(testName);
 
-// Make sure oplogs match
-try {
-    replTest.ensureOplogsMatch();
-} catch (e) {
-    var aDBHash = A.runCommand("dbhash");
-    var bDBHash = B.runCommand("dbhash");
-    assert.eq(
-        aDBHash.md5, bDBHash.md5, "hashes differ: " + tojson(aDBHash) + " to " + tojson(bDBHash));
-}
 replTest.stopSet();
 
 print("*****test done******");

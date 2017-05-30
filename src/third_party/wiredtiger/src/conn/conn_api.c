@@ -919,7 +919,7 @@ __conn_load_extensions(
 	    WT_CONFIG_BASE(session, WT_CONNECTION_load_extension), NULL, NULL };
 
 	WT_ERR(__wt_config_gets(session, cfg, "extensions", &cval));
-	WT_ERR(__wt_config_subinit(session, &subconfig, &cval));
+	__wt_config_subinit(session, &subconfig, &cval);
 	while ((ret = __wt_config_next(&subconfig, &skey, &sval)) == 0) {
 		if (expath == NULL)
 			WT_ERR(__wt_scr_alloc(session, 0, &expath));
@@ -1020,7 +1020,7 @@ err:	/*
 		}
 
 	/* Release all named snapshots. */
-	WT_TRET(__wt_txn_named_snapshot_destroy(session));
+	__wt_txn_named_snapshot_destroy(session);
 
 	/* Close open, external sessions. */
 	for (s = conn->sessions, i = 0; i < conn->session_cnt; ++s, ++i)
@@ -1055,13 +1055,16 @@ __conn_reconfigure(WT_CONNECTION *wt_conn, const char *config)
 	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
 	const char *p;
+	bool locked;
 
 	conn = (WT_CONNECTION_IMPL *)wt_conn;
+	locked = false;
 
 	CONNECTION_API_CALL(conn, session, reconfigure, config, cfg);
 
 	/* Serialize reconfiguration. */
 	__wt_spin_lock(session, &conn->reconfig_lock);
+	locked = true;
 
 	/*
 	 * The configuration argument has been checked for validity, update the
@@ -1096,7 +1099,8 @@ __conn_reconfigure(WT_CONNECTION *wt_conn, const char *config)
 	__wt_free(session, conn->cfg);
 	conn->cfg = p;
 
-err:	__wt_spin_unlock(session, &conn->reconfig_lock);
+err:	if (locked)
+		__wt_spin_unlock(session, &conn->reconfig_lock);
 
 	API_END_RET(session, ret);
 }
@@ -1117,11 +1121,11 @@ __conn_open_session(WT_CONNECTION *wt_conn,
 	*wt_sessionp = NULL;
 
 	conn = (WT_CONNECTION_IMPL *)wt_conn;
-	session_ret = NULL;
 
 	CONNECTION_API_CALL(conn, session, open_session, config, cfg);
 	WT_UNUSED(cfg);
 
+	session_ret = NULL;
 	WT_ERR(__wt_open_session(
 	    conn, event_handler, config, true, &session_ret));
 	*wt_sessionp = &session_ret->iface;
@@ -1657,7 +1661,7 @@ __conn_statistics_config(WT_SESSION_IMPL *session, const char *cfg[])
 	set = 0;
 	if ((ret = __wt_config_subgets(
 	    session, &cval, "none", &sval)) == 0 && sval.val != 0) {
-		LF_SET(WT_CONN_STAT_NONE);
+		flags = 0;
 		++set;
 	}
 	WT_RET_NOTFOUND_OK(ret);
@@ -1677,8 +1681,13 @@ __conn_statistics_config(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_RET_NOTFOUND_OK(ret);
 
 	if ((ret = __wt_config_subgets(
-	    session, &cval, "clear", &sval)) == 0 && sval.val != 0)
+	    session, &cval, "clear", &sval)) == 0 && sval.val != 0) {
+		if (!LF_ISSET(WT_CONN_STAT_FAST | WT_CONN_STAT_ALL))
+			WT_RET_MSG(session, EINVAL,
+			    "the value \"clear\" can be specified only if "
+			    "either \"all\" or \"fast\" is specified");
 		LF_SET(WT_CONN_STAT_CLEAR);
+	}
 	WT_RET_NOTFOUND_OK(ret);
 
 	if (set > 1)
@@ -1854,7 +1863,7 @@ __conn_write_base_config(WT_SESSION_IMPL *session, const char *cfg[])
 	    "readonly=,"
 	    "use_environment_priv=,"
 	    "verbose=,", &base_config));
-	WT_ERR(__wt_config_init(session, &parser, base_config));
+	__wt_config_init(session, &parser, base_config);
 	while ((ret = __wt_config_next(&parser, &k, &v)) == 0) {
 		/* Fix quoting for non-trivial settings. */
 		if (v.type == WT_CONFIG_ITEM_STRING) {
@@ -2009,7 +2018,7 @@ wiredtiger_open(const char *home, WT_EVENT_HANDLER *event_handler,
 	session->name = "wiredtiger_open";
 
 	/* Do standard I/O and error handling first. */
-	WT_ERR(__wt_os_stdio(session));
+	__wt_os_stdio(session);
 	__wt_event_handler_set(session, event_handler);
 
 	/*

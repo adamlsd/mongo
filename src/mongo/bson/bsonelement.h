@@ -542,15 +542,6 @@ public:
         return DeferredComparison(DeferredComparison::Type::kNE, *this, other);
     }
 
-    /**
-     * Functor compatible with std::hash for std::unordered_{map,set}
-     * Warning: The hash function is subject to change. Do not use in cases where hashes need
-     *          to be consistent across versions.
-     */
-    struct Hasher {
-        size_t operator()(const BSONElement& elem) const;
-    };
-
     const char* rawdata() const {
         return data;
     }
@@ -844,7 +835,4 @@ inline BSONElement::BSONElement() {
     fieldNameSize_ = 0;
     totalSize = 1;
 }
-
-// TODO(SERVER-14596): move to a better place; take a StringData.
-std::string escape(const std::string& s, bool escape_slash = false);
 }

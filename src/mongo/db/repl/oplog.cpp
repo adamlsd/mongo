@@ -249,26 +249,6 @@ Collection* getLocalOplogCollection(OperationContext* opCtx,
     return _localOplogCollection;
 }
 
-bool oplogDisabled(OperationContext* opCtx,
-                   ReplicationCoordinator::Mode replicationMode,
-                   const NamespaceString& nss) {
-    if (replicationMode == ReplicationCoordinator::modeNone)
-        return true;
-
-    if (nss.db() == "local")
-        return true;
-
-    if (nss.isSystemDotProfile())
-        return true;
-
-    if (!opCtx->writesAreReplicated())
-        return true;
-
-    fassert(28626, opCtx->recoveryUnit());
-
-    return false;
-}
-
 OplogDocWriter _logOpWriter(OperationContext* opCtx,
                             const char* opstr,
                             const NamespaceString& nss,
@@ -390,28 +370,29 @@ void _logOpsInner(OperationContext* opCtx,
     });
 }
 
-void logOp(OperationContext* opCtx,
-           const char* opstr,
-           const NamespaceString& nss,
-           OptionalCollectionUUID uuid,
-           const BSONObj& obj,
-           const BSONObj* o2,
-           bool fromMigrate) {
-    ReplicationCoordinator::Mode replMode =
-        ReplicationCoordinator::get(opCtx)->getReplicationMode();
-    if (oplogDisabled(opCtx, replMode, nss))
-        return;
+OpTime logOp(OperationContext* opCtx,
+             const char* opstr,
+             const NamespaceString& nss,
+             OptionalCollectionUUID uuid,
+             const BSONObj& obj,
+             const BSONObj* o2,
+             bool fromMigrate) {
+    auto replCoord = ReplicationCoordinator::get(opCtx);
+    if (replCoord->isOplogDisabledFor(opCtx, nss)) {
+        return {};
+    }
 
-    ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
     Collection* oplog = getLocalOplogCollection(opCtx, _oplogCollectionName);
     Lock::DBLock lk(opCtx, "local", MODE_IX);
     Lock::CollectionLock lock(opCtx->lockState(), _oplogCollectionName, MODE_IX);
+    auto replMode = replCoord->getReplicationMode();
     OplogSlot slot;
     getNextOpTime(opCtx, oplog, replCoord, replMode, 1, &slot);
     auto writer =
         _logOpWriter(opCtx, opstr, nss, uuid, obj, o2, fromMigrate, slot.opTime, slot.hash);
     const DocWriter* basePtr = &writer;
     _logOpsInner(opCtx, nss, &basePtr, 1, oplog, replMode, slot.opTime);
+    return slot.opTime;
 }
 
 void logOps(OperationContext* opCtx,
@@ -421,12 +402,12 @@ void logOps(OperationContext* opCtx,
             std::vector<BSONObj>::const_iterator begin,
             std::vector<BSONObj>::const_iterator end,
             bool fromMigrate) {
-    ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
-    ReplicationCoordinator::Mode replMode = replCoord->getReplicationMode();
-
     invariant(begin != end);
-    if (oplogDisabled(opCtx, replMode, nss))
+
+    auto replCoord = ReplicationCoordinator::get(opCtx);
+    if (replCoord->isOplogDisabledFor(opCtx, nss)) {
         return;
+    }
 
     const size_t count = end - begin;
     std::vector<OplogDocWriter> writers;
@@ -435,6 +416,7 @@ void logOps(OperationContext* opCtx,
     Lock::DBLock lk(opCtx, "local", MODE_IX);
     Lock::CollectionLock lock(opCtx->lockState(), _oplogCollectionName, MODE_IX);
     std::unique_ptr<OplogSlot[]> slots(new OplogSlot[count]);
+    auto replMode = replCoord->getReplicationMode();
     getNextOpTime(opCtx, oplog, replCoord, replMode, count, slots.get());
     for (size_t i = 0; i < count; i++) {
         writers.emplace_back(_logOpWriter(

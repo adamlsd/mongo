@@ -34,7 +34,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/storage_interface_impl.h"
@@ -64,23 +63,11 @@ protected:
     std::unique_ptr<StorageInterface> _storageInterface;
 };
 
-/**
- * Helper to create default ReplSettings for tests.
- */
-ReplSettings createReplSettings() {
-    ReplSettings settings;
-    settings.setOplogSizeBytes(5 * 1024 * 1024);
-    settings.setReplSetString("mySet/node1:12345");
-    return settings;
-}
-
 void DropPendingCollectionReaperTest::setUp() {
     ServiceContextMongoDTest::setUp();
     _storageInterface = stdx::make_unique<StorageInterfaceImpl>();
-    auto serviceContext = getServiceContext();
-    ReplicationCoordinator::set(
-        serviceContext,
-        stdx::make_unique<ReplicationCoordinatorMock>(serviceContext, createReplSettings()));
+    auto service = getServiceContext();
+    ReplicationCoordinator::set(service, stdx::make_unique<ReplicationCoordinatorMock>(service));
 }
 
 void DropPendingCollectionReaperTest::tearDown() {
@@ -214,6 +201,34 @@ TEST_F(DropPendingCollectionReaperTest, DropCollectionsOlderThanLogsDropCollecti
     stopCapturingLogMessages();
 
     ASSERT_EQUALS(1LL, countLogLinesContaining("Failed to remove drop-pending collection"));
+}
+
+TEST_F(DropPendingCollectionReaperTest,
+       DropCollectionsOlderThanDisablesReplicatedWritesWhenDroppingCollection) {
+    OpTime optime({Seconds{1}, 0}, 1LL);
+    NamespaceString ns("test.foo");
+    auto dpns = ns.makeDropPendingNamespace(optime);
+
+    // Override dropCollection to confirm that writes are not replicated when dropping the
+    // drop-pending collection.
+    StorageInterfaceMock storageInterfaceMock;
+    decltype(dpns) droppedNss;
+    bool writesAreReplicatedDuringDrop = true;
+    storageInterfaceMock.dropCollFn = [&droppedNss, &writesAreReplicatedDuringDrop](
+        OperationContext* opCtx, const NamespaceString& nss) {
+        droppedNss = nss;
+        writesAreReplicatedDuringDrop = opCtx->writesAreReplicated();
+        return Status::OK();
+    };
+
+    DropPendingCollectionReaper reaper(&storageInterfaceMock);
+    reaper.addDropPendingNamespace(optime, dpns);
+
+    auto opCtx = makeOpCtx();
+    reaper.dropCollectionsOlderThan(opCtx.get(), optime);
+
+    ASSERT_EQUALS(dpns, droppedNss);
+    ASSERT_FALSE(writesAreReplicatedDuringDrop);
 }
 
 }  // namespace

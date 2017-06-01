@@ -896,6 +896,27 @@ TEST(PipelineOptimizationTest, MatchWithTypeShouldMoveAcrossRename) {
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndProject) {
+    string inputPipe =
+        "[{$project: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$project: {_id: true, d: {$map: {input: '$a', as: 'iter', "
+        "in: {e: '$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: "
+        "1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndAddFields) {
+    string inputPipe =
+        "[{$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: "
+        "'$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: 1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
 }  // namespace Local
 
 namespace Sharded {
@@ -1275,6 +1296,61 @@ TEST(PipelineInitialSource, MatchInitialQuery) {
     ASSERT_BSONOBJ_EQ(pipe->getInitialQuery(), BSON("a" << 4));
 }
 
+namespace Namespaces {
+
+using PipelineInitialSourceNSTest = AggregationContextFixture;
+
+class DocumentSourceCollectionlessMock : public DocumentSourceMock {
+public:
+    DocumentSourceCollectionlessMock() : DocumentSourceMock({}) {}
+
+    InitialSourceType getInitialSourceType() const final {
+        return InitialSourceType::kCollectionlessInitialSource;
+    }
+
+    static boost::intrusive_ptr<DocumentSourceCollectionlessMock> create() {
+        return new DocumentSourceCollectionlessMock();
+    }
+};
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidForEmptyPipeline) {
+    const std::vector<BSONObj> rawPipeline = {};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidIfInitialStageRequiresCollection) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {}}")};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, CollectionNSNotValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString("a.collection");
+
+    ASSERT_NOT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+}  // namespace Namespaces
+
 namespace Dependencies {
 
 using PipelineDependenciesTest = AggregationContextFixture;
@@ -1300,8 +1376,8 @@ class DocumentSourceDependencyDummy : public DocumentSourceMock {
 public:
     DocumentSourceDependencyDummy() : DocumentSourceMock({}) {}
 
-    bool isValidInitialSource() const final {
-        return false;
+    InitialSourceType getInitialSourceType() const final {
+        return InitialSourceType::kNotInitialSource;
     }
 };
 

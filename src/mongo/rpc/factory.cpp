@@ -69,7 +69,7 @@ std::unique_ptr<RequestBuilderInterface> makeRequestBuilder(Protocol proto) {
 std::unique_ptr<ReplyInterface> makeReply(const Message* unownedMessage) {
     switch (unownedMessage->operation()) {
         case mongo::dbMsg:
-            return stdx::make_unique<OpMsgReply>(OpMsg::parse(*unownedMessage));
+            return stdx::make_unique<OpMsgReply>(OpMsg::parseOwned(*unownedMessage));
         case mongo::opReply:
             return stdx::make_unique<LegacyReply>(unownedMessage);
         case mongo::dbCommandReply:
@@ -84,7 +84,7 @@ std::unique_ptr<ReplyInterface> makeReply(const Message* unownedMessage) {
 std::unique_ptr<RequestInterface> makeRequest(const Message* unownedMessage) {
     switch (unownedMessage->operation()) {
         case mongo::dbMsg:
-            return stdx::make_unique<OpMsgRequest>(OpMsg::parse(*unownedMessage));
+            return stdx::make_unique<OpMsgRequest>(mongo::OpMsgRequest::parse(*unownedMessage));
         case mongo::dbQuery:
             return stdx::make_unique<LegacyRequest>(unownedMessage);
         case mongo::dbCommand:

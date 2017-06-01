@@ -425,10 +425,8 @@ void pointerOperations() {
     }
 
     // Test `*` functionality
-    if (false) {
-        Clonable& r = *a;
-        (void)r;
-    }
+	Clonable& r = *a;
+	(void)r;
 
     // Test reset functionality
     {

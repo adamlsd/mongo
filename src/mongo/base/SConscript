@@ -45,6 +45,17 @@ env.Library(
 
 env.CppUnitTest(
     target=[
+        'autoraii_test',
+    ],
+    source=[
+        'autoraii_test.cpp',
+    ],
+    LIBDEPS=[
+    ],
+)
+
+env.CppUnitTest(
+    target=[
         'system_error_test',
     ],
     source=[

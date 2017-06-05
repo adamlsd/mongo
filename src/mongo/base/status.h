@@ -64,7 +64,9 @@ namespace mongo {
  * TODO: generate base/error_codes.h out of a description file
  * TODO: check 'location' duplicates against assert numbers
  */
-class Status {
+class
+[[gnu::warn_unused_result]]
+Status {
 public:
     // Short-hand for returning an OK status.
     static inline Status OK();

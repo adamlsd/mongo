@@ -229,14 +229,14 @@ TEST(PipelineOptimizationTest, LookupShouldCoalesceWithUnwindOnAs) {
 
 TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldCoalesceWithUnwindOnAs) {
     string inputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$same'}}"
         "]";
     string outputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: [], "
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: [], "
         "unwinding: {preserveNullAndEmptyArrays: false}}}]";
     string serializedPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$same'}}"
         "]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
@@ -297,7 +297,7 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldNotCoalesceWithUnwi
         ",{$unwind: {path: '$from'}}"
         "]";
     string outputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$from'}}"
         "]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
@@ -321,7 +321,7 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldSwapWithMatch) {
         " {$match: {'independent': 0}}]";
     string outputPipe =
         "[{$match: {independent: 0}}, "
-        " {$lookup: {from: 'lookupColl', as: 'asField', pipeline: []}}]";
+        " {$lookup: {from: 'lookupColl', as: 'asField', let: {}, pipeline: []}}]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
@@ -374,12 +374,12 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldAbsorbUnwindMatch) 
         "{$unwind: '$asField'}, "
         "{$match: {'asField.subfield': {$eq: 1}}}]";
     string outputPipe =
-        "[{$lookup: {from: 'lookupColl', as: 'asField', pipeline: [{$match: {subfield: {$eq: "
-        "1}}}], "
+        "[{$lookup: {from: 'lookupColl', as: 'asField', let: {}, "
+        "pipeline: [{$match: {subfield: {$eq: 1}}}], "
         "unwinding: {preserveNullAndEmptyArrays: false} } } ]";
     string serializedPipe =
-        "[{$lookup: {from: 'lookupColl', as: 'asField', pipeline: [{$match: {subfield: {$eq: "
-        "1}}}]}}, "
+        "[{$lookup: {from: 'lookupColl', as: 'asField', let: {}, "
+        "pipeline: [{$match: {subfield: {$eq: 1}}}]}}, "
         "{$unwind: {path: '$asField'}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
@@ -896,6 +896,27 @@ TEST(PipelineOptimizationTest, MatchWithTypeShouldMoveAcrossRename) {
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndProject) {
+    string inputPipe =
+        "[{$project: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$project: {_id: true, d: {$map: {input: '$a', as: 'iter', "
+        "in: {e: '$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: "
+        "1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndAddFields) {
+    string inputPipe =
+        "[{$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: "
+        "'$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: 1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
 }  // namespace Local
 
 namespace Sharded {
@@ -1275,6 +1296,61 @@ TEST(PipelineInitialSource, MatchInitialQuery) {
     ASSERT_BSONOBJ_EQ(pipe->getInitialQuery(), BSON("a" << 4));
 }
 
+namespace Namespaces {
+
+using PipelineInitialSourceNSTest = AggregationContextFixture;
+
+class DocumentSourceCollectionlessMock : public DocumentSourceMock {
+public:
+    DocumentSourceCollectionlessMock() : DocumentSourceMock({}) {}
+
+    InitialSourceType getInitialSourceType() const final {
+        return InitialSourceType::kCollectionlessInitialSource;
+    }
+
+    static boost::intrusive_ptr<DocumentSourceCollectionlessMock> create() {
+        return new DocumentSourceCollectionlessMock();
+    }
+};
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidForEmptyPipeline) {
+    const std::vector<BSONObj> rawPipeline = {};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidIfInitialStageRequiresCollection) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {}}")};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, CollectionNSNotValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString("a.collection");
+
+    ASSERT_NOT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+}  // namespace Namespaces
+
 namespace Dependencies {
 
 using PipelineDependenciesTest = AggregationContextFixture;
@@ -1300,8 +1376,8 @@ class DocumentSourceDependencyDummy : public DocumentSourceMock {
 public:
     DocumentSourceDependencyDummy() : DocumentSourceMock({}) {}
 
-    bool isValidInitialSource() const final {
-        return false;
+    InitialSourceType getInitialSourceType() const final {
+        return InitialSourceType::kNotInitialSource;
     }
 };
 

@@ -4,6 +4,15 @@ Import("env")
 
 env = env.Clone()
 
+env.SConscript(
+    dirs=[
+        'util',
+    ],
+    exports=[
+        'env',
+    ],
+)
+
 env.Library(
     target='collection_options',
     source=[
@@ -145,7 +154,6 @@ env.Library(
         "collection_compact.cpp",
         "collection_impl.cpp",
         "collection_info_cache_impl.cpp",
-        "cursor_manager.cpp",
         "database_impl.cpp",
         "database_holder_impl.cpp",
         "index_catalog_impl.cpp",
@@ -164,9 +172,11 @@ env.Library(
         'index_key_validate',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/authmongod',
+        '$BUILD_DIR/mongo/db/clientcursor',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/query/query',
+        '$BUILD_DIR/mongo/db/repl/drop_pending_collection_reaper',
         '$BUILD_DIR/mongo/db/repl/serveronly',
         '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/service_context',
@@ -177,7 +187,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/background',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/index/index_access_methods',
-        '$BUILD_DIR/mongo/db/clientcursor',
         '$BUILD_DIR/mongo/db/s/balancer',
         '$BUILD_DIR/mongo/db/views/views_mongod',
     ],

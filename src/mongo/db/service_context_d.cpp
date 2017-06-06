@@ -40,11 +40,11 @@
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context_impl.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_lock_file.h"
 #include "mongo/db/storage/storage_engine_metadata.h"
 #include "mongo/db/storage/storage_options.h"
-#include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/scripting/engine.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
@@ -70,11 +70,7 @@ MONGO_INITIALIZER(SetGlobalEnvironment)(InitializerContext* context) {
 }  // namespace
 
 ServiceContextMongoD::ServiceContextMongoD()
-    // Evil:
-    : ServiceContext(nullptr) {
-    // Have to set the context after knowing where the transport layer is.
-    setServiceEntryPoint(stdx::make_unique<ServiceEntryPointMongod>(this->getTransportLayer()));
-}
+    : ServiceContext(stdx::make_unique<ServiceEntryPointMongod>(this)) {}
 
 ServiceContextMongoD::~ServiceContextMongoD() = default;
 

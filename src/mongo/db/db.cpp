@@ -84,6 +84,7 @@
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/repl_settings.h"
+#include "mongo/db/repl/replication_consistency_markers_impl.h"
 #include "mongo/db/repl/replication_coordinator_external_state_impl.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
@@ -640,7 +641,7 @@ ExitCode _initAndListen(int listenPort) {
         uassertStatusOK(ShardingState::get(startupOpCtx.get())
                             ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
     if (shardingInitialized) {
-        reloadShardRegistryUntilSuccess(startupOpCtx.get());
+        waitForShardRegistryReload(startupOpCtx.get());
     }
 
     if (!storageGlobalParams.readOnly) {
@@ -892,8 +893,11 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
     repl::StorageInterface::set(serviceContext, stdx::make_unique<repl::StorageInterfaceImpl>());
     auto storageInterface = repl::StorageInterface::get(serviceContext);
 
-    repl::ReplicationProcess::set(serviceContext,
-                                  stdx::make_unique<repl::ReplicationProcess>(storageInterface));
+    repl::ReplicationProcess::set(
+        serviceContext,
+        stdx::make_unique<repl::ReplicationProcess>(
+            storageInterface,
+            stdx::make_unique<repl::ReplicationConsistencyMarkersImpl>(storageInterface)));
     auto replicationProcess = repl::ReplicationProcess::get(serviceContext);
 
     repl::DropPendingCollectionReaper::set(
@@ -911,7 +915,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
         serviceContext,
         getGlobalReplSettings(),
         stdx::make_unique<repl::ReplicationCoordinatorExternalStateImpl>(
-            serviceContext, dropPendingCollectionReaper, storageInterface),
+            serviceContext, dropPendingCollectionReaper, storageInterface, replicationProcess),
         makeReplicationExecutor(serviceContext),
         stdx::make_unique<repl::TopologyCoordinatorImpl>(topoCoordOptions),
         replicationProcess,

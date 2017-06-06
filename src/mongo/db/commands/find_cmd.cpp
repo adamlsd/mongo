@@ -94,7 +94,7 @@ public:
         return false;
     }
 
-    bool supportsReadConcern() const final {
+    bool supportsReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
         return true;
     }
 
@@ -401,7 +401,12 @@ public:
             cursorExec->saveState();
             cursorExec->detachFromOperationContext();
 
-            pinnedCursor.getCursor()->setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
+            // We assume that cursors created through a DBDirectClient are always used from their
+            // original OperationContext, so we do not need to move time to and from the cursor.
+            if (!opCtx->getClient()->isInDirectClient()) {
+                pinnedCursor.getCursor()->setLeftoverMaxTimeMicros(
+                    opCtx->getRemainingMaxTimeMicros());
+            }
             pinnedCursor.getCursor()->setPos(numResults);
 
             // Fill out curop based on the results.

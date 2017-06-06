@@ -1155,6 +1155,60 @@ post:
       display_name: Core Dumps - Execution ${execution}
       optional: true
 
+  # Gather and archive failed unit test binaries.
+  - command: shell.exec
+    params:
+      working_dir: "src"
+      script: |
+        mkdir unittest_binaries
+        # Find all core files
+        core_files=$(/usr/bin/find -H . -name "dump_*.core" -o -name "*.mdmp" 2> /dev/null)
+        for core_file in $core_files
+        do
+          # A core file name does not always have the executable name that generated it.
+          # See http://stackoverflow.com/questions/34801353/core-dump-filename-gets-thread-name-instead-of-executable-name-with-core-pattern
+          # On platforms with GDB, we get the binary name from core file
+          gdb=/opt/mongodbtoolchain/gdb/bin/gdb
+          if [ -f $gdb ]; then
+            binary_file=$($gdb -batch --quiet -ex "core $core_file" 2> /dev/null | grep "Core was generated" | cut -f2 -d "\`" | cut -f1 -d "'")
+            binary_file_locations=$binary_file
+          else
+            # Find the base file name from the core file name, note it may be truncated.
+            # Remove leading 'dump_' and trailing '.<pid>.core' or '.<pid or time>.mdmp'
+            binary_file=$(echo $core_file | sed "s/.*\///;s/dump_//;s/\..*\.core//;s/\..*\.mdmp//")
+            # Locate the binary file. Since the base file name might be truncated, the find
+            # may return more than 1 file.
+            binary_file_locations=$(/usr/bin/find -H . -name "$binary_file*${exe}" 2> /dev/null)
+          fi
+          if [ -z "$binary_file_locations" ]; then
+            echo "Cannot locate the unittest binary file ($binary_file) that generated the core file $core_file"
+          fi
+          for binary_file_location in $binary_file_locations
+          do
+            new_binary_file=unittest_binaries/$(echo $binary_file_location | sed "s/.*\///")
+            if [ ! -f $new_binary_file ]; then
+              mv $binary_file_location $new_binary_file
+            fi
+          done
+        done
+  - command: archive.targz_pack
+    params:
+      target: "mongo-unittests.tgz"
+      source_dir: "src/unittest_binaries"
+      include:
+        - "./*_test${exe}"
+  - command: s3.put
+    params:
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      local_file: mongo-unittests.tgz
+      remote_file: mongodb-mongo-master/${build_variant}/${revision}/unittests/mongo-unittests-${build_id}-${task_name}-${execution}.tgz
+      bucket: mciuploads
+      permissions: public-read
+      content_type: ${content_type|application/x-gzip}
+      display_name: Unit tests - Execution ${execution}
+      optional: true
+
   # Gather and archive hang_analyzer debugger files.
   - command: archive.targz_pack
     params:
@@ -3722,24 +3776,20 @@ buildvariants:
 - name: linux-64-debug
   display_name: Linux DEBUG
   run_on:
-  - rhel62-small
+  - rhel62-large
   batchtime: 1440 # 1 day
   expansions:
     push_path: linux
     push_bucket: downloads.mongodb.org
     push_name: linux-debug
     push_arch: x86_64
-    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
     compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     use_scons_cache: true
     build_mongoreplay: true
   tasks:
   - name: compile
-    distros:
-    - rhel62-large
   - name: compile_all
-    distros:
-    - rhel62-large
   - name: aggregation
   - name: aggregation_WT
   - name: aggregation_auth
@@ -3774,31 +3824,13 @@ buildvariants:
   - name: parallel_compatibility
   - name: parallel_compatibility_WT
   - name: concurrency
-    # Some concurrency workloads require a lot of memory, so we use machines
-    # with more RAM for these suites.
-    distros:
-    - rhel62-large
   - name: concurrency_WT
-    distros:
-    - rhel62-large
   - name: concurrency_replication
-    distros:
-    - rhel62-large
   - name: concurrency_replication_WT
-    distros:
-    - rhel62-large
   - name: concurrency_sharded
-    distros:
-    - rhel62-large
   - name: concurrency_sharded_WT
-    distros:
-    - rhel62-large
   - name: concurrency_simultaneous
-    distros:
-    - rhel62-large
   - name: concurrency_simultaneous_WT
-    distros:
-    - rhel62-large
   - name: read_concern_linearizable_passthrough
   - name: read_concern_linearizable_passthrough_WT
   - name: read_concern_majority_passthrough_WT
@@ -4976,7 +5008,7 @@ buildvariants:
   - name: aggregation_sharded_collections_passthrough_WT
   - name: auth
   - name: auth_WT
-    # SERVER-29094 add causally_consistent_jscore_passthrough_WT once resolved.
+  - name: causally_consistent_jscore_passthrough_WT
   - name: dbtest
   - name: dbtest_WT
   - name: disk
@@ -5391,6 +5423,7 @@ buildvariants:
     push_name: osx-ssl
     push_arch: x86_64
     tooltags: "-tags ssl"
+    gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include
     compile_flags: --ssl --allocator=system -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     python: python2.7
     num_jobs_available: 1
@@ -5542,6 +5575,7 @@ buildvariants:
     push_name: osx
     push_arch: x86_64-enterprise
     tooltags: "-tags 'ssl sasl'"
+    gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include
     compile_flags: --ssl --allocator=system -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     python: python2.7
     num_jobs_available: 1
@@ -5820,7 +5854,7 @@ buildvariants:
   modules:
   - enterprise
   run_on:
-  - rhel62-small
+  - rhel62-large
   batchtime: 10080 # 7 days
   stepback: false
   expansions:
@@ -5829,7 +5863,7 @@ buildvariants:
     compile_flags: --dbg=on --gcov --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     multiversion_platform_arch: "rhel62"
     multiversion_edition: "targeted"
-    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
     # The gcov instrumentation saves the path the .gcno files were created in as the default path
     # for the .gcda files. In Evergreen the path will start with /data/mci/[Hashed ID]/src/... where
     # the hashed ID is unique per task run. GCOV_PREFIX_STRIP is the number of directory levels to
@@ -5841,11 +5875,7 @@ buildvariants:
     build_mongoreplay: true
   tasks:
   - name: compile
-    distros:
-    - rhel62-large
   - name: compile_all
-    distros:
-    - rhel62-large
   - name: aggregation
   - name: aggregation_WT
   - name: aggregation_WT_ese
@@ -5861,29 +5891,13 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: concurrency
-    distros:
-    - rhel62-large
   - name: concurrency_WT
-    distros:
-    - rhel62-large
   - name: concurrency_replication
-    distros:
-    - rhel62-large
   - name: concurrency_replication_WT
-    distros:
-    - rhel62-large
   - name: concurrency_sharded
-    distros:
-    - rhel62-large
   - name: concurrency_sharded_WT
-    distros:
-    - rhel62-large
   - name: concurrency_simultaneous
-    distros:
-    - rhel62-large
   - name: concurrency_simultaneous_WT
-    distros:
-    - rhel62-large
   - name: dbtest
   - name: dbtest_WT
   - name: disk
@@ -5930,60 +5944,26 @@ buildvariants:
   - name: parallel_compatibility
   - name: parallel_compatibility_WT
   - name: read_concern_linearizable_passthrough
-    distros:
-    - rhel62-large
   - name: read_concern_linearizable_passthrough_WT
-    distros:
-    - rhel62-large
   - name: read_concern_majority_passthrough_WT
-    distros:
-    - rhel62-large
   - name: read_only
   - name: read_only_WT
   - name: read_only_sharded
   - name: read_only_sharded_WT
   - name: replica_sets
-    distros:
-    - rhel62-large
   - name: replica_sets_WT
-    distros:
-    - rhel62-large
   - name: replica_sets_WT_ese
-    distros:
-    - rhel62-large
   - name: replica_sets_auth
-    distros:
-    - rhel62-large
   - name: replica_sets_pv0
-    distros:
-    - rhel62-large
   - name: replica_sets_jscore_passthrough
-    distros:
-    - rhel62-large
   - name: replica_sets_jscore_passthrough_WT
-    distros:
-    - rhel62-large
   - name: replica_sets_initsync_jscore_passthrough
-    distros:
-    - rhel62-large
   - name: replica_sets_initsync_jscore_passthrough_WT
-    distros:
-    - rhel62-large
   - name: replica_sets_initsync_static_jscore_passthrough
-    distros:
-    - rhel62-large
   - name: replica_sets_initsync_static_jscore_passthrough_WT
-    distros:
-    - rhel62-large
   - name: replica_sets_resync_static_jscore_passthrough
-    distros:
-    - rhel62-large
   - name: replica_sets_resync_static_jscore_passthrough_WT
-    distros:
-    - rhel62-large
   - name: replica_sets_kill_secondaries_jscore_passthrough_WT
-    distros:
-    - rhel62-large
   - name: master_slave
   - name: master_slave_WT
   - name: master_slave_auth
@@ -5993,20 +5973,10 @@ buildvariants:
   - name: sharded_collections_jscore_passthrough
   - name: sharded_collections_jscore_passthrough_WT
   - name: sharding
-    distros:
-    - rhel62-large
   - name: sharding_WT
-    distros:
-    - rhel62-large
   - name: sharding_WT_ese
-    distros:
-    - rhel62-large
   - name: sharding_auth
-    distros:
-    - rhel62-large
   - name: sharding_auth_audit_WT
-    distros:
-    - rhel62-large
   - name: sharding_gle_auth_basics_passthrough
   - name: sharding_gle_auth_basics_passthrough_WT
   - name: sharding_gle_auth_basics_passthrough_write_cmd
@@ -6015,14 +5985,8 @@ buildvariants:
   - name: sharding_jscore_passthrough_WT
   - name: sharding_jscore_passthrough_wire_ops_WT
   - name: sharding_last_stable_mongos_and_mixed_shards
-    distros:
-    - rhel62-large
   - name: sharding_op_query_WT
-    distros:
-    - rhel62-large
   - name: sharding_csrs_continuous_config_stepdown_WT
-    distros:
-    - rhel62-large
   - name: slow1
   - name: slow1_WT
   - name: serial_run
@@ -7539,7 +7503,9 @@ buildvariants:
     push_arch: x86_64
     gorootvars: PATH=/opt/mongodbtoolchain/v2/bin:$PATH
     tooltags: -gccgoflags "-lsocket -lnsl"
-    compile_flags: --variables-files=etc/scons/mongodbtoolchain_gcc.vars -j$(kstat cpu | sort -u | grep -c "^module") --release CCFLAGS="-m64" LINKFLAGS="-m64 -static-libstdc++ -static-libgcc"
+    # We invoke SCons using --jobs = (# of CPUs / 2) to avoid causing out of memory errors due to
+    # spawning a large number of linker processes.
+    compile_flags: --variables-files=etc/scons/mongodbtoolchain_gcc.vars -j$(( $(kstat cpu | sort -u | grep -c "^module") / 2 )) --release CCFLAGS="-m64" LINKFLAGS="-m64 -static-libstdc++ -static-libgcc"
     num_jobs_available: $(( $(kstat cpu | sort -u | grep -c "^module") / 2 ))
     use_scons_cache: true
   tasks:
@@ -8600,7 +8566,7 @@ buildvariants:
   modules:
   - enterprise
   run_on:
-  - ubuntu1604-test
+  - ubuntu1604-build
   stepback: true
   batchtime: 1440 # 1 day
   expansions:
@@ -8612,15 +8578,11 @@ buildvariants:
     compile_flags: --variables-files=etc/scons/mongodbtoolchain_clang.vars --dbg=on --opt=on --allocator=system --sanitize=undefined --ssl -j$(grep -c ^processor /proc/cpuinfo) --nostrip
     multiversion_platform_arch: "ubuntu1604"
     multiversion_edition: "targeted"
-    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 3)) # Avoid starting too many mongod's under UBSAN build.
     build_mongoreplay: true
   tasks:
   - name: compile
-    distros:
-    - ubuntu1604-build
   - name: compile_all
-    distros:
-    - ubuntu1604-build
   - name: aggregation
   - name: aggregation_WT
   - name: aggregation_WT_ese

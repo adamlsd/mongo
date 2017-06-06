@@ -76,13 +76,16 @@ const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
 CollectionRangeDeleter::~CollectionRangeDeleter() {
     // notify anybody still sleeping on orphan ranges
     clear(Status{ErrorCodes::InterruptedDueToReplStateChange,
-                 "Collection sharding metadata destroyed"});
+                 "Collection sharding metadata discarded"});
 }
 
-bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
+auto CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
                                               NamespaceString const& nss,
+                                              Action action,
                                               int maxToDelete,
-                                              CollectionRangeDeleter* rangeDeleterForTestOnly) {
+                                              CollectionRangeDeleter* forTestOnly) -> Action {
+
+    invariant(action != Action::kFinished);
     StatusWith<int> wrote = 0;
     auto range = boost::optional<ChunkRange>(boost::none);
     auto notification = DeleteNotification();
@@ -92,27 +95,54 @@ bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
         auto* css = CollectionShardingState::get(opCtx, nss);
         {
             auto scopedCollectionMetadata = css->getMetadata();
-            if ((!collection || !scopedCollectionMetadata) && !rangeDeleterForTestOnly) {
-                log() << "Abandoning collection " << nss.ns()
-                      << " range deletions left over from sharded state";
+            if ((!collection || !scopedCollectionMetadata) && !forTestOnly) {
+                log() << "Abandoning range deletions left over from previously sharded collection"
+                      << nss.ns();
                 stdx::lock_guard<stdx::mutex> lk(css->_metadataManager->_managerLock);
                 css->_metadataManager->_clearAllCleanups();
-                return false;  // collection was unsharded
+                return Action::kFinished;
             }
 
             // We don't actually know if this is the same collection that we were originally
             // scheduled to do deletions on, or another one with the same name. But it doesn't
-            // matter: if it has deletions scheduled, now is as good a time as any to do them.
-            auto self = rangeDeleterForTestOnly ? rangeDeleterForTestOnly
-                                                : &css->_metadataManager->_rangesToClean;
+            // matter: if it has a record of deletions scheduled, now is as good a time as any
+            // to do them.
+
+            auto self = forTestOnly ? forTestOnly : &css->_metadataManager->_rangesToClean;
             {
                 stdx::lock_guard<stdx::mutex> scopedLock(css->_metadataManager->_managerLock);
                 if (self->isEmpty())
-                    return false;
+                    return Action::kFinished;
 
                 const auto& frontRange = self->_orphans.front().range;
                 range.emplace(frontRange.getMin().getOwned(), frontRange.getMax().getOwned());
                 notification = self->_orphans.front().notification;
+            }
+            invariant(range);
+
+            if (action == Action::kWriteOpLog) {
+                // clang-format off
+                // Secondaries will watch for this update, and kill any queries that may depend on
+                // documents in the range -- excepting any queries with a read-concern option
+                // 'ignoreChunkMigration'
+                try {
+                    auto& adminSystemVersion = NamespaceString::kConfigCollectionNamespace;
+                    auto epoch = scopedCollectionMetadata->getCollVersion().epoch();
+                    AutoGetCollection autoAdmin(opCtx, adminSystemVersion, MODE_IX);
+
+                    Helpers::upsert(opCtx, adminSystemVersion.ns(),
+                        BSON("_id" << "startRangeDeletion" << "ns" << nss.ns() << "epoch" << epoch
+                          << "min" << range->getMin() << "max" << range->getMax()));
+
+                } catch (DBException const& e) {
+                    stdx::lock_guard<stdx::mutex> scopedLock(css->_metadataManager->_managerLock);
+                    css->_metadataManager->_clearAllCleanups(
+                        {ErrorCodes::fromInt(e.getCode()),
+                         str::stream() << "cannot push startRangeDeletion record to Op Log,"
+                                         " abandoning scheduled range deletions: " << e.what()});
+                    return Action::kFinished;
+                }
+                // clang-format on
             }
 
             try {
@@ -123,7 +153,6 @@ bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
                 wrote = e.toStatus();
                 warning() << e.what();
             }
-
             if (!wrote.isOK() || wrote.getValue() == 0) {
                 if (wrote.isOK()) {
                     log() << "No documents remain to delete in " << nss << " range "
@@ -131,20 +160,19 @@ bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
                 }
                 stdx::lock_guard<stdx::mutex> scopedLock(css->_metadataManager->_managerLock);
                 self->_pop(wrote.getStatus());
-                return true;
+                return Action::kWriteOpLog;
             }
         }  // drop scopedCollectionMetadata
     }      // drop autoColl
 
-    dassert(range);
-    dassert(wrote.getStatus().isOK());
-    dassert(wrote.getValue() > 0);
+    invariant(range);
+    invariantOK(wrote.getStatus());
+    invariant(wrote.getValue() > 0);
 
-    log() << "Deleted " << wrote.getValue() << " documents in " << nss.ns() << " range "
-          << redact(range->toString());
+    repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+    const auto clientOpTime = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
 
     // Wait for replication outside the lock
-    const auto clientOpTime = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
     WriteConcernResult unusedWCResult;
     Status status = Status::OK();
     try {
@@ -152,10 +180,9 @@ bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
     } catch (const DBException& e) {
         status = e.toStatus();
     }
-
     if (!status.isOK()) {
-        warning() << "Error when waiting for write concern after removing " << nss << " range "
-                  << redact(range->toString()) << " : " << redact(status.reason());
+        log() << "Error when waiting for write concern after removing " << nss << " range "
+              << redact(range->toString()) << " : " << redact(status.reason());
 
         AutoGetCollection autoColl(opCtx, nss, MODE_IX);
         auto* css = CollectionShardingState::get(opCtx, nss);
@@ -165,12 +192,18 @@ bool CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
         // its notification would have been triggered, so this check suffices to ensure that it is
         // safe to pop the range here.
         if (!notification.ready()) {
-            dassert(!self->isEmpty() && self->_orphans.front().notification == notification);
+            invariant(!self->isEmpty() && self->_orphans.front().notification == notification);
+            log() << "Abandoning deletion of latest range in " << nss.ns() << " after "
+                  << wrote.getValue() << " local deletions because of replication failure";
             self->_pop(status);
         }
+    } else {
+        log() << "Deleted " << wrote.getValue() << " documents in " << nss.ns() << " range "
+              << redact(range->toString());
     }
+
     notification.abandon();
-    return true;
+    return Action::kMore;
 }
 
 StatusWith<int> CollectionRangeDeleter::_doDeletion(OperationContext* opCtx,
@@ -316,6 +349,16 @@ CollectionRangeDeleter::DeleteNotification::DeleteNotification()
 CollectionRangeDeleter::DeleteNotification::DeleteNotification(Status status)
     : notification(std::make_shared<Notification<Status>>()) {
     notify(status);
+}
+
+Status CollectionRangeDeleter::DeleteNotification::waitStatus(OperationContext* opCtx) {
+    try {
+        return notification->get(opCtx);
+    } catch (...) {
+        notification = std::make_shared<Notification<Status>>();
+        notify({ErrorCodes::Interrupted, "Wait for range delete request completion interrupted"});
+        throw;
+    }
 }
 
 }  // namespace mongo

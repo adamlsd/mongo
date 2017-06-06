@@ -77,7 +77,6 @@
 #include "mongo/executor/network_interface.h"
 #include "mongo/rpc/metadata/oplog_query_metadata.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
-#include "mongo/rpc/request_interface.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
@@ -631,6 +630,7 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
                 stdx::make_unique<DataReplicatorExternalStateInitialSync>(this,
                                                                           _externalState.get()),
                 _storage,
+                _replicationProcess,
                 onCompletion);
             _initialSyncer = initialSyncerCopy;
         }
@@ -2069,7 +2069,8 @@ Status ReplicationCoordinatorImpl::processHeartbeat(const ReplSetHeartbeatArgs& 
 Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCtx,
                                                           const ReplSetReconfigArgs& args,
                                                           BSONObjBuilder* resultObj) {
-    log() << "replSetReconfig admin command received from client";
+    log() << "replSetReconfig admin command received from client; new config: "
+          << args.newConfigObj;
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
@@ -2121,6 +2122,7 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     if (args.force) {
         newConfigObj = incrementConfigVersionByRandom(newConfigObj);
     }
+
     Status status = newConfig.initialize(
         newConfigObj, oldConfig.getProtocolVersion() == 1, oldConfig.getReplicaSetId());
     if (!status.isOK()) {

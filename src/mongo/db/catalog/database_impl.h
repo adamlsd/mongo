@@ -155,9 +155,16 @@ public:
     /**
      * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
      * that is required.
+     *
+     * If we are applying a 'drop' oplog entry on a secondary, 'dropOpTime' will contain the optime
+     * of the oplog entry.
      */
-    Status dropCollection(OperationContext* opCtx, StringData fullns) final;
-    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns) final;
+    Status dropCollection(OperationContext* opCtx,
+                          StringData fullns,
+                          repl::OpTime dropOpTime) final;
+    Status dropCollectionEvenIfSystem(OperationContext* opCtx,
+                                      const NamespaceString& fullns,
+                                      repl::OpTime dropOpTime) final;
 
     Status dropView(OperationContext* opCtx, StringData fullns) final;
 
@@ -238,11 +245,13 @@ private:
 
     /**
      * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
-     * 'reason' for why the cache is being cleared.
+     * 'reason' for why the cache is being cleared. If 'collectionGoingAway' is false,
+     * unpinned cursors will not be killed.
      */
     void _clearCollectionCache(OperationContext* opCtx,
                                StringData fullns,
-                               const std::string& reason);
+                               const std::string& reason,
+                               bool collectionGoingAway);
 
     /**
      * Completes a collection drop by removing all the indexes and removing the collection itself

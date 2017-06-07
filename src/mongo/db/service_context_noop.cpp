@@ -36,8 +36,6 @@
 #include "mongo/transport/service_entry_point.h"
 
 namespace mongo {
-ServiceContextNoop::ServiceContextNoop() {}
-
 StorageEngine* ServiceContextNoop::getGlobalStorageEngine() {
     return NULL;
 }
@@ -62,12 +60,10 @@ StorageFactoriesIterator* ServiceContextNoop::makeStorageFactoriesIterator() {
         virtual bool more() const {
             return false;
         }
-
         virtual const StorageEngine::Factory* next() {
             invariant(false);
         }
     };
-
     return new EmptySFI();
 }
 

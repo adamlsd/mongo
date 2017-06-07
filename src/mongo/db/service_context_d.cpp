@@ -57,20 +57,22 @@
 
 namespace mongo {
 namespace {
-
-MONGO_INITIALIZER(SetGlobalEnvironment)(InitializerContext* context) {
-    setGlobalServiceContext(stdx::make_unique<ServiceContextMongoD>());
-    auto service = getGlobalServiceContext();
-
+auto makeMongoDServiceContext() {
+    auto service = stdx::make_unique<ServiceContextMongoD>();
+    service->setServiceEntryPoint(stdx::make_unique<ServiceEntryPointMongod>(service.get()));
     service->setTickSource(stdx::make_unique<SystemTickSource>());
     service->setFastClockSource(stdx::make_unique<SystemClockSource>());
     service->setPreciseClockSource(stdx::make_unique<SystemClockSource>());
+    return service;
+}
+
+MONGO_INITIALIZER(SetGlobalEnvironment)(InitializerContext* context) {
+    setGlobalServiceContext(makeMongoDServiceContext());
     return Status::OK();
 }
 }  // namespace
 
-ServiceContextMongoD::ServiceContextMongoD()
-    : ServiceContext(stdx::make_unique<ServiceEntryPointMongod>(this)) {}
+ServiceContextMongoD::ServiceContextMongoD() = default;
 
 ServiceContextMongoD::~ServiceContextMongoD() = default;
 

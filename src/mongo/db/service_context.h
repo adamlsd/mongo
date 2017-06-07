@@ -394,7 +394,7 @@ public:
     void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
 
 protected:
-    ServiceContext(std::unique_ptr<ServiceEntryPoint> sep);
+    ServiceContext();
 
     /**
      * Mutex used to synchronize access to mutable state of this ServiceContext instance,

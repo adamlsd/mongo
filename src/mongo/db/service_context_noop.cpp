@@ -36,7 +36,7 @@
 #include "mongo/transport/service_entry_point.h"
 
 namespace mongo {
-ServiceContextNoop::ServiceContextNoop() : ServiceContext(nullptr) {}
+ServiceContextNoop::ServiceContextNoop() {}
 
 StorageEngine* ServiceContextNoop::getGlobalStorageEngine() {
     return NULL;

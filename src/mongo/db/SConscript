@@ -565,7 +565,6 @@ env.Library(
 env.Library(
     target="service_context_d",
     source=[
-        "operation_context_impl.cpp",
         "service_context_d.cpp",
         "service_entry_point_mongod.cpp",
     ],

@@ -59,8 +59,6 @@
 
 namespace mongo {
 
-const HostAndPort kHostAndPortForDirectClient("0.0.0.0", 0);
-
 MONGO_FP_DECLARE(rsStopGetMore);
 
 namespace {
@@ -456,7 +454,7 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
                 currentOp.done();
                 shouldLogOpDebug = true;
             } else {
-                if (remote != kHostAndPortForDirectClient) {
+                if (!opCtx->getClient->isInDirectClient()) {
                     const ShardedConnectionInfo* connInfo = ShardedConnectionInfo::get(&c, false);
                     uassert(18663,
                             str::stream() << "legacy writeOps not longer supported for "

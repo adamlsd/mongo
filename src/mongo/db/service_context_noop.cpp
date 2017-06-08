@@ -33,7 +33,6 @@
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/transport/service_entry_point.h"
 
 namespace mongo {
 StorageEngine* ServiceContextNoop::getGlobalStorageEngine() {

@@ -368,8 +368,9 @@ DbResponse receivedGetMore(OperationContext* opCtx,
 }
 
 }  // namespace
+}  // namespace mongo
 
-DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const HostAndPort& remote) {
+mongo::DbResponse mongo::assembleResponse(OperationContext* opCtx, const Message& m) {
     // before we lock...
     NetworkOp op = m.operation();
     bool isCommand = false;
@@ -454,16 +455,14 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
                 currentOp.done();
                 shouldLogOpDebug = true;
             } else {
-                if (!opCtx->getClient->isInDirectClient()) {
+                if (!opCtx->getClient()->isInDirectClient()) {
                     const ShardedConnectionInfo* connInfo = ShardedConnectionInfo::get(&c, false);
                     uassert(18663,
                             str::stream() << "legacy writeOps not longer supported for "
                                           << "versioned connections, ns: "
                                           << nsString.ns()
                                           << ", op: "
-                                          << networkOpToString(op)
-                                          << ", remote: "
-                                          << remote.toString(),
+                                          << networkOpToString(op),
                             connInfo == NULL);
                 }
 
@@ -529,5 +528,3 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
     recordCurOpMetrics(opCtx);
     return dbresponse;
 }
-
-}  // namespace mongo

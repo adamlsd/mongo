@@ -121,8 +121,7 @@ QueryOptions DBDirectClient::_lookupAvailableOptions() {
 
 namespace {
 DbResponse loopbackBuildResponse(OperationContext* const opCtx, Message& toSend) {
-    return opCtx->getServiceContext()->getServiceEntryPoint()->handleRequest(
-        opCtx, toSend, HostAndPort{});
+    return opCtx->getServiceContext()->getServiceEntryPoint()->handleRequest(opCtx, toSend);
 }
 }  // namespace
 

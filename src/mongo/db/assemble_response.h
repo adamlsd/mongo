@@ -37,7 +37,6 @@ class Message;
 class OperationContext;
 
 DbResponse assembleResponse(OperationContext* opCtx,
-                            const Message& request,
-                            const HostAndPort& client);
+                            const Message& request);
 
 }  // namespace mongo

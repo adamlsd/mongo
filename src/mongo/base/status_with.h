@@ -110,9 +110,14 @@ public:
         return _status.isOK();
     }
 
-	// DO NOT CALL THIS METHOD.  This method serves the same purpose as `.getStatus().ignore()`; however, it indicates a situation where the code that presently ignores a status code has not been audited for correctness.  This method will be removed at some point.  If you encounter a compiler error from ignoring the result of a status-returning function be sure to check the return value, or deliberately ignore the return value.  The function is named to be auditable independently from unaudited `Status` ignore cases.
-	inline void status_with_transitional_ignore() && noexcept {};
-	inline void status_with_transitional_ignore() const & noexcept= delete;
+    // DO NOT CALL THIS METHOD.  This method serves the same purpose as `.getStatus().ignore()`;
+    // however, it indicates a situation where the code that presently ignores a status code has not
+    // been audited for correctness.  This method will be removed at some point.  If you encounter a
+    // compiler error from ignoring the result of a status-returning function be sure to check the
+    // return value, or deliberately ignore the return value.  The function is named to be auditable
+    // independently from unaudited `Status` ignore cases.
+    inline void status_with_transitional_ignore() && noexcept {};
+    inline void status_with_transitional_ignore() const& noexcept = delete;
 
 private:
     Status _status;

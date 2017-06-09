@@ -1605,7 +1605,8 @@ if env.TargetOSIs('posix'):
             env.Append( CCFLAGS=["-Werror"] )
 
     env.Append( CXXFLAGS=["-Woverloaded-virtual"] )
-    env.Append( CXXFLAGS=["-Werror=unused-result"] )
+    env.Append( CXXFLAGS=["-Wunused-result"] )
+    env.Append( CXXFLAGS=["-Wno-error=unused-result"] )
 
     # On OS X, clang doesn't want the pthread flag at link time, or it
     # issues warnings which make it impossible for us to declare link

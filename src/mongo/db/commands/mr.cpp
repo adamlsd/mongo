@@ -375,7 +375,7 @@ void State::dropTempCollections() {
                         "no longer primary",
                         repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(
                             _opCtx, _config.tempNamespace));
-                db->dropCollection(_opCtx, _config.tempNamespace.ns());
+                db->dropCollection(_opCtx, _config.tempNamespace.ns()).transitional_ignore();
                 wunit.commit();
             }
         }
@@ -393,7 +393,7 @@ void State::dropTempCollections() {
             Lock::DBLock lk(_opCtx, _config.incLong.db(), MODE_X);
             if (Database* db = dbHolder().get(_opCtx, _config.incLong.ns())) {
                 WriteUnitOfWork wunit(_opCtx);
-                db->dropCollection(_opCtx, _config.incLong.ns());
+                db->dropCollection(_opCtx, _config.incLong.ns()).transitional_ignore();
                 wunit.commit();
             }
         }

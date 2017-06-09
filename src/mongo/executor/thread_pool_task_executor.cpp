@@ -291,7 +291,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
             return;
         }
         scheduleIntoPool_inlock(&_sleepersQueue, cbState->iter, std::move(lk));
-    });
+    }).transitional_ignore();
 
     return cbHandle;
 }
@@ -362,7 +362,7 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleRemoteC
                    << redact(response.isOK() ? response.toString() : response.status.toString());
             swap(cbState->callback, newCb);
             scheduleIntoPool_inlock(&_networkInProgressQueue, cbState->iter, std::move(lk));
-        });
+        }).transitional_ignore();
     return cbHandle;
 }
 

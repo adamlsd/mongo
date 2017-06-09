@@ -269,7 +269,8 @@ protected:
                     log() << "reusing collection during test which may cause problems, ns:" << nss;
                 }
                 (collInfo->loader = new CollectionBulkLoaderMock(&collInfo->stats))
-                    ->init(nullptr, secondaryIndexSpecs);
+                    ->init(nullptr, secondaryIndexSpecs)
+                    .transitional_ignore();
 
                 return StatusWith<std::unique_ptr<CollectionBulkLoader>>(
                     std::unique_ptr<CollectionBulkLoader>(collInfo->loader));
@@ -880,7 +881,7 @@ TEST_F(InitialSyncerTest, InitialSyncerRecreatesOplogAndDropsReplicatedDatabases
     auto oldCreateOplogFn = _storageInterface->createOplogFn;
     _storageInterface->createOplogFn = [oldCreateOplogFn](OperationContext* opCtx,
                                                           const NamespaceString& nss) {
-        oldCreateOplogFn(opCtx, nss);
+        oldCreateOplogFn(opCtx, nss).transitional_ignore();
         return Status(ErrorCodes::OperationFailed, "oplog creation failed");
     };
 
@@ -1833,7 +1834,7 @@ TEST_F(InitialSyncerTest,
         net->blackHole(noi);
     }
 
-    initialSyncer->shutdown();
+    initialSyncer->shutdown().transitional_ignore();
     executor::NetworkInterfaceMock::InNetworkGuard(net)->runReadyNetworkOperations();
 
     initialSyncer->join();
@@ -2063,7 +2064,7 @@ TEST_F(
         OperationContext*, const NamespaceString& nss, const BSONObj& doc) {
         insertDocumentNss = nss;
         insertDocumentDoc = doc;
-        initialSyncer->shutdown();
+        initialSyncer->shutdown().transitional_ignore();
         return Status::OK();
     };
 
@@ -3107,7 +3108,7 @@ TEST_F(
                                           const MultiApplier::Operations& ops,
                                           MultiApplier::ApplyOperationFn applyOperation) {
         // 'OperationPtr*' is ignored by our overridden _multiInitialSyncApply().
-        applyOperation(nullptr);
+        applyOperation(nullptr).transitional_ignore();
         return ops.back().getOpTime();
     };
     bool fetchCountIncremented = false;

@@ -354,8 +354,9 @@ DbResponse receivedQuery(OperationContext* opCtx,
         // If we got a stale config, wait in case the operation is stuck in a critical section
         if (!opCtx->getClient()->isInDirectClient() && e.getCode() == ErrorCodes::SendStaleConfig) {
             auto& sce = static_cast<const StaleConfigException&>(e);
-            ShardingState::get(opCtx)->onStaleShardVersion(
-                opCtx, NamespaceString(sce.getns()), sce.getVersionReceived());
+            ShardingState::get(opCtx)
+                ->onStaleShardVersion(opCtx, NamespaceString(sce.getns()), sce.getVersionReceived())
+                .transitional_ignore();
         }
 
         dbResponse.response.reset();

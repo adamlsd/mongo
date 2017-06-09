@@ -219,8 +219,8 @@ public:
      * Helper method for running the server on a separate thread.
      */
     static void runServer(transport::TransportLayerLegacy* server) {
-        server->setup();
-        server->start();
+        server->setup().transitional_ignore();
+        server->start().transitional_ignore();
     }
 
 private:
@@ -355,8 +355,8 @@ protected:
 
 private:
     static void runServer(transport::TransportLayerLegacy* server) {
-        server->setup();
-        server->start();
+        server->setup().transitional_ignore();
+        server->start().transitional_ignore();
     }
 
     /**

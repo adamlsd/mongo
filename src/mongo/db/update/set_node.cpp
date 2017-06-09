@@ -48,7 +48,7 @@ Status SetNode::updateExistingElement(mutablebson::Element* element, bool* noop)
     if (element->getValue().binaryEqualValues(_val)) {
         *noop = true;
     } else {
-        element->setValueBSONElement(_val);
+        element->setValueBSONElement(_val).transitional_ignore();
     }
 
     return Status::OK();

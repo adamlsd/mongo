@@ -164,15 +164,16 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
     invariant(_state == kCreated);
     auto scopedGuard = MakeGuard([&] { cleanupOnError(opCtx); });
 
-    grid.catalogClient(opCtx)->logChange(
-        opCtx,
-        "moveChunk.start",
-        getNss().ns(),
-        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                   << _args.getFromShardId()
-                   << "to"
-                   << _args.getToShardId()),
-        ShardingCatalogClient::kMajorityWriteConcern);
+    grid.catalogClient(opCtx)
+        ->logChange(opCtx,
+                    "moveChunk.start",
+                    getNss().ns(),
+                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                               << _args.getFromShardId()
+                               << "to"
+                               << _args.getToShardId()),
+                    ShardingCatalogClient::kMajorityWriteConcern)
+        .transitional_ignore();
 
     _cloneDriver = stdx::make_unique<MigrationChunkClonerSourceLegacy>(
         _args, _collectionMetadata->getKeyPattern(), _donorConnStr, _recipientHost);
@@ -427,15 +428,16 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
     scopedGuard.Dismiss();
     _cleanup(opCtx);
 
-    grid.catalogClient(opCtx)->logChange(
-        opCtx,
-        "moveChunk.commit",
-        getNss().ns(),
-        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                   << _args.getFromShardId()
-                   << "to"
-                   << _args.getToShardId()),
-        ShardingCatalogClient::kMajorityWriteConcern);
+    grid.catalogClient(opCtx)
+        ->logChange(opCtx,
+                    "moveChunk.commit",
+                    getNss().ns(),
+                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                               << _args.getFromShardId()
+                               << "to"
+                               << _args.getToShardId()),
+                    ShardingCatalogClient::kMajorityWriteConcern)
+        .transitional_ignore();
 
     return Status::OK();
 }
@@ -445,15 +447,16 @@ void MigrationSourceManager::cleanupOnError(OperationContext* opCtx) {
         return;
     }
 
-    grid.catalogClient(opCtx)->logChange(
-        opCtx,
-        "moveChunk.error",
-        getNss().ns(),
-        BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
-                   << _args.getFromShardId()
-                   << "to"
-                   << _args.getToShardId()),
-        ShardingCatalogClient::kMajorityWriteConcern);
+    grid.catalogClient(opCtx)
+        ->logChange(opCtx,
+                    "moveChunk.error",
+                    getNss().ns(),
+                    BSON("min" << _args.getMinKey() << "max" << _args.getMaxKey() << "from"
+                               << _args.getFromShardId()
+                               << "to"
+                               << _args.getToShardId()),
+                    ShardingCatalogClient::kMajorityWriteConcern)
+        .transitional_ignore();
 
     _cleanup(opCtx);
 }

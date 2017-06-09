@@ -279,7 +279,7 @@ GeometryContainer* getRandomCircle(double radius) {
         BSON("$center" << BSON_ARRAY(BSON_ARRAY(randDouble(radius, MAXBOUND - radius)
                                                 << randDouble(radius, MAXBOUND - radius))
                                      << radius))
-            .firstElement());
+            .firstElement()).transitional_ignore();
     return container;
 }
 

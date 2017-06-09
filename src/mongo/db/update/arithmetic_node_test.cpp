@@ -47,7 +47,7 @@ DEATH_TEST(ArithmeticNodeTest, InitFailsForEmptyElement, "Invariant failure modE
     auto update = fromjson("{$inc: {}}");
     const CollatorInterface* collator = nullptr;
     ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
-    node.init(update["$inc"].embeddedObject().firstElement(), collator);
+    node.init(update["$inc"].embeddedObject().firstElement(), collator).transitional_ignore();
 }
 
 TEST(ArithmeticNodeTest, InitSucceedsForNumberIntElement) {

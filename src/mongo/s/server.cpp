@@ -311,7 +311,10 @@ static ExitCode runMongosServer() {
             return EXIT_SHARDING_ERROR;
         }
 
-        Grid::get(opCtx.get())->getBalancerConfiguration()->refreshAndCheck(opCtx.get());
+        Grid::get(opCtx.get())
+            ->getBalancerConfiguration()
+            ->refreshAndCheck(opCtx.get())
+            .transitional_ignore();
     }
 
     Status status = getGlobalAuthorizationManager()->initialize(NULL);

@@ -324,7 +324,7 @@ void BackgroundSync::_produce(OperationContext* opCtx) {
             log() << "Our newest OpTime : " << lastOpTimeFetched;
             log() << "Earliest OpTime available is " << syncSourceResp.earliestOpTimeSeen
                   << " from " << syncSourceResp.getSyncSource();
-            _replCoord->abortCatchupIfNeeded();
+            _replCoord->abortCatchupIfNeeded().transitional_ignore();
             return;
         }
 
@@ -580,7 +580,7 @@ void BackgroundSync::_runRollback(OperationContext* opCtx,
                                   StorageInterface* storageInterface) {
     if (_replCoord->getMemberState().primary()) {
         warning() << "Rollback situation detected in catch-up mode. Aborting catch-up mode.";
-        _replCoord->abortCatchupIfNeeded();
+        _replCoord->abortCatchupIfNeeded().transitional_ignore();
         return;
     }
 

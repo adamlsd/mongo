@@ -225,7 +225,7 @@ InitialSyncer::InitialSyncer(
 
 InitialSyncer::~InitialSyncer() {
     DESTRUCTOR_GUARD({
-        shutdown();
+        shutdown().transitional_ignore();
         join();
     });
 }

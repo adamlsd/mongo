@@ -1252,7 +1252,7 @@ void SnapshotThread::run() {
                 name = replCoord->reserveSnapshotName(nullptr);
 
                 // This establishes the view that we will name.
-                _manager->prepareForCreateSnapshot(opCtx.get());
+                _manager->prepareForCreateSnapshot(opCtx.get()).transitional_ignore();
             }
 
             auto opTimeOfSnapshot = OpTime();

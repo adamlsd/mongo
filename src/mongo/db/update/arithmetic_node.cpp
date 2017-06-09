@@ -103,7 +103,7 @@ Status ArithmeticNode::updateExistingElement(mutablebson::Element* element, bool
     if (element->getValue().ok() && valueToSet.isIdentical(originalValue)) {
         *noop = true;
     } else {
-        element->setValueSafeNum(valueToSet);
+        element->setValueSafeNum(valueToSet).transitional_ignore();
     }
 
     return Status::OK();

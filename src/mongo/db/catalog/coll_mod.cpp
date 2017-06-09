@@ -173,7 +173,7 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
         } else if (fieldName == "validationAction" && !isView) {
             auto statusW = coll->parseValidationAction(e.String());
             if (!statusW.isOK())
-                statusW.getStatus();
+                return statusW.getStatus();
 
             cmr.collValidationAction = e.String();
         } else if (fieldName == "pipeline") {

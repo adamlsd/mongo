@@ -1,5 +1,3 @@
-// status_with.h
-
 /*    Copyright 2013 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -61,7 +59,7 @@ namespace mongo {
  * }
  */
 template <typename T>
-class StatusWith {
+class MONGO_WARN_UNUSED_RESULT StatusWith {
     MONGO_STATIC_ASSERT_MSG(!(std::is_same<T, mongo::Status>::value),
                             "StatusWith<Status> is banned.");
 
@@ -111,6 +109,10 @@ public:
     bool isOK() const {
         return _status.isOK();
     }
+
+	// DO NOT CALL THIS METHOD.  This method serves the same purpose as `.getStatus().ignore()`; however, it indicates a situation where the code that presently ignores a status code has not been audited for correctness.  This method will be removed at some point.  If you encounter a compiler error from ignoring the result of a status-returning function be sure to check the return value, or deliberately ignore the return value.  The function is named to be auditable independently from unaudited `Status` ignore cases.
+	inline void status_with_transitional_ignore() && noexcept {};
+	inline void status_with_transitional_ignore() const & noexcept= delete;
 
 private:
     Status _status;

@@ -51,11 +51,6 @@
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/top.h"
-#include "mongo/rpc/command_reply_builder.h"
-#include "mongo/rpc/command_request.h"
-#include "mongo/rpc/legacy_reply_builder.h"
-#include "mongo/rpc/legacy_request.h"
-#include "mongo/rpc/op_msg_rpc_impls.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -63,8 +58,6 @@
 #include "mongo/util/net/op_msg.h"
 
 namespace mongo {
-
-const HostAndPort kHostAndPortForDirectClient("0.0.0.0", 0);
 
 MONGO_FP_DECLARE(rsStopGetMore);
 
@@ -135,144 +128,6 @@ void generateLegacyQueryErrorResponse(const AssertionException* exception,
     response->setData(bb.release());
 }
 
-/**
- * Fills out CurOp / OpDebug with basic command info.
- */
-void beginCommandOp(OperationContext* opCtx, const NamespaceString& nss, const BSONObj& queryObj) {
-    auto curop = CurOp::get(opCtx);
-    stdx::lock_guard<Client> lk(*opCtx->getClient());
-    curop->setOpDescription_inlock(queryObj);
-    curop->setNS_inlock(nss.ns());
-}
-
-DbResponse receivedCommand(OperationContext* opCtx,
-                           const NamespaceString& nss,
-                           Client& client,
-                           const Message& message) {
-    invariant(nss.isCommand());
-
-    DbMessage dbMessage(message);
-    QueryMessage queryMessage(dbMessage);
-
-    CurOp* op = CurOp::get(opCtx);
-
-    rpc::LegacyReplyBuilder builder{};
-
-    try {
-        // This will throw if the request is on an invalid namespace.
-        rpc::LegacyRequest legacyRequest{&message};
-        // Auth checking for Commands happens later.
-        int nToReturn = queryMessage.ntoreturn;
-
-        beginCommandOp(opCtx, nss, legacyRequest.getCommandArgs());
-
-        {
-            stdx::lock_guard<Client> lk(*opCtx->getClient());
-            op->markCommand_inlock();
-        }
-
-        uassert(16979,
-                str::stream() << "bad numberToReturn (" << nToReturn
-                              << ") for $cmd type ns - can only be 1 or -1",
-                nToReturn == 1 || nToReturn == -1);
-
-        auto request = OpMsgRequest::fromDBAndBody(legacyRequest.getDatabase(),
-                                                   legacyRequest.getCommandArgs(),
-                                                   legacyRequest.getMetadata());
-        runCommands(opCtx, request, &builder);
-
-        op->debug().iscommand = true;
-    } catch (const DBException& exception) {
-        generateErrorResponse(opCtx, &builder, exception);
-    }
-
-    auto response = builder.done();
-
-    op->debug().responseLength = response.header().dataLen();
-
-    return {std::move(response)};
-}
-
-DbResponse receivedMsg(OperationContext* opCtx, Client& client, const Message& message) {
-    invariant(message.operation() == dbMsg);
-
-    OpMsgRequest request;
-    rpc::OpMsgReplyBuilder replyBuilder;
-    auto curOp = CurOp::get(opCtx);
-    try {
-        // Request is validated here.
-        // TODO If this fails we reply to an invalid request which isn't always safe. Unfortunately
-        // tests currently rely on this. Figure out what to do.
-        request = OpMsgRequest::parse(message);
-
-        // We construct a legacy $cmd namespace so we can fill in curOp using
-        // the existing logic that existed for OP_QUERY commands
-        NamespaceString nss(request.getDatabase(), "$cmd");
-        beginCommandOp(opCtx, nss, request.body);
-        {
-            stdx::lock_guard<Client> lk(*opCtx->getClient());
-            curOp->markCommand_inlock();
-        }
-
-        runCommands(opCtx, request, &replyBuilder);
-
-        curOp->debug().iscommand = true;
-    } catch (const DBException& exception) {
-        replyBuilder.reset();
-        generateErrorResponse(opCtx, &replyBuilder, exception);
-    }
-
-    auto response = replyBuilder.done();
-
-    curOp->debug().responseLength = response.header().dataLen();
-
-    // TODO exhaust
-    if (request.isFlagSet(OpMsg::kMoreToCome)) {
-        return {};
-    }
-
-    return DbResponse{std::move(response)};
-}
-
-DbResponse receivedRpc(OperationContext* opCtx, Client& client, const Message& message) {
-    invariant(message.operation() == dbCommand);
-
-    rpc::CommandReplyBuilder replyBuilder{};
-
-    auto curOp = CurOp::get(opCtx);
-
-    try {
-        // database is validated here
-        rpc::CommandRequest commandRequest{&message};
-
-        // We construct a legacy $cmd namespace so we can fill in curOp using
-        // the existing logic that existed for OP_QUERY commands
-        NamespaceString nss(commandRequest.getDatabase(), "$cmd");
-        beginCommandOp(opCtx, nss, commandRequest.getCommandArgs());
-        {
-            stdx::lock_guard<Client> lk(*opCtx->getClient());
-            curOp->markCommand_inlock();
-        }
-
-
-        auto request = OpMsgRequest::fromDBAndBody(commandRequest.getDatabase(),
-                                                   commandRequest.getCommandArgs(),
-                                                   commandRequest.getMetadata());
-        runCommands(opCtx, request, &replyBuilder);
-
-        curOp->debug().iscommand = true;
-
-    } catch (const DBException& exception) {
-        generateErrorResponse(opCtx, &replyBuilder, exception);
-    }
-
-    auto response = replyBuilder.done();
-
-    curOp->debug().responseLength = response.header().dataLen();
-
-    return {std::move(response)};
-}
-
 // In SERVER-7775 we reimplemented the pseudo-commands fsyncUnlock, inProg, and killOp
 // as ordinary commands. To support old clients for another release, this helper serves
 // to execute the real command from the legacy pseudo-command codepath.
@@ -311,8 +166,6 @@ DbResponse receivedPseudoCommand(OperationContext* opCtx,
     cmdBob.appendElements(cmdParams);
     auto cmd = cmdBob.done();
 
-    // TODO: use OP_COMMAND here instead of constructing
-    // a legacy OP_QUERY style command
     BufBuilder cmdMsgBuf;
 
     int32_t flags = DataView(message.header().data()).read<LittleEndian<int32_t>>();
@@ -327,7 +180,7 @@ DbResponse receivedPseudoCommand(OperationContext* opCtx,
     interposed.setData(dbQuery, cmdMsgBuf.buf(), cmdMsgBuf.len());
     interposed.header().setId(message.header().getId());
 
-    return receivedCommand(opCtx, interposedNss, client, interposed);
+    return runCommands(opCtx, interposed);
 }
 
 DbResponse receivedQuery(OperationContext* opCtx,
@@ -516,8 +369,9 @@ DbResponse receivedGetMore(OperationContext* opCtx,
 }
 
 }  // namespace
+}  // namespace mongo
 
-DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const HostAndPort& remote) {
+mongo::DbResponse mongo::assembleResponse(OperationContext* opCtx, const Message& m) {
     // before we lock...
     NetworkOp op = m.operation();
     bool isCommand = false;
@@ -583,13 +437,11 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
     bool shouldLogOpDebug = shouldLog(logger::LogSeverity::Debug(1));
 
     DbResponse dbresponse;
-    if (op == dbQuery) {
-        dbresponse = isCommand ? receivedCommand(opCtx, nsString, c, m)
-                               : receivedQuery(opCtx, nsString, c, m);
-    } else if (op == dbMsg) {
-        dbresponse = receivedMsg(opCtx, c, m);
-    } else if (op == dbCommand) {
-        dbresponse = receivedRpc(opCtx, c, m);
+    if (op == dbMsg || op == dbCommand || (op == dbQuery && isCommand)) {
+        dbresponse = runCommands(opCtx, m);
+    } else if (op == dbQuery) {
+        invariant(!isCommand);
+        dbresponse = receivedQuery(opCtx, nsString, c, m);
     } else if (op == dbGetMore) {
         dbresponse = receivedGetMore(opCtx, m, currentOp, &shouldLogOpDebug);
     } else {
@@ -604,16 +456,14 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
                 currentOp.done();
                 shouldLogOpDebug = true;
             } else {
-                if (remote != kHostAndPortForDirectClient) {
+                if (!opCtx->getClient()->isInDirectClient()) {
                     const ShardedConnectionInfo* connInfo = ShardedConnectionInfo::get(&c, false);
                     uassert(18663,
                             str::stream() << "legacy writeOps not longer supported for "
                                           << "versioned connections, ns: "
                                           << nsString.ns()
                                           << ", op: "
-                                          << networkOpToString(op)
-                                          << ", remote: "
-                                          << remote.toString(),
+                                          << networkOpToString(op),
                             connInfo == NULL);
                 }
 
@@ -679,5 +529,3 @@ DbResponse assembleResponse(OperationContext* opCtx, const Message& m, const Hos
     recordCurOpMetrics(opCtx);
     return dbresponse;
 }
-
-}  // namespace mongo

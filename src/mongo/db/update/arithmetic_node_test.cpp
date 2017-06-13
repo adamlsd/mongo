@@ -125,15 +125,15 @@ TEST(ArithmeticNodeTest, ApplyIncNoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
@@ -158,15 +158,15 @@ TEST(ArithmeticNodeTest, ApplyMulNoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
@@ -191,15 +191,15 @@ TEST(ArithmeticNodeTest, ApplyRoundingNoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 6.022e23}"), doc);
@@ -224,15 +224,15 @@ TEST(ArithmeticNodeTest, ApplyEmptyPathToCreate) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
@@ -257,20 +257,51 @@ TEST(ArithmeticNodeTest, ApplyCreatePath) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {d: 5, b: {c: 6}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(fromjson("{$set: {'a.b.c': 6}}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyExtendPath) {
+    auto update = fromjson("{$inc: {'a.b': 2}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
+    ASSERT_OK(node.init(update["$inc"]["a.b"], collator));
+
+    Document doc(fromjson("{a: {c: 1}}"));
+    FieldRef pathToCreate("b");
+    FieldRef pathTaken("a");
+    StringData matchedField;
+    auto fromReplication = false;
+    UpdateIndexData indexData;
+    indexData.addPath("a.b");
+    LogBuilder* logBuilder = nullptr;
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_FALSE(noop);
+    ASSERT_TRUE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: {c: 1, b: 2}}"), doc);
+    ASSERT_FALSE(doc.isInPlaceModeEnabled());
 }
 
 TEST(ArithmeticNodeTest, ApplyCreatePathFromRoot) {
@@ -290,15 +321,15 @@ TEST(ArithmeticNodeTest, ApplyCreatePathFromRoot) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{c: 5, a: {b: 6}}"), doc);
@@ -323,15 +354,15 @@ TEST(ArithmeticNodeTest, ApplyPositional) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["1"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["1"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [0, 7, 2]}"), doc);
@@ -356,18 +387,18 @@ TEST(ArithmeticNodeTest, ApplyNonViablePathToInc) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    auto result = node.apply(doc.root()["a"],
-                             &pathToCreate,
-                             &pathTaken,
-                             matchedField,
-                             fromReplication,
-                             &indexData,
-                             &logBuilder,
-                             &indexesAffected,
-                             &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::PathNotViable);
-    ASSERT_EQ(result.reason(), "Cannot create field 'b' in element {a: 5}");
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           &indexData,
+                                           &logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::PathNotViable,
+                                "Cannot create field 'b' in element {a: 5}");
 }
 
 TEST(ArithmeticNodeTest, ApplyNonViablePathToCreateFromReplicationIsNoOp) {
@@ -387,15 +418,15 @@ TEST(ArithmeticNodeTest, ApplyNonViablePathToCreateFromReplicationIsNoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 5}"), doc);
@@ -418,15 +449,15 @@ TEST(ArithmeticNodeTest, ApplyNoIndexDataNoLogBuilder) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
@@ -449,15 +480,15 @@ TEST(ArithmeticNodeTest, ApplyDoesNotAffectIndexes) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 11}"), doc);
@@ -480,15 +511,15 @@ TEST(ArithmeticNodeTest, IncTypePromotionIsNotANoOp) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberLong(2)}"), doc);
@@ -511,15 +542,15 @@ TEST(ArithmeticNodeTest, MulTypePromotionIsNotANoOp) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberLong(2)}"), doc);
@@ -543,15 +574,15 @@ TEST(ArithmeticNodeTest, TypePromotionFromIntToDecimalIsNotANoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.0\")}"), doc);
@@ -576,15 +607,15 @@ TEST(ArithmeticNodeTest, TypePromotionFromLongToDecimalIsNotANoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.0\")}"), doc);
@@ -609,20 +640,51 @@ TEST(ArithmeticNodeTest, TypePromotionFromDoubleToDecimalIsNotANoOp) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"5.25\")}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(fromjson("{$set: {a: NumberDecimal(\"5.25\")}}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyPromoteToFloatingPoint) {
+    auto update = fromjson("{$inc: {a: 0.2}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
+    ASSERT_OK(node.init(update["$inc"]["a"], collator));
+
+    Document doc(fromjson("{a: NumberLong(1)}"));
+    FieldRef pathToCreate("");
+    FieldRef pathTaken("a");
+    StringData matchedField;
+    auto fromReplication = false;
+    UpdateIndexData indexData;
+    indexData.addPath("a");
+    LogBuilder* logBuilder = nullptr;
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_FALSE(noop);
+    ASSERT_TRUE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: 1.2}"), doc);
+    ASSERT_TRUE(doc.isInPlaceModeEnabled());
 }
 
 TEST(ArithmeticNodeTest, IncrementedDecimalStaysDecimal) {
@@ -642,15 +704,15 @@ TEST(ArithmeticNodeTest, IncrementedDecimalStaysDecimal) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: NumberDecimal(\"11.5\")}"), doc);
@@ -677,15 +739,15 @@ TEST(ArithmeticNodeTest, OverflowIntToLong) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(mongo::NumberLong, doc.root()["a"].getType());
@@ -712,15 +774,15 @@ TEST(ArithmeticNodeTest, UnderflowIntToLong) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(mongo::NumberLong, doc.root()["a"].getType());
@@ -746,15 +808,15 @@ TEST(ArithmeticNodeTest, IncModeCanBeReused) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc1.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc1.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 2}"), doc1);
@@ -762,15 +824,15 @@ TEST(ArithmeticNodeTest, IncModeCanBeReused) {
 
     indexesAffected = false;
     noop = false;
-    ASSERT_OK(node.apply(doc2.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc2.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 3}"), doc2);
@@ -793,15 +855,15 @@ TEST(ArithmeticNodeTest, CreatedNumberHasSameTypeAsInc) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 6, a: NumberLong(5)}"), doc);
@@ -824,15 +886,15 @@ TEST(ArithmeticNodeTest, CreatedNumberHasSameTypeAsMul) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 6, a: NumberLong(0)}"), doc);
@@ -855,15 +917,15 @@ TEST(ArithmeticNodeTest, ApplyEmptyDocument) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: 2}"), doc);
@@ -886,20 +948,19 @@ TEST(ArithmeticNodeTest, ApplyIncToObjectFails) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    Status result = node.apply(doc.root()["a"],
-                               &pathToCreate,
-                               &pathTaken,
-                               matchedField,
-                               fromReplication,
-                               &indexData,
-                               logBuilder,
-                               &indexesAffected,
-                               &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::TypeMismatch);
-    ASSERT_EQ(result.reason(),
-              "Cannot apply $inc to a value of non-numeric type. {_id: \"test_object\"} has the "
-              "field 'a' of non-numeric type object");
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           &indexData,
+                                           logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::TypeMismatch,
+                                "Cannot apply $inc to a value of non-numeric type. {_id: "
+                                "\"test_object\"} has the field 'a' of non-numeric type object");
 }
 
 TEST(ArithmeticNodeTest, ApplyIncToArrayFails) {
@@ -918,20 +979,19 @@ TEST(ArithmeticNodeTest, ApplyIncToArrayFails) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    Status result = node.apply(doc.root()["a"],
-                               &pathToCreate,
-                               &pathTaken,
-                               matchedField,
-                               fromReplication,
-                               &indexData,
-                               logBuilder,
-                               &indexesAffected,
-                               &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::TypeMismatch);
-    ASSERT_EQ(result.reason(),
-              "Cannot apply $inc to a value of non-numeric type. {_id: \"test_object\"} has the "
-              "field 'a' of non-numeric type array");
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           &indexData,
+                                           logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::TypeMismatch,
+                                "Cannot apply $inc to a value of non-numeric type. {_id: "
+                                "\"test_object\"} has the field 'a' of non-numeric type array");
 }
 
 TEST(ArithmeticNodeTest, ApplyIncToStringFails) {
@@ -950,51 +1010,19 @@ TEST(ArithmeticNodeTest, ApplyIncToStringFails) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    Status result = node.apply(doc.root()["a"],
-                               &pathToCreate,
-                               &pathTaken,
-                               matchedField,
-                               fromReplication,
-                               &indexData,
-                               logBuilder,
-                               &indexesAffected,
-                               &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::TypeMismatch);
-    ASSERT_EQ(result.reason(),
-              "Cannot apply $inc to a value of non-numeric type. {_id: \"test_object\"} has the "
-              "field 'a' of non-numeric type string");
-}
-
-TEST(ArithmeticNodeTest, ApplyPromoteToFP) {
-    auto update = fromjson("{$inc: {a: 0.2}}");
-    const CollatorInterface* collator = nullptr;
-    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
-    ASSERT_OK(node.init(update["$inc"]["a"], collator));
-
-    Document doc(fromjson("{a: NumberLong(1)}"));
-    FieldRef pathToCreate("");
-    FieldRef pathTaken("a");
-    StringData matchedField;
-    auto fromReplication = false;
-    UpdateIndexData indexData;
-    indexData.addPath("a");
-    LogBuilder* logBuilder = nullptr;
-    auto indexesAffected = false;
-    auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
-    ASSERT_FALSE(noop);
-    ASSERT_TRUE(indexesAffected);
-    ASSERT_EQUALS(fromjson("{a: 1.2}"), doc);
-    ASSERT_TRUE(doc.isInPlaceModeEnabled());
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           &indexData,
+                                           logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::TypeMismatch,
+                                "Cannot apply $inc to a value of non-numeric type. {_id: "
+                                "\"test_object\"} has the field 'a' of non-numeric type string");
 }
 
 TEST(ArithmeticNodeTest, ApplyNewPath) {
@@ -1013,15 +1041,15 @@ TEST(ArithmeticNodeTest, ApplyNewPath) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{b: 1, a: 2}"), doc);
@@ -1044,15 +1072,15 @@ TEST(ArithmeticNodeTest, ApplyEmptyIndexData) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_EQUALS(fromjson("{a: 3}"), doc);
     ASSERT_TRUE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(countChildren(logDoc.root()), 1u);
@@ -1075,15 +1103,15 @@ TEST(ArithmeticNodeTest, ApplyNoOpDottedPath) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b : 2}}"), doc);
@@ -1106,15 +1134,15 @@ TEST(ArithmeticNodeTest, TypePromotionOnDottedPathIsNotANoOp) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b : NumberLong(2)}}"), doc);
@@ -1136,18 +1164,18 @@ TEST(ArithmeticNodeTest, ApplyPathNotViableArray) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    Status result = node.apply(doc.root()["a"],
-                               &pathToCreate,
-                               &pathTaken,
-                               matchedField,
-                               fromReplication,
-                               indexData,
-                               logBuilder,
-                               &indexesAffected,
-                               &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::PathNotViable);
-    ASSERT_EQ(result.reason(), "Cannot create field 'b' in element {a: [ { b: 1 } ]}");
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           indexData,
+                                           logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::PathNotViable,
+                                "Cannot create field 'b' in element {a: [ { b: 1 } ]}");
 }
 
 TEST(ArithmeticNodeTest, ApplyInPlaceDottedPath) {
@@ -1166,15 +1194,15 @@ TEST(ArithmeticNodeTest, ApplyInPlaceDottedPath) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: 3}}"), doc);
@@ -1197,49 +1225,18 @@ TEST(ArithmeticNodeTest, ApplyPromotionDottedPath) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: NumberLong(5)}}"), doc);
-    ASSERT_FALSE(doc.isInPlaceModeEnabled());
-}
-
-TEST(ArithmeticNodeTest, ApplyExtendPath) {
-    auto update = fromjson("{$inc: {'a.b': 2}}");
-    const CollatorInterface* collator = nullptr;
-    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
-    ASSERT_OK(node.init(update["$inc"]["a.b"], collator));
-
-    Document doc(fromjson("{a: {c: 1}}"));
-    FieldRef pathToCreate("b");
-    FieldRef pathTaken("a");
-    StringData matchedField;
-    auto fromReplication = false;
-    UpdateIndexData indexData;
-    indexData.addPath("a.b");
-    LogBuilder* logBuilder = nullptr;
-    auto indexesAffected = false;
-    auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
-    ASSERT_FALSE(noop);
-    ASSERT_TRUE(indexesAffected);
-    ASSERT_EQUALS(fromjson("{a: {c: 1, b: 2}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
 }
 
@@ -1259,15 +1256,15 @@ TEST(ArithmeticNodeTest, ApplyDottedPathEmptyDoc) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: 2}}"), doc);
@@ -1290,15 +1287,15 @@ TEST(ArithmeticNodeTest, ApplyFieldWithDot) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root(),
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{'a.b':4, a: {b: 2}}"), doc);
@@ -1321,15 +1318,15 @@ TEST(ArithmeticNodeTest, ApplyNoOpArrayIndex) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["2"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["2"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_TRUE(noop);
     ASSERT_FALSE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 2}]}"), doc);
@@ -1352,15 +1349,15 @@ TEST(ArithmeticNodeTest, TypePromotionInArrayIsNotANoOp) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["2"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["2"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: NumberLong(2)}]}"), doc);
@@ -1382,18 +1379,18 @@ TEST(ArithmeticNodeTest, ApplyNonViablePathThroughArray) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    Status result = node.apply(doc.root()["a"],
-                               &pathToCreate,
-                               &pathTaken,
-                               matchedField,
-                               fromReplication,
-                               indexData,
-                               logBuilder,
-                               &indexesAffected,
-                               &noop);
-    ASSERT_NOT_OK(result);
-    ASSERT_EQ(result.code(), ErrorCodes::PathNotViable);
-    ASSERT_EQ(result.reason(), "Cannot create field '2' in element {a: 0}");
+    ASSERT_THROWS_CODE_AND_WHAT(node.apply(doc.root()["a"],
+                                           &pathToCreate,
+                                           &pathTaken,
+                                           matchedField,
+                                           fromReplication,
+                                           indexData,
+                                           logBuilder,
+                                           &indexesAffected,
+                                           &noop),
+                                UserException,
+                                ErrorCodes::PathNotViable,
+                                "Cannot create field '2' in element {a: 0}");
 }
 
 TEST(ArithmeticNodeTest, ApplyInPlaceArrayIndex) {
@@ -1412,15 +1409,15 @@ TEST(ArithmeticNodeTest, ApplyInPlaceArrayIndex) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["2"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["2"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 3}]}"), doc);
@@ -1443,15 +1440,15 @@ TEST(ArithmeticNodeTest, ApplyAppendArray) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [{b: 0},{b: 1},{b: 2}]}"), doc);
@@ -1474,15 +1471,15 @@ TEST(ArithmeticNodeTest, ApplyPaddingArray) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [{b: 0},null,{b: 2}]}"), doc);
@@ -1505,15 +1502,15 @@ TEST(ArithmeticNodeTest, ApplyNumericObject) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {b: 0, '2': {b: 2}}}"), doc);
@@ -1536,15 +1533,15 @@ TEST(ArithmeticNodeTest, ApplyNumericField) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["2"]["b"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["2"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 3}}}"), doc);
@@ -1567,15 +1564,15 @@ TEST(ArithmeticNodeTest, ApplyExtendNumericField) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"]["2"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"]["2"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {'2': {c: 1, b: 2}}}"), doc);
@@ -1598,15 +1595,15 @@ TEST(ArithmeticNodeTest, ApplyNumericFieldToEmptyObject) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 2}}}"), doc);
@@ -1629,15 +1626,15 @@ TEST(ArithmeticNodeTest, ApplyEmptyArray) {
     LogBuilder* logBuilder = nullptr;
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         &indexData,
-                         logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               &indexData,
+               logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_FALSE(noop);
     ASSERT_TRUE(indexesAffected);
     ASSERT_EQUALS(fromjson("{a: [null, null, {b: 2}]}"), doc);
@@ -1660,15 +1657,15 @@ TEST(ArithmeticNodeTest, ApplyLogDottedPath) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_EQUALS(fromjson("{a: [{b:0}, {b:1}, {b:2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(countChildren(logDoc.root()), 1u);
@@ -1691,15 +1688,15 @@ TEST(ArithmeticNodeTest, LogEmptyArray) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_EQUALS(fromjson("{a: [null, null, {b:2}]}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(countChildren(logDoc.root()), 1u);
@@ -1707,10 +1704,10 @@ TEST(ArithmeticNodeTest, LogEmptyArray) {
 }
 
 TEST(ArithmeticNodeTest, LogEmptyObject) {
-    auto update = fromjson("{$set: {'a.2.b': 2}}");
+    auto update = fromjson("{$inc: {'a.2.b': 2}}");
     const CollatorInterface* collator = nullptr;
     ArithmeticNode node(ArithmeticNode::ArithmeticOp::kAdd);
-    ASSERT_OK(node.init(update["$set"]["a.2.b"], collator));
+    ASSERT_OK(node.init(update["$inc"]["a.2.b"], collator));
 
     Document doc(fromjson("{a: {}}"));
     FieldRef pathToCreate("2.b");
@@ -1722,19 +1719,159 @@ TEST(ArithmeticNodeTest, LogEmptyObject) {
     LogBuilder logBuilder(logDoc.root());
     auto indexesAffected = false;
     auto noop = false;
-    ASSERT_OK(node.apply(doc.root()["a"],
-                         &pathToCreate,
-                         &pathTaken,
-                         matchedField,
-                         fromReplication,
-                         indexData,
-                         &logBuilder,
-                         &indexesAffected,
-                         &noop));
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
     ASSERT_EQUALS(fromjson("{a: {'2': {b: 2}}}"), doc);
     ASSERT_FALSE(doc.isInPlaceModeEnabled());
     ASSERT_EQUALS(countChildren(logDoc.root()), 1u);
     ASSERT_EQUALS(fromjson("{$set: {'a.2.b': 2}}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyDeserializedDocNotNoOp) {
+    auto update = fromjson("{$mul: {b: NumberInt(1)}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kMultiply);
+    ASSERT_OK(node.init(update["$mul"]["b"], collator));
+
+    Document doc(fromjson("{a: 1}"));
+    // De-serialize the int.
+    doc.root()["a"].setValueInt(1);
+
+    FieldRef pathToCreate("b");
+    FieldRef pathTaken("");
+    StringData matchedField;
+    auto fromReplication = false;
+    const UpdateIndexData* indexData = nullptr;
+    Document logDoc;
+    LogBuilder logBuilder(logDoc.root());
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root(),
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_FALSE(noop);
+    ASSERT_FALSE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: 1, b: NumberInt(0)}"), doc);
+    ASSERT_FALSE(doc.isInPlaceModeEnabled());
+    ASSERT_EQUALS(fromjson("{$set: {b: NumberInt(0)}}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyToDeserializedDocNoOp) {
+    auto update = fromjson("{$mul: {a: NumberInt(1)}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kMultiply);
+    ASSERT_OK(node.init(update["$mul"]["a"], collator));
+
+    Document doc(fromjson("{a: 1}"));
+    // De-serialize the int.
+    doc.root()["a"].setValueInt(2);
+
+    FieldRef pathToCreate("");
+    FieldRef pathTaken("a");
+    StringData matchedField;
+    auto fromReplication = false;
+    const UpdateIndexData* indexData = nullptr;
+    Document logDoc;
+    LogBuilder logBuilder(logDoc.root());
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root()["a"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_TRUE(noop);
+    ASSERT_FALSE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: NumberInt(2)}"), doc);
+    ASSERT_TRUE(doc.isInPlaceModeEnabled());
+    ASSERT_EQUALS(fromjson("{}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyToDeserializedDocNestedNoop) {
+    auto update = fromjson("{$mul: {'a.b': NumberInt(1)}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kMultiply);
+    ASSERT_OK(node.init(update["$mul"]["a.b"], collator));
+
+    Document doc{BSONObj()};
+    // De-serialize the int.
+    doc.root().appendObject("a", BSON("b" << static_cast<int>(1)));
+
+    FieldRef pathToCreate("");
+    FieldRef pathTaken("a.b");
+    StringData matchedField;
+    auto fromReplication = false;
+    const UpdateIndexData* indexData = nullptr;
+    Document logDoc;
+    LogBuilder logBuilder(logDoc.root());
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_TRUE(noop);
+    ASSERT_FALSE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: {b: NumberInt(1)}}"), doc);
+    ASSERT_FALSE(doc.isInPlaceModeEnabled());
+    ASSERT_EQUALS(fromjson("{}"), logDoc);
+}
+
+TEST(ArithmeticNodeTest, ApplyToDeserializedDocNestedNotNoop) {
+    auto update = fromjson("{$mul: {'a.b': 3}}");
+    const CollatorInterface* collator = nullptr;
+    ArithmeticNode node(ArithmeticNode::ArithmeticOp::kMultiply);
+    ASSERT_OK(node.init(update["$mul"]["a.b"], collator));
+
+    Document doc{BSONObj()};
+    // De-serialize the int.
+    doc.root().appendObject("a", BSON("b" << static_cast<int>(1)));
+
+    FieldRef pathToCreate("");
+    FieldRef pathTaken("a.b");
+    StringData matchedField;
+    auto fromReplication = false;
+    const UpdateIndexData* indexData = nullptr;
+    Document logDoc;
+    LogBuilder logBuilder(logDoc.root());
+    auto indexesAffected = false;
+    auto noop = false;
+    node.apply(doc.root()["a"]["b"],
+               &pathToCreate,
+               &pathTaken,
+               matchedField,
+               fromReplication,
+               indexData,
+               &logBuilder,
+               &indexesAffected,
+               &noop);
+    ASSERT_FALSE(noop);
+    ASSERT_FALSE(indexesAffected);
+    ASSERT_EQUALS(fromjson("{a: {b: 3}}"), doc);
+    ASSERT_FALSE(doc.isInPlaceModeEnabled());
+    ASSERT_EQUALS(fromjson("{$set: {'a.b': 3}}"), logDoc);
 }
 
 }  // namespace

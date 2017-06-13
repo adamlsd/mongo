@@ -176,7 +176,7 @@ protected:
                     log() << "reusing collection during test which may cause problems, ns:" << nss;
                 }
                 (collInfo->loader = new CollectionBulkLoaderMock(&collInfo->stats))
-                    ->init(nullptr, secondaryIndexSpecs)
+                    ->init(secondaryIndexSpecs)
                     .transitional_ignore();
 
                 return StatusWith<std::unique_ptr<CollectionBulkLoader>>(
@@ -187,12 +187,9 @@ protected:
     }
 
     void tearDown() override {
-        executor::ThreadPoolExecutorTest::shutdownExecutorThread();
-        executor::ThreadPoolExecutorTest::joinExecutorThread();
-
+        getExecutor().shutdown();
+        getExecutor().join();
         _dbWorkThreadPool.join();
-
-        executor::ThreadPoolExecutorTest::tearDown();
     }
 
     /**

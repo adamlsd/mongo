@@ -36,10 +36,8 @@
 
 namespace mongo {
 
-DbResponse ServiceEntryPointMongod::handleRequest(OperationContext* opCtx,
-                                                  const Message& request,
-                                                  const HostAndPort& client) {
-    return assembleResponse(opCtx, request, client);
+DbResponse ServiceEntryPointMongod::handleRequest(OperationContext* opCtx, const Message& request) {
+    return assembleResponse(opCtx, request);
 }
 
 }  // namespace mongo

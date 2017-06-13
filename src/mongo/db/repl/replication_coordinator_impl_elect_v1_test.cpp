@@ -1445,7 +1445,7 @@ TEST_F(PrimaryCatchUpTest, PrimaryDoesNotNeedToCatchUp) {
     ASSERT_EQUALS(2, count);
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Draining);
     stopCapturingLogMessages();
-    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest known optime via heartbeats"));
+    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest optime known via heartbeats"));
     auto opCtx = makeOperationContext();
     getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1513,7 +1513,7 @@ TEST_F(PrimaryCatchUpTest, CannotSeeAllNodes) {
     });
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Draining);
     stopCapturingLogMessages();
-    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest known optime via heartbeats"));
+    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest optime known via heartbeats"));
     auto opCtx = makeOperationContext();
     getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1538,7 +1538,7 @@ TEST_F(PrimaryCatchUpTest, HeartbeatTimeout) {
     });
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Draining);
     stopCapturingLogMessages();
-    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest known optime via heartbeats"));
+    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest optime known via heartbeats"));
     auto opCtx = makeOperationContext();
     getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1561,7 +1561,7 @@ TEST_F(PrimaryCatchUpTest, PrimaryStepsDownBeforeHeartbeatRefreshing) {
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Running);
     stopCapturingLogMessages();
     ASSERT_EQUALS(1, countLogLinesContaining("Exited primary catch-up mode"));
-    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest known optime"));
+    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest"));
     ASSERT_EQUALS(0, countLogLinesContaining("Catchup timed out"));
     auto opCtx = makeOperationContext();
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1590,7 +1590,7 @@ TEST_F(PrimaryCatchUpTest, PrimaryStepsDownDuringCatchUp) {
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Running);
     stopCapturingLogMessages();
     ASSERT_EQUALS(1, countLogLinesContaining("Exited primary catch-up mode"));
-    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest known optime"));
+    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest"));
     ASSERT_EQUALS(0, countLogLinesContaining("Catchup timed out"));
     auto opCtx = makeOperationContext();
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1614,7 +1614,7 @@ TEST_F(PrimaryCatchUpTest, PrimaryStepsDownDuringDrainMode) {
     advanceMyLastAppliedOpTime(time2);
     ASSERT(replCoord->getApplierState() == ApplierState::Draining);
     stopCapturingLogMessages();
-    ASSERT_EQUALS(1, countLogLinesContaining("Caught up to the latest known optime"));
+    ASSERT_EQUALS(1, countLogLinesContaining("Caught up to the latest"));
 
     // Step down during drain mode.
     TopologyCoordinator::UpdateTermResult updateTermResult;
@@ -1701,7 +1701,7 @@ TEST_F(PrimaryCatchUpTest, FreshestNodeBecomesAvailableLater) {
     advanceMyLastAppliedOpTime(time4);
     ASSERT(getReplCoord()->getApplierState() == ApplierState::Draining);
     stopCapturingLogMessages();
-    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest known optime"));
+    ASSERT_EQ(1, countLogLinesContaining("Caught up to the latest"));
     auto opCtx = makeOperationContext();
     getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());
     Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
@@ -1744,7 +1744,7 @@ TEST_F(PrimaryCatchUpTest, InfiniteTimeoutAndAbort) {
 
     stopCapturingLogMessages();
     ASSERT_EQUALS(1, countLogLinesContaining("Exited primary catch-up mode"));
-    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest known optime"));
+    ASSERT_EQUALS(0, countLogLinesContaining("Caught up to the latest"));
     ASSERT_EQUALS(0, countLogLinesContaining("Catchup timed out"));
     auto opCtx = makeOperationContext();
     getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());

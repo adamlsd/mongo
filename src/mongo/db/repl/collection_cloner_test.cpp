@@ -91,7 +91,7 @@ void CollectionClonerTest::setUp() {
                const BSONObj idIndexSpec,
                const std::vector<BSONObj>& secondaryIndexSpecs) {
             (_loader = new CollectionBulkLoaderMock(&collectionStats))
-                ->init(nullptr, secondaryIndexSpecs)
+                ->init(secondaryIndexSpecs)
                 .transitional_ignore();
 
             return StatusWith<std::unique_ptr<CollectionBulkLoader>>(
@@ -346,7 +346,7 @@ TEST_F(CollectionClonerTest, DoNotCreateIDIndexIfAutoIndexIdUsed) {
             collNss = theNss;
             collOptions = theOptions;
             collIndexSpecs = theIndexSpecs;
-            loader->init(nullptr, theIndexSpecs).transitional_ignore();
+            loader->init(theIndexSpecs).transitional_ignore();
             return std::unique_ptr<CollectionBulkLoader>(loader);
         };
 

@@ -265,6 +265,7 @@ InitialSyncerOptions createInitialSyncerOptions(
         replCoord->setMyLastAppliedOpTime(opTime);
         externalState->setGlobalTimestamp(replCoord->getServiceContext(), opTime.getTimestamp());
     };
+    options.resetOptimes = [replCoord]() { replCoord->resetMyLastOpTimes(); };
     options.getSlaveDelay = [replCoord]() { return replCoord->getSlaveDelaySecs(); };
     options.syncSourceSelector = replCoord;
     options.replBatchLimitBytes = dur::UncommittedBytesLimit;
@@ -2069,7 +2070,8 @@ Status ReplicationCoordinatorImpl::processHeartbeat(const ReplSetHeartbeatArgs& 
 Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCtx,
                                                           const ReplSetReconfigArgs& args,
                                                           BSONObjBuilder* resultObj) {
-    log() << "replSetReconfig admin command received from client";
+    log() << "replSetReconfig admin command received from client; new config: "
+          << args.newConfigObj;
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
@@ -2121,6 +2123,7 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
     if (args.force) {
         newConfigObj = incrementConfigVersionByRandom(newConfigObj);
     }
+
     Status status = newConfig.initialize(
         newConfigObj, oldConfig.getProtocolVersion() == 1, oldConfig.getReplicaSetId());
     if (!status.isOK()) {
@@ -2500,12 +2503,17 @@ void ReplicationCoordinatorImpl::CatchupState::start_inlock() {
         return;
     }
 
-    auto timeoutCB = [this](const CallbackArgs& cbData) {
+    auto mutex = &_repl->_mutex;
+    auto timeoutCB = [this, mutex](const CallbackArgs& cbData) {
         if (!cbData.status.isOK()) {
             return;
         }
+        stdx::lock_guard<stdx::mutex> lk(*mutex);
+        // Check whether the callback has been cancelled while holding mutex.
+        if (cbData.myHandle.isCanceled()) {
+            return;
+        }
         log() << "Catchup timed out after becoming primary.";
-        stdx::lock_guard<stdx::mutex> lk(_repl->_mutex);
         abort_inlock();
     };
 
@@ -2540,8 +2548,8 @@ void ReplicationCoordinatorImpl::CatchupState::abort_inlock() {
 
     // Enter primary drain mode.
     _repl->_enterDrainMode_inlock();
-    // Destruct the state itself.
-    _repl->_catchupState.reset(nullptr);
+    // Destroy the state itself.
+    _repl->_catchupState.reset();
 }
 
 void ReplicationCoordinatorImpl::CatchupState::signalHeartbeatUpdate_inlock() {
@@ -2553,7 +2561,7 @@ void ReplicationCoordinatorImpl::CatchupState::signalHeartbeatUpdate_inlock() {
 
     // We've caught up.
     if (*targetOpTime <= _repl->_getMyLastAppliedOpTime_inlock()) {
-        log() << "Caught up to the latest known optime via heartbeats after becoming primary.";
+        log() << "Caught up to the latest optime known via heartbeats after becoming primary.";
         abort_inlock();
         return;
     }

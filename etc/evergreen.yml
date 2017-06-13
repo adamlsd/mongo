@@ -511,56 +511,106 @@ functions:
         # The "resmoke_wrapper" expansion is used by the 'burn_in_tests' task to wrap the resmoke.py
         # invocation. It must be placed between $preamble and $resmoke.
         wrapper="${resmoke_wrapper}"
-        resmoke_report_file="--reportFile=report.json"
         resmoke="${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/resmoke.py \
                  ${resmoke_args}                   \
                  $extra_args                       \
                  ${test_flags}                     \
                  --log=buildlogger                 \
                  --staggerJobs=on                  \
-                 --tagFile=etc/test_lifecycle.yml  \
                  --taskId=${task_id}"
+
+        # Set variables for mainline builds. Patch builds will override these values below.
+        tag_file=etc/test_retrial.yml
+        retry_on_failure_options="--continueOnFailure --repeat=2"
+        resmoke_tags="retry_on_failure,                                \
+                      retry_on_failure|${task_name},                   \
+                      retry_on_failure|${task_name}|${build_variant},  \
+                      retry_on_failure|${task_name}|${build_variant}|${distro_id}"
+
+        # promote_silent_failures.py is only run on Evergreen mainline. Override in patch builds.
+        run_promote_silent_failures="${python|/opt/mongodbtoolchain/v2/bin/python2}  \
+                                     buildscripts/promote_silent_failures.py -o      \
+                                     report_unreliable.json report_unreliable.json"
 
         # For patch builds, we run reliable and then unreliable tests and combine the reports.
         if [ "${is_patch|}" = "true" ]; then
-          # Disable errexit, until we run combine_reports, so we can execute the reliable and
-          # unreliable tests.
-          set +o errexit
-          # If the "resmoke_wrapper" expansion is used for 'burn_in_tests' then add the reportFile.
-          echo "$wrapper" | grep -q burn_in_tests
-          add_report_file=$?
+          tag_file=etc/test_lifecycle.yml
+          retry_on_failure_options=""
+          run_promote_silent_failures=""
           resmoke_tags="unreliable,                                \
                         unreliable|${task_name},                   \
                         unreliable|${task_name}|${build_variant},  \
                         unreliable|${task_name}|${build_variant}|${distro_id}"
-          # Remove spaces from the tags argument.
-          resmoke_tags=$(echo $resmoke_tags| tr -d " ")
-          report_file=report_reliable.json
-          resmoke_base="$resmoke                         \
-                   --excludeWithAnyTags='$resmoke_tags'  \
-                   --reportFailureStatus=fail            \
-                   --reportFile=$report_file"
-          wrapper_report_file=""
-          if [ $add_report_file -eq 0 ]; then
-            wrapper_report_file="--reportFile=$report_file"
-          fi
-          eval $preamble $wrapper $wrapper_report_file $resmoke_base
-          report_file=report_unreliable.json
-          resmoke_base="$resmoke                         \
-                   --includeWithAnyTags='$resmoke_tags'  \
-                   --reportFailureStatus=silentfail      \
-                   --reportFile=$report_file"
-          if [ $add_report_file -eq 0 ]; then
-            wrapper_report_file="--reportFile=$report_file"
-          fi
-          eval $preamble $wrapper $wrapper_report_file  $resmoke_base
-          #  Reenable errexit, as the return from combine_reports will return the cumulative error.
-          set -o errexit
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -o report.json report_reliable.json report_unreliable.json
-        else
-          eval $preamble $wrapper $resmoke $resmoke_report_file
         fi
 
+        # Remove spaces from the tags argument.
+        resmoke_tags=$(echo $resmoke_tags| tr -d " ")
+
+        # Set report file for reliable test run.
+        report_file=report_reliable.json
+
+        # Disable errexit, until we run combine_reports, so we can execute the reliable and
+        # unreliable tests.
+        set +o errexit
+
+        # If the "resmoke_wrapper" expansion is used for 'burn_in_tests' then add the reportFile.
+        echo "$wrapper" | grep -q burn_in_tests
+        add_report_file=$?
+        wrapper_report_file=""
+        if [ $add_report_file -eq 0 ]; then
+          wrapper_report_file="--reportFile=$report_file"
+        fi
+
+        # Set up resmoke to run without tagged tests.
+        resmoke_base="$resmoke                         \
+                 --excludeWithAnyTags='$resmoke_tags'  \
+                 --reportFailureStatus=fail            \
+                 --reportFile=$report_file             \
+                 --tagFile=$tag_file"
+
+        # Run reliable set of tests once.
+        eval $preamble $wrapper $wrapper_report_file $resmoke_base
+        exit_codes=$?
+
+        # Set report file for unreliable test run.
+        report_file=report_unreliable.json
+
+        # Set up resmoke to run with only tagged tests.
+        resmoke_base="$resmoke                         \
+                 --includeWithAnyTags='$resmoke_tags'  \
+                 --reportFailureStatus=silentfail      \
+                 --reportFile=$report_file             \
+                 --tagFile=$tag_file                   \
+                 $retry_on_failure_options"
+
+        if [ $add_report_file -eq 0 ]; then
+          wrapper_report_file="--reportFile=$report_file"
+        fi
+
+        # Run unreliable set of tests.
+        eval $preamble $wrapper $wrapper_report_file $resmoke_base
+        exit_codes="$exit_codes $?"
+
+        #  Reenable errexit, as the return from combine_reports will return the cumulative error.
+        set -o errexit
+
+        # If both executions of the test with an "retry_on_failure*" tag fail, promote the task as
+        # a failure. Only promote silent failures on mainline.
+        eval $run_promote_silent_failures
+
+        # Combine reliable and unreliable reports.
+        ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -o report.json report_reliable.json report_unreliable.json
+
+        # We mask any errors from the resmoke runs above (by disabling errexit) until both have
+        # completed. If any of the resmoke runs failed due to non-test failures
+        # (i.e fixture failures), we need to exit with non-zero status.
+        for exit_code in $exit_codes
+        do
+          if [ $exit_code -ne 0 ]; then
+            echo "resmoke.py failed with error code: $exit_code"
+            exit $exit_code
+          fi
+        done
 
   "do jepsen setup" :
     - command: shell.exec
@@ -1170,7 +1220,7 @@ post:
           # On platforms with GDB, we get the binary name from core file
           gdb=/opt/mongodbtoolchain/gdb/bin/gdb
           if [ -f $gdb ]; then
-            binary_file=$($gdb -batch --quiet -ex "core $core_file" 2> /dev/null | grep "Core was generated" | cut -f2 -d "\`" | cut -f1 -d "'")
+            binary_file=$($gdb -batch --quiet -ex "core $core_file" 2> /dev/null | grep "Core was generated" | cut -f2 -d "\`" | cut -f1 -d "'" | cut -f1 -d " ")
             binary_file_locations=$binary_file
           else
             # Find the base file name from the core file name, note it may be truncated.
@@ -1312,7 +1362,7 @@ tasks:
 
           rm -rf ${install_directory|/data/mongo-install-directory}
 
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" core tools dbtest integration_tests dist dist-debugsymbols distsrc-${ext|tgz} ${msi_target|} MONGO_VERSION=${version}
+          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" core tools dbtest integration_tests dist dist-debugsymbols distsrc-${ext|tgz} ${msi_target|} MONGO_VERSION=${version}
 
           mv mongodb-src-*.${ext|tgz} distsrc.${ext|tgz}
           mv mongodb-*-debugsymbols.${ext|tgz} mongo-debugsymbols.tgz || true
@@ -1377,6 +1427,7 @@ tasks:
           - "./etc/*san.suppressions"
           - "./etc/repo_config.yaml"
           - "./etc/test_lifecycle.yml"
+          - "./etc/test_retrial.yml"
           - "./build/integration_tests/**"
           - "./build/integration_tests.txt"
           - "./build/**.gcno"
@@ -1454,7 +1505,7 @@ tasks:
 
           rm -rf ${install_directory|/data/mongo-install-directory}
 
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" all ${additional_targets|} MONGO_VERSION=${version}
+          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" all ${additional_targets|} MONGO_VERSION=${version}
 
     - command: s3.put
       params:
@@ -1489,7 +1540,7 @@ tasks:
           set -o errexit
           set -o verbose
 
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} --stack-size=1024 lint
+          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} --stack-size=1024 lint
 
 - <<: *task_template
   name: burn_in_tests
@@ -5415,7 +5466,7 @@ buildvariants:
 - name: osx-1010-ssl
   display_name: SSL OS X 10.10
   run_on:
-  - osx-1010
+  - macos-1012
   batchtime: 1440 # 1 day
   expansions:
     push_path: osx
@@ -5423,6 +5474,8 @@ buildvariants:
     push_name: osx-ssl
     push_arch: x86_64
     tooltags: "-tags ssl"
+    gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10
+    compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: --ssl --allocator=system -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     python: python2.7
     num_jobs_available: 1
@@ -5523,13 +5576,15 @@ buildvariants:
 - name: osx-1010-debug
   display_name: "* OS X 10.10 DEBUG"
   run_on:
-  - osx-1010
+  - macos-1012
   expansions:
     push_path: osx
     push_bucket: downloads.mongodb.org
     push_name: osx-debug
     push_arch: x86_64
     num_jobs_available: 1
+    gorootvars: CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10
+    compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: --dbg=on --opt=on --allocator=system -j$(sysctl -n hw.logicalcpu) --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10"
     python: python2.7
     build_mongoreplay: true
@@ -5566,7 +5621,7 @@ buildvariants:
   modules:
   - enterprise
   run_on:
-  - osx-1010
+  - macos-1012
   batchtime: 1440 # 1 day
   expansions:
     push_path: osx
@@ -5574,6 +5629,8 @@ buildvariants:
     push_name: osx
     push_arch: x86_64-enterprise
     tooltags: "-tags 'ssl sasl'"
+    gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10
+    compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: --ssl --allocator=system -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     python: python2.7
     num_jobs_available: 1
@@ -6891,8 +6948,8 @@ buildvariants:
   - name: push
 
 
-- name: enterprise-ubuntu1604-clang-3.7-libcxx
-  display_name: "! Enterprise Ubuntu 16.04 (Clang 3.7/libc++)"
+- name: enterprise-ubuntu1604-clang-3.8-libcxx
+  display_name: "! Enterprise Ubuntu 16.04 (Clang 3.8)"
   modules:
   - enterprise
   run_on:
@@ -6900,7 +6957,7 @@ buildvariants:
   expansions:
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
-    compile_flags: --link-model=dynamic --ssl CC=/usr/bin/clang-3.7 CXX=/usr/bin/clang++-3.7 --libc++ -j$(grep -c ^processor /proc/cpuinfo) CPPPATH=/usr/include/libcxxabi/
+    compile_flags: --link-model=dynamic --ssl CC=/usr/bin/clang-3.8 CXX=/usr/bin/clang++-3.8 -j$(grep -c ^processor /proc/cpuinfo) CPPPATH=/usr/include/libcxxabi/
     use_scons_cache: true
     build_mongoreplay: true
   tasks:

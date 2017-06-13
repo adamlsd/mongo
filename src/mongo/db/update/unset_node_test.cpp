@@ -73,8 +73,7 @@ DEATH_TEST(UnsetNodeTest, ApplyToRootFails, "Invariant failure parent.ok()") {
                indexData,
                logBuilder,
                &indexesAffected,
-               &noop)
-        .transitional_ignore();
+               &noop);
 }
 
 TEST(UnsetNodeTest, InitSucceedsForNonemptyElement) {

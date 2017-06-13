@@ -1060,8 +1060,7 @@ TEST(UpdateObjectNodeTest, ApplyBlockingElement) {
                                            &indexData,
                                            &logBuilder,
                                            &indexesAffected,
-                                           &noop)
-                                    .transitional_ignore(),
+                                           &noop),
                                 UserException,
                                 ErrorCodes::PathNotViable,
                                 "Cannot create field 'b' in element {a: 0}");
@@ -1130,8 +1129,7 @@ TEST(UpdateObjectNodeTest, ApplyPositionalMissingMatchedField) {
                    &indexData,
                    &logBuilder,
                    &indexesAffected,
-                   &noop)
-            .transitional_ignore(),
+                   &noop),
         UserException,
         ErrorCodes::BadValue,
         "The positional operator did not find the match needed from the query.");
@@ -1242,8 +1240,7 @@ TEST(UpdateObjectNodeTest, ApplyMergeConflictWithPositionalChild) {
                                            &indexData,
                                            &logBuilder,
                                            &indexesAffected,
-                                           &noop)
-                                    .transitional_ignore(),
+                                           &noop),
                                 UserException,
                                 ErrorCodes::ConflictingUpdateOperators,
                                 "Update created a conflict at 'a.0'");

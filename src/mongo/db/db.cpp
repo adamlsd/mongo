@@ -704,7 +704,7 @@ ExitCode _initAndListen(int listenPort) {
 
     // Set up the periodic runner for background job execution
     auto runner = makePeriodicRunner();
-    runner->startup();
+    runner->startup().transitional_ignore();
     globalServiceContext->setPeriodicRunner(std::move(runner));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the

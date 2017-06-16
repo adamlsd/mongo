@@ -193,8 +193,10 @@ bool BSONElementIterator::subCursorHasMore() {
             }
 
             _subCursorPath.reset(new ElementPath());
-            _subCursorPath->init(_arrayIterationState.restOfPath.substr(
-                _arrayIterationState.nextPieceOfPath.size() + 1)).transitional_ignore();
+            _subCursorPath
+                ->init(_arrayIterationState.restOfPath.substr(
+                    _arrayIterationState.nextPieceOfPath.size() + 1))
+                .transitional_ignore();
             _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
 
             // If we're here, we must be able to traverse nonleaf arrays.
@@ -295,8 +297,10 @@ bool BSONElementIterator::more() {
                     // The current array element is itself an array.  See if the nested array
                     // has any elements matching the remainihng.
                     _subCursorPath.reset(new ElementPath());
-                    _subCursorPath->init(_arrayIterationState.restOfPath.substr(
-                        _arrayIterationState.nextPieceOfPath.size() + 1)).transitional_ignore();
+                    _subCursorPath
+                        ->init(_arrayIterationState.restOfPath.substr(
+                            _arrayIterationState.nextPieceOfPath.size() + 1))
+                        .transitional_ignore();
                     _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
                     BSONElementIterator* real = new BSONElementIterator(
                         _subCursorPath.get(), _arrayIterationState._current.Obj());

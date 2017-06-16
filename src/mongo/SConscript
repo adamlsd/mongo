@@ -281,7 +281,6 @@ mongod = env.Program(
         "db/mongod_options_init.cpp",
     ] + env.WindowsResourceFile("db/db.rc"),
     LIBDEPS=[
-        'db/assemble_response',
         'db/commands/core',
         'db/conn_pool_options',
         'db/catalog/catalog',
@@ -290,6 +289,7 @@ mongod = env.Program(
         'db/ftdc/ftdc_mongod',
         'db/index_d',
         'db/initialize_snmp',
+        'db/logical_session_cache_factory_mongod',
         'db/mongod_options',
         'db/mongodandmongos',
         'db/op_observer_d',

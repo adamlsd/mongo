@@ -13,7 +13,7 @@ mozjsSuffix = '-45'
 yamlSuffix = '-0.5.3'
 icuSuffix = '-57.1'
 gperftoolsSuffix = '-2.5'
-timelibSuffix = '-2017.05beta3'
+timelibSuffix = '-2017.05beta4'
 
 thirdPartyIncludePathList = [
     ('s2', '#/src/third_party/s2'),
@@ -146,8 +146,6 @@ if use_system_version_of_library("boost"):
                 env['LIBDEPS_BOOST_THREAD_SYSLIBDEP'],
                 env['LIBDEPS_BOOST_SYSTEM_SYSLIBDEP'],
                 env['LIBDEPS_BOOST_IOSTREAMS_SYSLIBDEP'],
-                env['LIBDEPS_BOOST_CHRONO_SYSLIBDEP'],
-                env['LIBDEPS_BOOST_REGEX_SYSLIBDEP'],
             ])
 else:
     boostDirectory = 'boost' + boostSuffix
@@ -160,9 +158,7 @@ else:
             (boostDirectory + '/boost_filesystem', libdeps.dependency.Interface),
             (boostDirectory + '/boost_thread', libdeps.dependency.Interface),
             (boostDirectory + '/boost_system', libdeps.dependency.Interface),
-            (boostDirectory + '/boost_chrono', libdeps.dependency.Interface),
             (boostDirectory + '/boost_iostreams', libdeps.dependency.Interface),
-            (boostDirectory + '/boost_regex', libdeps.dependency.Interface),
         ])
 
 boostEnv.Library(

@@ -21,12 +21,23 @@ env.Library('auth_rolename', ['role_name.cpp'],
 env.Library(
     target = 'authentication_restriction',
     source = [
+        'restriction.cpp',
         'restriction_environment.cpp',
     ],
     LIBDEPS = [
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/decorable',
         '$BUILD_DIR/mongo/util/net/network',
+    ],
+)
+
+env.Library(
+    target='user_name',
+    source=[
+        'user_name.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
     ],
 )
 
@@ -48,11 +59,11 @@ env.Library('authcore', ['action_set.cpp',
                          'user.cpp',
                          'user_document_parser.cpp',
                          'user_management_commands_parser.cpp',
-                         'user_name.cpp',
                          'user_set.cpp'],
             LIBDEPS=['auth_rolename',
                      'authentication_restriction',
                      'sasl_options',
+                     'user_name',
                      '$BUILD_DIR/mongo/base',
                      '$BUILD_DIR/mongo/bson/mutable/mutable_bson',
                      '$BUILD_DIR/mongo/bson/util/bson_extract',

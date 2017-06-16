@@ -191,14 +191,13 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
         getGlobalServiceContext()->makeClient(str::stream() << nss.ns() << " loader"));
     auto opCtx = cc().makeOperationContext();
 
-    // We are not replicating nor validating writes under this OperationContext*.
-    // The OperationContext* is used for all writes to the (newly) cloned collection.
-    UnreplicatedWritesBlock uwb(opCtx.get());
     documentValidationDisabled(opCtx.get()) = true;
 
     std::unique_ptr<AutoGetCollection> autoColl;
     // Retry if WCE.
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+        UnreplicatedWritesBlock uwb(opCtx.get());
+
         // Get locks and create the collection.
         AutoGetOrCreateDb db(opCtx.get(), nss.db(), MODE_X);
         AutoGetCollection coll(opCtx.get(), nss, MODE_IX);
@@ -406,6 +405,40 @@ Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const Names
         return status;
     }
     MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "StorageInterfaceImpl::dropCollection", nss.ns());
+}
+
+Status StorageInterfaceImpl::renameCollection(OperationContext* opCtx,
+                                              const NamespaceString& fromNS,
+                                              const NamespaceString& toNS,
+                                              bool stayTemp) {
+    if (fromNS.db() != toNS.db()) {
+        return Status(ErrorCodes::InvalidNamespace,
+                      str::stream() << "Cannot rename collection between databases. From NS: "
+                                    << fromNS.ns()
+                                    << "; to NS: "
+                                    << toNS.ns());
+    }
+
+    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+        AutoGetDb autoDB(opCtx, fromNS.db(), MODE_X);
+        if (!autoDB.getDb()) {
+            return Status(ErrorCodes::NamespaceNotFound,
+                          str::stream() << "Cannot rename collection from " << fromNS.ns() << " to "
+                                        << toNS.ns()
+                                        << ". Database "
+                                        << fromNS.db()
+                                        << " not found.");
+        }
+        WriteUnitOfWork wunit(opCtx);
+        const auto status =
+            autoDB.getDb()->renameCollection(opCtx, fromNS.ns(), toNS.ns(), stayTemp);
+        if (status.isOK()) {
+            wunit.commit();
+        }
+        return status;
+    }
+    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
+        opCtx, "StorageInterfaceImpl::renameCollection", fromNS.ns());
 }
 
 namespace {

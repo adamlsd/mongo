@@ -140,7 +140,6 @@ private:
     const std::string _threadName;
 
     bool inExhaust = false;
-    bool wasCompressed = false;
     Message _inMessage;
     int64_t _counter = 0;
 

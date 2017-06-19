@@ -210,8 +210,7 @@ protected:
 
         auto tl = stdx::make_unique<MockTL>();
         _tl = tl.get();
-        sc->setTransportLayer(std::move(tl));
-        _tl->start().transitional_ignore();
+        sc->addAndStartTransportLayer(std::move(tl));
 
         _ssm = stdx::make_unique<ServiceStateMachine>(
             getGlobalServiceContext(), _tl->createSession(), true);

@@ -42,6 +42,7 @@
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
@@ -59,9 +60,6 @@ struct lock_weak {
     }
 };
 }  // namespace
-
-TransportLayerLegacy::Options::Options(const ServerGlobalParams* params)
-    : port(params->port), ipList(params->bind_ip) {}
 
 TransportLayerLegacy::ListenerLegacy::ListenerLegacy(const TransportLayerLegacy::Options& opts,
                                                      NewConnectionCb callback)
@@ -147,12 +145,20 @@ TransportLayerLegacy::~TransportLayerLegacy() = default;
 Ticket TransportLayerLegacy::sourceMessage(const SessionHandle& session,
                                            Message* message,
                                            Date_t expiration) {
-    auto sourceCb = [message](AbstractMessagingPort* amp) -> Status {
+    auto& compressorMgr = MessageCompressorManager::forSession(session);
+    auto sourceCb = [message, &compressorMgr](AbstractMessagingPort* amp) -> Status {
         if (!amp->recv(*message)) {
             return {ErrorCodes::HostUnreachable, "Recv failed"};
         }
 
         networkCounter.hitPhysical(message->size(), 0);
+        if (message->operation() == dbCompressed) {
+            auto swm = compressorMgr.decompressMessage(*message);
+            if (!swm.isOK())
+                return swm.getStatus();
+            *message = swm.getValue();
+        }
+        networkCounter.hitLogical(message->size(), 0);
         return Status::OK();
     };
 
@@ -178,10 +184,16 @@ TransportLayer::Stats TransportLayerLegacy::sessionStats() {
 Ticket TransportLayerLegacy::sinkMessage(const SessionHandle& session,
                                          const Message& message,
                                          Date_t expiration) {
-    auto sinkCb = [&message](AbstractMessagingPort* amp) -> Status {
+    auto& compressorMgr = MessageCompressorManager::forSession(session);
+    auto sinkCb = [&message, &compressorMgr](AbstractMessagingPort* amp) -> Status {
         try {
-            amp->say(message);
-            networkCounter.hitPhysical(0, message.size());
+            networkCounter.hitLogical(0, message.size());
+            auto swm = compressorMgr.compressMessage(message);
+            if (!swm.isOK())
+                return swm.getStatus();
+            const auto& compressedMessage = swm.getValue();
+            amp->say(compressedMessage);
+            networkCounter.hitPhysical(0, compressedMessage.size());
 
             return Status::OK();
         } catch (const SocketException& e) {

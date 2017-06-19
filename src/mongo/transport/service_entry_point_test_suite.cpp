@@ -143,10 +143,6 @@ void ServiceEntryPointTestSuite::MockTLHarness::endAllSessions(Session::TagMask 
     return _endAllSessions(tags);
 }
 
-Status ServiceEntryPointTestSuite::MockTLHarness::setup() {
-    return Status::OK();
-}
-
 Status ServiceEntryPointTestSuite::MockTLHarness::start() {
     return _start();
 }

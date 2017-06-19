@@ -42,9 +42,7 @@
 namespace mongo {
 
 class AbstractMessagingPort;
-class ServiceContext;
 class ServiceEntryPoint;
-struct ServerGlobalParams;
 
 namespace transport {
 
@@ -57,18 +55,17 @@ class TransportLayerLegacy final : public TransportLayer {
 
 public:
     struct Options {
-        Options(const ServerGlobalParams* params);
-        Options() : port(0), ipList("") {}
-
         int port;            // port to bind to
         std::string ipList;  // addresses to bind to
+
+        Options() : port(0), ipList("") {}
     };
 
     TransportLayerLegacy(const Options& opts, ServiceEntryPoint* sep);
 
     ~TransportLayerLegacy();
 
-    Status setup() override;
+    Status setup();
     Status start() override;
 
     Ticket sourceMessage(const SessionHandle& session,

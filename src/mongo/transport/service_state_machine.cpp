@@ -34,9 +34,7 @@
 
 #include "mongo/db/client.h"
 #include "mongo/db/dbmessage.h"
-#include "mongo/db/stats/counters.h"
 #include "mongo/stdx/memory.h"
-#include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/ticket.h"
@@ -161,19 +159,6 @@ void ServiceStateMachine::processMessage() {
     }
     invariant(!_inMessage.empty());
 
-    auto& compressorMgr = MessageCompressorManager::forSession(session());
-
-    if (_inMessage.operation() == dbCompressed) {
-        auto swm = compressorMgr.decompressMessage(_inMessage);
-        uassertStatusOK(swm.getStatus());
-        _inMessage = swm.getValue();
-        wasCompressed = true;
-    } else {
-        wasCompressed = false;
-    }
-
-    networkCounter.hitLogical(_inMessage.size(), 0);
-
     // 2. Pass sourced Message to handler to generate response.
     auto opCtx = cc().makeOperationContext();
 
@@ -197,14 +182,6 @@ void ServiceStateMachine::processMessage() {
         } else {
             inExhaust = false;
             _inMessage.reset();
-        }
-
-        networkCounter.hitLogical(0, toSink.size());
-
-        if (wasCompressed) {
-            auto swm = compressorMgr.compressMessage(toSink);
-            uassertStatusOK(swm.getStatus());
-            toSink = swm.getValue();
         }
 
         // 4. Sink our response to the client

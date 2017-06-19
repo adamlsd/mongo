@@ -37,6 +37,7 @@
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/session.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/system_clock_source.h"
@@ -118,7 +119,8 @@ Status validateStorageOptions(
 }
 
 ServiceContext::ServiceContext()
-    : _tickSource(stdx::make_unique<SystemTickSource>()),
+    : _transportLayerManager(stdx::make_unique<transport::TransportLayerManager>()),
+      _tickSource(stdx::make_unique<SystemTickSource>()),
       _fastClockSource(stdx::make_unique<SystemClockSource>()),
       _preciseClockSource(stdx::make_unique<SystemClockSource>()) {}
 
@@ -172,11 +174,15 @@ LogicalSessionCache* ServiceContext::getLogicalSessionCache() const& {
 }
 
 transport::TransportLayer* ServiceContext::getTransportLayer() const {
-    return _transportLayer.get();
+    return _transportLayerManager.get();
 }
 
 ServiceEntryPoint* ServiceContext::getServiceEntryPoint() const {
     return _serviceEntryPoint.get();
+}
+
+Status ServiceContext::addAndStartTransportLayer(std::unique_ptr<transport::TransportLayer> tl) {
+    return _transportLayerManager->addAndStartTransportLayer(std::move(tl));
 }
 
 TickSource* ServiceContext::getTickSource() const {
@@ -205,10 +211,6 @@ void ServiceContext::setPreciseClockSource(std::unique_ptr<ClockSource> newSourc
 
 void ServiceContext::setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep) {
     _serviceEntryPoint = std::move(sep);
-}
-
-void ServiceContext::setTransportLayer(std::unique_ptr<transport::TransportLayer> tl) {
-    _transportLayer = std::move(tl);
 }
 
 void ServiceContext::ClientDeleter::operator()(Client* client) const {
@@ -370,18 +372,6 @@ void ServiceContext::unsetKillAllOperations() {
 void ServiceContext::registerKillOpListener(KillOpListenerInterface* listener) {
     stdx::lock_guard<stdx::mutex> clientLock(_mutex);
     _killOpListeners.push_back(listener);
-}
-
-void ServiceContext::waitForStartupComplete() {
-    stdx::unique_lock<stdx::mutex> lk(_mutex);
-    _startupCompleteCondVar.wait(lk, [this] { return _startupComplete; });
-}
-
-void ServiceContext::notifyStartupComplete() {
-    stdx::unique_lock<stdx::mutex> lk(_mutex);
-    _startupComplete = true;
-    lk.unlock();
-    _startupCompleteCondVar.notify_all();
 }
 
 }  // namespace mongo

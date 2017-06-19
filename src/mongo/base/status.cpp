@@ -1,4 +1,5 @@
-/*    Copyright 2012 10gen Inc.
+/**
+ *    Copyright 2012 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -54,26 +55,32 @@ Status::Status(ErrorCodes::Error code, const mongoutils::str::stream& reason, in
     : Status(code, std::string(reason), location) {}
 
 bool Status::compare(const Status& other) const {
+	_checked= other._checked= true;
     return code() == other.code() && location() == other.location();
 }
 
 bool Status::operator==(const Status& other) const {
+	_checked= other._checked= true;
     return compare(other);
 }
 
 bool Status::operator!=(const Status& other) const {
+	_checked= other._checked= true;
     return !compare(other);
 }
 
 bool Status::compareCode(const ErrorCodes::Error other) const {
+	_checked= true;
     return code() == other;
 }
 
 bool Status::operator==(const ErrorCodes::Error other) const {
+	_checked= true;
     return compareCode(other);
 }
 
 bool Status::operator!=(const ErrorCodes::Error other) const {
+	_checked= true;
     return !compareCode(other);
 }
 

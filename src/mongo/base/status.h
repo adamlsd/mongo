@@ -133,8 +133,10 @@ public:
      * is only possible if the value being ignored is an xvalue -- it is not appropriate to create a
      * status variable and then ignore it.
      */
-    inline void ignore() && noexcept {}
-    inline void ignore() const& noexcept = delete;
+    inline void ignore() && noexcept { this->_checked= true; }
+    inline void ignore() const& noexcept= delete;
+
+public:
 
     /**
      * This method is a transitional tool, to facilitate transition to compile-time enforced status
@@ -146,7 +148,7 @@ public:
      * encounter a compiler error from ignoring the result of a status-returning function be sure to
      * check the return value, or deliberately ignore the return value.
      */
-    inline void transitional_ignore() && noexcept {};
+    inline void transitional_ignore() && noexcept { std::move( *this ).ignore(); };
     inline void transitional_ignore() const& noexcept = delete;
 
     //
@@ -170,6 +172,8 @@ private:
     };
 
     ErrorInfo* _error;
+
+	mutable bool _checked= false;
 
     /**
      * Increment/Decrement the reference counter inside an ErrorInfo

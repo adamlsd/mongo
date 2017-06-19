@@ -1,4 +1,5 @@
-/*    Copyright 2012 10gen Inc.
+/**
+ *    Copyright 2012 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -33,49 +34,63 @@ inline Status Status::OK() {
     return Status();
 }
 
-inline Status::Status(const Status& other) : _error(other._error) {
+inline Status::Status(const Status& other) : _error(other._error), _checked( other._checked ) {
     ref(_error);
+	other._checked= true;
 }
 
 inline Status& Status::operator=(const Status& other) {
+	invariant(_checked);
     ref(other._error);
     unref(_error);
     _error = other._error;
+	_checked= other._checked;
+	other._checked= true;
     return *this;
 }
 
-inline Status::Status(Status&& other) noexcept : _error(other._error) {
+inline Status::Status(Status&& other) noexcept : _error(other._error), _checked( other._checked ) {
     other._error = nullptr;
+	other._checked= true;
 }
 
 inline Status& Status::operator=(Status&& other) noexcept {
+	invariant( this->_checked );
     unref(_error);
     _error = other._error;
     other._error = nullptr;
+	_checked= other._checked;
+	other._checked= true;
     return *this;
 }
 
 inline Status::~Status() {
+	invariant(_checked);
     unref(_error);
 }
 
 inline bool Status::isOK() const {
+	_checked= true;
     return !_error;
 }
 
 inline ErrorCodes::Error Status::code() const {
+	_checked= true;
     return _error ? _error->code : ErrorCodes::OK;
 }
 
 inline std::string Status::codeString() const {
+	_checked= true;
     return ErrorCodes::errorString(code());
 }
 
 inline std::string Status::reason() const {
+	_checked= true;
     return _error ? _error->reason : std::string();
 }
 
 inline int Status::location() const {
+	_checked= true;
     return _error ? _error->location : 0;
 }
 

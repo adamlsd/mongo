@@ -34,6 +34,7 @@
 #include <list>
 #include <string>
 
+#include <boost/thread/shared_mutex.hpp>
 #include <wiredtiger.h>
 
 #include "mongo/db/storage/journal_listener.h"

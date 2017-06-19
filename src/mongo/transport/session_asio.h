@@ -102,8 +102,9 @@ public:
         _socket.non_blocking(async, ec);
         fassert(40490, ec.value() == 0);
 
-// Prevent a warning about unused variables on Solaris -- only create this variable for codepaths which use it.
-#if defined( __linux ) || defined( SO_NOSIGPIPE)
+// Prevent a warning about unused variables on Solaris -- only create this variable for codepaths
+// which use it.
+#if defined(__linux) || defined(SO_NOSIGPIPE)
         const auto sock = _socket.native_handle();
 #endif
 #ifdef SO_NOSIGPIPE

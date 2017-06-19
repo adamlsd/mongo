@@ -114,13 +114,13 @@ void serializeReply(OperationContext* opCtx,
     for (size_t i = 0; i < result.results.size(); i++) {
         if (result.results[i].isOK()) {
             const auto& opResult = result.results[i].getValue();
-            n += opResult.n;  // Always there.
+            n += opResult.getN();  // Always there.
             if (replyStyle == ReplyStyle::kUpdate) {
-                nModified += opResult.nModified;
-                if (!opResult.upsertedId.isEmpty()) {
+                nModified += opResult.getNModified();
+                if (auto idElement = opResult.getUpsertedId().firstElement()) {
                     BSONObjBuilder upsertedId(upsertInfoSizeTracker);
                     upsertedId.append("index", int(i));
-                    upsertedId.appendAs(opResult.upsertedId.firstElement(), "_id");
+                    upsertedId.appendAs(idElement, "_id");
                     upsertInfo.push_back(upsertedId.obj());
                 }
             }
@@ -313,6 +313,7 @@ public:
         updateRequest.setQuery(batch.updates[0].query);
         updateRequest.setCollation(batch.updates[0].collation);
         updateRequest.setUpdates(batch.updates[0].update);
+        updateRequest.setArrayFilters(batch.updates[0].arrayFilters);
         updateRequest.setMulti(batch.updates[0].multi);
         updateRequest.setUpsert(batch.updates[0].upsert);
         updateRequest.setYieldPolicy(PlanExecutor::YIELD_AUTO);

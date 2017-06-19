@@ -732,7 +732,9 @@ TEST_F(AuthorizationSessionTest, AddPrivilegesForStageFailsIfOutNamespaceIsNotVa
                                          << ""));
     BSONObj cmdObj = BSON("aggregate" << testFooNss.coll() << "pipeline" << pipeline);
     ASSERT_THROWS_CODE(
-        authzSession->checkAuthForAggregate(testFooNss, cmdObj, false), UserException, 17139);
+        authzSession->checkAuthForAggregate(testFooNss, cmdObj, false).transitional_ignore(),
+        UserException,
+        17139);
 }
 
 TEST_F(AuthorizationSessionTest, CannotAggregateOutWithoutInsertAndRemoveOnTargetNamespace) {

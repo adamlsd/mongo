@@ -153,13 +153,6 @@
  */
 
 
-// TODO: Move these to an appropriate header
-#ifdef __clang__
-#define MONGO_WARN_UNUSED_RESULT [[gnu::warn_unused_result]]
-#else
-#define MONGO_WARN_UNUSED_RESULT
-#endif
-
 #if defined(_MSC_VER)
 #include "mongo/platform/compiler_msvc.h"
 #elif defined(__GNUC__)

@@ -28,6 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/bson/util/builder.h"
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -107,10 +108,65 @@ void DatabaseTest::tearDown() {
     ServiceContextMongoDTest::tearDown();
 }
 
+TEST_F(DatabaseTest, SetDropPendingThrowsExceptionIfDatabaseIsAlreadyInADropPendingState) {
+    writeConflictRetry(_opCtx.get(), "testSetDropPending", _nss.ns(), [this] {
+        AutoGetOrCreateDb autoDb(_opCtx.get(), _nss.db(), MODE_X);
+        auto db = autoDb.getDb();
+        ASSERT_TRUE(db);
+
+        ASSERT_FALSE(db->isDropPending(_opCtx.get()));
+        db->setDropPending(_opCtx.get(), true);
+        ASSERT_TRUE(db->isDropPending(_opCtx.get()));
+
+        ASSERT_THROWS_CODE_AND_WHAT(
+            db->setDropPending(_opCtx.get(), true),
+            UserException,
+            ErrorCodes::DatabaseDropPending,
+            (StringBuilder() << "Unable to drop database " << _nss.db()
+                             << " because it is already in the process of being dropped.")
+                .stringData());
+
+        db->setDropPending(_opCtx.get(), false);
+        ASSERT_FALSE(db->isDropPending(_opCtx.get()));
+
+        // It's fine to reset 'dropPending' multiple times.
+        db->setDropPending(_opCtx.get(), false);
+        ASSERT_FALSE(db->isDropPending(_opCtx.get()));
+    });
+}
+
+TEST_F(DatabaseTest, CreateCollectionThrowsExceptionWhenDatabaseIsInADropPendingState) {
+    writeConflictRetry(
+        _opCtx.get(), "testÇreateCollectionWhenDatabaseIsInADropPendingState", _nss.ns(), [this] {
+            AutoGetOrCreateDb autoDb(_opCtx.get(), _nss.db(), MODE_X);
+            auto db = autoDb.getDb();
+            ASSERT_TRUE(db);
+
+            db->setDropPending(_opCtx.get(), true);
+
+            WriteUnitOfWork wuow(_opCtx.get());
+
+            // If createCollection() unexpectedly succeeds, we need to commit the collection
+            // creation to
+            // avoid leaving the ephemeralForTest storage engine in a bad state for subsequent
+            // tests.
+            ON_BLOCK_EXIT([&wuow] { wuow.commit(); });
+
+            ASSERT_THROWS_CODE_AND_WHAT(
+                db->createCollection(_opCtx.get(), _nss.ns()),
+                UserException,
+                ErrorCodes::DatabaseDropPending,
+                (StringBuilder() << "Cannot create collection " << _nss.ns()
+                                 << " - database is in the process of being dropped.")
+                    .stringData());
+        });
+}
+
 void _testDropCollection(OperationContext* opCtx,
                          const NamespaceString& nss,
                          bool createCollectionBeforeDrop,
-                         const repl::OpTime& dropOpTime = {}) {
+                         const repl::OpTime& dropOpTime = {},
+                         const CollectionOptions& collOpts = {}) {
     writeConflictRetry(opCtx, "testDropCollection", nss.ns(), [=] {
         AutoGetOrCreateDb autoDb(opCtx, nss.db(), MODE_X);
         auto db = autoDb.getDb();
@@ -118,7 +174,7 @@ void _testDropCollection(OperationContext* opCtx,
 
         WriteUnitOfWork wuow(opCtx);
         if (createCollectionBeforeDrop) {
-            ASSERT_TRUE(db->createCollection(opCtx, nss.ns()));
+            ASSERT_TRUE(db->createCollection(opCtx, nss.ns(), collOpts));
         } else {
             ASSERT_FALSE(db->getCollection(opCtx, nss));
         }
@@ -280,6 +336,14 @@ TEST_F(
     auto reaperEarliestDropOpTime =
         repl::DropPendingCollectionReaper::get(_opCtx.get())->getEarliestDropOpTime();
     ASSERT_FALSE(reaperEarliestDropOpTime);
+}
+
+TEST_F(DatabaseTest, DropPendingCollectionIsAllowedToHaveDocumentValidators) {
+    CollectionOptions opts;
+    opts.validator = BSON("x" << BSON("$type"
+                                      << "string"));
+    opts.validationAction = "error";
+    _testDropCollection(_opCtx.get(), _nss, true, {}, opts);
 }
 
 void _testDropCollectionThrowsExceptionIfThereAreIndexesInProgress(OperationContext* opCtx,

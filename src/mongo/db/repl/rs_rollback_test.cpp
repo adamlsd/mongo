@@ -222,7 +222,7 @@ TEST_F(RSRollbackTest, RemoteGetRollbackIdDiffersFromRequiredRBID) {
                                     _replicationProcess.get())
                            .transitional_ignore(),
                        UserException,
-                       ErrorCodes::Error(40362));
+                       ErrorCodes::Error(40506));
 }
 
 TEST_F(RSRollbackTest, BothOplogsAtCommonPoint) {
@@ -909,7 +909,7 @@ TEST_F(RSRollbackTest, RollbackDropCollectionCommandFailsIfRBIDChangesWhileSynci
                                     _replicationProcess.get())
                            .transitional_ignore(),
                        DBException,
-                       40365);
+                       40508);
     ASSERT(rollbackSource.copyCollectionCalled);
 }
 

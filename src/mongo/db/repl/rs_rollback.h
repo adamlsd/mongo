@@ -36,6 +36,8 @@
 #include "mongo/util/time_support.h"
 
 /**
+ * This rollback algorithm requires featureCompatibilityVersion 3.6.
+ *
  * Rollback Overview:
  *
  * Rollback occurs when a node's oplog diverges from its sync source's oplog and needs to regain

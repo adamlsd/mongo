@@ -599,7 +599,7 @@ functions:
         eval $run_promote_silent_failures
 
         # Combine reliable and unreliable reports.
-        ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -o report.json report_reliable.json report_unreliable.json
+        ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -m -o report.json report_reliable.json report_unreliable.json
 
         # We mask any errors from the resmoke runs above (by disabling errexit) until both have
         # completed. If any of the resmoke runs failed due to non-test failures
@@ -1025,9 +1025,7 @@ post:
     params:
       working_dir: src
       script: |
-        if [ -f report_reliable.json ]; then
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -o report.json report_reliable.json report_unreliable.json
-        fi
+        ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/combine_reports.py -m -o report.json report_reliable.json report_unreliable.json
   - command: attach.results
     params:
       file_location: src/report.json
@@ -3168,6 +3166,17 @@ tasks:
       resmoke_args: --suites=causally_consistent_jscore_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
+- <<: *task_template
+  name: causally_consistent_jscore_passthrough_auth_WT
+  depends_on:
+  - name: jsCore_WT
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=causally_consistent_jscore_passthrough_auth --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
 - name: idl_tests
   depends_on:
   - name: compile
@@ -4822,11 +4831,12 @@ buildvariants:
     - ubuntu1604-test
 
 - name: enterprise-linux-64-amazon-ami
-  display_name: "* Enterprise Amazon Linux"
+  display_name: "Enterprise Amazon Linux"
   modules:
   - enterprise
   run_on:
   - linux-64-amzn-test
+  batchtime: 1440 # 1 day
   expansions:
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -5078,6 +5088,7 @@ buildvariants:
   - name: auth
   - name: auth_WT
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: dbtest
   - name: dbtest_WT
   - name: disk
@@ -5510,6 +5521,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: concurrency
   - name: concurrency_WT
   - name: concurrency_replication
@@ -5743,6 +5755,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: concurrency
   - name: concurrency_WT
   - name: concurrency_replication
@@ -6744,7 +6757,8 @@ buildvariants:
   - name: tool_WT
   - name: push
     distros:
-    - rhel62-small
+    - rhel70
+    - rhel62-large
 
 ###########################################
 #          Ubuntu buildvariants           #
@@ -8077,6 +8091,7 @@ buildvariants:
   - name: auth_audit
   - name: bulk_gle_passthrough
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: concurrency
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
@@ -8496,6 +8511,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: concurrency
   - name: concurrency_WT
   - name: concurrency_replication
@@ -8672,6 +8688,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
   - name: concurrency
   - name: concurrency_WT
   - name: concurrency_replication

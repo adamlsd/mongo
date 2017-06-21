@@ -84,10 +84,6 @@ using std::pair;
 
 namespace repl {
 
-// Failpoint which causes rollback to hang before finishing.
-MONGO_FP_DECLARE(rollbackHangBeforeFinish);
-MONGO_FP_DECLARE(rollbackHangThenFailAfterWritingMinValid);
-
 using namespace rollback_internal;
 
 bool DocID::operator<(const DocID& other) const {
@@ -368,18 +364,18 @@ void checkRbidAndUpdateMinValid(OperationContext* opCtx,
     // 3. Sets our minValid to the previously fetched OpTime of the top of their oplog.
     const auto newMinValidDoc = rollbackSource.getLastOperation();
     if (newMinValidDoc.isEmpty()) {
-        uasserted(40361, "rollback error newest oplog entry on source is missing or empty");
+        uasserted(40500, "rollback error newest oplog entry on source is missing or empty");
     }
     if (rbid != rollbackSource.getRollbackId()) {
         // Our source rolled back so the data we received is not necessarily consistent.
-        uasserted(40365, "rollback rbid on source changed during rollback, canceling this attempt");
+        uasserted(40508, "rollback rbid on source changed during rollback, canceling this attempt");
     }
 
     // We have items we are writing that aren't from a point-in-time. Thus, it is best not to come
     // online until we get to that point in freshness. In other words, we do not transition from
     // RECOVERING state to SECONDARY state until we have reached the minValid oplog entry.
 
-    OpTime minValid = fassertStatusOK(28774, OpTime::parseFromOplogEntry(newMinValidDoc));
+    OpTime minValid = fassertStatusOK(40492, OpTime::parseFromOplogEntry(newMinValidDoc));
     log() << "Setting minvalid to " << minValid;
     replicationProcess->getConsistencyMarkers()->setAppliedThrough(opCtx, {});  // Use top of oplog.
     replicationProcess->getConsistencyMarkers()->setMinValid(opCtx, minValid);
@@ -393,7 +389,7 @@ void checkRbidAndUpdateMinValid(OperationContext* opCtx,
             invariant(!globalInShutdownDeprecated());  // It is an error to shutdown while enabled.
             mongo::sleepsecs(1);
         }
-        uasserted(40378,
+        uasserted(40502,
                   "failing rollback due to rollbackHangThenFailAfterWritingMinValid fail point");
     }
 }
@@ -474,7 +470,7 @@ void syncFixUp(OperationContext* opCtx,
                 Database* db = dbHolder().openDb(opCtx, nss.db().toString());
                 invariant(db);
                 WriteUnitOfWork wunit(opCtx);
-                fassertStatusOK(40359, db->dropCollectionEvenIfSystem(opCtx, nss));
+                fassertStatusOK(40505, db->dropCollectionEvenIfSystem(opCtx, nss));
                 wunit.commit();
             }
 
@@ -622,7 +618,7 @@ void syncFixUp(OperationContext* opCtx,
             }
 
             WriteUnitOfWork wunit(opCtx);
-            fassertStatusOK(40360, db->dropCollectionEvenIfSystem(opCtx, nss));
+            fassertStatusOK(40504, db->dropCollectionEvenIfSystem(opCtx, nss));
             wunit.commit();
         }
     }
@@ -830,7 +826,7 @@ void syncFixUp(OperationContext* opCtx,
         OldClientContext ctx(opCtx, rsOplogName);
         Collection* oplogCollection = ctx.db()->getCollection(opCtx, oplogNss);
         if (!oplogCollection) {
-            fassertFailedWithStatusNoTrace(13423,
+            fassertFailedWithStatusNoTrace(40495,
                                            Status(ErrorCodes::UnrecoverableRollbackError,
                                                   str::stream() << "Can't find " << rsOplogName));
         }
@@ -841,7 +837,7 @@ void syncFixUp(OperationContext* opCtx,
     Status status = getGlobalAuthorizationManager()->initialize(opCtx);
     if (!status.isOK()) {
         severe() << "Failed to reinitialize auth data after rollback: " << redact(status);
-        fassertFailedNoTrace(40366);
+        fassertFailedNoTrace(40496);
     }
 
     // Reload the lastAppliedOpTime and lastDurableOpTime value in the replcoord and the
@@ -861,7 +857,7 @@ Status _syncRollback(OperationContext* opCtx,
     log() << "Starting rollback. Sync source: " << rollbackSource.getSource() << rsLog;
     how.rbid = rollbackSource.getRollbackId();
     uassert(
-        40362, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
+        40506, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
 
     log() << "Finding the Common Point";
     try {
@@ -901,7 +897,7 @@ Status _syncRollback(OperationContext* opCtx,
     try {
         ON_BLOCK_EXIT([&] {
             auto status = replicationProcess->incrementRollbackID(opCtx);
-            fassertStatusOK(40425, status);
+            fassertStatusOK(40497, status);
         });
         syncFixUp(opCtx, how, rollbackSource, replCoord, replicationProcess);
     } catch (const RSFatalException& e) {
@@ -981,7 +977,7 @@ void rollback(OperationContext* opCtx,
         if (ErrorCodes::UnrecoverableRollbackError == status.code()) {
             severe() << "Unable to complete rollback. A full resync may be needed: "
                      << redact(status);
-            fassertFailedNoTrace(28723);
+            fassertFailedNoTrace(40507);
         }
 
         // In other cases, we log the message contained in the error status and retry later.
@@ -1018,14 +1014,14 @@ void rollback(OperationContext* opCtx,
         severe() << "shardIdentity document rollback detected.  Shutting down to clear "
                     "in-memory sharding state.  Restarting this process should safely return it "
                     "to a healthy state";
-        fassertFailedNoTrace(40276);
+        fassertFailedNoTrace(40498);
     }
 
     if (!replCoord->setFollowerMode(MemberState::RS_RECOVERING)) {
         severe() << "Failed to transition into " << MemberState(MemberState::RS_RECOVERING)
                  << "; expected to be in state " << MemberState(MemberState::RS_ROLLBACK)
                  << " but found self in " << replCoord->getMemberState();
-        fassertFailedNoTrace(40364);
+        fassertFailedNoTrace(40499);
     }
 }
 

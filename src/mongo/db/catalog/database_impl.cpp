@@ -38,7 +38,6 @@
 
 #include "mongo/base/init.h"
 #include "mongo/db/audit.h"
-#include "mongo/db/auth/auth_index_d.h"
 #include "mongo/db/background.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
@@ -63,6 +62,7 @@
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/db/system_index.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
@@ -325,6 +325,24 @@ Status DatabaseImpl::setProfilingLevel(OperationContext* opCtx, int newLevel) {
     _profile = newLevel;
 
     return Status::OK();
+}
+
+void DatabaseImpl::setDropPending(OperationContext* opCtx, bool dropPending) {
+    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
+    if (dropPending) {
+        uassert(ErrorCodes::DatabaseDropPending,
+                str::stream() << "Unable to drop database " << name()
+                              << " because it is already in the process of being dropped.",
+                !_dropPending);
+        _dropPending = true;
+    } else {
+        _dropPending = false;
+    }
+}
+
+bool DatabaseImpl::isDropPending(OperationContext* opCtx) const {
+    invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
+    return _dropPending;
 }
 
 void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale) {
@@ -648,6 +666,10 @@ void DatabaseImpl::_checkCanCreateCollection(OperationContext* opCtx,
 
     uassert(17316, "cannot create a blank collection", nss.coll() > 0);
     uassert(28838, "cannot create a non-capped oplog collection", options.capped || !nss.isOplog());
+    uassert(ErrorCodes::DatabaseDropPending,
+            str::stream() << "Cannot create collection " << nss.ns()
+                          << " - database is in the process of being dropped.",
+            !_dropPending);
 }
 
 Status DatabaseImpl::createView(OperationContext* opCtx,
@@ -705,7 +727,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
         }
 
         if (nss.isSystem()) {
-            authindex::createSystemIndexes(opCtx, collection);
+            createSystemIndexes(opCtx, collection);
         }
     }
 
@@ -737,7 +759,6 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
     }
 
     dbHolder().close(opCtx, name, "database dropped");
-    db = NULL;  // d is now deleted
 
     MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
         getGlobalServiceContext()

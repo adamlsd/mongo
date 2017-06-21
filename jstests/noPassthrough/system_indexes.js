@@ -1,4 +1,7 @@
 /** Ensure that authorization system collections' indexes are correctly generated.
+ *
+ * This test requires users to persist across a restart.
+ * @tags: [requires_persistence]
  */
 
 (function() {
@@ -60,4 +63,17 @@
     conn = MongoRunner.runMongod({restart: conn, cleanData: false});
     db = conn.getDB("admin");
     assert.eq(2, db.system.roles.getIndexes().length);
+
+    // TEST: Inserting to the sessions collection creates indexes
+    assert.eq(0, db.system.sessions.getIndexes().length);
+    db.system.sessions.insert({lastUse: new Date()});
+    assert.eq(2, db.system.sessions.getIndexes().length);
+
+    // TEST: Destroying admin.system.sessions index and restarting will recreate it
+    assert.commandWorked(db.system.sessions.dropIndexes());
+    MongoRunner.stopMongod(conn);
+    conn = MongoRunner.runMongod({restart: conn, cleanData: false});
+    db = conn.getDB("admin");
+    assert.eq(2, db.system.sessions.getIndexes().length);
+
 })();

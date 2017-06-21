@@ -276,7 +276,7 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
         b.append("o2", *o2);
 
     if (wallTime != Date_t{}) {
-        b.appendDate("wt", wallTime);
+        b.appendDate("wall", wallTime);
     }
 
     return OplogDocWriter(OplogDocWriter(b.obj(), obj));
@@ -616,7 +616,11 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
     {"drop",
      {[](OperationContext* opCtx, const char* ns, BSONObj& cmd, const OpTime& opTime) -> Status {
           BSONObjBuilder resultWeDontCareAbout;
-          return dropCollection(opCtx, parseNs(ns, cmd), resultWeDontCareAbout, opTime);
+          return dropCollection(opCtx,
+                                parseNs(ns, cmd),
+                                resultWeDontCareAbout,
+                                opTime,
+                                DropCollectionSystemCollectionMode::kAllowSystemCollectionDrops);
       },
       // IllegalOperation is necessary because in 3.0 we replicate drops of system.profile
       // TODO(dannenberg) remove IllegalOperation once we no longer need 3.0 compatibility

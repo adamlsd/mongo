@@ -178,7 +178,7 @@ TEST_F(ShardingCatalogClientTest, GetDatabaseExisting) {
         ASSERT_EQ(query->ns(), DatabaseType::ConfigNS);
         ASSERT_BSONOBJ_EQ(query->getFilter(), BSON(DatabaseType::name(expectedDb.getName())));
         ASSERT_BSONOBJ_EQ(query->getSort(), BSONObj());
-        ASSERT_EQ(query->getLimit().get(), 1);
+        ASSERT(!query->getLimit());
 
         checkReadConcern(request.cmdObj, Timestamp(0, 0), repl::OpTime::kUninitializedTerm);
 
@@ -1122,8 +1122,8 @@ TEST_F(ShardingCatalogClientTest, UpdateDatabase) {
                           rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
         BatchedUpdateRequest actualBatchedUpdate;
-        std::string errmsg;
-        ASSERT_TRUE(actualBatchedUpdate.parseBSON(request.dbname, request.cmdObj, &errmsg));
+        actualBatchedUpdate.parseRequest(
+            OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj));
         ASSERT_EQUALS(DatabaseType::ConfigNS, actualBatchedUpdate.getNS().ns());
         auto updates = actualBatchedUpdate.getUpdates();
         ASSERT_EQUALS(1U, updates.size());
@@ -1432,8 +1432,8 @@ TEST_F(ShardingCatalogClientTest, createDatabaseSuccess) {
                           rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
         BatchedInsertRequest actualBatchedInsert;
-        std::string errmsg;
-        ASSERT_TRUE(actualBatchedInsert.parseBSON(request.dbname, request.cmdObj, &errmsg));
+        actualBatchedInsert.parseRequest(
+            OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj));
         ASSERT_EQUALS(DatabaseType::ConfigNS, actualBatchedInsert.getNS().ns());
         auto inserts = actualBatchedInsert.getDocuments();
         ASSERT_EQUALS(1U, inserts.size());
@@ -1719,8 +1719,8 @@ TEST_F(ShardingCatalogClientTest, createDatabaseDuplicateKeyOnInsert) {
                           rpc::TrackingMetadata::removeTrackingData(request.metadata));
 
         BatchedInsertRequest actualBatchedInsert;
-        std::string errmsg;
-        ASSERT_TRUE(actualBatchedInsert.parseBSON(request.dbname, request.cmdObj, &errmsg));
+        actualBatchedInsert.parseRequest(
+            OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj));
         ASSERT_EQUALS(DatabaseType::ConfigNS, actualBatchedInsert.getNS().ns());
         auto inserts = actualBatchedInsert.getDocuments();
         ASSERT_EQUALS(1U, inserts.size());

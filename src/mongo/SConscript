@@ -255,6 +255,7 @@ config_header_substs = (
     ('@mongo_config_have_std_make_unique@', 'MONGO_CONFIG_HAVE_STD_MAKE_UNIQUE'),
     ('@mongo_config_have_strnlen@', 'MONGO_CONFIG_HAVE_STRNLEN'),
     ('@mongo_config_have_thread_local@', 'MONGO_CONFIG_HAVE_THREAD_LOCAL'),
+    ('@mongo_config_max_extended_alignment@', 'MONGO_CONFIG_MAX_EXTENDED_ALIGNMENT'),
     ('@mongo_config_optimized_build@', 'MONGO_CONFIG_OPTIMIZED_BUILD'),
     ('@mongo_config_ssl@', 'MONGO_CONFIG_SSL'),
     ('@mongo_config_ssl_has_asn1_any_definitions@', 'MONGO_CONFIG_HAVE_ASN1_ANY_DEFINITIONS'),
@@ -274,12 +275,12 @@ generateConfigHeaderFile = env.Substfile(
 )
 env.Alias('generated-sources', generateConfigHeaderFile)
 
-mongod = env.Program(
-    target="mongod",
+env.Library(
+    target="mongodmain",
     source=[
         "db/db.cpp",
         "db/mongod_options_init.cpp",
-    ] + env.WindowsResourceFile("db/db.rc"),
+    ],
     LIBDEPS=[
         'db/commands/core',
         'db/conn_pool_options',
@@ -301,6 +302,7 @@ mongod = env.Program(
         'db/serveronly',
         'db/service_context_d',
         'db/startup_warnings_mongod',
+        'db/system_index',
         'db/ttl_d',
         'executor/network_interface_factory',
         'rpc/rpc',
@@ -312,6 +314,15 @@ mongod = env.Program(
         'util/ntservice',
         'util/periodic_runner_factory',
         'util/version_impl',
+    ],
+)
+mongod = env.Program(
+    target="mongod",
+    source=[
+        "db/dbmain.cpp",
+    ] + env.WindowsResourceFile("db/db.rc"),
+    LIBDEPS=[
+        'mongodmain',
     ],
 )
 env.Default(env.Install('#/', mongod))

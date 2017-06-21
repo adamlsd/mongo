@@ -43,6 +43,7 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/action_set.h"
+#include "mongo/db/auth/address_restriction.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state.h"
 #include "mongo/db/auth/privilege.h"
@@ -53,6 +54,7 @@
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/auth/user_name_hash.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/mongod_options.h"
 #include "mongo/platform/compiler.h"
 #include "mongo/platform/unordered_map.h"
 #include "mongo/stdx/memory.h"
@@ -70,9 +72,8 @@ using std::vector;
 AuthInfo internalSecurity;
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
-(InitializerContext* context)
-{
-    auto user = stdx::make_unique< User >( UserName( "__system", "local" ) );
+(InitializerContext* context) {
+    auto user = stdx::make_unique<User>(UserName("__system", "local"));
 
     user->incrementRefCount();  // Pin this user so the ref count never drops below 1.
     ActionSet allActions;
@@ -81,10 +82,20 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOpti
     RoleGraph::generateUniversalPrivileges(&privileges);
     user->addPrivileges(privileges);
 
-	if( mongodGlobalParams.whitelistedClusterNetwork )
-	{
-		// TODO: Install document
-	}
+    if (mongodGlobalParams.whitelistedClusterNetwork) {
+        auto whitelistRestriction =
+            ClientSourceRestriction::parse(*mongodGlobalParams.whitelistedClusterNetwork);
+        if (!whitelistRestriction.isOK()) {
+            return whitelistRestriction.getStatus();
+        }
+
+
+        RestrictionDocuments clusterWhiteList(stdx::make_unique<RestrictionDocument<>>(
+            stdx::make_unique<RestrictionSet<>>(std::move(whitelistRestriction.getValue()))));
+
+
+        user->setRestrictions(std::move(clusterWhiteList));
+    }
 
 
     internalSecurity.user = user.release();

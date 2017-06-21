@@ -69,9 +69,10 @@ using std::vector;
 
 AuthInfo internalSecurity;
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, MONGO_NO_PREREQUISITES)
-(InitializerContext* context) {
-    User* user = new User(UserName("__system", "local"));
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
+(InitializerContext* context)
+{
+    auto user = stdx::make_unique< User >( UserName( "__system", "local" ) );
 
     user->incrementRefCount();  // Pin this user so the ref count never drops below 1.
     ActionSet allActions;
@@ -79,7 +80,14 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, MONGO_NO_PREREQU
     PrivilegeVector privileges;
     RoleGraph::generateUniversalPrivileges(&privileges);
     user->addPrivileges(privileges);
-    internalSecurity.user = user;
+
+	if( mongodGlobalParams.whitelistedClusterNetwork )
+	{
+		// TODO: Install document
+	}
+
+
+    internalSecurity.user = user.release();
 
     return Status::OK();
 }

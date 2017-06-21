@@ -99,6 +99,14 @@ Status addMongodOptions(moe::OptionSection* options) {
         .setSources(moe::SourceAllLegacy)
         .incompatibleWith("noauth");
 
+    // IP Whitelisting Options
+    general_options.addOptionChaining(
+        "security.clusterIpSourceWhitelist",
+        "clusterIpSourceWhitelist",
+        moe::String,
+        "Network CIDR specification of permitted origin for `__system` access.");
+
+
     // Way to enable or disable auth in JSON Config
     general_options
         .addOptionChaining(
@@ -1044,6 +1052,12 @@ Status storeMongodOptions(const moe::Environment& params) {
     if (params.count("security.javascriptEnabled")) {
         mongodGlobalParams.scriptingEnabled = params["security.javascriptEnabled"].as<bool>();
     }
+
+    if (params.count("security.clusterIpSourceWhitelist")) {
+        mongodGlobalParams.whitelistedClusterNetwork =
+            params["security.clusterIpSourceWhitelist"].as<std::string>();
+    }
+
     if (params.count("storage.mmapv1.preallocDataFiles")) {
         mmapv1GlobalOptions.prealloc = params["storage.mmapv1.preallocDataFiles"].as<bool>();
         cout << "note: noprealloc may hurt performance in many applications" << endl;

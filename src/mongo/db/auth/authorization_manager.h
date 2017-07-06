@@ -63,7 +63,7 @@ class UserDocumentParser;
  * Internal secret key info.
  */
 struct AuthInfo {
-    User* user;
+    std::unique_ptr<User> user;
 };
 extern AuthInfo internalSecurity;  // set at startup and not changed after initialization.
 

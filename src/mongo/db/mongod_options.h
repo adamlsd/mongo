@@ -49,7 +49,7 @@ namespace moe = mongo::optionenvironment;
 struct MongodGlobalParams {
     bool scriptingEnabled = true;  // --noscripting
 
-    boost::optional<std::string> whitelistedClusterNetwork;
+    boost::optional<std::vector<std::string>> whitelistedClusterNetwork;
 };
 
 extern MongodGlobalParams mongodGlobalParams;

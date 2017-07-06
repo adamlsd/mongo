@@ -65,15 +65,38 @@
 
 namespace mongo {
 
+using std::begin;
+using std::end;
 using std::endl;
+using std::back_inserter;
 using std::string;
 using std::vector;
 
 AuthInfo internalSecurity;
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
-(InitializerContext* context) {
-    auto user = stdx::make_unique<User>(UserName("__system", "local"));
+namespace
+{
+	auto
+	makeWhitelistRestrictionList( const std::vector< std::string > &whitelist )
+	{
+
+		std::vector< std::unique_ptr< Restriction > > restrictions;
+		restrictions.reserve( whitelist.size() );
+		std::transform( begin( whitelist ), end( whitelist ), back_inserter( restrictions ),
+			[]( const auto &address )
+			{
+				return stdx::make_unique< ClientSourceRestriction >( CIDR( address ) );
+			} );
+
+		return restrictions;
+	}
+}  // namespace
+
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser,
+("EndStartupOptionStorage")) (InitializerContext *const context)
+try
+{
+    auto user = stdx::make_unique< User >( UserName("__system", "local"));
 
     user->incrementRefCount();  // Pin this user so the ref count never drops below 1.
     ActionSet allActions;
@@ -82,25 +105,30 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOpti
     RoleGraph::generateUniversalPrivileges(&privileges);
     user->addPrivileges(privileges);
 
-    if (mongodGlobalParams.whitelistedClusterNetwork) {
-        auto whitelistRestriction =
-            ClientSourceRestriction::parse(*mongodGlobalParams.whitelistedClusterNetwork);
-        if (!whitelistRestriction.isOK()) {
-            return whitelistRestriction.getStatus();
-        }
+    if( mongodGlobalParams.whitelistedClusterNetwork )
+	{
+        const auto &whitelist = *mongodGlobalParams.whitelistedClusterNetwork;
 
+        std::vector< std::unique_ptr< Restriction > > restrictions =
+				makeWhitelistRestrictionList( whitelist );
 
-        RestrictionDocuments clusterWhiteList(stdx::make_unique<RestrictionDocument<>>(
-            stdx::make_unique<RestrictionSet<>>(std::move(whitelistRestriction.getValue()))));
+		auto restrictionSet= stdx::make_unique< RestrictionSet<> >( std::move( restrictions ) );
+		auto restrictionDocument= stdx::make_unique< RestrictionDocument<> >(
+				std::move( restrictionSet ) );
 
+        RestrictionDocuments clusterWhiteList( std::move( restrictionDocument ) );
 
         user->setRestrictions(std::move(clusterWhiteList));
     }
 
 
-    internalSecurity.user = user.release();
+    internalSecurity.user = std::move(user);
 
     return Status::OK();
+}
+catch( ... )
+{
+	return exceptionToStatus();
 }
 
 const std::string AuthorizationManager::USER_NAME_FIELD_NAME = "user";
@@ -276,7 +304,7 @@ AuthorizationManager::AuthorizationManager(std::unique_ptr<AuthzManagerExternalS
 AuthorizationManager::~AuthorizationManager() {
     for (unordered_map<UserName, User*>::iterator it = _userCache.begin(); it != _userCache.end();
          ++it) {
-        fassert(17265, it->second != internalSecurity.user);
+        fassert(17265, it->second != internalSecurity.user.get());
         delete it->second;
     }
 }
@@ -498,7 +526,7 @@ Status AuthorizationManager::acquireUserForInitialAuth(OperationContext* opCtx,
                                                        const UserName& userName,
                                                        User** acquiredUser) {
     if (userName == internalSecurity.user->getName()) {
-        *acquiredUser = internalSecurity.user;
+        *acquiredUser = internalSecurity.user.get();
         return Status::OK();
     }
 
@@ -608,7 +636,7 @@ Status AuthorizationManager::_fetchUserV2(OperationContext* opCtx,
 }
 
 void AuthorizationManager::releaseUser(User* user) {
-    if (user == internalSecurity.user) {
+    if (user == internalSecurity.user.get()) {
         return;
     }
 
@@ -661,7 +689,7 @@ void AuthorizationManager::_invalidateUserCache_inlock() {
     _updateCacheGeneration_inlock();
     for (unordered_map<UserName, User*>::iterator it = _userCache.begin(); it != _userCache.end();
          ++it) {
-        fassert(17266, it->second != internalSecurity.user);
+        fassert(17266, it->second != internalSecurity.user.get());
         it->second->invalidate();
     }
     _userCache.clear();

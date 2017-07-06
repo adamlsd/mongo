@@ -157,7 +157,7 @@ std::string AuthorizationSession::getAuthenticatedUserNamesToken() {
 }
 
 void AuthorizationSession::grantInternalAuthorization() {
-    _authenticatedUsers.add(internalSecurity.user);
+    _authenticatedUsers.add(internalSecurity.user.get());
     _buildAuthenticatedRolesVector();
 }
 

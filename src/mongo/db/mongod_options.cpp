@@ -103,7 +103,7 @@ Status addMongodOptions(moe::OptionSection* options) {
     general_options.addOptionChaining(
         "security.clusterIpSourceWhitelist",
         "clusterIpSourceWhitelist",
-        moe::String,
+        moe::StringVector,
         "Network CIDR specification of permitted origin for `__system` access.");
 
 
@@ -1055,7 +1055,7 @@ Status storeMongodOptions(const moe::Environment& params) {
 
     if (params.count("security.clusterIpSourceWhitelist")) {
         mongodGlobalParams.whitelistedClusterNetwork =
-            params["security.clusterIpSourceWhitelist"].as<std::string>();
+            params["security.clusterIpSourceWhitelist"].as<std::vector<std::string>>();
     }
 
     if (params.count("storage.mmapv1.preallocDataFiles")) {

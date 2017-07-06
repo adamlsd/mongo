@@ -71,32 +71,6 @@ public:
     explicit AddressRestriction(const std::string& cidr) : _cidr(CIDR(cidr)) {}
 
     /**
-     * If the given BSONElement represents a valid CIDR range,
-     * constructs and returns the AddressRestriction.
-     * Otherwise returns an error.
-     */
-    static StatusWith<AddressRestriction<T>> parse(BSONElement from) noexcept {
-        auto cidr = CIDR::parse(from);
-        if (cidr.isOK()) {
-            return AddressRestriction<T>(std::move(cidr.getValue()));
-        }
-        return cidr.getStatus();
-    }
-
-    /**
-     * If the given string represents a valid CIDR range,
-     * constructs and returns the AddressRestriction.
-     * Otherwise returns an error.
-     */
-    static StatusWith<AddressRestriction<T>> parse(const std::string& from) noexcept {
-        auto cidr = CIDR::parse(from);
-        if (cidr.isOK()) {
-            return AddressRestriction<T>(std::move(cidr.getValue()));
-        }
-        return cidr.getStatus();
-    }
-
-    /**
      * Returns true if the Environment's client/server's address
      * satisfies this restriction set.
      */
@@ -128,7 +102,7 @@ public:
         return lhs.equalityLens() == rhs.equalityLens();
     }
     friend bool operator!=(const AddressRestriction<T>& lhs, const AddressRestriction<T>& rhs) {
-        return !(lhs._cidr == rhs._cidr);
+        return !(lhs == rhs);
     }
 
 private:

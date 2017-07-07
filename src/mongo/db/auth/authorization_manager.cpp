@@ -74,29 +74,23 @@ using std::vector;
 
 AuthInfo internalSecurity;
 
-namespace
-{
-	auto
-	makeWhitelistRestrictionList( const std::vector< std::string > &whitelist )
-	{
+namespace {
+auto makeWhitelistRestrictionList(const std::vector<std::string>& whitelist) {
 
-		std::vector< std::unique_ptr< Restriction > > restrictions;
-		restrictions.reserve( whitelist.size() );
-		std::transform( begin( whitelist ), end( whitelist ), back_inserter( restrictions ),
-			[]( const auto &address )
-			{
-				return stdx::make_unique< ClientSourceRestriction >( CIDR( address ) );
-			} );
+    std::vector<std::unique_ptr<Restriction>> restrictions;
+    restrictions.reserve(whitelist.size());
+    std::transform(
+        begin(whitelist), end(whitelist), back_inserter(restrictions), [](const auto& address) {
+            return stdx::make_unique<ClientSourceRestriction>(CIDR(address));
+        });
 
-		return restrictions;
-	}
+    return restrictions;
+}
 }  // namespace
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser,
-("EndStartupOptionStorage")) (InitializerContext *const context)
-try
-{
-    auto user = stdx::make_unique< User >( UserName("__system", "local"));
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
+(InitializerContext* const context) try {
+    auto user = stdx::make_unique<User>(UserName("__system", "local"));
 
     user->incrementRefCount();  // Pin this user so the ref count never drops below 1.
     ActionSet allActions;
@@ -105,18 +99,17 @@ try
     RoleGraph::generateUniversalPrivileges(&privileges);
     user->addPrivileges(privileges);
 
-    if( mongodGlobalParams.whitelistedClusterNetwork )
-	{
-        const auto &whitelist = *mongodGlobalParams.whitelistedClusterNetwork;
+    if (mongodGlobalParams.whitelistedClusterNetwork) {
+        const auto& whitelist = *mongodGlobalParams.whitelistedClusterNetwork;
 
-        std::vector< std::unique_ptr< Restriction > > restrictions =
-				makeWhitelistRestrictionList( whitelist );
+        std::vector<std::unique_ptr<Restriction>> restrictions =
+            makeWhitelistRestrictionList(whitelist);
 
-		auto restrictionSet= stdx::make_unique< RestrictionSet<> >( std::move( restrictions ) );
-		auto restrictionDocument= stdx::make_unique< RestrictionDocument<> >(
-				std::move( restrictionSet ) );
+        auto restrictionSet = stdx::make_unique<RestrictionSet<>>(std::move(restrictions));
+        auto restrictionDocument =
+            stdx::make_unique<RestrictionDocument<>>(std::move(restrictionSet));
 
-        RestrictionDocuments clusterWhiteList( std::move( restrictionDocument ) );
+        RestrictionDocuments clusterWhiteList(std::move(restrictionDocument));
 
         user->setRestrictions(std::move(clusterWhiteList));
     }
@@ -125,10 +118,8 @@ try
     internalSecurity.user = std::move(user);
 
     return Status::OK();
-}
-catch( ... )
-{
-	return exceptionToStatus();
+} catch (...) {
+    return exceptionToStatus();
 }
 
 const std::string AuthorizationManager::USER_NAME_FIELD_NAME = "user";

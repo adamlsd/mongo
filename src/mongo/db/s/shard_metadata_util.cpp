@@ -68,14 +68,20 @@ Status getStatusFromWriteCommandResponse(const BSONObj& commandResult) {
 }  // namespace
 
 QueryAndSort createShardChunkDiffQuery(const ChunkVersion& collectionVersion) {
-    return {BSON(ChunkType::DEPRECATED_lastmod()
-                 << BSON("$gte" << Timestamp(collectionVersion.toLong()))),
-            BSON(ChunkType::DEPRECATED_lastmod() << 1)};
+    return {BSON(ChunkType::lastmod() << BSON("$gte" << Timestamp(collectionVersion.toLong()))),
+            BSON(ChunkType::lastmod() << 1)};
 }
 
-bool RefreshState::operator==(RefreshState& other) {
+bool RefreshState::operator==(const RefreshState& other) const {
     return (other.epoch == epoch) && (other.refreshing == refreshing) &&
         (other.lastRefreshedCollectionVersion == lastRefreshedCollectionVersion);
+}
+
+std::string RefreshState::toString() const {
+    return str::stream() << "epoch: " << epoch
+                         << ", refreshing: " << (refreshing ? "true" : "false")
+                         << ", lastRefreshedCollectionVersion: "
+                         << lastRefreshedCollectionVersion.toString();
 }
 
 Status setPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& nss) {
@@ -120,7 +126,11 @@ StatusWith<RefreshState> getPersistedRefreshFlags(OperationContext* opCtx,
     }
 
     return RefreshState{entry.getEpoch(),
-                        entry.hasRefreshing() ? entry.getRefreshing() : false,
+                        // If the refreshing field has not yet been added, this means that the first
+                        // refresh has started, but no chunks have ever yet been applied, around
+                        // which these flags are set. So default to refreshing true because the
+                        // chunk metadata is being updated and is not yet ready to be read.
+                        entry.hasRefreshing() ? entry.getRefreshing() : true,
                         entry.hasLastRefreshedCollectionVersion()
                             ? entry.getLastRefreshedCollectionVersion()
                             : ChunkVersion(0, 0, entry.getEpoch())};
@@ -194,8 +204,8 @@ Status updateShardCollectionsEntry(OperationContext* opCtx,
     try {
         DBDirectClient client(opCtx);
 
-        rpc::UniqueReply commandResponse = client.runCommandWithMetadata(
-            "config", cmdObj.firstElementFieldName(), rpc::makeEmptyMetadata(), cmdObj);
+        rpc::UniqueReply commandResponse =
+            client.runCommand(OpMsgRequest::fromDBAndBody("config", cmdObj));
         BSONObj responseReply = commandResponse->getCommandReply().getOwned();
 
         Status commandStatus =
@@ -318,10 +328,7 @@ Status updateShardChunks(OperationContext* opCtx,
             const BSONObj deleteCmdObj = batchedDeleteRequest.toBSON();
 
             rpc::UniqueReply deleteCommandResponse =
-                client.runCommandWithMetadata(chunkMetadataNss.db().toString(),
-                                              deleteCmdObj.firstElementFieldName(),
-                                              rpc::makeEmptyMetadata(),
-                                              deleteCmdObj);
+                client.runCommand(OpMsgRequest::fromDBAndBody(chunkMetadataNss.db(), deleteCmdObj));
 
             auto deleteStatus =
                 getStatusFromWriteCommandResponse(deleteCommandResponse->getCommandReply());
@@ -338,10 +345,7 @@ Status updateShardChunks(OperationContext* opCtx,
             const BSONObj insertCmdObj = insertRequest.toBSON();
 
             rpc::UniqueReply insertCommandResponse =
-                client.runCommandWithMetadata(chunkMetadataNss.db().toString(),
-                                              insertCmdObj.firstElementFieldName(),
-                                              rpc::makeEmptyMetadata(),
-                                              insertCmdObj);
+                client.runCommand(OpMsgRequest::fromDBAndBody(chunkMetadataNss.db(), insertCmdObj));
 
             auto insertStatus =
                 getStatusFromWriteCommandResponse(insertCommandResponse->getCommandReply());
@@ -374,8 +378,8 @@ Status dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const Namesp
         batchedDeleteRequest.setNS(NamespaceString(ShardCollectionType::ConfigNS));
         const BSONObj deleteCmdObj = batchedDeleteRequest.toBSON();
 
-        rpc::UniqueReply deleteCommandResponse = client.runCommandWithMetadata(
-            "config", deleteCmdObj.firstElementFieldName(), rpc::makeEmptyMetadata(), deleteCmdObj);
+        rpc::UniqueReply deleteCommandResponse =
+            client.runCommand(OpMsgRequest::fromDBAndBody("config", deleteCmdObj));
 
         auto deleteStatus =
             getStatusFromWriteCommandResponse(deleteCommandResponse->getCommandReply());

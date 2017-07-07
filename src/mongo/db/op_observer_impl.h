@@ -94,10 +94,6 @@ public:
     void onEmptyCapped(OperationContext* opCtx,
                        const NamespaceString& collectionName,
                        OptionalCollectionUUID uuid);
-    void onConvertToCapped(OperationContext* opCtx,
-                           const NamespaceString& collectionName,
-                           OptionalCollectionUUID uuid,
-                           double size) override;
 };
 
 }  // namespace mongo

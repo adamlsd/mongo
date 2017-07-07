@@ -101,7 +101,7 @@ CollectionOptions createOplogCollectionOptions() {
 void createCollection(OperationContext* opCtx,
                       const NamespaceString& nss,
                       const CollectionOptions& options = CollectionOptions()) {
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    writeConflictRetry(opCtx, "createCollection", nss.ns(), [&] {
         Lock::DBLock dblk(opCtx, nss.db(), MODE_X);
         OldClientContext ctx(opCtx, nss.ns());
         auto db = ctx.db();
@@ -110,8 +110,7 @@ void createCollection(OperationContext* opCtx,
         auto coll = db->createCollection(opCtx, nss.ns(), options);
         ASSERT_TRUE(coll);
         wuow.commit();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "createCollection", nss.ns());
+    });
 }
 
 /**
@@ -323,8 +322,7 @@ TEST_F(StorageInterfaceImplTest, GetRollbackIDReturnsBadStatusIfRollbackIDIsNotI
                               << StorageInterfaceImpl::kRollbackIdFieldName
                               << "bad id")};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, badDoc));
-    ASSERT_EQUALS(mongo::AssertionException::convertExceptionCode(40410),
-                  storage.getRollbackID(opCtx).getStatus());
+    ASSERT_EQUALS(ErrorCodes::TypeMismatch, storage.getRollbackID(opCtx).getStatus());
 }
 
 TEST_F(StorageInterfaceImplTest, SnapshotSupported) {
@@ -1961,7 +1959,7 @@ TEST_F(
 
     // deleteByFilter() checks the current member state indirectly through
     // ReplicationCoordinator::canAcceptWrites() if replicated writes are enabled.
-    ASSERT_TRUE(getReplicationCoordinatorMock()->setFollowerMode(MemberState::RS_ROLLBACK));
+    ASSERT_OK(getReplicationCoordinatorMock()->setFollowerMode(MemberState::RS_ROLLBACK));
 
     auto filter = BSON("x" << 0);
     ASSERT_EQUALS(ErrorCodes::PrimarySteppedDown, storage.deleteByFilter(opCtx, nss, filter));

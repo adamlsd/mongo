@@ -37,6 +37,11 @@
 
 namespace mongo {
 
+using TxnNumber = std::int64_t;
+using StmtId = std::int32_t;
+
+const TxnNumber kUninitializedTxnNumber = -1;
+
 class BSONObjBuilder;
 
 /**
@@ -44,8 +49,8 @@ class BSONObjBuilder;
  */
 class LogicalSessionId : public Logical_session_id {
 public:
-    friend class Logical_session_id;
-    friend class Logical_session_record;
+    LogicalSessionId();
+    LogicalSessionId(Logical_session_id&& lsid);
 
     /**
      * Create and return a new LogicalSessionId with a random UUID.
@@ -94,11 +99,6 @@ public:
     private:
         UUID::Hash _hasher;
     };
-
-    /**
-     * This constructor exists for IDL only.
-     */
-    LogicalSessionId();
 
 private:
     /**

@@ -39,6 +39,7 @@
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
@@ -74,6 +75,9 @@ void RollbackTest::setUp() {
     auto serviceContext = _serviceContextMongoDTest.getServiceContext();
     _replicationProcess = stdx::make_unique<ReplicationProcess>(
         &_storageInterface, stdx::make_unique<ReplicationConsistencyMarkersMock>());
+    _dropPendingCollectionReaper = new DropPendingCollectionReaper(&_storageInterface);
+    DropPendingCollectionReaper::set(
+        serviceContext, std::unique_ptr<DropPendingCollectionReaper>(_dropPendingCollectionReaper));
     _coordinator = new ReplicationCoordinatorRollbackMock(serviceContext);
     ReplicationCoordinator::set(serviceContext,
                                 std::unique_ptr<ReplicationCoordinator>(_coordinator));
@@ -110,10 +114,19 @@ RollbackTest::ReplicationCoordinatorRollbackMock::ReplicationCoordinatorRollback
 void RollbackTest::ReplicationCoordinatorRollbackMock::resetLastOpTimesFromOplog(
     OperationContext* opCtx) {}
 
-bool RollbackTest::ReplicationCoordinatorRollbackMock::setFollowerMode(
+void RollbackTest::ReplicationCoordinatorRollbackMock::failSettingFollowerMode(
+    const MemberState& transitionToFail, ErrorCodes::Error codeToFailWith) {
+    _failSetFollowerModeOnThisMemberState = transitionToFail;
+    _failSetFollowerModeWithThisCode = codeToFailWith;
+}
+
+Status RollbackTest::ReplicationCoordinatorRollbackMock::setFollowerMode(
     const MemberState& newState) {
     if (newState == _failSetFollowerModeOnThisMemberState) {
-        return false;
+        return Status(_failSetFollowerModeWithThisCode,
+                      str::stream()
+                          << "ReplicationCoordinatorRollbackMock set to fail on setting state to "
+                          << _failSetFollowerModeOnThisMemberState.toString());
     }
     return ReplicationCoordinatorMock::setFollowerMode(newState);
 }

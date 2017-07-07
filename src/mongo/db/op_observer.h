@@ -190,10 +190,6 @@ public:
     virtual void onEmptyCapped(OperationContext* opCtx,
                                const NamespaceString& collectionName,
                                OptionalCollectionUUID uuid) = 0;
-    virtual void onConvertToCapped(OperationContext* opCtx,
-                                   const NamespaceString& collectionName,
-                                   OptionalCollectionUUID uuid,
-                                   double size) = 0;
 };
 
 }  // namespace mongo

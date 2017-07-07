@@ -45,6 +45,8 @@
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/namespace_uuid_cache.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -205,6 +207,17 @@ CollectionImpl::~CollectionImpl() {
     if (isCapped()) {
         _recordStore->setCappedCallback(nullptr);
         _cappedNotifier->kill();
+    }
+
+    if (_uuid) {
+        if (auto opCtx = cc().getOperationContext()) {
+            auto& uuidCatalog = UUIDCatalog::get(opCtx);
+            invariant(uuidCatalog.lookupCollectionByUUID(_uuid.get()) != _this);
+            auto& cache = NamespaceUUIDCache::get(opCtx);
+            // TODO(geert): cache.verifyNotCached(ns(), uuid().get());
+            cache.evictNamespace(ns());
+        }
+        LOG(2) << "destructed collection " << ns() << " with UUID " << uuid()->toString();
     }
     _magic = 0;
 }
@@ -1266,16 +1279,15 @@ Status CollectionImpl::validate(OperationContext* opCtx,
             // `results`.
             dassert(status.isOK());
 
+            // The error message can't be more specific because even if the index is invalid, we
+            // won't know if the corruption occurred on the index entry or in the document.
+            const std::string invalidIdxMsg = "One or more indexes contain invalid index entries.";
 
-            string msg = "One or more indexes contain invalid index entries.";
             // when there's an index key/document mismatch, both `if` and `else if` statements
             // will be true. But if we only check tooFewIndexEntries(), we'll be able to see
             // which specific index is invalid.
             if (indexValidator->tooFewIndexEntries()) {
-                // The error message can't be more specific because even though the index is
-                // invalid, we won't know if the corruption occurred on the index entry or in
-                // the document.
-                results->errors.push_back(msg);
+                results->errors.push_back(invalidIdxMsg);
                 results->valid = false;
             } else if (indexValidator->tooManyIndexEntries()) {
                 for (auto& it : indexNsResultsMap) {
@@ -1283,8 +1295,7 @@ Status CollectionImpl::validate(OperationContext* opCtx,
                     ValidateResults& r = it.second;
                     r.valid = false;
                 }
-                string msg = "One or more indexes contain invalid index entries.";
-                results->errors.push_back(msg);
+                results->errors.push_back(invalidIdxMsg);
                 results->valid = false;
             }
         }

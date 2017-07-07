@@ -44,6 +44,8 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/namespace_uuid_cache.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -66,8 +68,6 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
-#include "mongo/util/namespace_uuid_cache.h"
-#include "mongo/util/uuid_catalog.h"
 
 namespace mongo {
 namespace {
@@ -584,11 +584,8 @@ Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const Namespace
         Collection* found = it->second;
         if (enableCollectionUUIDs) {
             NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
-            CollectionOptions found_options = found->getCatalogEntry()->getCollectionOptions(opCtx);
-            if (found_options.uuid) {
-                CollectionUUID uuid = found_options.uuid.get();
-                cache.ensureNamespaceInCache(nss, uuid);
-            }
+            if (auto uuid = found->uuid())
+                cache.ensureNamespaceInCache(nss, uuid.get());
         }
         return found;
     }
@@ -698,11 +695,16 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
     invariant(!options.isView());
 
+    CollectionOptions optionsWithUUID = options;
+    if (enableCollectionUUIDs && !optionsWithUUID.uuid)
+        optionsWithUUID.uuid.emplace(CollectionUUID::gen());
+
     NamespaceString nss(ns);
-    _checkCanCreateCollection(opCtx, nss, options);
+    _checkCanCreateCollection(opCtx, nss, optionsWithUUID);
     audit::logCreateCollection(&cc(), ns);
 
-    Status status = _dbEntry->createCollection(opCtx, ns, options, true /*allocateDefaultSpace*/);
+    Status status =
+        _dbEntry->createCollection(opCtx, ns, optionsWithUUID, true /*allocateDefaultSpace*/);
     massertNoTraceStatusOK(status);
 
     opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, ns));
@@ -714,8 +716,8 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
 
     if (createIdIndex) {
         if (collection->requiresIdIndex()) {
-            if (options.autoIndexId == CollectionOptions::YES ||
-                options.autoIndexId == CollectionOptions::DEFAULT) {
+            if (optionsWithUUID.autoIndexId == CollectionOptions::YES ||
+                optionsWithUUID.autoIndexId == CollectionOptions::DEFAULT) {
                 const auto featureCompatibilityVersion =
                     serverGlobalParams.featureCompatibility.version.load();
                 IndexCatalog* ic = collection->getIndexCatalog();
@@ -732,7 +734,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     }
 
     getGlobalServiceContext()->getOpObserver()->onCreateCollection(
-        opCtx, collection, nss, options, fullIdIndexSpec);
+        opCtx, collection, nss, optionsWithUUID, fullIdIndexSpec);
 
     return collection;
 }
@@ -754,19 +756,20 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
 
     audit::logDropDatabase(opCtx->getClient(), name);
 
+    UUIDCatalog::get(opCtx).onCloseDatabase(db);
     for (auto&& coll : *db) {
         Top::get(opCtx->getClient()->getServiceContext()).collectionDropped(coll->ns().ns(), true);
+        NamespaceUUIDCache::get(opCtx).evictNamespace(coll->ns());
     }
 
     dbHolder().close(opCtx, name, "database dropped");
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    writeConflictRetry(opCtx, "dropDatabase", name, [&] {
         getGlobalServiceContext()
             ->getGlobalStorageEngine()
             ->dropDatabase(opCtx, name)
             .transitional_ignore();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "dropDatabase", name);
+    });
 }
 
 namespace {
@@ -799,20 +802,19 @@ void mongo::dropAllDatabasesExceptLocalImpl(OperationContext* opCtx) {
 
     repl::getGlobalReplicationCoordinator()->dropAllSnapshots();
 
-    for (vector<string>::iterator i = n.begin(); i != n.end(); i++) {
-        if (*i != "local") {
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                Database* db = dbHolder().get(opCtx, *i);
+    for (const auto& dbName : n) {
+        if (dbName != "local") {
+            writeConflictRetry(opCtx, "dropAllDatabasesExceptLocal", dbName, [&opCtx, &dbName] {
+                Database* db = dbHolder().get(opCtx, dbName);
 
                 // This is needed since dropDatabase can't be rolled back.
                 // This is safe be replaced by "invariant(db);dropDatabase(opCtx, db);" once fixed
                 if (db == nullptr) {
-                    log() << "database disappeared after listDatabases but before drop: " << *i;
+                    log() << "database disappeared after listDatabases but before drop: " << dbName;
                 } else {
                     DatabaseImpl::dropDatabase(opCtx, db);
                 }
-            }
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "dropAllDatabasesExceptLocal", *i);
+            });
         }
     }
 }
@@ -893,8 +895,6 @@ auto mongo::userCreateNSImpl(OperationContext* opCtx,
         invariant(parseKind == CollectionOptions::parseForCommand);
         uassertStatusOK(db->createView(opCtx, ns, collectionOptions));
     } else {
-        if (enableCollectionUUIDs && !collectionOptions.uuid)
-            collectionOptions.uuid.emplace(CollectionUUID::gen());
         invariant(
             db->createCollection(opCtx, ns, collectionOptions, createDefaultIndexes, idIndex));
     }

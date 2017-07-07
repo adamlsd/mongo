@@ -758,13 +758,12 @@ void syncFixUp(OperationContext* opCtx,
                                     } catch (const DBException& e) {
                                         if (e.getCode() == 13415) {
                                             // hack: need to just make cappedTruncate do this...
-                                            MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                                                WriteUnitOfWork wunit(opCtx);
-                                                uassertStatusOK(collection->truncate(opCtx));
-                                                wunit.commit();
-                                            }
-                                            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
-                                                opCtx, "truncate", collection->ns().ns());
+                                            writeConflictRetry(
+                                                opCtx, "truncate", collection->ns().ns(), [&] {
+                                                    WriteUnitOfWork wunit(opCtx);
+                                                    uassertStatusOK(collection->truncate(opCtx));
+                                                    wunit.commit();
+                                                });
                                         } else {
                                             throw e;
                                         }
@@ -960,9 +959,10 @@ void rollbackNoUUID(OperationContext* opCtx,
 
     {
         Lock::GlobalWrite globalWrite(opCtx);
-        if (!replCoord->setFollowerMode(MemberState::RS_ROLLBACK)) {
+        auto status = replCoord->setFollowerMode(MemberState::RS_ROLLBACK);
+        if (!status.isOK()) {
             log() << "Cannot transition from " << replCoord->getMemberState().toString() << " to "
-                  << MemberState(MemberState::RS_ROLLBACK).toString();
+                  << MemberState(MemberState::RS_ROLLBACK).toString() << causedBy(status);
             return;
         }
     }
@@ -1017,10 +1017,11 @@ void rollbackNoUUID(OperationContext* opCtx,
         fassertFailedNoTrace(40276);
     }
 
-    if (!replCoord->setFollowerMode(MemberState::RS_RECOVERING)) {
+    auto status = replCoord->setFollowerMode(MemberState::RS_RECOVERING);
+    if (!status.isOK()) {
         severe() << "Failed to transition into " << MemberState(MemberState::RS_RECOVERING)
                  << "; expected to be in state " << MemberState(MemberState::RS_ROLLBACK)
-                 << " but found self in " << replCoord->getMemberState();
+                 << "; found self in " << replCoord->getMemberState() << causedBy(status);
         fassertFailedNoTrace(40364);
     }
 }

@@ -616,7 +616,7 @@ Status AuthorizationManager::_fetchUserV2(OperationContext* opCtx,
 
     // Put the new user into an unique_ptr temporarily in case there's an error while
     // initializing the user.
-    std::unique_ptr<User> user(new User(userName));
+    auto user = stdx::make_unique<User>(userName);
 
     status = _initializeUserFromPrivilegeDocument(user.get(), userObj);
     if (!status.isOK()) {

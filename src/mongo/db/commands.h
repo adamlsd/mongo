@@ -284,7 +284,7 @@ private:
  * Serves as a base for server commands. See the constructor for more details.
  */
 class Command : public CommandInterface {
-protected:
+public:
     // The type of the first field in 'cmdObj' must be mongo::String. The first field is
     // interpreted as a collection name.
     static std::string parseNsFullyQualified(const std::string& dbname, const BSONObj& cmdObj);
@@ -297,7 +297,6 @@ protected:
                                          const std::string& dbname,
                                          const BSONObj& cmdObj);
 
-public:
     typedef StringMap<Command*> CommandMap;
 
     /**
@@ -487,6 +486,12 @@ public:
                                      OperationContext* client,
                                      const std::string& dbname,
                                      const BSONObj& cmdObj);
+
+    /**
+     * Appends passthrough fields from a cmdObj to a given request.
+     */
+    static BSONObj appendPassthroughFields(const BSONObj& cmdObjWithPassthroughFields,
+                                           const BSONObj& request);
 
     /**
      * Returns true if the provided argument is one that is handled by the command processing layer

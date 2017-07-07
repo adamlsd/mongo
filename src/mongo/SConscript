@@ -112,6 +112,7 @@ baseSource=[
     'util/concurrency/idle_thread_block.cpp',
     'util/concurrency/thread_name.cpp',
     'util/duration.cpp',
+    'util/errno_util.cpp',
     'util/exception_filter_win32.cpp',
     'util/exit.cpp',
     'util/file.cpp',
@@ -282,10 +283,10 @@ env.Library(
         "db/mongod_options_init.cpp",
     ],
     LIBDEPS=[
-        'db/commands/core',
-        'db/conn_pool_options',
         'db/catalog/catalog',
         'db/clientcursor',
+        'db/commands/core',
+        'db/conn_pool_options',
         'db/dbdirectclient',
         'db/ftdc/ftdc_mongod',
         'db/index_d',
@@ -294,8 +295,8 @@ env.Library(
         'db/mongod_options',
         'db/mongodandmongos',
         'db/op_observer_d',
-        'db/repl/repl_set_commands',
         'db/repair_database',
+        'db/repl/repl_set_commands',
         'db/repl/storage_interface_impl',
         'db/repl/topology_coordinator_impl',
         'db/s/balancer',
@@ -539,8 +540,9 @@ installBinary( env, "mongos" )
 
 if shellEnv is not None:
     installBinary( shellEnv, "mongo" )
+    env.Alias( "core", [ '#/%s' % b for b in [ add_exe( "mongo" ) ] ] )
 
-env.Alias( "core", [ '#/%s' % b for b in [ add_exe( "mongo" ), add_exe( "mongod" ), add_exe( "mongos" ) ] ] )
+env.Alias( "core", [ '#/%s' % b for b in [ add_exe( "mongod" ), add_exe( "mongos" ) ] ] )
 
 # Stage the top-level mongodb banners
 distsrc = env.Dir('#distsrc')

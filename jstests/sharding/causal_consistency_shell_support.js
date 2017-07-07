@@ -11,7 +11,10 @@
     // Verifies causal consistency is either enabled or disabled for each given command name.
     function checkCausalConsistencySupportForCommandNames(cmdNames, isEnabled) {
         cmdNames.forEach(function(cmdName) {
-            assert.eq(testDB.getMongo().isCausalConsistencyEnabled(cmdName, {}),
+            var cmd = {};
+            cmd[cmdName] = 1;
+
+            assert.eq(testDB.getMongo().isCausalConsistencyEnabled(cmd),
                       isEnabled,
                       "expected causal consistency support for command, " + cmdName + ", to be " +
                           isEnabled);
@@ -106,11 +109,8 @@
 
     // Start the sharding test and add the majority readConcern enabled replica set.
     const name = "causal_consistency_shell_support";
-    const st = new ShardingTest({
-        name: name,
-        shards: 1,
-        manualAddShard: true,
-    });
+    const st =
+        new ShardingTest({name: name, shards: 1, manualAddShard: true, mongosWaitsForKeys: true});
     assert.commandWorked(st.s.adminCommand({addShard: rst.getURL()}));
 
     const testDB = st.s.getDB("test");

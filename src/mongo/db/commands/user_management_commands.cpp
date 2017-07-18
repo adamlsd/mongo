@@ -140,17 +140,16 @@ Status getCurrentUserRoles(OperationContext* opCtx,
                            AuthorizationManager* authzManager,
                            const UserName& userName,
                            unordered_set<RoleName>* roles) {
-    User* user;
     authzManager->invalidateUserByName(userName);  // Need to make sure cache entry is up to date
-    Status status = authzManager->acquireUserForInitialAuth(opCtx, userName, &user);
+    auto status = authzManager->acquireUserForInitialAuth(opCtx, userName);
     if (!status.isOK()) {
         return status;
     }
+    const std::shared_ptr<User> &user= status.getValue();
     RoleNameIterator rolesIt = user->getRoles();
     while (rolesIt.more()) {
         roles->insert(rolesIt.next());
     }
-    authzManager->releaseUser(user);
     return Status::OK();
 }
 

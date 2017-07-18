@@ -35,6 +35,9 @@
 
 namespace mongo {
 
+using std::begin;
+using std::end;
+
 namespace {
 class UserSetNameIteratorImpl : public UserNameIterator::Impl {
     MONGO_DISALLOW_COPYING(UserSetNameIteratorImpl);
@@ -47,10 +50,10 @@ public:
         return _curr != _end;
     }
     virtual const UserName& next() {
-        return (*(_curr++))->getName();
+        return _curr++->second->getName();
     }
     virtual const UserName& get() const {
-        return (*_curr)->getName();
+        return _curr->second->getName();
     }
     virtual UserNameIterator::Impl* doClone() const {
         return new UserSetNameIteratorImpl(_curr, _end);
@@ -62,70 +65,55 @@ private:
 };
 }  // namespace
 
-UserSet::UserSet() : _users(), _usersEnd(_users.end()) {}
-UserSet::~UserSet() {}
+UserSet::UserSet() = default;
+UserSet::~UserSet() = default;
 
-User* UserSet::add(User* user) {
-    for (mutable_iterator it = mbegin(); it != mend(); ++it) {
-        User* current = *it;
-        if (current->getName().getDB() == user->getName().getDB()) {
-            // There can be only one user per database.
-            *it = user;
-            return current;
-        }
-    }
-    if (_usersEnd == _users.end()) {
-        _users.push_back(user);
-        _usersEnd = _users.end();
-    } else {
-        *_usersEnd = user;
-        ++_usersEnd;
-    }
-    return NULL;
+std::shared_ptr<User> UserSet::add(std::shared_ptr<User> user) {
+    std::string dbName = user->getName().getDB().toString();
+    auto found = _users.find(dbName);
+    if( found != _users.end())
+	{
+        using std::swap;
+        swap(user, found->second);
+        return user;
+	}
+	else
+	{
+        _users.insert(std::make_pair(std::move(dbName), std::move(user)));
+        return nullptr;
+	}
 }
 
-User* UserSet::removeByDBName(StringData dbname) {
-    for (iterator it = begin(); it != end(); ++it) {
-        User* current = *it;
-        if (current->getName().getDB() == dbname) {
-            return removeAt(it);
-        }
-    }
-    return NULL;
+std::shared_ptr<User> UserSet::removeByDBName(StringData dbname) {
+    auto found = _users.find(dbname.toString());
+    return found != _users.end() ? removeAt(std::move(found)) : nullptr;
 }
 
-User* UserSet::replaceAt(iterator it, User* replacement) {
-    size_t offset = it - begin();
-    User* old = _users[offset];
-    _users[offset] = replacement;
-    return old;
+std::shared_ptr<User> UserSet::replaceAt(iterator it, std::shared_ptr<User> replacement) {
+    std::swap(replacement, it->second);
+    return replacement;
 }
 
-User* UserSet::removeAt(iterator it) {
-    size_t offset = it - begin();
-    User* old = _users[offset];
-    --_usersEnd;
-    _users[offset] = *_usersEnd;
-    *_usersEnd = NULL;
-    return old;
+std::shared_ptr<User> UserSet::removeAt(iterator it) {
+    auto victim = std::move(iterator->second);
+    _users.erase(iterator);
+    return victim;
 }
 
-User* UserSet::lookup(const UserName& name) const {
-    User* user = lookupByDBName(name.getDB());
+std::shared_ptr<User> UserSet::lookup(const UserName& name) const {
+    std::shared_ptr<User> user = lookupByDBName(name.getDB());
     if (user && user->getName() == name) {
         return user;
     }
-    return NULL;
+    return nullptr;
 }
 
-User* UserSet::lookupByDBName(StringData dbname) const {
-    for (iterator it = begin(); it != end(); ++it) {
-        User* current = *it;
-        if (current->getName().getDB() == dbname) {
-            return current;
-        }
+std::shared_ptr<User> UserSet::lookupByDBName(StringData dbname) const {
+    auto found = _users.find(dbname);
+    if (found != _users.end()) {
+        return found->second;
     }
-    return NULL;
+    return nullptr;
 }
 
 UserNameIterator UserSet::getNames() const {

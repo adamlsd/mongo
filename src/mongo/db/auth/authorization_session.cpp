@@ -94,8 +94,8 @@ public:
 
     void operator()(User* user) {
         // Remove the user from the borrower if it hasn't already been swapped out.
-        if (_borrower && *_it == user) {
-            fassert(40546, _borrower->removeAt(_it) == user);
+        if (_borrower && _it->second.get() == user) {
+            fassert(40546, _borrower->removeAt(_it).get() == user);
         }
         _owner->releaseUser(user);
     }
@@ -134,16 +134,14 @@ void AuthorizationSession::startRequest(OperationContext* opCtx) {
 
 Status AuthorizationSession::addAndAuthorizeUser(OperationContext* opCtx,
                                                  const UserName& userName) {
-    User* user;
     AuthorizationManager* authzManager = AuthorizationManager::get(opCtx->getServiceContext());
-    Status status = authzManager->acquireUserForInitialAuth(opCtx, userName, &user);
+    auto status = authzManager->acquireUserForInitialAuth(opCtx, userName);
     if (!status.isOK()) {
         return status;
     }
+	const std::shared_ptr<User> &user= status.getValue();
 
-    UserHolder userHolder(user, UserReleaser(authzManager));
-
-    const auto& restrictionSet = userHolder->getRestrictions();
+    const auto& restrictionSet = user->getRestrictions();
     if (opCtx->getClient() == nullptr) {
         return Status(ErrorCodes::AuthenticationFailed,
                       "Unable to evaluate restrictions, OperationContext has no Client");

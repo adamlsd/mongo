@@ -46,9 +46,11 @@ namespace mongo {
  */
 class UserSet {
     MONGO_DISALLOW_COPYING(UserSet);
+    using UserMap= stdx::unordered_map<std::string, std::shared_ptr<User>>;
 
 public:
-    typedef std::vector<User*>::const_iterator iterator;
+    using iterator = UserMap::iterator;
+    using const_iterator = UserMap::const_iterator;
 
     UserSet();
     ~UserSet();
@@ -65,64 +67,70 @@ public:
      *
      * Invalidates any outstanding iterators or NameIterators.
      */
-    User* add(User* user);
+    std::shared_ptr<User> add(std::shared_ptr<User> user);
 
     /**
      * Replaces the user at "it" with "replacement."  Does not take ownership of the User.
      * Returns a pointer to the old user referenced by "it".  Does _not_ invalidate "iterator"
      * instances.
      */
-    User* replaceAt(iterator it, User* replacement);
+    std::shared_ptr<User> replaceAt(iterator it, std::shared_ptr<User> replacement);
 
     /**
      * Removes the user at "it", and returns a pointer to it.  After this call, "it" remains
      * valid.  It will either equal "end()", or refer to some user between the values of "it"
      * and "end()" before this call was made.
      */
-    User* removeAt(iterator it);
+    std::shared_ptr<User> removeAt(iterator it);
 
     /**
      * Removes the User whose authentication credentials came from dbname, and returns that
      * user.  It is the caller's responsibility to then release that user back to the
      * authorizationManger.  If no user exists for the given database, returns NULL;
      */
-    User* removeByDBName(StringData dbname);
+    std::shared_ptr<User> removeByDBName(StringData dbname);
 
     // Returns the User with the given name, or NULL if not found.
     // Ownership of the returned User remains with the UserSet.  The pointer
     // returned is only guaranteed to remain valid until the next non-const method is called
     // on the UserSet.
-    User* lookup(const UserName& name) const;
+    std::shared_ptr<User> lookup(const UserName& name) const;
 
     // Gets the user whose authentication credentials came from dbname, or NULL if none
     // exist.  There should be at most one such user.
-    User* lookupByDBName(StringData dbname) const;
+    std::shared_ptr<User> lookupByDBName(StringData dbname) const;
 
     // Gets an iterator over the names of the users stored in the set.  The iterator is
     // valid until the next non-const method is called on the UserSet.
     UserNameIterator getNames() const;
 
-    iterator begin() const {
+    const_iterator begin() const {
         return _users.begin();
     }
-    iterator end() const {
-        return _usersEnd;
+    const_iterator end() const {
+        return _users.end();
+    }
+
+    iterator begin() {
+        return _users.begin();
+    }
+    iterator end() {
+        return _users.end();
     }
 
 private:
-    typedef std::vector<User*>::iterator mutable_iterator;
+    using mutable_iterator = UserMap::iterator;
 
     mutable_iterator mbegin() {
         return _users.begin();
     }
     mutable_iterator mend() {
-        return _usersEnd;
+        return _users.end();
     }
 
     // The UserSet maintains ownership of the Users in it, and is responsible for
     // returning them to the AuthorizationManager when done with them.
-    std::vector<User*> _users;
-    std::vector<User*>::iterator _usersEnd;
+    UserMap _users;
 };
 
 }  // namespace mongo

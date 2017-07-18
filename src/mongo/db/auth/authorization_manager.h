@@ -46,10 +46,11 @@
 #include "mongo/db/auth/user_name_hash.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/platform/unordered_map.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 
 namespace mongo {
 
@@ -259,7 +260,7 @@ public:
                                     std::vector<BSONObj>* result);
 
     /**
-     * Returns the User object for the given userName in the out parameter "acquiredUser".
+     * Returns the User object for the given userName.
      *
      * This method should be used only when initially authenticating a user, in contexts when
      * the caller does not yet have an id for this user. When the caller already has access
@@ -272,11 +273,10 @@ public:
      * The AuthorizationManager retains ownership of the returned User object.
      * On non-OK Status return values, acquiredUser will not be modified.
      */
-    Status acquireUserForInitialAuth(OperationContext* opCtx,
-                                     const UserName& userName,
-                                     User** acquiredUser);
+    StatusWith<std::shared_ptr<User>> acquireUserForInitialAuth(OperationContext* opCtx,
+                                                                const UserName& userName);
     /**
-     * Returns the User object for the given userName in the out parameter "acquiredUser".
+     * Returns the User object for the given userName.
      *
      * This method must be called with a user id (the unset optional, boost::none, will be
      * understood as a distinct id for a pre-3.6 user). The acquired user must match
@@ -290,10 +290,9 @@ public:
      * The AuthorizationManager retains ownership of the returned User object.
      * On non-OK Status return values, acquiredUser will not be modified.
      */
-    Status acquireUserToRefreshSessionCache(OperationContext* opCtx,
-                                            const UserName& userName,
-                                            boost::optional<OID> id,
-                                            User** acquiredUser);
+    StatusWith<std::shared_ptr<User>> acquireUserToRefreshSessionCache(OperationContext* opCtx,
+                                                                       const UserName& userName,
+                                                                       boost::optional<OID> id);
 
     /**
      * Decrements the refcount of the given User object.  If the refcount has gone to zero,
@@ -416,10 +415,10 @@ private:
     /**
      * Caches User objects with information about user privileges, to avoid the need to
      * go to disk to read user privilege documents whenever possible.  Every User object
-     * has a reference count - the AuthorizationManager must not delete a User object in the
-     * cache unless its reference count is zero.
+     * has a reference count, by dint of the weak pointer to it.  The AuthorizationManager
+     * may delete user objects with non-zero reference counts, due to weak-pointer semantics.
      */
-    unordered_map<UserName, User*> _userCache;
+    stdx::unordered_map<UserName, std::shared_ptr<User>> _userCache;
 
     /**
      * Current generation of cached data.  Updated every time part of the cache gets

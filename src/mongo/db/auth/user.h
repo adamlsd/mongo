@@ -38,8 +38,8 @@
 #include "mongo/db/auth/role_name.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/platform/atomic_word.h"
-#include "mongo/platform/unordered_map.h"
-#include "mongo/platform/unordered_set.h"
+#include "mongo/stdx/unordered_map.h"
+#include "mongo/stdx/unordered_set.h"
 
 namespace mongo {
 
@@ -58,7 +58,8 @@ namespace mongo {
  * user from the AuthorizationManager.
  */
 class User {
-    MONGO_DISALLOW_COPYING(User);
+    User(const User &)= default;
+    User &operator=(const User &)= delete;
 
 public:
     struct SCRAMCredentials {
@@ -77,9 +78,9 @@ public:
         bool isExternal;
     };
 
-    typedef unordered_map<ResourcePattern, Privilege> ResourcePrivilegeMap;
+    using ResourcePrivilegeMap = stdx::unordered_map<ResourcePattern, Privilege>;
 
-    explicit User(const UserName& name);
+    explicit User(UserName name);
     ~User();
 
     /**
@@ -125,22 +126,9 @@ public:
     const ActionSet getActionsForResource(const ResourcePattern& resource) const;
 
     /**
-     * Returns true if this copy of information about this user is still valid. If this returns
-     * false, this object should no longer be used and should be returned to the
-     * AuthorizationManager and a new User object for this user should be requested.
+     * Clones this user into a new, valid User object.
      */
-    bool isValid() const;
-
-    /**
-     * This returns the reference count for this User.  The AuthorizationManager should be the
-     * only caller of this.
-     */
-    uint32_t getRefCount() const;
-
-    /**
-     * Clones this user into a new, valid User object with refcount of 0.
-     */
-    User* clone() const;
+    std::unique_ptr<User> clone() const;
 
     // Mutators below.  Mutation functions should *only* be called by the AuthorizationManager
 
@@ -203,31 +191,6 @@ public:
     }
     void getRestrictions() && = delete;
 
-    /**
-     * Marks this instance of the User object as invalid, most likely because information about
-     * the user has been updated and needs to be reloaded from the AuthorizationManager.
-     *
-     * This method should *only* be called by the AuthorizationManager.
-     */
-    void invalidate();
-
-    /**
-     * Increments the reference count for this User object, which records how many threads have
-     * a reference to it.
-     *
-     * This method should *only* be called by the AuthorizationManager.
-     */
-    void incrementRefCount();
-
-    /**
-     * Decrements the reference count for this User object, which records how many threads have
-     * a reference to it.  Once the reference count goes to zero, the AuthorizationManager is
-     * allowed to destroy this instance.
-     *
-     * This method should *only* be called by the AuthorizationManager.
-     */
-    void decrementRefCount();
-
 private:
     UserName _name;
 
@@ -241,7 +204,7 @@ private:
     ResourcePrivilegeMap _privileges;
 
     // Roles the user has privileges from
-    unordered_set<RoleName> _roles;
+    stdx::unordered_set<RoleName> _roles;
 
     // Roles that the user indirectly has privileges from, due to role inheritance.
     std::vector<RoleName> _indirectRoles;
@@ -251,12 +214,6 @@ private:
 
     // Restrictions which must be met by a Client in order to authenticate as this user.
     RestrictionDocuments _restrictions;
-
-    // _refCount and _isInvalidated are modified exclusively by the AuthorizationManager
-    // _isInvalidated can be read by any consumer of User, but _refCount can only be
-    // meaningfully read by the AuthorizationManager, as _refCount is guarded by the AM's _lock
-    uint32_t _refCount;
-    AtomicUInt32 _isValid;  // Using as a boolean
 };
 
 }  // namespace mongo

@@ -44,7 +44,7 @@ namespace mongo {
  */
 class UserName {
 public:
-    UserName() : _splitPoint(0) {}
+    UserName() = default;
     UserName(StringData user, StringData dbname);
 
     /**
@@ -88,8 +88,8 @@ public:
     }
 
 private:
-    std::string _fullName;  // The full name, stored as a string.  "user@db".
-    size_t _splitPoint;     // The index of the "@" separating the user and db name parts.
+    std::string _fullName;   // The full name, stored as a string.  "user@db".
+    size_t _splitPoint = 0;  // The index of the "@" separating the user and db name parts.
 };
 
 std::ostream& operator<<(std::ostream& os, const UserName& name);

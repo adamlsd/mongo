@@ -1,5 +1,4 @@
 /*    Copyright 2013 10gen Inc.
-
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -41,11 +40,9 @@
 
 namespace mongo {
 
-User::User(const UserName& name) : _name(name), _id(), _refCount(0), _isValid(1) {}
+User::User(UserName name) : _name(std::move(name)) {}
 
-User::~User() {
-    dassert(_refCount == 0);
-}
+User::~User() = default;
 
 const UserName& User::getName() const {
     return _name;
@@ -71,29 +68,16 @@ const User::CredentialData& User::getCredentials() const {
     return _credentials;
 }
 
-bool User::isValid() const {
-    return _isValid.loadRelaxed() == 1;
-}
-
-uint32_t User::getRefCount() const {
-    return _refCount;
-}
-
 const ActionSet User::getActionsForResource(const ResourcePattern& resource) const {
-    unordered_map<ResourcePattern, Privilege>::const_iterator it = _privileges.find(resource);
+    auto it = _privileges.find(resource);
     if (it == _privileges.end()) {
         return ActionSet();
     }
     return it->second.getActions();
 }
 
-User* User::clone() const {
-    std::unique_ptr<User> result(new User(_name));
-    result->_id = _id;
-    result->_privileges = _privileges;
-    result->_roles = _roles;
-    result->_credentials = _credentials;
-    return result.release();
+std::unique_ptr<User> User::clone() const {
+    return std::unique_ptr<User>(new User(*this));
 }
 
 void User::setID(boost::optional<OID> id) {
@@ -137,7 +121,7 @@ void User::addRoles(const std::vector<RoleName>& roles) {
 }
 
 void User::addPrivilege(const Privilege& privilegeToAdd) {
-    ResourcePrivilegeMap::iterator it = _privileges.find(privilegeToAdd.getResourcePattern());
+    auto it = _privileges.find(privilegeToAdd.getResourcePattern());
     if (it == _privileges.end()) {
         // No privilege exists yet for this resource
         _privileges.insert(std::make_pair(privilegeToAdd.getResourcePattern(), privilegeToAdd));
@@ -155,18 +139,5 @@ void User::addPrivileges(const PrivilegeVector& privileges) {
 
 void User::setRestrictions(RestrictionDocuments restrictions)& {
     _restrictions = std::move(restrictions);
-}
-
-void User::invalidate() {
-    _isValid.store(0);
-}
-
-void User::incrementRefCount() {
-    ++_refCount;
-}
-
-void User::decrementRefCount() {
-    dassert(_refCount > 0);
-    --_refCount;
 }
 }  // namespace mongo

@@ -11,6 +11,7 @@ env.Library(
         'view_sharding_check.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/catalog/database_holder',
         '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/views/views',
         '$BUILD_DIR/mongo/db/s/sharding',

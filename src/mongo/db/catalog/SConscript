@@ -244,6 +244,7 @@ env.Library(
         'collection',
         'database',
         'index_catalog',
+        'database_holder',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/background',
         '$BUILD_DIR/mongo/db/db_raii',

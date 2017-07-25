@@ -146,10 +146,12 @@ env.Library(
         'sharding_catalog_manager_zone_operations_impl.cpp',
     ],
     LIBDEPS=[
+        'sharding_catalog_client_impl',
         '$BUILD_DIR/mongo/db/commands/dcommands_fcv',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/repl/read_concern_args',
         '$BUILD_DIR/mongo/db/s/balancer',
+        '$BUILD_DIR/mongo/db/s/type_shard_identity',
         '$BUILD_DIR/mongo/executor/network_interface',
         '$BUILD_DIR/mongo/s/client/sharding_client',
         '$BUILD_DIR/mongo/s/coreshard',

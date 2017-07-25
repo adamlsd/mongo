@@ -287,6 +287,7 @@ env.Library(
         'db/clientcursor',
         'db/commands/core',
         'db/conn_pool_options',
+        'db/db_raii_impl',
         'db/dbdirectclient',
         'db/ftdc/ftdc_mongod',
         'db/index_d',

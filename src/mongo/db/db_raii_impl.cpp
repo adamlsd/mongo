@@ -52,6 +52,43 @@ namespace mongo
 			MONGO_FP_DECLARE( setAutoGetCollectionWait );
 		}  // namespace
 
+		template< typename T >
+		Status
+		makeStatused( T callable )
+		try
+		{
+			callable();
+			return Status::OK();
+		}
+		catch( ... )
+		{
+			return exceptionToStatus();
+		}
+
+		template< typename T >
+		auto
+		factory()
+		{
+			return []( auto && ... args )
+			{
+				return stdx::make_unique< T >( args... );
+			};
+		}
+
+		template< typename T >
+		void
+		registerFactory_impl()
+		{
+			T::facade_type::registerFactory( factory< T >() );
+		}
+
+		template< typename T >
+		Status
+		registerFactory()
+		{
+			return makeStatused( []{ registerFactory_impl< T >(); } );
+		}
+
 		namespace db_raii_impl
 		{
 			// To avoid name collision outside this namespace -- Windows compilers seem to do the wrong thing here.
@@ -75,6 +112,12 @@ namespace mongo
 					const Lock::DBLock _dbLock;
 					Database *const _db;
 			};
+
+			MONGO_INITIALIZER( InitializeAutoGetDbFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetDb >();
+			}
+
 
 			class AutoGetCollection : public mongo::AutoGetCollection::Impl
 			{
@@ -106,6 +149,13 @@ namespace mongo
 					friend class AutoGetCollectionOrViewForReadCommand;
 			};
 
+			MONGO_INITIALIZER( InitializeAutoGetCollectionFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetCollection >();
+			}
+
+
+
 			class AutoGetCollectionOrView : public mongo::AutoGetCollectionOrView::Impl
 			{
 				private:
@@ -125,6 +175,13 @@ namespace mongo
 					const AutoGetCollection _autoColl;
 					std::shared_ptr< ViewDefinition > _view;
 			};
+
+			MONGO_INITIALIZER( InitializeAutoGetCollectionOrViewFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetCollectionOrView >();
+			}
+
+
 
 			class AutoGetOrCreateDb : public mongo::AutoGetOrCreateDb::Impl
 			{
@@ -146,6 +203,13 @@ namespace mongo
 					bool _justCreated;
 			};
 
+			MONGO_INITIALIZER( InitializeAutoGetOrCreateDbFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetOrCreateDb >();
+			}
+
+
+
 			class AutoStatsTracker : public mongo::AutoStatsTracker::Impl
 			{
 				private:
@@ -161,6 +225,13 @@ namespace mongo
 					OperationContext *_opCtx;
 					Top::LockType _lockType;
 			};
+
+			MONGO_INITIALIZER( InitializeAutoStatsTrackerFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoStatsTracker >();
+			}
+
+
 
 			class AutoGetCollectionForRead : public mongo::AutoGetCollectionForRead::Impl
 			{
@@ -179,6 +250,13 @@ namespace mongo
 
 					boost::optional< AutoGetCollection > _autoColl;
 			};
+
+			MONGO_INITIALIZER( InitializeAutoGetCollectionForReadFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetCollectionForRead >();
+			}
+
+
 
 			class AutoGetCollectionForReadCommand : public virtual mongo::AutoGetCollectionForReadCommand::Impl
 			{
@@ -203,6 +281,13 @@ namespace mongo
 					boost::optional< mongo::AutoStatsTracker > _statsTracker;
 			};
 
+			MONGO_INITIALIZER( InitializeAutoGetCollectionForReadCommandFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetCollectionForReadCommand >();
+			}
+
+
+
 			class AutoGetCollectionOrViewForReadCommand final
 					: virtual public AutoGetCollectionForReadCommand, virtual public mongo::AutoGetCollectionOrViewForReadCommand::Impl
 			{
@@ -220,6 +305,14 @@ namespace mongo
 				private:
 					std::shared_ptr< ViewDefinition > _view;
 			};
+
+			MONGO_INITIALIZER( InitializeAutoGetCollectionOrViewForReadCommandFactory )( InitializerContext *const )
+			{
+				return registerFactory< AutoGetCollectionOrViewForReadCommand >();
+			}
+
+
+
 
 			class OldClientContext : public mongo::OldClientContext::Impl
 			{
@@ -252,6 +345,18 @@ namespace mongo
 					Timer _timer;
 			};
 
+			MONGO_INITIALIZER( InitializeOldClientContextFactory )( InitializerContext *const )
+			{
+				return makeStatused( []
+						{
+							using factory_function_type= OldClientContext::facade_type::factory_function_type;
+							OldClientContext::facade_type::registerFactory( factory_function_type( factory< OldClientContext >() ) );
+							using factory_function_type2= OldClientContext::facade_type::factory_function_type2;
+							OldClientContext::facade_type::registerFactory( factory_function_type2( factory< OldClientContext >() ) );
+						} );
+			}
+
+
 
 			class OldClientWriteContext : public mongo ::OldClientWriteContext::Impl
 			{
@@ -275,6 +380,11 @@ namespace mongo
 					OldClientContext _c;
 					Collection *_collection;
 			};
+
+			MONGO_INITIALIZER( InitializeOldClientWriteContextFactory )( InitializerContext *const )
+			{
+				return registerFactory< OldClientWriteContext >();
+			}
 
 
 

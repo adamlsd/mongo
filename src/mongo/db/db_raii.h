@@ -58,6 +58,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoGetDb;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -120,6 +122,8 @@ namespace mongo
 					using ViewMode= AutoGetCollection::ViewMode;
 
 				public:
+					using facade_type= AutoGetCollection;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -196,6 +200,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoGetCollectionOrView;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -267,6 +273,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoGetOrCreateDb;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -318,6 +326,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoStatsTracker;
+
 					virtual ~Impl()= 0;
 			};
 
@@ -373,6 +383,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoGetCollectionForRead;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -443,6 +455,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= AutoGetCollectionForReadCommand;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *getDb() const= 0;
@@ -502,6 +516,8 @@ namespace mongo
 			class Impl : virtual public AutoGetCollectionForReadCommand::Impl
 			{
 				public:
+					using facade_type= AutoGetCollectionOrViewForReadCommand;
+
 					virtual ~Impl()= 0;
 
 					virtual ViewDefinition *getView() const= 0;
@@ -579,6 +595,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= OldClientContext;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *db() const= 0;
@@ -638,6 +656,8 @@ namespace mongo
 			class Impl
 			{
 				public:
+					using facade_type= OldClientWriteContext;
+
 					virtual ~Impl()= 0;
 
 					virtual Database *db() const= 0;

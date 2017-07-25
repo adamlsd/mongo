@@ -539,8 +539,9 @@ env.Library(
     source=[
         'db_raii_impl.cpp',
     ],
-    LIBDEPS=[
+    LIBDEPS_PRIVATE=[
         'curop',
+        'db_raii',
         'stats/top',
         'views/views',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',

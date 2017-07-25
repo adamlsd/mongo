@@ -225,14 +225,13 @@ Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInf
                 //     ...
                 // }
                 // TODO: Delete this when UUIDs are enabled. (SERVER-29815)
+                NamespaceString collectionNamespace(nss.getSisterNS(first.valuestr()));
                 if (!uuid) {
-                    string ns = nss.db().toString() + '.' + first.valuestr();
-                    fixUpInfo.collectionsToResyncData.insert(ns);
+                    fixUpInfo.collectionsToResyncData.insert(collectionNamespace.ns());
                     return Status::OK();
                 }
-                string collName = first.valuestr();
                 fixUpInfo.collectionsToRollBackPendingDrop.emplace(
-                    *uuid, std::make_pair(oplogEntry.getOpTime(), collName));
+                    *uuid, std::make_pair(oplogEntry.getOpTime(), collectionNamespace));
                 return Status::OK();
             }
             case OplogEntry::CommandType::kDropIndexes: {
@@ -493,9 +492,9 @@ void syncFixUp(OperationContext* opCtx,
     // exists when we attempt to resync its metadata or insert documents into it.
     for (const auto& collPair : fixUpInfo.collectionsToRollBackPendingDrop) {
         const auto& optime = collPair.second.first;
-        const auto& collName = collPair.second.second;
+        const auto& collectionNamespace = collPair.second.second;
         DropPendingCollectionReaper::get(opCtx)->rollBackDropPendingCollection(
-            opCtx, optime, collName);
+            opCtx, optime, collectionNamespace);
     }
 
     // Full collection data and metadata resync.
@@ -877,15 +876,16 @@ void syncFixUp(OperationContext* opCtx,
 
     // Cleans up the oplog.
     {
-        const NamespaceString oplogNss(rsOplogName);
+        const NamespaceString oplogNss(NamespaceString::kRsOplogNamespace);
         Lock::DBLock oplogDbLock(opCtx, oplogNss.db(), MODE_IX);
         Lock::CollectionLock oplogCollectionLoc(opCtx->lockState(), oplogNss.ns(), MODE_X);
-        OldClientContext ctx(opCtx, rsOplogName);
+        OldClientContext ctx(opCtx, oplogNss.ns());
         Collection* oplogCollection = ctx.db()->getCollection(opCtx, oplogNss);
         if (!oplogCollection) {
-            fassertFailedWithStatusNoTrace(40495,
-                                           Status(ErrorCodes::UnrecoverableRollbackError,
-                                                  str::stream() << "Can't find " << rsOplogName));
+            fassertFailedWithStatusNoTrace(
+                40495,
+                Status(ErrorCodes::UnrecoverableRollbackError,
+                       str::stream() << "Can't find " << NamespaceString::kRsOplogNamespace.ns()));
         }
         // TODO: fatal error if this throws?
         oplogCollection->cappedTruncateAfter(opCtx, fixUpInfo.commonPointOurDiskloc, false);

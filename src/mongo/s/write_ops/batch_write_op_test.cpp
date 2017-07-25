@@ -32,24 +32,17 @@
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/batched_command_request.h"
-#include "mongo/s/write_ops/batched_delete_document.h"
 #include "mongo/s/write_ops/mock_ns_targeter.h"
 #include "mongo/s/write_ops/write_error_detail.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
-
-using std::map;
-using std::string;
-using std::unique_ptr;
-using std::vector;
-
 namespace {
 
 void initTargeterFullRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
+    std::vector<MockRange*> mockRanges;
     mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
     targeter->init(mockRanges);
 }
@@ -58,7 +51,7 @@ void initTargeterSplitRange(const NamespaceString& nss,
                             const ShardEndpoint& endpointA,
                             const ShardEndpoint& endpointB,
                             MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
+    std::vector<MockRange*> mockRanges;
     mockRanges.push_back(new MockRange(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
     mockRanges.push_back(new MockRange(endpointB, nss, BSON("x" << 0), BSON("x" << MAXKEY)));
     targeter->init(mockRanges);
@@ -67,7 +60,7 @@ void initTargeterSplitRange(const NamespaceString& nss,
 void initTargeterHalfRange(const NamespaceString& nss,
                            const ShardEndpoint& endpoint,
                            MockNSTargeter* targeter) {
-    vector<MockRange*> mockRanges;
+    std::vector<MockRange*> mockRanges;
     mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << 0)));
 
     // x >= 0 values untargetable
@@ -105,7 +98,7 @@ void buildResponse(int n, BatchedCommandResponse* response) {
     ASSERT(response->isValid(NULL));
 }
 
-void buildErrResponse(int code, const string& message, BatchedCommandResponse* response) {
+void buildErrResponse(int code, const std::string& message, BatchedCommandResponse* response) {
     response->clear();
     response->setOk(false);
     response->setN(0);
@@ -114,8 +107,8 @@ void buildErrResponse(int code, const string& message, BatchedCommandResponse* r
     ASSERT(response->isValid(NULL));
 }
 
-void addError(int code, const string& message, int index, BatchedCommandResponse* response) {
-    unique_ptr<WriteErrorDetail> error(new WriteErrorDetail);
+void addError(int code, const std::string& message, int index, BatchedCommandResponse* response) {
+    std::unique_ptr<WriteErrorDetail> error(new WriteErrorDetail);
     error->setErrCode(code);
     error->setErrMessage(message);
     error->setIndex(index);
@@ -124,7 +117,7 @@ void addError(int code, const string& message, int index, BatchedCommandResponse
 }
 
 void addWCError(BatchedCommandResponse* response) {
-    unique_ptr<WriteConcernErrorDetail> error(new WriteConcernErrorDetail);
+    std::unique_ptr<WriteConcernErrorDetail> error(new WriteConcernErrorDetail);
     error->setErrCode(ErrorCodes::WriteConcernFailed);
     error->setErrMessage("mock wc error");
 
@@ -150,7 +143,7 @@ TEST(WriteOpTests, SingleOp) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -186,7 +179,7 @@ TEST(WriteOpTests, SingleError) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -205,7 +198,7 @@ TEST(WriteOpTests, SingleError) {
     ASSERT_EQUALS(clientResponse.sizeErrDetails(), 1u);
     ASSERT_EQUALS(clientResponse.getErrDetailsAt(0)->getErrCode(), response.getErrCode());
     ASSERT(clientResponse.getErrDetailsAt(0)->getErrMessage().find(response.getErrMessage()) !=
-           string::npos);
+           std::string::npos);
     ASSERT_EQUALS(clientResponse.getN(), 0);
 }
 
@@ -228,7 +221,7 @@ TEST(WriteOpTests, SingleTargetError) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_NOT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 0u);
@@ -265,7 +258,7 @@ TEST(WriteOpTests, SingleWriteConcernErrorOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -310,7 +303,7 @@ TEST(WriteOpTests, SingleStaleError) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     BatchedCommandResponse response;
@@ -362,14 +355,13 @@ TEST(WriteOpTests, MultiOpSameShardOrdered) {
     // Do single-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
-    request.setOrdered(true);
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << 1), false));
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << 2), false));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -402,14 +394,18 @@ TEST(WriteOpTests, MultiOpSameShardUnordered) {
     // Do single-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << 1), false));
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << 2), false));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -444,14 +440,13 @@ TEST(WriteOpTests, MultiOpTwoShardsOrdered) {
     // Do multi-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(true);
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -483,8 +478,8 @@ TEST(WriteOpTests, MultiOpTwoShardsOrdered) {
     ASSERT_EQUALS(clientResponse.getN(), 2);
 }
 
-void verifyTargetedBatches(map<ShardId, size_t> expected,
-                           const map<ShardId, TargetedWriteBatch*>& targeted) {
+void verifyTargetedBatches(std::map<ShardId, size_t> expected,
+                           const std::map<ShardId, TargetedWriteBatch*>& targeted) {
     // 'expected' contains each ShardId that was expected to be targeted and the size of the batch
     // that was expected to be targeted to it.
     // We check that each ShardId in 'targeted' corresponds to one in 'expected', in that it
@@ -515,14 +510,18 @@ TEST(WriteOpTests, MultiOpTwoShardsUnordered) {
     // Do multi-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -560,7 +559,6 @@ TEST(WriteOpTests, MultiOpTwoShardsEachOrdered) {
     // Do multi-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Delete);
     request.setNS(nss);
-    request.setOrdered(true);
     BSONObj queryA = BSON("x" << GTE << -1 << LT << 2);
     request.getDeleteRequest()->addToDeletes(buildDelete(queryA, 0));
     BSONObj queryB = BSON("x" << GTE << -2 << LT << 1);
@@ -569,7 +567,7 @@ TEST(WriteOpTests, MultiOpTwoShardsEachOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -621,7 +619,11 @@ TEST(WriteOpTests, MultiOpTwoShardsEachUnordered) {
     // Do multi-target, multi-doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     BSONObj queryA = BSON("x" << GTE << -1 << LT << 2);
     request.getUpdateRequest()->addToUpdates(buildUpdate(queryA, true));
     BSONObj queryB = BSON("x" << GTE << -2 << LT << 1);
@@ -630,7 +632,7 @@ TEST(WriteOpTests, MultiOpTwoShardsEachUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -669,7 +671,6 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Delete);
     request.setNS(nss);
-    request.setOrdered(true);
     // These go to the same shard
     request.getDeleteRequest()->addToDeletes(buildDelete(BSON("x" << -1), 1));
     request.getDeleteRequest()->addToDeletes(buildDelete(BSON("x" << -2), 1));
@@ -685,7 +686,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 1u);
@@ -768,7 +769,11 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     // These go to the same shard
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << -1), false));
     request.getUpdateRequest()->addToUpdates(buildUpdate(BSON("x" << -2), false));
@@ -784,7 +789,7 @@ TEST(WriteOpTests, MultiOpOneOrTwoShardsUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -823,14 +828,18 @@ TEST(WriteOpTests, MultiOpSingleShardErrorUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -884,14 +893,18 @@ TEST(WriteOpTests, MultiOpTwoShardErrorsUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
 
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -942,7 +955,11 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Delete);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     BSONObj queryA = BSON("x" << GTE << -1 << LT << 2);
     request.getDeleteRequest()->addToDeletes(buildDelete(queryA, 0));
     BSONObj queryB = BSON("x" << GTE << -2 << LT << 1);
@@ -951,7 +968,7 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -1006,7 +1023,6 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorOrdered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Delete);
     request.setNS(nss);
-    request.setOrdered(true);
     BSONObj queryA = BSON("x" << GTE << -1 << LT << 2);
     request.getDeleteRequest()->addToDeletes(buildDelete(queryA, 0));
     BSONObj queryB = BSON("x" << GTE << -2 << LT << 1);
@@ -1015,7 +1031,7 @@ TEST(WriteOpTests, MultiOpPartialSingleShardErrorOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT(!batchOp.isFinished());
     ASSERT_EQUALS(targeted.size(), 2u);
@@ -1073,7 +1089,11 @@ TEST(WriteOpTests, MultiOpErrorAndWriteConcernErrorUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 1));
     request.setWriteConcern(BSON("w" << 3));
@@ -1081,7 +1101,7 @@ TEST(WriteOpTests, MultiOpErrorAndWriteConcernErrorUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     BatchedCommandResponse response;
@@ -1117,7 +1137,6 @@ TEST(WriteOpTests, SingleOpErrorAndWriteConcernErrorOrdered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
-    request.setOrdered(true);
     BSONObj query = BSON("x" << GTE << -1 << LT << 2);
     request.getUpdateRequest()->addToUpdates(buildUpdate(query, true));
     request.setWriteConcern(BSON("w" << 3));
@@ -1125,7 +1144,7 @@ TEST(WriteOpTests, SingleOpErrorAndWriteConcernErrorOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     // Respond to batches.
@@ -1180,7 +1199,7 @@ TEST(WriteOpTests, MultiOpFailedTargetOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_NOT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     // First targeting round fails since we may be stale
@@ -1230,7 +1249,11 @@ TEST(WriteOpTests, MultiOpFailedTargetUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 2));
     request.getInsertRequest()->addToDocuments(BSON("x" << -2));
@@ -1240,7 +1263,7 @@ TEST(WriteOpTests, MultiOpFailedTargetUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_NOT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     // First targeting round fails since we may be stale
@@ -1292,7 +1315,7 @@ TEST(WriteOpTests, MultiOpFailedBatchOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     BatchedCommandResponse response;
@@ -1337,7 +1360,11 @@ TEST(WriteOpTests, MultiOpFailedBatchUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << 2));
     request.getInsertRequest()->addToDocuments(BSON("x" << 3));
@@ -1345,7 +1372,7 @@ TEST(WriteOpTests, MultiOpFailedBatchUnordered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     // Respond to batches.
@@ -1401,7 +1428,7 @@ TEST(WriteOpTests, MultiOpAbortOrdered) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     BatchedCommandResponse response;
@@ -1443,7 +1470,11 @@ TEST(WriteOpTests, MultiOpAbortUnordered) {
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
     request.setNS(nss);
-    request.setOrdered(false);
+    {
+        write_ops::WriteCommandBase writeCommandBase;
+        writeCommandBase.setOrdered(false);
+        request.setWriteCommandBase(std::move(writeCommandBase));
+    }
     request.getInsertRequest()->addToDocuments(BSON("x" << -1));
     request.getInsertRequest()->addToDocuments(BSON("x" << -2));
 
@@ -1490,7 +1521,7 @@ TEST(WriteOpTests, MultiOpTwoWCErrors) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
 
     BatchedCommandResponse response;
@@ -1532,7 +1563,7 @@ TEST(WriteOpLimitTests, OneBigDoc) {
     initTargeterFullRange(nss, endpoint, &targeter);
 
     // Create a BSONObj (slightly) bigger than the maximum size by including a max-size string
-    string bigString(BSONObjMaxUserSize, 'x');
+    std::string bigString(BSONObjMaxUserSize, 'x');
 
     // Do single-target, single doc batch write op
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Insert);
@@ -1542,7 +1573,7 @@ TEST(WriteOpLimitTests, OneBigDoc) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT_EQUALS(targeted.size(), 1u);
 
@@ -1565,7 +1596,7 @@ TEST(WriteOpLimitTests, OneBigOneSmall) {
     initTargeterFullRange(nss, endpoint, &targeter);
 
     // Create a BSONObj (slightly) bigger than the maximum size by including a max-size string
-    string bigString(BSONObjMaxUserSize, 'x');
+    std::string bigString(BSONObjMaxUserSize, 'x');
 
     BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
     request.setNS(nss);
@@ -1577,7 +1608,7 @@ TEST(WriteOpLimitTests, OneBigOneSmall) {
     BatchWriteOp batchOp(&opCtx, request);
 
     OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
+    std::map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT_EQUALS(targeted.size(), 1u);
     ASSERT_EQUALS(targeted.begin()->second->getWrites().size(), 1u);
@@ -1592,123 +1623,6 @@ TEST(WriteOpLimitTests, OneBigOneSmall) {
     ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
     ASSERT_EQUALS(targeted.size(), 1u);
     ASSERT_EQUALS(targeted.begin()->second->getWrites().size(), 1u);
-
-    batchOp.noteBatchResponse(*targeted.begin()->second, response, NULL);
-    ASSERT(batchOp.isFinished());
-}
-
-TEST(WriteOpLimitTests, TooManyOps) {
-    //
-    // Batch of 1002 documents
-    //
-
-    OperationContextNoop opCtx;
-    NamespaceString nss("foo.bar");
-    ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
-    MockNSTargeter targeter;
-    initTargeterFullRange(nss, endpoint, &targeter);
-
-    BatchedCommandRequest request(BatchedCommandRequest::BatchType_Delete);
-    request.setNS(nss);
-
-    // Add 2 more than the maximum to the batch
-    for (size_t i = 0; i < BatchedCommandRequest::kMaxWriteBatchSize + 2u; ++i) {
-        request.getDeleteRequest()->addToDeletes(buildDelete(BSON("x" << 2), 0));
-    }
-
-    BatchWriteOp batchOp(&opCtx, request);
-
-    OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
-    ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
-    ASSERT_EQUALS(targeted.size(), 1u);
-    ASSERT_EQUALS(targeted.begin()->second->getWrites().size(), 1000u);
-
-    BatchedCommandResponse response;
-    buildResponse(1, &response);
-
-    batchOp.noteBatchResponse(*targeted.begin()->second, response, NULL);
-    ASSERT(!batchOp.isFinished());
-
-    targetedOwned.clear();
-
-    ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
-    ASSERT_EQUALS(targeted.size(), 1u);
-    ASSERT_EQUALS(targeted.begin()->second->getWrites().size(), 2u);
-
-    batchOp.noteBatchResponse(*targeted.begin()->second, response, NULL);
-    ASSERT(batchOp.isFinished());
-}
-
-TEST(WriteOpLimitTests, UpdateOverheadIncluded) {
-    //
-    // Tests that the overhead of the extra fields in an update x 1000 is included in our size
-    // calculation
-    //
-
-    OperationContextNoop opCtx;
-    NamespaceString nss("foo.bar");
-    ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
-    MockNSTargeter targeter;
-    initTargeterFullRange(nss, endpoint, &targeter);
-
-    int updateDataBytes =
-        BSONObjMaxUserSize / static_cast<int>(BatchedCommandRequest::kMaxWriteBatchSize);
-
-    string dataString(updateDataBytes -
-                          BSON("x" << 1 << "data"
-                                   << "")
-                              .objsize(),
-                      'x');
-
-    BatchedCommandRequest request(BatchedCommandRequest::BatchType_Update);
-    request.setNS(nss);
-
-    // Add the maximum number of updates
-    int estSizeBytes = 0;
-    for (size_t i = 0; i < BatchedCommandRequest::kMaxWriteBatchSize; ++i) {
-        BatchedUpdateDocument* updateDoc = new BatchedUpdateDocument;
-        updateDoc->setQuery(BSON("x" << 1 << "data" << dataString));
-        updateDoc->setUpdateExpr(BSONObj());
-        updateDoc->setMulti(false);
-        updateDoc->setUpsert(false);
-        request.getUpdateRequest()->addToUpdates(updateDoc);
-        estSizeBytes += updateDoc->toBSON().objsize();
-    }
-
-    ASSERT_GREATER_THAN(estSizeBytes, BSONObjMaxInternalSize);
-
-    BatchWriteOp batchOp(&opCtx, request);
-
-    OwnedPointerMap<ShardId, TargetedWriteBatch> targetedOwned;
-    map<ShardId, TargetedWriteBatch*>& targeted = targetedOwned.mutableMap();
-    ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
-    ASSERT_EQUALS(targeted.size(), 1u);
-    ASSERT_LESS_THAN(targeted.begin()->second->getWrites().size(), 1000u);
-
-    {
-        BatchedCommandRequest childRequest(BatchedCommandRequest::BatchType_Update);
-        batchOp.buildBatchRequest(*targeted.begin()->second, &childRequest);
-        ASSERT_LESS_THAN(childRequest.toBSON().objsize(), BSONObjMaxInternalSize);
-    }
-
-    BatchedCommandResponse response;
-    buildResponse(1, &response);
-
-    batchOp.noteBatchResponse(*targeted.begin()->second, response, NULL);
-    ASSERT(!batchOp.isFinished());
-
-    targetedOwned.clear();
-
-    ASSERT_OK(batchOp.targetBatch(targeter, false, &targeted));
-    ASSERT_EQUALS(targeted.size(), 1u);
-    ASSERT_LESS_THAN(targeted.begin()->second->getWrites().size(), 1000u);
-
-    {
-        BatchedCommandRequest childRequest(BatchedCommandRequest::BatchType_Update);
-        batchOp.buildBatchRequest(*targeted.begin()->second, &childRequest);
-        ASSERT_LESS_THAN(childRequest.toBSON().objsize(), BSONObjMaxInternalSize);
-    }
 
     batchOp.noteBatchResponse(*targeted.begin()->second, response, NULL);
     ASSERT(batchOp.isFinished());

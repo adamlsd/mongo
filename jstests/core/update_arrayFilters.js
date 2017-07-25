@@ -340,61 +340,41 @@
                "update failed for a reason other than using array updates with $setOnInsert");
 
     // $min.
-    // TODO SERVER-28768: $min should use the new update implementation.
     coll.drop();
+    assert.writeOK(coll.insert({_id: 0, a: [{b: 0, c: 1}, {b: 0, c: -1}, {b: 1, c: 1}]}));
     if (db.getMongo().writeMode() === "commands") {
-        res = coll.update({_id: 0}, {$min: {"a.$[i]": 1}}, {arrayFilters: [{i: 0}]});
-        assert.writeErrorWithCode(res, ErrorCodes.InvalidOptions);
-        assert.neq(
-            -1,
-            res.getWriteError().errmsg.indexOf("Cannot use array filters with modifier $min"),
-            "update failed for a reason other than using array filters with $min");
+        assert.writeOK(
+            coll.update({_id: 0}, {$min: {"a.$[i].c": 0}}, {arrayFilters: [{"i.b": 0}]}));
+        assert.eq(coll.findOne({_id: 0}), {_id: 0, a: [{b: 0, c: 0}, {b: 0, c: -1}, {b: 1, c: 1}]});
     }
-    assert.writeOK(coll.insert({_id: 0, a: [0]}));
-    res = coll.update({_id: 0}, {$min: {"a.$[]": 1}});
-    assert.writeErrorWithCode(res, 16837);
-    assert.neq(-1,
-               res.getWriteError().errmsg.indexOf(
-                   "cannot use the part (a of a.$[]) to traverse the element ({a: [ 0.0 ]})"),
-               "update failed for a reason other than using array updates with $min");
+    assert.writeOK(coll.update({_id: 0}, {$min: {"a.$[].c": 0}}));
+    assert.eq(coll.findOne({_id: 0}), {_id: 0, a: [{b: 0, c: 0}, {b: 0, c: -1}, {b: 1, c: 0}]});
 
     // $max.
-    // TODO SERVER-28768: $max should use the new update implementation.
     coll.drop();
+    assert.writeOK(coll.insert({_id: 0, a: [{b: 0, c: 1}, {b: 0, c: -1}, {b: 1, c: -1}]}));
     if (db.getMongo().writeMode() === "commands") {
-        res = coll.update({_id: 0}, {$max: {"a.$[i]": 1}}, {arrayFilters: [{i: 0}]});
-        assert.writeErrorWithCode(res, ErrorCodes.InvalidOptions);
-        assert.neq(
-            -1,
-            res.getWriteError().errmsg.indexOf("Cannot use array filters with modifier $max"),
-            "update failed for a reason other than using array filters with $max");
+        assert.writeOK(
+            coll.update({_id: 0}, {$max: {"a.$[i].c": 0}}, {arrayFilters: [{"i.b": 0}]}));
+        assert.eq(coll.findOne({_id: 0}), {_id: 0, a: [{b: 0, c: 1}, {b: 0, c: 0}, {b: 1, c: -1}]});
     }
-    assert.writeOK(coll.insert({_id: 0, a: [2]}));
-    res = coll.update({_id: 0}, {$max: {"a.$[]": 1}});
-    assert.writeErrorWithCode(res, 16837);
-    assert.neq(-1,
-               res.getWriteError().errmsg.indexOf(
-                   "cannot use the part (a of a.$[]) to traverse the element ({a: [ 2.0 ]})"),
-               "update failed for a reason other than using array updates with $max");
+    assert.writeOK(coll.update({_id: 0}, {$max: {"a.$[].c": 0}}));
+    assert.eq(coll.findOne({_id: 0}), {_id: 0, a: [{b: 0, c: 1}, {b: 0, c: 0}, {b: 1, c: 0}]});
 
     // $currentDate.
-    // TODO SERVER-28766: $currentDate should use the new update implementation.
     coll.drop();
+    assert.writeOK(coll.insert({_id: 0, a: [0, 1]}));
     if (db.getMongo().writeMode() === "commands") {
-        res = coll.update({_id: 0}, {$currentDate: {"a.$[i]": true}}, {arrayFilters: [{i: 0}]});
-        assert.writeErrorWithCode(res, ErrorCodes.InvalidOptions);
-        assert.neq(-1,
-                   res.getWriteError().errmsg.indexOf(
-                       "Cannot use array filters with modifier $currentDate"),
-                   "update failed for a reason other than using array filters with $currentDate");
+        assert.writeOK(
+            coll.update({_id: 0}, {$currentDate: {"a.$[i]": true}}, {arrayFilters: [{i: 0}]}));
+        let doc = coll.findOne({_id: 0});
+        assert(doc.a[0].constructor == Date, tojson(doc));
+        assert.eq(doc.a[1], 1, printjson(doc));
     }
-    assert.writeOK(coll.insert({_id: 0, a: [0]}));
-    res = coll.update({_id: 0}, {$currentDate: {"a.$[]": true}});
-    assert.writeErrorWithCode(res, 16837);
-    assert.neq(-1,
-               res.getWriteError().errmsg.indexOf(
-                   "cannot use the part (a of a.$[]) to traverse the element ({a: [ 0.0 ]})"),
-               "update failed for a reason other than using array updates with $currentDate");
+    assert.writeOK(coll.update({_id: 0}, {$currentDate: {"a.$[]": true}}));
+    let doc = coll.findOne({_id: 0});
+    assert(doc.a[0].constructor == Date, tojson(doc));
+    assert(doc.a[1].constructor == Date, tojson(doc));
 
     // $addToSet.
     coll.drop();
@@ -421,23 +401,17 @@
     assert.eq({_id: 0, a: [[]]}, coll.findOne());
 
     // $pullAll.
-    // TODO SERVER-28771: $pullAll should use the new update implementation.
     coll.drop();
+    assert.writeOK(coll.insert({_id: 0, a: [[0, 1, 2, 3], [1, 2, 3, 4]]}));
     if (db.getMongo().writeMode() === "commands") {
-        res = coll.update({_id: 0}, {$pullAll: {"a.$[i]": [0]}}, {arrayFilters: [{i: 0}]});
-        assert.writeErrorWithCode(res, ErrorCodes.InvalidOptions);
-        assert.neq(
-            -1,
-            res.getWriteError().errmsg.indexOf("Cannot use array filters with modifier $pullAll"),
-            "update failed for a reason other than using array filters with $pullAll");
+        assert.writeOK(
+            coll.update({_id: 0}, {$pullAll: {"a.$[i]": [0, 2]}}, {arrayFilters: [{i: 0}]}));
+        assert.eq({_id: 0, a: [[1, 3], [1, 2, 3, 4]]}, coll.findOne());
     }
-    assert.writeOK(coll.insert({_id: 0, a: [[0]]}));
-    res = coll.update({_id: 0}, {$pullAll: {"a.$[]": [0]}});
-    assert.writeErrorWithCode(res, 16837);
-    assert.neq(-1,
-               res.getWriteError().errmsg.indexOf(
-                   "cannot use the part (a of a.$[]) to traverse the element ({a: [ [ 0.0 ] ]})"),
-               "update failed for a reason other than using array updates with $pullAll");
+    coll.drop();
+    assert.writeOK(coll.insert({_id: 0, a: [[0, 1, 2, 3], [1, 2, 3, 4]]}));
+    res = coll.update({_id: 0}, {$pullAll: {"a.$[]": [0, 2]}});
+    assert.eq({_id: 0, a: [[1, 3], [1, 3, 4]]}, coll.findOne());
 
     // $pull.
     coll.drop();
@@ -665,7 +639,7 @@
         assert.neq(
             -1,
             res.getWriteError().errmsg.indexOf(
-                "The top-level field name in an array filter must be an alphanumeric string beginning with a lowercase letter, found 'I'"),
+                "Error parsing array filter: The top-level field name must be an alphanumeric string beginning with a lowercase letter, found 'I'"),
             "update failed for a reason other than bad array filter identifier");
 
         assert.writeOK(coll.insert({_id: 0, a: [0], b: [{j: 0}]}));

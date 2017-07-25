@@ -44,6 +44,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/commands/server_status_metric.h"
@@ -323,39 +324,34 @@ Status SyncTail::syncApply(OperationContext* opCtx,
     if (isCrudOpType(opType)) {
         return writeConflictRetry(opCtx, "syncApply_CRUD", nss.ns(), [&] {
             // DB lock always acquires the global lock
-            std::unique_ptr<Lock::DBLock> dbLock;
-            std::unique_ptr<Lock::CollectionLock> collectionLock;
-            std::unique_ptr<OldClientContext> ctx;
-
-            auto dbName = nss.db();
-
-            auto resetLocks = [&](LockMode mode) {
-                collectionLock.reset();
-                // Warning: We must reset the pointer to nullptr first, in order to ensure that we
-                // drop the DB lock before acquiring
-                // the upgraded one.
-                dbLock.reset();
-                dbLock.reset(new Lock::DBLock(opCtx, dbName, mode));
-                collectionLock.reset(new Lock::CollectionLock(opCtx->lockState(), nss.ns(), mode));
-            };
-
-            resetLocks(MODE_IX);
-            if (!dbHolder().get(opCtx, dbName)) {
-                // Need to create database, so reset lock to stronger mode.
-                resetLocks(MODE_X);
-                ctx.reset(new OldClientContext(opCtx, nss.ns()));
-            } else {
-                ctx.reset(new OldClientContext(opCtx, nss.ns()));
-                if (!ctx->db()->getCollection(opCtx, nss)) {
-                    // Need to implicitly create collection.  This occurs for 'u' opTypes,
-                    // but not for 'i' nor 'd'.
-                    ctx.reset();
-                    resetLocks(MODE_X);
-                    ctx.reset(new OldClientContext(opCtx, nss.ns()));
-                }
+            Lock::DBLock dbLock(opCtx, nss.db(), MODE_IX);
+            auto ui = op["ui"];
+            NamespaceString actualNss = nss;
+            if (ui) {
+                auto statusWithUUID = UUID::parse(ui);
+                if (!statusWithUUID.isOK())
+                    return statusWithUUID.getStatus();
+                // We may be replaying operations on a collection that was renamed since. If so,
+                // it must have been in the same database or it would have gotten a new UUID.
+                // Need to throw instead of returning a status for it to be properly ignored.
+                actualNss = UUIDCatalog::get(opCtx).lookupNSSByUUID(statusWithUUID.getValue());
+                uassert(ErrorCodes::NamespaceNotFound,
+                        str::stream() << "Failed to apply operation due to missing collection ("
+                                      << statusWithUUID.getValue()
+                                      << "): "
+                                      << redact(op.toString()),
+                        !actualNss.isEmpty());
+                dassert(actualNss.db() == nss.db());
             }
+            Lock::CollectionLock collLock(opCtx->lockState(), actualNss.ns(), MODE_IX);
 
-            return applyOp(ctx->db());
+            Database* db = dbHolder().get(opCtx, actualNss.db());
+            if (!db)
+                return Status(ErrorCodes::NamespaceNotFound,
+                              "cannot apply operation on missing database " + actualNss.db());
+
+            OldClientContext ctx(opCtx, actualNss.ns(), db, /*justCreated*/ false);
+            return applyOp(ctx.db());
         });
     }
 
@@ -479,7 +475,7 @@ void scheduleWritesToOplog(OperationContext* opCtx,
 
             fassertStatusOK(40141,
                             StorageInterface::get(opCtx)->insertDocuments(
-                                opCtx, NamespaceString(rsOplogName), docs));
+                                opCtx, NamespaceString::kRsOplogNamespace, docs));
         };
     };
 
@@ -687,9 +683,9 @@ private:
         OperationContext& opCtx = *opCtxPtr;
         const auto replCoord = ReplicationCoordinator::get(&opCtx);
         const auto fastClockSource = opCtx.getServiceContext()->getFastClockSource();
-        const auto oplogMaxSize = fassertStatusOK(
-            40301,
-            StorageInterface::get(&opCtx)->getOplogMaxSize(&opCtx, NamespaceString(rsOplogName)));
+        const auto oplogMaxSize = fassertStatusOK(40301,
+                                                  StorageInterface::get(&opCtx)->getOplogMaxSize(
+                                                      &opCtx, NamespaceString::kRsOplogNamespace));
 
         // Batches are limited to 10% of the oplog.
         BatchLimits batchLimits;
@@ -753,14 +749,18 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
         OperationContext& opCtx = *opCtxPtr;
 
         // For pausing replication in tests.
-        while (MONGO_FAIL_POINT(rsSyncApplyStop)) {
-            // Tests should not trigger clean shutdown while that failpoint is active. If we
-            // think we need this, we need to think hard about what the behavior should be.
-            if (_networkQueue->inShutdown()) {
-                severe() << "Turn off rsSyncApplyStop before attempting clean shutdown";
-                fassertFailedNoTrace(40304);
+        if (MONGO_FAIL_POINT(rsSyncApplyStop)) {
+            log() << "sync tail - rsSyncApplyStop fail point enabled. Blocking until fail point is "
+                     "disabled.";
+            while (MONGO_FAIL_POINT(rsSyncApplyStop)) {
+                // Tests should not trigger clean shutdown while that failpoint is active. If we
+                // think we need this, we need to think hard about what the behavior should be.
+                if (_networkQueue->inShutdown()) {
+                    severe() << "Turn off rsSyncApplyStop before attempting clean shutdown";
+                    fassertFailedNoTrace(40304);
+                }
+                sleepmillis(10);
             }
-            sleepmillis(10);
         }
 
         tryToGoLiveAsASecondary(&opCtx, replCoord);

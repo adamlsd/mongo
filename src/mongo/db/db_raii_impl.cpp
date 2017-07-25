@@ -91,7 +91,7 @@ namespace mongo
 
 		namespace db_raii_impl
 		{
-			// To avoid name collision outside this namespace -- Windows compilers seem to do the wrong thing here.
+			// To avoid name collision outside this namespace -- Windows compilers seem to do the wrong thing with friend declarations in this namespace -- they do not shadow, they reach up.
 			class AutoGetCollectionOrView;
 			class AutoGetCollectionForRead;
 			class AutoGetCollectionForReadCommand;

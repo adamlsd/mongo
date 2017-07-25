@@ -54,6 +54,12 @@ namespace mongo
 
 		namespace db_raii_impl
 		{
+			// To avoid name collision outside this namespace -- Windows compilers seem to do the wrong thing here.
+			class AutoGetCollectionOrView;
+			class AutoGetCollectionForRead;
+			class AutoGetCollectionForReadCommand;
+			class AutoGetCollectionOrViewForReadCommand;
+
 			class AutoGetDb : public mongo::AutoGetDb::Impl
 			{
 				private:
@@ -61,7 +67,7 @@ namespace mongo
 					AutoGetDb &operator= ( const AutoGetDb & )= delete;
 
 				public:
-					explicit AutoGetDb( OperationContext *opCtx, StringData ns, LockMode mode ) : _dbLock( opCtx, ns, mode ), _db( dbHolder().get( opCtx, ns ) ) {}
+					explicit AutoGetDb( OperationContext *const opCtx, const StringData ns, const LockMode mode ) : _dbLock( opCtx, ns, mode ), _db( dbHolder().get( opCtx, ns ) ) {}
 
 					Database *getDb() const final { return _db; }
 

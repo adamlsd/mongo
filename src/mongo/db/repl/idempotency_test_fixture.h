@@ -28,6 +28,10 @@
 
 #pragma once
 
+#include <initializer_list>
+#include <ostream>
+#include <string>
+
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobj_comparator_interface.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -38,9 +42,7 @@
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/sync_tail_test_fixture.h"
 #include "mongo/util/duration.h"
-#include <initializer_list>
-#include <ostream>
-#include <string>
+#include "mongo/util/uuid.h"
 
 namespace mongo {
 namespace repl {
@@ -79,7 +81,7 @@ std::ostream& operator<<(std::ostream& stream, const CollectionState& state);
 
 class IdempotencyTest : public SyncTailTest {
 protected:
-    OplogEntry createCollection();
+    OplogEntry createCollection(CollectionUUID uuid = UUID::gen());
     OplogEntry insert(const BSONObj& obj);
     template <class IdType>
     OplogEntry update(IdType _id, const BSONObj& obj);

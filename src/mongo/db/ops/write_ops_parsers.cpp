@@ -38,25 +38,23 @@
 
 namespace mongo {
 
+using write_ops::Insert;
+using write_ops::Update;
+using write_ops::Delete;
 using write_ops::UpdateOpEntry;
 using write_ops::DeleteOpEntry;
 
 namespace {
 
-// The specified limit to the number of operations that can be included in a single write command.
-// This is an attempt to avoid a large number of errors resulting in a reply that exceeds 16MB. It
-// doesn't fully ensure that goal, but it reduces the probability of it happening. This limit should
-// not be used if the protocol changes to avoid the 16MB limit on reply size.
-const size_t kMaxWriteBatchSize = 1000;
-
 template <class T>
 void checkOpCountForCommand(const T& op, size_t numOps) {
     uassert(ErrorCodes::InvalidLength,
-            str::stream() << "Write batch sizes must be between 1 and " << kMaxWriteBatchSize
+            str::stream() << "Write batch sizes must be between 1 and "
+                          << write_ops::kMaxWriteBatchSize
                           << ". Got "
                           << numOps
                           << " operations.",
-            numOps != 0 && numOps <= kMaxWriteBatchSize);
+            numOps != 0 && numOps <= write_ops::kMaxWriteBatchSize);
 
     const auto& stmtIds = op.getWriteCommandBase().getStmtIds();
     uassert(ErrorCodes::InvalidLength,
@@ -96,7 +94,7 @@ int32_t getStmtIdForWriteAt(const WriteCommandBase& writeCommandBase, size_t wri
 
 }  // namespace write_ops
 
-InsertOp InsertOp::parse(const OpMsgRequest& request) {
+write_ops::Insert InsertOp::parse(const OpMsgRequest& request) {
     auto insertOp = Insert::parse(IDLParserErrorContext("insert"), request);
 
     if (insertOp.getNamespace().isSystemDotIndexes()) {
@@ -107,13 +105,13 @@ InsertOp InsertOp::parse(const OpMsgRequest& request) {
     }
 
     checkOpCountForCommand(insertOp, insertOp.getDocuments().size());
-    return {std::move(insertOp)};
+    return insertOp;
 }
 
-InsertOp InsertOp::parseLegacy(const Message& msgRaw) {
+write_ops::Insert InsertOp::parseLegacy(const Message& msgRaw) {
     DbMessage msg(msgRaw);
 
-    InsertOp op(NamespaceString(msg.getns()));
+    Insert op(NamespaceString(msg.getns()));
 
     {
         write_ops::WriteCommandBase writeCommandBase;
@@ -136,17 +134,17 @@ InsertOp InsertOp::parseLegacy(const Message& msgRaw) {
     return op;
 }
 
-UpdateOp UpdateOp::parse(const OpMsgRequest& request) {
+write_ops::Update UpdateOp::parse(const OpMsgRequest& request) {
     auto updateOp = Update::parse(IDLParserErrorContext("update"), request);
 
     checkOpCountForCommand(updateOp, updateOp.getUpdates().size());
-    return {std::move(updateOp)};
+    return updateOp;
 }
 
-UpdateOp UpdateOp::parseLegacy(const Message& msgRaw) {
+write_ops::Update UpdateOp::parseLegacy(const Message& msgRaw) {
     DbMessage msg(msgRaw);
 
-    UpdateOp op(NamespaceString(msg.getns()));
+    Update op(NamespaceString(msg.getns()));
 
     {
         write_ops::WriteCommandBase writeCommandBase;
@@ -173,17 +171,17 @@ UpdateOp UpdateOp::parseLegacy(const Message& msgRaw) {
     return op;
 }
 
-DeleteOp DeleteOp::parse(const OpMsgRequest& request) {
+write_ops::Delete DeleteOp::parse(const OpMsgRequest& request) {
     auto deleteOp = Delete::parse(IDLParserErrorContext("delete"), request);
 
     checkOpCountForCommand(deleteOp, deleteOp.getDeletes().size());
-    return {std::move(deleteOp)};
+    return deleteOp;
 }
 
-DeleteOp DeleteOp::parseLegacy(const Message& msgRaw) {
+write_ops::Delete DeleteOp::parseLegacy(const Message& msgRaw) {
     DbMessage msg(msgRaw);
 
-    DeleteOp op(NamespaceString(msg.getns()));
+    Delete op(NamespaceString(msg.getns()));
 
     {
         write_ops::WriteCommandBase writeCommandBase;

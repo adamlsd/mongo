@@ -292,7 +292,7 @@ unsigned long long checkIfReplMissingFromCommandLine(OperationContext* opCtx) {
  * Caller must lock DB before calling this function.
  */
 void checkForCappedOplog(OperationContext* opCtx, Database* db) {
-    const NamespaceString oplogNss(repl::rsOplogName);
+    const NamespaceString oplogNss(NamespaceString::kRsOplogNamespace);
     invariant(opCtx->lockState()->isDbLockedForMode(oplogNss.db(), MODE_IS));
     Collection* oplogCollection = db->getCollection(opCtx, oplogNss);
     if (oplogCollection && !oplogCollection->isCapped()) {
@@ -388,6 +388,11 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                         fassertFailedNoTrace(40283);
                     }
                     serverGlobalParams.featureCompatibility.version.store(version.getValue());
+
+                    // Update schemaVersion parameter.
+                    serverGlobalParams.featureCompatibility.isSchemaVersion36.store(
+                        serverGlobalParams.featureCompatibility.version.load() ==
+                        ServerGlobalParams::FeatureCompatibility::Version::k36);
                 }
             }
         }

@@ -109,7 +109,6 @@ using std::vector;
 using IndexVersion = IndexDescriptor::IndexVersion;
 
 namespace repl {
-std::string rsOplogName = "local.oplog.rs";
 std::string masterSlaveOplogName = "local.oplog.$main";
 
 MONGO_FP_DECLARE(disableSnapshotting);
@@ -145,11 +144,6 @@ struct OplogSlot {
  * Allocates an optime for a new entry in the oplog, and updates the replication coordinator to
  * reflect that new optime.  Returns the new optime and the correct value of the "h" field for
  * the new oplog entry.
- *
- * NOTE: From the time this function returns to the time that the new oplog entry is written
- * to the storage system, all errors must be considered fatal.  This is because the this
- * function registers the new optime with the storage system and the replication coordinator,
- * and provides no facility to revert those registrations on rollback.
  */
 void getNextOpTime(OperationContext* opCtx,
                    Collection* oplog,
@@ -228,7 +222,7 @@ private:
 void setOplogCollectionName() {
     if (getGlobalReplicationCoordinator()->getReplicationMode() ==
         ReplicationCoordinator::modeReplSet) {
-        _oplogCollectionName = rsOplogName;
+        _oplogCollectionName = NamespaceString::kRsOplogNamespace.ns();
     } else {
         _oplogCollectionName = masterSlaveOplogName;
     }
@@ -249,6 +243,35 @@ Collection* getLocalOplogCollection(OperationContext* opCtx,
             _localOplogCollection);
 
     return _localOplogCollection;
+}
+
+/**
+ * Attaches the session information of a write to an oplog entry if it exists.
+ */
+void appendSessionInfo(OperationContext* opCtx, BSONObjBuilder* builder, StmtId statementId) {
+    auto txnNum = opCtx->getTxnNumber();
+
+    if (!txnNum) {
+        return;
+    }
+
+    auto logicalSessionId = opCtx->getLogicalSessionId();
+    invariant(logicalSessionId);
+
+    // Note: certain operations, like implicit collection creation will not have a stmtId.
+    if (statementId == kUninitializedStmtId) {
+        return;
+    }
+
+    Logical_session_id lsid;
+    lsid.setId(logicalSessionId->getId());
+
+    OperationSessionInfo sessionInfo;
+    sessionInfo.setSessionId(lsid);
+    sessionInfo.setTxnNumber(txnNum);
+    sessionInfo.serialize(builder);
+
+    builder->append(OplogEntryBase::kStatementIdFieldName, statementId);
 }
 
 OplogDocWriter _logOpWriter(OperationContext* opCtx,
@@ -286,9 +309,7 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
         b.appendDate("wall", wallTime);
     }
 
-    if (statementId != kUninitializedStmtId) {
-        // TODO: SERVER-28912 append stmtId to oplog entry
-    }
+    appendSessionInfo(opCtx, &b, statementId);
 
     return OplogDocWriter(OplogDocWriter(b.obj(), obj));
 }
@@ -296,14 +317,15 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
 
 // Truncates the oplog after and including the "truncateTimestamp" entry.
 void truncateOplogTo(OperationContext* opCtx, Timestamp truncateTimestamp) {
-    const NamespaceString oplogNss(rsOplogName);
+    const NamespaceString oplogNss(NamespaceString::kRsOplogNamespace);
     AutoGetDb autoDb(opCtx, oplogNss.db(), MODE_IX);
     Lock::CollectionLock oplogCollectionLoc(opCtx->lockState(), oplogNss.ns(), MODE_X);
     Collection* oplogCollection = autoDb.getDb()->getCollection(opCtx, oplogNss);
     if (!oplogCollection) {
         fassertFailedWithStatusNoTrace(
             34418,
-            Status(ErrorCodes::NamespaceNotFound, str::stream() << "Can't find " << rsOplogName));
+            Status(ErrorCodes::NamespaceNotFound,
+                   str::stream() << "Can't find " << NamespaceString::kRsOplogNamespace.ns()));
     }
 
     // Scan through oplog in reverse, from latest entry to first, to find the truncateTimestamp.
@@ -392,7 +414,8 @@ OpTime logOp(OperationContext* opCtx,
              OptionalCollectionUUID uuid,
              const BSONObj& obj,
              const BSONObj* o2,
-             bool fromMigrate) {
+             bool fromMigrate,
+             StmtId statementId) {
     auto replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->isOplogDisabledFor(opCtx, nss)) {
         return {};
@@ -405,7 +428,6 @@ OpTime logOp(OperationContext* opCtx,
     OplogSlot slot;
     getNextOpTime(opCtx, oplog, replCoord, replMode, 1, &slot);
 
-    // TODO: SERVER-28912 Include statementId for other ops
     auto writer = _logOpWriter(opCtx,
                                opstr,
                                nss,
@@ -416,7 +438,7 @@ OpTime logOp(OperationContext* opCtx,
                                slot.opTime,
                                slot.hash,
                                Date_t::now(),
-                               kUninitializedStmtId);
+                               statementId);
     const DocWriter* basePtr = &writer;
     _logOpsInner(opCtx, nss, &basePtr, 1, oplog, replMode, slot.opTime);
     return slot.opTime;
@@ -719,8 +741,23 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
          const BSONElement& ui,
          BSONObj& cmd,
          const OpTime& opTime) -> Status {
-          BSONObjBuilder resultWeDontCareAbout;
-          return collMod(opCtx, parseUUIDorNs(opCtx, ns, ui, cmd), cmd, &resultWeDontCareAbout);
+          // Get UUID from cmd, if it exists.
+          OptionalCollectionUUID uuid;
+          NamespaceString nss;
+          if (ui.eoo()) {
+              uuid = boost::none;
+              nss = parseNs(ns, cmd);
+          } else {
+              uuid = uassertStatusOK(UUID::parse(ui));
+              // We need to see whether a collection with UUID ui exists before attempting to do
+              // a collMod on it. This is because we add UUIDs during upgrade to
+              // featureCompatibilityVersion 3.6 with a collMod command, so the collection will
+              // not have a UUID at the time we attempt to look it up by UUID.
+              auto& catalog = UUIDCatalog::get(opCtx);
+              nss = catalog.lookupCollectionByUUID(uuid.get()) ? catalog.lookupNSSByUUID(uuid.get())
+                                                               : parseNs(ns, cmd);
+          }
+          return collModForUUIDUpgrade(opCtx, nss, cmd, uuid);
       },
       {ErrorCodes::IndexNotFound, ErrorCodes::NamespaceNotFound}}},
     {"dropDatabase",
@@ -897,14 +934,16 @@ Status applyOperation_inlock(OperationContext* opCtx,
     Collection* collection = nullptr;
     if (fieldUI) {
         UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
-        auto uuid = UUID::parse(fieldUI);
-        uassertStatusOK(uuid);
-        collection = catalog.lookupCollectionByUUID(uuid.getValue());
-        if (collection) {
-            requestNss = collection->ns();
-            dassert(opCtx->lockState()->isCollectionLockedForMode(
-                requestNss.ns(), supportsDocLocking() ? MODE_IX : MODE_X));
-        }
+        auto uuid = uassertStatusOK(UUID::parse(fieldUI));
+        collection = catalog.lookupCollectionByUUID(uuid);
+        uassert(ErrorCodes::NamespaceNotFound,
+                str::stream() << "Failed to apply operation due to missing collection (" << uuid
+                              << "): "
+                              << redact(op.toString()),
+                collection);
+        requestNss = collection->ns();
+        dassert(opCtx->lockState()->isCollectionLockedForMode(
+            requestNss.ns(), supportsDocLocking() ? MODE_IX : MODE_X));
     } else {
         uassert(ErrorCodes::InvalidNamespace,
                 "'ns' must be of type String",
@@ -993,7 +1032,6 @@ Status applyOperation_inlock(OperationContext* opCtx,
             // 2. If okay, commit
             // 3. If not, do upsert (and commit)
             // 4. If both !Ok, return status
-            Status status{ErrorCodes::NotYetInitialized, ""};
 
             // We cannot rely on a DuplicateKey error if we'repart of a larger transaction, because
             // that would require the transaction to abort. So instead, use upsert in that case.
@@ -1001,13 +1039,9 @@ Status applyOperation_inlock(OperationContext* opCtx,
 
             if (!needToDoUpsert) {
                 WriteUnitOfWork wuow(opCtx);
-                try {
-                    OpDebug* const nullOpDebug = nullptr;
-                    status =
-                        collection->insertDocument(opCtx, InsertStatement(o), nullOpDebug, true);
-                } catch (DBException dbe) {
-                    status = dbe.toStatus();
-                }
+                OpDebug* const nullOpDebug = nullptr;
+                auto status =
+                    collection->insertDocument(opCtx, InsertStatement(o), nullOpDebug, true);
                 if (status.isOK()) {
                     wuow.commit();
                 } else if (status == ErrorCodes::DuplicateKey) {
@@ -1399,7 +1433,8 @@ void SnapshotThread::run() {
 
             auto opTimeOfSnapshot = OpTime();
             {
-                AutoGetCollectionForReadCommand oplog(opCtx.get(), NamespaceString(rsOplogName));
+                AutoGetCollectionForReadCommand oplog(opCtx.get(),
+                                                      NamespaceString::kRsOplogNamespace);
                 invariant(oplog.getCollection());
                 // Read the latest op from the oplog.
                 auto cursor = oplog.getCollection()->getCursor(opCtx.get(), /*forward*/ false);

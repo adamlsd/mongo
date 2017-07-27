@@ -17,28 +17,29 @@
  *    code of portions of this program with the OpenSSL library under certain
  *    conditions as described in each individual source file and distribute
  *    linked combinations including the program with the OpenSSL library. You
- *    must comply with the GNU Affero General Public License in all respects for
- *    all of the code used other than as permitted herein. If you modify file(s)
- *    with this exception, you may extend this exception to your version of the
- *    file(s), but you are not obligated to do so. If you do not wish to do so,
- *    delete this exception statement from your version. If you delete this
- *    exception statement from all source files in the program, then also delete
- *    it in the license file.
+ *    must comply with the GNU Affero General Public License in all respects
+ *    for all of the code used other than as permitted herein. If you modify
+ *    file(s) with this exception, you may extend this exception to your
+ *    version of the file(s), but you are not obligated to do so. If you do not
+ *    wish to do so, delete this exception statement from your version. If you
+ *    delete this exception statement from all source files in the program,
+ *    then also delete it in the license file.
  */
 
-#include "mongo/platform/basic.h"
+#pragma once
 
-#include "mongo/db/s/chunk_splitter.h"
-
-#include "mongo/s/shard_server_test_fixture.h"
+#include <mongoc.h>
 
 namespace mongo {
-namespace {
 
-class ChunkSplitterTest : public ShardServerTestFixture {};
+namespace embeddedTest {
 
-TEST_F(ChunkSplitterTest, SplitTest) {}
-TEST_F(ChunkSplitterTest, DontSplitTest) {}
+bool explain(mongoc_collection_t* collection);
 
-}  // namespace
+bool insert_data(mongoc_collection_t* collection);
+
+int run_c_driver_all();
+
+}  // namespace embeddedTest
+
 }  // namespace mongo

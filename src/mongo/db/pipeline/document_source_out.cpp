@@ -30,6 +30,7 @@
 
 #include "mongo/db/pipeline/document_source_out.h"
 
+#include "mongo/db/ops/write_ops.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/destructor_guard.h"
 
@@ -137,7 +138,7 @@ void DocumentSourceOut::initialize() {
                               << indexBson
                               << " error: "
                               << err,
-                DBClientWithCommands::getLastErrorString(err).empty());
+                DBClientBase::getLastErrorString(err).empty());
     }
     _initialized = true;
 }
@@ -146,7 +147,7 @@ void DocumentSourceOut::spill(const vector<BSONObj>& toInsert) {
     BSONObj err = _mongod->insert(_tempNs, toInsert);
     uassert(16996,
             str::stream() << "insert for $out failed: " << err,
-            DBClientWithCommands::getLastErrorString(err).empty());
+            DBClientBase::getLastErrorString(err).empty());
 }
 
 DocumentSource::GetNextResult DocumentSourceOut::getNext() {
@@ -169,7 +170,8 @@ DocumentSource::GetNextResult DocumentSourceOut::getNext() {
         BSONObj toInsert = nextInput.releaseDocument().toBson();
 
         bufferedBytes += toInsert.objsize();
-        if (!bufferedObjects.empty() && bufferedBytes > BSONObjMaxUserSize) {
+        if (!bufferedObjects.empty() && (bufferedBytes > BSONObjMaxUserSize ||
+                                         bufferedObjects.size() >= write_ops::kMaxWriteBatchSize)) {
             spill(bufferedObjects);
             bufferedObjects.clear();
             bufferedBytes = toInsert.objsize();

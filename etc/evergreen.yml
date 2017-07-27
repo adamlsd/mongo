@@ -373,6 +373,26 @@ functions:
         make CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ static_lib
         fi
 
+  "build cdriver" :
+    command: shell.exec
+    params:
+      script: |
+        set -o errexit
+        set -o verbose
+        if [ "${build_cdriver|}" = "true" ]; then 
+        CDRIVER_VERSION=1.6.3
+        rm -rf mongo-c-driver-$CDRIVER_VERSION
+        rm -rf mongo-c-driver
+        curl -LO https://github.com/mongodb/mongo-c-driver/releases/download/$CDRIVER_VERSION/mongo-c-driver-$CDRIVER_VERSION.tar.gz
+        tar xzf mongo-c-driver-$CDRIVER_VERSION.tar.gz
+        mv mongo-c-driver-$CDRIVER_VERSION mongo-c-driver
+        cd mongo-c-driver
+        export ${compile_env|}
+        ./configure --prefix=$(pwd)/install --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin --with-libbson=bundled --disable-automatic-init-and-cleanup --disable-ssl --disable-sasl --disable-examples --disable-man-pages --disable-html-docs --disable-shm-counters --disable-shared --enable-static CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode"  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
+        make
+        make install
+        fi
+
   "build new tools" :
     command: shell.exec
     params:
@@ -580,7 +600,7 @@ functions:
 
         # Run reliable set of tests once.
         eval $preamble $wrapper $wrapper_report_file $resmoke_base
-        exit_codes=$?
+        reliable_exit_code=$?
 
         # Set report file for unreliable test run.
         report_file=report_unreliable.json
@@ -599,7 +619,7 @@ functions:
 
         # Run unreliable set of tests.
         eval $preamble $wrapper $wrapper_report_file $resmoke_base
-        exit_codes="$exit_codes $?"
+        unreliable_exit_code=$?
 
         #  Reenable errexit, as the return from combine_reports will return the cumulative error.
         set -o errexit
@@ -614,13 +634,15 @@ functions:
         # We mask any errors from the resmoke runs above (by disabling errexit) until both have
         # completed. If any of the resmoke runs failed due to non-test failures
         # (i.e fixture failures), we need to exit with non-zero status.
-        for exit_code in $exit_codes
-        do
-          if [ $exit_code -ne 0 ]; then
-            echo "resmoke.py failed with error code: $exit_code"
-            exit $exit_code
-          fi
-        done
+        if [ $reliable_exit_code -ne 0 ]; then
+          echo "resmoke.py reliable run failed with error code: $reliable_exit_code"
+          exit $reliable_exit_code
+        fi
+        # Ignoring the error code 1 that is returned when there are only silent failures.
+        if [ $unreliable_exit_code -ne 0 ] && [ $unreliable_exit_code -ne 1 ]; then
+          echo "resmoke.py unreliable run failed with error code: $unreliable_exit_code"
+          exit $unreliable_exit_code
+        fi
 
   "do jepsen setup" :
     - command: shell.exec
@@ -1573,6 +1595,7 @@ tasks:
     - func: "setup credentials"
     - func: "build new tools" # noop if ${newtools} is not "true"
     - func: "build rocksdb" # noop if ${build_rocksdb} is not "true"
+    - func: "build cdriver" # noop if ${build_cdriver} is not "true"
     - *generate_compile_expansions
     # Then we load the generated version data into the agent so we can use it in task definitions.
     - *apply_compile_expansions
@@ -1780,6 +1803,19 @@ tasks:
       jepsen_storage_engine: --storage-engine wiredTiger
       jepsen_test_name: read-concern-majority
       jepsen_write_concern: --write-concern w1
+
+## jstestfuzz standalone generational fuzzer WT ##
+- <<: *jstestfuzz_template
+  name: generational_jstestfuzz_WT
+  commands:
+  - func: "do setup"
+  - func: "run jstestfuzz"
+    vars:
+      jstestfuzz_vars: -g
+  - <<: *run_jstestfuzz_tests
+    vars:
+      <<: *jstestfuzz_config_vars
+      resmoke_args: --suites=generational_jstestfuzz --storageEngine=wiredTiger
 
 ## jstestfuzz mmapv1 ##
 - <<: *jstestfuzz_template
@@ -3197,12 +3233,30 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: ssl_async
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=ssl --serviceExecutor=fixedForTesting
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: sslSpecial
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
       resmoke_args: --suites=ssl_special
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: sslSpecial_async
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=ssl_special --serviceExecutor=fixedForTesting
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -3802,6 +3856,53 @@ tasks:
             - {'source': {'path': '${push_path}-STAGE/${push_name}/mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}-${task_id}.${ext|tgz}.md5', 'bucket': 'build-push-testing'},
                'destination': {'path': '${push_path}/mongodb-${push_name}-${push_arch}-debugsymbols-${suffix}.${ext|tgz}.md5', 'bucket': '${push_bucket}'}}
 
+- name: update_test_lifecycle
+  exec_timeout_secs: 21600 # 6 hour timeout for the task overall
+  depends_on: []
+  commands:
+  - *git_get_project
+  - command: shell.exec
+    timeout_secs: 14400 # Timeout if there is no output for 4 hours
+    type: test
+    params:
+      working_dir: src
+      script: |
+        set -o errexit
+
+        # Setup the git ssh private key
+        mkdir -p ~/.ssh
+        echo -n "${testlifecycle_ssh_key}" > ~/.ssh/test_lifecycle.pem
+        chmod 0600 ~/.ssh/test_lifecycle.pem
+        export GIT_SSH_COMMAND="ssh -i ~/.ssh/test_lifecycle.pem"
+
+        # Create the jira credentials configuration file
+        cat > ~/.jira.yml <<END_OF_CREDS
+        user: "${testlifecycle_jira_user}"
+        password: "${testlifecycle_jira_password}"
+        server: "https://jira.mongodb.org"
+        END_OF_CREDS
+
+        set -o verbose
+
+        # Create and activate the virtualenv. We use the MongoDB toolchain's Python (with --python)
+        # as this task is only expected to run on a Linux builder.
+        /opt/mongodbtoolchain/v2/bin/virtualenv --python=/opt/mongodbtoolchain/v2/bin/python2 \
+            --system-site-packages ./venv
+        . ./venv/bin/activate
+
+        # Install Python jira client with pip until it is available in the toolchain
+        pip install jira==1.0.10
+
+        python buildscripts/update_test_lifecycle.py \
+            --project ${project} \
+            --commit \
+            --resmokeTagFile "etc/test_lifecycle.yml" \
+            --metadataRepo "git@github.com:mongodb/mongo-test-metadata" \
+            --referencesFile "references.yml" \
+            --gitUserName "Test Lifecycle" \
+            --gitUserEmail "build+testlifecycle@mongodb.com" \
+            --jiraConfig ~/.jira.yml
+
 
 #######################################
 #               Modules               #
@@ -3889,6 +3990,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -4118,6 +4220,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_compatibility
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -4185,6 +4288,7 @@ buildvariants:
   - name: sharding_gle_auth_basics_passthrough_write_cmd_WT
   - name: jsCore_WT
   - name: jsCore_compatibility_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -4274,6 +4378,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -4425,6 +4530,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -4549,6 +4655,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -4658,6 +4765,7 @@ buildvariants:
   - name: jsCore_WT
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -4747,6 +4855,7 @@ buildvariants:
   - name: jsCore_WT
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -4838,6 +4947,7 @@ buildvariants:
   - name: jsCore_WT
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -4932,6 +5042,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -5023,6 +5134,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5130,6 +5242,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5393,6 +5506,7 @@ buildvariants:
   - name: jsCore_decimal_WT
   - name: sharding_WT_ese
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5418,6 +5532,34 @@ buildvariants:
   - name: push
     distros:
     - rhel70-small
+
+- name: enterprise-windows-64-2k8-async
+  display_name: "~ Enterprise Windows 2008R2 async"
+  modules:
+  - enterprise
+  run_on:
+  - windows-64-vs2015-small
+  expansions:
+    platform_decompress: unzip
+    tooltags: "-tags 'ssl sasl'"
+    exe: ".exe"
+    gorootvars: 'PATH="/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:/cygdrive/c/sasl/:$PATH" CGO_CFLAGS="-D_WIN32_WINNT=0x0601 -DNTDDI_VERSION=0x06010000"'
+    push_path: win32
+    push_bucket: downloads.10gen.com
+    push_name: win32
+    push_arch: x86_64-enterprise-windows-64
+    msi_target: msi
+    content_type: application/zip
+    compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
+    python: python
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    ext: zip
+    use_scons_cache: true
+  tasks:
+  - name: compile
+    distros:
+    - windows-64-vs2015-large
+  - name: jsCore_async
 
 - name: enterprise-windows-64-2k8-inmem
   display_name: Enterprise Windows 2008R2 (inMemory)
@@ -5462,6 +5604,7 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
   - name: jstestfuzz_concurrent_WT
@@ -5547,6 +5690,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5699,6 +5843,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5827,6 +5972,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -5854,8 +6000,9 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    build_cdriver: true
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_ios.vars all
+    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_ios.vars  CPPPATH=$(readlink -f ../mongo-c-driver/build/c-driver-install/include/libbson-1.0 ../mongo-c-driver/build/c-driver-install/include/libmongoc-1.0 /opt/mongodbtoolchain/v2/include) LIBPATH=$(readlink -f ../mongo-c-driver/build/c-driver-install/lib) all 
     python: python2.7
   tasks:
   - name: compile_all_notest
@@ -5994,6 +6141,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size_WT
   - name: jsCore_op_query
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -6319,6 +6467,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -6408,6 +6557,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -6533,6 +6683,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -6674,6 +6825,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -6779,6 +6931,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -7004,6 +7157,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7094,6 +7248,7 @@ buildvariants:
     - ubuntu1404-jepsen
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7157,6 +7312,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7246,6 +7402,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7332,6 +7489,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -7436,6 +7594,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_compatibility_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7536,6 +7695,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7615,6 +7775,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal_WT
   - name: jsCore_op_query_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -7718,6 +7879,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_compatibility_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7831,6 +7993,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
   - name: jsCore_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7920,6 +8083,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -7983,6 +8147,7 @@ buildvariants:
   - name: ese_WT
   - name: jsCore
   - name: jsCore_auth
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -8069,6 +8234,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_compatibility_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -8197,6 +8363,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_compatibility_WT
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -8323,6 +8490,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_op_query
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -8406,6 +8574,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_op_query
   - name: jsCore_compatibility
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -8652,6 +8821,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_compatibility
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_concurrent_WT
   - name: jstestfuzz_concurrent_replication_WT
@@ -8852,6 +9022,7 @@ buildvariants:
   tasks:
   - name: compile
   - name: compile_all
+  - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
   - name: jstestfuzz_concurrent
@@ -9057,6 +9228,8 @@ buildvariants:
   - name: compile
   - name: jsCore_async
   - name: parallel_async
+  - name: ssl_async
+  - name: sslSpecial_async
 
 - name: enterprise-ubuntu-dynamic-1604-64-bit
   display_name: "* Shared Library Enterprise Ubuntu 16.04"
@@ -9094,7 +9267,7 @@ buildvariants:
     # nest curly braces inside. The curly braces "{}" need their own quotes to protect them from
     # being interpreted by bash.
     test_flags: >
-      --mongodSetParameters='{rollbackMethod: rollbackViaRefetchNoUUID}'
+      --mongodSetParameters='{rollbackMethod: rollbackViaRefetch}'
     compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     use_scons_cache: true
@@ -9192,3 +9365,12 @@ buildvariants:
     - rhel62-large
   - name: slow1
   - name: slow1_WT
+
+- name: tig-daily-cron
+  display_name: "~ TIG Daily Cron"
+  run_on:
+  - rhel62-large
+  batchtime: 1440 # 1 day
+  stepback: false
+  tasks:
+  - name: update_test_lifecycle

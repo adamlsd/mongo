@@ -26,56 +26,62 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+
 #include "mongo/platform/basic.h"
 
-#include <string>
+#include <set>
 
-#include "mongo/bson/bsonmisc.h"
-#include "mongo/bson/bsonobj.h"
-#include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/bson/bsontypes.h"
-#include "mongo/crypto/sha1_block.h"
-#include "mongo/db/logical_session_id.h"
-#include "mongo/db/signed_logical_session_id.h"
-#include "mongo/unittest/unittest.h"
-#include "mongo/util/uuid.h"
+#include "mongo/db/audit.h"
+#include "mongo/db/auth/action_set.h"
+#include "mongo/db/auth/action_type.h"
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/client.h"
+#include "mongo/db/commands.h"
+#include "mongo/db/operation_context.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
+#include "mongo/s/catalog/type_database.h"
+#include "mongo/s/catalog_cache.h"
+#include "mongo/s/grid.h"
+#include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 namespace {
 
-TEST(SignedLogicalSessionIdTest, ConstructWithLsid) {
-    auto lsid = LogicalSessionId::gen();
-    SignedLogicalSessionId slsid(lsid, boost::none, 1, SHA1Block{});
-    ASSERT_EQ(slsid.getLsid(), lsid);
-}
+/**
+ * Internal sharding command run on config servers to remove a shard from the cluster.
+ */
+class ConfigSvrRemoveShardCommand : public BasicCommand {
+public:
+    ConfigSvrRemoveShardCommand() : BasicCommand("_configsvrRemoveShard") {}
 
-TEST(SignedLogicalSessionIdTest, FromBSONTest) {
-    auto lsid = LogicalSessionId::gen();
+    virtual bool slaveOk() const {
+        return false;
+    }
 
-    BSONObjBuilder b;
-    b.append("lsid", lsid.toBSON());
-    b.append("keyId", 4ll);
-    char buffer[SHA1Block::kHashLength] = {0};
-    b.appendBinData("signature", SHA1Block::kHashLength, BinDataGeneral, buffer);
-    auto bson = b.done();
+    virtual bool adminOnly() const {
+        return true;
+    }
 
-    auto slsid = SignedLogicalSessionId::parse(bson);
-    ASSERT_EQ(slsid.getLsid(), lsid);
+    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
 
-    // Dump back to BSON, make sure we get the same thing
-    auto bsonDump = slsid.toBSON();
-    ASSERT_EQ(bsonDump.woCompare(bson), 0);
+    virtual void help(std::stringstream& help) const override {
+        help << "Internal command, which is exported by the sharding config server. Do not call "
+                "directly. Removes a shard from the cluster.";
+    }
 
-    // Try parsing mal-formatted bson objs
-    ASSERT_THROWS(SignedLogicalSessionId::parse(BSON("hi"
-                                                     << "there")),
-                  UserException);
+    bool run(OperationContext* opCtx,
+             const std::string& dbname,
+             const BSONObj& cmdObj,
+             BSONObjBuilder& result) {
 
-    ASSERT_THROWS(SignedLogicalSessionId::parse(BSON("lsid"
-                                                     << "not a session id!")),
-                  UserException);
-    ASSERT_THROWS(SignedLogicalSessionId::parse(BSON("lsid" << 14)), UserException);
-}
+        return true;
+    }
+
+} configsvrRemoveShardCmd;
 
 }  // namespace
 }  // namespace mongo

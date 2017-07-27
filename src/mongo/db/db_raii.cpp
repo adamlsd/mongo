@@ -36,9 +36,28 @@ namespace mongo
 
 	namespace
 	{
+		class EvilAbort
+		{
+			public:
+				explicit EvilAbort()= default;
+
+				template< typename Rv, typename ... Args >
+				Rv
+				operator () () { abort(); }
+
+				template< typename Rv, typename ... Args >
+				operator std::function< std::unique_ptr< Rv > ( Args ... ) > ()
+				{
+					return *this;
+				}
+		};
+	}//namespace
+
+	namespace
+	{
 		namespace auto_get_db
 		{
-			AutoGetDb::factory_function_type factory;
+			AutoGetDb::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_db
 	}//namespace
 
@@ -66,7 +85,7 @@ namespace mongo
 	{
 		namespace auto_get_collection
 		{
-			AutoGetCollection::factory_function_type factory;
+			AutoGetCollection::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_collection
 	}//namespace
 
@@ -95,7 +114,7 @@ namespace mongo
 	{
 		namespace auto_get_collection_or_view
 		{
-			AutoGetCollectionOrView::factory_function_type factory;
+			AutoGetCollectionOrView::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_collection_or_view
 	}//namespace
 
@@ -124,7 +143,7 @@ namespace mongo
 	{
 		namespace auto_get_or_create_db
 		{
-			AutoGetOrCreateDb::factory_function_type factory;
+			AutoGetOrCreateDb::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_or_create_db
 	}//namespace
 
@@ -153,7 +172,7 @@ namespace mongo
 	{
 		namespace auto_stats_tracker
 		{
-			AutoStatsTracker::factory_function_type factory;
+			AutoStatsTracker::factory_function_type factory= EvilAbort{};
 		}//namespace auto_stats_tracker
 	}//namespace
 
@@ -183,7 +202,7 @@ namespace mongo
 	{
 		namespace auto_get_collection_for_read
 		{
-			AutoGetCollectionForRead::factory_function_type factory;
+			AutoGetCollectionForRead::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_collection_for_read
 	}//namespace
 
@@ -212,7 +231,7 @@ namespace mongo
 	{
 		namespace auto_get_collection_for_read_command
 		{
-			AutoGetCollectionForReadCommand::factory_function_type factory;
+			AutoGetCollectionForReadCommand::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_collection_for_read_command
 	}//namespace
 
@@ -241,7 +260,7 @@ namespace mongo
 	{
 		namespace auto_get_collection_or_view_for_read_command
 		{
-			AutoGetCollectionOrViewForReadCommand::factory_function_type factory;
+			AutoGetCollectionOrViewForReadCommand::factory_function_type factory= EvilAbort{};
 		}//namespace auto_get_collection_or_view_for_read_command
 	}//namespace
 	
@@ -270,7 +289,7 @@ namespace mongo
 	{
 		namespace old_client_context
 		{
-			OldClientContext::factory_function_type factory;
+			OldClientContext::factory_function_type factory= EvilAbort{};
 		}//namespace old_client_context
 
 		namespace old_client_context2
@@ -319,7 +338,7 @@ namespace mongo
 	{
 		namespace old_client_write_context
 		{
-			OldClientWriteContext::factory_function_type factory;
+			OldClientWriteContext::factory_function_type factory= EvilAbort{};
 		}//namespace old_client_write_context
 	}//namespace
 

@@ -294,7 +294,7 @@ namespace mongo
 
 		namespace old_client_context2
 		{
-			OldClientContext::factory_function_type2 factory;
+			OldClientContext::factory_function_type2 factory= EvilAbort{};
 		}//namespace old_client_context
 	}//namespace
 

@@ -192,7 +192,10 @@ Status parseCreateOrUpdateUserCommands(const BSONObj& cmdObj,
     validFieldNames.insert("digestPassword");
     validFieldNames.insert("pwd");
     validFieldNames.insert("roles");
-    validFieldNames.insert("authenticationRestrictions");
+    if (serverGlobalParams.featureCompatibility.version.load() >=
+        ServerGlobalParams::FeatureCompatibility::Version::k36) {
+        validFieldNames.insert("authenticationRestrictions");
+    }
 
     Status status = _checkNoExtraFields(cmdObj, cmdName, validFieldNames);
     if (!status.isOK()) {
@@ -320,6 +323,7 @@ Status parseAndValidateDropAllUsersFromDatabaseCommand(const BSONObj& cmdObj,
 Status parseUsersInfoCommand(const BSONObj& cmdObj, StringData dbname, UsersInfoArgs* parsedArgs) {
     unordered_set<std::string> validFieldNames;
     validFieldNames.insert("usersInfo");
+    validFieldNames.insert("showAuthenticationRestrictions");
     validFieldNames.insert("showPrivileges");
     validFieldNames.insert("showCredentials");
 
@@ -359,6 +363,20 @@ Status parseUsersInfoCommand(const BSONObj& cmdObj, StringData dbname, UsersInfo
         cmdObj, "showCredentials", false, &parsedArgs->showCredentials);
     if (!status.isOK()) {
         return status;
+    }
+
+    const auto showAuthenticationRestrictions = cmdObj["showAuthenticationRestrictions"];
+    if (showAuthenticationRestrictions.eoo()) {
+        parsedArgs->authenticationRestrictionsFormat = AuthenticationRestrictionsFormat::kOmit;
+    } else {
+        bool show;
+        status = bsonExtractBooleanField(cmdObj, "showAuthenticationRestrictions", &show);
+        if (!status.isOK()) {
+            return status;
+        }
+        parsedArgs->authenticationRestrictionsFormat = show
+            ? AuthenticationRestrictionsFormat::kShow
+            : AuthenticationRestrictionsFormat::kOmit;
     }
 
     return Status::OK();
@@ -490,7 +508,10 @@ Status parseCreateOrUpdateRoleCommands(const BSONObj& cmdObj,
     validFieldNames.insert(cmdName.toString());
     validFieldNames.insert("privileges");
     validFieldNames.insert("roles");
-    validFieldNames.insert("authenticationRestrictions");
+    if (serverGlobalParams.featureCompatibility.version.load() >=
+        ServerGlobalParams::FeatureCompatibility::Version::k36) {
+        validFieldNames.insert("authenticationRestrictions");
+    }
 
     Status status = _checkNoExtraFields(cmdObj, cmdName, validFieldNames);
     if (!status.isOK()) {

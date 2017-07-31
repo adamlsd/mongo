@@ -75,6 +75,7 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/shard_remote.h"
 #include "mongo/s/client/sharding_connection_hook.h"
+#include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/is_mongos.h"
 #include "mongo/s/mongos_options.h"
@@ -125,6 +126,45 @@ namespace {
 
 boost::optional<ShardingUptimeReporter> shardingUptimeReporter;
 
+static constexpr auto kRetryInterval = Seconds{1};
+
+Status waitForSigningKeys(OperationContext* opCtx) {
+    while (true) {
+        // this should be true when shard registry is up
+        invariant(grid.shardRegistry()->isUp());
+        auto configCS = grid.shardRegistry()->getConfigServerConnectionString();
+        auto rsm = ReplicaSetMonitor::get(configCS.getSetName());
+        // mongod will set minWireVersion == maxWireVersion for isMaster requests from
+        // internalClient.
+        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG ||
+                    rsm->getMaxWireVersion() != rsm->getMinWireVersion())) {
+            log() << "Not waiting for signing keys, not supported by the config shard "
+                  << configCS.getSetName();
+            return Status::OK();
+        }
+        auto stopStatus = opCtx->checkForInterruptNoAssert();
+        if (!stopStatus.isOK()) {
+            return stopStatus;
+        }
+
+        try {
+            if (LogicalTimeValidator::get(opCtx)->shouldGossipLogicalTime()) {
+                return Status::OK();
+            }
+            log() << "Waiting for signing keys, sleeping for " << kRetryInterval
+                  << " and trying again.";
+            sleepFor(kRetryInterval);
+            continue;
+        } catch (const DBException& ex) {
+            Status status = ex.toStatus();
+            warning() << "Error waiting for signing keys, sleeping for " << kRetryInterval
+                      << " and trying again " << causedBy(status);
+            sleepFor(kRetryInterval);
+            continue;
+        }
+    }
+}
+
 }  // namespace
 
 #if defined(_WIN32)
@@ -158,8 +198,9 @@ static void cleanupTask() {
             }
         }
 
-        // Validator shutdown must be called after setKillAllOperations is called. Otherwise, this
-        // can deadlock.
+        // Perform all shutdown operations after setKillAllOperations is called in order to ensure
+        // that any pending threads are about to terminate
+
         if (auto validator = LogicalTimeValidator::get(serviceContext)) {
             validator->shutDown();
         }
@@ -167,9 +208,11 @@ static void cleanupTask() {
         if (auto cursorManager = Grid::get(opCtx)->getCursorManager()) {
             cursorManager->shutdown();
         }
+
         if (auto pool = Grid::get(opCtx)->getExecutorPool()) {
             pool->shutdownAndJoin();
         }
+
         if (auto catalog = Grid::get(opCtx)->catalogClient()) {
             catalog->shutDown(opCtx);
         }
@@ -209,12 +252,15 @@ static Status initializeSharding(OperationContext* opCtx) {
     auto shardFactory =
         stdx::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
 
+    CatalogCacheLoader::set(opCtx->getServiceContext(),
+                            stdx::make_unique<ConfigServerCatalogCacheLoader>());
+
     Status status = initializeGlobalShardingState(
         opCtx,
         mongosGlobalParams.configdbs,
         generateDistLockProcessId(opCtx),
         std::move(shardFactory),
-        stdx::make_unique<CatalogCache>(),
+        stdx::make_unique<CatalogCache>(CatalogCacheLoader::get(opCtx)),
         [opCtx]() {
             auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
             hookList->addHook(
@@ -229,6 +275,11 @@ static Status initializeSharding(OperationContext* opCtx) {
     }
 
     status = waitForShardRegistryReload(opCtx);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    status = waitForSigningKeys(opCtx);
     if (!status.isOK()) {
         return status;
     }
@@ -453,6 +504,7 @@ static ExitCode initService() {
 #endif
 
 namespace {
+
 std::unique_ptr<AuthzManagerExternalState> createAuthzManagerExternalStateMongos() {
     return stdx::make_unique<AuthzManagerExternalStateMongos>();
 }

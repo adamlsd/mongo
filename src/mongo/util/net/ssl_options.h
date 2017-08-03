@@ -40,11 +40,10 @@ class OptionSection;
 class Environment;
 }  // namespace optionenvironment
 
-namespace moe = mongo::optionenvironment;
-
 struct SSLParams {
     enum class Protocols { TLS1_0, TLS1_1, TLS1_2 };
     AtomicInt32 sslMode;             // --sslMode - the SSL operation mode, see enum SSLModes
+	std::string sslPEMTempDHParam;   // --sslPEMTempDHParam - The PEM file containing PFS DH parameters.
     std::string sslPEMKeyFile;       // --sslPEMKeyFile
     std::string sslPEMKeyPassword;   // --sslPEMKeyPassword
     std::string sslClusterFile;      // --sslInternalKeyFile
@@ -66,22 +65,22 @@ struct SSLParams {
 
     enum SSLModes {
         /**
-        * Make unencrypted outgoing connections and do not accept incoming SSL-connections
+        * Make unencrypted outgoing connections and do not accept incoming SSL-connections.
         */
         SSLMode_disabled,
 
         /**
-        * Make unencrypted outgoing connections and accept both unencrypted and SSL-connections
+        * Make unencrypted outgoing connections and accept both unencrypted and SSL-connections.
         */
         SSLMode_allowSSL,
 
         /**
-        * Make outgoing SSL-connections and accept both unecrypted and SSL-connections
+        * Make outgoing SSL-connections and accept both unecrypted and SSL-connections.
         */
         SSLMode_preferSSL,
 
         /**
-        * Make outgoing SSL-connections and only accept incoming SSL-connections
+        * Make outgoing SSL-connections and only accept incoming SSL-connections.
         */
         SSLMode_requireSSL
     };
@@ -89,19 +88,19 @@ struct SSLParams {
 
 extern SSLParams sslGlobalParams;
 
-Status addSSLServerOptions(moe::OptionSection* options);
+Status addSSLServerOptions(mongo::optionenvironment::OptionSection* options);
 
-Status addSSLClientOptions(moe::OptionSection* options);
+Status addSSLClientOptions(mongo::optionenvironment::OptionSection* options);
 
-Status storeSSLServerOptions(const moe::Environment& params);
+Status storeSSLServerOptions(const mongo::optionenvironment::Environment& params);
 
 /**
  * Canonicalize SSL options for the given environment that have different representations with
- * the same logical meaning
+ * the same logical meaning.
  */
-Status canonicalizeSSLServerOptions(moe::Environment* params);
+Status canonicalizeSSLServerOptions(mongo::optionenvironment::Environment* params);
 
-Status validateSSLServerOptions(const moe::Environment& params);
+Status validateSSLServerOptions(const mongo::optionenvironment::Environment& params);
 
-Status storeSSLClientOptions(const moe::Environment& params);
-}
+Status storeSSLClientOptions(const mongo::optionenvironment::Environment& params);
+}//namespace mongo

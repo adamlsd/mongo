@@ -41,6 +41,9 @@
 
 namespace mongo {
 
+namespace moe = mongo::optionenvironment;
+
+
 using std::string;
 
 Status addSSLServerOptions(moe::OptionSection* options) {
@@ -64,6 +67,11 @@ Status addSSLServerOptions(moe::OptionSection* options) {
     options
         ->addOptionChaining(
             "net.ssl.PEMKeyPassword", "sslPEMKeyPassword", moe::String, "PEM file password")
+        .setImplicit(moe::Value(std::string("")));
+
+    options
+        ->addOptionChaining(
+            "net.ssl.PEMTempDHParam", "sslPEMTempDHParam", moe::String, "PEM DHParams file for PFS")
         .setImplicit(moe::Value(std::string("")));
 
     options->addOptionChaining("net.ssl.clusterFile",
@@ -239,6 +247,13 @@ Status storeSSLServerOptions(const moe::Environment& params) {
         sslGlobalParams.sslPEMKeyFile =
             boost::filesystem::absolute(params["net.ssl.PEMKeyFile"].as<string>()).generic_string();
     }
+
+
+	if( params.count( "net.ssl.PEMTempDHParam" ) )
+	{
+		sslGlobalParams.sslPEMTempDHParam=
+				boost::filesystem::absolute( params[ "net.ssl.PEMTempDHParam" ].as< std::string >() ).generic_string();
+	}
 
     if (params.count("net.ssl.PEMKeyPassword")) {
         sslGlobalParams.sslPEMKeyPassword = params["net.ssl.PEMKeyPassword"].as<string>();

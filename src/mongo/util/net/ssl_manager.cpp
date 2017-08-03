@@ -237,19 +237,22 @@ private:
 };
 std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
 
+namespace
+{
 // We only want to free SSL_CTX objects if they have been populated. OpenSSL seems to perform this
 // check before freeing them, but because it does not document this, we should protect ourselves.
-void _free_ssl_context(SSL_CTX* ctx) {
+void free_ssl_context(SSL_CTX* ctx) {
     if (ctx != nullptr) {
         SSL_CTX_free(ctx);
     }
 }
+}//namespace
 
 ////////////////////////////////////////////////////////////////
 
 SimpleMutex sslManagerMtx;
 SSLManagerInterface* theSSLManager = NULL;
-using UniqueSSLContext = std::unique_ptr<SSL_CTX, decltype(&_free_ssl_context)>;
+using UniqueSSLContext = std::unique_ptr<SSL_CTX, decltype(&free_ssl_context)>;
 static const int BUFFER_SIZE = 8 * 1024;
 static const int DATE_LEN = 128;
 
@@ -312,7 +315,7 @@ private:
 
     /**
      * Given an error code from an SSL-type IO function, logs an
-     * appropriate message and throws a SocketException
+     * appropriate message and throws a SocketException.
      */
     MONGO_COMPILER_NORETURN void _handleSSLError(int code, int ret);
 
@@ -383,7 +386,7 @@ private:
     bool _hostNameMatch(const char* nameToMatch, const char* certHostName);
 
     /**
-     * Callbacks for SSL functions
+     * Callbacks for SSL functions.
      */
     static int password_cb(char* buf, int num, int rwflag, void* userdata);
     static int verify_cb(int ok, X509_STORE_CTX* ctx);
@@ -513,7 +516,7 @@ void canonicalizeClusterDN(std::vector<std::string>* dn) {
     }
     std::stable_sort(dn->begin(), dn->end());
 }
-}
+}//namespace
 
 bool SSLConfiguration::isClusterMember(StringData subjectName) const {
     std::vector<std::string> clientRDN = StringSplitter::split(subjectName.toString(), ",");
@@ -545,8 +548,8 @@ BSONObj SSLConfiguration::getServerStatusBSON() const {
 SSLManagerInterface::~SSLManagerInterface() {}
 
 SSLManager::SSLManager(const SSLParams& params, bool isServer)
-    : _serverContext(nullptr, _free_ssl_context),
-      _clientContext(nullptr, _free_ssl_context),
+    : _serverContext(nullptr, free_ssl_context),
+      _clientContext(nullptr, free_ssl_context),
       _weakValidation(params.sslWeakCertificateValidation),
       _allowInvalidCertificates(params.sslAllowInvalidCertificates),
       _allowInvalidHostnames(params.sslAllowInvalidHostnames) {
@@ -665,17 +668,15 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
 
     // Set the supported TLS protocols. Allow --sslDisabledProtocols to disable selected
     // ciphers.
-    if (!params.sslDisabledProtocols.empty()) {
-        for (const SSLParams::Protocols& protocol : params.sslDisabledProtocols) {
-            if (protocol == SSLParams::Protocols::TLS1_0) {
-                supportedProtocols |= SSL_OP_NO_TLSv1;
-            } else if (protocol == SSLParams::Protocols::TLS1_1) {
-                supportedProtocols |= SSL_OP_NO_TLSv1_1;
-            } else if (protocol == SSLParams::Protocols::TLS1_2) {
-                supportedProtocols |= SSL_OP_NO_TLSv1_2;
-            }
-        }
-    }
+	for (const SSLParams::Protocols& protocol : params.sslDisabledProtocols) {
+		if (protocol == SSLParams::Protocols::TLS1_0) {
+			supportedProtocols |= SSL_OP_NO_TLSv1;
+		} else if (protocol == SSLParams::Protocols::TLS1_1) {
+			supportedProtocols |= SSL_OP_NO_TLSv1_1;
+		} else if (protocol == SSLParams::Protocols::TLS1_2) {
+			supportedProtocols |= SSL_OP_NO_TLSv1_2;
+		}
+	}
     ::SSL_CTX_set_options(context, supportedProtocols);
 
     // HIGH - Enable strong ciphers
@@ -727,13 +728,38 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
         }
     }
 
+	struct file_closer
+	{
+		void operator () ( FILE *const fp ) noexcept { if( fp ) { fclose( fp ); } }
+	};
+	std::unique_ptr< FILE, file_closer > dhparamPemFile( fopen( params.sslPEMTempDHParam.c_str(), "r" ) );
+	if( !dhparamPemFile )
+	{
+		return Status(ErrorCodes::InvalidSSLConfiguration, "Can not open PEM DHParams file.");
+	}
+
+	struct dh_freer
+	{
+		void operator() ( DH *const dh ) noexcept { if( dh ) { DH_free( dh ); } }
+	};
+	std::unique_ptr< DH, dh_freer > dhparams( PEM_read_DHparams( dhparamPemFile.get(), nullptr, nullptr, nullptr ) );
+	if( !dhparams )
+	{
+		return Status(ErrorCodes::InvalidSSLConfiguration, "Error reading DHParams file.");
+	}
+	
+	if( SSL_CTX_set_tmp_dh( context, dhparams.get() ) != 1 )
+	{
+		return Status( ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters." );
+	}
+
     return Status::OK();
 }
 
 bool SSLManager::_initSynchronousSSLContext(UniqueSSLContext* contextPtr,
                                             const SSLParams& params,
                                             ConnectionDirection direction) {
-    *contextPtr = UniqueSSLContext(SSL_CTX_new(SSLv23_method()), _free_ssl_context);
+    *contextPtr = UniqueSSLContext(SSL_CTX_new(SSLv23_method()), free_ssl_context);
 
     uassertStatusOK(initSSLContext(contextPtr->get(), params, direction));
 
@@ -1500,4 +1526,4 @@ MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
 }
 
 #endif  // #ifdef MONGO_CONFIG_SSL
-}
+}//namespace mongo

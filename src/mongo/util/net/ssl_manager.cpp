@@ -772,7 +772,8 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
         return Status(ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters.");
     }
 
-    setECDHModeAuto(ctx);
+    // We always set ECDH mode anyhow, if available.
+    setECDHModeAuto(context);
 
     return Status::OK();
 }

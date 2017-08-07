@@ -758,18 +758,20 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
         }
     }
 
-    UniqueFile dhparamPemFile(fopen(params.sslPEMTempDHParam.c_str(), "r"));
-    if (!dhparamPemFile) {
-        return Status(ErrorCodes::InvalidSSLConfiguration, "Can not open PEM DHParams file.");
-    }
+    if (!params.sslPEMTempDHParam.empty()) {
+        UniqueFile dhparamPemFile(fopen(params.sslPEMTempDHParam.c_str(), "r"));
+        if (!dhparamPemFile) {
+            return Status(ErrorCodes::InvalidSSLConfiguration, "Can not open PEM DHParams file.");
+        }
 
-    DHParams dhparams(::PEM_read_DHparams(dhparamPemFile.get(), nullptr, nullptr, nullptr));
-    if (!dhparams) {
-        return Status(ErrorCodes::InvalidSSLConfiguration, "Error reading DHParams file.");
-    }
+        DHParams dhparams(::PEM_read_DHparams(dhparamPemFile.get(), nullptr, nullptr, nullptr));
+        if (!dhparams) {
+            return Status(ErrorCodes::InvalidSSLConfiguration, "Error reading DHParams file.");
+        }
 
-    if (::SSL_CTX_set_tmp_dh(context, dhparams.get()) != 1) {
-        return Status(ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters.");
+        if (::SSL_CTX_set_tmp_dh(context, dhparams.get()) != 1) {
+            return Status(ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters.");
+        }
     }
 
     // We always set ECDH mode anyhow, if available.

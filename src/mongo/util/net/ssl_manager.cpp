@@ -80,13 +80,11 @@ namespace {
 
 // If the underlying SSL supports auto-configuration of ECDH parameters,
 // this function will select it, otherwise this function will do nothing.
-void
-setECDHModeAuto( SSL_CTX *const ctx )
-{
+void setECDHModeAuto(SSL_CTX* const ctx) {
 #ifdef MONGO_CONFIG_HAVE_SSL_SET_ECDH_AUTO
-	::SSL_CTX_set_ecdh_auto( ctx, true );
+    ::SSL_CTX_set_ecdh_auto(ctx, true);
 #endif
-	std::ignore= ctx;
+    std::ignore = ctx;
 }
 
 
@@ -249,8 +247,7 @@ private:
 };
 std::vector<std::unique_ptr<stdx::recursive_mutex>> SSLThreadInfo::_mutex;
 
-namespace
-{
+namespace {
 // We only want to free SSL_CTX objects if they have been populated. OpenSSL seems to perform this
 // check before freeing them, but because it does not document this, we should protect ourselves.
 void free_ssl_context(SSL_CTX* ctx) {
@@ -258,7 +255,7 @@ void free_ssl_context(SSL_CTX* ctx) {
         SSL_CTX_free(ctx);
     }
 }
-}//namespace
+}  // namespace
 
 ////////////////////////////////////////////////////////////////
 
@@ -528,7 +525,7 @@ void canonicalizeClusterDN(std::vector<std::string>* dn) {
     }
     std::stable_sort(dn->begin(), dn->end());
 }
-}//namespace
+}  // namespace
 
 bool SSLConfiguration::isClusterMember(StringData subjectName) const {
     std::vector<std::string> clientRDN = StringSplitter::split(subjectName.toString(), ",");
@@ -670,19 +667,24 @@ void SSLManager::SSL_free(SSLConnection* conn) {
     return ::SSL_free(conn->ssl);
 }
 
-namespace
-{
-	struct file_closer
-	{
-		void operator () ( FILE *const fp ) noexcept { if( fp ) { fclose( fp ); } }
-	};
-	using UniqueFile= std::unique_ptr< FILE, file_closer >;
+namespace {
+struct file_closer {
+    void operator()(FILE* const fp) noexcept {
+        if (fp) {
+            fclose(fp);
+        }
+    }
+};
+using UniqueFile = std::unique_ptr<FILE, file_closer>;
 
-	struct dh_freer
-	{
-		void operator() ( DH *const dh ) noexcept { if( dh ) { DH_free( dh ); } }
-	};
-	using DHParams= std::unique_ptr< DH, dh_freer >;
+struct dh_freer {
+    void operator()(DH* const dh) noexcept {
+        if (dh) {
+            DH_free(dh);
+        }
+    }
+};
+using DHParams = std::unique_ptr<DH, dh_freer>;
 }
 
 Status SSLManager::initSSLContext(SSL_CTX* context,
@@ -695,15 +697,15 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
 
     // Set the supported TLS protocols. Allow --sslDisabledProtocols to disable selected
     // ciphers.
-	for (const SSLParams::Protocols& protocol : params.sslDisabledProtocols) {
-		if (protocol == SSLParams::Protocols::TLS1_0) {
-			supportedProtocols |= SSL_OP_NO_TLSv1;
-		} else if (protocol == SSLParams::Protocols::TLS1_1) {
-			supportedProtocols |= SSL_OP_NO_TLSv1_1;
-		} else if (protocol == SSLParams::Protocols::TLS1_2) {
-			supportedProtocols |= SSL_OP_NO_TLSv1_2;
-		}
-	}
+    for (const SSLParams::Protocols& protocol : params.sslDisabledProtocols) {
+        if (protocol == SSLParams::Protocols::TLS1_0) {
+            supportedProtocols |= SSL_OP_NO_TLSv1;
+        } else if (protocol == SSLParams::Protocols::TLS1_1) {
+            supportedProtocols |= SSL_OP_NO_TLSv1_1;
+        } else if (protocol == SSLParams::Protocols::TLS1_2) {
+            supportedProtocols |= SSL_OP_NO_TLSv1_2;
+        }
+    }
     ::SSL_CTX_set_options(context, supportedProtocols);
 
     // HIGH - Enable strong ciphers
@@ -755,24 +757,21 @@ Status SSLManager::initSSLContext(SSL_CTX* context,
         }
     }
 
-	UniqueFile dhparamPemFile( fopen( params.sslPEMTempDHParam.c_str(), "r" ) );
-	if( !dhparamPemFile )
-	{
-		return Status(ErrorCodes::InvalidSSLConfiguration, "Can not open PEM DHParams file.");
-	}
+    UniqueFile dhparamPemFile(fopen(params.sslPEMTempDHParam.c_str(), "r"));
+    if (!dhparamPemFile) {
+        return Status(ErrorCodes::InvalidSSLConfiguration, "Can not open PEM DHParams file.");
+    }
 
-	DHParams dhparams( ::PEM_read_DHparams( dhparamPemFile.get(), nullptr, nullptr, nullptr ) );
-	if( !dhparams )
-	{
-		return Status(ErrorCodes::InvalidSSLConfiguration, "Error reading DHParams file.");
-	}
-	
-	if( ::SSL_CTX_set_tmp_dh( context, dhparams.get() ) != 1 )
-	{
-		return Status( ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters." );
-	}
+    DHParams dhparams(::PEM_read_DHparams(dhparamPemFile.get(), nullptr, nullptr, nullptr));
+    if (!dhparams) {
+        return Status(ErrorCodes::InvalidSSLConfiguration, "Error reading DHParams file.");
+    }
 
-	setECDHModeAuto( ctx );
+    if (::SSL_CTX_set_tmp_dh(context, dhparams.get()) != 1) {
+        return Status(ErrorCodes::InvalidSSLConfiguration, "Failure to set PFS DH parameters.");
+    }
+
+    setECDHModeAuto(ctx);
 
     return Status::OK();
 }
@@ -1547,4 +1546,4 @@ MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
 }
 
 #endif  // #ifdef MONGO_CONFIG_SSL
-}//namespace mongo
+}  // namespace mongo

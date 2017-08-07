@@ -252,17 +252,22 @@ bool checkIfAlreadyShardedWithSameOptions(OperationContext* opCtx,
                                           const ConfigsvrShardCollection& request) {
     auto catalogCache = Grid::get(opCtx)->catalogCache();
 
-    // We must reload the collection while metadata commands are split between mongos and the
-    // config servers.
+    // Until all metadata commands are on the config server, the CatalogCache on the config
+    // server may be stale. Force a refresh for the collection before reading it.
     catalogCache->invalidateShardedCollection(nss);
     auto routingInfo = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, nss));
 
     // If the collection is already sharded, fail if the deduced options in this request do not
     // match the options the collection was originally sharded with.
     if (routingInfo.cm()) {
-        auto existingColl =
-            uassertStatusOK(Grid::get(opCtx)->catalogClient()->getCollection(opCtx, nss.ns()))
-                .value;
+        auto cm = routingInfo.cm();
+
+        CollectionType existingOptions;
+        existingOptions.setNs(NamespaceString(cm->getns()));
+        existingOptions.setKeyPattern(cm->getShardKeyPattern().getKeyPattern());
+        existingOptions.setDefaultCollation(
+            cm->getDefaultCollator() ? cm->getDefaultCollator()->getSpec().toBSON() : BSONObj());
+        existingOptions.setUnique(cm->isUnique());
 
         CollectionType requestedOptions;
         requestedOptions.setNs(nss);
@@ -273,8 +278,8 @@ bool checkIfAlreadyShardedWithSameOptions(OperationContext* opCtx,
         uassert(ErrorCodes::AlreadyInitialized,
                 str::stream() << "sharding already enabled for collection " << nss.ns()
                               << " with options "
-                              << existingColl.toString(),
-                requestedOptions.hasSameOptions(existingColl));
+                              << existingOptions.toString(),
+                requestedOptions.hasSameOptions(existingOptions));
 
         // If the options do match, we can immediately return success.
         return true;
@@ -629,6 +634,55 @@ void migrateAndFurtherSplitInitialChunks(OperationContext* opCtx,
     }
 }
 
+boost::optional<UUID> getUUIDFromPrimaryShard(const NamespaceString& nss,
+                                              ScopedDbConnection& conn) {
+    // UUIDs were introduced in featureCompatibilityVersion 3.6.
+    if (serverGlobalParams.featureCompatibility.version.load() <
+        ServerGlobalParams::FeatureCompatibility::Version::k36) {
+        return boost::none;
+    }
+
+    // Obtain the collection's UUID from the primary shard's listCollections response.
+    BSONObj res;
+    {
+        std::list<BSONObj> all =
+            conn->getCollectionInfos(nss.db().toString(), BSON("name" << nss.coll()));
+        if (!all.empty()) {
+            res = all.front().getOwned();
+        }
+    }
+
+    uassert(ErrorCodes::InternalError,
+            str::stream() << "expected the primary shard host " << conn.getHost()
+                          << " for database "
+                          << nss.db()
+                          << " to return an entry for "
+                          << nss.ns()
+                          << " in its listCollections response, but it did not",
+            !res.isEmpty());
+
+    BSONObj collectionInfo;
+    if (res["info"].type() == BSONType::Object) {
+        collectionInfo = res["info"].Obj();
+    }
+
+    uassert(ErrorCodes::InternalError,
+            str::stream() << "expected primary shard to return 'info' field as part of "
+                             "listCollections for "
+                          << nss.ns()
+                          << " because the cluster is in featureCompatibilityVersion=3.6, but got "
+                          << res,
+            !collectionInfo.isEmpty());
+
+    uassert(ErrorCodes::InternalError,
+            str::stream() << "expected primary shard to return a UUID for collection " << nss.ns()
+                          << " as part of 'info' field but got "
+                          << res,
+            collectionInfo.hasField("uuid"));
+
+    return uassertStatusOK(UUID::parse(collectionInfo["uuid"]));
+}
+
 /**
  * Internal sharding command run on config servers to add a shard to the cluster.
  */
@@ -690,10 +744,15 @@ public:
             uassertStatusOK(Grid::get(opCtx)->catalogClient()->getDistLockManager()->lock(
                 opCtx, nss.ns(), "shardCollection", DistLockManager::kDefaultLockTimeout)));
 
-        // Ensure sharding is allowed on the database
-        auto dbType = uassertStatusOK(Grid::get(opCtx)->catalogClient()->getDatabase(
-                                          opCtx, nss.db().toString()))
-                          .value;
+        // Ensure sharding is allowed on the database.
+        // Until all metadata commands are on the config server, the CatalogCache on the config
+        // server may be stale. Read the database entry directly rather than purging and reloading
+        // the database into the CatalogCache, which is very expensive.
+        auto dbType =
+            uassertStatusOK(
+                Grid::get(opCtx)->catalogClient()->getDatabase(
+                    opCtx, nss.db().toString(), repl::ReadConcernLevel::kLocalReadConcern))
+                .value;
         uassert(ErrorCodes::IllegalOperation,
                 str::stream() << "sharding not enabled for db " << nss.db(),
                 dbType.getSharded());
@@ -728,10 +787,13 @@ public:
         validateShardKeyAgainstExistingIndexes(
             opCtx, nss, proposedKey, shardKeyPattern, primaryShard, conn, request);
 
+        // Step 4.
+        auto uuid = getUUIDFromPrimaryShard(nss, conn);
+
         // isEmpty is used by multiple steps below.
         bool isEmpty = (conn->count(nss.ns()) == 0);
 
-        // Step 4.
+        // Step 5.
         std::vector<BSONObj> initSplits;  // there will be at most numShards-1 of these
         std::vector<BSONObj> allSplits;   // all of the initial desired split points
         determinePresplittingPoints(opCtx,
@@ -753,9 +815,10 @@ public:
         // (below) if using a hashed shard key.
         const bool distributeInitialChunks = request.getInitialSplitPoints().is_initialized();
 
-        // Step 5. Actually shard the collection.
+        // Step 6. Actually shard the collection.
         catalogManager->shardCollection(opCtx,
                                         nss.ns(),
+                                        uuid,
                                         shardKeyPattern,
                                         *request.getCollation(),
                                         request.getUnique(),
@@ -770,7 +833,7 @@ public:
         // proceed.
         scopedDistLock.reset();
 
-        // Step 6. Migrate initial chunks to distribute them across shards.
+        // Step 7. Migrate initial chunks to distribute them across shards.
         migrateAndFurtherSplitInitialChunks(
             opCtx, nss, numShards, shardIds, isEmpty, shardKeyPattern, allSplits);
 

@@ -37,13 +37,18 @@
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_change_stream.h"
+#include "mongo/db/pipeline/document_source_lookup_change_post_image.h"
+#include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_project.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/query/query_test_service_context.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace PipelineTests {
@@ -51,6 +56,16 @@ namespace PipelineTests {
 using boost::intrusive_ptr;
 using std::string;
 using std::vector;
+
+const NamespaceString kTestNss = NamespaceString("a.collection");
+
+namespace {
+void setMockReplicationCoordinatorOnOpCtx(OperationContext* opCtx) {
+    repl::ReplicationCoordinator::set(
+        opCtx->getServiceContext(),
+        stdx::make_unique<repl::ReplicationCoordinatorMock>(opCtx->getServiceContext()));
+}
+}  // namespace
 
 namespace Optimizations {
 using namespace mongo;
@@ -77,7 +92,7 @@ void assertPipelineOptimizesAndSerializesTo(std::string inputPipeJson,
         ASSERT_EQUALS(stageElem.type(), BSONType::Object);
         rawPipeline.push_back(stageElem.embeddedObject());
     }
-    AggregationRequest request(NamespaceString("a.collection"), rawPipeline);
+    AggregationRequest request(kTestNss, rawPipeline);
     intrusive_ptr<ExpressionContextForTest> ctx =
         new ExpressionContextForTest(opCtx.get(), request);
 
@@ -962,6 +977,54 @@ TEST(PipelineOptimizationTest, MatchOnMaxLengthShouldMoveAcrossRename) {
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
+TEST(PipelineOptimizationTest, ChangeStreamLookupSwapsWithIndependentMatch) {
+    QueryTestServiceContext testServiceContext;
+    auto opCtx = testServiceContext.makeOperationContext();
+
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContextForTest(kTestNss));
+    expCtx->opCtx = opCtx.get();
+    setMockReplicationCoordinatorOnOpCtx(expCtx->opCtx);
+
+    auto spec = BSON("$changeStream" << BSON("fullDocument"
+                                             << "lookup"));
+    auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
+    ASSERT_EQ(stages.size(), 3UL);
+    // Make sure the change lookup is at the end.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
+
+    auto matchPredicate = BSON("extra"
+                               << "predicate");
+    stages.push_back(DocumentSourceMatch::create(matchPredicate, expCtx));
+    auto pipeline = uassertStatusOK(Pipeline::create(stages, expCtx));
+    pipeline->optimizePipeline();
+
+    // Make sure the $match stage has swapped before the change look up.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(pipeline->getSources().back().get()));
+}
+
+TEST(PipelineOptimizationTest, ChangeStreamLookupDoesNotSwapWithMatchOnPostImage) {
+    QueryTestServiceContext testServiceContext;
+    auto opCtx = testServiceContext.makeOperationContext();
+
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContextForTest(kTestNss));
+    expCtx->opCtx = opCtx.get();
+    setMockReplicationCoordinatorOnOpCtx(expCtx->opCtx);
+
+    auto spec = BSON("$changeStream" << BSON("fullDocument"
+                                             << "lookup"));
+    auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
+    ASSERT_EQ(stages.size(), 3UL);
+    // Make sure the change lookup is at the end.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
+
+    stages.push_back(DocumentSourceMatch::create(
+        BSON(DocumentSourceLookupChangePostImage::kFullDocumentFieldName << BSONNULL), expCtx));
+    auto pipeline = uassertStatusOK(Pipeline::create(stages, expCtx));
+    pipeline->optimizePipeline();
+
+    // Make sure the $match stage stays at the end.
+    ASSERT(dynamic_cast<DocumentSourceMatch*>(pipeline->getSources().back().get()));
+}
 }  // namespace Local
 
 namespace Sharded {
@@ -986,7 +1049,7 @@ public:
             ASSERT_EQUALS(stageElem.type(), BSONType::Object);
             rawPipeline.push_back(stageElem.embeddedObject());
         }
-        AggregationRequest request(NamespaceString("a.collection"), rawPipeline);
+        AggregationRequest request(kTestNss, rawPipeline);
         intrusive_ptr<ExpressionContextForTest> ctx =
             new ExpressionContextForTest(&_opCtx, request);
 
@@ -995,11 +1058,23 @@ public:
         NamespaceString lookupCollNs("a", "lookupColl");
         ctx->setResolvedNamespace(lookupCollNs, {lookupCollNs, std::vector<BSONObj>{}});
 
+        // Test that we can both split the pipeline and reassemble it into its original form.
         mergePipe = uassertStatusOK(Pipeline::parse(request.getPipeline(), ctx));
         mergePipe->optimizePipeline();
 
+        auto beforeSplit = Value(mergePipe->serialize());
+
         shardPipe = mergePipe->splitForSharded();
-        ASSERT(shardPipe != nullptr);
+        ASSERT(shardPipe);
+
+        shardPipe->unsplitFromSharded(std::move(mergePipe));
+        ASSERT_FALSE(mergePipe);
+
+        ASSERT_VALUE_EQ(Value(shardPipe->serialize()), beforeSplit);
+
+        mergePipe = std::move(shardPipe);
+        shardPipe = mergePipe->splitForSharded();
+        ASSERT(shardPipe);
 
         ASSERT_VALUE_EQ(Value(shardPipe->writeExplainOps(ExplainOptions::Verbosity::kQueryPlanner)),
                         Value(shardPipeExpected["pipeline"]));
@@ -1349,8 +1424,10 @@ class DocumentSourceCollectionlessMock : public DocumentSourceMock {
 public:
     DocumentSourceCollectionlessMock() : DocumentSourceMock({}) {}
 
-    InitialSourceType getInitialSourceType() const final {
-        return InitialSourceType::kCollectionlessInitialSource;
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.isIndependentOfAnyCollection = true;
+        return constraints;
     }
 
     static boost::intrusive_ptr<DocumentSourceCollectionlessMock> create() {
@@ -1389,7 +1466,7 @@ TEST_F(PipelineInitialSourceNSTest, CollectionNSNotValidIfInitialStageIsCollecti
     auto collectionlessSource = DocumentSourceCollectionlessMock::create();
     auto ctx = getExpCtx();
 
-    ctx->ns = NamespaceString("a.collection");
+    ctx->ns = kTestNss;
 
     ASSERT_NOT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
 }
@@ -1401,6 +1478,37 @@ TEST_F(PipelineInitialSourceNSTest, AggregateOneNSValidForFacetPipelineRegardles
     ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("unittests");
 
     ASSERT_OK(Pipeline::parseFacetPipeline(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsValidAsFirstStage) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    ASSERT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStage) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {custom: 'filter'}}"),
+                                              fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    auto parseStatus = Pipeline::parse(rawPipeline, ctx).getStatus();
+    ASSERT_EQ(parseStatus, ErrorCodes::BadValue);
+    ASSERT_EQ(parseStatus.location(), 40549);
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStageInFacet) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {custom: 'filter'}}"),
+                                              fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    auto parseStatus = Pipeline::parseFacetPipeline(rawPipeline, ctx).getStatus();
+    ASSERT_EQ(parseStatus, ErrorCodes::BadValue);
+    ASSERT_EQ(parseStatus.location(), 40550);
+    ASSERT(std::string::npos != parseStatus.reason().find("$changeStream"));
 }
 
 }  // namespace Namespaces
@@ -1430,8 +1538,8 @@ class DocumentSourceDependencyDummy : public DocumentSourceMock {
 public:
     DocumentSourceDependencyDummy() : DocumentSourceMock({}) {}
 
-    InitialSourceType getInitialSourceType() const final {
-        return InitialSourceType::kNotInitialSource;
+    StageConstraints constraints() const final {
+        return StageConstraints{};  // Overrides DocumentSourceMock's required position.
     }
 };
 

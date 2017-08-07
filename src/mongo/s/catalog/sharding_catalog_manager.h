@@ -31,10 +31,13 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status_with.h"
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/repl/optime_with.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/client/shard_registry.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/stdx/mutex.h"
 
@@ -43,6 +46,17 @@ namespace mongo {
 class OperationContext;
 class RemoteCommandTargeter;
 class ServiceContext;
+class UUID;
+
+/**
+ * Used to indicate to the caller of the removeShard method whether draining of chunks for
+ * a particular shard has started, is ongoing, or has been completed.
+ */
+enum ShardDrainingStatus {
+    STARTED,
+    ONGOING,
+    COMPLETED,
+};
 
 /**
  * Implements modifications to the sharding catalog metadata.
@@ -179,6 +193,20 @@ public:
     //
 
     /**
+     * Creates a new database entry for the specified database name in the configuration
+     * metadata and sets the specified shard as primary.
+     *
+     * @param dbName name of the database (case sensitive)
+     *
+     * Returns Status::OK on success or any error code indicating the failure. These are some
+     * of the known failures:
+     *  - NamespaceExists - database already exists
+     *  - DatabaseDifferCase - database already exists, but with a different case
+     *  - ShardNotFound - could not find a shard to place the DB on
+     */
+    Status createDatabase(OperationContext* opCtx, const std::string& dbName);
+
+    /**
      * Creates a new database or updates the sharding status for an existing one. Cannot be
      * used for the admin/config/local DBs, which should not be created or sharded manually
      * anyways.
@@ -190,6 +218,15 @@ public:
      */
     Status enableSharding(OperationContext* opCtx, const std::string& dbName);
 
+    /**
+     * Retrieves all databases for a shard.
+     *
+     * Returns a !OK status if an error occurs.
+     */
+    Status getDatabasesForShard(OperationContext* opCtx,
+                                const ShardId& shardId,
+                                std::vector<std::string>* dbs);
+
 
     //
     // Collection Operations
@@ -199,6 +236,7 @@ public:
      * Shards a collection. Assumes that the database is enabled for sharding.
      *
      * @param ns: namespace of collection to shard
+     * @param uuid: the collection's UUID. Optional because new in 3.6.
      * @param fieldsAndOrder: shardKey pattern
      * @param defaultCollation: the default collation for the collection, to be written to
      *     config.collections. If empty, the collection default collation is simple binary
@@ -211,6 +249,7 @@ public:
      */
     void shardCollection(OperationContext* opCtx,
                          const std::string& ns,
+                         const boost::optional<UUID> uuid,
                          const ShardKeyPattern& fieldsAndOrder,
                          const BSONObj& defaultCollation,
                          bool unique,
@@ -239,6 +278,16 @@ public:
                                      const std::string* shardProposedName,
                                      const ConnectionString& shardConnectionString,
                                      const long long maxSize);
+
+    /**
+     * Tries to remove a shard. To completely remove a shard from a sharded cluster,
+     * the data residing in that shard must be moved to the remaining shards in the
+     * cluster by "draining" chunks from that shard.
+     *
+     * Because of the asynchronous nature of the draining mechanism, this method returns
+     * the current draining status. See ShardDrainingStatus enum definition for more details.
+     */
+    StatusWith<ShardDrainingStatus> removeShard(OperationContext* opCtx, const ShardId& shardId);
 
     //
     // Cluster Upgrade Operations
@@ -338,6 +387,40 @@ private:
                                                               RemoteCommandTargeter* targeter,
                                                               const std::string& dbName,
                                                               const BSONObj& cmdObj);
+
+    /**
+     * Checks that the given database name doesn't already exist in the config.databases
+     * collection, including under different casing. Optional db can be passed and will
+     * be set with the database details if the given dbName exists.
+     *
+     * Returns OK status if the db does not exist.
+     * Some known errors include:
+     *  NamespaceExists if it exists with the same casing
+     *  DatabaseDifferCase if it exists under different casing.
+     */
+    Status _checkDbDoesNotExist(OperationContext* opCtx,
+                                const std::string& dbName,
+                                DatabaseType* db);
+
+    /**
+     * Selects an optimal shard on which to place a newly created database from the set of
+     * available shards. Will return ShardNotFound if shard could not be found.
+     */
+    static StatusWith<ShardId> _selectShardForNewDatabase(OperationContext* opCtx,
+                                                          ShardRegistry* shardRegistry);
+
+    /**
+     * Helper method for running a count command against the config server with appropriate error
+     * handling.
+     */
+    StatusWith<long long> _runCountCommandOnConfig(OperationContext* opCtx,
+                                                   const NamespaceString& ns,
+                                                   BSONObj query);
+
+    /**
+     * Appends a read committed read concern to the request object.
+     */
+    void _appendReadConcern(BSONObjBuilder* builder);
 
     // The owning service context
     ServiceContext* const _serviceContext;

@@ -848,8 +848,8 @@ private:
      *      _onVoteRequestComplete()
      */
     void _startElectSelf_inlock();
-    void _startElectSelfV1_inlock();
-    void _startElectSelfV1();
+    void _startElectSelfV1_inlock(TopologyCoordinator::StartElectionReason reason);
+    void _startElectSelfV1(TopologyCoordinator::StartElectionReason reason);
 
     /**
      * Callback called when the FreshnessChecker has completed; checks the results and
@@ -1056,12 +1056,8 @@ private:
 
     /**
      * Callback which starts an election if this node is electable and using protocolVersion 1.
-     * "isPriorityTakeover" is used to determine if the caller was a priority takeover or not and
-     * log messages accordingly.
      */
-    enum StartElectionV1Reason { kElectionTimeout, kPriorityTakeover, kStepUpRequest };
-
-    void _startElectSelfIfEligibleV1(StartElectionV1Reason reason);
+    void _startElectSelfIfEligibleV1(TopologyCoordinator::StartElectionReason reason);
 
     /**
      * Resets the term of last vote to 0 to prevent any node from voting for term 0.

@@ -547,10 +547,10 @@ TEST(IDLNestedStruct, TestDuplicateTypes) {
         "field3" << BSON("field1" << 4 << "field2" << 5 << "field3" << 6));
     auto testStruct = NestedWithDuplicateTypes::parse(ctxt, testDoc);
 
-    assert_same_types<decltype(testStruct.getField1()), const RequiredStrictField3&>();
+    assert_same_types<decltype(testStruct.getField1()), RequiredStrictField3&>();
     assert_same_types<decltype(testStruct.getField2()),
                       const boost::optional<RequiredNonStrictField3>&>();
-    assert_same_types<decltype(testStruct.getField3()), const RequiredStrictField3&>();
+    assert_same_types<decltype(testStruct.getField3()), RequiredStrictField3&>();
 
     ASSERT_EQUALS(1, testStruct.getField1().getField1());
     ASSERT_EQUALS(2, testStruct.getField1().getField2());
@@ -1228,10 +1228,9 @@ TEST(IDLChainedType, TestChainedStruct) {
 
     auto testStruct = Chained_struct_mixed::parse(ctxt, testDoc);
 
-    assert_same_types<decltype(testStruct.getChained_any_basic_type()),
-                      const Chained_any_basic_type&>();
+    assert_same_types<decltype(testStruct.getChained_any_basic_type()), Chained_any_basic_type&>();
     assert_same_types<decltype(testStruct.getChainedObjectBasicType()),
-                      const Chained_object_basic_type&>();
+                      Chained_object_basic_type&>();
 
     ASSERT_EQUALS(testStruct.getField3(), "abc");
 
@@ -1737,6 +1736,20 @@ void TestDocSequence(StringData name) {
     ASSERT_EQUALS(2UL, testStruct.getStructs().size());
     ASSERT_EQUALS("hello", testStruct.getStructs()[0].getValue());
     ASSERT_EQUALS("world", testStruct.getStructs()[1].getValue());
+
+    auto opmsg = testStruct.serialize(BSONObj());
+
+    BSONObjBuilder builder;
+    builder.appendElements(testTempDoc);
+    builder.append("structs",
+                   BSON_ARRAY(BSON("value"
+                                   << "hello")
+                              << BSON("value"
+                                      << "world")));
+    builder.append("objects", BSON_ARRAY(BSON("foo" << 1)));
+    auto testCompleteMsg = OpMsgRequest::fromDBAndBody("db", builder.obj());
+
+    ASSERT_BSONOBJ_EQ(opmsg.body, testCompleteMsg.body);
 }
 
 // Positive: Test a command read and written to OpMsgRequest with content in DocumentSequence works

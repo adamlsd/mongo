@@ -295,7 +295,7 @@ Status runAggregate(OperationContext* opCtx,
     auto curOp = CurOp::get(opCtx);
     {
         const LiteParsedPipeline liteParsedPipeline(request);
-        if (liteParsedPipeline.hasChangeNotification()) {
+        if (liteParsedPipeline.hasChangeStream()) {
             nss = NamespaceString::kRsOplogNamespace;
         }
 
@@ -396,19 +396,14 @@ Status runAggregate(OperationContext* opCtx,
                                   uassertStatusOK(resolveInvolvedNamespaces(opCtx, request))));
         expCtx->tempDir = storageGlobalParams.dbpath + "/_tmp";
 
-        if (liteParsedPipeline.hasChangeNotification()) {
+        if (liteParsedPipeline.hasChangeStream()) {
             expCtx->tailableMode = ExpressionContext::TailableMode::kTailableAndAwaitData;
         }
 
-        // Parse the pipeline.
-        auto statusWithPipeline = Pipeline::parse(request.getPipeline(), expCtx);
-        if (!statusWithPipeline.isOK()) {
-            return statusWithPipeline.getStatus();
-        }
-        auto pipeline = std::move(statusWithPipeline.getValue());
+        auto pipeline = uassertStatusOK(Pipeline::parse(request.getPipeline(), expCtx));
 
-        // Check that the view's collation matches the collation of any views involved
-        // in the pipeline.
+        // Check that the view's collation matches the collation of any views involved in the
+        // pipeline.
         if (!pipelineInvolvedNamespaces.empty()) {
             invariant(ctx);
             auto pipelineCollationStatus = collatorCompatibleWithPipeline(
@@ -420,11 +415,11 @@ Status runAggregate(OperationContext* opCtx,
 
         pipeline->optimizePipeline();
 
-        if (kDebugBuild && !expCtx->explain && !expCtx->inShard) {
+        if (kDebugBuild && !expCtx->explain && !expCtx->fromRouter) {
             // Make sure all operations round-trip through Pipeline::serialize() correctly by
             // re-parsing every command in debug builds. This is important because sharded
-            // aggregations rely on this ability.  Skipping when inShard because this has
-            // already been through the transformation (and this un-sets expCtx->inShard).
+            // aggregations rely on this ability.  Skipping when fromRouter because this has
+            // already been through the transformation (and this un-sets expCtx->fromRouter).
             pipeline = reparsePipeline(pipeline.get(), request, expCtx);
         }
 

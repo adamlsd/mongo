@@ -75,12 +75,17 @@ public:
                                          const ChunkVersion& version) override;
 
     /**
-     * This function can throw a DBException if the opCtx is interrupted. A lock must not be held
-     * when calling this because it would prevent using the latest snapshot and actually seeing the
-     * change after it arrives.
+     * Waits for the persisted collection version to be gte to 'version', or an epoch change. Only
+     * call this function if you KNOW that a version gte WILL eventually be persisted.
      *
-     * See CatalogCache::waitForCollectionVersion for function details: it's a passthrough function
-     * to give external access to this function, and so it is the interface.
+     * This function cannot wait for a version if nothing is persisted because a collection can
+     * become unsharded after we start waiting and 'version' will then never be reached. If 'nss'
+     * has no persisted metadata, even if it will shortly, a NamespaceNotFound error will be
+     * returned.
+     *
+     * A lock must not be held when calling this because it would prevent using the latest snapshot
+     * and actually seeing the change after it arrives.
+     * This function can throw a DBException if the opCtx is interrupted.
      */
     Status waitForCollectionVersion(OperationContext* opCtx,
                                     const NamespaceString& nss,
@@ -99,8 +104,9 @@ public:
     std::shared_ptr<Notification<void>> getChunksSince(
         const NamespaceString& nss,
         ChunkVersion version,
-        stdx::function<void(OperationContext*, StatusWith<CollectionAndChangedChunks>)> callbackFn)
-        override;
+        stdx::function<void(OperationContext*, StatusWith<CollectionAndChangedChunks>)> callbackFn,
+        const repl::ReadConcernLevel& readConcern =
+            repl::ReadConcernLevel::kMajorityReadConcern) override;
 
 private:
     // Differentiates the server's role in the replica set so that the chunk loader knows whether to
@@ -314,18 +320,15 @@ private:
     void _updatePersistedMetadata(OperationContext* opCtx, const NamespaceString& nss);
 
     /**
-     * Attempt to read the collection and chunk metadata since version 'sinceVersion' from the shard
-     * persisted metadata store.
+     * Attempts to read the collection and chunk metadata since 'version' from the shard persisted
+     * metadata store. Continues to retry reading the metadata until a complete diff is read
+     * uninterrupted by concurrent updates.
      *
-     * Retries reading the metadata if the shard persisted metadata store becomes imcomplete due to
-     * concurrent updates being applied -- complete here means that every chunk range is accounted
-     * for.
-     *
-     * May return: a complete metadata update, which when applied to a complete metadata store up to
-     * 'sinceVersion' again produces a complete metadata store; or a NamespaceNotFound error, which
-     * means no metadata was found and the collection was dropped.
+     * Returns a complete metadata update since 'version', which when applied to a complete metadata
+     * store up to 'version' again produces a complete metadata store. Throws on error --
+     * NamespaceNotFound error means the collection does not exist.
      */
-    StatusWith<CollectionAndChangedChunks> _getCompletePersistedMetadataForSecondarySinceVersion(
+    CollectionAndChangedChunks _getCompletePersistedMetadataForSecondarySinceVersion(
         OperationContext* opCtx, const NamespaceString& nss, const ChunkVersion& version);
 
     // Used by the shard primary to retrieve chunk metadata from the config server.

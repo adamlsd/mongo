@@ -38,6 +38,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/authenticate.h"
 #include "mongo/client/constants.h"
@@ -650,6 +651,37 @@ BSONObj DBClientBase::findOne(const string& ns,
     return v.empty() ? BSONObj() : v[0];
 }
 
+BSONObj DBClientBase::findOneByUUID(const std::string& db, UUID uuid, const BSONObj& filter) {
+    list<BSONObj> results;
+    BSONObj res;
+
+    BSONObjBuilder cmdBuilder;
+    uuid.appendToBuilder(&cmdBuilder, "find");
+    cmdBuilder.append("filter", filter);
+    cmdBuilder.append("limit", 1);
+    cmdBuilder.append("singleBatch", true);
+
+    BSONObj cmd = cmdBuilder.obj();
+
+    if (runCommand(db, cmd, res, QueryOption_SlaveOk)) {
+        BSONObj cursorObj = res.getObjectField("cursor");
+        BSONObj docs = cursorObj.getObjectField("firstBatch");
+        BSONObjIterator it(docs);
+        while (it.more()) {
+            BSONElement e = it.next();
+            results.push_back(e.Obj().getOwned());
+        }
+        invariant(results.size() <= 1);
+        if (results.empty()) {
+            return BSONObj();
+        }
+        return results.front();
+    }
+    uasserted(
+        40586,
+        str::stream() << "find command using UUID failed. Command: " << cmd << " Result: " << res);
+}
+
 namespace {
 
 /**
@@ -772,6 +804,19 @@ Status DBClientConnection::connect(const HostAndPort& serverAddress, StringData 
     auto swProtocolSet = rpc::parseProtocolSetFromIsMasterReply(swIsMasterReply.data);
     if (!swProtocolSet.isOK()) {
         return swProtocolSet.getStatus();
+    }
+
+    {
+        std::string msgField;
+        auto msgFieldExtractStatus = bsonExtractStringField(swIsMasterReply.data, "msg", &msgField);
+
+        if (msgFieldExtractStatus == ErrorCodes::NoSuchKey) {
+            _isMongos = false;
+        } else if (!msgFieldExtractStatus.isOK()) {
+            return msgFieldExtractStatus;
+        } else {
+            _isMongos = (msgField == "isdbgrid");
+        }
     }
 
     auto validateStatus =

@@ -588,9 +588,21 @@ public:
     virtual void setPrimaryIndex(long long primaryIndex) = 0;
 
     /**
+     * Returns the current primary index.
+     */
+    virtual int getCurrentPrimaryIndex() const = 0;
+
+    enum StartElectionReason {
+        kElectionTimeout,
+        kPriorityTakeover,
+        kStepUpRequest,
+        kCatchupTakeover
+    };
+
+    /**
      * Transitions to the candidate role if the node is electable.
      */
-    virtual Status becomeCandidateIfElectable(const Date_t now, bool isPriorityTakeover) = 0;
+    virtual Status becomeCandidateIfElectable(const Date_t now, StartElectionReason reason) = 0;
 
     /**
      * Updates the storage engine read committed support in the TopologyCoordinator options after

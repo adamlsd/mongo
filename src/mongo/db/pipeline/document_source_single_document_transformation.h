@@ -57,7 +57,7 @@ public:
             kInclusionProjection,
             kComputedProjection,
             kReplaceRoot,
-            kChangeNotificationTransformation,
+            kChangeStreamTransformation,
         };
         virtual ~TransformerInterface() = default;
         virtual Document applyTransformation(const Document& input) = 0;
@@ -101,8 +101,10 @@ public:
     DocumentSource::GetDepsReturn getDependencies(DepsTracker* deps) const final;
     GetModPathsReturn getModifiedPaths() const final;
 
-    bool canSwapWithMatch() const final {
-        return true;
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.canSwapWithMatch = true;
+        return constraints;
     }
 
     TransformerInterface::TransformerType getType() const {

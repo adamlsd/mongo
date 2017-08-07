@@ -66,11 +66,6 @@ Status ShardingCatalogClientMock::enableSharding(OperationContext* opCtx,
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
-StatusWith<ShardDrainingStatus> ShardingCatalogClientMock::removeShard(OperationContext* opCtx,
-                                                                       const ShardId& name) {
-    return ShardDrainingStatus::COMPLETED;
-}
-
 Status ShardingCatalogClientMock::updateDatabase(OperationContext* opCtx,
                                                  const string& dbName,
                                                  const DatabaseType& db) {
@@ -78,19 +73,20 @@ Status ShardingCatalogClientMock::updateDatabase(OperationContext* opCtx,
 }
 
 StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientMock::getDatabase(
-    OperationContext* opCtx, const string& dbName) {
+    OperationContext* opCtx, const string& dbName, const repl::ReadConcernLevel& readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
 StatusWith<repl::OpTimeWith<CollectionType>> ShardingCatalogClientMock::getCollection(
-    OperationContext* opCtx, const string& collNs) {
+    OperationContext* opCtx, const string& collNs, const repl::ReadConcernLevel& readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
 Status ShardingCatalogClientMock::getCollections(OperationContext* opCtx,
                                                  const string* dbName,
                                                  vector<CollectionType>* collections,
-                                                 repl::OpTime* optime) {
+                                                 repl::OpTime* optime,
+                                                 const repl::ReadConcernLevel& readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
@@ -166,8 +162,8 @@ Status ShardingCatalogClientMock::logChange(OperationContext* opCtx,
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
-StatusWith<BSONObj> ShardingCatalogClientMock::getGlobalSettings(OperationContext* opCtx,
-                                                                 StringData key) {
+StatusWith<BSONObj> ShardingCatalogClientMock::getGlobalSettings(
+    OperationContext* opCtx, StringData key, const repl::ReadConcernLevel& readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
@@ -183,7 +179,8 @@ void ShardingCatalogClientMock::writeConfigServerDirect(OperationContext* opCtx,
 Status ShardingCatalogClientMock::insertConfigDocument(OperationContext* opCtx,
                                                        const std::string& ns,
                                                        const BSONObj& doc,
-                                                       const WriteConcernOptions& writeConcern) {
+                                                       const WriteConcernOptions& writeConcern,
+                                                       const repl::ReadConcernLevel& readConcern) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
@@ -226,9 +223,14 @@ StatusWith<std::vector<KeysCollectionDocument>> ShardingCatalogClientMock::getNe
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
-Status ShardingCatalogClientMock::_checkDbDoesNotExist(OperationContext* opCtx,
-                                                       const string& dbName,
-                                                       DatabaseType* db) {
+StatusWith<repl::OpTimeWith<std::vector<BSONObj>>>
+ShardingCatalogClientMock::_exhaustiveFindOnConfig(OperationContext* opCtx,
+                                                   const ReadPreferenceSetting& readPref,
+                                                   const repl::ReadConcernLevel& readConcern,
+                                                   const NamespaceString& nss,
+                                                   const BSONObj& query,
+                                                   const BSONObj& sort,
+                                                   boost::optional<long long> limit) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 

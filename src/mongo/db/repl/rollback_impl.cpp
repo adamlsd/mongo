@@ -26,7 +26,7 @@
  *    it in the license file.
  */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplicationRollback
 
 #include "mongo/platform/basic.h"
 
@@ -35,6 +35,7 @@
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/roll_back_local_operations.h"
 #include "mongo/db/s/shard_identity_rollback_notifier.h"
 #include "mongo/db/session_catalog.h"
@@ -46,23 +47,27 @@ namespace repl {
 
 RollbackImpl::RollbackImpl(OplogInterface* localOplog,
                            OplogInterface* remoteOplog,
+                           ReplicationProcess* replicationProcess,
                            ReplicationCoordinator* replicationCoordinator,
                            Listener* listener)
     : _localOplog(localOplog),
       _remoteOplog(remoteOplog),
+      _replicationProcess(replicationProcess),
       _replicationCoordinator(replicationCoordinator),
       _listener(listener) {
 
     invariant(localOplog);
     invariant(remoteOplog);
+    invariant(replicationProcess);
     invariant(replicationCoordinator);
     invariant(listener);
 }
 
 RollbackImpl::RollbackImpl(OplogInterface* localOplog,
                            OplogInterface* remoteOplog,
+                           ReplicationProcess* replicationProcess,
                            ReplicationCoordinator* replicationCoordinator)
-    : RollbackImpl(localOplog, remoteOplog, replicationCoordinator, {}) {}
+    : RollbackImpl(localOplog, remoteOplog, replicationProcess, replicationCoordinator, {}) {}
 
 RollbackImpl::~RollbackImpl() {
     shutdown();
@@ -79,13 +84,23 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     if (!commonPointSW.isOK()) {
         return commonPointSW.getStatus();
     }
+
+    // Persist the common point to the 'oplogTruncateAfterPoint' document. We save this value so
+    // that the replication recovery logic knows where to truncate the oplog. Note that it must be
+    // saved *durably* in case a crash occurs after the storage engine recovers to the stable
+    // timestamp. Upon startup after such a crash, the standard replication recovery code will know
+    // where to truncate the oplog by observing the value of the 'oplogTruncateAfterPoint' document.
+    // Note that the storage engine timestamp recovery only restores the database *data* to a stable
+    // timestamp, but does not revert the oplog, which must be done as part of the rollback process.
+    _replicationProcess->getConsistencyMarkers()->setOplogTruncateAfterPoint(
+        opCtx, commonPointSW.getValue());
     _listener->onCommonPointFound(commonPointSW.getValue());
 
     // At this point these functions need to always be called before returning, even on failure.
     // These functions fassert on failure.
     ON_BLOCK_EXIT([this, opCtx] {
         _checkShardIdentityRollback(opCtx);
-        _clearSessionTransactionTable(opCtx);
+        _resetSessions(opCtx);
         _transitionFromRollbackToSecondary(opCtx);
     });
 
@@ -161,12 +176,12 @@ void RollbackImpl::_checkShardIdentityRollback(OperationContext* opCtx) {
     }
 }
 
-void RollbackImpl::_clearSessionTransactionTable(OperationContext* opCtx) {
+void RollbackImpl::_resetSessions(OperationContext* opCtx) {
     invariant(opCtx);
 
-    log() << "Rollback - clearing transaction table";
+    log() << "Rollback - resetting in-memory state of active sessions";
 
-    SessionCatalog::get(opCtx)->clearTransactionTable();
+    SessionCatalog::get(opCtx)->resetSessions();
 }
 
 void RollbackImpl::_transitionFromRollbackToSecondary(OperationContext* opCtx) {

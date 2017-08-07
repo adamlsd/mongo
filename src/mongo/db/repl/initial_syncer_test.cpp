@@ -45,6 +45,7 @@
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
 #include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/replication_recovery_mock.h"
 #include "mongo/db/repl/reporter.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/storage_interface_mock.h"
@@ -285,7 +286,9 @@ protected:
         launchExecutorThread();
 
         _replicationProcess = stdx::make_unique<ReplicationProcess>(
-            _storageInterface.get(), stdx::make_unique<ReplicationConsistencyMarkersMock>());
+            _storageInterface.get(),
+            stdx::make_unique<ReplicationConsistencyMarkersMock>(),
+            stdx::make_unique<ReplicationRecoveryMock>());
 
         _executorProxy = stdx::make_unique<TaskExecutorMock>(&getExecutor());
 
@@ -617,6 +620,22 @@ TEST_F(InitialSyncerTest, StartupSetsInitialSyncFlagOnSuccess) {
 
     // Initial sync flag should be set.
     ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
+}
+
+TEST_F(InitialSyncerTest, StartupSetsInitialDataTimestampAndStableTimestampOnSuccess) {
+    auto initialSyncer = &getInitialSyncer();
+    auto opCtx = makeOpCtx();
+
+    // Set initial data timestamp forward first.
+    _storageInterface->setInitialDataTimestamp(opCtx.get(), SnapshotName(Timestamp(5, 5)));
+    _storageInterface->setStableTimestamp(opCtx.get(), SnapshotName(Timestamp(6, 6)));
+
+    ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
+    ASSERT_TRUE(initialSyncer->isActive());
+
+    ASSERT_EQUALS(SnapshotName(Timestamp::kAllowUnstableCheckpointsSentinel),
+                  _storageInterface->getInitialDataTimestamp());
+    ASSERT_EQUALS(SnapshotName::min(), _storageInterface->getStableTimestamp());
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerReturnsCallbackCanceledIfShutdownImmediatelyAfterStartup) {
@@ -3018,6 +3037,9 @@ TEST_F(InitialSyncerTest,
     initialSyncer->join();
     ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
     ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
+
+    ASSERT_EQUALS(SnapshotName(lastOp.getOpTime().getTimestamp()),
+                  _storageInterface->getInitialDataTimestamp());
 }
 
 TEST_F(InitialSyncerTest,

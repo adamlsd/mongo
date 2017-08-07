@@ -30,6 +30,9 @@
 
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 
+#include <pcrecpp.h>
+
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog/type_database.h"
@@ -38,6 +41,65 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+using std::string;
+using std::vector;
+
+namespace {
+
+const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
+
+}  // namespace
+
+Status ShardingCatalogManager::createDatabase(OperationContext* opCtx, const std::string& dbName) {
+    invariant(nsIsDbOnly(dbName));
+
+    // The admin and config databases should never be explicitly created. They "just exist",
+    // i.e. getDatabase will always return an entry for them.
+    if (dbName == "admin" || dbName == "config") {
+        uasserted(ErrorCodes::InvalidOptions,
+                  str::stream() << "cannot manually create database '" << dbName << "'");
+    }
+
+    // Lock the database globally to prevent conflicts with simultaneous database creation.
+    auto scopedDistLock = Grid::get(opCtx)->catalogClient()->getDistLockManager()->lock(
+        opCtx, dbName, "createDatabase", DistLockManager::kDefaultLockTimeout);
+    if (!scopedDistLock.isOK()) {
+        return scopedDistLock.getStatus();
+    }
+
+    // check for case sensitivity violations
+    Status status = _checkDbDoesNotExist(opCtx, dbName, nullptr);
+    if (!status.isOK()) {
+        if (status.code() == ErrorCodes::NamespaceExists) {
+            return Status::OK();
+        }
+        return status;
+    }
+
+    // Database does not exist, pick a shard and create a new entry
+    auto newShardIdStatus = _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
+    if (!newShardIdStatus.isOK()) {
+        return newShardIdStatus.getStatus();
+    }
+
+    const ShardId& newShardId = newShardIdStatus.getValue();
+
+    log() << "Placing [" << dbName << "] on: " << newShardId;
+
+    DatabaseType db;
+    db.setName(dbName);
+    db.setPrimary(newShardId);
+    db.setSharded(false);
+
+    status = Grid::get(opCtx)->catalogClient()->insertConfigDocument(
+        opCtx, DatabaseType::ConfigNS, db.toBSON(), ShardingCatalogClient::kMajorityWriteConcern);
+    if (status.code() == ErrorCodes::DuplicateKey) {
+        return Status(ErrorCodes::NamespaceExists, "database " + dbName + " already exists");
+    }
+
+    return status;
+}
 
 Status ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std::string& dbName) {
     invariant(nsIsDbOnly(dbName));
@@ -58,11 +120,11 @@ Status ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std
 
     // Check for case sensitivity violations
     DatabaseType db;
-    Status status = Grid::get(opCtx)->catalogClient()->_checkDbDoesNotExist(opCtx, dbName, &db);
+    Status status = _checkDbDoesNotExist(opCtx, dbName, &db);
     if (status.isOK()) {
         // Database does not exist, create a new entry
-        auto newShardIdStatus = ShardingCatalogClientImpl::_selectShardForNewDatabase(
-            opCtx, Grid::get(opCtx)->shardRegistry());
+        auto newShardIdStatus =
+            _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
         if (!newShardIdStatus.isOK()) {
             return newShardIdStatus.getStatus();
         }
@@ -88,6 +150,81 @@ Status ShardingCatalogManager::enableSharding(OperationContext* opCtx, const std
     log() << "Enabling sharding for database [" << dbName << "] in config db";
 
     return Grid::get(opCtx)->catalogClient()->updateDatabase(opCtx, dbName, db);
+}
+
+Status ShardingCatalogManager::_checkDbDoesNotExist(OperationContext* opCtx,
+                                                    const std::string& dbName,
+                                                    DatabaseType* db) {
+    BSONObjBuilder queryBuilder;
+    queryBuilder.appendRegex(
+        DatabaseType::name(), (string) "^" + pcrecpp::RE::QuoteMeta(dbName) + "$", "i");
+
+    auto findStatus = Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
+        opCtx,
+        kConfigReadSelector,
+        repl::ReadConcernLevel::kMajorityReadConcern,
+        NamespaceString(DatabaseType::ConfigNS),
+        queryBuilder.obj(),
+        BSONObj(),
+        1);
+
+    if (!findStatus.isOK()) {
+        return findStatus.getStatus();
+    }
+
+    const auto& docs = findStatus.getValue().value;
+    if (docs.empty()) {
+        return Status::OK();
+    }
+
+    BSONObj dbObj = docs.front();
+    std::string actualDbName = dbObj[DatabaseType::name()].String();
+    if (actualDbName == dbName) {
+        if (db) {
+            auto parseDBStatus = DatabaseType::fromBSON(dbObj);
+            if (!parseDBStatus.isOK()) {
+                return parseDBStatus.getStatus();
+            }
+
+            *db = parseDBStatus.getValue();
+        }
+
+        return Status(ErrorCodes::NamespaceExists,
+                      str::stream() << "database " << dbName << " already exists");
+    }
+
+    return Status(ErrorCodes::DatabaseDifferCase,
+                  str::stream() << "can't have 2 databases that just differ on case "
+                                << " have: "
+                                << actualDbName
+                                << " want to add: "
+                                << dbName);
+}
+
+Status ShardingCatalogManager::getDatabasesForShard(OperationContext* opCtx,
+                                                    const ShardId& shardId,
+                                                    std::vector<std::string>* dbs) {
+    auto findStatus = Grid::get(opCtx)->catalogClient()->_exhaustiveFindOnConfig(
+        opCtx,
+        kConfigReadSelector,
+        repl::ReadConcernLevel::kLocalReadConcern,
+        NamespaceString(DatabaseType::ConfigNS),
+        BSON(DatabaseType::primary(shardId.toString())),
+        BSONObj(),
+        boost::none);  // no limit
+
+    for (const BSONObj& obj : findStatus.getValue().value) {
+        std::string dbName;
+        Status status = bsonExtractStringField(obj, DatabaseType::name(), &dbName);
+        if (!status.isOK()) {
+            dbs->clear();
+            return status;
+        }
+
+        dbs->push_back(dbName);
+    }
+
+    return Status::OK();
 }
 
 }  // namespace mongo

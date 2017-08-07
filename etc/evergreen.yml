@@ -443,7 +443,11 @@ functions:
           set -o errexit
           set -o verbose
 
-          virtualenv --system-site-packages ./venv
+          python_loc=$(which ${python|/opt/mongodbtoolchain/v2/bin/python2})
+          if [ "Windows_NT" = "$OS" ]; then
+            python_loc=$(cygpath -w $python_loc)
+          fi
+          virtualenv --python $python_loc --system-site-packages ./venv
 
   "run tests" :
     command: shell.exec
@@ -454,14 +458,8 @@ functions:
         set -o errexit
         set -o verbose
 
-        # check if virtualenv is set up
-        if [ -d "venv" ]; then
-          if [ "Windows_NT" = "$OS" ]; then
-            . ./venv/Scripts/activate
-          else
-            . ./venv/bin/activate
-          fi
-        fi
+        # activate the virtualenv if it has been set up
+        ${activate_virtualenv}
 
         if [ -f /proc/self/coredump_filter ]; then
           # Set the shell process (and its children processes) to dump ELF headers (bit 4),
@@ -1045,6 +1043,138 @@ functions:
         else
           exit 0
         fi
+  "set up EC2 instance":
+    - command: shell.exec
+      params:
+        working_dir: src
+        script: |
+
+          ${activate_virtualenv}
+          easy_install --upgrade boto3
+
+          # Clone another instance of this host in EC2.
+          buildscripts/launch_evergreen_ec2_instance.sh \
+            -k ${ssh_key_id}                            \
+            -t "AMI Evergreen ${task_id}"               \
+            -y ${aws_ec2_yml}
+
+    - command: expansions.update
+      params:
+        file: src/${aws_ec2_yml}
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          # Copy mount_ephemeral_drive.sh script to remote host.
+          ssh_options="${ssh_credentials} ${ssh_options}"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --verbose                      \
+            --userHost $USER@${ip_address} \
+            --operation "copy_to"          \
+            --sshOptions "$ssh_options"    \
+            --retries ${ssh_retries|0}     \
+            --file buildscripts/mount_ephemeral_drive.sh
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          # Mount /data on the attached ephemeral drive(s), more than 1 indicates a RAID set.
+          ${set_sudo}
+          script_opts="-d '${device_names}'"
+          if [ ! -z "${raid_device_name}" ]; then
+            script_opts="$script_opts -r ${raid_device_name}"
+          fi
+          if [ ! -z "${fstype}" ]; then
+            script_opts="$script_opts -t ${fstype}"
+          fi
+          if [ ! -z "${fs_options}" ]; then
+            script_opts="$script_opts -o '${fs_options}'"
+          fi
+          group=$(id -Gn $USER | cut -f1 -d ' ') || true
+          user_group="$USER:$group"
+          script_opts="$script_opts -u $user_group"
+          data_db=/data/db
+          set_permission="chmod 777 $data_db"
+          if [ "Windows_NT" = "$OS" ]; then
+            set_permission="setfacl -s user::rwx,group::rwx,other::rwx $data_db"
+          fi
+          cmds="$sudo bash mount_ephemeral_drive.sh $script_opts; $set_permission; ls -ld $data_db; df; mount"
+          ssh_options="${ssh_credentials} ${ssh_options}"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --verbose                      \
+            --userHost $USER@${ip_address} \
+            --sshOptions "$ssh_options"    \
+            --retries ${ssh_retries|0}     \
+            --commands "$cmds"
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          # Create remote_dir, if specified as expansion macro and is not '.' (pwd).
+          if [[ -z "${remote_dir|}" || ${remote_dir} == "." ]]; then
+            exit 0
+          fi
+          ${set_sudo}
+          ssh_options="${ssh_credentials} ${ssh_options}"
+          group=$(id -Gn $USER | cut -f1 -d ' ') || true
+          user_group="$USER:$group"
+          set_permission="chmod 777 ${remote_dir}"
+          if [ "Windows_NT" = "$OS" ]; then
+            set_permission="setfacl -s user::rwx,group::rwx,other::rwx ${remote_dir}"
+          fi
+          cmds="$sudo mkdir -p ${remote_dir}; $sudo chown $user_group ${remote_dir}; $set_permission; ls -ld ${remote_dir}"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --userHost $USER@${ip_address} \
+            --sshOptions "$ssh_options"    \
+            --retries ${ssh_retries|0}     \
+            --commands "$cmds"
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          # Copy buildscripts, mongoDB executables and debug symbols to the remote host.
+          file_param="--file buildscripts"
+          mongo_executables="mongo mongod mongos"
+          file_extensions="${exe} .debug .dSYM .pdb"
+          for executable in $mongo_executables
+          do
+            for extension in $file_extensions
+            do
+              file=$executable$extension
+              if [[ -f $file || -d $file ]]; then
+                file_param="$file_param --file $file"
+              fi
+            done
+          done
+          ssh_options="${ssh_credentials} ${ssh_options}"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --userHost $USER@${ip_address} \
+            --operation "copy_to"          \
+            --sshOptions "$ssh_options"    \
+            --retries ${ssh_retries|0}     \
+            $file_param                    \
+            --remoteDir ${remote_dir}
+
+  "cleanup EC2 instance":
+    command: shell.exec
+    params:
+      working_dir: src
+      script: |
+        if [ -z ${aws_ec2_yml} ]; then
+          exit 0
+        fi
+        ${activate_virtualenv}
+        echo "Terminating $instance_id"
+        aws_ec2=$(python buildscripts/aws_ec2.py --imageId ${instance_id} --mode terminate)
+        echo "Terminated AMI EC2 instance: $aws_ec2"
 
 pre:
   - func: "kill processes"
@@ -1052,6 +1182,22 @@ pre:
   - command: expansions.update
     params:
        updates:
+       - key: activate_virtualenv
+         value: |
+          # check if virtualenv is set up
+          if [ -d "venv" ]; then
+            if [ "Windows_NT" = "$OS" ]; then
+              . ./venv/Scripts/activate
+            else
+              . ./venv/bin/activate
+            fi
+          fi
+        # For ssh disable the options GSSAPIAuthentication, CheckHostIP, StrictHostKeyChecking
+        # & UserKnownHostsFile, since these are local connections from one AWS instance to another.
+       - key: ssh_options
+         value: -o GSSAPIAuthentication=no -o CheckHostIP=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ConnectionAttempts=10
+       - key: ssh_retries
+         value: "10"
        - key: set_sudo
          value: |
           set -o | grep errexit | grep on
@@ -1067,6 +1213,16 @@ pre:
           # Set errexit "on", if previously enabled.
           if [ $errexit_on -eq 0 ]; then
             set -o errexit
+          fi
+       - key: virtualenv
+         value: |
+          # check if virtualenv is set up
+          if [ -d "venv" ]; then
+            if [ "Windows_NT" = "$OS" ]; then
+              . ./venv/Scripts/activate
+            else
+              . ./venv/bin/activate
+            fi
           fi
   - command: shell.exec
     params:
@@ -1094,6 +1250,7 @@ post:
     params:
       file_location: src/report.json
 
+  - func: "cleanup EC2 instance"
   - func: "kill processes"
   # Print out any Out of Memory killed process messages.
   - command: shell.exec
@@ -1445,6 +1602,36 @@ timeout:
         echo "Calling the hang analyzer: PATH=\"/opt/mongodbtoolchain/gdb/bin:$PATH\" $sudo ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/hang_analyzer.py $hang_analyzer_option"
         PATH="/opt/mongodbtoolchain/gdb/bin:$PATH" $sudo ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/hang_analyzer.py $hang_analyzer_option
 
+        # Call hang_analyzer.py script for tasks that are running remote mongo processes
+        # The file ${aws_ec2_yml} will define the remote's ${ip_address} and ${remote_dir}.
+        # Any task which uses remote processes will have previously loaded this file to set these
+        # expansions macros.
+        if [ -f ${aws_ec2_yml|} ]; then
+          core_ext=core
+          if [ "Windows_NT" = "$OS" ]; then
+            core_ext=mdmp
+          fi
+          ssh_options="${ssh_credentials} ${ssh_options}"
+          # buildscripts must be installed in ${remote_dir} on the remote host.
+          remote_dir=${remote_dir|.}
+          cmds="PATH=\"/opt/mongodbtoolchain/gdb/bin:\$PATH\" $sudo ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/hang_analyzer.py $hang_analyzer_option"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --verbose                      \
+            --userHost $USER@${ip_address} \
+            --sshOptions "$ssh_options"    \
+            --retries ${ssh_retries}       \
+            --commands "$cmds"             \
+            --commandDir ${remote_dir}
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --verbose                          \
+            --userHost $USER@${ip_address}     \
+            --operation "copy_from"            \
+            --sshOptions "$ssh_options"        \
+            --retries ${ssh_retries}           \
+            --file "${remote_dir}/debugger*.*" \
+            --file "${remote_dir}/*.$core_ext"
+        fi
+
 #######################################
 #               Tasks                 #
 #######################################
@@ -1642,7 +1829,13 @@ tasks:
 
           rm -rf ${install_directory|/data/mongo-install-directory}
 
-          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" all ${additional_targets|} MONGO_VERSION=${version}
+          extra_args=""
+          if [ -n "${num_scons_compile_all_jobs_available|}" ]; then
+            echo "Changing SCons to run with --jobs=${num_scons_compile_all_jobs_available|}"
+            extra_args="$extra_args --jobs=${num_scons_compile_all_jobs_available|}"
+          fi
+
+          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" $extra_args all ${additional_targets|} MONGO_VERSION=${version}
 
 ## compile_all - build all scons targets including unittests ##
 - name: compile_all
@@ -1668,7 +1861,13 @@ tasks:
 
           rm -rf ${install_directory|/data/mongo-install-directory}
 
-          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" all ${additional_targets|} MONGO_VERSION=${version}
+          extra_args=""
+          if [ -n "${num_scons_compile_all_jobs_available|}" ]; then
+            echo "Changing SCons to run with --jobs=${num_scons_compile_all_jobs_available|}"
+            extra_args="$extra_args --jobs=${num_scons_compile_all_jobs_available|}"
+          fi
+
+          ${compile_env|} ${python|/opt/mongodbtoolchain/v2/bin/python2} ./buildscripts/scons.py ${compile_flags|} ${scons_cache_args|} --use-new-tools --build-mongoreplay="${build_mongoreplay}" $extra_args all ${additional_targets|} MONGO_VERSION=${version}
 
     - command: s3.put
       params:
@@ -2243,11 +2442,7 @@ tasks:
         set -o errexit
         set -o verbose
 
-        if [ "Windows_NT" = "$OS" ]; then
-          . ./venv/Scripts/activate
-        else
-          . ./venv/bin/activate
-        fi
+        ${activate_virtualenv}
         # we should go back to using pip when it works on SLES
         easy_install --upgrade `cat src/mongo/db/modules/enterprise/jstests/encryptdb/libs/requirements.txt`
   - func: "run tests"
@@ -2432,15 +2627,6 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=core --storageEngine=mmapv1
-      run_multiple_jobs: true
-
-- <<: *task_template
-  name: jsCore_async
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=core --storageEngine=wiredTiger --serviceExecutor=fixedForTesting
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -2920,16 +3106,6 @@ tasks:
       resmoke_args: --suites=parallel --storageEngine=wiredTiger
 
 - <<: *task_template
-  name: parallel_async
-  depends_on:
-  - name: jsCore_async
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=parallel --storageEngine=wiredTiger --serviceExecutor=fixedForTesting
-
-- <<: *task_template
   name: parallel_compatibility
   depends_on:
   - name: jsCore_compatibility
@@ -3265,30 +3441,12 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: ssl_async
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=ssl --serviceExecutor=fixedForTesting
-      run_multiple_jobs: true
-
-- <<: *task_template
   name: sslSpecial
   commands:
   - func: "do setup"
   - func: "run tests"
     vars:
       resmoke_args: --suites=ssl_special
-      run_multiple_jobs: true
-
-- <<: *task_template
-  name: sslSpecial_async
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=ssl_special --serviceExecutor=fixedForTesting
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -3372,6 +3530,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=causally_consistent_jscore_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: session_jscore_passthrough_WT
+  depends_on:
+  - name: jsCore_WT
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=session_jscore_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -3903,6 +4072,7 @@ tasks:
   depends_on: []
   commands:
   - *git_get_project
+  - func: "set up virtualenv"
   - command: shell.exec
     timeout_secs: 14400 # Timeout if there is no output for 4 hours
     type: test
@@ -3926,23 +4096,19 @@ tasks:
 
         set -o verbose
 
-        # Create and activate the virtualenv. We use the MongoDB toolchain's Python (with --python)
-        # as this task is only expected to run on a Linux builder.
-        /opt/mongodbtoolchain/v2/bin/virtualenv --python=/opt/mongodbtoolchain/v2/bin/python2 \
-            --system-site-packages ./venv
-        . ./venv/bin/activate
+        ${activate_virtualenv}
 
         # Install Python jira client with pip until it is available in the toolchain
         pip install jira==1.0.10
 
-        python buildscripts/update_test_lifecycle.py \
-            --project ${project} \
-            --commit \
-            --resmokeTagFile "etc/test_lifecycle.yml" \
+        python buildscripts/update_test_lifecycle.py                    \
+            --project ${project}                                        \
+            --commit                                                    \
+            --resmokeTagFile "etc/test_lifecycle.yml"                   \
             --metadataRepo "git@github.com:mongodb/mongo-test-metadata" \
-            --referencesFile "references.yml" \
-            --gitUserName "Test Lifecycle" \
-            --gitUserEmail "build+testlifecycle@mongodb.com" \
+            --referencesFile "references.yml"                           \
+            --gitUserName "Test Lifecycle"                              \
+            --gitUserEmail "build+testlifecycle@mongodb.com"            \
             --jiraConfig ~/.jira.yml
 
 
@@ -5370,6 +5536,9 @@ buildvariants:
     content_type: application/zip
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     compile_flags: --dbg=on --opt=on --win-version-min=ws08r2 -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) MONGO_DISTMOD=2008plus
+    # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
+    # spawning a large number of linker processes.
+    num_scons_compile_all_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     ext: zip
     use_scons_cache: true
@@ -5413,6 +5582,7 @@ buildvariants:
   - name: noPassthrough_WT
   - name: noPassthroughWithMongod
   - name: noPassthroughWithMongod_WT
+  - name: session_jscore_passthrough_WT
   - name: bulk_gle_passthrough
   - name: bulk_gle_passthrough_WT
   - name: parallel
@@ -5522,6 +5692,9 @@ buildvariants:
     msi_target: msi
     content_type: application/zip
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
+    # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
+    # spawning a large number of linker processes.
+    num_scons_compile_all_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -5597,11 +5770,12 @@ buildvariants:
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
     use_scons_cache: true
+    test_flags: --serviceExecutor=adaptive
   tasks:
   - name: compile
     distros:
     - windows-64-vs2015-large
-  - name: jsCore_async
+  - name: jsCore
 
 - name: enterprise-windows-64-2k8-inmem
   display_name: Enterprise Windows 2008R2 (inMemory)
@@ -5920,6 +6094,7 @@ buildvariants:
   - name: replica_sets_kill_secondaries_jscore_passthrough_WT
   - name: serial_run
   - name: serial_run_WT
+  - name: session_jscore_passthrough_WT
   - name: sharded_collections_jscore_passthrough
   - name: sharded_collections_jscore_passthrough_WT
   - name: sharding_gle_auth_basics_passthrough
@@ -6213,6 +6388,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: parallel_compatibility_WT
   - name: read_concern_linearizable_passthrough
+  - name: session_jscore_passthrough_WT
     distros:
     - rhel62-large
   - name: read_concern_linearizable_passthrough_WT
@@ -8555,6 +8731,7 @@ buildvariants:
   - name: master_slave_jscore_passthrough
   - name: rlp
   - name: sasl
+  - name: session_jscore_passthrough_WT
   - name: sharded_collections_jscore_passthrough
   - name: sharding
   - name: sharding_auth
@@ -9020,6 +9197,7 @@ buildvariants:
   - name: master_slave_jscore_passthrough
   - name: master_slave_jscore_passthrough_WT
   - name: sasl
+  - name: session_jscore_passthrough_WT
   - name: sharded_collections_jscore_passthrough
   - name: sharded_collections_jscore_passthrough_WT
   - name: sharding
@@ -9200,6 +9378,7 @@ buildvariants:
   - name: master_slave_jscore_passthrough
   - name: master_slave_jscore_passthrough_WT
   - name: sasl
+  - name: session_jscore_passthrough_WT
   - name: sharded_collections_jscore_passthrough
   - name: sharded_collections_jscore_passthrough_WT
   - name: sharding
@@ -9270,12 +9449,137 @@ buildvariants:
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 3)) # Avoid starting too many mongod's under {A,UB}SAN build.
     build_mongoreplay: false
     hang_analyzer_dump_core: false
+    test_flags: --serviceExecutor=adaptive
   tasks:
   - name: compile
-  - name: jsCore_async
-  - name: parallel_async
-  - name: ssl_async
-  - name: sslSpecial_async
+  - name: compile_all
+  - name: aggregation
+  - name: aggregation_WT
+  - name: aggregation_WT_ese
+  - name: aggregation_auth
+  - name: aggregation_facet_unwind_passthrough_WT
+  - name: aggregation_read_concern_majority_passthrough_WT
+  - name: aggregation_sharded_collections_passthrough_WT
+# TODO Put back when SERVER-30471 is done
+#  - name: audit
+#  - name: audit_WT
+#  - name: auth
+#  - name: auth_WT
+#  - name: auth_audit
+#  - name: auth_audit_WT
+  - name: bulk_gle_passthrough
+  - name: bulk_gle_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_WT
+  - name: causally_consistent_jscore_passthrough_auth_WT
+  - name: concurrency
+  - name: concurrency_WT
+  - name: concurrency_replication
+  - name: concurrency_replication_WT
+  - name: concurrency_sharded
+  - name: concurrency_sharded_WT
+  - name: concurrency_simultaneous
+  - name: concurrency_simultaneous_WT
+  - name: dbtest
+  - name: dbtest_WT
+  - name: disk
+  - name: disk_WT
+  - name: dur_jscore_passthrough
+  - name: durability
+  - name: ese_WT
+  - name: failpoints
+  - name: failpoints_auth
+  - name: gle_auth
+  - name: gle_auth_WT
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_WT
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: gle_auth_basics_passthrough_write_cmd_WT
+  - name: gle_auth_write_cmd
+  - name: gle_auth_write_cmd_WT
+  - name: integration_tests_replset
+  - name: integration_tests_sharded
+  - name: integration_tests_standalone
+  - name: jsCore
+  - name: jsCore_WT
+  - name: jsCore_WT_ese
+  - name: jsCore_inMem
+  - name: jsCore_auth
+  - name: jsCore_compatibility
+  - name: jsCore_compatibility_WT
+  - name: jsCore_decimal
+  - name: jsCore_decimal_WT
+  - name: jsCore_minimum_batch_size_WT
+  - name: jsCore_op_query
+  - name: jsCore_op_query_WT
+  - name: mmap
+  - name: mongosTest
+  - name: multiversion
+  - name: multiversion_auth
+  - name: multiversion_WT
+  - name: multiversion_multistorage_engine
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: noPassthroughWithMongod_WT
+  - name: noPassthrough_WT
+  - name: parallel
+  - name: parallel_WT
+  - name: parallel_compatibility
+  - name: parallel_compatibility_WT
+  - name: read_concern_linearizable_passthrough
+  - name: read_concern_linearizable_passthrough_WT
+  - name: read_concern_majority_passthrough_WT
+  - name: read_only
+  - name: read_only_WT
+  - name: read_only_sharded
+  - name: read_only_sharded_WT
+# TODO Put back when SERVER-30471 is done
+#  - name: replica_sets
+#  - name: replica_sets_WT
+#  - name: replica_sets_WT_ese
+#  - name: replica_sets_auth
+#  - name: replica_sets_pv0
+  - name: replica_sets_jscore_passthrough
+  - name: replica_sets_jscore_passthrough_WT
+  - name: replica_sets_initsync_jscore_passthrough
+  - name: replica_sets_initsync_jscore_passthrough_WT
+  - name: replica_sets_initsync_static_jscore_passthrough
+  - name: replica_sets_initsync_static_jscore_passthrough_WT
+  - name: replica_sets_resync_static_jscore_passthrough
+  - name: replica_sets_resync_static_jscore_passthrough_WT
+  - name: replica_sets_kill_secondaries_jscore_passthrough_WT
+  - name: master_slave
+  - name: master_slave_WT
+  - name: master_slave_auth
+  - name: master_slave_jscore_passthrough
+  - name: master_slave_jscore_passthrough_WT
+  - name: sasl
+  - name: sharded_collections_jscore_passthrough
+  - name: sharded_collections_jscore_passthrough_WT
+  - name: sharding
+  - name: sharding_WT
+  - name: sharding_WT_ese
+  - name: sharding_auth
+  - name: sharding_auth_audit_WT
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_WT
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: sharding_gle_auth_basics_passthrough_write_cmd_WT
+  - name: sharding_last_stable_mongos_and_mixed_shards
+  - name: sharding_jscore_passthrough
+  - name: sharding_jscore_passthrough_WT
+  - name: sharding_jscore_op_query_passthrough_WT
+  - name: sharding_jscore_passthrough_wire_ops_WT
+  - name: sharding_op_query_WT
+  - name: slow1
+  - name: slow1_WT
+  - name: serial_run
+  - name: serial_run_WT
+  - name: snmp
+  - name: snmp_WT
+  - name: ssl
+  - name: sslSpecial
+  - name: tool
+  - name: tool_WT
 
 - name: enterprise-ubuntu-dynamic-1604-64-bit
   display_name: "* Shared Library Enterprise Ubuntu 16.04"

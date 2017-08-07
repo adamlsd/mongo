@@ -423,6 +423,11 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
                 self._writer.write_template(
                     'const ${param_type} get${method_name}() const& { ${body} }')
                 self._writer.write_template('void get${method_name}() && = delete;')
+            elif field.struct_type:
+                # Support mutable accessors
+                self._writer.write_template(
+                    'const ${param_type} get${method_name}() const { ${body} }')
+                self._writer.write_template('${param_type} get${method_name}() { ${body} }')
             else:
                 self._writer.write_template(
                     '${const_type}${param_type} get${method_name}() const { ${body} }')
@@ -834,16 +839,28 @@ class _CppSourceFileWriter(_CppFileWriterBase):
 
         initializers = ['_%s(std::move(%s))' % (arg.name, arg.name) for arg in constructor.args]
 
+        # Serialize non-has fields first
+        # Initialize int and other primitive fields to -1 to prevent Coverity warnings.
+        for field in struct.fields:
+            needs_init = field.cpp_type and not field.array and cpp_types.is_primitive_scalar_type(
+                field.cpp_type)
+            if _is_required_serializer_field(field) and needs_init:
+                initializers.append(
+                    '%s(%s)' % (_get_field_member_name(field),
+                                cpp_types.get_primitive_scalar_type_default_value(field.cpp_type)))
+
+        # Serialize the _dbName field second
         initializes_db_name = False
         if [arg for arg in constructor.args if arg.name == 'nss']:
             initializers.append('_dbName(nss.db().toString())')
             initializes_db_name = True
 
-        initializers += [
-            '%s(false)' % _get_has_field_member_name(field) for field in struct.fields
+        # Serialize has fields third
+        # Add _has{FIELD} bool members to ensure fields are set before serialization.
+        for field in struct.fields:
             if _is_required_serializer_field(field) and not (field.name == "$db" and
-                                                             initializes_db_name)
-        ]
+                                                             initializes_db_name):
+                initializers.append('%s(false)' % _get_has_field_member_name(field))
 
         if initializes_db_name:
             initializers.append('_hasDbName(true)')
@@ -1008,6 +1025,10 @@ class _CppSourceFileWriter(_CppFileWriterBase):
 
                         with self._predicate(field_predicate, not first_field):
                             field_usage_check.add(field, "sequence.name")
+
+                            if _is_required_serializer_field(field):
+                                self._writer.write_line('%s = true;' %
+                                                        (_get_has_field_member_name(field)))
 
                             self.gen_doc_sequence_deserializer(field)
 

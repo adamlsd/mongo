@@ -198,6 +198,14 @@ public:
                const BSONObj* fieldsToReturn = 0,
                int queryOptions = 0);
 
+    /**
+     * @return a single object that matches the filter within the collection specified by the UUID.
+     * If the command fails, an assertion error is thrown. Otherwise, if no document matches
+     * the query, an empty BSONObj is returned.
+     * @throws AssertionException
+     */
+    virtual BSONObj findOneByUUID(const std::string& db, UUID uuid, const BSONObj& filter);
+
     virtual std::string getServerAddress() const = 0;
 
     /** helper function.  run a simple command where the command expression is simply
@@ -746,6 +754,8 @@ public:
 
     virtual void reset() {}
 
+    virtual bool isMongos() const = 0;
+
 protected:
     /** if the result of a command is ok*/
     bool isOk(const BSONObj&);
@@ -988,9 +998,14 @@ public:
             _checkConnection();
     }
 
+    bool isMongos() const override {
+        return _isMongos;
+    }
+
 protected:
     int _minWireVersion{0};
     int _maxWireVersion{0};
+    bool _isMongos = false;
 
     virtual void _auth(const BSONObj& params);
 

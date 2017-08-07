@@ -1058,7 +1058,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             if (jsTest.options().serviceExecutor &&
                 (!programVersion || (parseInt(programVersion.split(".")[0]) >= 3 &&
                                      parseInt(programVersion.split(".")[1]) >= 5))) {
-                if (!argArrayContains("serviceExecutor")) {
+                if (!argArrayContains("--serviceExecutor")) {
                     argArray.push(...["--serviceExecutor", jsTest.options().serviceExecutor]);
                 }
             }
@@ -1103,7 +1103,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 if (programName.endsWith('mongod')) {
                     // Enable heartbeat logging for replica set nodes.
                     if (!argArrayContains("logComponentVerbosity")) {
-                        logComponentVerbosity["replication"] = {"heartbeats": 2};
+                        logComponentVerbosity["replication"] = {"heartbeats": 2, "rollback": 2};
                     }
 
                     if (jsTest.options().storageEngine === "wiredTiger" ||

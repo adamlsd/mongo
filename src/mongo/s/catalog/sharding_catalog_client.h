@@ -71,16 +71,6 @@ struct ConnectionPoolStats;
 }
 
 /**
- * Used to indicate to the caller of the removeShard method whether draining of chunks for
- * a particular shard has started, is ongoing, or has been completed.
- */
-enum ShardDrainingStatus {
-    STARTED,
-    ONGOING,
-    COMPLETED,
-};
-
-/**
  * Abstracts reads of the sharding catalog metadata.
  *
  * All implementations of this interface should go directly to the persistent backing store
@@ -94,16 +84,15 @@ enum ShardDrainingStatus {
 class ShardingCatalogClient {
     MONGO_DISALLOW_COPYING(ShardingCatalogClient);
 
-    // Allows ShardingCatalogManager to access _checkDbDoesNotExist
-    // TODO: move _checkDbDoesNotExist to ShardingCatalogManager when
-    // ShardingCatalogClient::createDatabaseCommand, the other caller of this function,
-    // is moved into ShardingCatalogManager.
-    // SERVER-30022.
+    // Allows ShardingCatalogManager to access _exhaustiveFindOnConfig
     friend class ShardingCatalogManager;
 
 public:
     // Constant to use for configuration data majority writes
     static const WriteConcernOptions kMajorityWriteConcern;
+
+    // Constant to use for configuration data local writes
+    static const WriteConcernOptions kLocalWriteConcern;
 
     virtual ~ShardingCatalogClient() = default;
 
@@ -118,17 +107,6 @@ public:
      * Performs necessary cleanup when shutting down cleanly.
      */
     virtual void shutDown(OperationContext* opCtx) = 0;
-
-    /**
-     * Tries to remove a shard. To completely remove a shard from a sharded cluster,
-     * the data residing in that shard must be moved to the remaining shards in the
-     * cluster by "draining" chunks from that shard.
-     *
-     * Because of the asynchronous nature of the draining mechanism, this method returns
-     * the current draining status. See ShardDrainingStatus enum definition for more details.
-     */
-    virtual StatusWith<ShardDrainingStatus> removeShard(OperationContext* opCtx,
-                                                        const ShardId& name) = 0;
 
     /**
      * Updates or creates the metadata for a given database.
@@ -147,8 +125,11 @@ public:
      * the failure. These are some of the known failures:
      *  - NamespaceNotFound - database does not exist
      */
-    virtual StatusWith<repl::OpTimeWith<DatabaseType>> getDatabase(OperationContext* opCtx,
-                                                                   const std::string& dbName) = 0;
+    virtual StatusWith<repl::OpTimeWith<DatabaseType>> getDatabase(
+        OperationContext* opCtx,
+        const std::string& dbName,
+        const repl::ReadConcernLevel& readConcern =
+            repl::ReadConcernLevel::kMajorityReadConcern) = 0;
 
     /**
      * Retrieves the metadata for a given collection, if it exists.
@@ -161,7 +142,10 @@ public:
      *  - NamespaceNotFound - collection does not exist
      */
     virtual StatusWith<repl::OpTimeWith<CollectionType>> getCollection(
-        OperationContext* opCtx, const std::string& collNs) = 0;
+        OperationContext* opCtx,
+        const std::string& collNs,
+        const repl::ReadConcernLevel& readConcern =
+            repl::ReadConcernLevel::kMajorityReadConcern) = 0;
 
     /**
      * Retrieves all collections undera specified database (or in the system).
@@ -178,7 +162,9 @@ public:
     virtual Status getCollections(OperationContext* opCtx,
                                   const std::string* dbName,
                                   std::vector<CollectionType>* collections,
-                                  repl::OpTime* optime) = 0;
+                                  repl::OpTime* optime,
+                                  const repl::ReadConcernLevel& readConcern =
+                                      repl::ReadConcernLevel::kMajorityReadConcern) = 0;
 
     /**
      * Drops the specified collection from the collection metadata store.
@@ -311,7 +297,11 @@ public:
      * Returns ErrorCodes::NoMatchingDocument if no such key exists or the BSON content of the
      * setting otherwise.
      */
-    virtual StatusWith<BSONObj> getGlobalSettings(OperationContext* opCtx, StringData key) = 0;
+    virtual StatusWith<BSONObj> getGlobalSettings(
+        OperationContext* opCtx,
+        StringData key,
+        const repl::ReadConcernLevel& readConcern =
+            repl::ReadConcernLevel::kMajorityReadConcern) = 0;
 
     /**
      * Returns the contents of the config.version document - containing the current cluster schema
@@ -344,20 +334,6 @@ public:
                                          BatchedCommandResponse* response) = 0;
 
     /**
-     * Creates a new database entry for the specified database name in the configuration
-     * metadata and sets the specified shard as primary.
-     *
-     * @param dbName name of the database (case sensitive)
-     *
-     * Returns Status::OK on success or any error code indicating the failure. These are some
-     * of the known failures:
-     *  - NamespaceExists - database already exists
-     *  - DatabaseDifferCase - database already exists, but with a different case
-     *  - ShardNotFound - could not find a shard to place the DB on
-     */
-    virtual Status createDatabase(OperationContext* opCtx, const std::string& dbName) = 0;
-
-    /**
      * Directly inserts a document in the specified namespace on the config server. The document
      * must have an _id index. Must only be used for insertions in the 'config' database.
      *
@@ -366,7 +342,9 @@ public:
     virtual Status insertConfigDocument(OperationContext* opCtx,
                                         const std::string& ns,
                                         const BSONObj& doc,
-                                        const WriteConcernOptions& writeConcern) = 0;
+                                        const WriteConcernOptions& writeConcern,
+                                        const repl::ReadConcernLevel& readConcern =
+                                            repl::ReadConcernLevel::kMajorityReadConcern) = 0;
 
     /**
      * Updates a single document in the specified namespace on the config server. The document must
@@ -422,19 +400,14 @@ protected:
     ShardingCatalogClient() = default;
 
 private:
-    /**
-     * Checks that the given database name doesn't already exist in the config.databases
-     * collection, including under different casing. Optional db can be passed and will
-     * be set with the database details if the given dbName exists.
-     *
-     * Returns OK status if the db does not exist.
-     * Some known errors include:
-     *  NamespaceExists if it exists with the same casing
-     *  DatabaseDifferCase if it exists under different casing.
-     */
-    virtual Status _checkDbDoesNotExist(OperationContext* opCtx,
-                                        const std::string& dbName,
-                                        DatabaseType* db) = 0;
+    virtual StatusWith<repl::OpTimeWith<std::vector<BSONObj>>> _exhaustiveFindOnConfig(
+        OperationContext* opCtx,
+        const ReadPreferenceSetting& readPref,
+        const repl::ReadConcernLevel& readConcern,
+        const NamespaceString& nss,
+        const BSONObj& query,
+        const BSONObj& sort,
+        boost::optional<long long> limit) = 0;
 };
 
 }  // namespace mongo

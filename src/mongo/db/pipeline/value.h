@@ -117,6 +117,9 @@ public:
     explicit Value(const MaxKeyLabeler&) : _storage(MaxKey) {}        // MAXKEY
     explicit Value(const Date_t& date) : _storage(Date, date.toMillisSinceEpoch()) {}
 
+    explicit Value(const char*) = delete;  // Use StringData instead to prevent accidentally
+                                           // terminating the string at the first null byte.
+
     // TODO: add an unsafe version that can share storage with the BSONElement
     /// Deep-convert from BSONElement to Value
     explicit Value(const BSONElement& elem);
@@ -324,6 +327,11 @@ public:
     Value getOwned() const {
         return *this;
     }
+
+    /// Members to support parsing/deserialization from IDL generated code.
+    void serializeForIDL(StringData fieldName, BSONObjBuilder* builder) const;
+    void serializeForIDL(BSONArrayBuilder* builder) const;
+    static Value deserializeForIDL(const BSONElement& element);
 
 private:
     /** This is a "honeypot" to prevent unexpected implicit conversions to the accepted argument

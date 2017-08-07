@@ -86,10 +86,6 @@ const char* DocumentSourceCurrentOp::getSourceName() const {
     return "$currentOp";
 }
 
-DocumentSource::InitialSourceType DocumentSourceCurrentOp::getInitialSourceType() const {
-    return InitialSourceType::kCollectionlessInitialSource;
-}
-
 DocumentSource::GetNextResult DocumentSourceCurrentOp::getNext() {
     pExpCtx->checkForInterrupt();
 
@@ -99,7 +95,7 @@ DocumentSource::GetNextResult DocumentSourceCurrentOp::getNext() {
 
         _opsIter = _ops.begin();
 
-        if (pExpCtx->inShard) {
+        if (pExpCtx->fromRouter) {
             _shardName = _mongod->getShardName(pExpCtx->opCtx);
 
             uassert(40465,
@@ -110,7 +106,7 @@ DocumentSource::GetNextResult DocumentSourceCurrentOp::getNext() {
     }
 
     if (_opsIter != _ops.end()) {
-        if (!pExpCtx->inShard) {
+        if (!pExpCtx->fromRouter) {
             return Document(*_opsIter++);
         }
 

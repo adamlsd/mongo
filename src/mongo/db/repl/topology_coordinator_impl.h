@@ -228,6 +228,7 @@ public:
     virtual void voteForMyselfV1();
     virtual void prepareForStepDown();
     virtual void setPrimaryIndex(long long primaryIndex);
+    virtual int getCurrentPrimaryIndex() const;
     virtual bool haveNumNodesReachedOpTime(const OpTime& opTime, int numNodes, bool durablyWritten);
     virtual bool haveTaggedNodesReachedOpTime(const OpTime& opTime,
                                               const ReplSetTagPattern& tagPattern,
@@ -247,7 +248,7 @@ public:
     virtual MemberData* findMemberDataByMemberId(const int memberId);
     virtual MemberData* findMemberDataByRid(const OID rid);
     virtual MemberData* addSlaveMemberData(const OID rid);
-    virtual Status becomeCandidateIfElectable(const Date_t now, bool isPriorityTakeover);
+    virtual Status becomeCandidateIfElectable(const Date_t now, StartElectionReason reason);
     virtual void setStorageEngineSupportsReadCommitted(bool supported);
 
     virtual void restartHeartbeats();
@@ -278,9 +279,6 @@ public:
     // Returns _electionId.  Only used in unittests.
     OID getElectionId() const;
 
-    // Returns _currentPrimaryIndex.  Only used in unittests.
-    int getCurrentPrimaryIndex() const;
-
 private:
     enum UnelectableReason {
         None = 0,
@@ -295,6 +293,7 @@ private:
         VotedTooRecently = 1 << 8,
         RefusesToStand = 1 << 9,
         NotCloseEnoughToLatestForPriorityTakeover = 1 << 10,
+        NotFreshEnoughForCatchupTakeover = 1 << 11,
     };
     typedef int UnelectableReasonMask;
 
@@ -327,8 +326,13 @@ private:
     // Is our optime close enough to the latest known optime to call for a priority takeover.
     bool _amIFreshEnoughForPriorityTakeover() const;
 
+    // Is the primary node still in catchup mode and is our optime the latest
+    // known optime of all the up nodes.
+    bool _amIFreshEnoughForCatchupTakeover() const;
+
     // Returns reason why "self" member is unelectable
-    UnelectableReasonMask _getMyUnelectableReason(const Date_t now, bool isPriorityTakeover) const;
+    UnelectableReasonMask _getMyUnelectableReason(const Date_t now,
+                                                  StartElectionReason reason) const;
 
     // Returns reason why memberIndex is unelectable
     UnelectableReasonMask _getUnelectableReason(int memberIndex) const;

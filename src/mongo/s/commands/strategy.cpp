@@ -434,12 +434,11 @@ DbResponse Strategy::clientOpMsgCommand(OperationContext* opCtx, const Message& 
     // isn't always safe. Unfortunately tests currently rely on this. Figure out what to do
     // (probably throw a special exception type like ConnectionFatalMessageParseError).
     bool canReply = true;
-    boost::optional<OpMsgRequest> request;
     OpMsgBuilder reply;
     try {
-        request.emplace(OpMsgRequest::parse(m));  // Request is validated here.
-        canReply = !request->isFlagSet(OpMsg::kMoreToCome);
-        runCommand(opCtx, *request, reply.beginBody());
+        const auto request = OpMsgRequest::parse(m);
+        canReply = !request.isFlagSet(OpMsg::kMoreToCome);
+        runCommand(opCtx, request, reply.beginBody());
     } catch (const DBException& ex) {
         reply.reset();
         auto bob = reply.beginBody();
@@ -624,6 +623,7 @@ Status Strategy::explainFind(OperationContext* opCtx,
                                           qr.getFilter(),
                                           qr.getCollation(),
                                           true,  // do shard versioning
+                                          true,  // retry on stale shard version
                                           &viewDefinition);
 
     long long millisElapsed = timer.millis();

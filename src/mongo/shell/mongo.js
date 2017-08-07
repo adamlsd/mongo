@@ -14,7 +14,8 @@ if (!Mongo.prototype) {
 (function(original) {
     Mongo.prototype.find = function find(ns, query, fields, limit, skip, batchSize, options) {
         const self = this;
-        if (this._isCausal) {
+        // Causal consistency is not supported in the OP_QUERY legacy protocol.
+        if (this._isCausal && this.useReadCommands()) {
             query = this._gossipLogicalTime(query);
         }
         const res = original.call(this, ns, query, fields, limit, skip, batchSize, options);
@@ -53,12 +54,14 @@ Mongo.prototype.setCausalConsistency = function(value) {
 };
 
 Mongo.prototype.isCausalConsistencyEnabled = function(cmdObj) {
-    var cmdName = (() => {
-        for (var name in cmdObj) {
-            return name;
-        }
-        doassert("empty cmdObj");
-    })();
+    let cmdName = Object.keys(cmdObj)[0];
+    // If the command is in a wrapped form, then we look for the actual command name inside the
+    // query/$query object.
+    let cmdObjUnwrapped = cmdObj;
+    if (cmdName === "query" || cmdName === "$query") {
+        cmdObjUnwrapped = cmdObj[cmdName];
+        cmdName = Object.keys(cmdObjUnwrapped)[0];
+    }
 
     if (!this._isCausal) {
         return false;
@@ -84,13 +87,13 @@ Mongo.prototype.isCausalConsistencyEnabled = function(cmdObj) {
     if (cmdName === "aggregate") {
         // Aggregate can be either a read or a write depending on whether it has a $out stage.
         // $out is required to be the last stage of the pipeline.
-        var stages = cmdObj.pipeline;
+        var stages = cmdObjUnwrapped.pipeline;
         const lastStage = stages && Array.isArray(stages) && (stages.length !== 0)
             ? stages[stages.length - 1]
             : undefined;
         const hasOut =
             lastStage && (typeof lastStage === "object") && lastStage.hasOwnProperty("$out");
-        const hasExplain = cmdObj.hasOwnProperty("explain");
+        const hasExplain = cmdObjUnwrapped.hasOwnProperty("explain");
 
         if (!hasExplain && !hasOut) {
             supportsMajorityReadConcern = true;
@@ -142,16 +145,29 @@ Mongo.prototype._injectAfterClusterTime = function(cmdObj) {
     // clusterTime.
     const operationTime = this.getOperationTime();
     if (operationTime) {
-        const readConcern = Object.assign({}, cmdObj.readConcern);
-        // Currently server supports afterClusterTime only with level:majority. Going forward it
-        // will be relaxed for any level of readConcern.
+        const cmdName = Object.keys(cmdObj)[0];
+        let cmdObjUnwrapped = cmdObj;
+        if (cmdName === "query" || cmdName === "$query") {
+            cmdObj[cmdName] = Object.assign({}, cmdObj[cmdName]);
+            cmdObjUnwrapped = cmdObj[cmdName];
+        }
+
+        cmdObjUnwrapped.readConcern = Object.assign({}, cmdObjUnwrapped.readConcern);
+        let readConcern = cmdObjUnwrapped.readConcern;
+
         if (!readConcern.hasOwnProperty("afterClusterTime")) {
             readConcern.afterClusterTime = operationTime;
         }
         if (!readConcern.hasOwnProperty("level")) {
             readConcern.level = "local";
         }
-        cmdObj.readConcern = readConcern;
+
+        // While the readConcern must be set on the commandObject level i.e. in this case its the
+        // object referenced by cmdObjUnwrapped the $readPreference must be set on the top level.
+        const readPref = this.getReadPref();
+        if (!cmdObj.hasOwnProperty("$readPreference") && readPref) {
+            cmdObj.$readPreference = readPref;
+        }
     }
     return cmdObj;
 };
@@ -191,6 +207,7 @@ Mongo.prototype._setLogicalTimeFromReply = function(res) {
             metadata = this._gossipLogicalTime(metadata);
         }
         const res = original.call(this, dbName, metadata, cmdObj);
+
         this._setLogicalTimeFromReply(res);
         return res;
     };
@@ -554,23 +571,6 @@ Mongo.prototype.getOperationTime = function() {
     return this._operationTime;
 };
 
-/**
- * Sets the clusterTime.
- */
-Mongo.prototype.setClusterTime = function(logicalTimeObj) {
-    if (typeof logicalTimeObj === "object" && logicalTimeObj.hasOwnProperty("clusterTime") &&
-        (this._clusterTime === undefined || this._clusterTime === null ||
-         bsonWoCompare(logicalTimeObj.clusterTime, this._clusterTime.clusterTime) === 1)) {
-        this._clusterTime = logicalTimeObj;
-    }
-};
-
-/**
- * Gets the clusterTime or null if unset.
- */
-Mongo.prototype.getClusterTime = function() {
-    if (this._clusterTime === undefined) {
-        return null;
-    }
-    return this._clusterTime;
+Mongo.prototype.startSession = function(opts) {
+    return new DriverSession(this, opts);
 };

@@ -249,11 +249,11 @@ Status storeSSLServerOptions(const moe::Environment& params) {
     }
 
 
-	if( params.count( "net.ssl.PEMTempDHParam" ) )
-	{
-		sslGlobalParams.sslPEMTempDHParam=
-				boost::filesystem::absolute( params[ "net.ssl.PEMTempDHParam" ].as< std::string >() ).generic_string();
-	}
+    if (params.count("net.ssl.PEMTempDHParam")) {
+        sslGlobalParams.sslPEMTempDHParam =
+            boost::filesystem::absolute(params["net.ssl.PEMTempDHParam"].as<std::string>())
+                .generic_string();
+    }
 
     if (params.count("net.ssl.PEMKeyPassword")) {
         sslGlobalParams.sslPEMKeyPassword = params["net.ssl.PEMKeyPassword"].as<string>();

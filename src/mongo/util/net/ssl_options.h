@@ -42,15 +42,16 @@ class Environment;
 
 struct SSLParams {
     enum class Protocols { TLS1_0, TLS1_1, TLS1_2 };
-    AtomicInt32 sslMode;             // --sslMode - the SSL operation mode, see enum SSLModes
-	std::string sslPEMTempDHParam;   // --sslPEMTempDHParam - The PEM file containing PFS DH parameters.
-    std::string sslPEMKeyFile;       // --sslPEMKeyFile
-    std::string sslPEMKeyPassword;   // --sslPEMKeyPassword
-    std::string sslClusterFile;      // --sslInternalKeyFile
-    std::string sslClusterPassword;  // --sslInternalKeyPassword
-    std::string sslCAFile;           // --sslCAFile
-    std::string sslCRLFile;          // --sslCRLFile
-    std::string sslCipherConfig;     // --sslCipherConfig
+    AtomicInt32 sslMode;  // --sslMode - the SSL operation mode, see enum SSLModes
+    std::string
+        sslPEMTempDHParam;      // --sslPEMTempDHParam - The PEM file containing PFS DH parameters.
+    std::string sslPEMKeyFile;  // --sslPEMKeyFile
+    std::string sslPEMKeyPassword;                // --sslPEMKeyPassword
+    std::string sslClusterFile;                   // --sslInternalKeyFile
+    std::string sslClusterPassword;               // --sslInternalKeyPassword
+    std::string sslCAFile;                        // --sslCAFile
+    std::string sslCRLFile;                       // --sslCRLFile
+    std::string sslCipherConfig;                  // --sslCipherConfig
     std::vector<Protocols> sslDisabledProtocols;  // --sslDisabledProtocols
     bool sslWeakCertificateValidation = false;    // --sslWeakCertificateValidation
     bool sslFIPSMode = false;                     // --sslFIPSMode
@@ -103,4 +104,4 @@ Status canonicalizeSSLServerOptions(mongo::optionenvironment::Environment* param
 Status validateSSLServerOptions(const mongo::optionenvironment::Environment& params);
 
 Status storeSSLClientOptions(const mongo::optionenvironment::Environment& params);
-}//namespace mongo
+}  // namespace mongo

@@ -2776,9 +2776,10 @@ def doConfigure(myenv):
             result = context.TryCompile(compile_test_body, ".cpp")
             context.Result(result)
             return result
+
         conf.AddTest("CheckOpenSSL_EC_DH", CheckOpenSSL_EC_DH)
         if conf.CheckOpenSSL_EC_DH():
-            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAVE_SSL_SET_ECDH_AUTO')
+            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAS_SSL_SET_ECDH_AUTO')
 
     else:
         env.Append( MONGO_CRYPTO=["tom"] )

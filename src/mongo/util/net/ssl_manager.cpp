@@ -75,8 +75,8 @@ namespace mongo {
 
 namespace {
 
-// If the underlying SSL supports auto-configuration of ECDH parameters,
-// this function will select it, otherwise this function will do nothing.
+// If the underlying SSL supports auto-configuration of ECDH parameters, this function will select
+// it, otherwise this function will do nothing.
 void setECDHModeAuto(SSL_CTX* const ctx) {
 #ifdef MONGO_CONFIG_HAVE_SSL_SET_ECDH_AUTO
     ::SSL_CTX_set_ecdh_auto(ctx, true);
@@ -669,23 +669,23 @@ void SSLManager::SSL_free(SSLConnection* conn) {
 }
 
 namespace {
-struct file_closer {
+struct FileCloser {
     void operator()(FILE* const fp) noexcept {
         if (fp) {
             fclose(fp);
         }
     }
 };
-using UniqueFile = std::unique_ptr<FILE, file_closer>;
+using UniqueFile = std::unique_ptr<FILE, FileCloser>;
 
-struct dh_freer {
+struct DHFreer {
     void operator()(DH* const dh) noexcept {
         if (dh) {
             DH_free(dh);
         }
     }
 };
-using DHParams = std::unique_ptr<DH, dh_freer>;
+using DHParams = std::unique_ptr<DH, DHFreer>;
 }
 
 Status SSLManager::initSSLContext(SSL_CTX* context,

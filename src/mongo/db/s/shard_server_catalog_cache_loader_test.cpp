@@ -104,7 +104,6 @@ void ShardServerCatalogCacheLoaderTest::setUp() {
 
     // Set the shard loader to primary mode, and set it for testing.
     _shardLoader->initializeReplicaSetRole(true);
-    _shardLoader->setForTesting();
 }
 
 void ShardServerCatalogCacheLoaderTest::tearDown() {
@@ -227,8 +226,7 @@ vector<ChunkType> ShardServerCatalogCacheLoaderTest::setUpChunkLoaderWithFiveChu
     ASSERT_EQUALS(collAndChunkRes.epoch, collectionType.getEpoch());
     ASSERT_EQUALS(collAndChunkRes.changedChunks.size(), 5UL);
     for (unsigned int i = 0; i < collAndChunkRes.changedChunks.size(); ++i) {
-        ASSERT_BSONOBJ_EQ(collAndChunkRes.changedChunks[i].toConfigBSON(),
-                          chunks[i].toConfigBSON());
+        ASSERT_BSONOBJ_EQ(collAndChunkRes.changedChunks[i].toShardBSON(), chunks[i].toShardBSON());
     }
 
     return chunks;
@@ -311,8 +309,8 @@ TEST_F(ShardServerCatalogCacheLoaderTest, PrimaryLoadFromShardedAndFindNoDiff) {
     auto collAndChunksRes = results.getValue();
     ASSERT_EQUALS(collAndChunksRes.epoch, chunks.back().getVersion().epoch());
     ASSERT_EQUALS(collAndChunksRes.changedChunks.size(), 1UL);
-    ASSERT_BSONOBJ_EQ(collAndChunksRes.changedChunks.back().toConfigBSON(),
-                      chunks.back().toConfigBSON());
+    ASSERT_BSONOBJ_EQ(collAndChunksRes.changedChunks.back().toShardBSON(),
+                      chunks.back().toShardBSON());
 }
 
 // Same as the above unit test, PrimaryLoadFromShardedAndFindNoDiff, but caller requests complete
@@ -408,8 +406,7 @@ TEST_F(ShardServerCatalogCacheLoaderTest, PrimaryLoadFromShardedAndFindDiffReque
     notification->get();
 
     // Wait for persistence of update
-    ASSERT_OK(_shardLoader->waitForCollectionVersion(
-        operationContext(), kNss, updatedChunksDiff.back().getVersion()));
+    _shardLoader->waitForCollectionFlush(operationContext(), kNss);
 
     // Set up the remote loader to return a single document we've already seen, indicating no change
     // occurred.
@@ -474,6 +471,83 @@ TEST_F(ShardServerCatalogCacheLoaderTest, PrimaryLoadFromShardedAndFindNewEpoch)
     notification->get();
 
     // Check that the complete routing table for the new epoch was returned.
+    ASSERT_OK(results.getStatus());
+    auto collAndChunksRes = results.getValue();
+    ASSERT_EQUALS(collAndChunksRes.epoch, collectionTypeWithNewEpoch.getEpoch());
+    ASSERT_EQUALS(collAndChunksRes.changedChunks.size(), 5UL);
+    for (unsigned int i = 0; i < collAndChunksRes.changedChunks.size(); ++i) {
+        ASSERT_BSONOBJ_EQ(collAndChunksRes.changedChunks[i].getMin(),
+                          chunksWithNewEpoch[i].getMin());
+        ASSERT_BSONOBJ_EQ(collAndChunksRes.changedChunks[i].getMax(),
+                          chunksWithNewEpoch[i].getMax());
+        ASSERT_EQUALS(collAndChunksRes.changedChunks[i].getVersion(),
+                      chunksWithNewEpoch[i].getVersion());
+    }
+}
+
+TEST_F(ShardServerCatalogCacheLoaderTest, PrimaryLoadFromShardedAndFindMixedChunkVersions) {
+    // First set up the shard chunk loader as sharded.
+
+    vector<ChunkType> chunks = setUpChunkLoaderWithFiveChunks();
+
+    // Then refresh again and retrieve chunks from the config server that have mixed epoches, like
+    // as if the chunks read yielded around a drop and recreate of the collection.
+
+    CollectionType originalCollectionType = makeCollectionType(chunks.back().getVersion());
+
+    ChunkVersion collVersionWithNewEpoch(1, 0, OID::gen());
+    CollectionType collectionTypeWithNewEpoch = makeCollectionType(collVersionWithNewEpoch);
+    vector<ChunkType> chunksWithNewEpoch = makeFiveChunks(collVersionWithNewEpoch);
+    vector<ChunkType> mixedChunks;
+    mixedChunks.push_back(chunks.back());
+    mixedChunks.insert(mixedChunks.end(), chunksWithNewEpoch.begin(), chunksWithNewEpoch.end());
+    _remoteLoaderMock->setChunkRefreshReturnValue(mixedChunks);
+
+    StatusWith<CatalogCacheLoader::CollectionAndChangedChunks> mixedResults{
+        Status(ErrorCodes::InternalError, "")};
+    const auto mixedRefreshCallbackFn = [&mixedResults](
+        OperationContext * opCtx,
+        StatusWith<CatalogCacheLoader::CollectionAndChangedChunks> swCollAndChunks) noexcept {
+        mixedResults = std::move(swCollAndChunks);
+    };
+
+    auto mixedNotification =
+        _shardLoader->getChunksSince(kNss, chunks.back().getVersion(), mixedRefreshCallbackFn);
+    mixedNotification->get();
+
+    ASSERT_EQUALS(mixedResults.getStatus().code(), ErrorCodes::ConflictingOperationInProgress);
+
+    // Now make sure the newly recreated collection is cleanly loaded. We cannot ensure a
+    // non-variable response until the loader has remotely retrieved the new metadata and applied
+    // them to the persisted store. So first do a reload and ignore the results. Then call again,
+    // this time checking the results.
+
+    _remoteLoaderMock->setCollectionRefreshReturnValue(collectionTypeWithNewEpoch);
+    _remoteLoaderMock->setChunkRefreshReturnValue(chunksWithNewEpoch);
+
+    auto cleanNotification =
+        _shardLoader->getChunksSince(kNss, chunks.back().getVersion(), kDoNothingCallbackFn);
+    cleanNotification->get();
+
+    // Wait for persistence of update.
+    _shardLoader->waitForCollectionFlush(operationContext(), kNss);
+
+    vector<ChunkType> lastChunkWithNewEpoch;
+    lastChunkWithNewEpoch.push_back(chunksWithNewEpoch.back());
+    _remoteLoaderMock->setChunkRefreshReturnValue(lastChunkWithNewEpoch);
+
+    StatusWith<CatalogCacheLoader::CollectionAndChangedChunks> results{
+        Status(ErrorCodes::InternalError, "")};
+    const auto refreshCallbackFn = [&results](
+        OperationContext * opCtx,
+        StatusWith<CatalogCacheLoader::CollectionAndChangedChunks> swCollAndChunks) noexcept {
+        results = std::move(swCollAndChunks);
+    };
+
+    auto notification =
+        _shardLoader->getChunksSince(kNss, ChunkVersion::UNSHARDED(), refreshCallbackFn);
+    notification->get();
+
     ASSERT_OK(results.getStatus());
     auto collAndChunksRes = results.getValue();
     ASSERT_EQUALS(collAndChunksRes.epoch, collectionTypeWithNewEpoch.getEpoch());

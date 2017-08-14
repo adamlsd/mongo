@@ -44,8 +44,8 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/rename_collection.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
@@ -134,7 +134,7 @@ bool FixUpInfo::removeRedundantIndexCommands(UUID uuid, std::string indexName) {
         if ((*indexes).second.empty()) {
             indexesToCreate.erase(uuid);
         }
-        log() << "Rollback: Index " << indexName
+        log() << "Index " << indexName
               << " was previously dropped. The createIndexes command is canceled out.";
         return true;
     }

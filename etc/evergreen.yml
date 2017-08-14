@@ -364,7 +364,7 @@ functions:
         rm -rf rocksdb
         git clone https://github.com/facebook/rocksdb.git
         cd rocksdb
-        make CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ static_lib
+        make USE_RTTI=1 CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ static_lib
         fi
 
   "build cdriver" :
@@ -1616,7 +1616,7 @@ timeout:
         # The file ${aws_ec2_yml} will define the remote's ${ip_address} and ${remote_dir}.
         # Any task which uses remote processes will have previously loaded this file to set these
         # expansions macros.
-        if [ -f ${aws_ec2_yml|} ]; then
+        if [ -f ${aws_ec2_yml|""} ]; then
           core_ext=core
           if [ "Windows_NT" = "$OS" ]; then
             core_ext=mdmp
@@ -1704,14 +1704,6 @@ tasks:
             ${strip_command|/usr/bin/strip} mongobridge
           fi
 
-          # If this is a scheduled build, we check for changes against the last scheduled commit.
-          if [ "${is_patch}" != "true" ]; then
-            burn_in_args="--checkEvergreen"
-          fi
-
-          # Capture a list of new and modified tests.
-          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/burn_in_tests.py --branch=${branch_name} --buildVariant=${build_variant} --testListOutfile=jstests/new_tests.json --noExec $burn_in_args
-
     - command: shell.exec
       params:
         working_dir: src
@@ -1767,6 +1759,7 @@ tasks:
           - "repo/**"
           - "src/mongo/util/options_parser/test_config_files/**"
           - "library_dependency_graph.json"
+          - "src/third_party/JSON-Schema-Test-Suite/tests/draft4/**"
         exclude_files:
           - "*_test.pdb"
     - func: "upload debugsymbols"
@@ -1891,7 +1884,25 @@ tasks:
   depends_on:
   - name: compile
   commands:
+  - *git_get_project
+  - command: shell.exec
+    params:
+      working_dir: src
+      script: |
+        # Remove the empty directory path left over by the git.get_project command as it can cause
+        # a name conflict when copying the binaries over during 'do setup'. See EVG-1954.
+        rmdir -p mongo/db/modules/* 2>/dev/null || true
   - func: "do setup"
+  - command: shell.exec
+    params:
+      working_dir: src
+      script: |
+        # If this is a scheduled build, we check for changes against the last scheduled commit.
+        if [ "${is_patch}" != "true" ]; then
+          burn_in_args="--checkEvergreen"
+        fi
+        # Capture a list of new and modified tests.
+        ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/burn_in_tests.py --branch=${branch_name} --buildVariant=${build_variant} --testListOutfile=jstests/new_tests.json --noExec $burn_in_args
   - func: "do multiversion setup"
   - func: "run tests"
     vars:
@@ -3554,6 +3565,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=watchdog --storageEngine=wiredTiger
+      run_multiple_jobs: false
+
+- <<: *task_template
+  name: jsonSchema
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=json_schema --storageEngine=wiredTiger
       run_multiple_jobs: false
 
 - name: idl_tests
@@ -5470,15 +5490,14 @@ buildvariants:
     ext: zip
     use_scons_cache: true
   tasks:
+  # TODO SERVER-30634: Re-enable the burn_in_tests task on Windows after addressing how git detects
+  # all JavaScript tests as having been modified and causes the Evergreen task to time out.
   - name: compile
-    requires:
-    - name: burn_in_tests
     distros:
     - windows-64-vs2015-large
   - name: compile_all
     distros:
     - windows-64-vs2015-large
-  - name: burn_in_tests
   - name: aggregation
   - name: aggregation_WT
   - name: aggregation_facet_unwind_passthrough_WT
@@ -5503,6 +5522,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: jsonSchema
   - name: mmap
   - name: mongosTest
   - name: noPassthrough
@@ -5681,6 +5701,8 @@ buildvariants:
   - enterprise
   run_on:
   - windows-64-vs2015-small
+  stepback: true
+  batchtime: 1440 # 1 day
   expansions:
     platform_decompress: unzip
     tooltags: "-tags 'ssl sasl'"
@@ -5842,6 +5864,7 @@ buildvariants:
   - name: jsCore_compatibility_WT
   - name: jsCore_decimal
   - name: jsCore_decimal_WT
+  - name: jsonSchema
   - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
@@ -6305,6 +6328,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size_WT
   - name: jsCore_op_query
   - name: jsCore_op_query_WT
+  - name: jsonSchema
   - name: generational_jstestfuzz_WT
   - name: jstestfuzz
   - name: jstestfuzz_WT
@@ -9005,6 +9029,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size_WT
   - name: jsCore_op_query
   - name: jsCore_op_query_WT
+  - name: jsonSchema
   - name: mmap
   - name: mongosTest
   - name: multiversion
@@ -9186,6 +9211,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size_WT
   - name: jsCore_op_query
   - name: jsCore_op_query_WT
+  - name: jsonSchema
   - name: mmap
   - name: mongosTest
   - name: multiversion
@@ -9289,6 +9315,7 @@ buildvariants:
   run_on:
   - ubuntu1604-build
   stepback: true
+  batchtime: 1440 # 1 day
   expansions:
     tooltags: "-tags 'ssl'"
     # We need llvm-symbolizer in the PATH for ASAN for clang-3.7 or later.

@@ -32,6 +32,7 @@
 
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_consistency.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
@@ -288,7 +289,7 @@ void IndexConsistency::nextStage() {
     }
 }
 
-const ValidationStage IndexConsistency::getStage() {
+ValidationStage IndexConsistency::getStage() const {
 
     stdx::lock_guard<stdx::mutex> lock(_classMutex);
     return _stage;
@@ -386,7 +387,7 @@ void IndexConsistency::relockCollectionWithMode(LockMode mode) {
     uassertStatusOK(_throwExceptionIfError());
 }
 
-const bool IndexConsistency::scanLimitHit() {
+bool IndexConsistency::scanLimitHit() {
 
     stdx::lock_guard<stdx::mutex> lock(_classMutex);
 

@@ -55,7 +55,10 @@ TEST(UpdateGenTest, FindsAllPaths) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 1;
     size_t length = 1;
-    UpdateSequenceGenerator generator({fields, depth, length});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generator({fields, depth, length}, random, &trivialScalarGenerator);
 
     ASSERT_EQ(generator.getPaths().size(), 5U);
 
@@ -84,7 +87,10 @@ TEST(UpdateGenTest, NoDuplicatePaths) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 2;
     size_t length = 2;
-    UpdateSequenceGenerator generator({fields, depth, length});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generator({fields, depth, length}, random, &trivialScalarGenerator);
 
     auto paths = generator.getPaths();
     for (size_t i = 0; i < paths.size(); i++) {
@@ -103,7 +109,10 @@ TEST(UpdateGenTest, UpdatesHaveValidPaths) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 1;
     size_t length = 1;
-    UpdateSequenceGenerator generator({fields, depth, length});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generator({fields, depth, length}, random, &trivialScalarGenerator);
     auto update = generator.generateUpdate();
 
     BSONObj updateArg;
@@ -140,7 +149,10 @@ TEST(UpdateGenTest, UpdatesAreNotAmbiguous) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 1;
     size_t length = 1;
-    UpdateSequenceGenerator generator({fields, depth, length});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generator({fields, depth, length}, random, &trivialScalarGenerator);
     auto update = generator.generateUpdate();
 
     BSONObj updateArg;
@@ -186,7 +198,11 @@ TEST(UpdateGenTest, UpdatesPreserveDepthConstraint) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 2;
     size_t length = 1;
-    UpdateSequenceGenerator generator({fields, depth, length, 0.333, 0.333, 0.334});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generator(
+        {fields, depth, length, 0.333, 0.333, 0.334}, random, &trivialScalarGenerator);
 
     BSONElement setElem;
     BSONObj update;
@@ -221,7 +237,11 @@ TEST(UpdateGenTest, OnlyGenerateUnset) {
     size_t depth = 1;
     size_t length = 1;
 
-    UpdateSequenceGenerator generatorNoSet({fields, depth, length, 0.0, 0.0, 0.0});
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generatorNoSet(
+        {fields, depth, length, 0.0, 0.0, 0.0}, random, &trivialScalarGenerator);
+
     for (size_t i = 0; i < 100; i++) {
         auto update = generatorNoSet.generateUpdate();
         if (!update["$unset"]) {
@@ -238,7 +258,12 @@ TEST(UpdateGenTest, OnlySetUpdatesWithScalarValue) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 1;
     size_t length = 1;
-    UpdateSequenceGenerator generatorNoUnsetAndOnlyScalar({fields, depth, length, 1.0, 0.0, 0.0});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generatorNoUnsetAndOnlyScalar(
+        {fields, depth, length, 1.0, 0.0, 0.0}, random, &trivialScalarGenerator);
+
     for (size_t i = 0; i < 100; i++) {
         auto update = generatorNoUnsetAndOnlyScalar.generateUpdate();
         if (!update["$set"]) {
@@ -261,7 +286,12 @@ TEST(UpdateGenTest, OnlySetUpdatesWithScalarsAtMaxDepth) {
     std::set<StringData> fields{"a", "b"};
     size_t depth = 2;
     size_t length = 1;
-    UpdateSequenceGenerator generatorNeverScalar({fields, depth, length, 0.0, 0.5, 0.5});
+
+    PseudoRandom random(SecureRandom::create()->nextInt64());
+    TrivialScalarGenerator trivialScalarGenerator;
+    UpdateSequenceGenerator generatorNeverScalar(
+        {fields, depth, length, 0.0, 0.5, 0.5}, random, &trivialScalarGenerator);
+
     for (size_t i = 0; i < 100; i++) {
         auto update = generatorNeverScalar.generateUpdate();
         for (auto elem : update["$set"].Obj()) {

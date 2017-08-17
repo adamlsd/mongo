@@ -354,7 +354,8 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
     if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
         !(nobodyIsLoggedIn() || authHasImpersonatePrivilege())) {
         return Status{ErrorCodes::Unauthorized,
-                      str::stream() << "Cursor session id (" << *cursorSessionId
+                      str::stream() << "Cursor session id ("
+                                    << sessionIdToStringOrNone(cursorSessionId)
                                     << ") is not the same as the operation context's session id ("
                                     << sessionIdToStringOrNone(opCtx->getLogicalSessionId())
                                     << ")"};

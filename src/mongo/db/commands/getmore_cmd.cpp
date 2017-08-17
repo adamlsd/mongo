@@ -249,17 +249,6 @@ public:
                                      << " was not created by the authenticated user"));
         }
 
-        if (opCtx->getLogicalSessionId() != cursor->getSessionId()) {
-            return appendCommandStatus(
-                result,
-                Status(
-                    ErrorCodes::Unauthorized,
-                    str::stream()
-                        << "cursor id "
-                        << request.cursorid
-                        << " is in a different Logical Session than the GetMore command request."));
-        }
-
         if (request.nss != cursor->nss()) {
             return appendCommandStatus(
                 result,

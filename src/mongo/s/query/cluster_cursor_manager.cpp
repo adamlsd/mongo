@@ -30,6 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 
 #include <set>
@@ -280,6 +281,28 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
     if (!cursor) {
         return cursorInUseStatus(nss, cursorId);
     }
+
+	// If the cursor has a session then one of the following must be true:
+		// A: context session id must match cursor session id.
+		// B: user must be magic special (system).
+
+	auto *const authSession= AuthorizationSession::get( opCtx->getClient() );
+
+	auto nobodyIsLoggedIn= [authSession] { return !authSession->getAuthenticatedUserNames().more(); };
+
+	auto authHasPrivilege= [authSession= AuthorizationSession::get( opCtx->getClient() )]
+	{
+		return authSession->isAuthorizedForPrivilege(
+                    Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate));
+	};
+
+	auto authIsOn= [authSession] { return authSession->getAuthorizationManager().isAuthEnabled(); };
+
+	if( authIsOn() && cursor->getLsid() && cursor->getLsid() != opCtx->getLogicalSessionId()
+			&& !( nobodyIsLoggedIn() || authHasPrivilege() ) )
+	{
+		return Status{ ErrorCodes::Unauthorized, str::stream() << "..." };
+	}
 
     // Note that pinning a cursor transfers ownership of the underlying ClusterClientCursor object
     // to the pin; the CursorEntry is left with a null ClusterClientCursor.

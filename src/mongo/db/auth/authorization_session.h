@@ -345,12 +345,16 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
 
     if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
         !(nobodyIsLoggedIn() || authHasPrivilege())) {
-        return Status{
-            ErrorCodes::Unauthorized,
-            str::stream() << "Cursor session id (" << *cursorSessionId
-                          << ") is not the same as the operation context's session id ("
-                          << (opCtx->getLogicalSessionId ? *opCtx->getLogicalSessionId() : "none")
-                          << ")"};
+        return Status{ErrorCodes::Unauthorized,
+                      str::stream() << "Cursor session id (" << *cursorSessionId
+                                    << ") is not the same as the operation context's session id ("
+                                    <<
+                          [opCtx]() -> std::string {
+                          if (opCtx->getLogicalSessionId()) {
+                              return str::stream() << *opCtx->getLogicalSessionId();
+                          }
+                          return "none";
+                      }() << ")"};
     }
 
     return Status::OK();

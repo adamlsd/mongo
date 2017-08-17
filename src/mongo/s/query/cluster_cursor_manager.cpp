@@ -282,27 +282,11 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
         return cursorInUseStatus(nss, cursorId);
     }
 
-	// If the cursor has a session then one of the following must be true:
-		// A: context session id must match cursor session id.
-		// B: user must be magic special (system).
+    auto cursorPrivilegeStatus = checkCursorSessionPrivilege(opCtx, cursor->getLsid());
 
-	auto *const authSession= AuthorizationSession::get( opCtx->getClient() );
-
-	auto nobodyIsLoggedIn= [authSession] { return !authSession->getAuthenticatedUserNames().more(); };
-
-	auto authHasPrivilege= [authSession= AuthorizationSession::get( opCtx->getClient() )]
-	{
-		return authSession->isAuthorizedForPrivilege(
-                    Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate));
-	};
-
-	auto authIsOn= [authSession] { return authSession->getAuthorizationManager().isAuthEnabled(); };
-
-	if( authIsOn() && cursor->getLsid() && cursor->getLsid() != opCtx->getLogicalSessionId()
-			&& !( nobodyIsLoggedIn() || authHasPrivilege() ) )
-	{
-		return Status{ ErrorCodes::Unauthorized, str::stream() << "..." };
-	}
+    if (cursorPrivilegeStatus != Status::OK()) {
+        return cursorPrivilegeStatus;
+    }
 
     // Note that pinning a cursor transfers ownership of the underlying ClusterClientCursor object
     // to the pin; the CursorEntry is left with a null ClusterClientCursor.

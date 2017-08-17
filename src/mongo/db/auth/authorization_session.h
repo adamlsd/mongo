@@ -322,4 +322,38 @@ private:
     bool _impersonationFlag;
 };
 
+inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
+                                          const boost::optional<LogicalSessionId> cursorSessionId) {
+    auto* const authSession = AuthorizationSession::get(opCtx->getClient());
+
+    auto nobodyIsLoggedIn = [authSession] {
+        return !authSession->getAuthenticatedUserNames().more();
+    };
+
+    auto authHasPrivilege = [authSession = AuthorizationSession::get(opCtx->getClient())] {
+        return authSession->isAuthorizedForPrivilege(
+            Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate));
+    };
+
+    auto authIsOn = [authSession] {
+        return authSession->getAuthorizationManager().isAuthEnabled();
+    };
+
+    // If the cursor has a session then one of the following must be true:
+    // 1: context session id must match cursor session id.
+    // 2: user must be magic special (__system, or background task, etc).
+
+    if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
+        !(nobodyIsLoggedIn() || authHasPrivilege())) {
+        return Status{
+            ErrorCodes::Unauthorized,
+            str::stream() << "Cursor session id (" << *cursorSessionId
+                          << ") is not the same as the operation context's session id ("
+                          << (opCtx->getLogicalSessionId ? *opCtx->getLogicalSessionId() : "none")
+                          << ")"};
+    }
+
+    return Status::OK();
+}
+
 }  // namespace mongo

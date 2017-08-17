@@ -352,7 +352,7 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
     // 2: user must be magic special (__system, or background task, etc).
 
     if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
-        !(nobodyIsLoggedIn() || authHasImpersonatePrivilege())) {
+        !nobodyIsLoggedIn() && !authHasImpersonatePrivilege()) {
         return Status{ErrorCodes::Unauthorized,
                       str::stream() << "Cursor session id ("
                                     << sessionIdToStringOrNone(cursorSessionId)

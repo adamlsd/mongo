@@ -330,7 +330,7 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
         return !authSession->getAuthenticatedUserNames().more();
     };
 
-    auto authHasPrivilege = [authSession = AuthorizationSession::get(opCtx->getClient())] {
+    auto authHasImpersonatePrivilege = [authSession] {
         return authSession->isAuthorizedForPrivilege(
             Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate));
     };
@@ -339,22 +339,25 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
         return authSession->getAuthorizationManager().isAuthEnabled();
     };
 
+    auto sessionIdToStringOrNone =
+        [](const boost::optional<LogicalSessionId>& sessionId) -> std::string {
+        if (sessionId) {
+            return str::stream() << *sessionId;
+        }
+        return "none";
+    };
+
     // If the cursor has a session then one of the following must be true:
     // 1: context session id must match cursor session id.
     // 2: user must be magic special (__system, or background task, etc).
 
     if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
-        !(nobodyIsLoggedIn() || authHasPrivilege())) {
+        !(nobodyIsLoggedIn() || authHasImpersonatePrivilege())) {
         return Status{ErrorCodes::Unauthorized,
                       str::stream() << "Cursor session id (" << *cursorSessionId
                                     << ") is not the same as the operation context's session id ("
-                                    <<
-                          [opCtx]() -> std::string {
-                          if (opCtx->getLogicalSessionId()) {
-                              return str::stream() << *opCtx->getLogicalSessionId();
-                          }
-                          return "none";
-                      }() << ")"};
+                                    << sessionIdToStringOrNone(opCtx->getLogicalSessionId())
+                                    << ")"};
     }
 
     return Status::OK();

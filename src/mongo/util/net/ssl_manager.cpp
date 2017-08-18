@@ -85,7 +85,7 @@ namespace {
 // cause a connection failure if and only if that domain socket also has a certificate for SSL and
 // the connection is an SSL connection.
 bool isUnixDomainSocket(const std::string& hostname) {
-    return end(hostname) != std::find(begin(hostname), end(hostname) '/');
+    return end(hostname) != std::find(begin(hostname), end(hostname), '/');
 }
 
 const transport::Session::Decoration<SSLPeerInfo> peerInfoForSession =

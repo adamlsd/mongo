@@ -351,8 +351,19 @@ inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
     // 1: context session id must match cursor session id.
     // 2: user must be magic special (__system, or background task, etc).
 
-    if (authIsOn() && cursorSessionId && cursorSessionId != opCtx->getLogicalSessionId() &&
-        !nobodyIsLoggedIn() && !authHasImpersonatePrivilege()) {
+    // We do not check the user's ID against the cursor's notion of a user ID, since higher level
+    // auth checks will check that for us anyhow.
+    if (authIsOn() &&  // If the authorization is not on, then we permit anybody to do anything.
+        cursorSessionId &&  // If the cursor is not assigned to a session, it is okay to work with
+                            // it from any session.
+        cursorSessionId != opCtx->getLogicalSessionId() &&  // If the cursor's session doesn't match
+                                                            // the Operation Context's session, then
+                                                            // we should forbid the operation
+        !nobodyIsLoggedIn() &&          // Unless, for some reason a user isn't actually using this
+                                        // Operation Context (which implies a background job
+        !authHasImpersonatePrivilege()  // Or if the user has an impersonation privilege, in which
+                                        // case, the user gets to sidestep certain checks.
+        ) {
         return Status{ErrorCodes::Unauthorized,
                       str::stream() << "Cursor session id ("
                                     << sessionIdToStringOrNone(cursorSessionId)

@@ -23,7 +23,7 @@
 	var sessionId = res.id;
     res = assert.commandWorked(data.runCommand({find: "data_storage", batchSize: 0}));
     var cursorId = res.cursor.id;
-    assert.commandWorked(testDB.runCommand({getMore: cursorId, collection: "data_storage"});
+    assert.commandWorked(testDB.runCommand({getMore: cursorId, collection: "data_storage"}));
 
     assert.commandWorked(data.runCommand({startSession: 2}));
     assert.commandFailedWithCode(data2.runCommand({getMore: cursorId, collection: "data_storage"}),

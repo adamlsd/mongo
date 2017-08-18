@@ -256,19 +256,23 @@ Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInf
         invariant(sessionId);
         invariant(oplogEntry.getStatementId());
 
-        // TODO: SERVER-30076
-        // Once collection uuids replace namespace strings for rollback, this will need to be
-        // changed to the uuid of the session transaction table collection. Need to add
-        // txnDoc.uuid with the proper uuid.
-        //        DocID txnDoc;
-        //        BSONObjBuilder txnBob;
-        //        txnBob.append("_id", sessionId->toBSON());
-        //        txnDoc.ownedObj = txnBob.obj();
-        //        txnDoc._id = txnDoc.ownedObj.firstElement();
-        //        txnDoc.ns = NamespaceString::kSessionTransactionsTableNamespace.ns().c_str();
-        //
-        //        fixUpInfo.docsToRefetch.insert(txnDoc);
-        //        fixUpInfo.refetchTransactionDocs = true;
+        auto transactionTableUUID = fixUpInfo.transactionTableUUID;
+        if (transactionTableUUID) {
+            BSONObjBuilder txnBob;
+            txnBob.append("_id", sessionId->toBSON());
+            auto txnObj = txnBob.obj();
+
+            DocID txnDoc(txnObj, txnObj.firstElement(), transactionTableUUID.get());
+            txnDoc.ns = NamespaceString::kSessionTransactionsTableNamespace.ns();
+
+            fixUpInfo.docsToRefetch.insert(txnDoc);
+            fixUpInfo.refetchTransactionDocs = true;
+        } else {
+            throw RSFatalException(
+                str::stream() << NamespaceString::kSessionTransactionsTableNamespace.ns()
+                              << " does not have a UUID, but local op has a transaction number: "
+                              << redact(oplogEntry.toBSON()));
+        }
     }
 
     if (oplogEntry.getOpType() == OpTypeEnum::kCommand) {
@@ -808,7 +812,7 @@ void renameOutOfTheWay(OperationContext* opCtx, RenameCollectionInfo info, Datab
     // Renaming the collection that was clashing with the attempted rename
     // operation to a different collection name.
     auto renameStatus = renameCollectionForApplyOps(
-        opCtx, db->name(), tempRenameCollUUID.getField("uuid"), tempRenameCmd.obj());
+        opCtx, db->name(), tempRenameCollUUID.getField("uuid"), tempRenameCmd.obj(), {});
 
     if (!renameStatus.isOK()) {
         severe() << "Unable to rename collection " << info.renameTo << " out of the way to "
@@ -835,7 +839,7 @@ void rollbackRenameCollection(OperationContext* opCtx, UUID uuid, RenameCollecti
     cmd.append("dropTarget", false);
     BSONObj obj = cmd.obj();
 
-    auto status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj);
+    auto status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj, {});
 
     // If we try to roll back a collection to a collection name that currently exists
     // because another collection was renamed or created with the same collection name,
@@ -846,7 +850,7 @@ void rollbackRenameCollection(OperationContext* opCtx, UUID uuid, RenameCollecti
 
         // Retrying to renameCollection command again now that the conflicting
         // collection has been renamed out of the way.
-        status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj);
+        status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj, {});
 
         if (!status.isOK()) {
             severe() << "Rename collection failed to roll back twice. We were unable to rename "
@@ -1307,6 +1311,10 @@ Status _syncRollback(OperationContext* opCtx,
     how.rbid = rollbackSource.getRollbackId();
     uassert(
         40506, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
+
+    // Find the UUID of the transactions collection. An OperationContext is required because the
+    // UUID is not known at compile time, so the SessionCatalog needs to load the collection.
+    how.transactionTableUUID = SessionCatalog::getTransactionTableUUID(opCtx);
 
     log() << "Finding the Common Point";
     try {

@@ -88,7 +88,7 @@ LogicalSessionCache::LogicalSessionCache(std::unique_ptr<ServiceLiason> service,
       _service(std::move(service)),
       _sessionsColl(std::move(collection)),
       _cache(options.capacity) {
-    PeriodicRunner::PeriodicJob job{[this](Client* client) { _refresh(client); },
+    PeriodicRunner::PeriodicJob job{[this](Client* client) { _periodicRefresh(client); },
                                     duration_cast<Milliseconds>(_refreshInterval)};
     _service->scheduleJob(std::move(job));
 }
@@ -101,33 +101,6 @@ LogicalSessionCache::~LogicalSessionCache() {
         // log but swallow the error since there is no good way to recover.
         severe() << "Failed to join background service thread";
     }
-}
-
-// TODO: fetch should attempt to update user info, if it is not in the found record.
-
-Status LogicalSessionCache::fetchAndPromote(OperationContext* opCtx, const LogicalSessionId& lsid) {
-    // Search our local cache first
-    auto promoteRes = promote(lsid);
-    if (promoteRes.isOK()) {
-        return promoteRes;
-    }
-
-    // Cache miss, must fetch from the sessions collection.
-    auto res = _sessionsColl->fetchRecord(opCtx, lsid);
-
-    // If we got a valid record, add it to our cache.
-    if (res.isOK()) {
-        auto& record = res.getValue();
-        record.setLastUse(now());
-
-        // Any duplicate records here are actually the same record with different
-        // lastUse times, ignore them.
-        auto oldRecord = _addToCache(record);
-        return Status::OK();
-    }
-
-    // If we could not get a valid record, return the error.
-    return res.getStatus();
 }
 
 Status LogicalSessionCache::promote(LogicalSessionId lsid) {
@@ -182,7 +155,7 @@ Status LogicalSessionCache::refreshSessions(OperationContext* opCtx,
     return _sessionsColl->refreshSessions(opCtx, toRefresh, now());
 }
 
-void LogicalSessionCache::refreshNow(Client* client) {
+Status LogicalSessionCache::refreshNow(Client* client) {
     return _refresh(client);
 }
 
@@ -195,7 +168,16 @@ size_t LogicalSessionCache::size() {
     return _cache.size();
 }
 
-void LogicalSessionCache::_refresh(Client* client) {
+void LogicalSessionCache::_periodicRefresh(Client* client) {
+    auto res = _refresh(client);
+    if (!res.isOK()) {
+        log() << "Failed to refresh session cache: " << res;
+    }
+
+    return;
+}
+
+Status LogicalSessionCache::_refresh(Client* client) {
     LogicalSessionRecordSet activeSessions;
     LogicalSessionRecordSet deadSessions;
 
@@ -267,7 +249,7 @@ void LogicalSessionCache::_refresh(Client* client) {
         auto res = _sessionsColl->refreshSessions(opCtx, std::move(activeSessions), time);
         if (!res.isOK()) {
             // TODO SERVER-29709: handle network errors here.
-            return;
+            return res;
         }
     }
 
@@ -279,6 +261,8 @@ void LogicalSessionCache::_refresh(Client* client) {
     {
         // TODO SERVER-29709: handle expiration separately from failure to refresh.
     }
+
+    return Status::OK();
 }
 
 bool LogicalSessionCache::_isDead(const LogicalSessionRecord& record, Date_t now) const {

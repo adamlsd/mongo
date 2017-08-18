@@ -294,6 +294,13 @@ public:
         return runCommandWithTarget(std::move(request)).first;
     }
 
+    /**
+     * Runs the specified command request in fire-and-forget mode and returns the connection that
+     * the command was actually sent on. If the connection doesn't support OP_MSG, the request will
+     * be run as a normal two-way command and the reply will be ignored after parsing.
+     */
+    virtual DBClientBase* runFireAndForgetCommand(OpMsgRequest request);
+
     /** Run a database command.  Database commands are represented as BSON objects.  Common database
         commands have prebuilt helper functions -- see below.  If a helper is not available you can
         directly call runCommand.
@@ -756,6 +763,13 @@ public:
 
     virtual bool isMongos() const = 0;
 
+    /**
+     * Parses command replies and runs them through the metadata reader.
+     * This is virtual and non-const to allow subclasses to act on failures.
+     */
+    virtual rpc::UniqueReply parseCommandReplyMessage(const std::string& host,
+                                                      const Message& replyMsg);
+
 protected:
     /** if the result of a command is ok*/
     bool isOk(const BSONObj&);
@@ -909,6 +923,9 @@ public:
 
     using DBClientBase::runCommandWithTarget;
     std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) override;
+
+    rpc::UniqueReply parseCommandReplyMessage(const std::string& host,
+                                              const Message& replyMsg) override;
 
     /**
        @return true if this connection is currently in a failed state.  When autoreconnect is on,

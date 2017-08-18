@@ -324,6 +324,9 @@ private:
 
 inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
                                           const boost::optional<LogicalSessionId> cursorSessionId) {
+    if (!AuthorizationSession::exists(opCtx->getClient())) {
+        return Status::OK();
+    }
     auto* const authSession = AuthorizationSession::get(opCtx->getClient());
 
     auto nobodyIsLoggedIn = [authSession] {

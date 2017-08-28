@@ -18,15 +18,25 @@
     assert.writeOK(data.test.insert({name: "second", data: 2}));
 
     {
-		var session1 = conn.startSession();
-		var session2 = conn.startSession();
-        res = assert.commandWorked(session1.getDatabase("data_storage").runCommand({find: "test", batchSize: 0}));
+        var session1 = conn.startSession();
+        var session2 = conn.startSession();
+        var res = assert.commandWorked(session1.getDatabase("data_storage").runCommand({find: "test", batchSize: 0}));
         var cursorId = res.cursor.id;
         assert.commandWorked(session1.getDatabase("data_storage").runCommand({getMore: cursorId, collection: "test"}));
+
+        session2.endSession();
+        session1.endSession();
+    }
+
+    {
+        var session1 = conn.startSession();
+        var session2 = conn.startSession();
+        var res = assert.commandWorked(session1.getDatabase("data_storage").runCommand({find: "test", batchSize: 0}));
+        var cursorId = res.cursor.id;
         assert.commandFailed(session2.getDatabase("data_storage").runCommand({getMore: cursorId, collection: "test"}));
 
-		session2.endSession();
-		session1.endSession();
+        session2.endSession();
+        session1.endSession();
     }
 
     MongoRunner.stopMongod(conn);

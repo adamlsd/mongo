@@ -3,6 +3,8 @@
 (function() {
     "use strict";
 
+    load('jstests/libs/uuid_util.js');
+
     const replTest = new ReplSetTest({name: "changeStreamTest", nodes: 1});
     const nodes = replTest.startSet();
     replTest.initiate();
@@ -107,7 +109,7 @@ eventFn();`,
     let res = assert.commandWorked(db.runCommand({
         aggregate: changesCollection.getName(),
         // Project out the timestamp, since that's subject to change unpredictably.
-        pipeline: [{$changeStream: {}}, {$project: {"_id.ts": 0}}],
+        pipeline: [{$changeStream: {}}, {$project: {"_id.clusterTime": 0}}],
         cursor: {}
     }));
     const changeCursorId = res.cursor.id;
@@ -122,11 +124,12 @@ eventFn();`,
         event: () => assert.writeOK(db.changes.insert({_id: "wake up"}))
     });
     assert.eq(getMoreResponse.cursor.nextBatch.length, 1);
+    const changesCollectionUuid = getUUIDFromListCollections(db, changesCollection.getName());
     assert.docEq(getMoreResponse.cursor.nextBatch[0], {
-        _id: {_id: "wake up", ns: changesCollection.getFullName()},
+        _id: {documentKey: {_id: "wake up"}, uuid: changesCollectionUuid},
         documentKey: {_id: "wake up"},
         fullDocument: {_id: "wake up"},
-        ns: {coll: changesCollection.getName(), db: db.getName()},
+        ns: {db: db.getName(), coll: changesCollection.getName()},
         operationType: "insert"
     });
 

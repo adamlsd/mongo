@@ -42,7 +42,6 @@
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace QueryStageCount {
@@ -126,16 +125,14 @@ public:
         BSONObj oldDoc = _coll->getRecordStore()->dataFor(&_opCtx, oldrecordId).releaseToBson();
         OplogUpdateEntryArgs args;
         args.nss = _coll->ns();
-        _coll
-            ->updateDocument(&_opCtx,
-                             oldrecordId,
-                             Snapshotted<BSONObj>(_opCtx.recoveryUnit()->getSnapshotId(), oldDoc),
-                             newDoc,
-                             false,
-                             true,
-                             NULL,
-                             &args)
-            .status_with_transitional_ignore();
+        _coll->updateDocument(&_opCtx,
+                              oldrecordId,
+                              Snapshotted<BSONObj>(_opCtx.recoveryUnit()->getSnapshotId(), oldDoc),
+                              newDoc,
+                              false,
+                              true,
+                              NULL,
+                              &args);
         wunit.commit();
     }
 
@@ -152,8 +149,8 @@ public:
         unique_ptr<WorkingSet> ws(new WorkingSet);
 
         const CollatorInterface* collator = nullptr;
-        StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-            request.getQuery(), ExtensionsCallbackDisallowExtensions(), collator);
+        StatusWithMatchExpression statusWithMatcher =
+            MatchExpressionParser::parse(request.getQuery(), collator);
         ASSERT(statusWithMatcher.isOK());
         unique_ptr<MatchExpression> expression = std::move(statusWithMatcher.getValue());
 

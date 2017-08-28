@@ -48,6 +48,7 @@ namespace {
 const char kLocalReadConcernStr[] = "local";
 const char kMajorityReadConcernStr[] = "majority";
 const char kLinearizableReadConcernStr[] = "linearizable";
+const char kAvailableReadConcernStr[] = "available";
 
 }  // unnamed namespace
 
@@ -55,6 +56,9 @@ const string ReadConcernArgs::kReadConcernFieldName("readConcern");
 const string ReadConcernArgs::kAfterOpTimeFieldName("afterOpTime");
 const string ReadConcernArgs::kAfterClusterTimeFieldName("afterClusterTime");
 const string ReadConcernArgs::kLevelFieldName("level");
+
+const OperationContext::Decoration<ReadConcernArgs> ReadConcernArgs::get =
+    OperationContext::declareDecoration<ReadConcernArgs>();
 
 ReadConcernArgs::ReadConcernArgs() = default;
 
@@ -145,11 +149,16 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
                 _level = ReadConcernLevel::kMajorityReadConcern;
             } else if (levelString == kLinearizableReadConcernStr) {
                 _level = ReadConcernLevel::kLinearizableReadConcern;
+            } else if (levelString == kAvailableReadConcernStr) {
+                _level = ReadConcernLevel::kAvailableReadConcern;
             } else {
                 return Status(
                     ErrorCodes::FailedToParse,
-                    str::stream() << kReadConcernFieldName << '.' << kLevelFieldName
-                                  << " must be either 'local', 'majority' or 'linearizable'");
+                    str::stream()
+                        << kReadConcernFieldName
+                        << '.'
+                        << kLevelFieldName
+                        << " must be either 'local', 'majority', 'linearizable', or 'available'");
             }
         } else {
             return Status(ErrorCodes::InvalidOptions,
@@ -166,6 +175,8 @@ Status ReadConcernArgs::initialize(const BSONElement& readConcernElem) {
                                     << kAfterOpTimeFieldName);
     }
 
+    // Note: 'available' should not be used with after cluster time, as cluster time can wait for
+    // replication whereas the premise of 'available' is to avoid waiting.
     if (_clusterTime && getLevel() != ReadConcernLevel::kMajorityReadConcern &&
         getLevel() != ReadConcernLevel::kLocalReadConcern) {
         return Status(ErrorCodes::InvalidOptions,
@@ -201,6 +212,10 @@ void ReadConcernArgs::appendInfo(BSONObjBuilder* builder) const {
 
             case ReadConcernLevel::kLinearizableReadConcern:
                 levelName = kLinearizableReadConcernStr;
+                break;
+
+            case ReadConcernLevel::kAvailableReadConcern:
+                levelName = kAvailableReadConcernStr;
                 break;
 
             default:

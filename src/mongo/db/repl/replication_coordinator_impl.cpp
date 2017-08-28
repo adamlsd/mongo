@@ -274,13 +274,6 @@ InitialSyncerOptions createInitialSyncerOptions(
 }
 }  // namespace
 
-std::string ReplicationCoordinatorImpl::SnapshotInfo::toString() const {
-    BSONObjBuilder bob;
-    bob.append("optime", opTime.toBSON());
-    bob.append("name-id", name.toString());
-    return bob.obj().toString();
-}
-
 ReplicationCoordinatorImpl::ReplicationCoordinatorImpl(
     ServiceContext* service,
     const ReplSettings& settings,
@@ -1130,6 +1123,13 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
 Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
                                                     bool isMajorityReadConcern,
                                                     OpTime targetOpTime) {
+    if (!isMajorityReadConcern) {
+        // This assumes the read concern is "local" level.
+        // We need to wait for all committed writes to be visible, even in the oplog (which uses
+        // special visibility rules).
+        _externalState->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+    }
+
     stdx::unique_lock<stdx::mutex> lock(_mutex);
 
     if (isMajorityReadConcern && !_externalState->snapshotsEnabled()) {
@@ -2326,7 +2326,7 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
     // Sets the initial data timestamp on the storage engine so it can assign a timestamp
     // to data on disk. We do this after writing the "initiating set" oplog entry.
     auto initialDataTS = SnapshotName(lastAppliedOpTime.getTimestamp().asULL());
-    _storage->setInitialDataTimestamp(getServiceContext()->getGlobalStorageEngine(), initialDataTS);
+    _storage->setInitialDataTimestamp(getServiceContext(), initialDataTS);
 
     _finishReplSetInitiate(newConfig, myIndex.getValue());
 
@@ -3016,8 +3016,7 @@ void ReplicationCoordinatorImpl::_setStableTimestampForStorage_inlock() {
     if (stableTimestamp) {
         LOG(2) << "Setting replication's stable timestamp to " << stableTimestamp.value();
 
-        auto storageEngine = getServiceContext()->getGlobalStorageEngine();
-        _storage->setStableTimestamp(storageEngine, SnapshotName(stableTimestamp.get()));
+        _storage->setStableTimestamp(getServiceContext(), SnapshotName(stableTimestamp.get()));
 
         _cleanupStableTimestampCandidates(&_stableTimestampCandidates, stableTimestamp.get());
     }
@@ -3040,7 +3039,6 @@ void ReplicationCoordinatorImpl::_advanceCommitPoint_inlock(const OpTime& commit
 
 void ReplicationCoordinatorImpl::_updateCommitPoint_inlock() {
     auto committedOpTime = _topCoord->getLastCommittedOpTime();
-    _externalState->notifyOplogMetadataWaiters(committedOpTime);
 
     // Update the stable timestamp.
     _setStableTimestampForStorage_inlock();
@@ -3061,10 +3059,11 @@ void ReplicationCoordinatorImpl::_updateCommitPoint_inlock() {
 
         // Update committed snapshot and wake up any threads waiting on read concern or
         // write concern.
-        //
-        // This function is only called on secondaries, so only threads waiting for
-        // committed snapshot need to be woken up.
         _updateCommittedSnapshot_inlock(newSnapshot);
+    } else {
+        // Even if we have no new snapshot, we need to notify waiters that the commit point
+        // moved.
+        _externalState->notifyOplogMetadataWaiters(committedOpTime);
     }
 }
 
@@ -3360,7 +3359,7 @@ void ReplicationCoordinatorImpl::_updateCommittedSnapshot_inlock(
     _currentCommittedSnapshot = newCommittedSnapshot;
     _currentCommittedSnapshotCond.notify_all();
 
-    _externalState->updateCommittedSnapshot(newCommittedSnapshot.name);
+    _externalState->updateCommittedSnapshot(newCommittedSnapshot);
 
     // Wake up any threads waiting for read concern or write concern.
     _wakeReadyWaiters_inlock();

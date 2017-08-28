@@ -31,7 +31,6 @@
 #include "mongo/db/update/pull_node.h"
 
 #include "mongo/db/matcher/copyable_match_expression.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/query/collation/collator_interface.h"
 
 namespace mongo {
@@ -43,9 +42,7 @@ namespace mongo {
 class PullNode::ObjectMatcher final : public PullNode::ElementMatcher {
 public:
     ObjectMatcher(BSONObj matchCondition, const CollatorInterface* collator)
-        : _matchExpr(
-              matchCondition, stdx::make_unique<ExtensionsCallbackDisallowExtensions>(), collator) {
-    }
+        : _matchExpr(matchCondition, collator) {}
 
     std::unique_ptr<ElementMatcher> clone() const final {
         return stdx::make_unique<ObjectMatcher>(*this);
@@ -77,9 +74,7 @@ private:
 class PullNode::WrappedObjectMatcher final : public PullNode::ElementMatcher {
 public:
     WrappedObjectMatcher(BSONElement matchCondition, const CollatorInterface* collator)
-        : _matchExpr(matchCondition.wrap(""),
-                     stdx::make_unique<ExtensionsCallbackDisallowExtensions>(),
-                     collator) {}
+        : _matchExpr(matchCondition.wrap(""), collator) {}
 
     std::unique_ptr<ElementMatcher> clone() const final {
         return stdx::make_unique<WrappedObjectMatcher>(*this);
@@ -137,7 +132,7 @@ Status PullNode::init(BSONElement modExpr, const CollatorInterface* collator) {
         } else {
             _matcher = stdx::make_unique<EqualityMatcher>(modExpr, collator);
         }
-    } catch (UserException& exception) {
+    } catch (AssertionException& exception) {
         return exception.toStatus();
     }
 

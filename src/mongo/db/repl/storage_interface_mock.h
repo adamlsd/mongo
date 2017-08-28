@@ -90,7 +90,7 @@ public:
             const BSONObj idIndexSpec,
             const std::vector<BSONObj>& secondaryIndexSpecs)>;
     using InsertDocumentFn = stdx::function<Status(
-        OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc)>;
+        OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc)>;
     using InsertDocumentsFn = stdx::function<Status(OperationContext* opCtx,
                                                     const NamespaceString& nss,
                                                     const std::vector<InsertStatement>& docs)>;
@@ -135,7 +135,7 @@ public:
 
     Status insertDocument(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const BSONObj& doc) override {
+                          const TimestampedBSONObj& doc) override {
         return insertDocumentFn(opCtx, nss, doc);
     };
 
@@ -244,13 +244,17 @@ public:
         return 0;
     }
 
-    void setStableTimestamp(StorageEngine* storageEngine, SnapshotName snapshotName) override;
+    void setStableTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
 
-    void setInitialDataTimestamp(StorageEngine* storageEngine, SnapshotName snapshotName) override;
+    void setInitialDataTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
 
     SnapshotName getStableTimestamp() const;
 
     SnapshotName getInitialDataTimestamp() const;
+
+    Status recoverToStableTimestamp(ServiceContext* serviceCtx) override {
+        return Status{ErrorCodes::IllegalOperation, "recoverToStableTimestamp not implemented."};
+    }
 
     Status isAdminDbValid(OperationContext* opCtx) override {
         return isAdminDbValidFn(opCtx);
@@ -266,7 +270,7 @@ public:
         return Status{ErrorCodes::IllegalOperation, "CreateCollectionForBulkFn not implemented."};
     };
     InsertDocumentFn insertDocumentFn =
-        [](OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc) {
+        [](OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc) {
             return Status{ErrorCodes::IllegalOperation, "InsertDocumentFn not implemented."};
         };
     InsertDocumentsFn insertDocumentsFn = [](OperationContext* opCtx,

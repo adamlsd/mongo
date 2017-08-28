@@ -254,22 +254,23 @@ Document redactSafePortionDollarOps(BSONObj expr) {
 
             // These are never allowed
             case PathAcceptingKeyword::EQUALITY:  // This actually means unknown
-            case PathAcceptingKeyword::GEO_NEAR:
-            case PathAcceptingKeyword::NOT_EQUAL:
-            case PathAcceptingKeyword::SIZE:
-            case PathAcceptingKeyword::NOT_IN:
             case PathAcceptingKeyword::EXISTS:
-            case PathAcceptingKeyword::WITHIN:
             case PathAcceptingKeyword::GEO_INTERSECTS:
+            case PathAcceptingKeyword::GEO_NEAR:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_ALL_ELEM_MATCH_FROM_INDEX:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_FMOD:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_ITEMS:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_ITEMS:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_UNIQUE_ITEMS:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_OBJECT_MATCH:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_LENGTH:
-            case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_LENGTH:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_MATCH_ARRAY_INDEX:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_ITEMS:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_LENGTH:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_ITEMS:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_LENGTH:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_OBJECT_MATCH:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_TYPE:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_UNIQUE_ITEMS:
+            case PathAcceptingKeyword::NOT_EQUAL:
+            case PathAcceptingKeyword::NOT_IN:
+            case PathAcceptingKeyword::SIZE:
+            case PathAcceptingKeyword::WITHIN:
                 continue;
         }
     }
@@ -360,8 +361,13 @@ bool DocumentSourceMatch::isTextQuery(const BSONObj& query) {
 void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other) {
     _predicate = BSON("$and" << BSON_ARRAY(_predicate << other->getQuery()));
 
-    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
-        _predicate, ExtensionsCallbackNoop(), pExpCtx->getCollator(), pExpCtx));
+    StatusWithMatchExpression status = uassertStatusOK(
+        MatchExpressionParser::parse(_predicate,
+                                     pExpCtx->getCollator(),
+                                     pExpCtx,
+                                     ExtensionsCallbackNoop(),
+                                     MatchExpressionParser::AllowedFeatures::kText |
+                                         MatchExpressionParser::AllowedFeatures::kExpr));
     _expression = std::move(status.getValue());
     _dependencies = DepsTracker(_dependencies.getMetadataAvailable());
     getDependencies(&_dependencies);
@@ -446,27 +452,8 @@ boost::intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::descendMatchOnPat
     return new DocumentSourceMatch(query.obj(), expCtx);
 }
 
-static void uassertNoDisallowedClauses(BSONObj query) {
-    BSONForEach(e, query) {
-        // can't use the MatchExpression API because this would segfault the constructor
-        uassert(16395,
-                "$where is not allowed inside of a $match aggregation expression",
-                !str::equals(e.fieldName(), "$where"));
-        // geo breaks if it is not the first portion of the pipeline
-        uassert(16424,
-                "$near is not allowed inside of a $match aggregation expression",
-                !str::equals(e.fieldName(), "$near"));
-        uassert(16426,
-                "$nearSphere is not allowed inside of a $match aggregation expression",
-                !str::equals(e.fieldName(), "$nearSphere"));
-        if (e.isABSONObj())
-            uassertNoDisallowedClauses(e.Obj());
-    }
-}
-
 intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::create(
     BSONObj filter, const intrusive_ptr<ExpressionContext>& expCtx) {
-    uassertNoDisallowedClauses(filter);
     intrusive_ptr<DocumentSourceMatch> match(new DocumentSourceMatch(filter, expCtx));
     return match;
 }
@@ -507,8 +494,13 @@ void DocumentSourceMatch::addDependencies(DepsTracker* deps) const {
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
                                          const intrusive_ptr<ExpressionContext>& pExpCtx)
     : DocumentSource(pExpCtx), _predicate(query.getOwned()), _isTextQuery(isTextQuery(query)) {
-    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
-        _predicate, ExtensionsCallbackNoop(), pExpCtx->getCollator(), pExpCtx));
+    StatusWithMatchExpression status = uassertStatusOK(
+        MatchExpressionParser::parse(_predicate,
+                                     pExpCtx->getCollator(),
+                                     pExpCtx,
+                                     ExtensionsCallbackNoop(),
+                                     MatchExpressionParser::AllowedFeatures::kText |
+                                         MatchExpressionParser::AllowedFeatures::kExpr));
 
     _expression = std::move(status.getValue());
     getDependencies(&_dependencies);

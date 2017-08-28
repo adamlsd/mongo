@@ -35,6 +35,8 @@
 
 #include <set>
 
+#include "mongo/db/kill_sessions_common.h"
+#include "mongo/db/logical_session_cache.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -282,10 +284,10 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
         return cursorInUseStatus(nss, cursorId);
     }
 
-    auto cursorPrivilegeStatus = checkCursorSessionPrivilege(opCtx, cursor->getLsid());
-
-    if (cursorPrivilegeStatus != Status::OK()) {
-        return cursorPrivilegeStatus;
+    // We use pinning of a cursor as a proxy for active, user-initiated use of a cursor.  Therefore,
+    // we pass down to the logical session cache and vivify the record (updating last use).
+    if (cursor->getLsid()) {
+        LogicalSessionCache::get(opCtx)->vivify(opCtx, cursor->getLsid().get());
     }
 
     // Note that pinning a cursor transfers ownership of the underlying ClusterClientCursor object
@@ -476,6 +478,17 @@ void ClusterCursorManager::appendActiveSessions(LogicalSessionIdSet* lsids) cons
             }
         }
     }
+}
+
+Status ClusterCursorManager::killCursorsWithMatchingSessions(
+    OperationContext* opCtx, const SessionKiller::Matcher& matcher) {
+    auto eraser = [&](ClusterCursorManager& mgr, CursorId id) {
+        uassertStatusOK(mgr.killCursor(getNamespaceForCursorId(id).get(), id));
+    };
+
+    auto visitor = makeKillSessionsCursorManagerVisitor(opCtx, matcher, std::move(eraser));
+    visitor(*this);
+    return visitor.getStatus();
 }
 
 stdx::unordered_set<CursorId> ClusterCursorManager::getCursorsForSession(

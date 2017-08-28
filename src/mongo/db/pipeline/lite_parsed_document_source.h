@@ -72,7 +72,8 @@ public:
     static void registerParser(const std::string& name, Parser parser);
 
     /**
-     * Constructs a LiteParsedDocumentSource from the user-supplied BSON, or throws a UserException.
+     * Constructs a LiteParsedDocumentSource from the user-supplied BSON, or throws a
+     * AssertionException.
      *
      * Extracts the first field name from 'spec', and delegates to the parser that was registered
      * with that field name using registerParser() above.
@@ -109,6 +110,20 @@ public:
      */
     virtual bool isInitialSource() const {
         return false;
+    }
+
+    /**
+     * Returns true if this stage may be forwarded to shards from a mongos.
+     */
+    virtual bool allowedToForwardFromMongos() const {
+        return true;
+    }
+
+    /**
+     * Returns true if this stage may be forwarded from Mongos unmodified.
+     */
+    virtual bool allowedToPassthroughFromMongos() const {
+        return true;
     }
 };
 

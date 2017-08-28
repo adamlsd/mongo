@@ -102,8 +102,12 @@ public:
     explicit InsertStatement(BSONObj toInsert) : doc(toInsert) {}
 
     InsertStatement(StmtId statementId, BSONObj toInsert) : stmtId(statementId), doc(toInsert) {}
+    InsertStatement(StmtId statementId, BSONObj toInsert, SnapshotName ts)
+        : stmtId(statementId), timestamp(ts), doc(toInsert) {}
+    InsertStatement(BSONObj toInsert, SnapshotName ts) : timestamp(ts), doc(toInsert) {}
 
     StmtId stmtId = kUninitializedStmtId;
+    SnapshotName timestamp = SnapshotName();
     BSONObj doc;
 };
 
@@ -185,6 +189,7 @@ class Collection final : CappedCallback, UpdateNotifier {
 public:
     enum ValidationAction { WARN, ERROR_V };
     enum ValidationLevel { OFF, MODERATE, STRICT_V };
+    enum class StoreDeletedDoc { Off, On };
 
     class Impl : virtual CappedCallback, virtual UpdateNotifier {
     public:
@@ -246,7 +251,8 @@ public:
                                     const RecordId& loc,
                                     OpDebug* opDebug,
                                     bool fromMigrate,
-                                    bool noWarn) = 0;
+                                    bool noWarn,
+                                    StoreDeletedDoc storeDeletedDoc) = 0;
 
         virtual Status insertDocuments(OperationContext* opCtx,
                                        std::vector<InsertStatement>::const_iterator begin,
@@ -263,6 +269,7 @@ public:
 
         virtual Status insertDocumentsForOplog(OperationContext* opCtx,
                                                const DocWriter* const* docs,
+                                               Timestamp* timestamps,
                                                size_t nDocs) = 0;
 
         virtual Status insertDocument(OperationContext* opCtx,
@@ -270,14 +277,14 @@ public:
                                       const std::vector<MultiIndexBlock*>& indexBlocks,
                                       bool enforceQuota) = 0;
 
-        virtual StatusWith<RecordId> updateDocument(OperationContext* opCtx,
-                                                    const RecordId& oldLocation,
-                                                    const Snapshotted<BSONObj>& oldDoc,
-                                                    const BSONObj& newDoc,
-                                                    bool enforceQuota,
-                                                    bool indexesAffected,
-                                                    OpDebug* opDebug,
-                                                    OplogUpdateEntryArgs* args) = 0;
+        virtual RecordId updateDocument(OperationContext* opCtx,
+                                        const RecordId& oldLocation,
+                                        const Snapshotted<BSONObj>& oldDoc,
+                                        const BSONObj& newDoc,
+                                        bool enforceQuota,
+                                        bool indexesAffected,
+                                        OpDebug* opDebug,
+                                        OplogUpdateEntryArgs* args) = 0;
 
         virtual bool updateWithDamagesSupported() const = 0;
 
@@ -473,8 +480,10 @@ public:
                                const RecordId& loc,
                                OpDebug* const opDebug,
                                const bool fromMigrate = false,
-                               const bool noWarn = false) {
-        return this->_impl().deleteDocument(opCtx, stmtId, loc, opDebug, fromMigrate, noWarn);
+                               const bool noWarn = false,
+                               StoreDeletedDoc storeDeletedDoc = StoreDeletedDoc::Off) {
+        return this->_impl().deleteDocument(
+            opCtx, stmtId, loc, opDebug, fromMigrate, noWarn, storeDeletedDoc);
     }
 
     /*
@@ -514,8 +523,9 @@ public:
      */
     inline Status insertDocumentsForOplog(OperationContext* const opCtx,
                                           const DocWriter* const* const docs,
+                                          Timestamp* timestamps,
                                           const size_t nDocs) {
-        return this->_impl().insertDocumentsForOplog(opCtx, docs, nDocs);
+        return this->_impl().insertDocumentsForOplog(opCtx, docs, timestamps, nDocs);
     }
 
     /**
@@ -539,14 +549,14 @@ public:
      * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
      * @return the post update location of the doc (may or may not be the same as oldLocation)
      */
-    inline StatusWith<RecordId> updateDocument(OperationContext* const opCtx,
-                                               const RecordId& oldLocation,
-                                               const Snapshotted<BSONObj>& oldDoc,
-                                               const BSONObj& newDoc,
-                                               const bool enforceQuota,
-                                               const bool indexesAffected,
-                                               OpDebug* const opDebug,
-                                               OplogUpdateEntryArgs* const args) {
+    inline RecordId updateDocument(OperationContext* const opCtx,
+                                   const RecordId& oldLocation,
+                                   const Snapshotted<BSONObj>& oldDoc,
+                                   const BSONObj& newDoc,
+                                   const bool enforceQuota,
+                                   const bool indexesAffected,
+                                   OpDebug* const opDebug,
+                                   OplogUpdateEntryArgs* const args) {
         return this->_impl().updateDocument(
             opCtx, oldLocation, oldDoc, newDoc, enforceQuota, indexesAffected, opDebug, args);
     }

@@ -42,6 +42,7 @@
 #include "mongo/db/repl/collection_bulk_loader.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/snapshot_name.h"
 
 namespace mongo {
 
@@ -50,6 +51,11 @@ struct CollectionOptions;
 class OperationContext;
 
 namespace repl {
+
+struct TimestampedBSONObj {
+    BSONObj obj;
+    SnapshotName timestamp;
+};
 
 /**
  * Storage interface used by the replication system to interact with storage.
@@ -98,17 +104,18 @@ public:
         const std::vector<BSONObj>& secondaryIndexSpecs) = 0;
 
     /**
-     * Inserts a document into a collection.
+     * Inserts a document with a timestamp into a collection.
      *
      * NOTE: If the collection doesn't exist, it will not be created, and instead
      * an error is returned.
      */
     virtual Status insertDocument(OperationContext* opCtx,
                                   const NamespaceString& nss,
-                                  const BSONObj& doc) = 0;
+                                  const TimestampedBSONObj& doc) = 0;
 
     /**
-     * Inserts the given documents into the collection.
+     * Inserts the given documents, with associated timestamps and statement id's, into the
+     * collection.
      * It is an error to call this function with an empty set of documents.
      */
     virtual Status insertDocuments(OperationContext* opCtx,
@@ -280,14 +287,24 @@ public:
      * Sets the highest timestamp at which the storage engine is allowed to take a checkpoint.
      * This timestamp can never decrease, and thus should be a timestamp that can never roll back.
      */
-    virtual void setStableTimestamp(StorageEngine* storageEngine, SnapshotName snapshotName) = 0;
+    virtual void setStableTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) = 0;
 
     /**
      * Tells the storage engine the timestamp of the data at startup. This is necessary because
      * timestamps are not persisted in the storage layer.
      */
-    virtual void setInitialDataTimestamp(StorageEngine* storageEngine,
-                                         SnapshotName snapshotName) = 0;
+    virtual void setInitialDataTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) = 0;
+
+    /**
+     * Reverts the state of all database data to the last stable timestamp.
+     *
+     * The "local" database is exempt and none of its state should be reverted except for
+     * "local.replset.minvalid" and "local.replset.checkpointTimestamp" which should be reverted to
+     * the last stable timestamp.
+     *
+     * The 'stable' timestamp is set by calling StorageInterface::setStableTimestamp.
+     */
+    virtual Status recoverToStableTimestamp(ServiceContext* serviceCtx) = 0;
 };
 
 }  // namespace repl

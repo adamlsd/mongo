@@ -31,6 +31,8 @@
 #include "mongo/db/pipeline/document_source_change_stream.h"
 
 #include "mongo/bson/simple_bsonelement_comparator.h"
+#include "mongo/db/bson/bson_helper.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/pipeline/document_source_check_resume_token.h"
 #include "mongo/db/pipeline/document_source_limit.h"
@@ -65,9 +67,11 @@ constexpr StringData DocumentSourceChangeStream::kDocumentKeyField;
 constexpr StringData DocumentSourceChangeStream::kFullDocumentField;
 constexpr StringData DocumentSourceChangeStream::kIdField;
 constexpr StringData DocumentSourceChangeStream::kNamespaceField;
+constexpr StringData DocumentSourceChangeStream::kUuidField;
 constexpr StringData DocumentSourceChangeStream::kOperationTypeField;
 constexpr StringData DocumentSourceChangeStream::kStageName;
-constexpr StringData DocumentSourceChangeStream::kTimestmapField;
+constexpr StringData DocumentSourceChangeStream::kTimestampField;
+constexpr StringData DocumentSourceChangeStream::kClusterTimeField;
 constexpr StringData DocumentSourceChangeStream::kUpdateOpType;
 constexpr StringData DocumentSourceChangeStream::kDeleteOpType;
 constexpr StringData DocumentSourceChangeStream::kReplaceOpType;
@@ -154,7 +158,7 @@ public:
 
 private:
     /**
-     * Use the create static method to create a DocumentSourceCheckResumeToken.
+     * Use the create static method to create a DocumentSourceCloseCursor.
      */
     DocumentSourceCloseCursor(const boost::intrusive_ptr<ExpressionContext>& expCtx)
         : DocumentSource(expCtx) {}
@@ -198,27 +202,25 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(const NamespaceString& nss,
     auto dropDatabase = BSON("o.dropDatabase" << 1);
     auto dropCollection = BSON("o.drop" << nss.coll());
     auto renameCollection = BSON("o.renameCollection" << target);
-    // Commands that are on target db and one of the above.
+    // 1.1) Commands that are on target db and one of the above.
     auto commandsOnTargetDb =
-        BSON("ns" << nss.getCommandNS().ns() << "$or"
-                  << BSON_ARRAY(dropDatabase << dropCollection << renameCollection));
-
-    // 2) Supported commands that have arbitrary db namespaces in "ns" field.
+        BSON("ns" << nss.getCommandNS().ns() << OR(dropDatabase, dropCollection, renameCollection));
+    // 1.2) Supported commands that have arbitrary db namespaces in "ns" field.
     auto renameDropTarget = BSON("o.to" << target);
+    // All supported commands that are either (1.1) or (1.2).
+    BSONObj commandMatch = BSON("op"
+                                << "c"
+                                << OR(commandsOnTargetDb, renameDropTarget));
 
-    // 3) All supported commands that are either (1) or (2).
-    auto commandMatch = BSON("op"
-                             << "c"
-                             << "$or"
-                             << BSON_ARRAY(commandsOnTargetDb << renameDropTarget));
-
-    // 4) Normal CRUD ops on the target collection.
+    // 2) Normal CRUD ops on the target collection.
     auto opMatch = BSON("ns" << target);
 
-    // Match oplog entries after "start" and are either (3) supported commands or (4) CRUD ops.
-    // Include the resume token if resuming, so we can verify it was still present in the oplog.
-    return BSON("ts" << (isResume ? GTE : GT) << startFrom << "$or"
-                     << BSON_ARRAY(opMatch << commandMatch));
+    // Match oplog entries after "start" and are either (1) supported commands or (2) CRUD ops,
+    // excepting those tagged "fromMigrate".
+    // Include the resume token, if resuming, so we can verify it was still present in the oplog.
+    return BSON("$and" << BSON_ARRAY(BSON("ts" << (isResume ? GTE : GT) << startFrom)
+                                     << BSON(OR(opMatch, commandMatch))
+                                     << BSON("fromMigrate" << NE << true)));
 }
 
 list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
@@ -232,29 +234,39 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
 
     auto replCoord = repl::ReplicationCoordinator::get(expCtx->opCtx);
     uassert(40573, "The $changeStream stage is only supported on replica sets", replCoord);
-    Timestamp startFrom = replCoord->getLastCommittedOpTime().getTimestamp();
+    Timestamp startFrom = replCoord->getMyLastAppliedOpTime().getTimestamp();
 
-    intrusive_ptr<DocumentSourceCheckResumeToken> resumeStage = nullptr;
+    intrusive_ptr<DocumentSource> resumeStage = nullptr;
     auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserErrorContext("$changeStream"),
                                                       elem.embeddedObject());
     if (auto resumeAfter = spec.getResumeAfter()) {
         ResumeToken token = resumeAfter.get();
+        auto resumeNamespace = UUIDCatalog::get(expCtx->opCtx).lookupNSSByUUID(token.getUuid());
+        uassert(40615,
+                "The resume token UUID does not exist. Has the collection been dropped?",
+                !resumeNamespace.isEmpty());
         startFrom = token.getTimestamp();
-        DocumentSourceCheckResumeTokenSpec spec;
-        spec.setResumeToken(std::move(token));
-        resumeStage = DocumentSourceCheckResumeToken::create(expCtx, std::move(spec));
+        if (expCtx->needsMerge) {
+            DocumentSourceShardCheckResumabilitySpec spec;
+            spec.setResumeToken(std::move(token));
+            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, std::move(spec));
+        } else {
+            DocumentSourceEnsureResumeTokenPresentSpec spec;
+            spec.setResumeToken(std::move(token));
+            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(spec));
+        }
     }
     const bool changeStreamIsResuming = resumeStage != nullptr;
 
     auto fullDocOption = spec.getFullDocument();
     uassert(40575,
             str::stream() << "unrecognized value for the 'fullDocument' option to the "
-                             "$changeStream stage. Expected \"none\" or "
-                             "\"lookup\", got \""
+                             "$changeStream stage. Expected \"default\" or "
+                             "\"updateLookup\", got \""
                           << fullDocOption
                           << "\"",
-            fullDocOption == "lookup"_sd || fullDocOption == "none"_sd);
-    const bool shouldLookupPostImage = (fullDocOption == "lookup"_sd);
+            fullDocOption == "updateLookup"_sd || fullDocOption == "default"_sd);
+    const bool shouldLookupPostImage = (fullDocOption == "updateLookup"_sd);
 
     auto oplogMatch = DocumentSourceOplogMatch::create(
         buildMatchFilter(expCtx->ns, startFrom, changeStreamIsResuming), expCtx);
@@ -288,12 +300,15 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
     Value ts = input[repl::OplogEntry::kTimestampFieldName];
     Value ns = input[repl::OplogEntry::kNamespaceFieldName];
     checkValueType(ns, repl::OplogEntry::kNamespaceFieldName, BSONType::String);
+    Value uuid = input[repl::OplogEntry::kUuidFieldName];
+    if (!uuid.missing())
+        checkValueType(uuid, repl::OplogEntry::kUuidFieldName, BSONType::BinData);
     NamespaceString nss(ns.getString());
     Value id = input.getNestedField("o._id");
     // Non-replace updates have the _id in field "o2".
     Value documentId = id.missing() ? input.getNestedField("o2._id") : id;
     StringData operationType;
-    Value fullDocument = Value(BSONNULL);
+    Value fullDocument;
     Value updateDescription;
 
     // Deal with CRUD operations and commands.
@@ -344,11 +359,19 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
         default: { MONGO_UNREACHABLE; }
     }
 
-    // Construct the result document. Note that 'documentId' might be the missing value, in which
-    // case it will not appear in the output.
-    doc.addField(
-        kIdField,
-        Value(Document{{kTimestmapField, ts}, {kNamespaceField, ns}, {kIdField, documentId}}));
+    // UUID should always be present except for invalidate entries.
+    invariant(operationType == kInvalidateOpType || !uuid.missing());
+
+    // Construct the result document.
+    Value documentKey;
+    if (!documentId.missing()) {
+        documentKey = Value(Document{{kIdField, documentId}});
+    }
+    // Note that 'documentKey' might be missing, in which case it will not appear in the output.
+    Document resumeToken{{kClusterTimeField, Document{{kTimestampField, ts}}},
+                         {kUuidField, uuid},
+                         {kDocumentKeyField, documentKey}};
+    doc.addField(kIdField, Value(resumeToken));
     doc.addField(kOperationTypeField, Value(operationType));
     doc.addField(kFullDocumentField, fullDocument);
 
@@ -358,7 +381,7 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
     }
 
     doc.addField(kNamespaceField, Value(Document{{"db", nss.db()}, {"coll", nss.coll()}}));
-    doc.addField(kDocumentKeyField, Value(Document{{kIdField, documentId}}));
+    doc.addField(kDocumentKeyField, documentKey);
 
     // Note that 'updateDescription' might be the 'missing' value, in which case it will not be
     // serialized.
@@ -376,6 +399,7 @@ DocumentSource::GetDepsReturn DocumentSourceChangeStream::Transformation::addDep
     deps->fields.insert(repl::OplogEntry::kOpTypeFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kTimestampFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kNamespaceFieldName.toString());
+    deps->fields.insert(repl::OplogEntry::kUuidFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kObjectFieldName.toString());
     deps->fields.insert(repl::OplogEntry::kObject2FieldName.toString());
     return DocumentSource::GetDepsReturn::EXHAUSTIVE_ALL;

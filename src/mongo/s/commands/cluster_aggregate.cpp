@@ -95,8 +95,12 @@ Status appendExplainResults(
     const std::unique_ptr<Pipeline, Pipeline::Deleter>& pipelineForMerging,
     BSONObjBuilder* result) {
     if (pipelineForTargetedShards->isSplitForSharded()) {
-        *result << "needsPrimaryShardMerger" << pipelineForMerging->needsPrimaryShardMerger()
-                << "mergeOnMongoS" << pipelineForMerging->canRunOnMongos() << "splitPipeline"
+        *result << "mergeType"
+                << (pipelineForMerging->canRunOnMongos()
+                        ? "mongos"
+                        : pipelineForMerging->needsPrimaryShardMerger() ? "primaryShard"
+                                                                        : "anyShard")
+                << "splitPipeline"
                 << Document{
                        {"shardsPart",
                         pipelineForTargetedShards->writeExplainOps(*mergeCtx->explain)},
@@ -308,7 +312,7 @@ StatusWith<std::pair<ShardId, Shard::CommandResponse>> establishMergingShardCurs
                                                        ReadPreferenceSetting::get(opCtx),
                                                        nss.db().toString(),
                                                        mergeCmdObj,
-                                                       Shard::RetryPolicy::kNoRetry));
+                                                       Shard::RetryPolicy::kIdempotent));
 
     return {{std::move(mergingShardId), std::move(shardCmdResponse)}};
 }
@@ -411,10 +415,10 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     StringMap<ExpressionContext::ResolvedNamespace> resolvedNamespaces;
     LiteParsedPipeline liteParsedPipeline(request);
 
-    // TODO SERVER-29141 support $changeStream on mongos.
+    // TODO SERVER-29141 support forcing pipeline to run on Mongos.
     uassert(40567,
-            "$changeStream is not yet supported on mongos",
-            !liteParsedPipeline.hasChangeStream());
+            "Unable to force mongos-only stage to run on mongos",
+            liteParsedPipeline.allowedToForwardFromMongos());
 
     for (auto&& nss : liteParsedPipeline.getInvolvedNamespaces()) {
         const auto resolvedNsRoutingInfo =
@@ -425,7 +429,8 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
     }
 
     // If this aggregation is on an unsharded collection, pass through to the primary shard.
-    if (!executionNsRoutingInfo.cm() && !namespaces.executionNss.isCollectionlessAggregateNS()) {
+    if (!executionNsRoutingInfo.cm() && !namespaces.executionNss.isCollectionlessAggregateNS() &&
+        liteParsedPipeline.allowedToPassthroughFromMongos()) {
         return aggPassthrough(
             opCtx, namespaces, executionNsRoutingInfo.primary()->getId(), request, cmdObj, result);
     }
@@ -682,7 +687,7 @@ Status ClusterAggregate::aggPassthrough(OperationContext* opCtx,
         namespaces.executionNss.db().toString(),
         !shard->isConfig() ? appendShardVersion(std::move(cmdObj), ChunkVersion::UNSHARDED())
                            : std::move(cmdObj),
-        Shard::RetryPolicy::kNoRetry));
+        Shard::RetryPolicy::kIdempotent));
 
     if (ErrorCodes::isStaleShardingError(cmdResponse.commandStatus.code())) {
         throw RecvStaleConfigException("command failed because of stale config",

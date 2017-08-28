@@ -602,7 +602,7 @@ void IndexAccessMethod::getKeys(const BSONObj& obj,
                                               13027};
     try {
         doGetKeys(obj, keys, multikeyPaths);
-    } catch (const UserException& ex) {
+    } catch (const AssertionException& ex) {
         if (mode == GetKeysMode::kEnforceConstraints) {
             throw;
         }
@@ -613,7 +613,7 @@ void IndexAccessMethod::getKeys(const BSONObj& obj,
             multikeyPaths->clear();
         }
         // Only suppress the errors in the whitelist.
-        if (whiteList.find(ex.getCode()) == whiteList.end()) {
+        if (whiteList.find(ex.code()) == whiteList.end()) {
             throw;
         }
         LOG(1) << "Ignoring indexing error for idempotency reasons: " << redact(ex)

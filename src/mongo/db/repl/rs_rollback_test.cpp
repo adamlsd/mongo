@@ -75,7 +75,9 @@ public:
     BSONObj getLastOperation() const override;
     BSONObj findOne(const NamespaceString& nss, const BSONObj& filter) const override;
 
-    BSONObj findOneByUUID(const std::string& db, UUID uuid, const BSONObj& filter) const override;
+    std::pair<BSONObj, NamespaceString> findOneByUUID(const std::string& db,
+                                                      UUID uuid,
+                                                      const BSONObj& filter) const override;
 
     void copyCollectionFromRemote(OperationContext* opCtx,
                                   const NamespaceString& nss) const override;
@@ -114,10 +116,10 @@ BSONObj RollbackSourceMock::findOne(const NamespaceString& nss, const BSONObj& f
     return BSONObj();
 }
 
-BSONObj RollbackSourceMock::findOneByUUID(const std::string& db,
-                                          UUID uuid,
-                                          const BSONObj& filter) const {
-    return BSONObj();
+std::pair<BSONObj, NamespaceString> RollbackSourceMock::findOneByUUID(const std::string& db,
+                                                                      UUID uuid,
+                                                                      const BSONObj& filter) const {
+    return {BSONObj(), NamespaceString()};
 }
 
 void RollbackSourceMock::copyCollectionFromRemote(OperationContext* opCtx,
@@ -248,7 +250,7 @@ TEST_F(RSRollbackTest, InconsistentMinValid) {
                                _coordinator,
                                _replicationProcess.get());
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18752, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "unable to determine common point");
 }
 
 TEST_F(RSRollbackTest, OplogStartMissing) {
@@ -278,7 +280,7 @@ TEST_F(RSRollbackTest, NoRemoteOpLog) {
                                _coordinator,
                                _replicationProcess.get());
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18752, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "unable to determine common point");
 }
 
 TEST_F(RSRollbackTest, RemoteGetRollbackIdThrows) {
@@ -300,7 +302,7 @@ TEST_F(RSRollbackTest, RemoteGetRollbackIdThrows) {
                                     _coordinator,
                                     _replicationProcess.get())
                            .transitional_ignore(),
-                       UserException,
+                       AssertionException,
                        ErrorCodes::UnknownError);
 }
 
@@ -324,7 +326,7 @@ TEST_F(RSRollbackTest, RemoteGetRollbackIdDiffersFromRequiredRBID) {
                                     _coordinator,
                                     _replicationProcess.get())
                            .transitional_ignore(),
-                       UserException,
+                       AssertionException,
                        ErrorCodes::Error(40506));
 }
 
@@ -396,9 +398,11 @@ int _testRollbackDelete(OperationContext* opCtx,
             : RollbackSourceMock(std::move(oplog)),
               called(false),
               _documentAtSource(documentAtSource) {}
-        BSONObj findOneByUUID(const std::string& db, UUID uuid, const BSONObj& filter) const {
+        std::pair<BSONObj, NamespaceString> findOneByUUID(const std::string& db,
+                                                          UUID uuid,
+                                                          const BSONObj& filter) const override {
             called = true;
-            return _documentAtSource;
+            return {_documentAtSource, NamespaceString()};
         }
         mutable bool called;
 
@@ -514,7 +518,7 @@ TEST_F(RSRollbackTest, RollbackInsertDocumentWithNoId) {
                                _replicationProcess.get());
     stopCapturingLogMessages();
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18752, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "unable to determine common point");
     ASSERT_EQUALS(1, countLogLinesContaining("Cannot roll back op with no _id. ns: test.t,"));
     ASSERT_FALSE(rollbackSource.called);
 }
@@ -832,7 +836,7 @@ TEST_F(RSRollbackTest, RollbackCreateIndexCommandMissingIndexName) {
                                _replicationProcess.get());
     stopCapturingLogMessages();
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18752, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "unable to determine common point");
     ASSERT_EQUALS(1,
                   countLogLinesContaining(
                       "Missing index name in createIndexes operation on rollback, document: "));
@@ -864,7 +868,7 @@ TEST_F(RSRollbackTest, RollbackUnknownCommand) {
                      _coordinator,
                      _replicationProcess.get());
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18752, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "unable to determine common point");
 }
 
 TEST_F(RSRollbackTest, RollbackDropCollectionCommand) {
@@ -1643,9 +1647,9 @@ TEST_F(RSRollbackTest, RollbackApplyOpsCommand) {
         RollbackSourceLocal(std::unique_ptr<OplogInterface> oplog)
             : RollbackSourceMock(std::move(oplog)) {}
 
-        BSONObj findOneByUUID(const std::string& db,
-                              UUID uuid,
-                              const BSONObj& filter) const override {
+        std::pair<BSONObj, NamespaceString> findOneByUUID(const std::string& db,
+                                                          UUID uuid,
+                                                          const BSONObj& filter) const override {
             int numFields = 0;
             for (const auto element : filter) {
                 ++numFields;
@@ -1655,11 +1659,11 @@ TEST_F(RSRollbackTest, RollbackApplyOpsCommand) {
             searchedIds.insert(filter.firstElement().numberInt());
             switch (filter.firstElement().numberInt()) {
                 case 1:
-                    return BSON("_id" << 1 << "v" << 1);
+                    return {BSON("_id" << 1 << "v" << 1), NamespaceString()};
                 case 2:
-                    return BSON("_id" << 2 << "v" << 3);
+                    return {BSON("_id" << 2 << "v" << 3), NamespaceString()};
                 case 3:
-                    return BSON("_id" << 3 << "v" << 5);
+                    return {BSON("_id" << 3 << "v" << 5), NamespaceString()};
                 case 4:
                     return {};
             }
@@ -1820,7 +1824,7 @@ TEST_F(RSRollbackTest, RollbackCollectionModificationCommandInvalidCollectionOpt
                      _coordinator,
                      _replicationProcess.get());
     ASSERT_EQUALS(ErrorCodes::UnrecoverableRollbackError, status.code());
-    ASSERT_EQUALS(18753, status.location());
+    ASSERT_STRING_CONTAINS(status.reason(), "Failed to parse options");
 }
 
 TEST(RSRollbackTest, LocalEntryWithoutNsIsFatal) {
@@ -1975,53 +1979,164 @@ DEATH_TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutStmtIdIsFatal, "invar
                   RSFatalException);
 }
 
-// TODO: Uncomment this test once transactions have been updated to work with the proper
-// uuid. See SERVER-30076.
-// TEST(RSRollbackTest, LocalEntryWithTxnNumberAddsTransactionTableDocToBeRefetched) {
-//    FixUpInfo fui;
-//    auto entryWithoutTxnNumber =
-//        BSON("ts" << Timestamp(Seconds(1), 0) << "t" << 1LL << "h" << 1LL << "op"
-//                  << "i"
-//                  << "ui"
-//                  << UUID::gen()
-//                  << "ns"
-//                  << "test.t2"
-//                  << "o"
-//                  << BSON("_id" << 2 << "a" << 2));
-//    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(fui, entryWithoutTxnNumber));
-//
-//    // With no txnNumber present, no extra documents need to be refetched.
-//    ASSERT_EQ(fui.docsToRefetch.size(), 1U);
-//
-//    UUID uuid = UUID::gen();
-//    auto entryWithTxnNumber =
-//        BSON("ts" << Timestamp(Seconds(1), 0) << "t" << 1LL << "h" << 1LL << "op"
-//                  << "i"
-//                  << "ui"
-//                  << uuid
-//                  << "ns"
-//                  << "test.t"
-//                  << "o"
-//                  << BSON("_id" << 1 << "a" << 1)
-//                  << "txnNumber"
-//                  << 1LL
-//                  << "stmtId"
-//                  << 1
-//                  << "lsid"
-//                  << makeLogicalSessionIdForTest().toBSON());
-//    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber));
-//
-//    // If txnNumber is present, the session transactions table document corresponding to the oplog
-//    // entry's sessionId also needs to be refetched.
-//    ASSERT_EQ(fui.docsToRefetch.size(), 3U);
-//
-//    DocID expectedTxnDoc;
-//    expectedTxnDoc.ownedObj = BSON("_id" << entryWithTxnNumber["lsid"]);
-//    expectedTxnDoc._id = expectedTxnDoc.ownedObj.firstElement();
-//    expectedTxnDoc.ns = NamespaceString::kSessionTransactionsTableNamespace.ns().c_str();
-//    expectedTxnDoc.uuid = uuid;
-//    ASSERT_TRUE(fui.docsToRefetch.find(expectedTxnDoc) != fui.docsToRefetch.end());
-//}
+TEST_F(RSRollbackTest, LocalEntryWithTxnNumberWithoutTxnTableUUIDIsFatal) {
+    // If txnNumber is present, but the transaction collection has no UUID, rollback fails.
+    UUID uuid = UUID::gen();
+    auto lsid = makeLogicalSessionIdForTest();
+    auto entryWithTxnNumber =
+        BSON("ts" << Timestamp(Seconds(1), 0) << "t" << 1LL << "h" << 1LL << "op"
+                  << "i"
+                  << "ui"
+                  << uuid
+                  << "ns"
+                  << "test.t"
+                  << "o"
+                  << BSON("_id" << 1 << "a" << 1)
+                  << "txnNumber"
+                  << 1LL
+                  << "stmtId"
+                  << 1
+                  << "lsid"
+                  << lsid.toBSON());
+
+    FixUpInfo fui;
+    ASSERT_THROWS(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber).ignore(),
+                  RSFatalException);
+}
+
+TEST_F(RSRollbackTest, LocalEntryWithTxnNumberAddsTransactionTableDocToBeRefetched) {
+    FixUpInfo fui;
+
+    // With no txnNumber present, no extra documents need to be refetched.
+    auto entryWithoutTxnNumber =
+        BSON("ts" << Timestamp(Seconds(1), 0) << "t" << 1LL << "h" << 1LL << "op"
+                  << "i"
+                  << "ui"
+                  << UUID::gen()
+                  << "ns"
+                  << "test.t2"
+                  << "o"
+                  << BSON("_id" << 2 << "a" << 2));
+
+    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(fui, entryWithoutTxnNumber));
+    ASSERT_EQ(fui.docsToRefetch.size(), 1U);
+
+    // If txnNumber is present, and the transaction table exists and has a UUID, the session
+    // transactions table document corresponding to the oplog entry's sessionId also needs to be
+    // refetched.
+    UUID uuid = UUID::gen();
+    auto lsid = makeLogicalSessionIdForTest();
+    auto entryWithTxnNumber =
+        BSON("ts" << Timestamp(Seconds(1), 0) << "t" << 1LL << "h" << 1LL << "op"
+                  << "i"
+                  << "ui"
+                  << uuid
+                  << "ns"
+                  << "test.t"
+                  << "o"
+                  << BSON("_id" << 1 << "a" << 1)
+                  << "txnNumber"
+                  << 1LL
+                  << "stmtId"
+                  << 1
+                  << "lsid"
+                  << lsid.toBSON());
+    UUID transactionTableUUID = UUID::gen();
+    fui.transactionTableUUID = transactionTableUUID;
+
+    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber));
+    ASSERT_EQ(fui.docsToRefetch.size(), 3U);
+
+    auto expectedObj = BSON("_id" << lsid.toBSON());
+    DocID expectedTxnDoc(expectedObj, expectedObj.firstElement(), transactionTableUUID);
+    ASSERT_TRUE(fui.docsToRefetch.find(expectedTxnDoc) != fui.docsToRefetch.end());
+}
+
+TEST_F(RSRollbackTest, RollbackFailsIfTransactionDocumentRefetchReturnsDifferentNamespace) {
+    createOplog(_opCtx.get());
+
+    // Create a valid FixUpInfo struct for rolling back a single CRUD operation that has a
+    // transaction number and session id.
+    FixUpInfo fui;
+
+    auto entryWithTxnNumber =
+        BSON("ts" << Timestamp(Seconds(2), 0) << "t" << 1LL << "h" << 1LL << "op"
+                  << "i"
+                  << "ui"
+                  << UUID::gen()
+                  << "ns"
+                  << "test.t"
+                  << "o"
+                  << BSON("_id" << 1 << "a" << 1)
+                  << "txnNumber"
+                  << 1LL
+                  << "stmtId"
+                  << 1
+                  << "lsid"
+                  << makeLogicalSessionIdForTest().toBSON());
+
+    UUID transactionTableUUID = UUID::gen();
+    fui.transactionTableUUID = transactionTableUUID;
+
+    auto commonOperation =
+        std::make_pair(BSON("ts" << Timestamp(Seconds(1), 0) << "h" << 1LL), RecordId(1));
+    fui.commonPoint = OpTime(Timestamp(Seconds(1), 0), 1LL);
+    fui.commonPointOurDiskloc = RecordId(1);
+
+    fui.rbid = 1;
+
+    // The FixUpInfo will have an extra doc to refetch: the corresponding transaction table entry.
+    ASSERT_OK(updateFixUpInfoFromLocalOplogEntry(fui, entryWithTxnNumber));
+    ASSERT_EQ(fui.docsToRefetch.size(), 2U);
+
+    {
+        class RollbackSourceLocal : public RollbackSourceMock {
+        public:
+            RollbackSourceLocal(std::unique_ptr<OplogInterface> oplog)
+                : RollbackSourceMock(std::move(oplog)) {}
+            std::pair<BSONObj, NamespaceString> findOneByUUID(
+                const std::string& db, UUID uuid, const BSONObj& filter) const override {
+                return {BSONObj(), NamespaceString::kSessionTransactionsTableNamespace};
+            }
+            int getRollbackId() const override {
+                return 1;
+            }
+        };
+
+        // Should not throw, since findOneByUUID will return the expected namespace.
+        syncFixUp(_opCtx.get(),
+                  fui,
+                  RollbackSourceLocal(
+                      std::unique_ptr<OplogInterface>(new OplogInterfaceMock({commonOperation}))),
+                  _coordinator,
+                  _replicationProcess.get());
+    }
+
+    {
+        class RollbackSourceLocal : public RollbackSourceMock {
+        public:
+            RollbackSourceLocal(std::unique_ptr<OplogInterface> oplog)
+                : RollbackSourceMock(std::move(oplog)) {}
+            std::pair<BSONObj, NamespaceString> findOneByUUID(
+                const std::string& db, UUID uuid, const BSONObj& filter) const override {
+                return {BSONObj(), NamespaceString("foo.bar")};
+            }
+            int getRollbackId() const override {
+                return 1;
+            }
+        };
+
+        // The returned namespace will not be the expected one, implying a rename/drop of the
+        // transactions collection across this node and the sync source, so rollback should fail.
+        ASSERT_THROWS(syncFixUp(_opCtx.get(),
+                                fui,
+                                RollbackSourceLocal(std::unique_ptr<OplogInterface>(
+                                    new OplogInterfaceMock({commonOperation}))),
+                                _coordinator,
+                                _replicationProcess.get()),
+                      RSFatalException);
+    }
+}
 
 TEST_F(RSRollbackTest, RollbackReturnsImmediatelyOnFailureToTransitionToRollback) {
     // On failing to transition to ROLLBACK, rollback() should return immediately and not call
@@ -2048,12 +2163,12 @@ TEST_F(RSRollbackTest, RollbackReturnsImmediatelyOnFailureToTransitionToRollback
     ASSERT_EQUALS(MemberState(MemberState::RS_SECONDARY), _coordinator->getMemberState());
 }
 
-DEATH_TEST_F(RSRollbackTest,
-             RollbackUnrecoverableRollbackErrorTriggersFatalAssertion,
-             "Unable to complete rollback. A full resync may be needed: "
-             "UnrecoverableRollbackError: need to rollback, but unable to determine common point "
-             "between local and remote oplog: InvalidSyncSource: remote oplog empty or unreadable "
-             "@ 18752") {
+DEATH_TEST_F(
+    RSRollbackTest,
+    RollbackUnrecoverableRollbackErrorTriggersFatalAssertion,
+    "Unable to complete rollback. A full resync may be needed: "
+    "UnrecoverableRollbackError: need to rollback, but unable to determine common point "
+    "between local and remote oplog: InvalidSyncSource: remote oplog empty or unreadable") {
     // rollback() should abort on getting UnrecoverableRollbackError from syncRollback(). An empty
     // local oplog will make syncRollback() return the intended error.
     OplogInterfaceMock localOplogWithSingleOplogEntry({makeNoopOplogEntryAndRecordId(Seconds(1))});

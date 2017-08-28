@@ -32,22 +32,20 @@
 
 #include "mongo/db/logical_session_cache_factory_mongos.h"
 
+#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_liason_mongos.h"
-#include "mongo/db/sessions_collection_mock.h"
+#include "mongo/db/sessions_collection_sharded.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
 
 std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheS() {
     auto liason = stdx::make_unique<ServiceLiasonMongos>();
+    auto sessionsColl = stdx::make_unique<SessionsCollectionSharded>();
 
-    // TODO SERVER-29203, replace with SessionsCollectionSharded
-    auto sessionsColl =
-        stdx::make_unique<MockSessionsCollection>(std::make_shared<MockSessionsCollectionImpl>());
-
-    return stdx::make_unique<LogicalSessionCache>(
-        std::move(liason), std::move(sessionsColl), LogicalSessionCache::Options{});
+    return stdx::make_unique<LogicalSessionCacheImpl>(
+        std::move(liason), std::move(sessionsColl), LogicalSessionCacheImpl::Options{});
 }
 
 }  // namespace mongo

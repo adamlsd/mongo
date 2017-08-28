@@ -133,7 +133,8 @@ public:
                         const RecordId& loc,
                         OpDebug* opDebug,
                         bool fromMigrate,
-                        bool noWarn) {
+                        bool noWarn,
+                        Collection::StoreDeletedDoc storeDeletedDoc) {
         std::abort();
     }
 
@@ -156,6 +157,7 @@ public:
 
     Status insertDocumentsForOplog(OperationContext* opCtx,
                                    const DocWriter* const* docs,
+                                   Timestamp* timestamps,
                                    size_t nDocs) {
         std::abort();
     }
@@ -167,14 +169,14 @@ public:
         std::abort();
     }
 
-    StatusWith<RecordId> updateDocument(OperationContext* opCtx,
-                                        const RecordId& oldLocation,
-                                        const Snapshotted<BSONObj>& oldDoc,
-                                        const BSONObj& newDoc,
-                                        bool enforceQuota,
-                                        bool indexesAffected,
-                                        OpDebug* opDebug,
-                                        OplogUpdateEntryArgs* args) {
+    RecordId updateDocument(OperationContext* opCtx,
+                            const RecordId& oldLocation,
+                            const Snapshotted<BSONObj>& oldDoc,
+                            const BSONObj& newDoc,
+                            bool enforceQuota,
+                            bool indexesAffected,
+                            OpDebug* opDebug,
+                            OplogUpdateEntryArgs* args) {
         std::abort();
     }
 

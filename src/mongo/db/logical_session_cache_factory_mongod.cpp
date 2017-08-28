@@ -32,8 +32,10 @@
 
 #include "mongo/db/logical_session_cache_factory_mongod.h"
 
+#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/service_liason_mongod.h"
-#include "mongo/db/sessions_collection_mock.h"
+#include "mongo/db/sessions_collection_rs.h"
+#include "mongo/db/sessions_collection_sharded.h"
 #include "mongo/db/sessions_collection_standalone.h"
 #include "mongo/stdx/memory.h"
 
@@ -44,13 +46,9 @@ namespace {
 std::unique_ptr<SessionsCollection> makeSessionsCollection(LogicalSessionCacheServer state) {
     switch (state) {
         case LogicalSessionCacheServer::kSharded:
-            // TODO SERVER-29203, replace with SessionsCollectionSharded
-            return stdx::make_unique<MockSessionsCollection>(
-                std::make_shared<MockSessionsCollectionImpl>());
+            return stdx::make_unique<SessionsCollectionSharded>();
         case LogicalSessionCacheServer::kReplicaSet:
-            // TODO SERVER-29202, replace with SessionsCollectionRS
-            return stdx::make_unique<MockSessionsCollection>(
-                std::make_shared<MockSessionsCollectionImpl>());
+            return stdx::make_unique<SessionsCollectionRS>();
         case LogicalSessionCacheServer::kStandalone:
             return stdx::make_unique<SessionsCollectionStandalone>();
         default:
@@ -65,8 +63,8 @@ std::unique_ptr<LogicalSessionCache> makeLogicalSessionCacheD(LogicalSessionCach
 
     // Set up the logical session cache
     auto sessionsColl = makeSessionsCollection(state);
-    return stdx::make_unique<LogicalSessionCache>(
-        std::move(liason), std::move(sessionsColl), LogicalSessionCache::Options{});
+    return stdx::make_unique<LogicalSessionCacheImpl>(
+        std::move(liason), std::move(sessionsColl), LogicalSessionCacheImpl::Options{});
 }
 
 }  // namespace mongo

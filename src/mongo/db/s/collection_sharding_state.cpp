@@ -267,17 +267,6 @@ boost::optional<KeyRange> CollectionShardingState::getNextOrphanRange(BSONObj co
     return _metadataManager->getNextOrphanRange(from);
 }
 
-bool CollectionShardingState::isDocumentInMigratingChunk(OperationContext* opCtx,
-                                                         const BSONObj& doc) {
-    dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
-
-    if (_sourceMgr) {
-        return _sourceMgr->getCloner()->isDocumentInMigratingChunk(opCtx, doc);
-    }
-
-    return false;
-}
-
 void CollectionShardingState::onInsertOp(OperationContext* opCtx, const BSONObj& insertedDoc) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
 
@@ -330,11 +319,12 @@ void CollectionShardingState::onUpdateOp(OperationContext* opCtx,
     }
 }
 
-CollectionShardingState::DeleteState::DeleteState(OperationContext* opCtx,
-                                                  CollectionShardingState* css,
-                                                  BSONObj const& doc)
-    : documentKey(css->_metadataManager->extractDocumentKey(doc).getOwned()),
-      isMigrating(css->_sourceMgr && css->isDocumentInMigratingChunk(opCtx, doc)) {}
+auto CollectionShardingState::makeDeleteState(BSONObj const& doc) -> DeleteState {
+    BSONObj documentKey = getMetadata().extractDocumentKey(doc).getOwned();
+    invariant(documentKey.hasField("_id"_sd));
+    return {std::move(documentKey),
+            _sourceMgr && _sourceMgr->getCloner()->isDocumentInMigratingChunk(doc)};
+}
 
 void CollectionShardingState::onDeleteOp(OperationContext* opCtx,
                                          const CollectionShardingState::DeleteState& deleteState) {
@@ -478,6 +468,10 @@ bool CollectionShardingState::_checkShardVersionOk(OperationContext* opCtx,
 
         *expectedShardVersion = info->getVersion(_nss.ns());
     }
+
+    // An operation with read concern 'available' should never have shardVersion set.
+    invariant(repl::ReadConcernArgs::get(opCtx).getLevel() !=
+              repl::ReadConcernLevel::kAvailableReadConcern);
 
     if (ChunkVersion::isIgnoredVersion(*expectedShardVersion)) {
         return true;

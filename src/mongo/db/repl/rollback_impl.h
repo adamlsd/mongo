@@ -30,6 +30,7 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/repl/rollback.h"
+#include "mongo/db/repl/storage_interface.h"
 #include "mongo/stdx/functional.h"
 
 namespace mongo {
@@ -94,14 +95,24 @@ public:
         virtual ~Listener() = default;
 
         /**
-         *  Function called after we transition to ROLLBACK.
+         * Function called after we transition to ROLLBACK.
          */
-        virtual void onTransitionToRollback() {}
+        virtual void onTransitionToRollback() noexcept {}
 
         /**
-         *  Function called after we find the common point.
+         * Function called after we find the common point.
          */
-        virtual void onCommonPointFound(Timestamp commonPoint) {}
+        virtual void onCommonPointFound(Timestamp commonPoint) noexcept {}
+
+        /**
+         * Function called after we recover to the stable timestamp.
+         */
+        virtual void onRecoverToStableTimestamp() noexcept {}
+
+        /**
+         * Function called after we recover from the oplog.
+         */
+        virtual void onRecoverFromOplog() noexcept {}
     };
 
     /**
@@ -111,6 +122,7 @@ public:
      */
     RollbackImpl(OplogInterface* localOplog,
                  OplogInterface* remoteOplog,
+                 StorageInterface* storageInterface,
                  ReplicationProcess* replicationProcess,
                  ReplicationCoordinator* replicationCoordinator,
                  Listener* listener);
@@ -120,6 +132,7 @@ public:
      */
     RollbackImpl(OplogInterface* localOplog,
                  OplogInterface* remoteOplog,
+                 StorageInterface* storageInterface,
                  ReplicationProcess* replicationProcess,
                  ReplicationCoordinator* replicationCoordinator);
 
@@ -154,6 +167,17 @@ private:
      * 'opCtx' cannot be null.
      */
     Status _transitionToRollback(OperationContext* opCtx);
+
+    /**
+     * Recovers to the stable timestamp while holding the global exclusive lock.
+     */
+    Status _recoverToStableTimestamp(OperationContext* opCtx);
+
+    /**
+     * Runs the oplog recovery logic. This involves applying oplog operations between the stable
+     * timestamp and the common point.
+     */
+    Status _oplogRecovery(OperationContext* opCtx);
 
     /**
      * If we detected that we rolled back the shardIdentity document as part of this rollback
@@ -198,6 +222,10 @@ private:
 
     // This is used to read oplog entries from the remote oplog to find the common point.
     OplogInterface* const _remoteOplog;  // (R)
+
+    // The StorageInterface associated with this Rollback instance. Used to execute operations
+    // at the storage layer e.g. recovering to a timestamp.
+    StorageInterface* _storageInterface;  // (R)
 
     // The ReplicationProcess associated with this Rollback instance. Used to update and persist
     // various pieces of replication state related to the rollback process.

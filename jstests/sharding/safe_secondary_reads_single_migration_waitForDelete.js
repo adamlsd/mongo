@@ -143,10 +143,9 @@
             command: {distinct: coll, key: "x"},
             checkResults: function(res) {
                 assert.commandWorked(res);
-                // Expect the command not to find any results, since the chunk moved.
-                assert.eq(0, res.values.length, tojson(res));
+                assert.eq(1, res.values.length, tojson(res));
             },
-            behavior: "unversioned"
+            behavior: "versioned"
         },
         driverOIDTest: {skip: "does not return user data"},
         drop: {skip: "primary only"},
@@ -190,7 +189,7 @@
             checkResults: function(res) {
                 assert.commandWorked(res);
                 // Expect the command not to find any results, since the chunk moved.
-                assert.eq(0, res.results.length, res);
+                assert.eq(0, res.results.length, tojson(res));
             },
             behavior: "unversioned"
         },
@@ -230,8 +229,11 @@
         isdbgrid: {skip: "does not return user data"},
         isMaster: {skip: "does not return user data"},
         journalLatencyTest: {skip: "does not return user data"},
+        killAllSessions: {skip: "does not return user data"},
+        killAllSessionsByPattern: {skip: "does not return user data"},
         killCursors: {skip: "does not return user data"},
         killOp: {skip: "does not return user data"},
+        killSessions: {skip: "does not return user data"},
         listCollections: {skip: "primary only"},
         listCommands: {skip: "does not return user data"},
         listDatabases: {skip: "primary only"},
@@ -246,6 +248,7 @@
         mergeChunks: {skip: "primary only"},
         moveChunk: {skip: "primary only"},
         movePrimary: {skip: "primary only"},
+        multicast: {skip: "does not return user data"},
         netstat: {skip: "does not return user data"},
         parallelCollectionScan: {skip: "is an internal command"},
         ping: {skip: "does not return user data"},
@@ -257,6 +260,8 @@
         planCacheSetFilter: {skip: "does not return user data"},
         profile: {skip: "primary only"},
         refreshLogicalSessionCacheNow: {skip: "does not return user data"},
+        refreshSessions: {skip: "does not return user data"},
+        refreshSessionsInternal: {skip: "does not return user data"},
         reIndex: {skip: "does not return user data"},
         removeShard: {skip: "primary only"},
         removeShardFromZone: {skip: "primary only"},

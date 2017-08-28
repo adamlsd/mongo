@@ -47,6 +47,7 @@
 #include "mongo/transport/message_compressor_registry.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/sock.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/version.h"
@@ -347,7 +348,7 @@ Status storeMongoShellOptions(const moe::Environment& params,
     if (params.count("writeMode")) {
         std::string mode = params["writeMode"].as<string>();
         if (mode != "commands" && mode != "legacy" && mode != "compatibility") {
-            throw MsgAssertionException(
+            throw AssertionException(
                 17396, mongoutils::str::stream() << "Unknown writeMode option: " << mode);
         }
         shellGlobalParams.writeMode = mode;
@@ -355,7 +356,7 @@ Status storeMongoShellOptions(const moe::Environment& params,
     if (params.count("readMode")) {
         std::string mode = params["readMode"].as<string>();
         if (mode != "commands" && mode != "compatibility" && mode != "legacy") {
-            throw MsgAssertionException(
+            throw AssertionException(
                 17397,
                 mongoutils::str::stream()
                     << "Unknown readMode option: '"
@@ -368,10 +369,10 @@ Status storeMongoShellOptions(const moe::Environment& params,
         std::string protos = params["rpcProtocols"].as<string>();
         auto parsedRPCProtos = rpc::parseProtocolSet(protos);
         if (!parsedRPCProtos.isOK()) {
-            throw MsgAssertionException(28653,
-                                        str::stream() << "Unknown RPC Protocols: '" << protos
-                                                      << "'. Valid values are {none, opQueryOnly, "
-                                                      << "opCommandOnly, all}");
+            throw AssertionException(28653,
+                                     str::stream() << "Unknown RPC Protocols: '" << protos
+                                                   << "'. Valid values are {none, opQueryOnly, "
+                                                   << "opCommandOnly, all}");
         }
         shellGlobalParams.rpcProtocols = parsedRPCProtos.getValue();
     }

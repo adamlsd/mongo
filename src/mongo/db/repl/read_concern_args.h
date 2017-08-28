@@ -34,6 +34,7 @@
 #include "mongo/base/status.h"
 #include "mongo/db/json.h"
 #include "mongo/db/logical_time.h"
+#include "mongo/db/operation_context.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/util/time_support.h"
 
@@ -43,7 +44,12 @@ class BSONObj;
 
 namespace repl {
 
-enum class ReadConcernLevel { kLocalReadConcern, kMajorityReadConcern, kLinearizableReadConcern };
+enum class ReadConcernLevel {
+    kLocalReadConcern,
+    kMajorityReadConcern,
+    kLinearizableReadConcern,
+    kAvailableReadConcern
+};
 
 class ReadConcernArgs {
 public:
@@ -51,6 +57,8 @@ public:
     static const std::string kAfterOpTimeFieldName;
     static const std::string kAfterClusterTimeFieldName;
     static const std::string kLevelFieldName;
+
+    static const OperationContext::Decoration<ReadConcernArgs> get;
 
     ReadConcernArgs();
 
@@ -66,7 +74,7 @@ public:
      *    find: "coll"
      *    filter: <Query Object>,
      *    readConcern: { // optional
-     *      level: "[majority|local|linearizable]",
+     *      level: "[majority|local|linearizable|available]",
      *      afterOpTime: { ts: <timestamp>, term: <NumberLong> },
      *      afterClusterTime: <timestamp>,
      *    }

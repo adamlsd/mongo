@@ -117,6 +117,23 @@ using UserHolder = std::unique_ptr<User, UserReleaser>;
 
 }  // namespace
 
+AuthorizationSession::ScopedImpersonate::ScopedImpersonate(AuthorizationSession* authSession,
+                                                           std::vector<UserName>* users,
+                                                           std::vector<RoleName>* roles)
+    : _authSession(*authSession), _users(*users), _roles(*roles) {
+    swap();
+}
+
+AuthorizationSession::ScopedImpersonate::~ScopedImpersonate() {
+    swap();
+}
+
+void AuthorizationSession::ScopedImpersonate::swap() {
+    using std::swap;
+    swap(_authSession._impersonatedUserNames, _users);
+    swap(_authSession._impersonatedRoleNames, _roles);
+}
+
 AuthorizationSession::AuthorizationSession(std::unique_ptr<AuthzSessionExternalState> externalState)
     : _externalState(std::move(externalState)), _impersonationFlag(false) {}
 
@@ -183,10 +200,10 @@ User* AuthorizationSession::getSingleUser() {
     if (userNameItr.more()) {
         userName = userNameItr.next();
         if (userNameItr.more()) {
-            uasserted(ErrorCodes::Unauthorized, "there are no users authenticated");
+            uasserted(ErrorCodes::Unauthorized, "too many users are authenticated");
         }
     } else {
-        uasserted(ErrorCodes::Unauthorized, "too many users are authenticated");
+        uasserted(ErrorCodes::Unauthorized, "there are no users authenticated");
     }
 
     return lookupUser(userName);
@@ -363,39 +380,11 @@ Status AuthorizationSession::checkAuthForFind(const NamespaceString& ns, bool ha
 Status AuthorizationSession::checkAuthForGetMore(const NamespaceString& ns,
                                                  long long cursorID,
                                                  bool hasTerm) {
-    // "ns" can be in one of several formats: "listCollections" format, "listIndexes" format,
-    // "collectionless aggregation" format, and normal format.
-    if (ns.isListCollectionsCursorNS()) {
-        // "ns" is of the form "<db>.$cmd.listCollections". Check if we can perform the
-        // listCollections action on the database resource for "<db>".
-        if (!isAuthorizedToListCollections(ns.db())) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized for listCollections getMore on "
-                                        << ns.ns());
-        }
-    } else if (ns.isListIndexesCursorNS()) {
-        // "ns" is of the form "<db>.$cmd.listIndexes.<coll>". Check if we can perform the
-        // listIndexes action on the "<db>.<coll>" namespace.
-        NamespaceString targetNS = ns.getTargetNSForListIndexes();
-        if (!isAuthorizedForActionsOnNamespace(targetNS, ActionType::listIndexes)) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized for listIndexes getMore on " << ns.ns());
-        }
-    } else if (ns.isCollectionlessAggregateNS()) {
-        // "ns" is of the form "<db>.$cmd.aggregate". We don't have access to the parameters of the
-        // original command at this point, but since users can only getMore their own cursors we
-        // verify that a user either is authenticated or does not need to be.
-        if (!_externalState->shouldIgnoreAuthChecks() && !getAuthenticatedUserNames().more()) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized for collectionless aggregate getMore on "
-                                        << ns.db());
-        }
-    } else {
-        // "ns" is a regular namespace string.  Check if we can perform the find action on it.
-        if (!isAuthorizedForActionsOnNamespace(ns, ActionType::find)) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized for getMore on " << ns.ns());
-        }
+    // Since users can only getMore their own cursors, we verify that a user either is authenticated
+    // or does not need to be.
+    if (!_externalState->shouldIgnoreAuthChecks() && !getAuthenticatedUserNames().more()) {
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "not authorized for getMore on " << ns.db());
     }
 
     // Only internal clients (such as other nodes in a replica set) are allowed to use

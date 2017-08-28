@@ -126,7 +126,8 @@ Status StorageInterfaceImpl::initializeRollbackID(OperationContext* opCtx) {
 
     BSONObjBuilder bob;
     rbid.serialize(&bob);
-    return insertDocument(opCtx, _rollbackIdNss, bob.done());
+    SnapshotName noTimestamp;  // This write is not replicated.
+    return insertDocument(opCtx, _rollbackIdNss, TimestampedBSONObj{bob.done(), noTimestamp});
 }
 
 Status StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
@@ -263,8 +264,8 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
 
 Status StorageInterfaceImpl::insertDocument(OperationContext* opCtx,
                                             const NamespaceString& nss,
-                                            const BSONObj& doc) {
-    return insertDocuments(opCtx, nss, {InsertStatement(doc)});
+                                            const TimestampedBSONObj& doc) {
+    return insertDocuments(opCtx, nss, {InsertStatement(doc.obj, doc.timestamp)});
 }
 
 namespace {
@@ -392,7 +393,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
         try {
             auto coll = db->createCollection(opCtx, nss.ns(), options);
             invariant(coll);
-        } catch (const UserException& ex) {
+        } catch (const AssertionException& ex) {
             return ex.toStatus();
         }
         wuow.commit();
@@ -448,7 +449,8 @@ Status StorageInterfaceImpl::renameCollection(OperationContext* opCtx,
 
         auto newColl = autoDB.getDb()->getCollection(opCtx, toNS);
         if (newColl->uuid()) {
-            UUIDCatalog::get(opCtx).onRenameCollection(opCtx, newColl, newColl->uuid().get());
+            UUIDCatalog::get(opCtx).onRenameCollection(
+                opCtx, [newColl] { return newColl; }, newColl->uuid().get());
         }
         wunit.commit();
         return status;
@@ -894,14 +896,18 @@ StatusWith<StorageInterface::CollectionCount> StorageInterfaceImpl::getCollectio
     return collection->numRecords(opCtx);
 }
 
-void StorageInterfaceImpl::setStableTimestamp(StorageEngine* storageEngine,
+void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx,
                                               SnapshotName snapshotName) {
-    storageEngine->setStableTimestamp(snapshotName);
+    serviceCtx->getGlobalStorageEngine()->setStableTimestamp(snapshotName);
 }
 
-void StorageInterfaceImpl::setInitialDataTimestamp(StorageEngine* storageEngine,
+void StorageInterfaceImpl::setInitialDataTimestamp(ServiceContext* serviceCtx,
                                                    SnapshotName snapshotName) {
-    storageEngine->setInitialDataTimestamp(snapshotName);
+    serviceCtx->getGlobalStorageEngine()->setInitialDataTimestamp(snapshotName);
+}
+
+Status StorageInterfaceImpl::recoverToStableTimestamp(ServiceContext* serviceCtx) {
+    return serviceCtx->getGlobalStorageEngine()->recoverToStableTimestamp();
 }
 
 Status StorageInterfaceImpl::isAdminDbValid(OperationContext* opCtx) {

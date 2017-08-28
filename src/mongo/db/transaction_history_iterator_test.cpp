@@ -37,6 +37,7 @@
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/mock_repl_coord_server_fixture.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/optime.h"
@@ -49,62 +50,7 @@
 
 namespace mongo {
 
-class SessionHistoryIteratorTest : public ServiceContextMongoDTest {
-public:
-    void setUp() override {
-        ServiceContextMongoDTest::setUp();
-
-        _opCtx = cc().makeOperationContext();
-
-        // Insert code path assumes existence of repl coordinator!
-        repl::ReplSettings replSettings;
-        replSettings.setReplSetString(
-            ConnectionString::forReplicaSet("sessionTxnStateTest", {HostAndPort("a:1")})
-                .toString());
-        replSettings.setMaster(true);
-
-        auto service = getServiceContext();
-        repl::ReplicationCoordinator::set(
-            service, stdx::make_unique<repl::ReplicationCoordinatorMock>(service, replSettings));
-
-        // Note: internal code does not allow implicit creation of non-capped oplog collection.
-        DBDirectClient client(opCtx());
-        ASSERT_TRUE(
-            client.createCollection(NamespaceString::kRsOplogNamespace.ns(), 1024 * 1024, true));
-    }
-
-    void tearDown() override {
-        // ServiceContextMongoDTest::tearDown() will try to create it's own opCtx, and it's not
-        // allowed to have 2 present per client, so destroy this one.
-        _opCtx.reset();
-
-        ServiceContextMongoDTest::tearDown();
-    }
-
-    /**
-     * Helper method for inserting new entries to the oplog. This completely bypasses
-     * fixDocumentForInsert.
-     */
-    void insertOplogEntry(const repl::OplogEntry newOplog) {
-        AutoGetCollection autoColl(opCtx(), NamespaceString::kRsOplogNamespace, MODE_IX);
-        auto coll = autoColl.getCollection();
-        ASSERT_TRUE(coll != nullptr);
-
-        auto status = coll->insertDocument(opCtx(),
-                                           InsertStatement(newOplog.toBSON()),
-                                           &CurOp::get(opCtx())->debug(),
-                                           /* enforceQuota */ false,
-                                           /* fromMigrate */ false);
-        ASSERT_OK(status);
-    }
-
-    OperationContext* opCtx() {
-        return _opCtx.get();
-    }
-
-private:
-    ServiceContext::UniqueOperationContext _opCtx;
-};
+using SessionHistoryIteratorTest = MockReplCoordServerFixture;
 
 TEST_F(SessionHistoryIteratorTest, NormalHistory) {
     repl::OplogEntry entry1(repl::OpTime(Timestamp(52, 345), 2),
@@ -196,7 +142,8 @@ TEST_F(SessionHistoryIteratorTest, NextShouldAssertIfHistoryIsTruncated) {
     ASSERT_BSONOBJ_EQ(BSON("y" << 50), nextEntry.getObject());
 
     ASSERT_TRUE(iter.hasNext());
-    ASSERT_THROWS_CODE(iter.next(opCtx()), UserException, ErrorCodes::IncompleteTransactionHistory);
+    ASSERT_THROWS_CODE(
+        iter.next(opCtx()), AssertionException, ErrorCodes::IncompleteTransactionHistory);
 }
 
 TEST_F(SessionHistoryIteratorTest, OplogInWriteHistoryChainWithMissingPrevTSShouldAssert) {
@@ -209,7 +156,7 @@ TEST_F(SessionHistoryIteratorTest, OplogInWriteHistoryChainWithMissingPrevTSShou
 
     TransactionHistoryIterator iter(Timestamp(67, 54801));
     ASSERT_TRUE(iter.hasNext());
-    ASSERT_THROWS_CODE(iter.next(opCtx()), UserException, ErrorCodes::FailedToParse);
+    ASSERT_THROWS_CODE(iter.next(opCtx()), AssertionException, ErrorCodes::FailedToParse);
 }
 
 }  // namespace mongo

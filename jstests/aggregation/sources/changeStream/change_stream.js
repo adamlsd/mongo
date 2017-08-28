@@ -2,7 +2,9 @@
 (function() {
     "use strict";
 
-    const oplogProjection = {$project: {"_id.ts": 0}};
+    load('jstests/libs/uuid_util.js');
+
+    const oplogProjection = {$project: {"_id.clusterTime": 0}};
     function getCollectionNameFromFullNamespace(ns) {
         return ns.split(/\.(.+)/)[1];
     }
@@ -13,6 +15,17 @@
     function startWatchingChanges(pipeline, collection) {
         // Strip the oplog fields we aren't testing.
         pipeline.push(oplogProjection);
+
+        // TODO: SERVER-29126
+        // While change streams still uses read concern level local instead of read concern level
+        // majority, we need to use causal consistency to be able to immediately read our own writes
+        // out of the oplog.  Once change streams read from the majority snapshot, we can remove
+        // these synchronization points from this test.
+        assert.commandWorked(db.runCommand({
+            find: "foo",
+            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+        }));
+
         // Waiting for replication assures no previous operations will be included.
         replTest.awaitReplication();
         let res = assert.commandWorked(
@@ -22,6 +35,11 @@
     }
 
     function assertNextBatchMatches({cursor, expectedBatch}) {
+        // TODO: SERVER-29126
+        assert.commandWorked(db.runCommand({
+            find: "foo",
+            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+        }));
         replTest.awaitReplication();
         if (expectedBatch.length == 0)
             assert.commandWorked(db.adminCommand(
@@ -49,14 +67,15 @@
     jsTestLog("Testing single insert");
     let cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     assert.writeOK(db.t1.insert({_id: 0, a: 1}));
+    const t1Uuid = getUUIDFromListCollections(db, db.t1.getName());
     let expected = {
         _id: {
-            _id: 0,
-            ns: "test.t1",
+            documentKey: {_id: 0},
+            uuid: t1Uuid,
         },
         documentKey: {_id: 0},
         fullDocument: {_id: 0, a: 1},
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "insert",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -66,12 +85,12 @@
     assert.writeOK(db.t1.insert({_id: 1, a: 2}));
     expected = {
         _id: {
-            _id: 1,
-            ns: "test.t1",
+            documentKey: {_id: 1},
+            uuid: t1Uuid,
         },
         documentKey: {_id: 1},
         fullDocument: {_id: 1, a: 2},
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "insert",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -80,10 +99,10 @@
     cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     assert.writeOK(db.t1.update({_id: 0}, {a: 3}));
     expected = {
-        _id: {_id: 0, ns: "test.t1"},
+        _id: {documentKey: {_id: 0}, uuid: t1Uuid},
         documentKey: {_id: 0},
         fullDocument: {_id: 0, a: 3},
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "replace",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -92,10 +111,10 @@
     cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     assert.writeOK(db.t1.update({_id: 0}, {b: 3}));
     expected = {
-        _id: {_id: 0, ns: "test.t1"},
+        _id: {documentKey: {_id: 0}, uuid: t1Uuid},
         documentKey: {_id: 0},
         fullDocument: {_id: 0, b: 3},
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "replace",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -105,12 +124,12 @@
     assert.writeOK(db.t1.update({_id: 2}, {a: 4}, {upsert: true}));
     expected = {
         _id: {
-            _id: 2,
-            ns: "test.t1",
+            documentKey: {_id: 2},
+            uuid: t1Uuid,
         },
         documentKey: {_id: 2},
         fullDocument: {_id: 2, a: 4},
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "insert",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -120,10 +139,9 @@
     cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     assert.writeOK(db.t1.update({_id: 3}, {$inc: {b: 2}}));
     expected = {
-        _id: {_id: 3, ns: "test.t1"},
+        _id: {documentKey: {_id: 3}, uuid: t1Uuid},
         documentKey: {_id: 3},
-        fullDocument: null,
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "update",
         updateDescription: {removedFields: [], updatedFields: {b: 3}},
     };
@@ -133,10 +151,9 @@
     cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     assert.writeOK(db.t1.remove({_id: 1}));
     expected = {
-        _id: {_id: 1, ns: "test.t1"},
+        _id: {documentKey: {_id: 1}, uuid: t1Uuid},
         documentKey: {_id: 1},
-        fullDocument: null,
-        ns: {coll: "t1", db: "test"},
+        ns: {db: "test", coll: "t1"},
         operationType: "delete",
     };
     assertNextBatchMatches({cursor: cursor, expectedBatch: [expected]});
@@ -145,15 +162,16 @@
     cursor = startWatchingChanges([{$changeStream: {}}], db.t1);
     let t2cursor = startWatchingChanges([{$changeStream: {}}], db.t2);
     assert.writeOK(db.t2.insert({_id: 100, c: 1}));
+    const t2Uuid = getUUIDFromListCollections(db, db.t2.getName());
     assertNextBatchMatches({cursor: cursor, expectedBatch: []});
     expected = {
         _id: {
-            _id: 100,
-            ns: "test.t2",
+            documentKey: {_id: 100},
+            uuid: t2Uuid,
         },
         documentKey: {_id: 100},
         fullDocument: {_id: 100, c: 1},
-        ns: {coll: "t2", db: "test"},
+        ns: {db: "test", coll: "t2"},
         operationType: "insert",
     };
     assertNextBatchMatches({cursor: t2cursor, expectedBatch: [expected]});
@@ -166,7 +184,7 @@
     jsTestLog("Testing rename");
     t2cursor = startWatchingChanges([{$changeStream: {}}], db.t2);
     assert.writeOK(db.t2.renameCollection("t3"));
-    expected = {_id: {ns: "test.$cmd"}, operationType: "invalidate", fullDocument: null};
+    expected = {_id: {uuid: t2Uuid}, operationType: "invalidate"};
     assertNextBatchMatches({cursor: t2cursor, expectedBatch: [expected]});
 
     jsTestLog("Testing insert that looks like rename");
@@ -181,19 +199,22 @@
     const tailableCursor = db.tailable1.aggregate([{$changeStream: {}}, oplogProjection]);
     assert(!tailableCursor.hasNext());
     assert.writeOK(db.tailable1.insert({_id: 101, a: 1}));
+    const tailable1Uuid = getUUIDFromListCollections(db, db.tailable1.getName());
     assert(tailableCursor.hasNext());
     assert.docEq(tailableCursor.next(), {
         _id: {
-            _id: 101,
-            ns: "test.tailable1",
+            documentKey: {_id: 101},
+            uuid: tailable1Uuid,
         },
         documentKey: {_id: 101},
         fullDocument: {_id: 101, a: 1},
-        ns: {coll: "tailable1", db: "test"},
+        ns: {db: "test", coll: "tailable1"},
         operationType: "insert",
     });
 
     jsTestLog("Testing awaitdata");
+    db.createCollection("tailable2");
+    const tailable2Uuid = getUUIDFromListCollections(db, db.tailable2.getName());
     let res = assert.commandWorked(db.runCommand(
         {aggregate: "tailable2", pipeline: [{$changeStream: {}}, oplogProjection], cursor: {}}));
     let aggcursor = res.cursor;
@@ -228,12 +249,12 @@
     assert.eq(aggcursor.nextBatch.length, 1);
     assert.docEq(aggcursor.nextBatch[0], {
         _id: {
-            _id: 102,
-            ns: "test.tailable2",
+            documentKey: {_id: 102},
+            uuid: tailable2Uuid,
         },
         documentKey: {_id: 102},
         fullDocument: {_id: 102, a: 2},
-        ns: {coll: "tailable2", db: "test"},
+        ns: {db: "test", coll: "tailable2"},
         operationType: "insert",
     });
 
@@ -253,6 +274,11 @@
      * document is present.
      */
     function getOneDoc(cursor) {
+        // TODO: SERVER-29126
+        assert.commandWorked(db.runCommand({
+            find: "foo",
+            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+        }));
         replTest.awaitReplication();
         assert.commandWorked(db.adminCommand(
             {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}));
@@ -272,6 +298,11 @@
      * is present.
      */
     function assertNextBatchIsEmpty(cursor) {
+        // TODO: SERVER-29126
+        assert.commandWorked(db.runCommand({
+            find: "foo",
+            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+        }));
         replTest.awaitReplication();
         assert.commandWorked(db.adminCommand(
             {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}));
@@ -337,21 +368,6 @@
     }));
     resumeCursor = res.cursor;
     assert.docEq(getOneDoc(resumeCursor), thirdInsertChangeDoc);
-    assertNextBatchIsEmpty(resumeCursor);
-
-    jsTestLog("Testing that resume is possible after the collection is dropped.");
-    assert(db.resume1.drop());
-    const invalidateDoc = getOneDoc(resumeCursor);
-    assert.eq(invalidateDoc.operationType, "invalidate");
-    res = assert.commandWorked(db.runCommand({
-        aggregate: "resume1",
-        pipeline: [{$changeStream: {resumeAfter: firstInsertChangeDoc._id}}],
-        cursor: {batchSize: 0}
-    }));
-    resumeCursor = res.cursor;
-    assert.docEq(getOneDoc(resumeCursor), secondInsertChangeDoc);
-    assert.docEq(getOneDoc(resumeCursor), thirdInsertChangeDoc);
-    assert.docEq(getOneDoc(resumeCursor), invalidateDoc);
     assertNextBatchIsEmpty(resumeCursor);
 
     replTest.stopSet();

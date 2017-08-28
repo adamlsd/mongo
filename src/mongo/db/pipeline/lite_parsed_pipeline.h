@@ -47,7 +47,7 @@ public:
     /**
      * Constructs a LiteParsedPipeline from the raw BSON stages given in 'request'.
      *
-     * May throw a UserException if there is an invalid stage specification, although full
+     * May throw a AssertionException if there is an invalid stage specification, although full
      * validation happens later, during Pipeline construction.
      */
     LiteParsedPipeline(const AggregationRequest& request) {
@@ -99,6 +99,24 @@ public:
     bool hasChangeStream() const {
         return std::any_of(_stageSpecs.begin(), _stageSpecs.end(), [](auto&& spec) {
             return spec->isChangeStream();
+        });
+    }
+
+    /**
+     * Returns false if the pipeline has any stage which must be run locally on mongos.
+     */
+    bool allowedToForwardFromMongos() const {
+        return std::all_of(_stageSpecs.cbegin(), _stageSpecs.cend(), [](const auto& spec) {
+            return spec->allowedToForwardFromMongos();
+        });
+    }
+
+    /**
+     * Returns false if the pipeline has any Documet Source which requires rewriting via serialize.
+     */
+    bool allowedToPassthroughFromMongos() const {
+        return std::all_of(_stageSpecs.cbegin(), _stageSpecs.cend(), [](const auto& spec) {
+            return spec->allowedToPassthroughFromMongos();
         });
     }
 

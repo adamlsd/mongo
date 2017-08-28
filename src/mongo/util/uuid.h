@@ -53,13 +53,15 @@ class UUID {
     using UUIDStorage = std::array<unsigned char, 16>;
 
     // Make the IDL generated parser a friend
-    friend class ConfigsvrShardCollection;
+    friend class ConfigsvrShardCollectionResponse;
+    friend class DbCheckOplogCollection;
     friend class One_UUID;
     friend class LogicalSessionId;
     friend class LogicalSessionToClient;
     friend class LogicalSessionIdToClient;
     friend class LogicalSessionFromClient;
     friend class repl::OplogEntryBase;
+    friend class ResumeTokenInternal;
 
 public:
     /**
@@ -139,6 +141,22 @@ public:
 
     inline bool operator!=(const UUID& rhs) const {
         return !(*this == rhs);
+    }
+
+    inline bool operator<(const UUID& rhs) const {
+        return _uuid < rhs._uuid;
+    }
+
+    inline bool operator>(const UUID& rhs) const {
+        return _uuid > rhs._uuid;
+    }
+
+    inline bool operator<=(const UUID& rhs) const {
+        return _uuid <= rhs._uuid;
+    }
+
+    inline bool operator>=(const UUID& rhs) const {
+        return _uuid >= rhs._uuid;
     }
 
     /**

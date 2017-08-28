@@ -75,6 +75,8 @@
 #include "mongo/db/introspect.h"
 #include "mongo/db/json.h"
 #include "mongo/db/keys_collection_manager.h"
+#include "mongo/db/kill_sessions.h"
+#include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_session_cache.h"
@@ -109,6 +111,7 @@
 #include "mongo/db/service_context_d.h"
 #include "mongo/db/service_entry_point_mongod.h"
 #include "mongo/db/session_catalog.h"
+#include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/storage/encryption_hooks.h"
@@ -326,12 +329,39 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     const repl::ReplSettings& replSettings = repl::getGlobalReplicationCoordinator()->getSettings();
 
     if (!storageGlobalParams.readOnly) {
-        // We open the "local" database before calling checkIfReplMissingFromCommandLine() to ensure
-        // the in-memory catalog entries for the 'kSystemReplSetCollection' collection have been
-        // populated if the collection exists. If the "local" database didn't exist at this point
-        // yet, then it will be created. If the mongod is running in a read-only mode, then it is
-        // fine to not open the "local" database and populate the catalog entries because we won't
-        // attempt to drop the temporary collections anyway.
+        StatusWith<std::vector<StorageEngine::CollectionIndexNamePair>> swIndexesToRebuild =
+            storageEngine->reconcileCatalogAndIdents(opCtx);
+        fassertStatusOK(40593, swIndexesToRebuild);
+        for (auto&& collIndexPair : swIndexesToRebuild.getValue()) {
+            const std::string& coll = collIndexPair.first;
+            const std::string& indexName = collIndexPair.second;
+            DatabaseCatalogEntry* dbce =
+                storageEngine->getDatabaseCatalogEntry(opCtx, NamespaceString(coll).db());
+            invariant(dbce);
+            CollectionCatalogEntry* cce = dbce->getCollectionCatalogEntry(coll);
+            invariant(cce);
+
+            StatusWith<IndexNameObjs> swIndexToRebuild(
+                getIndexNameObjs(opCtx, dbce, cce, [&indexName](const std::string& str) {
+                    return str == indexName;
+                }));
+            if (!swIndexToRebuild.isOK() || swIndexToRebuild.getValue().first.empty()) {
+                severe() << "Unable to get indexes for collection. Collection: " << coll;
+                fassertFailedNoTrace(40590);
+            }
+
+            invariant(swIndexToRebuild.getValue().first.size() == 1 &&
+                      swIndexToRebuild.getValue().second.size() == 1);
+            fassertStatusOK(
+                40592, rebuildIndexesOnCollection(opCtx, dbce, cce, swIndexToRebuild.getValue()));
+        }
+
+        // We open the "local" database before calling checkIfReplMissingFromCommandLine() to
+        // ensure the in-memory catalog entries for the 'kSystemReplSetCollection' collection have
+        // been populated if the collection exists. If the "local" database didn't exist at this
+        // point yet, then it will be created. If the mongod is running in a read-only mode, then
+        // it is fine to not open the "local" database and populate the catalog entries because we
+        // won't attempt to drop the temporary collections anyway.
         Lock::DBLock dbLock(opCtx, kSystemReplSetCollection.db(), MODE_X);
         dbHolder().openDb(opCtx, kSystemReplSetCollection.db());
     }
@@ -735,9 +765,12 @@ ExitCode _initAndListen(int listenPort) {
     runner->startup().transitional_ignore();
     globalServiceContext->setPeriodicRunner(std::move(runner));
 
+    SessionKiller::set(globalServiceContext,
+                       std::make_shared<SessionKiller>(globalServiceContext, killSessionsLocal));
+
     // Set up the logical session cache
     LogicalSessionCacheServer kind = LogicalSessionCacheServer::kStandalone;
-    if (shardingInitialized) {
+    if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
         kind = LogicalSessionCacheServer::kSharded;
     } else if (replSettings.usingReplSets()) {
         kind = LogicalSessionCacheServer::kReplicaSet;
@@ -983,8 +1016,6 @@ void shutdownTask() {
     log(LogComponent::kNetwork) << "shutdown: going to flush diaglog...";
     _diaglog.flush();
 
-    serviceContext->setKillAllOperations();
-
     if (serviceContext->getGlobalStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
         OperationContext* opCtx = client->getOperationContext();
@@ -1021,6 +1052,8 @@ void shutdownTask() {
 
         ShardingState::get(serviceContext)->shutDown(opCtx);
     }
+
+    serviceContext->setKillAllOperations();
 
     // Shut down the background periodic task runner
     if (auto runner = serviceContext->getPeriodicRunner()) {

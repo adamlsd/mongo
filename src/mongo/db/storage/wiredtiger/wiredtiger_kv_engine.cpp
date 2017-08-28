@@ -112,8 +112,8 @@ public:
                 const bool forceCheckpoint = false;
                 const bool stableCheckpoint = false;
                 _sessionCache->waitUntilDurable(forceCheckpoint, stableCheckpoint);
-            } catch (const UserException& e) {
-                invariant(e.getCode() == ErrorCodes::ShutdownInProgress);
+            } catch (const AssertionException& e) {
+                invariant(e.code() == ErrorCodes::ShutdownInProgress);
             }
 
             int ms = storageGlobalParams.journalCommitIntervalMs.load();
@@ -201,8 +201,11 @@ public:
                         _sessionCache->waitUntilDurable(forceCheckpoint, stableCheckpoint);
                     }
                 }
-            } catch (const UserException& exc) {
-                invariant(exc.getCode() == ErrorCodes::ShutdownInProgress);
+            } catch (const WriteConflictException& wce) {
+                // Temporary: remove this after WT-3483
+                warning() << "Checkpoint encountered a write conflict exception.";
+            } catch (const AssertionException& exc) {
+                invariant(exc.code() == ErrorCodes::ShutdownInProgress);
             }
         }
         LOG(1) << "stopping " << name() << " thread";
@@ -379,7 +382,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
                 fassertFailedNoTrace(28717);
             } else if (ret != 0) {
                 Status s(wtRCToStatus(ret));
-                msgassertedNoTrace(28718, s.reason());
+                msgasserted(28718, s.reason());
             }
             invariantWTOK(_conn->close(_conn, NULL));
             // After successful recovery, remove the journal directory.
@@ -403,7 +406,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         fassertFailedNoTrace(28561);
     } else if (ret != 0) {
         Status s(wtRCToStatus(ret));
-        msgassertedNoTrace(28595, s.reason());
+        msgasserted(28595, s.reason());
     }
 
     _sessionCache.reset(new WiredTigerSessionCache(this));
@@ -726,9 +729,9 @@ std::unique_ptr<RecordStore> WiredTigerKVEngine::getGroupedRecordStore(
 
     std::unique_ptr<WiredTigerRecordStore> ret;
     if (prefix == KVPrefix::kNotPrefixed) {
-        ret = stdx::make_unique<StandardWiredTigerRecordStore>(opCtx, params);
+        ret = stdx::make_unique<StandardWiredTigerRecordStore>(this, opCtx, params);
     } else {
-        ret = stdx::make_unique<PrefixedWiredTigerRecordStore>(opCtx, params, prefix);
+        ret = stdx::make_unique<PrefixedWiredTigerRecordStore>(this, opCtx, params, prefix);
     }
     ret->postConstructorInit(opCtx);
 
@@ -1015,6 +1018,40 @@ void WiredTigerKVEngine::setStableTimestamp(SnapshotName stableTimestamp) {
     if (_checkpointThread) {
         _checkpointThread->setStableTimestamp(stableTimestamp);
     }
+
+    // Communicate to WiredTiger that it can clean up timestamp data earlier than the timestamp
+    // provided.  No future queries will need point-in-time reads at a timestamp prior to the one
+    // provided here.
+    _setOldestTimestamp(stableTimestamp);
+}
+
+void WiredTigerKVEngine::_setOldestTimestamp(SnapshotName oldestTimestamp) {
+    if (oldestTimestamp == SnapshotName()) {
+        // No oldestTimestamp to set, yet.
+        return;
+    }
+    {
+        stdx::unique_lock<stdx::mutex> lock(_oplogManagerMutex);
+        if (!_oplogManager) {
+            // No oplog yet, so don't bother setting oldest_timestamp.
+            return;
+        }
+        if (_oplogManager->getOplogReadTimestamp() < oldestTimestamp.asU64()) {
+            // For one node replica sets, the commit point might race ahead of the oplog read
+            // timestamp.
+            // For now, we will simply avoid setting the oldestTimestamp in such cases.
+            return;
+        }
+    }
+    char oldestTSConfigString["oldest_timestamp="_sd.size() + (8 * 2) /* 16 hexadecimal digits */ +
+                              1 /* trailing null */];
+    auto size = std::snprintf(oldestTSConfigString,
+                              sizeof(oldestTSConfigString),
+                              "oldest_timestamp=%llx",
+                              static_cast<unsigned long long>(oldestTimestamp.asU64()));
+    invariant(static_cast<std::size_t>(size) < sizeof(oldestTSConfigString));
+    invariantWTOK(_conn->set_timestamp(_conn, oldestTSConfigString));
+    LOG(2) << "oldest_timestamp set to " << oldestTimestamp.asU64();
 }
 
 void WiredTigerKVEngine::setInitialDataTimestamp(SnapshotName initialDataTimestamp) {
@@ -1030,4 +1067,29 @@ bool WiredTigerKVEngine::supportsRecoverToStableTimestamp() const {
 
     return _checkpointThread->supportsRecoverToStableTimestamp();
 }
+
+void WiredTigerKVEngine::initializeOplogManager(OperationContext* opCtx,
+                                                const std::string& uri,
+                                                WiredTigerRecordStore* oplogRecordStore) {
+    stdx::unique_lock<stdx::mutex> lock(_oplogManagerMutex);
+    if (_oplogManagerCount == 0)
+        _oplogManager.reset(new WiredTigerOplogManager(opCtx, uri, oplogRecordStore));
+    _oplogManagerCount++;
+}
+
+void WiredTigerKVEngine::deleteOplogManager() {
+    stdx::unique_lock<stdx::mutex> lock(_oplogManagerMutex);
+    invariant(_oplogManagerCount > 0);
+    _oplogManagerCount--;
+    if (_oplogManagerCount == 0)
+        _oplogManager.reset();
+}
+
+void WiredTigerKVEngine::replicationBatchIsComplete() const {
+    stdx::unique_lock<stdx::mutex> lock(_oplogManagerMutex);
+    if (_oplogManager) {
+        _oplogManager->triggerJournalFlush();
+    }
+}
+
 }  // namespace mongo

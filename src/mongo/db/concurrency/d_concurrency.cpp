@@ -147,12 +147,9 @@ Lock::GlobalLock::GlobalLock(OperationContext* opCtx,
                              EnqueueOnly enqueueOnly)
     : _opCtx(opCtx),
       _result(LOCK_INVALID),
-      _pbwm(opCtx->lockState(), resourceIdParallelBatchWriterMode) {
+      _pbwm(opCtx->lockState(), resourceIdParallelBatchWriterMode),
+      _isOutermostLock(!opCtx->lockState()->isLocked()) {
     _enqueue(lockMode, timeoutMs);
-
-    if ((lockMode == LockMode::MODE_IX || lockMode == LockMode::MODE_X) && isLocked()) {
-        GlobalLockAcquisitionTracker::get(opCtx).setGlobalExclusiveLockTaken();
-    }
 }
 
 void Lock::GlobalLock::_enqueue(LockMode lockMode, unsigned timeoutMs) {
@@ -171,6 +168,10 @@ void Lock::GlobalLock::waitForLock(unsigned timeoutMs) {
     if (_result != LOCK_OK && _opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
         _pbwm.unlock();
     }
+
+    if (_opCtx->lockState()->isWriteLocked()) {
+        GlobalLockAcquisitionTracker::get(_opCtx).setGlobalExclusiveLockTaken();
+    }
 }
 
 void Lock::GlobalLock::_unlock() {
@@ -179,7 +180,6 @@ void Lock::GlobalLock::_unlock() {
         _result = LOCK_INVALID;
     }
 }
-
 
 Lock::DBLock::DBLock(OperationContext* opCtx, StringData db, LockMode mode)
     : _id(RESOURCE_DATABASE, db),

@@ -76,6 +76,7 @@
 #include "mongo/s/chunk_version.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/sock.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -280,6 +281,11 @@ public:
                     infoBuilder.append("killPending", true);
                 }
 
+                if (clientOpCtx->getLogicalSessionId()) {
+                    BSONObjBuilder bob(infoBuilder.subobjStart("lsid"));
+                    clientOpCtx->getLogicalSessionId()->serialize(&bob);
+                }
+
                 CurOp::get(clientOpCtx)
                     ->reportState(&infoBuilder,
                                   (truncateMode == CurrentOpTruncateMode::kTruncateOps));
@@ -420,7 +426,12 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
 
     const ExtensionsCallbackReal extensionsCallback(pExpCtx->opCtx, &nss);
 
-    auto cq = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback, pExpCtx);
+    auto cq = CanonicalQuery::canonicalize(opCtx,
+                                           std::move(qr),
+                                           pExpCtx,
+                                           extensionsCallback,
+                                           MatchExpressionParser::AllowedFeatures::kText |
+                                               MatchExpressionParser::AllowedFeatures::kExpr);
 
     if (!cq.isOK()) {
         // Return an error instead of uasserting, since there are cases where the combination of

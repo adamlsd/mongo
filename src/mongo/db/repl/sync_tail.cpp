@@ -477,7 +477,8 @@ void scheduleWritesToOplog(OperationContext* opCtx,
             for (size_t i = begin; i < end; i++) {
                 // Add as unowned BSON to avoid unnecessary ref-count bumps.
                 // 'ops' will outlive 'docs' so the BSON lifetime will be guaranteed.
-                docs.emplace_back(BSONObj(ops[i].raw.objdata()));
+                docs.emplace_back(
+                    InsertStatement{ops[i].raw, SnapshotName(ops[i].getOpTime().getTimestamp())});
             }
 
             fassertStatusOK(40141,
@@ -1284,7 +1285,7 @@ Status multiInitialSyncApply_noAbort(OperationContext* opCtx,
         } catch (const DBException& e) {
             // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
             // dropped before initial sync ends anyways and we should ignore it.
-            if (e.getCode() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType()) {
+            if (e.code() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType()) {
                 continue;
             }
 
@@ -1361,6 +1362,12 @@ StatusWith<OpTime> multiApply(OperationContext* opCtx,
 
         // Update the transaction table to point to the latest oplog entries for each session id.
         scheduleTxnTableUpdates(opCtx, workerPool, latestTxnRecords);
+
+        // Notify the storage engine that a replication batch has completed.
+        // This means that all the writes associated with the oplog entries in the batch are
+        // finished and no new writes with timestamps associated with those oplog entries will show
+        // up in the future.
+        getGlobalServiceContext()->getGlobalStorageEngine()->replicationBatchIsComplete();
     }
 
     // If any of the statuses is not ok, return error.

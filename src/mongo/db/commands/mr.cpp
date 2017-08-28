@@ -53,7 +53,6 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
-#include "mongo/db/matcher/matcher.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/query/find_common.h"
@@ -1096,7 +1095,14 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
     auto qr = stdx::make_unique<QueryRequest>(_config.incLong);
     qr->setSort(sortKey);
 
-    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
+    auto statusWithCQ =
+        CanonicalQuery::canonicalize(opCtx,
+                                     std::move(qr),
+                                     expCtx,
+                                     extensionsCallback,
+                                     MatchExpressionParser::kAllowAllSpecialFeatures &
+                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
     verify(statusWithCQ.isOK());
     std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -1143,11 +1149,8 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
         prev = o;
         all.push_back(o);
 
-        if (!exec->restoreState()) {
-            uasserted(34375, "Plan executor killed during mapReduce final reduce");
-        }
-
         _opCtx->checkForInterrupt();
+        uassertStatusOK(exec->restoreState());
     }
 
     uassert(34428,
@@ -1464,8 +1467,14 @@ public:
 
                 const ExtensionsCallbackReal extensionsCallback(opCtx, &config.nss);
 
-                auto statusWithCQ =
-                    CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+                const boost::intrusive_ptr<ExpressionContext> expCtx;
+                auto statusWithCQ = CanonicalQuery::canonicalize(
+                    opCtx,
+                    std::move(qr),
+                    expCtx,
+                    extensionsCallback,
+                    MatchExpressionParser::kAllowAllSpecialFeatures &
+                        ~MatchExpressionParser::AllowedFeatures::kExpr);
                 if (!statusWithCQ.isOK()) {
                     uasserted(17238, "Can't canonicalize query " + config.filter.toString());
                     return 0;
@@ -1528,12 +1537,9 @@ public:
 
                         scopedAutoDb.reset(new AutoGetDb(opCtx, config.nss.db(), MODE_S));
 
-                        if (!exec->restoreState()) {
-                            return appendCommandStatus(
-                                result,
-                                Status(ErrorCodes::OperationFailed,
-                                       str::stream()
-                                           << "Executor killed during mapReduce command"));
+                        auto restoreStatus = exec->restoreState();
+                        if (!restoreStatus.isOK()) {
+                            return appendCommandStatus(result, restoreStatus);
                         }
 
                         reduceTime += t.micros();

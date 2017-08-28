@@ -28,16 +28,15 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/logical_session_id.h"
+#include "mongo/db/logical_session_id_helpers.h"
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/user.h"
+#include "mongo/db/auth/user_name.h"
 #include "mongo/db/logical_session_cache.h"
 #include "mongo/db/operation_context.h"
 
 namespace mongo {
-
-namespace {
 
 /**
  * This is a safe hash that will not collide with a username because all full usernames include an
@@ -45,14 +44,14 @@ namespace {
  */
 const auto kNoAuthDigest = SHA256Block::computeHash(reinterpret_cast<const uint8_t*>(""), 0);
 
-SHA256Block lookupUserDigest(OperationContext* opCtx) {
+SHA256Block getLogicalSessionUserDigestForLoggedInUser(const OperationContext* opCtx) {
     auto client = opCtx->getClient();
     ServiceContext* serviceContext = client->getServiceContext();
 
     if (AuthorizationManager::get(serviceContext)->isAuthEnabled()) {
         UserName userName;
 
-        auto user = AuthorizationSession::get(client)->getSingleUser();
+        const auto user = AuthorizationSession::get(client)->getSingleUser();
         invariant(user);
 
         return user->getDigest();
@@ -61,10 +60,18 @@ SHA256Block lookupUserDigest(OperationContext* opCtx) {
     }
 }
 
-}  // namespace
+SHA256Block getLogicalSessionUserDigestFor(StringData user, StringData db) {
+    if (user.empty() && db.empty()) {
+        return kNoAuthDigest;
+    }
+    const UserName un(user, db);
+    const auto& fn = un.getFullName();
+    return SHA256Block::computeHash({ConstDataRange(fn.c_str(), fn.size())});
+}
 
 LogicalSessionId makeLogicalSessionId(const LogicalSessionFromClient& fromClient,
-                                      OperationContext* opCtx) {
+                                      OperationContext* opCtx,
+                                      std::initializer_list<Privilege> allowSpoof) {
     LogicalSessionId lsid;
 
     lsid.setId(fromClient.getId());
@@ -74,12 +81,18 @@ LogicalSessionId makeLogicalSessionId(const LogicalSessionFromClient& fromClient
 
         uassert(ErrorCodes::Unauthorized,
                 "Unauthorized to set user digest in LogicalSessionId",
-                authSession->isAuthorizedForPrivilege(
-                    Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate)));
+                std::any_of(allowSpoof.begin(),
+                            allowSpoof.end(),
+                            [&](const auto& priv) {
+                                return authSession->isAuthorizedForPrivilege(priv);
+                            }) ||
+                    authSession->isAuthorizedForPrivilege(Privilege(
+                        ResourcePattern::forClusterResource(), ActionType::impersonate)) ||
+                    getLogicalSessionUserDigestForLoggedInUser(opCtx) == fromClient.getUid());
 
         lsid.setUid(*fromClient.getUid());
     } else {
-        lsid.setUid(lookupUserDigest(opCtx));
+        lsid.setUid(getLogicalSessionUserDigestForLoggedInUser(opCtx));
     }
 
     return lsid;
@@ -89,7 +102,7 @@ LogicalSessionId makeLogicalSessionId(OperationContext* opCtx) {
     LogicalSessionId id{};
 
     id.setId(UUID::gen());
-    id.setUid(lookupUserDigest(opCtx));
+    id.setUid(getLogicalSessionUserDigestForLoggedInUser(opCtx));
 
     return id;
 }
@@ -159,30 +172,16 @@ LogicalSessionToClient makeLogicalSessionToClient(const LogicalSessionId& lsid) 
     return id;
 };
 
-void initializeOperationSessionInfo(OperationContext* opCtx,
-                                    const BSONObj& requestBody,
-                                    bool requiresAuth) {
-    if (!requiresAuth) {
-        return;
+LogicalSessionIdSet makeLogicalSessionIds(const std::vector<LogicalSessionFromClient>& sessions,
+                                          OperationContext* opCtx,
+                                          std::initializer_list<Privilege> allowSpoof) {
+    LogicalSessionIdSet lsids;
+    lsids.reserve(sessions.size());
+    for (auto&& session : sessions) {
+        lsids.emplace(makeLogicalSessionId(session, opCtx, allowSpoof));
     }
 
-    auto osi = OperationSessionInfoFromClient::parse(IDLParserErrorContext("OperationSessionInfo"),
-                                                     requestBody);
-
-    if (osi.getSessionId()) {
-        opCtx->setLogicalSessionId(makeLogicalSessionId(*(osi.getSessionId()), opCtx));
-    }
-
-    if (osi.getTxnNumber()) {
-        uassert(ErrorCodes::IllegalOperation,
-                "Transaction number requires a sessionId to be specified",
-                opCtx->getLogicalSessionId());
-        uassert(ErrorCodes::BadValue,
-                "Transaction number cannot be negative",
-                *osi.getTxnNumber() >= 0);
-
-        opCtx->setTxnNumber(*osi.getTxnNumber());
-    }
+    return lsids;
 }
 
 }  // namespace mongo

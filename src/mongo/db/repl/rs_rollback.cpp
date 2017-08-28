@@ -256,19 +256,23 @@ Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInf
         invariant(sessionId);
         invariant(oplogEntry.getStatementId());
 
-        // TODO: SERVER-30076
-        // Once collection uuids replace namespace strings for rollback, this will need to be
-        // changed to the uuid of the session transaction table collection. Need to add
-        // txnDoc.uuid with the proper uuid.
-        //        DocID txnDoc;
-        //        BSONObjBuilder txnBob;
-        //        txnBob.append("_id", sessionId->toBSON());
-        //        txnDoc.ownedObj = txnBob.obj();
-        //        txnDoc._id = txnDoc.ownedObj.firstElement();
-        //        txnDoc.ns = NamespaceString::kSessionTransactionsTableNamespace.ns().c_str();
-        //
-        //        fixUpInfo.docsToRefetch.insert(txnDoc);
-        //        fixUpInfo.refetchTransactionDocs = true;
+        auto transactionTableUUID = fixUpInfo.transactionTableUUID;
+        if (transactionTableUUID) {
+            BSONObjBuilder txnBob;
+            txnBob.append("_id", sessionId->toBSON());
+            auto txnObj = txnBob.obj();
+
+            DocID txnDoc(txnObj, txnObj.firstElement(), transactionTableUUID.get());
+            txnDoc.ns = NamespaceString::kSessionTransactionsTableNamespace.ns();
+
+            fixUpInfo.docsToRefetch.insert(txnDoc);
+            fixUpInfo.refetchTransactionDocs = true;
+        } else {
+            throw RSFatalException(
+                str::stream() << NamespaceString::kSessionTransactionsTableNamespace.ns()
+                              << " does not have a UUID, but local op has a transaction number: "
+                              << redact(oplogEntry.toBSON()));
+        }
     }
 
     if (oplogEntry.getOpType() == OpTypeEnum::kCommand) {
@@ -808,7 +812,7 @@ void renameOutOfTheWay(OperationContext* opCtx, RenameCollectionInfo info, Datab
     // Renaming the collection that was clashing with the attempted rename
     // operation to a different collection name.
     auto renameStatus = renameCollectionForApplyOps(
-        opCtx, db->name(), tempRenameCollUUID.getField("uuid"), tempRenameCmd.obj());
+        opCtx, db->name(), tempRenameCollUUID.getField("uuid"), tempRenameCmd.obj(), {});
 
     if (!renameStatus.isOK()) {
         severe() << "Unable to rename collection " << info.renameTo << " out of the way to "
@@ -835,7 +839,7 @@ void rollbackRenameCollection(OperationContext* opCtx, UUID uuid, RenameCollecti
     cmd.append("dropTarget", false);
     BSONObj obj = cmd.obj();
 
-    auto status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj);
+    auto status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj, {});
 
     // If we try to roll back a collection to a collection name that currently exists
     // because another collection was renamed or created with the same collection name,
@@ -846,7 +850,7 @@ void rollbackRenameCollection(OperationContext* opCtx, UUID uuid, RenameCollecti
 
         // Retrying to renameCollection command again now that the conflicting
         // collection has been renamed out of the way.
-        status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj);
+        status = renameCollectionForApplyOps(opCtx, dbName, ui.getField("uuid"), obj, {});
 
         if (!status.isOK()) {
             severe() << "Rename collection failed to roll back twice. We were unable to rename "
@@ -865,11 +869,88 @@ void rollbackRenameCollection(OperationContext* opCtx, UUID uuid, RenameCollecti
           << " with uuid: " << uuid;
 }
 
-void syncFixUp(OperationContext* opCtx,
-               const FixUpInfo& fixUpInfo,
-               const RollbackSource& rollbackSource,
-               ReplicationCoordinator* replCoord,
-               ReplicationProcess* replicationProcess) {
+Status _syncRollback(OperationContext* opCtx,
+                     const OplogInterface& localOplog,
+                     const RollbackSource& rollbackSource,
+                     int requiredRBID,
+                     ReplicationCoordinator* replCoord,
+                     ReplicationProcess* replicationProcess) {
+    invariant(!opCtx->lockState()->isLocked());
+
+    FixUpInfo how;
+    log() << "Starting rollback. Sync source: " << rollbackSource.getSource() << rsLog;
+    how.rbid = rollbackSource.getRollbackId();
+    uassert(
+        40506, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
+
+    // Find the UUID of the transactions collection. An OperationContext is required because the
+    // UUID is not known at compile time, so the SessionCatalog needs to load the collection.
+    how.transactionTableUUID = SessionCatalog::getTransactionTableUUID(opCtx);
+
+    log() << "Finding the Common Point";
+    try {
+
+        auto processOperationForFixUp = [&how](const BSONObj& operation) {
+            return updateFixUpInfoFromLocalOplogEntry(how, operation);
+        };
+
+        // Calls syncRollBackLocalOperations to run updateFixUpInfoFromLocalOplogEntry
+        // on each oplog entry up until the common point.
+        auto res = syncRollBackLocalOperations(
+            localOplog, rollbackSource.getOplog(), processOperationForFixUp);
+        if (!res.isOK()) {
+            const auto status = res.getStatus();
+            switch (status.code()) {
+                case ErrorCodes::OplogStartMissing:
+                case ErrorCodes::UnrecoverableRollbackError:
+                    return status;
+                default:
+                    throw RSFatalException(status.toString());
+            }
+        }
+
+        how.commonPoint = res.getValue().first;             // OpTime
+        how.commonPointOurDiskloc = res.getValue().second;  // RecordID
+        how.removeRedundantOperations();
+    } catch (const RSFatalException& e) {
+        return Status(ErrorCodes::UnrecoverableRollbackError,
+                      str::stream()
+                          << "need to rollback, but unable to determine common point between"
+                             " local and remote oplog: "
+                          << e.what());
+    }
+
+    log() << "Rollback common point is " << how.commonPoint;
+    try {
+        ON_BLOCK_EXIT([&] {
+            auto status = replicationProcess->incrementRollbackID(opCtx);
+            fassertStatusOK(40497, status);
+        });
+        syncFixUp(opCtx, how, rollbackSource, replCoord, replicationProcess);
+    } catch (const RSFatalException& e) {
+        return Status(ErrorCodes::UnrecoverableRollbackError, e.what());
+    }
+
+    if (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
+        // This log output is used in js tests so please leave it.
+        log() << "rollback - rollbackHangBeforeFinish fail point "
+                 "enabled. Blocking until fail point is disabled.";
+        while (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
+            invariant(!globalInShutdownDeprecated());  // It is an error to shutdown while enabled.
+            mongo::sleepsecs(1);
+        }
+    }
+
+    return Status::OK();
+}
+
+}  // namespace
+
+void rollback_internal::syncFixUp(OperationContext* opCtx,
+                                  const FixUpInfo& fixUpInfo,
+                                  const RollbackSource& rollbackSource,
+                                  ReplicationCoordinator* replCoord,
+                                  ReplicationProcess* replicationProcess) {
     unsigned long long totalSize = 0;
 
     // UUID -> doc id -> doc
@@ -892,7 +973,27 @@ void syncFixUp(OperationContext* opCtx,
                    << ", _id: " << redact(doc._id);
             // TODO : Slow. Lots of round trips.
             numFetched++;
-            BSONObj good = rollbackSource.findOneByUUID(nss.db().toString(), uuid, doc._id.wrap());
+
+            BSONObj good;
+            NamespaceString resNss;
+            std::tie(good, resNss) =
+                rollbackSource.findOneByUUID(nss.db().toString(), uuid, doc._id.wrap());
+
+            // To prevent inconsistencies in the transactions collection, rollback fails if the UUID
+            // of the collection is different on the sync source than on the node rolling back,
+            // forcing an initial sync. This is detected if the returned namespace for a refetch of
+            // a transaction table document is not "config.transactions," which implies a rename or
+            // drop of the collection occured on either node.
+            if (uuid == fixUpInfo.transactionTableUUID &&
+                resNss != NamespaceString::kSessionTransactionsTableNamespace) {
+                throw RSFatalException(
+                    str::stream()
+                    << "A fetch on the transactions collection returned an unexpected namespace: "
+                    << resNss.ns()
+                    << ". The transactions collection cannot be correctly rolled back, a full "
+                       "resync is required.");
+            }
+
             totalSize += good.objsize();
 
             // Checks that the total amount of data that needs to be refetched is at most
@@ -909,7 +1010,7 @@ void syncFixUp(OperationContext* opCtx,
             // If the collection turned into a view, we might get an error trying to
             // refetch documents, but these errors should be ignored, as we'll be creating
             // the view during oplog replay.
-            if (ex.getCode() == ErrorCodes::CommandNotSupportedOnView)
+            if (ex.code() == ErrorCodes::CommandNotSupportedOnView)
                 continue;
 
             log() << "Rollback couldn't re-fetch from uuid: " << uuid << " _id: " << redact(doc._id)
@@ -1200,7 +1301,7 @@ void syncFixUp(OperationContext* opCtx,
                                     try {
                                         collection->cappedTruncateAfter(opCtx, loc, true);
                                     } catch (const DBException& e) {
-                                        if (e.getCode() == 13415) {
+                                        if (e.code() == 13415) {
                                             // hack: need to just make cappedTruncate do this...
                                             writeConflictRetry(
                                                 opCtx, "truncate", collection->ns().ns(), [&] {
@@ -1294,80 +1395,6 @@ void syncFixUp(OperationContext* opCtx,
     replCoord->resetLastOpTimesFromOplog(opCtx);
 }
 
-Status _syncRollback(OperationContext* opCtx,
-                     const OplogInterface& localOplog,
-                     const RollbackSource& rollbackSource,
-                     int requiredRBID,
-                     ReplicationCoordinator* replCoord,
-                     ReplicationProcess* replicationProcess) {
-    invariant(!opCtx->lockState()->isLocked());
-
-    FixUpInfo how;
-    log() << "Starting rollback. Sync source: " << rollbackSource.getSource() << rsLog;
-    how.rbid = rollbackSource.getRollbackId();
-    uassert(
-        40506, "Upstream node rolled back. Need to retry our rollback.", how.rbid == requiredRBID);
-
-    log() << "Finding the Common Point";
-    try {
-
-        auto processOperationForFixUp = [&how](const BSONObj& operation) {
-            return updateFixUpInfoFromLocalOplogEntry(how, operation);
-        };
-
-        // Calls syncRollBackLocalOperations to run updateFixUpInfoFromLocalOplogEntry
-        // on each oplog entry up until the common point.
-        auto res = syncRollBackLocalOperations(
-            localOplog, rollbackSource.getOplog(), processOperationForFixUp);
-        if (!res.isOK()) {
-            const auto status = res.getStatus();
-            switch (status.code()) {
-                case ErrorCodes::OplogStartMissing:
-                case ErrorCodes::UnrecoverableRollbackError:
-                    return status;
-                default:
-                    throw RSFatalException(status.toString());
-            }
-        }
-
-        how.commonPoint = res.getValue().first;             // OpTime
-        how.commonPointOurDiskloc = res.getValue().second;  // RecordID
-        how.removeRedundantOperations();
-    } catch (const RSFatalException& e) {
-        return Status(ErrorCodes::UnrecoverableRollbackError,
-                      str::stream()
-                          << "need to rollback, but unable to determine common point between"
-                             " local and remote oplog: "
-                          << e.what(),
-                      18752);
-    }
-
-    log() << "Rollback common point is " << how.commonPoint;
-    try {
-        ON_BLOCK_EXIT([&] {
-            auto status = replicationProcess->incrementRollbackID(opCtx);
-            fassertStatusOK(40497, status);
-        });
-        syncFixUp(opCtx, how, rollbackSource, replCoord, replicationProcess);
-    } catch (const RSFatalException& e) {
-        return Status(ErrorCodes::UnrecoverableRollbackError, e.what(), 18753);
-    }
-
-    if (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
-        // This log output is used in js tests so please leave it.
-        log() << "rollback - rollbackHangBeforeFinish fail point "
-                 "enabled. Blocking until fail point is disabled.";
-        while (MONGO_FAIL_POINT(rollbackHangBeforeFinish)) {
-            invariant(!globalInShutdownDeprecated());  // It is an error to shutdown while enabled.
-            mongo::sleepsecs(1);
-        }
-    }
-
-    return Status::OK();
-}
-
-}  // namespace
-
 Status syncRollback(OperationContext* opCtx,
                     const OplogInterface& localOplog,
                     const RollbackSource& rollbackSource,
@@ -1435,7 +1462,7 @@ void rollback(OperationContext* opCtx,
     } catch (const DBException& ex) {
         // UnrecoverableRollbackError should only come from a returned status which is handled
         // above.
-        invariant(ex.getCode() != ErrorCodes::UnrecoverableRollbackError);
+        invariant(ex.code() != ErrorCodes::UnrecoverableRollbackError);
 
         warning() << "Rollback cannot complete at this time (retrying later): " << redact(ex)
                   << " appliedThrough= " << replCoord->getMyLastAppliedOpTime() << " minvalid= "

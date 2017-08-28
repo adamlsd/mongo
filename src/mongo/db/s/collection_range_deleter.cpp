@@ -105,7 +105,7 @@ auto CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
                           << nss.ns();
                 }
                 stdx::lock_guard<stdx::mutex> lk(css->_metadataManager->_managerLock);
-                css->_metadataManager->_clearAllCleanups();
+                css->_metadataManager->_clearAllCleanups(lk);
                 return boost::none;
             }
             if (!forTestOnly && scopedCollectionMetadata->getCollVersion().epoch() != epoch) {
@@ -160,7 +160,8 @@ auto CollectionRangeDeleter::cleanUpNextRange(OperationContext* opCtx,
                 } catch (DBException const& e) {
                     stdx::lock_guard<stdx::mutex> scopedLock(css->_metadataManager->_managerLock);
                     css->_metadataManager->_clearAllCleanups(
-                        {ErrorCodes::fromInt(e.getCode()),
+                        scopedLock,
+                        {e.code(),
                          str::stream() << "cannot push startRangeDeletion record to Op Log,"
                                           " abandoning scheduled range deletions: " << e.what()});
                     return boost::none;

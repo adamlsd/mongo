@@ -56,7 +56,6 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/update_request.h"
@@ -107,28 +106,6 @@ MONGO_INITIALIZER(InitializeParseValidationActionImpl)(InitializerContext* const
 
 // Used below to fail during inserts.
 MONGO_FP_DECLARE(failCollectionInserts);
-
-const auto bannedExpressionsInValidators = std::set<StringData>{
-    "$geoNear", "$near", "$nearSphere", "$text", "$where",
-};
-
-Status checkValidatorForBannedExpressions(const BSONObj& validator) {
-    for (auto field : validator) {
-        const auto name = field.fieldNameStringData();
-        if (name[0] == '$' && bannedExpressionsInValidators.count(name)) {
-            return {ErrorCodes::InvalidOptions,
-                    str::stream() << name << " is not allowed in collection validators"};
-        }
-
-        if (field.type() == Object || field.type() == Array) {
-            auto status = checkValidatorForBannedExpressions(field.Obj());
-            if (!status.isOK())
-                return status;
-        }
-    }
-
-    return Status::OK();
-}
 
 // Uses the collator factory to convert the BSON representation of a collator to a
 // CollatorInterface. Returns null if the BSONObj is empty. We expect the stored collation to be
@@ -305,14 +282,7 @@ StatusWithMatchExpression CollectionImpl::parseValidator(const BSONObj& validato
                               << " database"};
     }
 
-    {
-        auto status = checkValidatorForBannedExpressions(validator);
-        if (!status.isOK())
-            return status;
-    }
-
-    auto statusWithMatcher = MatchExpressionParser::parse(
-        validator, ExtensionsCallbackDisallowExtensions(), _collator.get());
+    auto statusWithMatcher = MatchExpressionParser::parse(validator, _collator.get());
     if (!statusWithMatcher.isOK())
         return statusWithMatcher.getStatus();
 
@@ -321,6 +291,7 @@ StatusWithMatchExpression CollectionImpl::parseValidator(const BSONObj& validato
 
 Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
                                                const DocWriter* const* docs,
+                                               Timestamp* timestamps,
                                                size_t nDocs) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
 
@@ -331,7 +302,7 @@ Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
     invariant(!_indexCatalog.haveAnyIndexes());
     invariant(!_mustTakeCappedLockOnInsert);
 
-    Status status = _recordStore->insertRecordsWithDocWriter(opCtx, docs, nDocs);
+    Status status = _recordStore->insertRecordsWithDocWriterT(opCtx, docs, timestamps, nDocs);
     if (!status.isOK())
         return status;
 
@@ -433,7 +404,8 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
 
     if (_mustTakeCappedLockOnInsert)
         synchronizeOnCappedInFlightResource(opCtx->lockState(), _ns);
-
+    // TODO SERVER-30638: using timestamp 0 for these inserts, which are non-oplog so we don't yet
+    // care about their correct timestamps.
     StatusWith<RecordId> loc = _recordStore->insertRecord(
         opCtx, doc.objdata(), doc.objsize(), _enforceQuota(enforceQuota));
 
@@ -485,11 +457,17 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
 
     std::vector<Record> records;
     records.reserve(count);
+    std::vector<Timestamp> timestamps;
+    timestamps.reserve(count);
+
     for (auto it = begin; it != end; it++) {
         Record record = {RecordId(), RecordData(it->doc.objdata(), it->doc.objsize())};
         records.push_back(record);
+        Timestamp timestamp = Timestamp(it->timestamp.asU64());
+        timestamps.push_back(timestamp);
     }
-    Status status = _recordStore->insertRecords(opCtx, &records, _enforceQuota(enforceQuota));
+    Status status =
+        _recordStore->insertRecordsT(opCtx, &records, &timestamps, _enforceQuota(enforceQuota));
     if (!status.isOK())
         return status;
 
@@ -546,7 +524,8 @@ void CollectionImpl::deleteDocument(OperationContext* opCtx,
                                     const RecordId& loc,
                                     OpDebug* opDebug,
                                     bool fromMigrate,
-                                    bool noWarn) {
+                                    bool noWarn,
+                                    Collection::StoreDeletedDoc storeDeletedDoc) {
     if (isCapped()) {
         log() << "failing remove on a capped ns " << _ns;
         uasserted(10089, "cannot remove from a capped collection");
@@ -557,6 +536,11 @@ void CollectionImpl::deleteDocument(OperationContext* opCtx,
 
     auto deleteState =
         getGlobalServiceContext()->getOpObserver()->aboutToDelete(opCtx, ns(), doc.value());
+
+    boost::optional<BSONObj> deletedDoc;
+    if (storeDeletedDoc == Collection::StoreDeletedDoc::On) {
+        deletedDoc.emplace(doc.value().getOwned());
+    }
 
     /* check if any cursors point to us.  if so, advance them. */
     _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_DELETION);
@@ -570,31 +554,31 @@ void CollectionImpl::deleteDocument(OperationContext* opCtx,
     _recordStore->deleteRecord(opCtx, loc);
 
     getGlobalServiceContext()->getOpObserver()->onDelete(
-        opCtx, ns(), uuid(), stmtId, std::move(deleteState), fromMigrate);
+        opCtx, ns(), uuid(), stmtId, std::move(deleteState), fromMigrate, deletedDoc);
 }
 
 Counter64 moveCounter;
 ServerStatusMetricField<Counter64> moveCounterDisplay("record.moves", &moveCounter);
 
-StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
-                                                    const RecordId& oldLocation,
-                                                    const Snapshotted<BSONObj>& oldDoc,
-                                                    const BSONObj& newDoc,
-                                                    bool enforceQuota,
-                                                    bool indexesAffected,
-                                                    OpDebug* opDebug,
-                                                    OplogUpdateEntryArgs* args) {
+RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
+                                        const RecordId& oldLocation,
+                                        const Snapshotted<BSONObj>& oldDoc,
+                                        const BSONObj& newDoc,
+                                        bool enforceQuota,
+                                        bool indexesAffected,
+                                        OpDebug* opDebug,
+                                        OplogUpdateEntryArgs* args) {
     {
         auto status = checkValidation(opCtx, newDoc);
         if (!status.isOK()) {
             if (_validationLevel == ValidationLevel::STRICT_V) {
-                return status;
+                uassertStatusOK(status);
             }
             // moderate means we have to check the old doc
             auto oldDocStatus = checkValidation(opCtx, oldDoc.value());
             if (oldDocStatus.isOK()) {
                 // transitioning from good -> bad is not ok
-                return status;
+                uassertStatusOK(status);
             }
             // bad -> bad is ok in moderate mode
         }
@@ -616,8 +600,7 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
 
     BSONElement oldId = oldDoc.value()["_id"];
     if (!oldId.eoo() && SimpleBSONElementComparator::kInstance.evaluate(oldId != newDoc["_id"]))
-        return StatusWith<RecordId>(
-            ErrorCodes::InternalError, "in Collection::updateDocument _id mismatch", 13596);
+        uasserted(13596, "in Collection::updateDocument _id mismatch");
 
     // The MMAPv1 storage engine implements capped collections in a way that does not allow records
     // to grow beyond their original size. If MMAPv1 part of a replicaset with storage engines that
@@ -628,11 +611,11 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
     // all size changes.
     const auto oldSize = oldDoc.value().objsize();
     if (_recordStore->isCapped() && oldSize != newDoc.objsize())
-        return {ErrorCodes::CannotGrowDocumentInCappedNamespace,
-                str::stream() << "Cannot change the size of a document in a capped collection: "
-                              << oldSize
-                              << " != "
-                              << newDoc.objsize()};
+        uasserted(ErrorCodes::CannotGrowDocumentInCappedNamespace,
+                  str::stream() << "Cannot change the size of a document in a capped collection: "
+                                << oldSize
+                                << " != "
+                                << newDoc.objsize());
 
     // At the end of this step, we will have a map of UpdateTickets, one per index, which
     // represent the index updates needed to be done, based on the changes between oldDoc and
@@ -649,28 +632,26 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
             IndexCatalog::prepareInsertDeleteOptions(opCtx, descriptor, &options);
             UpdateTicket* updateTicket = new UpdateTicket();
             updateTickets.mutableMap()[descriptor] = updateTicket;
-            Status ret = iam->validateUpdate(opCtx,
-                                             oldDoc.value(),
-                                             newDoc,
-                                             oldLocation,
-                                             options,
-                                             updateTicket,
-                                             entry->getFilterExpression());
-            if (!ret.isOK()) {
-                return StatusWith<RecordId>(ret);
-            }
+            uassertStatusOK(iam->validateUpdate(opCtx,
+                                                oldDoc.value(),
+                                                newDoc,
+                                                oldLocation,
+                                                options,
+                                                updateTicket,
+                                                entry->getFilterExpression()));
         }
     }
+
+    args->preImageDoc = oldDoc.value().getOwned();
 
     Status updateStatus = _recordStore->updateRecord(
         opCtx, oldLocation, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota), this);
 
     if (updateStatus == ErrorCodes::NeedsDocumentMove) {
-        return _updateDocumentWithMove(
-            opCtx, oldLocation, oldDoc, newDoc, enforceQuota, opDebug, args, sid);
-    } else if (!updateStatus.isOK()) {
-        return updateStatus;
+        return uassertStatusOK(_updateDocumentWithMove(
+            opCtx, oldLocation, oldDoc, newDoc, enforceQuota, opDebug, args, sid));
     }
+    uassertStatusOK(updateStatus);
 
     // Object did not move.  We update each index with each respective UpdateTicket.
     if (indexesAffected) {
@@ -681,10 +662,8 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
 
             int64_t keysInserted;
             int64_t keysDeleted;
-            Status ret = iam->update(
-                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted);
-            if (!ret.isOK())
-                return StatusWith<RecordId>(ret);
+            uassertStatusOK(iam->update(
+                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted));
             if (opDebug) {
                 opDebug->keysInserted += keysInserted;
                 opDebug->keysDeleted += keysDeleted;
@@ -709,8 +688,9 @@ StatusWith<RecordId> CollectionImpl::_updateDocumentWithMove(OperationContext* o
                                                              OplogUpdateEntryArgs* args,
                                                              const SnapshotId& sid) {
     // Insert new record.
-    StatusWith<RecordId> newLocation = _recordStore->insertRecord(
-        opCtx, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota));
+    // TODO SERVER-30638, thread through actual timestamps.
+    StatusWith<RecordId> newLocation = _recordStore->insertRecordT(
+        opCtx, newDoc.objdata(), newDoc.objsize(), Timestamp(), _enforceQuota(enforceQuota));
     if (!newLocation.isOK()) {
         return newLocation;
     }
@@ -718,6 +698,8 @@ StatusWith<RecordId> CollectionImpl::_updateDocumentWithMove(OperationContext* o
     invariant(newLocation.getValue() != oldLocation);
 
     _cursorManager.invalidateDocument(opCtx, oldLocation, INVALIDATION_DELETION);
+
+    args->preImageDoc = oldDoc.value().getOwned();
 
     // Remove indexes for old record.
     int64_t keysDeleted;
@@ -1231,7 +1213,7 @@ Status CollectionImpl::validate(OperationContext* opCtx,
             log(LogComponent::kIndex) << "validated collection " << ns().toString() << endl;
         }
     } catch (DBException& e) {
-        if (ErrorCodes::isInterruption(ErrorCodes::Error(e.getCode()))) {
+        if (ErrorCodes::isInterruption(e.code())) {
             return e.toStatus();
         }
         string err = str::stream() << "exception during index validation: " << e.toString();

@@ -270,7 +270,7 @@ void ServiceStateMachine::_sinkCallback(Status status) {
               << _session()->remote() << " (connection id: " << _session()->id() << ")";
         _state.store(State::EndSession);
         return _runNextInGuard(guard);
-    } else if (inExhaust) {
+    } else if (_inExhaust) {
         _state.store(State::Process);
     } else {
         _state.store(State::Source);
@@ -298,13 +298,13 @@ void ServiceStateMachine::_processMessage(ThreadGuard& guard) {
 
     auto& compressorMgr = MessageCompressorManager::forSession(_session());
 
+    _compressorId = boost::none;
     if (_inMessage.operation() == dbCompressed) {
-        auto swm = compressorMgr.decompressMessage(_inMessage);
+        MessageCompressorId compressorId;
+        auto swm = compressorMgr.decompressMessage(_inMessage, &compressorId);
         uassertStatusOK(swm.getStatus());
         _inMessage = swm.getValue();
-        wasCompressed = true;
-    } else {
-        wasCompressed = false;
+        _compressorId = compressorId;
     }
 
     networkCounter.hitLogicalIn(_inMessage.size());
@@ -323,21 +323,22 @@ void ServiceStateMachine::_processMessage(ThreadGuard& guard) {
     // Format our response, if we have one
     Message& toSink = dbresponse.response;
     if (!toSink.empty()) {
+        invariant(!OpMsg::isFlagSet(_inMessage, OpMsg::kMoreToCome));
         toSink.header().setId(nextMessageId());
         toSink.header().setResponseToMsgId(_inMessage.header().getId());
 
         // If this is an exhaust cursor, don't source more Messages
         if (dbresponse.exhaustNS.size() > 0 && setExhaustMessage(&_inMessage, dbresponse)) {
-            inExhaust = true;
+            _inExhaust = true;
         } else {
-            inExhaust = false;
+            _inExhaust = false;
             _inMessage.reset();
         }
 
         networkCounter.hitLogicalOut(toSink.size());
 
-        if (wasCompressed) {
-            auto swm = compressorMgr.compressMessage(toSink);
+        if (_compressorId) {
+            auto swm = compressorMgr.compressMessage(toSink, &_compressorId.value());
             uassertStatusOK(swm.getStatus());
             toSink = swm.getValue();
         }
@@ -422,13 +423,9 @@ void ServiceStateMachine::_runNextInGuard(ThreadGuard& guard) {
         }
 
         return;
-    } catch (const AssertionException& e) {
-        log() << "AssertionException handling request, closing client connection: " << e;
-    } catch (const SocketException& e) {
-        log() << "SocketException handling request, closing client connection: " << e;
     } catch (const DBException& e) {
         // must be right above std::exception to avoid catching subclasses
-        log() << "DBException handling request, closing client connection: " << e;
+        log() << "DBException handling request, closing client connection: " << redact(e);
     } catch (const std::exception& e) {
         error() << "Uncaught std::exception: " << e.what() << ", terminating";
         quickExit(EXIT_UNCAUGHT);

@@ -116,12 +116,12 @@ void createCollection(OperationContext* opCtx,
 /**
  * Creates an oplog entry with given optime.
  */
-BSONObj makeOplogEntry(OpTime opTime) {
+TimestampedBSONObj makeOplogEntry(OpTime opTime) {
     BSONObjBuilder bob(opTime.toBSON());
     bob.append("h", 1LL);
     bob.append("op", "c");
     bob.append("ns", "test.t");
-    return bob.obj();
+    return {bob.obj(), SnapshotName(opTime.getTimestamp())};
 }
 
 /**
@@ -139,6 +139,13 @@ std::vector<InsertStatement> transformInserts(std::vector<BSONObj> docs) {
     std::vector<InsertStatement> inserts(docs.size());
     std::transform(docs.cbegin(), docs.cend(), inserts.begin(), [](const BSONObj& doc) {
         return InsertStatement(doc);
+    });
+    return inserts;
+}
+std::vector<InsertStatement> transformInserts(std::vector<TimestampedBSONObj> docs) {
+    std::vector<InsertStatement> inserts(docs.size());
+    std::transform(docs.cbegin(), docs.cend(), inserts.begin(), [](const TimestampedBSONObj& doc) {
+        return InsertStatement(doc.obj, doc.timestamp);
     });
     return inserts;
 }
@@ -244,6 +251,19 @@ void _assertDocumentsInCollectionEquals(OperationContext* opCtx,
     ASSERT_EQUALS(ErrorCodes::CollectionIsEmpty, iter->next().getStatus());
 }
 
+void _assertDocumentsInCollectionEquals(OperationContext* opCtx,
+                                        const NamespaceString& nss,
+                                        const std::vector<TimestampedBSONObj>& docs) {
+    std::vector<TimestampedBSONObj> reversedDocs(docs);
+    std::reverse(reversedDocs.begin(), reversedDocs.end());
+    OplogInterfaceLocal oplog(opCtx, nss.ns());
+    auto iter = oplog.makeIterator();
+    for (const auto& doc : reversedDocs) {
+        ASSERT_BSONOBJ_EQ(doc.obj, unittest::assertGet(iter->next()).first);
+    }
+    ASSERT_EQUALS(ErrorCodes::CollectionIsEmpty, iter->next().getStatus());
+}
+
 /**
  * Check collection contents for a singleton Rollback ID document.
  */
@@ -284,10 +304,11 @@ TEST_F(StorageInterfaceImplTest, IncrementRollbackIDRollsToZeroWhenExceedingMaxI
     auto opCtx = getOperationContext();
     NamespaceString nss(StorageInterfaceImpl::kDefaultRollbackIdNamespace);
     createCollection(opCtx, nss);
-    auto maxDoc = {BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId
-                              << StorageInterfaceImpl::kRollbackIdFieldName
-                              << std::numeric_limits<int>::max())};
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(maxDoc)));
+    TimestampedBSONObj maxDoc = {BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId
+                                            << StorageInterfaceImpl::kRollbackIdFieldName
+                                            << std::numeric_limits<int>::max()),
+                                 SnapshotName(0)};
+    ASSERT_OK(storage.insertDocument(opCtx, nss, maxDoc));
     _assertRollbackIDDocument(opCtx, std::numeric_limits<int>::max());
 
     auto rbid = unittest::assertGet(storage.getRollbackID(opCtx));
@@ -313,10 +334,11 @@ TEST_F(StorageInterfaceImplTest, GetRollbackIDReturnsBadStatusIfDocumentHasBadFi
 
     createCollection(opCtx, nss);
 
-    auto badDoc = {BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId << "bad field" << 3)};
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(badDoc)));
-    ASSERT_EQUALS(mongo::AssertionException::convertExceptionCode(40415),
-                  storage.getRollbackID(opCtx).getStatus());
+    std::vector<TimestampedBSONObj> badDocs = {
+        {BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId << "bad field" << 3),
+         SnapshotName(0)}};
+    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(badDocs)));
+    ASSERT_EQUALS(ErrorCodes::fromInt(40415), storage.getRollbackID(opCtx).getStatus());
 }
 
 TEST_F(StorageInterfaceImplTest, GetRollbackIDReturnsBadStatusIfRollbackIDIsNotInt) {
@@ -326,9 +348,11 @@ TEST_F(StorageInterfaceImplTest, GetRollbackIDReturnsBadStatusIfRollbackIDIsNotI
 
     createCollection(opCtx, nss);
 
-    auto badDoc = {BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId
-                              << StorageInterfaceImpl::kRollbackIdFieldName
-                              << "bad id")};
+    std::vector<TimestampedBSONObj> badDoc = {
+        TimestampedBSONObj{BSON("_id" << StorageInterfaceImpl::kRollbackIdDocumentId
+                                      << StorageInterfaceImpl::kRollbackIdFieldName
+                                      << "bad id"),
+                           SnapshotName(0)}};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(badDoc)));
     ASSERT_EQUALS(ErrorCodes::TypeMismatch, storage.getRollbackID(opCtx).getStatus());
 }
@@ -411,8 +435,8 @@ TEST_F(StorageInterfaceImplTest, InsertDocumentsSavesOperationsReturnsOpTimeOfLa
     // Check contents of oplog. OplogInterface iterates over oplog collection in reverse.
     repl::OplogInterfaceLocal oplog(opCtx, nss.ns());
     auto iter = oplog.makeIterator();
-    ASSERT_BSONOBJ_EQ(op2, unittest::assertGet(iter->next()).first);
-    ASSERT_BSONOBJ_EQ(op1, unittest::assertGet(iter->next()).first);
+    ASSERT_BSONOBJ_EQ(op2.obj, unittest::assertGet(iter->next()).first);
+    ASSERT_BSONOBJ_EQ(op1.obj, unittest::assertGet(iter->next()).first);
     ASSERT_EQUALS(ErrorCodes::CollectionIsEmpty, iter->next().getStatus());
 }
 
@@ -435,7 +459,7 @@ TEST_F(StorageInterfaceImplTest, InsertMissingDocWorksOnExistingCappedCollection
     opts.capped = true;
     opts.cappedSize = 1024 * 1024;
     createCollection(opCtx, nss, opts);
-    ASSERT_OK(storage.insertDocument(opCtx, nss, BSON("_id" << 1)));
+    ASSERT_OK(storage.insertDocument(opCtx, nss, {BSON("_id" << 1), SnapshotName(1)}));
     AutoGetCollectionForReadCommand autoColl(opCtx, nss);
     ASSERT_TRUE(autoColl.getCollection());
 }
@@ -445,7 +469,7 @@ TEST_F(StorageInterfaceImplTest, InsertMissingDocWorksOnExistingCollection) {
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     createCollection(opCtx, nss);
-    ASSERT_OK(storage.insertDocument(opCtx, nss, BSON("_id" << 1)));
+    ASSERT_OK(storage.insertDocument(opCtx, nss, {BSON("_id" << 1), SnapshotName(1)}));
     AutoGetCollectionForReadCommand autoColl(opCtx, nss);
     ASSERT_TRUE(autoColl.getCollection());
 }
@@ -454,7 +478,7 @@ TEST_F(StorageInterfaceImplTest, InsertMissingDocFailesIfCollectionIsMissing) {
     auto opCtx = getOperationContext();
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
-    const auto status = storage.insertDocument(opCtx, nss, BSON("_id" << 1));
+    const auto status = storage.insertDocument(opCtx, nss, {BSON("_id" << 1), SnapshotName(1)});
     ASSERT_NOT_OK(status);
     ASSERT_EQ(status.code(), ErrorCodes::NamespaceNotFound);
 }
@@ -624,7 +648,7 @@ TEST_F(StorageInterfaceImplTest, DropCollectionWorksWithExistingWithDataCollecti
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     createCollection(opCtx, nss);
-    ASSERT_OK(storage.insertDocument(opCtx, nss, BSON("_id" << 1)));
+    ASSERT_OK(storage.insertDocument(opCtx, nss, {BSON("_id" << 1), SnapshotName(1)}));
     ASSERT_OK(storage.dropCollection(opCtx, nss));
 }
 
@@ -894,13 +918,14 @@ TEST_F(StorageInterfaceImplTest,
     auto nss = makeNamespace(_agent);
     auto indexName = "_id_"_sd;
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(opCtx,
-                                      nss,
-                                      transformInserts({BSON("_id" << 0),
-                                                        BSON("_id" << 1),
-                                                        BSON("_id" << 2),
-                                                        BSON("_id" << 3),
-                                                        BSON("_id" << 4)})));
+    ASSERT_OK(storage.insertDocuments(
+        opCtx,
+        nss,
+        transformInserts(std::vector<TimestampedBSONObj>{{BSON("_id" << 0), SnapshotName(0)},
+                                                         {BSON("_id" << 1), SnapshotName(1)},
+                                                         {BSON("_id" << 2), SnapshotName(2)},
+                                                         {BSON("_id" << 3), SnapshotName(3)},
+                                                         {BSON("_id" << 4), SnapshotName(4)}})));
 
     // startKey not provided
     ASSERT_BSONOBJ_EQ(
@@ -1032,11 +1057,11 @@ TEST_F(StorageInterfaceImplTest,
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     ASSERT_OK(storage.insertDocuments(opCtx,
                                       nss,
-                                      transformInserts({BSON("_id" << 0),
-                                                        BSON("_id" << 1),
-                                                        BSON("_id" << 2),
-                                                        BSON("_id" << 3),
-                                                        BSON("_id" << 4)})));
+                                      {{BSON("_id" << 0), SnapshotName(0)},
+                                       {BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 3), SnapshotName(3)},
+                                       {BSON("_id" << 4), SnapshotName(4)}}));
 
     // startKey not provided
     ASSERT_BSONOBJ_EQ(
@@ -1145,8 +1170,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(
         BSON("_id" << 1),
         _assetGetFront(storage.findDocuments(opCtx,
@@ -1172,8 +1200,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(
         BSON("_id" << 0),
         _assetGetFront(storage.findDocuments(opCtx,
@@ -1193,8 +1224,11 @@ TEST_F(StorageInterfaceImplTest, FindDocumentsCollScanReturnsNoSuchKeyIfStartKey
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::NoSuchKey,
                   storage
                       .findDocuments(opCtx,
@@ -1213,8 +1247,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::InvalidOptions,
                   storage
                       .findDocuments(opCtx,
@@ -1288,14 +1325,14 @@ TEST_F(StorageInterfaceImplTest,
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     ASSERT_OK(storage.insertDocuments(opCtx,
                                       nss,
-                                      transformInserts({BSON("_id" << 0),
-                                                        BSON("_id" << 1),
-                                                        BSON("_id" << 2),
-                                                        BSON("_id" << 3),
-                                                        BSON("_id" << 4),
-                                                        BSON("_id" << 5),
-                                                        BSON("_id" << 6),
-                                                        BSON("_id" << 7)})));
+                                      {{BSON("_id" << 0), SnapshotName(0)},
+                                       {BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 3), SnapshotName(3)},
+                                       {BSON("_id" << 4), SnapshotName(4)},
+                                       {BSON("_id" << 5), SnapshotName(5)},
+                                       {BSON("_id" << 6), SnapshotName(6)},
+                                       {BSON("_id" << 7), SnapshotName(7)}}));
 
     // startKey not provided
     ASSERT_BSONOBJ_EQ(
@@ -1398,14 +1435,14 @@ TEST_F(StorageInterfaceImplTest,
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     ASSERT_OK(storage.insertDocuments(opCtx,
                                       nss,
-                                      transformInserts({BSON("_id" << 0),
-                                                        BSON("_id" << 1),
-                                                        BSON("_id" << 2),
-                                                        BSON("_id" << 3),
-                                                        BSON("_id" << 4),
-                                                        BSON("_id" << 5),
-                                                        BSON("_id" << 6),
-                                                        BSON("_id" << 7)})));
+                                      {{BSON("_id" << 0), SnapshotName(0)},
+                                       {BSON("_id" << 1), SnapshotName(1)},
+                                       {BSON("_id" << 2), SnapshotName(2)},
+                                       {BSON("_id" << 3), SnapshotName(3)},
+                                       {BSON("_id" << 4), SnapshotName(4)},
+                                       {BSON("_id" << 5), SnapshotName(5)},
+                                       {BSON("_id" << 6), SnapshotName(6)},
+                                       {BSON("_id" << 7), SnapshotName(7)}}));
 
     // startKey not provided
     ASSERT_BSONOBJ_EQ(
@@ -1505,8 +1542,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(
         BSON("_id" << 1),
         _assetGetFront(storage.deleteDocuments(opCtx,
@@ -1526,8 +1566,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(
         BSON("_id" << 0),
         _assetGetFront(storage.deleteDocuments(opCtx,
@@ -1546,8 +1589,11 @@ TEST_F(StorageInterfaceImplTest, DeleteDocumentsCollScanReturnsNoSuchKeyIfStartK
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::NoSuchKey,
                   storage
                       .deleteDocuments(opCtx,
@@ -1566,8 +1612,11 @@ TEST_F(StorageInterfaceImplTest,
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::InvalidOptions,
                   storage
                       .deleteDocuments(opCtx,
@@ -1611,7 +1660,8 @@ TEST_F(StorageInterfaceImplTest,
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc2})));
+    ASSERT_OK(
+        storage.insertDocuments(opCtx, nss, {{doc1, SnapshotName(0)}, {doc2, SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::TooManyMatchingDocuments,
                   storage.findSingleton(opCtx, nss).getStatus());
 }
@@ -1622,7 +1672,7 @@ TEST_F(StorageInterfaceImplTest, FindSingletonReturnsDocumentWhenSingletonDocume
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     auto doc1 = BSON("_id" << 0 << "x" << 0);
-    ASSERT_OK(storage.insertDocument(opCtx, nss, doc1));
+    ASSERT_OK(storage.insertDocument(opCtx, nss, {doc1, SnapshotName(0)}));
     ASSERT_BSONOBJ_EQ(doc1, unittest::assertGet(storage.findSingleton(opCtx, nss)));
 }
 
@@ -1662,7 +1712,7 @@ TEST_F(StorageInterfaceImplTest, PutSingletonUpdatesDocumentWhenCollectionIsNotE
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     auto doc1 = BSON("_id" << 0 << "x" << 0);
-    ASSERT_OK(storage.insertDocument(opCtx, nss, doc1));
+    ASSERT_OK(storage.insertDocument(opCtx, nss, {doc1, SnapshotName(0)}));
     auto update = BSON("$set" << BSON("x" << 1));
     ASSERT_OK(storage.putSingleton(opCtx, nss, update));
     ASSERT_BSONOBJ_EQ(BSON("_id" << 0 << "x" << 1),
@@ -1677,7 +1727,8 @@ TEST_F(StorageInterfaceImplTest, PutSingletonUpdatesFirstDocumentWhenCollectionI
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc2})));
+    ASSERT_OK(
+        storage.insertDocuments(opCtx, nss, {{doc1, SnapshotName(0)}, {doc2, SnapshotName(0)}}));
     auto update = BSON("$set" << BSON("x" << 2));
     ASSERT_OK(storage.putSingleton(opCtx, nss, update));
     _assertDocumentsInCollectionEquals(opCtx, nss, {BSON("_id" << 0 << "x" << 2), doc2});
@@ -1709,7 +1760,8 @@ TEST_F(StorageInterfaceImplTest, FindByIdReturnsNoSuchKeyWhenDocumentIsNotFound)
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
     auto doc3 = BSON("_id" << 2 << "x" << 2);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc3})));
+    ASSERT_OK(
+        storage.insertDocuments(opCtx, nss, {{doc1, SnapshotName(0)}, {doc3, SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::NoSuchKey, storage.findById(opCtx, nss, doc2["_id"]).getStatus());
 }
 
@@ -1721,7 +1773,8 @@ TEST_F(StorageInterfaceImplTest, FindByIdReturnsDocumentWhenDocumentExists) {
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
     auto doc3 = BSON("_id" << 2 << "x" << 2);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc2, doc3})));
+    ASSERT_OK(storage.insertDocuments(
+        opCtx, nss, {{doc1, SnapshotName(0)}, {doc2, SnapshotName(0)}, {doc3, SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(doc2, unittest::assertGet(storage.findById(opCtx, nss, doc2["_id"])));
 }
 
@@ -1741,7 +1794,7 @@ TEST_F(StorageInterfaceImplTest, DeleteByIdReturnsNoSuchKeyWhenCollectionIsEmpty
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
     auto doc = BSON("_id" << 0 << "x" << 0);
     ASSERT_EQUALS(ErrorCodes::NoSuchKey, storage.deleteById(opCtx, nss, doc["_id"]).getStatus());
-    _assertDocumentsInCollectionEquals(opCtx, nss, {});
+    _assertDocumentsInCollectionEquals(opCtx, nss, std::vector<BSONObj>{});
 }
 
 TEST_F(StorageInterfaceImplTest, DeleteByIdReturnsNoSuchKeyWhenDocumentIsNotFound) {
@@ -1752,7 +1805,8 @@ TEST_F(StorageInterfaceImplTest, DeleteByIdReturnsNoSuchKeyWhenDocumentIsNotFoun
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
     auto doc3 = BSON("_id" << 2 << "x" << 2);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc3})));
+    ASSERT_OK(
+        storage.insertDocuments(opCtx, nss, {{doc1, SnapshotName(0)}, {doc3, SnapshotName(0)}}));
     ASSERT_EQUALS(ErrorCodes::NoSuchKey, storage.deleteById(opCtx, nss, doc2["_id"]).getStatus());
     _assertDocumentsInCollectionEquals(opCtx, nss, {doc1, doc3});
 }
@@ -1765,7 +1819,8 @@ TEST_F(StorageInterfaceImplTest, DeleteByIdReturnsDocumentWhenDocumentExists) {
     auto doc1 = BSON("_id" << 0 << "x" << 0);
     auto doc2 = BSON("_id" << 1 << "x" << 1);
     auto doc3 = BSON("_id" << 2 << "x" << 2);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc2, doc3})));
+    ASSERT_OK(storage.insertDocuments(
+        opCtx, nss, {{doc1, SnapshotName(0)}, {doc2, SnapshotName(0)}, {doc3, SnapshotName(0)}}));
     ASSERT_BSONOBJ_EQ(doc2, unittest::assertGet(storage.deleteById(opCtx, nss, doc2["_id"])));
     _assertDocumentsInCollectionEquals(opCtx, nss, {doc1, doc3});
 }
@@ -1802,11 +1857,11 @@ TEST_F(StorageInterfaceImplTest, UpsertSingleDocumentReplacesExistingDocumentInC
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
     auto originalDoc = BSON("_id" << 1 << "x" << 1);
-    ASSERT_OK(storage.insertDocuments(
-        opCtx,
-        nss,
-        transformInserts(
-            {BSON("_id" << 0 << "x" << 0), originalDoc, BSON("_id" << 2 << "x" << 2)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                       {originalDoc, SnapshotName(0)},
+                                       {BSON("_id" << 2 << "x" << 2), SnapshotName(2)}}));
 
     ASSERT_OK(storage.upsertById(opCtx, nss, originalDoc["_id"], BSON("x" << 100)));
 
@@ -1823,10 +1878,10 @@ TEST_F(StorageInterfaceImplTest, UpsertSingleDocumentInsertsNewDocumentInCollect
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
-    ASSERT_OK(storage.insertDocuments(
-        opCtx,
-        nss,
-        transformInserts({BSON("_id" << 0 << "x" << 0), BSON("_id" << 2 << "x" << 2)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                       {BSON("_id" << 2 << "x" << 2), SnapshotName(2)}}));
 
     ASSERT_OK(storage.upsertById(opCtx, nss, BSON("" << 1).firstElement(), BSON("x" << 100)));
 
@@ -1851,11 +1906,11 @@ TEST_F(StorageInterfaceImplTest,
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
     auto originalDoc = BSON("_id" << 1 << "x" << 1);
-    ASSERT_OK(storage.insertDocuments(
-        opCtx,
-        nss,
-        transformInserts(
-            {BSON("_id" << 0 << "x" << 0), originalDoc, BSON("_id" << 2 << "x" << 2)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                       {originalDoc, SnapshotName(0)},
+                                       {BSON("_id" << 2 << "x" << 2), SnapshotName(2)}}));
 
     ASSERT_OK(storage.upsertById(opCtx, nss, originalDoc["_id"], BSON("x" << 100)));
 
@@ -1909,7 +1964,7 @@ TEST_F(StorageInterfaceImplTest,
                                                 BSON("" << 1).firstElement(),
                                                 BSON("$unknownUpdateOp" << BSON("x" << 1000)))
                                     .transitional_ignore(),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::FailedToParse,
                                 "Unknown modifier: $unknownUpdateOp");
 }
@@ -1965,7 +2020,7 @@ TEST_F(
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
     auto doc = BSON("_id" << 0 << "x" << 0);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc})));
+    ASSERT_OK(storage.insertDocuments(opCtx, nss, {{doc, SnapshotName(0)}}));
     _assertDocumentsInCollectionEquals(opCtx, nss, {doc});
 
     // This test fixture disables replicated writes by default. We want to re-enable this setting
@@ -1990,7 +2045,7 @@ TEST_F(
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
     auto doc = BSON("_id" << 0 << "x" << 0);
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc})));
+    ASSERT_OK(storage.insertDocuments(opCtx, nss, {{doc, SnapshotName(0)}}));
     _assertDocumentsInCollectionEquals(opCtx, nss, {doc});
 
     // This test fixture disables replicated writes by default. We want to re-enable this setting
@@ -2031,7 +2086,7 @@ TEST_F(StorageInterfaceImplTest, DeleteByFilterReturnsSuccessIfCollectionIsEmpty
 
     ASSERT_OK(storage.deleteByFilter(opCtx, nss, {}));
 
-    _assertDocumentsInCollectionEquals(opCtx, nss, {});
+    _assertDocumentsInCollectionEquals(opCtx, nss, std::vector<BSONObj>{});
 }
 
 TEST_F(StorageInterfaceImplTest, DeleteByFilterLeavesCollectionUnchangedIfNoDocumentsMatchFilter) {
@@ -2040,7 +2095,8 @@ TEST_F(StorageInterfaceImplTest, DeleteByFilterLeavesCollectionUnchangedIfNoDocu
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
-    auto docs = {BSON("_id" << 0 << "x" << 0), BSON("_id" << 2 << "x" << 2)};
+    std::vector<TimestampedBSONObj> docs = {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                            {BSON("_id" << 2 << "x" << 2), SnapshotName(0)}};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(docs)));
 
     auto filter = BSON("x" << 1);
@@ -2055,10 +2111,10 @@ TEST_F(StorageInterfaceImplTest, DeleteByFilterRemoveDocumentsThatMatchFilter) {
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
-    auto docs = {BSON("_id" << 0 << "x" << 0),
-                 BSON("_id" << 1 << "x" << 1),
-                 BSON("_id" << 2 << "x" << 2),
-                 BSON("_id" << 3 << "x" << 3)};
+    std::vector<TimestampedBSONObj> docs = {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                            {BSON("_id" << 1 << "x" << 1), SnapshotName(0)},
+                                            {BSON("_id" << 2 << "x" << 2), SnapshotName(0)},
+                                            {BSON("_id" << 3 << "x" << 3), SnapshotName(0)}};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(docs)));
 
     auto filter = BSON("x" << BSON("$in" << BSON_ARRAY(1 << 2)));
@@ -2074,7 +2130,8 @@ TEST_F(StorageInterfaceImplTest, DeleteByFilterUsesIdHackIfFilterContainsIdField
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
-    auto docs = {BSON("_id" << 0 << "x" << 0), BSON("_id" << 1 << "x" << 1)};
+    std::vector<TimestampedBSONObj> docs = {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                            {BSON("_id" << 1 << "x" << 1), SnapshotName(0)}};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(docs)));
 
     auto filter = BSON("_id" << 1);
@@ -2094,10 +2151,10 @@ TEST_F(StorageInterfaceImplTest, DeleteByFilterRemovesDocumentsInIllegalClientSy
     StorageInterfaceImpl storage;
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
 
-    auto docs = {BSON("_id" << 0 << "x" << 0),
-                 BSON("_id" << 1 << "x" << 1),
-                 BSON("_id" << 2 << "x" << 2),
-                 BSON("_id" << 3 << "x" << 3)};
+    std::vector<TimestampedBSONObj> docs = {{BSON("_id" << 0 << "x" << 0), SnapshotName(0)},
+                                            {BSON("_id" << 1 << "x" << 1), SnapshotName(0)},
+                                            {BSON("_id" << 2 << "x" << 2), SnapshotName(0)},
+                                            {BSON("_id" << 3 << "x" << 3), SnapshotName(0)}};
     ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts(docs)));
 
     auto filter = BSON("$or" << BSON_ARRAY(BSON("x" << 0) << BSON("_id" << 2)));
@@ -2129,7 +2186,12 @@ TEST_F(StorageInterfaceImplTest,
                            << "DEF");
     auto doc4 = BSON("_id" << 4 << "x"
                            << "def");
-    ASSERT_OK(storage.insertDocuments(opCtx, nss, transformInserts({doc1, doc2, doc3, doc4})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{doc1, SnapshotName(0)},
+                                       {doc2, SnapshotName(0)},
+                                       {doc3, SnapshotName(0)},
+                                       {doc4, SnapshotName(0)}}));
 
     // This filter should remove doc1 and doc2 because the values of the field "x"
     // are equivalent to "aBc" under the case-insensive collation.
@@ -2174,8 +2236,11 @@ TEST_F(StorageInterfaceImplTest, GetCollectionCountReturnsCollectionCount) {
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     auto count = unittest::assertGet(storage.getCollectionCount(opCtx, nss));
     ASSERT_EQUALS(3UL, count);
 }
@@ -2213,8 +2278,11 @@ TEST_F(StorageInterfaceImplTest, GetCollectionSizeReturnsCollectionSize) {
     StorageInterfaceImpl storage;
     auto nss = makeNamespace(_agent);
     ASSERT_OK(storage.createCollection(opCtx, nss, CollectionOptions()));
-    ASSERT_OK(storage.insertDocuments(
-        opCtx, nss, transformInserts({BSON("_id" << 1), BSON("_id" << 2), BSON("_id" << 0)})));
+    ASSERT_OK(storage.insertDocuments(opCtx,
+                                      nss,
+                                      {{BSON("_id" << 1), SnapshotName(0)},
+                                       {BSON("_id" << 2), SnapshotName(0)},
+                                       {BSON("_id" << 0), SnapshotName(0)}}));
     auto size = unittest::assertGet(storage.getCollectionSize(opCtx, nss));
     ASSERT_NOT_EQUALS(0UL, size);
 }

@@ -66,6 +66,11 @@ public:
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}  // No auth required
+
+    bool requiresAuth() const override {
+        return false;
+    }
+
     virtual void help(stringstream& help) const {
         help << "reset error state (used with getpreverror)";
     }
@@ -91,6 +96,11 @@ public:
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}  // No auth required
+
+    bool requiresAuth() const override {
+        return false;
+    }
+
     virtual void help(stringstream& help) const {
         help << "return error status of the last operation on this connection\n"
              << "options:\n"
@@ -305,6 +315,9 @@ public:
     }
     virtual bool slaveOk() const {
         return true;
+    }
+    bool requiresAuth() const override {
+        return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

@@ -28,15 +28,30 @@
 
 #pragma once
 
+#include <initializer_list>
+#include <vector>
+
+#include "mongo/db/auth/privilege.h"
 #include "mongo/db/logical_session_id.h"
 
 namespace mongo {
 
 /**
+ * Get the currently logged in user's UID digest.
+ */
+SHA256Block getLogicalSessionUserDigestForLoggedInUser(const OperationContext* opCtx);
+
+/**
+ * Get a user digest for a specific user/db identifier.
+ */
+SHA256Block getLogicalSessionUserDigestFor(StringData user, StringData db);
+
+/**
  * Factory functions to generate logical session records.
  */
 LogicalSessionId makeLogicalSessionId(const LogicalSessionFromClient& lsid,
-                                      OperationContext* opCtx);
+                                      OperationContext* opCtx,
+                                      std::initializer_list<Privilege> allowSpoof = {});
 LogicalSessionId makeLogicalSessionId(OperationContext* opCtx);
 
 /**
@@ -51,19 +66,8 @@ LogicalSessionRecord makeLogicalSessionRecord(OperationContext* opCtx,
                                               Date_t lastUse);
 
 LogicalSessionToClient makeLogicalSessionToClient(const LogicalSessionId& lsid);
-
-/**
- * Parses the session information from the body of a request and installs it on the current
- * operation context. Must only be called once per operation and should be done right in the
- * beginning.
- *
- * Throws if the sessionId/txnNumber combination is not properly formatted.
- *
- * requiresAuth specifies if the command we're initializing operationSessionInfo for requires
- * authorization or not.  This can be determined by invoking ->requiresAuth() on the parsed command.
- */
-void initializeOperationSessionInfo(OperationContext* opCtx,
-                                    const BSONObj& requestBody,
-                                    bool requiresAuth);
+LogicalSessionIdSet makeLogicalSessionIds(const std::vector<LogicalSessionFromClient>& sessions,
+                                          OperationContext* opCtx,
+                                          std::initializer_list<Privilege> allowSpoof = {});
 
 }  // namespace mongo

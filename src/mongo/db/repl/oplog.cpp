@@ -74,6 +74,7 @@
 #include "mongo/db/ops/update_lifecycle_impl.h"
 #include "mongo/db/repl/apply_ops.h"
 #include "mongo/db/repl/bgsync.h"
+#include "mongo/db/repl/dbcheck.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -333,7 +334,8 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
                             long long hashNew,
                             Date_t wallTime,
                             StmtId statementId,
-                            const Timestamp& prevTs) {
+                            const Timestamp& prevTs,
+                            const PreAndPostImageTimestamps& preAndPostTs) {
     BSONObjBuilder b(256);
 
     b.append("ts", optime.getTimestamp());
@@ -360,6 +362,14 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
 
     appendSessionInfo(opCtx, &b, statementId, prevTs);
 
+    if (!preAndPostTs.preImageTs.isNull()) {
+        b.append(OplogEntryBase::kPreImageTsFieldName, preAndPostTs.preImageTs);
+    }
+
+    if (!preAndPostTs.postImageTs.isNull()) {
+        b.append(OplogEntryBase::kPostImageTsFieldName, preAndPostTs.postImageTs);
+    }
+
     return OplogDocWriter(OplogDocWriter(b.obj(), obj));
 }
 }  // end anon namespace
@@ -374,17 +384,23 @@ OplogDocWriter _logOpWriter(OperationContext* opCtx,
     "u" update
     "d" delete
     "c" db cmd
-    "db" declares presence of a database (ns is set to the db name + '.')
+    "db" declares presence of a database (ns is set to the db name + '.') (master/slave only)
     "n" no op
-
-   bb param:
-     if not null, specifies a boolean to pass along to the other side as b: param.
-     used for "justOne" or "upsert" flags on 'd', 'u'
 */
+
+
+/*
+ * writers - an array with size nDocs of DocWriter objects.
+ * timestamps - an array with size nDocs of respective Timestamp objects for each DocWriter.
+ * oplogCollection - collection to be written to.
+ * replicationMode - ReplSet or MasterSlave.
+ * finalOpTime - the OpTime of the last DocWriter object.
+ */
 void _logOpsInner(OperationContext* opCtx,
                   const NamespaceString& nss,
                   const DocWriter* const* writers,
-                  size_t nWriters,
+                  Timestamp* timestamps,
+                  size_t nDocs,
                   Collection* oplogCollection,
                   ReplicationCoordinator::Mode replicationMode,
                   OpTime finalOpTime) {
@@ -398,7 +414,7 @@ void _logOpsInner(OperationContext* opCtx,
 
     // we jump through a bunch of hoops here to avoid copying the obj buffer twice --
     // instead we do a single copy to the destination in the record store.
-    checkOplogInsert(oplogCollection->insertDocumentsForOplog(opCtx, writers, nWriters));
+    checkOplogInsert(oplogCollection->insertDocumentsForOplog(opCtx, writers, timestamps, nDocs));
 
     // Set replCoord last optime only after we're sure the WUOW didn't abort and roll back.
     opCtx->recoveryUnit()->onCommit([opCtx, replCoord, finalOpTime] {
@@ -414,7 +430,8 @@ OpTime logOp(OperationContext* opCtx,
              const BSONObj& obj,
              const BSONObj* o2,
              bool fromMigrate,
-             StmtId statementId) {
+             StmtId statementId,
+             const PreAndPostImageTimestamps& preAndPostTs) {
     auto replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->isOplogDisabledFor(opCtx, nss)) {
         invariant(statementId == kUninitializedStmtId);
@@ -426,6 +443,7 @@ OpTime logOp(OperationContext* opCtx,
     Lock::CollectionLock lock(opCtx->lockState(), _oplogCollectionName, MODE_IX);
     auto replMode = replCoord->getReplicationMode();
     OplogSlot slot;
+    WriteUnitOfWork wuow(opCtx);
     getNextOpTime(opCtx, oplog, replCoord, replMode, 1, &slot);
 
     Timestamp prevTs;
@@ -444,9 +462,12 @@ OpTime logOp(OperationContext* opCtx,
                                slot.hash,
                                Date_t::now(),
                                statementId,
-                               prevTs);
+                               prevTs,
+                               preAndPostTs);
     const DocWriter* basePtr = &writer;
-    _logOpsInner(opCtx, nss, &basePtr, 1, oplog, replMode, slot.opTime);
+    auto timestamp = slot.opTime.getTimestamp();
+    _logOpsInner(opCtx, nss, &basePtr, &timestamp, 1, oplog, replMode, slot.opTime);
+    wuow.commit();
     return slot.opTime;
 }
 
@@ -472,6 +493,8 @@ repl::OpTime logInsertOps(OperationContext* opCtx,
     Lock::CollectionLock lock(opCtx->lockState(), _oplogCollectionName, MODE_IX);
     std::unique_ptr<OplogSlot[]> slots(new OplogSlot[count]);
     auto replMode = replCoord->getReplicationMode();
+
+    WriteUnitOfWork wuow(opCtx);
     getNextOpTime(opCtx, oplog, replCoord, replMode, count, slots.get());
     auto wallTime = Date_t::now();
 
@@ -480,6 +503,7 @@ repl::OpTime logInsertOps(OperationContext* opCtx,
         prevTs = OperationContextSession::get(opCtx)->getLastWriteOpTimeTs();
     }
 
+    auto timestamps = stdx::make_unique<Timestamp[]>(count);
     for (size_t i = 0; i < count; i++) {
         auto insertStatement = begin[i];
         writers.emplace_back(_logOpWriter(opCtx,
@@ -493,16 +517,25 @@ repl::OpTime logInsertOps(OperationContext* opCtx,
                                           slots[i].hash,
                                           wallTime,
                                           insertStatement.stmtId,
-                                          prevTs));
+                                          prevTs,
+                                          {}));
         prevTs = slots[i].opTime.getTimestamp();
+        timestamps[i] = slots[i].opTime.getTimestamp();
     }
 
     std::unique_ptr<DocWriter const* []> basePtrs(new DocWriter const*[count]);
     for (size_t i = 0; i < count; i++) {
         basePtrs[i] = &writers[i];
     }
-    _logOpsInner(opCtx, nss, basePtrs.get(), count, oplog, replMode, slots[count - 1].opTime);
-
+    _logOpsInner(opCtx,
+                 nss,
+                 basePtrs.get(),
+                 timestamps.get(),
+                 count,
+                 oplog,
+                 replMode,
+                 slots[count - 1].opTime);
+    wuow.commit();
     return slots[count - 1].opTime;
 }
 
@@ -571,7 +604,7 @@ void createOplog(OperationContext* opCtx, const std::string& oplogCollectionName
                 ss << "cmdline oplogsize (" << n << ") different than existing (" << o
                    << ") see: http://dochub.mongodb.org/core/increase-oplog";
                 log() << ss.str() << endl;
-                throw UserException(13257, ss.str());
+                throw AssertionException(13257, ss.str());
             }
         }
 
@@ -622,6 +655,29 @@ NamespaceString parseNs(const string& ns, const BSONObj& cmdObj) {
     std::string coll = first.valuestr();
     uassert(28635, "no collection name specified", !coll.empty());
     return NamespaceString(NamespaceString(ns).db().toString(), coll);
+}
+
+std::pair<OptionalCollectionUUID, NamespaceString> parseCollModUUIDAndNss(OperationContext* opCtx,
+                                                                          const BSONElement& ui,
+                                                                          const char* ns,
+                                                                          BSONObj& cmd) {
+    if (ui.eoo()) {
+        return std::pair<OptionalCollectionUUID, NamespaceString>(boost::none, parseNs(ns, cmd));
+    }
+    CollectionUUID uuid = uassertStatusOK(UUID::parse(ui));
+    auto& catalog = UUIDCatalog::get(opCtx);
+    if (catalog.lookupCollectionByUUID(uuid)) {
+        return std::pair<OptionalCollectionUUID, NamespaceString>(uuid,
+                                                                  catalog.lookupNSSByUUID(uuid));
+    } else {
+        uassert(ErrorCodes::NamespaceNotFound,
+                str::stream() << "Failed to apply operation due to missing collection (" << uuid
+                              << "): "
+                              << redact(cmd.toString()),
+                cmd.nFields() == 1);
+        // If cmd is an empty collMod, i.e., nFields is 1, this is a UUID upgrade collMod.
+        return std::pair<OptionalCollectionUUID, NamespaceString>(uuid, parseNs(ns, cmd));
+    }
 }
 
 NamespaceString parseUUID(OperationContext* opCtx, const BSONElement& ui) {
@@ -715,25 +771,13 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
          const BSONElement& ui,
          BSONObj& cmd,
          const OpTime& opTime) -> Status {
-          // Get UUID from cmd, if it exists.
           OptionalCollectionUUID uuid;
           NamespaceString nss;
-          if (ui.eoo()) {
-              uuid = boost::none;
-              nss = parseNs(ns, cmd);
-          } else {
-              uuid = uassertStatusOK(UUID::parse(ui));
-              // We need to see whether a collection with UUID ui exists before attempting to do
-              // a collMod on it. This is because we add UUIDs during upgrade to
-              // featureCompatibilityVersion 3.6 with a collMod command, so the collection will
-              // not have a UUID at the time we attempt to look it up by UUID.
-              auto& catalog = UUIDCatalog::get(opCtx);
-              nss = catalog.lookupCollectionByUUID(uuid.get()) ? catalog.lookupNSSByUUID(uuid.get())
-                                                               : parseNs(ns, cmd);
-          }
+          std::tie(uuid, nss) = parseCollModUUIDAndNss(opCtx, ui, ns, cmd);
           return collModForUUIDUpgrade(opCtx, nss, cmd, uuid);
       },
       {ErrorCodes::IndexNotFound, ErrorCodes::NamespaceNotFound}}},
+    {"dbCheck", {dbCheckOplogCommand, {}}},
     {"dropDatabase",
      {[](OperationContext* opCtx,
          const char* ns,
@@ -804,7 +848,7 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
          const BSONElement& ui,
          BSONObj& cmd,
          const OpTime& opTime) -> Status {
-          return renameCollectionForApplyOps(opCtx, nsToDatabase(ns), ui, cmd);
+          return renameCollectionForApplyOps(opCtx, nsToDatabase(ns), ui, cmd, opTime);
       },
       {ErrorCodes::NamespaceNotFound, ErrorCodes::NamespaceExists}}},
     {"applyOps",
@@ -887,20 +931,25 @@ Status applyOperation_inlock(OperationContext* opCtx,
 
     OpCounters* opCounters = opCtx->writesAreReplicated() ? &globalOpCounters : &replOpCounters;
 
-    std::array<StringData, 6> names = {"o", "ui", "ns", "op", "b", "o2"};
-    std::array<BSONElement, 6> fields;
+    std::array<StringData, 7> names = {"ts", "o", "ui", "ns", "op", "b", "o2"};
+    std::array<BSONElement, 7> fields;
     op.getFields(names, &fields);
-    BSONElement& fieldO = fields[0];
-    BSONElement& fieldUI = fields[1];
-    BSONElement& fieldNs = fields[2];
-    BSONElement& fieldOp = fields[3];
-    BSONElement& fieldB = fields[4];
-    BSONElement& fieldO2 = fields[5];
+    BSONElement& fieldTs = fields[0];
+    BSONElement& fieldO = fields[1];
+    BSONElement& fieldUI = fields[2];
+    BSONElement& fieldNs = fields[3];
+    BSONElement& fieldOp = fields[4];
+    BSONElement& fieldB = fields[5];
+    BSONElement& fieldO2 = fields[6];
 
     BSONObj o;
     if (fieldO.isABSONObj())
         o = fieldO.embeddedObject();
 
+    SnapshotName timestamp;
+    if (fieldTs.ok()) {
+        timestamp = SnapshotName(fieldTs.timestamp());
+    }
     // operation type -- see logOp() comments for types
     const char* opType = fieldOp.valuestrsafe();
 
@@ -970,7 +1019,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
             for (auto elem : fieldO.Obj()) {
                 // Note: we don't care about statement ids here since the secondaries don't create
                 // their own oplog entries.
-                insertObjs.emplace_back(elem.Obj());
+                insertObjs.emplace_back(elem.Obj(), timestamp);
             }
             uassert(ErrorCodes::OperationFailed,
                     str::stream() << "Failed to apply insert due to empty array element: "
@@ -1014,8 +1063,8 @@ Status applyOperation_inlock(OperationContext* opCtx,
             if (!needToDoUpsert) {
                 WriteUnitOfWork wuow(opCtx);
                 OpDebug* const nullOpDebug = nullptr;
-                auto status =
-                    collection->insertDocument(opCtx, InsertStatement(o), nullOpDebug, true);
+                auto status = collection->insertDocument(
+                    opCtx, InsertStatement(o, timestamp), nullOpDebug, true);
                 if (status.isOK()) {
                     wuow.commit();
                 } else if (status == ErrorCodes::DuplicateKey) {
@@ -1134,7 +1183,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
         }
     } else {
         invariant(*opType != 'c');  // commands are processed in applyCommand_inlock()
-        throw MsgAssertionException(
+        throw AssertionException(
             14825, str::stream() << "error in applyOperation : unknown opType " << *opType);
     }
 
@@ -1264,7 +1313,6 @@ Status applyCommand_inlock(OperationContext* opCtx,
     WriteUnitOfWork wuow(opCtx);
     getGlobalAuthorizationManager()->logOp(opCtx, opType, nss, o, nullptr);
     wuow.commit();
-
     return Status::OK();
 }
 

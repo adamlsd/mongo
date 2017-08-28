@@ -52,6 +52,7 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/service_context.h"
+#include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
@@ -76,8 +77,15 @@ Status renameCollectionCommon(OperationContext* opCtx,
                               const NamespaceString& source,
                               const NamespaceString& target,
                               OptionalCollectionUUID targetUUID,
-                              bool dropTarget,
-                              bool stayTemp) {
+                              repl::OpTime renameOpTimeFromApplyOps,
+                              const RenameCollectionOptions& options) {
+    // A valid 'renameOpTimeFromApplyOps' is not allowed when writes are replicated.
+    if (!renameOpTimeFromApplyOps.isNull() && opCtx->writesAreReplicated()) {
+        return Status(
+            ErrorCodes::BadValue,
+            "renameCollection() cannot accept a rename optime when writes are replicated.");
+    }
+
     DisableDocumentValidation validationDisabler(opCtx);
 
     boost::optional<Lock::GlobalWrite> globalWriteLock;
@@ -150,7 +158,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
             return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
         }
 
-        if (!dropTarget) {
+        if (!options.dropTarget) {
             return Status(ErrorCodes::NamespaceExists, "target namespace exists");
         }
 
@@ -164,30 +172,54 @@ Status renameCollectionCommon(OperationContext* opCtx,
     if (sourceDB == targetDB) {
         return writeConflictRetry(opCtx, "renameCollection", target.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
-            OptionalCollectionUUID dropTargetUUID;
-            if (targetColl) {
-                // No logOp necessary because the entire renameCollection command is one logOp.
-                repl::UnreplicatedWritesBlock uwb(opCtx);
-                dropTargetUUID = targetColl->uuid();
-                Status s = targetDB->dropCollection(opCtx, target.ns());
-                if (!s.isOK()) {
-                    return s;
+            auto opObserver = getGlobalServiceContext()->getOpObserver();
+            if (!targetColl) {
+                // Target collection does not exist.
+                auto stayTemp = options.stayTemp;
+                {
+                    // No logOp necessary because the entire renameCollection command is one logOp.
+                    repl::UnreplicatedWritesBlock uwb(opCtx);
+                    status = targetDB->renameCollection(opCtx, source.ns(), target.ns(), stayTemp);
+                    if (!status.isOK()) {
+                        return status;
+                    }
                 }
+                opObserver->onRenameCollection(
+                    opCtx, source, target, sourceUUID, options.dropTarget, {}, {}, stayTemp);
+                wunit.commit();
+                return Status::OK();
             }
 
-            Status s = targetDB->renameCollection(opCtx, source.ns(), target.ns(), stayTemp);
-            if (!s.isOK()) {
-                return s;
+            // Target collection exists - drop it.
+            invariant(options.dropTarget);
+            auto dropTargetUUID = targetColl->uuid();
+            auto renameOpTime = opObserver->onRenameCollection(
+                opCtx, source, target, sourceUUID, true, dropTargetUUID, {}, options.stayTemp);
+
+            if (!renameOpTimeFromApplyOps.isNull()) {
+                // 'renameOpTime' must be null because a valid 'renameOpTimeFromApplyOps' implies
+                // replicated writes are not enabled.
+                if (!renameOpTime.isNull()) {
+                    severe() << "renameCollection: " << source << " to " << target
+                             << " (with dropTarget=true) - unexpected renameCollection oplog entry"
+                             << " written to the oplog with optime " << renameOpTime;
+                    fassertFailed(40616);
+                }
+                renameOpTime = renameOpTimeFromApplyOps;
             }
 
-            getGlobalServiceContext()->getOpObserver()->onRenameCollection(opCtx,
-                                                                           NamespaceString(source),
-                                                                           NamespaceString(target),
-                                                                           sourceUUID,
-                                                                           dropTarget,
-                                                                           dropTargetUUID,
-                                                                           /*dropSourceUUID*/ {},
-                                                                           stayTemp);
+            // No logOp necessary because the entire renameCollection command is one logOp.
+            repl::UnreplicatedWritesBlock uwb(opCtx);
+
+            status = targetDB->dropCollection(opCtx, target.ns(), renameOpTime);
+            if (!status.isOK()) {
+                return status;
+            }
+
+            status = targetDB->renameCollection(opCtx, source.ns(), target.ns(), options.stayTemp);
+            if (!status.isOK()) {
+                return status;
+            }
 
             wunit.commit();
             return Status::OK();
@@ -215,16 +247,16 @@ Status renameCollectionCommon(OperationContext* opCtx,
     Collection* tmpColl = nullptr;
     OptionalCollectionUUID newUUID;
     {
-        CollectionOptions options = sourceColl->getCatalogEntry()->getCollectionOptions(opCtx);
+        auto collectionOptions = sourceColl->getCatalogEntry()->getCollectionOptions(opCtx);
         // Renaming across databases will result in a new UUID, as otherwise we'd require
         // two collections with the same uuid (temporarily).
-        options.temp = true;
+        collectionOptions.temp = true;
         if (targetUUID)
             newUUID = targetUUID;
         else if (enableCollectionUUIDs)
             newUUID = UUID::gen();
 
-        options.uuid = newUUID;
+        collectionOptions.uuid = newUUID;
 
         writeConflictRetry(opCtx, "renameCollection", tmpName.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
@@ -233,7 +265,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
             repl::UnreplicatedWritesBlock uwb(opCtx);
             tmpColl = targetDB->createCollection(opCtx,
                                                  tmpName.ns(),
-                                                 options,
+                                                 collectionOptions,
                                                  false);  // _id index build with others later.
 
             wunit.commit();
@@ -313,7 +345,8 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 status = targetDB->dropCollection(opCtx, target.ns());
             }
             if (status.isOK())
-                status = targetDB->renameCollection(opCtx, tmpName.ns(), target.ns(), stayTemp);
+                status =
+                    targetDB->renameCollection(opCtx, tmpName.ns(), target.ns(), options.stayTemp);
             if (status.isOK())
                 status = sourceDB->dropCollection(opCtx, source.ns());
 
@@ -321,8 +354,14 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 return status;
         }
 
-        getGlobalServiceContext()->getOpObserver()->onRenameCollection(
-            opCtx, source, target, newUUID, dropTarget, dropTargetUUID, sourceUUID, stayTemp);
+        getGlobalServiceContext()->getOpObserver()->onRenameCollection(opCtx,
+                                                                       source,
+                                                                       target,
+                                                                       newUUID,
+                                                                       options.dropTarget,
+                                                                       dropTargetUUID,
+                                                                       sourceUUID,
+                                                                       options.stayTemp);
 
         wunit.commit();
         return Status::OK();
@@ -340,17 +379,17 @@ Status renameCollectionCommon(OperationContext* opCtx,
 Status renameCollection(OperationContext* opCtx,
                         const NamespaceString& source,
                         const NamespaceString& target,
-                        bool dropTarget,
-                        bool stayTemp) {
+                        const RenameCollectionOptions& options) {
     OptionalCollectionUUID noTargetUUID;
-    return renameCollectionCommon(opCtx, source, target, noTargetUUID, dropTarget, stayTemp);
+    return renameCollectionCommon(opCtx, source, target, noTargetUUID, {}, options);
 }
 
 
 Status renameCollectionForApplyOps(OperationContext* opCtx,
                                    const std::string& dbName,
                                    const BSONElement& ui,
-                                   const BSONObj& cmd) {
+                                   const BSONObj& cmd,
+                                   const repl::OpTime& renameOpTime) {
 
     const auto sourceNsElt = cmd.firstElement();
     const auto targetNsElt = cmd["to"];
@@ -403,11 +442,9 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
     if (!ui.eoo())
         targetUUID = uassertStatusOK(UUID::parse(ui));
 
-    return renameCollectionCommon(opCtx,
-                                  sourceNss,
-                                  targetNss,
-                                  targetUUID,
-                                  cmd["dropTarget"].trueValue(),
-                                  cmd["stayTemp"].trueValue());
+    RenameCollectionOptions options;
+    options.dropTarget = cmd["dropTarget"].trueValue();
+    options.stayTemp = cmd["stayTemp"].trueValue();
+    return renameCollectionCommon(opCtx, sourceNss, targetNss, targetUUID, renameOpTime, options);
 }
 }  // namespace mongo

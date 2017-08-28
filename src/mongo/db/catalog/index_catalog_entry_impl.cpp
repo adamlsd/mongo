@@ -44,7 +44,6 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/service_context.h"
@@ -128,8 +127,8 @@ IndexCatalogEntryImpl::IndexCatalogEntryImpl(IndexCatalogEntry* const this_,
     if (BSONElement filterElement = _descriptor->getInfoElement("partialFilterExpression")) {
         invariant(filterElement.isABSONObj());
         BSONObj filter = filterElement.Obj();
-        StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-            filter, ExtensionsCallbackDisallowExtensions(), _collator.get());
+        StatusWithMatchExpression statusWithMatcher =
+            MatchExpressionParser::parse(filter, _collator.get());
         // this should be checked in create, so can blow up here
         invariantOK(statusWithMatcher.getStatus());
         _filterExpression = std::move(statusWithMatcher.getValue());
@@ -277,7 +276,14 @@ void IndexCatalogEntryImpl::setMultikey(OperationContext* opCtx,
         // snapshot isolation.
         {
             StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
-            RecoveryUnitSwap ruSwap(opCtx, storageEngine->newRecoveryUnit());
+
+            // This ensures that the recovery unit is not swapped for engines that do not support
+            // database level locking.
+            std::unique_ptr<RecoveryUnitSwap> ruSwap;
+            if (storageEngine->supportsDBLocking()) {
+                ruSwap =
+                    stdx::make_unique<RecoveryUnitSwap>(opCtx, storageEngine->newRecoveryUnit());
+            }
 
             WriteUnitOfWork wuow(opCtx);
 

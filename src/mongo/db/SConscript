@@ -633,6 +633,7 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/logical_session_cache",
         "$BUILD_DIR/mongo/db/logical_session_id",
         "$BUILD_DIR/mongo/util/background_job",
         "query/query",
@@ -872,6 +873,7 @@ env.Library(
     source=[
         'logical_session_id.cpp',
         env.Idlc('logical_session_id.idl')[0],
+        env.Idlc('refresh_sessions.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
@@ -894,23 +896,6 @@ env.Library(
     ],
 )
 
-env.CppUnitTest(
-    target='logical_session_id_test',
-    source=[
-        'logical_session_id_test.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/transport/transport_layer_mock',
-        '$BUILD_DIR/mongo/db/auth/authcore',
-        '$BUILD_DIR/mongo/db/auth/authmocks',
-        '$BUILD_DIR/mongo/db/auth/authorization_session_for_test',
-        'logical_session_id',
-        'logical_session_id_helpers',
-    ],
-)
-
 env.Library(
     target='service_liason',
     source=[
@@ -927,6 +912,27 @@ env.Library(
 
 envWithAsio = env.Clone()
 envWithAsio.InjectThirdPartyIncludePaths(libraries=['asio'])
+
+envWithAsio.CppUnitTest(
+    target='logical_session_id_test',
+    source=[
+        'logical_session_id_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/db/auth/authorization_session_for_test',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/transport/transport_layer_mock',
+        'logical_session_cache',
+        'logical_session_cache_impl',
+        'logical_session_id',
+        'logical_session_id_helpers',
+        'service_liason_mock',
+        'sessions_collection_mock',
+    ],
+)
 
 envWithAsio.Library(
     target='service_liason_mock',
@@ -978,6 +984,8 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/client/clientdriver',
+        '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
         'logical_session_id',
     ],
 )
@@ -990,6 +998,22 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/logical_session_id',
+        'sessions_collection',
+    ],
+)
+
+env.Library(
+    target='sessions_collection_rs',
+    source=[
+        'sessions_collection_rs.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/client/remote_command_targeter',
+        '$BUILD_DIR/mongo/db/auth/authcommon',
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        'dbdirectclient',
         'sessions_collection',
     ],
 )
@@ -1008,11 +1032,39 @@ env.Library(
 )
 
 env.Library(
+    target='sessions_collection_sharded',
+    source=[
+        'sessions_collection_sharded.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/s/write_ops/cluster_write_op',
+        'logical_session_id',
+        'sessions_collection',
+    ],
+)
+
+env.Library(
     target='logical_session_cache',
     source=[
         'logical_session_cache.cpp',
     ],
     LIBDEPS=[
+        'logical_session_id',
+        'service_context',
+    ],
+)
+
+env.Library(
+    target='logical_session_cache_impl',
+    source=[
+        'initialize_operation_session_info.cpp',
+        'logical_session_cache_impl.cpp',
+        'logical_session_server_status_section.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands/server_status',
+        'logical_session_cache',
         'logical_session_id',
         'logical_session_id_helpers',
         'sessions_collection',
@@ -1035,6 +1087,7 @@ envWithAsio.CppUnitTest(
         'logical_session_id',
         'logical_session_id_helpers',
         'logical_session_cache',
+        'logical_session_cache_impl',
         'service_liason_mock',
         'sessions_collection_mock',
     ],
@@ -1047,8 +1100,10 @@ envWithAsio.Library(
     ],
     LIBDEPS=[
         'logical_session_cache',
+        'logical_session_cache_impl',
         'service_liason_mongod',
-        'sessions_collection_mock', # TODO SERVER-29202, SERVER-29203
+        'sessions_collection_rs',
+        'sessions_collection_sharded',
         'sessions_collection_standalone',
     ],
 )
@@ -1060,8 +1115,9 @@ envWithAsio.Library(
     ],
     LIBDEPS=[
         'logical_session_cache',
+        'logical_session_cache_impl',
         'service_liason_mongos',
-        'sessions_collection_mock', # TODO SERVER-29203 replace with sessions_collection_sharded
+        'sessions_collection_sharded',
     ],
 )
 
@@ -1074,6 +1130,34 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         'service_context',
+    ],
+)
+
+env.Library(
+    target='kill_sessions',
+    source=[
+        'kill_sessions.cpp',
+        'kill_sessions_common.cpp',
+        'session_killer.cpp',
+        env.Idlc('kill_sessions.idl')[0],
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/idl/idl_parser',
+    ],
+)
+
+env.Library(
+    target='kill_sessions_local',
+    source=[
+        'kill_sessions_local.cpp',
+    ],
+    LIBDEPS=[
+        'clientcursor',
+        'kill_sessions',
     ],
 )
 
@@ -1413,6 +1497,7 @@ env.Library(
         'session_catalog.cpp',
         'session_txn_record.cpp',
         'transaction_history_iterator.cpp',
+        env.Idlc('commands/find_and_modify.idl')[0],
         env.Idlc('ops/single_write_result.idl')[0],
         env.Idlc('session_txn_record.idl')[0],
     ],
@@ -1426,6 +1511,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/logical_session_id',
         '$BUILD_DIR/mongo/db/matcher/expressions_mongod_only',
         '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/query/command_request_response',
         '$BUILD_DIR/mongo/db/query/query',
         '$BUILD_DIR/mongo/db/repl/oplog_entry',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_impl',
@@ -1442,8 +1528,7 @@ env.CppUnitTest(
         'session_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/repl/replmocks',
-        'service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
         'write_ops',
     ],
 )
@@ -1454,8 +1539,7 @@ env.CppUnitTest(
         'transaction_history_iterator_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/repl/replmocks',
-        'service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
         'write_ops',
     ],
 )

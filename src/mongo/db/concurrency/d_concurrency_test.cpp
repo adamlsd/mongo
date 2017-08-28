@@ -37,6 +37,7 @@
 #include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/concurrency/lock_manager_test_help.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/storage/recovery_unit_noop.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
@@ -48,31 +49,11 @@
 #include "mongo/util/time_support.h"
 
 namespace mongo {
-
-extern bool _supportsDocLocking;
-
 namespace {
 
 const int kMaxPerfThreads = 16;    // max number of threads to use for lock perf
 const int kMaxStressThreads = 32;  // max number of threads to use for lock stress
 const int kMinPerfMillis = 30;     // min duration for reliable timing
-
-/**
- * Temporarily forces setting of the docLockingSupported global for testing purposes.
- */
-class ForceSupportsDocLocking {
-public:
-    explicit ForceSupportsDocLocking(bool supported) : _oldSupportsDocLocking(_supportsDocLocking) {
-        _supportsDocLocking = supported;
-    }
-
-    ~ForceSupportsDocLocking() {
-        _supportsDocLocking = _oldSupportsDocLocking;
-    }
-
-private:
-    bool _oldSupportsDocLocking;
-};
 
 /**
  * A RAII object that instantiates a TicketHolder that limits number of allowed global lock
@@ -903,6 +884,42 @@ TEST_F(DConcurrencyTestFixture, PerformanceMMAPv1CollectionExclusive) {
             Lock::CollectionLock clk(clients[threadId].second->lockState(), "test.coll", MODE_X);
         },
         kMaxPerfThreads);
+}
+
+namespace {
+class RecoveryUnitMock : public RecoveryUnitNoop {
+public:
+    virtual void abandonSnapshot() {
+        activeTransaction = false;
+    }
+
+    bool activeTransaction = true;
+};
+}
+
+TEST_F(DConcurrencyTestFixture, TestGlobalLockAbandonSnapshot) {
+    auto clients = makeKClientsWithLockers<MMAPV1LockerImpl>(1);
+    auto opCtx = clients[0].second.get();
+    auto recovUnitOwned = stdx::make_unique<RecoveryUnitMock>();
+    auto recovUnitBorrowed = recovUnitOwned.get();
+    opCtx->setRecoveryUnit(recovUnitOwned.release(),
+                           OperationContext::RecoveryUnitState::kActiveUnitOfWork);
+
+    {
+        Lock::GlobalLock gw1(opCtx, MODE_IS, 0);
+        ASSERT(gw1.isLocked());
+        ASSERT(recovUnitBorrowed->activeTransaction);
+
+        {
+            Lock::GlobalLock gw2(opCtx, MODE_S, 0);
+            ASSERT(gw2.isLocked());
+            ASSERT(recovUnitBorrowed->activeTransaction);
+        }
+
+        ASSERT(recovUnitBorrowed->activeTransaction);
+        ASSERT(gw1.isLocked());
+    }
+    ASSERT_FALSE(recovUnitBorrowed->activeTransaction);
 }
 
 }  // namespace

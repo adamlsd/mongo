@@ -43,7 +43,6 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
@@ -139,9 +138,9 @@ Status _applyOps(OperationContext* opCtx,
 
             if (!dbHolder().get(opCtx, ns)) {
                 throw DBException(
+                    ErrorCodes::NamespaceNotFound,
                     "cannot create a database in atomic applyOps mode; will retry without "
-                    "atomicity",
-                    ErrorCodes::NamespaceNotFound);
+                    "atomicity");
             }
 
             OldClientContext ctx(opCtx, ns);
@@ -193,9 +192,8 @@ Status _applyOps(OperationContext* opCtx,
             } catch (const DBException& ex) {
                 ab.append(false);
                 result->append("applied", ++(*numApplied));
-                result->append("code", ex.getCode());
-                result->append("codeName",
-                               ErrorCodes::errorString(ErrorCodes::fromInt(ex.getCode())));
+                result->append("code", ex.code());
+                result->append("codeName", ErrorCodes::errorString(ex.code()));
                 result->append("errmsg", ex.what());
                 result->append("results", ab.arr());
                 return Status(ErrorCodes::UnknownError, ex.what());
@@ -270,10 +268,9 @@ Status _checkPrecondition(OperationContext* opCtx,
         }
         const CollatorInterface* collator = collection->getDefaultCollator();
 
-        // Apply-ops would never have a $where/$text matcher. Using the "DisallowExtensions"
-        // callback ensures that parsing will throw an error if $where or $text are found.
-        Matcher matcher(
-            preCondition["res"].Obj(), ExtensionsCallbackDisallowExtensions(), collator);
+        // applyOps does not allow any extensions, such as $text, $where, $geoNear, $near,
+        // $nearSphere, or $expr.
+        Matcher matcher(preCondition["res"].Obj(), collator);
         if (!matcher.matches(realres)) {
             result->append("got", realres);
             result->append("whatFailed", preCondition);
@@ -374,7 +371,7 @@ Status applyOps(OperationContext* opCtx,
             result->appendElements(intermediateResult.obj());
         });
     } catch (const DBException& ex) {
-        if (ex.getCode() == ErrorCodes::NamespaceNotFound) {
+        if (ex.code() == ErrorCodes::NamespaceNotFound) {
             // Retry in non-atomic mode, since MMAP cannot implicitly create a new database
             // within an active WriteUnitOfWork.
             return _applyOps(opCtx, dbName, applyOpCmd, result, &numApplied);
@@ -384,8 +381,8 @@ Status applyOps(OperationContext* opCtx,
         for (int j = 0; j < numApplied; j++)
             ab.append(false);
         result->append("applied", numApplied);
-        result->append("code", ex.getCode());
-        result->append("codeName", ErrorCodes::errorString(ErrorCodes::fromInt(ex.getCode())));
+        result->append("code", ex.code());
+        result->append("codeName", ErrorCodes::errorString(ex.code()));
         result->append("errmsg", ex.what());
         result->append("results", ab.arr());
         return Status(ErrorCodes::UnknownError, ex.what());

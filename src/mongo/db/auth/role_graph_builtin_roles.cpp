@@ -186,6 +186,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::getShardMap
         << ActionType::hostInfo
         << ActionType::listDatabases
+        << ActionType::listSessions // clusterManager gets this also
         << ActionType::listShards  // clusterManager gets this also
         << ActionType::netstat
         << ActionType::replSetGetConfig  // clusterManager gets this also
@@ -216,6 +217,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::flushRouterConfig  // clusterManager gets this also
         << ActionType::fsync
         << ActionType::invalidateUserCache // userAdminAnyDatabase gets this also
+        << ActionType::killAnySession
         << ActionType::killop
         << ActionType::replSetResizeOplog
         << ActionType::resync;  // clusterManager gets this also
@@ -237,6 +239,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::resync  // hostManager gets this also
         << ActionType::addShard 
         << ActionType::removeShard
+        << ActionType::listSessions  // clusterMonitor gets this also
         << ActionType::listShards  // clusterMonitor gets this also
         << ActionType::flushRouterConfig  // hostManager gets this also
         << ActionType::cleanupOrphaned;
@@ -648,11 +651,6 @@ void addInternalRolePrivileges(PrivilegeVector* privileges) {
     RoleGraph::generateUniversalPrivileges(privileges);
 }
 
-void addAnyBuiltinRolePrivileges(PrivilegeVector* privileges) {
-    Privilege::addPrivilegeToPrivilegeVector(
-        privileges, Privilege(ResourcePattern::forClusterResource(), ActionType::startSession));
-}
-
 }  // namespace
 
 bool RoleGraph::addPrivilegesForBuiltinRole(const RoleName& roleName, PrivilegeVector* result) {
@@ -699,7 +697,6 @@ bool RoleGraph::addPrivilegesForBuiltinRole(const RoleName& roleName, PrivilegeV
     }
 
     // One of the roles has matched, otherwise we would have returned already.
-    addAnyBuiltinRolePrivileges(result);
     return true;
 }
 

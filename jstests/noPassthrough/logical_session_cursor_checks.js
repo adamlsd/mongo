@@ -46,4 +46,3 @@
 
     MongoRunner.stopMongod(conn);
 })();
-

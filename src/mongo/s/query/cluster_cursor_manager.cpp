@@ -286,7 +286,7 @@ StatusWith<ClusterCursorManager::PinnedCursor> ClusterCursorManager::checkOutCur
 
     const auto cursorPrivilegeStatus = checkCursorSessionPrivilege(opCtx, cursor->getLsid());
 
-    if (cursorPrivilegeStatus != Status::OK()) {
+    if (!cursorPrivilegeStatus.isOK()) {
         return cursorPrivilegeStatus;
     }
 

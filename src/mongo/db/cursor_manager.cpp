@@ -515,7 +515,7 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(OperationContext* opCtx, Cu
 
     auto cursorPrivilegeStatus = checkCursorSessionPrivilege(opCtx, cursor->getSessionId());
 
-    if (cursorPrivilegeStatus != Status::OK()) {
+    if (!cursorPrivilegeStatus.isOK()) {
         return cursorPrivilegeStatus;
     }
 

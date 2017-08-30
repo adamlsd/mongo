@@ -9,7 +9,6 @@
     admin.auth("admin", "admin");
     data.createUser({user: 'admin', pwd: 'admin', roles: jsTest.basicUserRoles});
     data.createUser({user: 'user0', pwd: 'password', roles: jsTest.basicUserRoles});
-    data.createUser({user: 'user1', pwd: 'password', roles: jsTest.basicUserRoles});
     admin.logout();
 
     data.auth("user0", "password");

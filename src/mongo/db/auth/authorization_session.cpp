@@ -1014,7 +1014,8 @@ auto mongo::checkCursorSessionPrivilege(OperationContext* const opCtx,
     if (authIsOn() &&  // If the authorization is not on, then we permit anybody to do anything.
         cursorSessionId != opCtx->getLogicalSessionId() &&  // If the cursor's session doesn't match
                                                             // the Operation Context's session, then
-                                                            // we should forbid the operation
+                                                            // we should forbid the operation even
+                                                            // when the cursor has no session.
         !nobodyIsLoggedIn() &&          // Unless, for some reason a user isn't actually using this
                                         // Operation Context (which implies a background job
         !authHasImpersonatePrivilege()  // Or if the user has an impersonation privilege, in which

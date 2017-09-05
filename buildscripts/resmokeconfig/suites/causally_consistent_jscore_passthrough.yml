@@ -102,6 +102,8 @@ selector:
   - jstests/core/bypass_doc_validation.js
   - jstests/core/capped_max1.js
   - jstests/core/commands_namespace_parsing.js
+  - jstests/core/tailable_cursor_invalidation.js
+  - jstests/core/tailable_getmore_batch_size.js
   - jstests/core/tailable_skip_limit.js
   - jstests/core/constructors.js
   - jstests/core/index_stats.js
@@ -183,7 +185,6 @@ executor:
   fixture:
     class: ShardedClusterFixture
     mongos_options:
-      bind_ip_all: ''
       set_parameters:
         enableTestCommands: 1
         logComponentVerbosity:
@@ -194,7 +195,6 @@ executor:
             asio: 2
           tracking: 0
     mongod_options:
-      bind_ip_all: ''
       nopreallocj: ''
       enableMajorityReadConcern: ''
       set_parameters:

@@ -8,7 +8,6 @@ selector:
   - jstests/aggregation/sources/*/*.js
   exclude_files:
   # The following tests start their own ShardingTest.
-  - jstests/aggregation/bugs/server6118.js
   - jstests/aggregation/bugs/server6179.js
   - jstests/aggregation/bugs/server7781.js
   - jstests/aggregation/mongos_merge.js
@@ -50,11 +49,9 @@ executor:
   fixture:
     class: ShardedClusterFixture
     mongos_options:
-      bind_ip_all: ''
       set_parameters:
         enableTestCommands: 1
     mongod_options:
-      bind_ip_all: ''
       nopreallocj: ''
       set_parameters:
         enableTestCommands: 1

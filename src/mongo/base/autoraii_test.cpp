@@ -26,7 +26,8 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/base/autoraii.h"
+#include "mongo/base/unique_raii.h"
+#include "mongo/base/scoped_raii.h"
 
 #include "mongo/unittest/unittest.h"
 

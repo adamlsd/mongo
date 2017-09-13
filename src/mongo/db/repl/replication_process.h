@@ -36,6 +36,8 @@
 #include "mongo/base/status_with.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/optime.h"
+#include "mongo/db/repl/replication_consistency_markers.h"
+#include "mongo/db/repl/replication_recovery.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {
@@ -77,10 +79,11 @@ public:
     static ReplicationProcess* get(ServiceContext* service);
     static ReplicationProcess* get(ServiceContext& service);
     static ReplicationProcess* get(OperationContext* opCtx);
-    static void set(ServiceContext* service, std::unique_ptr<ReplicationProcess> storageInterface);
+    static void set(ServiceContext* service, std::unique_ptr<ReplicationProcess> process);
 
-    // Constructor and Destructor.
-    explicit ReplicationProcess(StorageInterface* storageInterface);
+    ReplicationProcess(StorageInterface* storageInterface,
+                       std::unique_ptr<ReplicationConsistencyMarkers> consistencyMarkers,
+                       std::unique_ptr<ReplicationRecovery> recovery);
     virtual ~ReplicationProcess() = default;
 
     /**
@@ -128,6 +131,16 @@ public:
      */
     Status clearRollbackProgress(OperationContext* opCtx);
 
+    /**
+     * Returns an object used for operating on the documents that maintain replication consistency.
+     */
+    ReplicationConsistencyMarkers* getConsistencyMarkers();
+
+    /**
+     * Returns an object used to recover from the oplog on startup or rollback.
+     */
+    ReplicationRecovery* getReplicationRecovery();
+
 private:
     // All member variables are labeled with one of the following codes indicating the
     // synchronization rules for accessing them.
@@ -141,6 +154,11 @@ private:
 
     // Used to access the storage layer.
     StorageInterface* const _storageInterface;  // (R)
+
+    // Used for operations on documents that maintain replication consistency.
+    std::unique_ptr<ReplicationConsistencyMarkers> _consistencyMarkers;  // (S)
+
+    std::unique_ptr<ReplicationRecovery> _recovery;  // (S)
 
     // Rollback ID. This is a cached copy of the persisted value in the local.system.rollback.id
     // collection.

@@ -39,6 +39,7 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/storage/kv/kv_prefix.h"
 #include "mongo/db/storage/record_store.h"
+#include "mongo/db/storage/snapshot_name.h"
 
 namespace mongo {
 
@@ -196,6 +197,13 @@ public:
     virtual bool supportsDocLocking() const = 0;
 
     /**
+     * This must not change over the lifetime of the engine.
+     */
+    virtual bool supportsDBLocking() const {
+        return true;
+    }
+
+    /**
      * Returns true if storage engine supports --directoryperdb.
      * See:
      *     http://docs.mongodb.org/manual/reference/program/mongod/#cmdoption--directoryperdb
@@ -237,6 +245,28 @@ public:
      * system about journaled write progress.
      */
     virtual void setJournalListener(JournalListener* jl) = 0;
+
+    /**
+     * See `StorageEngine::setStableTimestamp`
+     */
+    virtual void setStableTimestamp(SnapshotName stableTimestamp) {}
+
+    /**
+     * See `StorageEngine::setInitialDataTimestamp`
+     */
+    virtual void setInitialDataTimestamp(SnapshotName initialDataTimestamp) {}
+
+    /**
+     * See `StorageEngine::supportsRecoverToStableTimestamp`
+     */
+    virtual bool supportsRecoverToStableTimestamp() const {
+        return false;
+    }
+
+    /**
+     * See `StorageEngine::replicationBatchIsComplete()`
+     */
+    virtual void replicationBatchIsComplete() const {};
 
     /**
      * The destructor will never be called from mongod, but may be called from tests.

@@ -37,7 +37,9 @@
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/cursor_response.h"
+#include "mongo/db/query/tailable_mode.h"
 #include "mongo/s/client/shard.h"
 #include "mongo/util/net/hostandport.h"
 
@@ -110,11 +112,12 @@ struct ClusterClientCursorParams {
     // Should be forwarded to the remote hosts in 'cmdObj'.
     boost::optional<long long> limit;
 
-    // Whether this cursor is tailing a capped collection.
-    bool isTailable = false;
+    // If set, we use this pipeline to merge the output of aggregations on each remote.
+    std::unique_ptr<Pipeline, Pipeline::Deleter> mergePipeline;
 
-    // Whether this cursor has the awaitData option set.
-    bool isAwaitData = false;
+    // Whether this cursor is tailing a capped collection, and whether it has the awaitData option
+    // set.
+    TailableMode tailableMode = TailableMode::kNormal;
 
     // Set if a readPreference must be respected throughout the lifetime of the cursor.
     boost::optional<ReadPreferenceSetting> readPreference;

@@ -33,7 +33,6 @@
 #include "mongo/base/init.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_comparator.h"
 #include "mongo/db/pipeline/document_path_support.h"
@@ -49,27 +48,34 @@ using boost::intrusive_ptr;
 
 namespace dps = ::mongo::dotted_path_support;
 
-std::unique_ptr<LiteParsedDocumentSourceOneForeignCollection> DocumentSourceGraphLookUp::liteParse(
+std::unique_ptr<LiteParsedDocumentSourceForeignCollections> DocumentSourceGraphLookUp::liteParse(
     const AggregationRequest& request, const BSONElement& spec) {
-    uassert(40327,
+    uassert(ErrorCodes::FailedToParse,
             str::stream() << "the $graphLookup stage specification must be an object, but found "
                           << typeName(spec.type()),
             spec.type() == BSONType::Object);
 
     auto specObj = spec.Obj();
     auto fromElement = specObj["from"];
-    uassert(40328,
+    uassert(ErrorCodes::FailedToParse,
             str::stream() << "missing 'from' option to $graphLookup stage specification: "
                           << specObj,
             fromElement);
-    uassert(40329,
+    uassert(ErrorCodes::FailedToParse,
             str::stream() << "'from' option to $graphLookup must be a string, but was type "
                           << typeName(specObj["from"].type()),
             fromElement.type() == BSONType::String);
 
     NamespaceString nss(request.getNamespaceString().db(), fromElement.valueStringData());
-    uassert(40330, str::stream() << "invalid $graphLookup namespace: " << nss.ns(), nss.isValid());
-    return stdx::make_unique<LiteParsedDocumentSourceOneForeignCollection>(std::move(nss));
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "invalid $graphLookup namespace: " << nss.ns(),
+            nss.isValid());
+
+    PrivilegeVector privileges{
+        Privilege(ResourcePattern::forExactNamespace(nss), ActionType::find)};
+
+    return stdx::make_unique<LiteParsedDocumentSourceForeignCollections>(std::move(nss),
+                                                                         std::move(privileges));
 }
 
 REGISTER_DOCUMENT_SOURCE(graphLookup,
@@ -537,22 +543,15 @@ intrusive_ptr<DocumentSource> DocumentSourceGraphLookUp::createFromBson(
                     argument.type() == Object);
 
             // We don't need to keep ahold of the MatchExpression, but we do need to ensure that
-            // the specified object is parseable.
-            auto parsedMatchExpression = MatchExpressionParser::parse(
-                argument.embeddedObject(), ExtensionsCallbackDisallowExtensions(), nullptr);
+            // the specified object is parseable and does not contain extensions.
+            auto parsedMatchExpression =
+                MatchExpressionParser::parse(argument.embeddedObject(), nullptr);
 
             uassert(40186,
                     str::stream()
                         << "Failed to parse 'restrictSearchWithMatch' option to $graphLookup: "
                         << parsedMatchExpression.getStatus().reason(),
                     parsedMatchExpression.isOK());
-
-            uassert(40187,
-                    str::stream()
-                        << "Failed to parse 'restrictSearchWithMatch' option to $graphLookup: "
-                        << "$near not supported.",
-                    !QueryPlannerCommon::hasNode(parsedMatchExpression.getValue().get(),
-                                                 MatchExpression::GEO_NEAR));
 
             additionalFilter = argument.embeddedObject().getOwned();
             continue;

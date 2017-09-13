@@ -45,10 +45,10 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/server_status_metric.h"
+#include "mongo/db/cursor_server_params.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/db/server_parameters.h"
 #include "mongo/util/background.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/exit.h"
@@ -71,19 +71,19 @@ static ServerStatusMetricField<Counter64> dCursorStatsOpenNoTimeout("cursor.open
 static ServerStatusMetricField<Counter64> dCursorStatusTimedout("cursor.timedOut",
                                                                 &cursorStatsTimedOut);
 
-MONGO_EXPORT_SERVER_PARAMETER(clientCursorMonitorFrequencySecs, int, 4);
-
 long long ClientCursor::totalOpen() {
     return cursorStatsOpen.get();
 }
 
-ClientCursor::ClientCursor(ClientCursorParams&& params,
+ClientCursor::ClientCursor(ClientCursorParams params,
                            CursorManager* cursorManager,
                            CursorId cursorId,
+                           boost::optional<LogicalSessionId> lsid,
                            Date_t now)
     : _cursorid(cursorId),
       _nss(std::move(params.nss)),
       _authenticatedUsers(std::move(params.authenticatedUsers)),
+      _lsid(std::move(lsid)),
       _isReadCommitted(params.isReadCommitted),
       _cursorManager(cursorManager),
       _originatingCommand(params.originatingCommandObj),
@@ -138,7 +138,9 @@ void ClientCursor::updateSlaveLocation(OperationContext* opCtx) {
     if (!rid.isSet())
         return;
 
-    repl::getGlobalReplicationCoordinator()->setLastOptimeForSlave(rid, _slaveReadTill);
+    repl::getGlobalReplicationCoordinator()
+        ->setLastOptimeForSlave(rid, _slaveReadTill)
+        .transitional_ignore();
 }
 
 //
@@ -259,6 +261,7 @@ ClientCursor* ClientCursorPin::getCursor() const {
     return _cursor;
 }
 
+namespace {
 //
 // ClientCursorMonitor
 //
@@ -282,12 +285,11 @@ public:
                     CursorManager::timeoutCursorsGlobal(opCtx.get(), now));
             }
             MONGO_IDLE_THREAD_BLOCK;
-            sleepsecs(clientCursorMonitorFrequencySecs.load());
+            sleepsecs(getClientCursorMonitorFrequencySecs());
         }
     }
 };
 
-namespace {
 // Only one instance of the ClientCursorMonitor exists
 ClientCursorMonitor clientCursorMonitor;
 

@@ -36,9 +36,9 @@
 #include "mongo/bson/mutable/element.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
+#include "mongo/db/auth/privilege_parser.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/update/update_driver.h"
@@ -179,7 +179,8 @@ Status AuthzManagerExternalStateMock::updateOne(OperationContext* opCtx,
     namespace mmb = mutablebson;
     UpdateDriver::Options updateOptions;
     UpdateDriver driver(updateOptions);
-    Status status = driver.parse(updatePattern);
+    std::map<StringData, std::unique_ptr<ExpressionWithPlaceholder>> arrayFilters;
+    Status status = driver.parse(updatePattern, arrayFilters);
     if (!status.isOK())
         return status;
 
@@ -188,8 +189,16 @@ Status AuthzManagerExternalStateMock::updateOne(OperationContext* opCtx,
     mmb::Document document;
     if (status.isOK()) {
         document.reset(*iter, mmb::Document::kInPlaceDisabled);
+        const BSONObj emptyOriginal;
+        const bool validateForStorage = false;
+        const FieldRefSet emptyImmutablePaths;
         BSONObj logObj;
-        status = driver.update(StringData(), &document, &logObj);
+        status = driver.update(StringData(),
+                               emptyOriginal,
+                               &document,
+                               validateForStorage,
+                               emptyImmutablePaths,
+                               &logObj);
         if (!status.isOK())
             return status;
         BSONObj newObj = document.getObject().copy();
@@ -203,13 +212,23 @@ Status AuthzManagerExternalStateMock::updateOne(OperationContext* opCtx,
         return Status::OK();
     } else if (status == ErrorCodes::NoMatchingDocument && upsert) {
         if (query.hasField("_id")) {
-            document.root().appendElement(query["_id"]);
+            document.root().appendElement(query["_id"]).transitional_ignore();
         }
-        status = driver.populateDocumentWithQueryFields(opCtx, query, NULL, document);
+        const FieldRef idFieldRef("_id");
+        FieldRefSet immutablePaths;
+        invariant(immutablePaths.insert(&idFieldRef));
+        status = driver.populateDocumentWithQueryFields(opCtx, query, immutablePaths, document);
         if (!status.isOK()) {
             return status;
         }
-        status = driver.update(StringData(), &document);
+
+        // The original document can be empty because it is only needed for validation of immutable
+        // paths.
+        const BSONObj emptyOriginal;
+        const bool validateForStorage = false;
+        const FieldRefSet emptyImmutablePaths;
+        status = driver.update(
+            StringData(), emptyOriginal, &document, validateForStorage, emptyImmutablePaths);
         if (!status.isOK()) {
             return status;
         }
@@ -276,8 +295,7 @@ Status AuthzManagerExternalStateMock::_queryVector(
     const BSONObj& query,
     std::vector<BSONObjCollection::iterator>* result) {
     CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression parseResult =
-        MatchExpressionParser::parse(query, ExtensionsCallbackDisallowExtensions(), collator);
+    StatusWithMatchExpression parseResult = MatchExpressionParser::parse(query, collator);
     if (!parseResult.isOK()) {
         return parseResult.getStatus();
     }

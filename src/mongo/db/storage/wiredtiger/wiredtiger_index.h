@@ -67,7 +67,8 @@ public:
     static StatusWith<std::string> generateCreateString(const std::string& engineName,
                                                         const std::string& sysIndexConfig,
                                                         const std::string& collIndexConfig,
-                                                        const IndexDescriptor& desc);
+                                                        const IndexDescriptor& desc,
+                                                        bool isPrefixed);
 
     /**
      * Creates a WiredTiger table suitable for implementing a MongoDB index.
@@ -78,7 +79,8 @@ public:
     WiredTigerIndex(OperationContext* ctx,
                     const std::string& uri,
                     const IndexDescriptor* desc,
-                    KVPrefix prefix);
+                    KVPrefix prefix,
+                    bool readOnly);
 
     virtual Status insert(OperationContext* opCtx,
                           const BSONObj& key,
@@ -146,6 +148,8 @@ protected:
                           const RecordId& id,
                           bool dupsAllowed) = 0;
 
+    void setKey(WT_CURSOR* cursor, const WT_ITEM* item);
+
     class BulkBuilder;
     class StandardBulkBuilder;
     class UniqueBulkBuilder;
@@ -166,7 +170,8 @@ public:
     WiredTigerIndexUnique(OperationContext* ctx,
                           const std::string& uri,
                           const IndexDescriptor* desc,
-                          KVPrefix prefix);
+                          KVPrefix prefix,
+                          bool readOnly = false);
 
     std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                            bool forward) const override;
@@ -190,7 +195,8 @@ public:
     WiredTigerIndexStandard(OperationContext* ctx,
                             const std::string& uri,
                             const IndexDescriptor* desc,
-                            KVPrefix prefix);
+                            KVPrefix prefix,
+                            bool readOnly = false);
 
     std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
                                                            bool forward) const override;

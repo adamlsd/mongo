@@ -45,38 +45,15 @@ class StorageInterfaceImpl : public StorageInterface {
     MONGO_DISALLOW_COPYING(StorageInterfaceImpl);
 
 public:
-    static const char kDefaultMinValidNamespace[];
-    static const char kInitialSyncFlagFieldName[];
-    static const char kBeginFieldName[];
-    static const char kOplogDeleteFromPointFieldName[];
     static const char kDefaultRollbackIdNamespace[];
     static const char kRollbackIdFieldName[];
     static const char kRollbackIdDocumentId[];
 
     StorageInterfaceImpl();
-    explicit StorageInterfaceImpl(const NamespaceString& minValidNss);
 
-    /**
-     * Returns namespace of collection containing the minvalid boundaries and initial sync flag.
-     */
-    NamespaceString getMinValidNss() const;
-
-    bool getInitialSyncFlag(OperationContext* opCtx) const override;
-
-    void setInitialSyncFlag(OperationContext* opCtx) override;
-
-    void clearInitialSyncFlag(OperationContext* opCtx) override;
-
-    OpTime getMinValid(OperationContext* opCtx) const override;
-    void setMinValid(OperationContext* opCtx, const OpTime& minValid) override;
-    void setMinValidToAtLeast(OperationContext* opCtx, const OpTime& endOpTime) override;
     StatusWith<int> getRollbackID(OperationContext* opCtx) override;
     Status initializeRollbackID(OperationContext* opCtx) override;
     Status incrementRollbackID(OperationContext* opCtx) override;
-    void setOplogDeleteFromPoint(OperationContext* opCtx, const Timestamp& timestamp) override;
-    Timestamp getOplogDeleteFromPoint(OperationContext* opCtx) override;
-    void setAppliedThrough(OperationContext* opCtx, const OpTime& optime) override;
-    OpTime getAppliedThrough(OperationContext* opCtx) override;
 
     /**
      *  Allocates a new TaskRunner for use by the passed in collection.
@@ -89,11 +66,11 @@ public:
 
     Status insertDocument(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const BSONObj& doc) override;
+                          const TimestampedBSONObj& doc) override;
 
     Status insertDocuments(OperationContext* opCtx,
                            const NamespaceString& nss,
-                           const std::vector<BSONObj>& docs) override;
+                           const std::vector<InsertStatement>& docs) override;
 
     Status dropReplicatedDatabases(OperationContext* opCtx) override;
 
@@ -106,6 +83,13 @@ public:
                             const CollectionOptions& options) override;
 
     Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) override;
+
+    Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) override;
+
+    Status renameCollection(OperationContext* opCtx,
+                            const NamespaceString& fromNS,
+                            const NamespaceString& toNS,
+                            bool stayTemp) override;
 
     StatusWith<std::vector<BSONObj>> findDocuments(OperationContext* opCtx,
                                                    const NamespaceString& nss,
@@ -152,17 +136,20 @@ public:
     StatusWith<StorageInterface::CollectionCount> getCollectionCount(
         OperationContext* opCtx, const NamespaceString& nss) override;
 
+    void setStableTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
+
+    void setInitialDataTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
+
+    Status recoverToStableTimestamp(ServiceContext* serviceCtx) override;
+
     /**
      * Checks that the "admin" database contains a supported version of the auth data schema.
      */
     Status isAdminDbValid(OperationContext* opCtx) override;
 
-private:
-    // Returns empty document if not present.
-    BSONObj getMinValidDocument(OperationContext* opCtx) const;
-    void updateMinValidDocument(OperationContext* opCtx, const BSONObj& updateSpec);
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) override;
 
-    const NamespaceString _minValidNss;
+private:
     const NamespaceString _rollbackIdNss;
 };
 

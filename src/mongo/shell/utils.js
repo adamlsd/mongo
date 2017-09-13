@@ -198,6 +198,7 @@ var _jsTestOptions = {enableTestCommands: true};  // Test commands should be ena
 jsTestOptions = function() {
     if (TestData) {
         return Object.merge(_jsTestOptions, {
+            serviceExecutor: TestData.serviceExecutor,
             setParameters: TestData.setParameters,
             setParametersMongos: TestData.setParametersMongos,
             storageEngine: TestData.storageEngine,
@@ -229,8 +230,16 @@ jsTestOptions = function() {
             shardMixedBinVersions: TestData.shardMixedBinVersions || false,
             networkMessageCompressors: TestData.networkMessageCompressors,
             skipValidationOnInvalidViewDefinitions: TestData.skipValidationOnInvalidViewDefinitions,
-            forceValidationWithFeatureCompatibilityVersion:
-                TestData.forceValidationWithFeatureCompatibilityVersion
+            skipCollectionAndIndexValidation: TestData.skipCollectionAndIndexValidation,
+            // We default skipValidationOnNamespaceNotFound to true because mongod can end up
+            // dropping a collection after calling listCollections (e.g. if a secondary applies an
+            // oplog entry).
+            skipValidationOnNamespaceNotFound:
+                TestData.hasOwnProperty("skipValidationOnNamespaceNotFound")
+                ? TestData.skipValidationOnNamespaceNotFound
+                : true,
+            jsonSchemaTestFile: TestData.jsonSchemaTestFile,
+            excludedDBsFromDBHash: TestData.excludedDBsFromDBHash,
         });
     }
     return _jsTestOptions;
@@ -669,7 +678,7 @@ shellHelper.use = function(dbname) {
         print("bad use parameter");
         return;
     }
-    db = db.getMongo().getDB(dbname);
+    db = db.getSiblingDB(dbname);
     print("switched to db " + db.getName());
 };
 
@@ -766,7 +775,7 @@ shellHelper.show = function(what) {
     }
 
     if (what == "dbs" || what == "databases") {
-        var dbs = db.getMongo().getDBs();
+        var dbs = db.getMongo().getDBs(db.getSession());
         var dbinfo = [];
         var maxNameLength = 0;
         var maxGbDigits = 0;

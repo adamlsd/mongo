@@ -26,20 +26,24 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kSharding
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/s/shard_metadata_util.h"
 
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/ops/write_ops.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/unique_message.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_shard_collection.h"
 #include "mongo/s/chunk_version.h"
-#include "mongo/s/write_ops/batched_command_request.h"
+#include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace shardmetadatautil {
@@ -50,39 +54,58 @@ const WriteConcernOptions kLocalWriteConcern(1,
                                              WriteConcernOptions::SyncMode::UNSET,
                                              Milliseconds(0));
 
+/**
+ * Processes a command result for errors, including write concern errors.
+ */
+Status getStatusFromWriteCommandResponse(const BSONObj& commandResult) {
+    BatchedCommandResponse batchResponse;
+    std::string errmsg;
+    if (!batchResponse.parseBSON(commandResult, &errmsg)) {
+        return Status(ErrorCodes::FailedToParse,
+                      str::stream() << "Failed to parse write response: " << errmsg);
+    }
+
+    return batchResponse.toStatus();
+}
+
 }  // namespace
 
 QueryAndSort createShardChunkDiffQuery(const ChunkVersion& collectionVersion) {
-    return {BSON(ChunkType::DEPRECATED_lastmod()
-                 << BSON("$gte" << Timestamp(collectionVersion.toLong()))),
-            BSON(ChunkType::DEPRECATED_lastmod() << 1)};
+    return {BSON(ChunkType::lastmod() << BSON("$gte" << Timestamp(collectionVersion.toLong()))),
+            BSON(ChunkType::lastmod() << 1)};
 }
 
-bool RefreshState::operator==(RefreshState& other) {
+bool RefreshState::operator==(const RefreshState& other) const {
     return (other.epoch == epoch) && (other.refreshing == refreshing) &&
-        (other.sequenceNumber == sequenceNumber);
+        (other.lastRefreshedCollectionVersion == lastRefreshedCollectionVersion);
+}
+
+std::string RefreshState::toString() const {
+    return str::stream() << "epoch: " << epoch
+                         << ", refreshing: " << (refreshing ? "true" : "false")
+                         << ", lastRefreshedCollectionVersion: "
+                         << lastRefreshedCollectionVersion.toString();
 }
 
 Status setPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& nss) {
     // Set 'refreshing' to true.
     BSONObj update = BSON(ShardCollectionType::refreshing() << true);
     return updateShardCollectionsEntry(
-        opCtx, BSON(ShardCollectionType::uuid() << nss.ns()), update, BSONObj(), false /*upsert*/);
+        opCtx, BSON(ShardCollectionType::uuid() << nss.ns()), update, false /*upsert*/);
 }
 
-Status unsetPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& nss) {
-    // Set 'refreshing' to false and increment the sequence number so it's differs from the last
-    // stable state. Note: incrementing a non-existent field sets the field to the increment value,
-    // so such a situation is safe.
-    BSONObj update = BSON(ShardCollectionType::refreshing()
-                          << false
-                          << "$inc"
-                          << BSON(ShardCollectionType::refreshSequenceNumber() << 1));
+Status unsetPersistedRefreshFlags(OperationContext* opCtx,
+                                  const NamespaceString& nss,
+                                  const ChunkVersion& refreshedVersion) {
+    // Set 'refreshing' to false and update the last refreshed collection version.
+    BSONObjBuilder updateBuilder;
+    updateBuilder.append(ShardCollectionType::refreshing(), false);
+    updateBuilder.appendTimestamp(ShardCollectionType::lastRefreshedCollectionVersion(),
+                                  refreshedVersion.toLong());
 
     return updateShardCollectionsEntry(opCtx,
                                        BSON(ShardCollectionType::uuid() << nss.ns()),
-                                       BSON(ShardCollectionType::refreshing() << false),
-                                       BSON(ShardCollectionType::refreshSequenceNumber() << 1),
+                                       updateBuilder.obj(),
                                        false /*upsert*/);
 }
 
@@ -94,9 +117,26 @@ StatusWith<RefreshState> getPersistedRefreshFlags(OperationContext* opCtx,
     }
     ShardCollectionType entry = statusWithCollectionEntry.getValue();
 
+    // Ensure the results have not been incorrectly set somehow.
+    if (entry.hasRefreshing()) {
+        // If 'refreshing' is present and false, a refresh must have occurred (otherwise the field
+        // would never have been added to the document) and there should always be a refresh
+        // version.
+        invariant(entry.getRefreshing() ? true : entry.hasLastRefreshedCollectionVersion());
+    } else {
+        // If 'refreshing' is not present, no refresh version should exist.
+        invariant(!entry.hasLastRefreshedCollectionVersion());
+    }
+
     return RefreshState{entry.getEpoch(),
-                        entry.hasRefreshing() ? entry.getRefreshing() : false,
-                        entry.hasRefreshSequenceNumber() ? entry.getRefreshSequenceNumber() : 0LL};
+                        // If the refreshing field has not yet been added, this means that the first
+                        // refresh has started, but no chunks have ever yet been applied, around
+                        // which these flags are set. So default to refreshing true because the
+                        // chunk metadata is being updated and is not yet ready to be read.
+                        entry.hasRefreshing() ? entry.getRefreshing() : true,
+                        entry.hasLastRefreshedCollectionVersion()
+                            ? entry.getLastRefreshedCollectionVersion()
+                            : ChunkVersion(0, 0, entry.getEpoch())};
 }
 
 StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCtx,
@@ -139,55 +179,35 @@ StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCt
 Status updateShardCollectionsEntry(OperationContext* opCtx,
                                    const BSONObj& query,
                                    const BSONObj& update,
-                                   const BSONObj& inc,
                                    const bool upsert) {
     invariant(query.hasField("_id"));
     if (upsert) {
         // If upserting, this should be an update from the config server that does not have shard
         // refresh information.
         invariant(!update.hasField(ShardCollectionType::refreshing()));
-        invariant(!update.hasField(ShardCollectionType::refreshSequenceNumber()));
-        invariant(inc.isEmpty());
+        invariant(!update.hasField(ShardCollectionType::lastRefreshedCollectionVersion()));
     }
-
-    // Want to modify the document, not replace it.
-    BSONObjBuilder updateBuilder;
-    updateBuilder.append("$set", update);
-    if (!inc.isEmpty()) {
-        updateBuilder.append("$inc", inc);
-    }
-
-    std::unique_ptr<BatchedUpdateDocument> updateDoc(new BatchedUpdateDocument());
-    updateDoc->setQuery(query);
-    updateDoc->setUpdateExpr(updateBuilder.obj());
-    updateDoc->setUpsert(upsert);
-
-    std::unique_ptr<BatchedUpdateRequest> updateRequest(new BatchedUpdateRequest());
-    updateRequest->addToUpdates(updateDoc.release());
-
-    BatchedCommandRequest request(updateRequest.release());
-    request.setNS(NamespaceString(ShardCollectionType::ConfigNS));
-    request.setWriteConcern(kLocalWriteConcern.toBSON());
-    BSONObj cmdObj = request.toBSON();
 
     try {
         DBDirectClient client(opCtx);
 
-        rpc::UniqueReply commandResponse = client.runCommandWithMetadata(
-            "config", cmdObj.firstElementFieldName(), rpc::makeEmptyMetadata(), cmdObj);
-        BSONObj responseReply = commandResponse->getCommandReply().getOwned();
-
-        Status commandStatus = getStatusFromCommandResult(commandResponse->getCommandReply());
-        if (!commandStatus.isOK()) {
-            return commandStatus;
-        }
+        auto commandResponse = client.runCommand([&] {
+            write_ops::Update updateOp(NamespaceString{ShardCollectionType::ConfigNS});
+            updateOp.setUpdates({[&] {
+                write_ops::UpdateOpEntry entry;
+                entry.setQ(query);
+                // Want to modify the document, not replace it
+                entry.setU(BSON("$set" << update));
+                entry.setUpsert(upsert);
+                return entry;
+            }()});
+            return updateOp.serialize({});
+        }());
+        uassertStatusOK(getStatusFromWriteCommandResponse(commandResponse->getCommandReply()));
 
         return Status::OK();
     } catch (const DBException& ex) {
-        return {ex.toStatus().code(),
-                str::stream() << "Failed to apply the update '" << request.toString()
-                              << "' to config.collections"
-                              << causedBy(ex.toStatus())};
+        return ex.toStatus();
     }
 }
 
@@ -197,22 +217,20 @@ StatusWith<std::vector<ChunkType>> readShardChunks(OperationContext* opCtx,
                                                    const BSONObj& sort,
                                                    boost::optional<long long> limit,
                                                    const OID& epoch) {
-    // Query to retrieve the chunks.
-    Query fullQuery(query);
-    fullQuery.sort(sort);
-
     try {
+        Query fullQuery(query);
+        fullQuery.sort(sort);
+
         DBDirectClient client(opCtx);
 
-        std::string chunkMetadataNs = ChunkType::ShardNSPrefix + nss.ns();
+        const std::string chunkMetadataNs = ChunkType::ShardNSPrefix + nss.ns();
+
         std::unique_ptr<DBClientCursor> cursor =
             client.query(chunkMetadataNs, fullQuery, limit.get_value_or(0));
-
-        if (!cursor) {
-            return {ErrorCodes::OperationFailed,
-                    str::stream() << "Failed to establish a cursor for reading " << chunkMetadataNs
-                                  << " from local storage"};
-        }
+        uassert(ErrorCodes::OperationFailed,
+                str::stream() << "Failed to establish a cursor for reading " << chunkMetadataNs
+                              << " from local storage",
+                cursor);
 
         std::vector<ChunkType> chunks;
         while (cursor->more()) {
@@ -224,6 +242,7 @@ StatusWith<std::vector<ChunkType>> readShardChunks(OperationContext* opCtx,
                                       << "' due to "
                                       << statusWithChunk.getStatus().reason()};
             }
+
             chunks.push_back(std::move(statusWithChunk.getValue()));
         }
 
@@ -243,6 +262,10 @@ Status updateShardChunks(OperationContext* opCtx,
 
     try {
         DBDirectClient client(opCtx);
+
+        // This may be the first update, so the first opportunity to create an index.
+        // If the index already exists, this is a no-op.
+        client.createIndex(chunkMetadataNss.ns(), BSON(ChunkType::lastmod() << 1));
 
         /**
          * Here are examples of the operations that can happen on the config server to update
@@ -267,64 +290,34 @@ Status updateShardChunks(OperationContext* opCtx,
          *
          */
         for (auto& chunk : chunks) {
-            // Check for a different epoch.
-            if (!chunk.getVersion().hasEqualEpoch(currEpoch)) {
-                return Status{ErrorCodes::ConflictingOperationInProgress,
-                              str::stream() << "Invalid chunks found when reloading '"
-                                            << nss.toString()
-                                            << "'. Previous collection epoch was '"
-                                            << currEpoch.toString()
-                                            << "', but unexpectedly found a new epoch '"
-                                            << chunk.getVersion().epoch().toString()
-                                            << "'. Collection was dropped and recreated."};
-            }
+            invariant(chunk.getVersion().hasEqualEpoch(currEpoch));
 
             // Delete any overlapping chunk ranges. Overlapping chunks will have a min value
             // ("_id") between (chunk.min, chunk.max].
             //
             // query: { "_id" : {"$gte": chunk.min, "$lt": chunk.max}}
-            auto deleteDocs(stdx::make_unique<BatchedDeleteDocument>());
-            deleteDocs->setQuery(BSON(ChunkType::minShardID << BSON(
-                                          "$gte" << chunk.getMin() << "$lt" << chunk.getMax())));
-            deleteDocs->setLimit(0);
+            auto deleteCommandResponse = client.runCommand([&] {
+                write_ops::Delete deleteOp(chunkMetadataNss);
+                deleteOp.setDeletes({[&] {
+                    write_ops::DeleteOpEntry entry;
+                    entry.setQ(BSON(ChunkType::minShardID
+                                    << BSON("$gte" << chunk.getMin() << "$lt" << chunk.getMax())));
+                    entry.setMulti(true);
+                    return entry;
+                }()});
+                return deleteOp.serialize({});
+            }());
+            uassertStatusOK(
+                getStatusFromWriteCommandResponse(deleteCommandResponse->getCommandReply()));
 
-            auto deleteRequest(stdx::make_unique<BatchedDeleteRequest>());
-            deleteRequest->addToDeletes(deleteDocs.release());
-
-            BatchedCommandRequest batchedDeleteRequest(deleteRequest.release());
-            batchedDeleteRequest.setNS(chunkMetadataNss);
-            const BSONObj deleteCmdObj = batchedDeleteRequest.toBSON();
-
-            rpc::UniqueReply deleteCommandResponse =
-                client.runCommandWithMetadata(chunkMetadataNss.db().toString(),
-                                              deleteCmdObj.firstElementFieldName(),
-                                              rpc::makeEmptyMetadata(),
-                                              deleteCmdObj);
-            auto deleteStatus =
-                getStatusFromCommandResult(deleteCommandResponse->getCommandReply());
-
-            if (!deleteStatus.isOK()) {
-                return deleteStatus;
-            }
-
-            // Now the document can be expected to cleanly insert without overlap.
-            auto insert(stdx::make_unique<BatchedInsertRequest>());
-            insert->addToDocuments(chunk.toShardBSON());
-
-            BatchedCommandRequest insertRequest(insert.release());
-            insertRequest.setNS(chunkMetadataNss);
-            const BSONObj insertCmdObj = insertRequest.toBSON();
-
-            rpc::UniqueReply commandResponse =
-                client.runCommandWithMetadata(chunkMetadataNss.db().toString(),
-                                              insertCmdObj.firstElementFieldName(),
-                                              rpc::makeEmptyMetadata(),
-                                              insertCmdObj);
-            auto insertStatus = getStatusFromCommandResult(commandResponse->getCommandReply());
-
-            if (!insertStatus.isOK()) {
-                return insertStatus;
-            }
+            // Now the document can be expected to cleanly insert without overlap
+            auto insertCommandResponse = client.runCommand([&] {
+                write_ops::Insert insertOp(chunkMetadataNss);
+                insertOp.setDocuments({chunk.toShardBSON()});
+                return insertOp.serialize({});
+            }());
+            uassertStatusOK(
+                getStatusFromWriteCommandResponse(insertCommandResponse->getCommandReply()));
         }
 
         return Status::OK();
@@ -334,41 +327,34 @@ Status updateShardChunks(OperationContext* opCtx,
 }
 
 Status dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const NamespaceString& nss) {
-    NamespaceString chunkMetadataNss(ChunkType::ShardNSPrefix + nss.ns());
-
     try {
         DBDirectClient client(opCtx);
 
-        // Delete the collections collection entry matching 'nss'.
-        auto deleteDocs(stdx::make_unique<BatchedDeleteDocument>());
-        deleteDocs->setQuery(BSON(ShardCollectionType::uuid << nss.ns()));
-        deleteDocs->setLimit(0);
+        auto deleteCommandResponse = client.runCommand([&] {
+            write_ops::Delete deleteOp(
+                NamespaceString{NamespaceString::kShardConfigCollectionsCollectionName});
+            deleteOp.setDeletes({[&] {
+                write_ops::DeleteOpEntry entry;
+                entry.setQ(BSON(ShardCollectionType::uuid << nss.ns()));
+                entry.setMulti(true);
+                return entry;
+            }()});
+            return deleteOp.serialize({});
+        }());
+        uassertStatusOK(
+            getStatusFromWriteCommandResponse(deleteCommandResponse->getCommandReply()));
 
-        auto deleteRequest(stdx::make_unique<BatchedDeleteRequest>());
-        deleteRequest->addToDeletes(deleteDocs.release());
-
-        BatchedCommandRequest batchedDeleteRequest(deleteRequest.release());
-        batchedDeleteRequest.setNS(NamespaceString(ShardCollectionType::ConfigNS));
-        const BSONObj deleteCmdObj = batchedDeleteRequest.toBSON();
-
-        rpc::UniqueReply deleteCommandResponse = client.runCommandWithMetadata(
-            "config", deleteCmdObj.firstElementFieldName(), rpc::makeEmptyMetadata(), deleteCmdObj);
-        auto deleteStatus = getStatusFromCommandResult(deleteCommandResponse->getCommandReply());
-
-        if (!deleteStatus.isOK()) {
-            return deleteStatus;
-        }
-
-        // Drop the config.chunks.ns collection specified by 'chunkMetadataNss'.
+        // Drop the corresponding config.chunks.ns collection
         BSONObj result;
-        bool isOK = client.dropCollection(chunkMetadataNss.ns(), kLocalWriteConcern, &result);
-        if (!isOK) {
+        if (!client.dropCollection(
+                ChunkType::ShardNSPrefix + nss.ns(), kLocalWriteConcern, &result)) {
             Status status = getStatusFromCommandResult(result);
-            if (!status.isOK() && status.code() != ErrorCodes::NamespaceNotFound) {
-                return status;
+            if (status != ErrorCodes::NamespaceNotFound) {
+                uassertStatusOK(status);
             }
         }
 
+        LOG(1) << "Successfully cleared persisted chunk metadata for collection '" << nss << "'.";
         return Status::OK();
     } catch (const DBException& ex) {
         return ex.toStatus();

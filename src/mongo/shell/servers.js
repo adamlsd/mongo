@@ -827,6 +827,8 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     MongoRunner.EXIT_UNCAUGHT = 100;  // top level exception that wasn't caught
     MongoRunner.EXIT_TEST = 101;
 
+    MongoRunner.validateCollectionsCallback = function(port) {};
+
     /**
      * Kills a mongod process.
      *
@@ -849,6 +851,11 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                             "it is usually the object returned from MongoRunner.runMongod/s");
         }
 
+        if (!conn.port) {
+            throw new Error("first arg must have a `port` property; " +
+                            "it is usually the object returned from MongoRunner.runMongod/s");
+        }
+
         signal = parseInt(signal) || 15;
         opts = opts || {};
 
@@ -868,6 +875,13 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             returnCode = serverExitCodeMap[pid];
             delete serverExitCodeMap[pid];
         } else {
+            // Invoke callback to validate collections and indexes before shutting down mongod.
+            // We skip calling the callback function when the expected return code of
+            // the mongod process is non-zero since it's likely the process has already exited.
+            if (allowedExitCode === MongoRunner.EXIT_CLEAN) {
+                MongoRunner.validateCollectionsCallback(port);
+            }
+
             returnCode = _stopMongoProgram(port, signal, opts);
         }
         if (allowedExitCode !== returnCode) {
@@ -1001,17 +1015,22 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
 
         // programName includes the version, e.g., mongod-3.2.
         // baseProgramName is the program name without any version information, e.g., mongod.
-        var programName = argArray[0];
+        let programName = argArray[0];
 
         // Object containing log component levels for the "logComponentVerbosity" parameter
-        var logComponentVerbosity = {};
+        let logComponentVerbosity = {};
 
-        var [baseProgramName, programVersion] = programName.split("-");
+        let [baseProgramName, programVersion] = programName.split("-");
+        let programMajorMinorVersion = 0;
+        if (programVersion) {
+            let [major, minor, point] = programVersion.split(".");
+            programMajorMinorVersion = parseInt(major) * 100 + parseInt(minor);
+        }
+
         if (baseProgramName === 'mongod' || baseProgramName === 'mongos') {
             if (jsTest.options().enableTestCommands) {
                 argArray.push(...['--setParameter', "enableTestCommands=1"]);
-                if (!programVersion || (parseInt(programVersion.split(".")[0]) >= 3 &&
-                                        parseInt(programVersion.split(".")[1]) >= 3)) {
+                if (!programVersion || programMajorMinorVersion >= 303) {
                     if (!argArrayContains("logComponentVerbosity")) {
                         logComponentVerbosity["tracking"] = 0;
                     }
@@ -1035,6 +1054,20 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             if (jsTest.options().auth) {
                 argArray.push(...['--setParameter', "enableLocalhostAuthBypass=false"]);
             }
+
+            // New options in 3.5.x
+            if (!programVersion || (parseInt(programVersion.split(".")[0]) >= 3 &&
+                                    parseInt(programVersion.split(".")[1]) >= 5)) {
+                if (jsTest.options().serviceExecutor) {
+                    if (!argArrayContains("--serviceExecutor")) {
+                        argArray.push(...["--serviceExecutor", jsTest.options().serviceExecutor]);
+                    }
+                }
+
+                // Disable background cache refreshing to avoid races in tests
+                argArray.push(...['--setParameter', "disableLogicalSessionCacheRefresh=true"]);
+            }
+
             // Since options may not be backward compatible, mongos options are not
             // set on older versions, e.g., mongos-3.0.
             if (programName.endsWith('mongos')) {
@@ -1051,9 +1084,22 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             } else if (baseProgramName === 'mongod') {
                 // Set storageEngine for mongod. There was no storageEngine parameter before 3.0.
                 if (jsTest.options().storageEngine &&
-                    (!programVersion || parseInt(programVersion.split(".")[0]) >= 3)) {
-                    if (argArray.indexOf("--storageEngine") < 0) {
+                    (!programVersion || programMajorMinorVersion >= 300)) {
+                    if (!argArrayContains("--storageEngine")) {
                         argArray.push(...['--storageEngine', jsTest.options().storageEngine]);
+                    }
+                }
+
+                // TODO: Make this unconditional in 3.8.
+                if (!programMajorMinorVersion || programMajorMinorVersion > 304) {
+                    let hasParam = false;
+                    for (let arg of argArray) {
+                        if (typeof arg === 'string' && arg.startsWith('orphanCleanupDelaySecs=')) {
+                            hasParam = true;
+                        }
+                    }
+                    if (!hasParam) {
+                        argArray.push(...['--setParameter', 'orphanCleanupDelaySecs=0']);
                     }
                 }
 
@@ -1062,7 +1108,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                 if (programName.endsWith('mongod')) {
                     // Enable heartbeat logging for replica set nodes.
                     if (!argArrayContains("logComponentVerbosity")) {
-                        logComponentVerbosity["replication"] = {"heartbeats": 2};
+                        logComponentVerbosity["replication"] = {"heartbeats": 2, "rollback": 2};
                     }
 
                     if (jsTest.options().storageEngine === "wiredTiger" ||
@@ -1116,7 +1162,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
     /**
      * Start a mongo process with a particular argument array.
      * If we aren't waiting for connect, return {pid: <pid>}.
-     * If we are not waiting for connect:
+     * If we are waiting for connect:
      *     returns connection to process on success;
      *     otherwise returns null if we fail to connect.
      */

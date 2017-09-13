@@ -38,7 +38,7 @@ namespace mongo {
 
 class DocumentSourceGraphLookUp final : public DocumentSourceNeedsMongod {
 public:
-    static std::unique_ptr<LiteParsedDocumentSourceOneForeignCollection> liteParse(
+    static std::unique_ptr<LiteParsedDocumentSourceForeignCollections> liteParse(
         const AggregationRequest& request, const BSONElement& spec);
 
     GetNextResult getNext() final;
@@ -53,18 +53,17 @@ public:
      */
     GetModPathsReturn getModifiedPaths() const final;
 
-    bool canSwapWithMatch() const final {
-        return true;
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.canSwapWithMatch = true;
+        constraints.hostRequirement = HostTypeRequirement::kPrimaryShard;
+        return constraints;
     }
 
     GetDepsReturn getDependencies(DepsTracker* deps) const final {
         _startWith->addDependencies(deps);
         return SEE_NEXT;
     };
-
-    bool needsPrimaryShard() const final {
-        return true;
-    }
 
     void addInvolvedCollections(std::vector<NamespaceString>* collections) const final {
         collections->push_back(_from);

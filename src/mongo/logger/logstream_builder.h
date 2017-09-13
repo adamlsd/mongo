@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 
+#include "mongo/base/error_codes.h"
 #include "mongo/bson/bsontypes.h"
 #include "mongo/logger/labeled_level.h"
 #include "mongo/logger/log_component.h"
@@ -73,11 +74,17 @@ public:
      * "contextName" is a short name of the thread or other context.
      * "severity" is the logging severity of the message.
      * "component" is the primary log component of the message.
+     *
+     * By default, this class will create one ostream per thread, and it
+     * will cache that object in a threadlocal and reuse it for subsequent
+     * logs messages. Set "shouldCache" to false to create a new ostream
+     * for each instance of this class rather than cacheing.
      */
     LogstreamBuilder(MessageLogDomain* domain,
                      StringData contextName,
                      LogSeverity severity,
-                     LogComponent component);
+                     LogComponent component,
+                     bool shouldCache = true);
 
     /**
      * Deprecated.
@@ -193,6 +200,11 @@ public:
         return *this;
     }
 
+    LogstreamBuilder& operator<<(ErrorCodes::Error ec) {
+        stream() << ErrorCodes::errorString(ec);
+        return *this;
+    }
+
     template <typename T>
     LogstreamBuilder& operator<<(const T& x) {
         stream() << x.toString();
@@ -225,6 +237,7 @@ private:
     std::unique_ptr<std::ostringstream> _os;
     Tee* _tee;
     bool _isTruncatable = true;
+    bool _shouldCache;
 };
 
 

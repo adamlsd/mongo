@@ -50,7 +50,7 @@ StatusWith<bool> SaslPLAINServerConversation::step(StringData inputData, std::st
     // Expecting user input on the form: [authz-id]\0authn-id\0pwd
     std::string input = inputData.toString();
 
-    SecureString pwd = "";
+    SecureAllocatorAuthDomain::SecureString pwd = "";
     try {
         size_t firstNull = inputData.find('\0');
         if (firstNull == std::string::npos) {
@@ -78,7 +78,7 @@ StatusWith<bool> SaslPLAINServerConversation::step(StringData inputData, std::st
                           str::stream()
                               << "SASL authorization identity must match authentication identity");
         }
-        pwd = SecureString(input.substr(secondNull + 1).c_str());
+        pwd = SecureAllocatorAuthDomain::SecureString(input.substr(secondNull + 1).c_str());
         if (pwd->empty()) {
             return Status(ErrorCodes::AuthenticationFailed,
                           str::stream()
@@ -91,12 +91,11 @@ StatusWith<bool> SaslPLAINServerConversation::step(StringData inputData, std::st
 
     User* userObj;
     // The authentication database is also the source database for the user.
-    Status status = _saslAuthSession->getAuthorizationSession()
-                        ->getAuthorizationManager()
-                        .acquireUserForInitialAuth(
-                            _saslAuthSession->getOpCtxt(),
-                            UserName(_user, _saslAuthSession->getAuthenticationDatabase()),
-                            &userObj);
+    Status status =
+        _saslAuthSession->getAuthorizationSession()->getAuthorizationManager().acquireUser(
+            _saslAuthSession->getOpCtxt(),
+            UserName(_user, _saslAuthSession->getAuthenticationDatabase()),
+            &userObj);
 
     if (!status.isOK()) {
         return StatusWith<bool>(status);

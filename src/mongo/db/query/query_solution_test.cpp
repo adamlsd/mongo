@@ -30,7 +30,6 @@
 
 #include "mongo/bson/bsontypes.h"
 #include "mongo/bson/json.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/index_entry.h"
@@ -687,12 +686,10 @@ TEST(QuerySolutionTest, IndexScanNodeHasFieldExcludesSimpleBoundsStringFieldWhen
 std::unique_ptr<ParsedProjection> createParsedProjection(const BSONObj& query,
                                                          const BSONObj& projObj) {
     const CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression queryMatchExpr =
-        MatchExpressionParser::parse(query, ExtensionsCallbackDisallowExtensions(), collator);
+    StatusWithMatchExpression queryMatchExpr = MatchExpressionParser::parse(query, collator);
     ASSERT(queryMatchExpr.isOK());
     ParsedProjection* out = nullptr;
-    Status status = ParsedProjection::make(
-        projObj, queryMatchExpr.getValue().get(), &out, ExtensionsCallbackDisallowExtensions());
+    Status status = ParsedProjection::make(projObj, queryMatchExpr.getValue().get(), &out);
     if (!status.isOK()) {
         FAIL(mongoutils::str::stream() << "failed to parse projection " << projObj << " (query: "
                                        << query
@@ -828,6 +825,72 @@ TEST(QuerySolutionTest, MultikeyIndexCannotCoverFieldWithAnyMultikeyPathComponen
     ASSERT_FALSE(node->hasField("b.c"));
     ASSERT_FALSE(node->hasField("b.c.d"));
     ASSERT_TRUE(node->hasField("e"));
+}
+
+TEST(QuerySolutionTest, MultikeyIndexWithoutPathLevelInfoCannotProvideAnySorts) {
+    IndexScanNode node{IndexEntry(BSON("a" << 1 << "b" << 1 << "c" << 1))};
+    node.index.multikey = true;
+
+    {
+        OrderedIntervalList oil{};
+        oil.name = "a";
+        oil.intervals.push_back(IndexBoundsBuilder::makePointInterval(BSON("" << 1)));
+        node.bounds.fields.push_back(oil);
+    }
+
+    for (auto&& name : {"b"_sd, "c"_sd}) {
+        OrderedIntervalList oil{};
+        oil.name = name.toString();
+        oil.intervals.push_back(IndexBoundsBuilder::makeRangeInterval(
+            BSON("" << 1 << "" << 2), BoundInclusion::kIncludeBothStartAndEndKeys));
+        node.bounds.fields.push_back(oil);
+    }
+
+    node.computeProperties();
+    ASSERT(node.getSort().empty());
+}
+
+TEST(QuerySolutionTest, SimpleRangeAllEqualExcludesFieldWithMultikeyComponent) {
+    IndexScanNode node{
+        IndexEntry(BSON("a" << 1 << "b" << 1 << "c.z" << 1 << "d" << 1 << "e" << 1))};
+    node.bounds.isSimpleRange = true;
+    node.bounds.startKey = BSON("a" << 1 << "b" << 1 << "c.z" << 1 << "d" << 1 << "e" << 1);
+    node.bounds.endKey = BSON("a" << 1 << "b" << 1 << "c.z" << 1 << "d" << 1 << "e" << 1);
+
+    // Add metadata indicating that "c.z" is multikey.
+    node.index.multikey = true;
+    node.index.multikeyPaths = MultikeyPaths{{}, {}, {1U}, {}, {}};
+
+    node.computeProperties();
+
+    ASSERT_EQUALS(node.getSort().size(), 4U);
+    ASSERT(node.getSort().count(BSON("a" << 1 << "b" << 1)));
+    ASSERT(node.getSort().count(BSON("a" << 1)));
+    ASSERT(node.getSort().count(BSON("d" << 1 << "e" << 1)));
+    ASSERT(node.getSort().count(BSON("e" << 1)));
+}
+
+TEST(QuerySolutionTest, NonSimpleRangeAllEqualExcludesFieldWithMultikeyComponent) {
+    IndexScanNode node{
+        IndexEntry(BSON("a" << 1 << "b" << 1 << "c.z" << 1 << "d" << 1 << "e" << 1))};
+    // Add metadata indicating that "c.z" is multikey.
+    node.index.multikey = true;
+    node.index.multikeyPaths = MultikeyPaths{{}, {}, {1U}, {}, {}};
+
+    for (auto&& name : {"a"_sd, "b"_sd, "c.z"_sd, "d"_sd, "e"_sd}) {
+        OrderedIntervalList oil{};
+        oil.name = name.toString();
+        oil.intervals.push_back(IndexBoundsBuilder::makePointInterval(BSON("" << 1)));
+        node.bounds.fields.push_back(oil);
+    }
+
+    node.computeProperties();
+
+    ASSERT_EQUALS(node.getSort().size(), 4U);
+    ASSERT(node.getSort().count(BSON("a" << 1 << "b" << 1)));
+    ASSERT(node.getSort().count(BSON("a" << 1)));
+    ASSERT(node.getSort().count(BSON("d" << 1 << "e" << 1)));
+    ASSERT(node.getSort().count(BSON("e" << 1)));
 }
 
 }  // namespace

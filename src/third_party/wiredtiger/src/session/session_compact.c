@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -160,12 +160,12 @@ __compact_handle_append(WT_SESSION_IMPL *session, const char *cfg[])
 
 	WT_UNUSED(cfg);
 
-	WT_RET(__wt_session_get_btree(
+	WT_RET(__wt_session_get_dhandle(
 	    session, session->dhandle->name, NULL, NULL, 0));
 
 	/* Set compact active on the handle. */
 	if ((ret = __compact_start(session)) != 0) {
-		WT_TRET(__wt_session_release_btree(session));
+		WT_TRET(__wt_session_release_dhandle(session));
 		return (ret);
 	}
 
@@ -225,10 +225,13 @@ __compact_checkpoint(WT_SESSION_IMPL *session)
 	 * generation number changes, the checkpoint blocking us has completed.
 	 */
 	txn_global = &S2C(session)->txn_global;
-	for (txn_gen = txn_global->checkpoint_gen;;) {
-		WT_READ_BARRIER();
+	for (txn_gen = __wt_gen(session, WT_GEN_CHECKPOINT);;) {
+		/*
+		 * This loop only checks objects that are declared volatile,
+		 * therefore no barriers are needed.
+		 */
 		if (!txn_global->checkpoint_running ||
-		    txn_gen != txn_global->checkpoint_gen)
+		    txn_gen != __wt_gen(session, WT_GEN_CHECKPOINT))
 			break;
 
 		WT_RET(__wt_session_compact_check_timeout(session));
@@ -316,13 +319,12 @@ __wt_session_compact(
 	WT_DATA_SOURCE *dsrc;
 	WT_DECL_RET;
 	WT_SESSION_IMPL *session;
-	WT_TXN *txn;
 	u_int i;
 
 	session = (WT_SESSION_IMPL *)wt_session;
 	SESSION_API_CALL(session, compact, config, cfg);
 
-	/* In-memory is already as compact as it's going to get. */
+	/* In-memory ignores compaction operations. */
 	if (F_ISSET(S2C(session), WT_CONN_IN_MEMORY))
 		goto err;
 
@@ -332,10 +334,7 @@ __wt_session_compact(
 	 * reason for LSM to allow this, possible or not), and check now so the
 	 * error message isn't confusing.
 	 */
-	txn = &session->txn;
-	if (F_ISSET(txn, WT_TXN_RUNNING))
-		WT_ERR_MSG(session, EINVAL,
-		    "compaction not permitted in a transaction");
+	WT_ERR(__wt_txn_context_check(session, false));
 
 	/* Disallow objects in the WiredTiger name space. */
 	WT_ERR(__wt_str_name_check(session, uri));
@@ -382,7 +381,7 @@ err:	session->compact = NULL;
 		WT_WITH_DHANDLE(session, session->op_handle[i],
 		    WT_TRET(__compact_end(session)));
 		WT_WITH_DHANDLE(session, session->op_handle[i],
-		    WT_TRET(__wt_session_release_btree(session)));
+		    WT_TRET(__wt_session_release_dhandle(session)));
 	}
 
 	__wt_free(session, session->op_handle);

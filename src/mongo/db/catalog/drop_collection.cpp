@@ -47,16 +47,20 @@
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/util/log.h"
 
-mongo::Status mongo::dropCollection(OperationContext* opCtx,
-                                    const NamespaceString& collectionName,
-                                    BSONObjBuilder& result) {
+namespace mongo {
+
+Status dropCollection(OperationContext* opCtx,
+                      const NamespaceString& collectionName,
+                      BSONObjBuilder& result,
+                      const repl::OpTime& dropOpTime,
+                      DropCollectionSystemCollectionMode systemCollectionMode) {
     if (!serverGlobalParams.quiet.load()) {
         log() << "CMD: drop " << collectionName;
     }
 
     const std::string dbname = collectionName.db().toString();
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "drop", collectionName.ns(), [&] {
         AutoGetDb autoDb(opCtx, dbname, MODE_X);
         Database* const db = autoDb.getDb();
         Collection* coll = db ? db->getCollection(opCtx, collectionName) : nullptr;
@@ -88,7 +92,10 @@ mongo::Status mongo::dropCollection(OperationContext* opCtx,
 
             BackgroundOperation::assertNoBgOpInProgForNs(collectionName.ns());
 
-            Status s = db->dropCollection(opCtx, collectionName.ns());
+            Status s = systemCollectionMode ==
+                    DropCollectionSystemCollectionMode::kDisallowSystemCollectionDrops
+                ? db->dropCollection(opCtx, collectionName.ns(), dropOpTime)
+                : db->dropCollectionEvenIfSystem(opCtx, collectionName, dropOpTime);
 
             if (!s.isOK()) {
                 return s;
@@ -103,8 +110,9 @@ mongo::Status mongo::dropCollection(OperationContext* opCtx,
             }
         }
         wunit.commit();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "drop", collectionName.ns());
 
-    return Status::OK();
+        return Status::OK();
+    });
 }
+
+}  // namespace mongo

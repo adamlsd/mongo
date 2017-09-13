@@ -175,7 +175,7 @@ public:
 
     virtual int getMyId() const override;
 
-    virtual bool setFollowerMode(const MemberState& newState) override;
+    virtual Status setFollowerMode(const MemberState& newState) override;
 
     virtual ApplierState getApplierState() override;
 
@@ -361,10 +361,30 @@ public:
     boost::optional<Date_t> getPriorityTakeover_forTest() const;
 
     /**
+     * Returns the scheduled time of the catchup takeover callback. If a catchup
+     * takeover has not been scheduled, returns boost::none.
+     */
+    boost::optional<Date_t> getCatchupTakeover_forTest() const;
+
+    /**
+     * Returns the catchup takeover CallbackHandle.
+     */
+    executor::TaskExecutor::CallbackHandle getCatchupTakeoverCbh_forTest() const;
+
+    /**
      * Simple wrappers around _setLastOptime_inlock to make it easier to test.
      */
     Status setLastAppliedOptime_forTest(long long cfgVer, long long memberId, const OpTime& opTime);
     Status setLastDurableOptime_forTest(long long cfgVer, long long memberId, const OpTime& opTime);
+
+    /**
+     * Simple test wrappers that expose private methods.
+     */
+    boost::optional<Timestamp> calculateStableTimestamp_forTest(
+        const std::set<Timestamp>& candidates, const Timestamp& commitPoint);
+    void cleanupStableTimestampCandidates_forTest(std::set<Timestamp>* candidates,
+                                                  Timestamp stableTimestamp);
+    std::set<Timestamp> getStableTimestampCandidates_forTest();
 
     /**
      * Non-blocking version of updateTerm.
@@ -398,31 +418,6 @@ private:
 
     using ScheduleFn = stdx::function<StatusWith<executor::TaskExecutor::CallbackHandle>(
         const executor::TaskExecutor::CallbackFn& work)>;
-
-    struct SnapshotInfo {
-        OpTime opTime;
-        SnapshotName name;
-
-        bool operator==(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) == std::tie(other.opTime, other.name);
-        }
-        bool operator!=(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) != std::tie(other.opTime, other.name);
-        }
-        bool operator<(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) < std::tie(other.opTime, other.name);
-        }
-        bool operator<=(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) <= std::tie(other.opTime, other.name);
-        }
-        bool operator>(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) > std::tie(other.opTime, other.name);
-        }
-        bool operator>=(const SnapshotInfo& other) const {
-            return std::tie(opTime, name) >= std::tie(other.opTime, other.name);
-        }
-        std::string toString() const;
-    };
 
     class LoseElectionGuardV1;
     class LoseElectionDryRunGuardV1;
@@ -646,6 +641,8 @@ private:
      * Non-blocking helper method for the stepDown method, that represents executing
      * one attempt to step down. See implementation of this method and stepDown for
      * details.
+     *
+     * TODO(spencer): Move the bulk of this method into the TopologyCoordinator.
      */
     bool _tryToStepDown_inlock(Date_t waitUntil, Date_t stepdownUntil, bool force);
 
@@ -837,8 +834,8 @@ private:
      *      _onVoteRequestComplete()
      */
     void _startElectSelf_inlock();
-    void _startElectSelfV1_inlock();
-    void _startElectSelfV1();
+    void _startElectSelfV1_inlock(TopologyCoordinator::StartElectionReason reason);
+    void _startElectSelfV1(TopologyCoordinator::StartElectionReason reason);
 
     /**
      * Callback called when the FreshnessChecker has completed; checks the results and
@@ -1004,6 +1001,28 @@ private:
     void _updateCommittedSnapshot_inlock(SnapshotInfo newCommittedSnapshot);
 
     /**
+     * Calculates the 'stable' replication timestamp given a set of timestamp candidates and the
+     * current commit point. The stable timestamp is the greatest timestamp in 'candidates' that is
+     * also less than or equal to 'commitPoint'.
+     */
+    boost::optional<Timestamp> _calculateStableTimestamp(const std::set<Timestamp>& candidates,
+                                                         const Timestamp& commitPoint);
+
+    /**
+     * Removes any timestamps from the timestamp set 'candidates' that are less than
+     * 'stableTimestamp'.
+     */
+    void _cleanupStableTimestampCandidates(std::set<Timestamp>* candidates,
+                                           Timestamp stableTimestamp);
+
+    /**
+     * Calculates and sets the value of the 'stable' replication timestamp for the storage engine.
+     * See ReplicationCoordinatorImpl::_calculateStableTimestamp for a definition of 'stable', in
+     * this context.
+     */
+    void _setStableTimestampForStorage_inlock();
+
+    /**
      * Drops all snapshots and clears the "committed" snapshot.
      */
     void _dropAllSnapshots_inlock();
@@ -1033,6 +1052,11 @@ private:
     void _cancelPriorityTakeover_inlock();
 
     /**
+     * Cancels all outstanding _catchupTakeover callbacks.
+     */
+    void _cancelCatchupTakeover_inlock();
+
+    /**
      * Cancels the current _handleElectionTimeout callback and reschedules a new callback.
      * Returns immediately otherwise.
      */
@@ -1040,12 +1064,8 @@ private:
 
     /**
      * Callback which starts an election if this node is electable and using protocolVersion 1.
-     * "isPriorityTakeover" is used to determine if the caller was a priority takeover or not and
-     * log messages accordingly.
      */
-    enum StartElectionV1Reason { kElectionTimeout, kPriorityTakeover, kStepUpRequest };
-
-    void _startElectSelfIfEligibleV1(StartElectionV1Reason reason);
+    void _startElectSelfIfEligibleV1(TopologyCoordinator::StartElectionReason reason);
 
     /**
      * Resets the term of last vote to 0 to prevent any node from voting for term 0.
@@ -1094,18 +1114,24 @@ private:
     executor::TaskExecutor::EventHandle _cancelElectionIfNeeded_inlock();
 
     /**
-     * Waits until the optime of the current node is at least the opTime specified in 'readConcern'.
-     * It supports local readConcern, which _waitUntilClusterTimeForRead does not.
-     * TODO: remove when SERVER-28150 is done.
+     * Waits until the optime of the current node is at least the 'opTime'.
      */
+    Status _waitUntilOpTime(OperationContext* opCtx, bool isMajorityReadConcern, OpTime opTime);
+
+    /**
+     * Waits until the optime of the current node is at least the opTime specified in 'readConcern'.
+     * Supports local and majority readConcern.
+     */
+    // TODO: remove when SERVER-29729 is done
     Status _waitUntilOpTimeForReadDeprecated(OperationContext* opCtx,
                                              const ReadConcernArgs& readConcern);
 
     /**
-     * Waits until the logicalTime of the current node is at least the 'clusterTime'.
-     * TODO: Merge with waitUntilOpTimeForRead() when SERVER-28150 is done.
+     * Waits until the optime of the current node is at least the clusterTime specified in
+     * 'readConcern'. Supports local and majority readConcern.
      */
-    Status _waitUntilClusterTimeForRead(OperationContext* opCtx, LogicalTime clusterTime);
+    Status _waitUntilClusterTimeForRead(OperationContext* opCtx,
+                                        const ReadConcernArgs& readConcern);
 
     /**
      * Returns a pseudorandom number no less than 0 and less than limit (which must be positive).
@@ -1262,6 +1288,12 @@ private:
     // When engaged, this must be <= _lastCommittedOpTime and < _uncommittedSnapshots.front().
     boost::optional<SnapshotInfo> _currentCommittedSnapshot;  // (M)
 
+    // A set of timestamps that are used for computing the replication system's current 'stable'
+    // timestamp. Every time a node's applied optime is updated, it will be added to this set.
+    // Timestamps that are older than the current stable timestamp should get removed from this set.
+    // This set should also be cleared if a rollback occurs.
+    std::set<Timestamp> _stableTimestampCandidates;  // (M)
+
     // Used to signal threads that are waiting for new committed snapshots.
     stdx::condition_variable _currentCommittedSnapshotCond;  // (M)
 
@@ -1276,13 +1308,21 @@ private:
     // Used for testing only.
     Date_t _handleElectionTimeoutWhen;  // (M)
 
-    // Callback Handle used to cancel a scheduled PriorityTakover callback.
+    // Callback Handle used to cancel a scheduled PriorityTakeover callback.
     executor::TaskExecutor::CallbackHandle _priorityTakeoverCbh;  // (M)
 
     // Priority takeover callback will not run before this time.
     // If this date is Date_t(), the callback is either unscheduled or canceled.
     // Used for testing only.
     Date_t _priorityTakeoverWhen;  // (M)
+
+    // Callback Handle used to cancel a scheduled CatchupTakeover callback.
+    executor::TaskExecutor::CallbackHandle _catchupTakeoverCbh;  // (M)
+
+    // Catchup takeover callback will not run before this time.
+    // If this date is Date_t(), the callback is either unscheduled or canceled.
+    // Used for testing only.
+    Date_t _catchupTakeoverWhen;  // (M)
 
     // Callback handle used by _waitForStartUpComplete() to block until configuration
     // is loaded and external state threads have been started (unless this node is an arbiter).

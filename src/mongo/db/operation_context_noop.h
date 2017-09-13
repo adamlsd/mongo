@@ -46,32 +46,18 @@ public:
      * These constructors are for use in legacy tests that do not need operation contexts that are
      * properly connected to clients.
      */
-    OperationContextNoop() : OperationContextNoop(nullptr, 0, boost::none) {}
-    OperationContextNoop(RecoveryUnit* ru) : OperationContextNoop(nullptr, 0, boost::none) {
+    OperationContextNoop() : OperationContextNoop(nullptr, 0) {}
+    OperationContextNoop(RecoveryUnit* ru) : OperationContextNoop(nullptr, 0) {
         setRecoveryUnit(ru, kNotInUnitOfWork);
     }
-
 
     /**
      * This constructor is for use by ServiceContexts, and should not be called directly.
      */
-    OperationContextNoop(Client* client, unsigned int opId, boost::optional<LogicalSessionId> lsid)
-        : OperationContext(client, opId, std::move(lsid)) {
+    OperationContextNoop(Client* client, unsigned int opId) : OperationContext(client, opId) {
         setRecoveryUnit(new RecoveryUnitNoop(), kNotInUnitOfWork);
         setLockState(stdx::make_unique<LockerNoop>());
     }
-
-    virtual ~OperationContextNoop() = default;
-
-    virtual ProgressMeter* setMessage_inlock(const char* msg,
-                                             const std::string& name,
-                                             unsigned long long progressMeterTotal,
-                                             int secondsBetween) override {
-        return &_pm;
-    }
-
-private:
-    ProgressMeter _pm;
 };
 
 }  // namespace mongo

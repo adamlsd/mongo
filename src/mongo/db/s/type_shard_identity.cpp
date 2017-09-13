@@ -32,8 +32,6 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/s/write_ops/batched_update_document.h"
-#include "mongo/s/write_ops/batched_update_request.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -88,7 +86,7 @@ StatusWith<ShardIdentityType> ShardIdentityType::fromBSON(const BSONObj& source)
             }
 
             shardIdentity.setConfigsvrConnString(std::move(configSvrConnStr));
-        } catch (const UserException& parseException) {
+        } catch (const AssertionException& parseException) {
             return parseException.toStatus();
         }
     }

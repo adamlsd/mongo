@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -91,12 +91,12 @@ __lsm_merge_aggressive_update(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 */
 	if (!lsm_tree->aggressive_timer_enabled) {
 		lsm_tree->aggressive_timer_enabled = true;
-		__wt_epoch(session, &lsm_tree->merge_aggressive_ts);
+		__wt_epoch(session, &lsm_tree->merge_aggressive_time);
 	}
 
 	__wt_epoch(session, &now);
 	msec_since_last_merge =
-	    WT_TIMEDIFF_MS(now, lsm_tree->merge_aggressive_ts);
+	    WT_TIMEDIFF_MS(now, lsm_tree->merge_aggressive_time);
 
 	/*
 	 * If there is no estimate for how long it's taking to fill chunks
@@ -148,7 +148,7 @@ __lsm_merge_span(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree,
 {
 	WT_LSM_CHUNK *chunk, *previous, *youngest;
 	uint32_t aggressive, max_gap, max_gen, max_level;
-	uint64_t record_count, chunk_size;
+	uint64_t chunk_size, record_count;
 	u_int end_chunk, i, merge_max, merge_min, nchunks, start_chunk;
 	u_int oldest_gen, youngest_gen;
 
@@ -156,7 +156,6 @@ __lsm_merge_span(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree,
 	*start = *end = 0;
 	*records = 0;
 
-	chunk_size = 0;
 	chunk = youngest = NULL;
 
 	aggressive = lsm_tree->merge_aggressiveness;
@@ -215,7 +214,7 @@ __lsm_merge_span(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree,
 	 */
 retry_find:
 	oldest_gen = youngest_gen = lsm_tree->chunk[end_chunk]->generation;
-	for (record_count = 0,
+	for (chunk_size = record_count = 0,
 	    start_chunk = end_chunk + 1; start_chunk > 0;) {
 		chunk = lsm_tree->chunk[start_chunk - 1];
 		youngest = lsm_tree->chunk[end_chunk];
@@ -621,7 +620,7 @@ err:	if (locked)
 
 		if (ret == EINTR)
 			__wt_verbose(session, WT_VERB_LSM,
-			    "Merge aborted due to close");
+			    "%s", "Merge aborted due to close");
 		else
 			__wt_verbose(session, WT_VERB_LSM,
 			    "Merge failed with %s",

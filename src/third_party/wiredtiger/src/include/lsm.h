@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -86,7 +86,7 @@ struct __wt_cursor_lsm {
 struct __wt_lsm_chunk {
 	const char *uri;		/* Data source for this chunk */
 	const char *bloom_uri;		/* URI of Bloom filter, if any */
-	struct timespec create_ts;	/* Creation time (for rate limiting) */
+	struct timespec create_time;	/* Creation time (for rate limiting) */
 	uint64_t count;			/* Approximate count of records */
 	uint64_t size;			/* Final chunk size */
 
@@ -97,6 +97,11 @@ struct __wt_lsm_chunk {
 					 * out, or by compact to get the most
 					 * recent chunk flushed.
 					 */
+	WT_DECL_TIMESTAMP(switch_timestamp)/*
+					 * The timestamp used to decide when
+					 * updates need to detect conflicts.
+					 */
+	WT_SPINLOCK timestamp_spinlock;
 
 	uint32_t id;			/* ID used to generate URIs */
 	uint32_t generation;		/* Merge generation */
@@ -107,10 +112,11 @@ struct __wt_lsm_chunk {
 	int8_t evicted;			/* 1/0: in-memory chunk was evicted */
 	uint8_t flushing;		/* 1/0: chunk flush in progress */
 
-#define	WT_LSM_CHUNK_BLOOM	0x01
-#define	WT_LSM_CHUNK_MERGING	0x02
-#define	WT_LSM_CHUNK_ONDISK	0x04
-#define	WT_LSM_CHUNK_STABLE	0x08
+#define	WT_LSM_CHUNK_BLOOM		0x01
+#define	WT_LSM_CHUNK_HAS_TIMESTAMP	0x02
+#define	WT_LSM_CHUNK_MERGING		0x04
+#define	WT_LSM_CHUNK_ONDISK		0x08
+#define	WT_LSM_CHUNK_STABLE		0x10
 	uint32_t flags;
 };
 
@@ -203,10 +209,10 @@ struct __wt_lsm_tree {
 	uint64_t ckpt_throttle;		/* Rate limiting due to checkpoints */
 	uint64_t merge_throttle;	/* Rate limiting due to merges */
 	uint64_t chunk_fill_ms;		/* Estimate of time to fill a chunk */
-	struct timespec last_flush_ts;	/* Timestamp last flush finished */
+	struct timespec last_flush_time;/* Time last flush finished */
 	uint64_t chunks_flushed;	/* Count of chunks flushed since open */
-	struct timespec merge_aggressive_ts;/* Timestamp for merge aggression */
-	struct timespec work_push_ts;	/* Timestamp last work unit added */
+	struct timespec merge_aggressive_time;/* Time for merge aggression */
+	struct timespec work_push_time;	/* Time last work unit added */
 	uint64_t merge_progressing;	/* Bumped when merges are active */
 	uint32_t merge_syncing;		/* Bumped when merges are syncing */
 
@@ -240,11 +246,11 @@ struct __wt_lsm_tree {
 	 * area, copying them into place when a statistics cursor is created.
 	 */
 #define	WT_LSM_TREE_STAT_INCR(session, fld) do {			\
-	if (WT_STAT_ENABLED(session))	\
+	if (WT_STAT_ENABLED(session))					\
 		++(fld);						\
 } while (0)
 #define	WT_LSM_TREE_STAT_INCRV(session, fld, v) do {			\
-	if (WT_STAT_ENABLED(session))	\
+	if (WT_STAT_ENABLED(session))					\
 		(fld) += (int64_t)(v);					\
 } while (0)
 	int64_t bloom_false_positive;

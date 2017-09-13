@@ -38,19 +38,34 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/stats/top.h"
+#include "mongo/util/fail_point_service.h"
 
 namespace mongo {
 
+namespace {
+MONGO_FP_DECLARE(setAutoGetCollectionWait);
+}  // namespace
+
 AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData ns, LockMode mode)
     : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {}
+
+AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData ns, Lock::DBLock lock)
+    : _dbLock(std::move(lock)), _db(dbHolder().get(opCtx, ns)) {}
 
 AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
                                      const NamespaceString& nss,
                                      LockMode modeDB,
                                      LockMode modeColl,
                                      ViewMode viewMode)
+    : AutoGetCollection(opCtx, nss, modeColl, viewMode, Lock::DBLock(opCtx, nss.db(), modeDB)) {}
+
+AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
+                                     const NamespaceString& nss,
+                                     LockMode modeColl,
+                                     ViewMode viewMode,
+                                     Lock::DBLock lock)
     : _viewMode(viewMode),
-      _autoDb(opCtx, nss.db(), modeDB),
+      _autoDb(opCtx, nss.db(), std::move(lock)),
       _collLock(opCtx->lockState(), nss.ns(), modeColl),
       _coll(_autoDb.getDb() ? _autoDb.getDb()->getCollection(opCtx, nss) : nullptr) {
     Database* db = _autoDb.getDb();
@@ -59,7 +74,21 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
         db->getViewCatalog()->lookup(opCtx, nss.ns()))
         uasserted(ErrorCodes::CommandNotSupportedOnView,
                   str::stream() << "Namespace " << nss.ns() << " is a view, not a collection");
+
+    // Wait for a configured amount of time after acquiring locks if the failpoint is enabled.
+    MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
+        const BSONObj& data = customWait.getData();
+        sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
+    }
 }
+
+AutoGetCollectionOrView::AutoGetCollectionOrView(OperationContext* opCtx,
+                                                 const NamespaceString& nss,
+                                                 LockMode modeAll)
+    : _autoColl(opCtx, nss, modeAll, modeAll, AutoGetCollection::ViewMode::kViewsPermitted),
+      _view(_autoColl.getDb() && !_autoColl.getCollection()
+                ? _autoColl.getDb()->getViewCatalog()->lookup(opCtx, nss.ns())
+                : nullptr) {}
 
 AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode)
     : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {
@@ -99,7 +128,7 @@ AutoStatsTracker::~AutoStatsTracker() {
                 curOp->getNS(),
                 curOp->getLogicalOp(),
                 _lockType,
-                _timer.micros(),
+                durationCount<Microseconds>(curOp->elapsedTimeExcludingPauses()),
                 curOp->isCommand(),
                 curOp->getReadWriteType());
 }
@@ -113,6 +142,15 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
     _ensureMajorityCommittedSnapshotIsValid(nss, opCtx);
 }
 
+AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
+                                                   const NamespaceString& nss,
+                                                   AutoGetCollection::ViewMode viewMode,
+                                                   Lock::DBLock lock) {
+    _autoColl.emplace(opCtx, nss, MODE_IS, viewMode, std::move(lock));
+
+    // Note: this can yield.
+    _ensureMajorityCommittedSnapshotIsValid(nss, opCtx);
+}
 void AutoGetCollectionForRead::_ensureMajorityCommittedSnapshotIsValid(const NamespaceString& nss,
                                                                        OperationContext* opCtx) {
     while (true) {
@@ -150,9 +188,11 @@ void AutoGetCollectionForRead::_ensureMajorityCommittedSnapshotIsValid(const Nam
 }
 
 AutoGetCollectionForReadCommand::AutoGetCollectionForReadCommand(
-    OperationContext* opCtx, const NamespaceString& nss, AutoGetCollection::ViewMode viewMode) {
-
-    _autoCollForRead.emplace(opCtx, nss, viewMode);
+    OperationContext* opCtx,
+    const NamespaceString& nss,
+    AutoGetCollection::ViewMode viewMode,
+    Lock::DBLock lock) {
+    _autoCollForRead.emplace(opCtx, nss, viewMode, std::move(lock));
     const int doNotChangeProfilingLevel = 0;
     _statsTracker.emplace(opCtx,
                           nss,
@@ -166,9 +206,22 @@ AutoGetCollectionForReadCommand::AutoGetCollectionForReadCommand(
     css->checkShardVersionOrThrow(opCtx);
 }
 
+AutoGetCollectionForReadCommand::AutoGetCollectionForReadCommand(
+    OperationContext* opCtx, const NamespaceString& nss, AutoGetCollection::ViewMode viewMode)
+    : AutoGetCollectionForReadCommand(
+          opCtx, nss, viewMode, Lock::DBLock(opCtx, nss.db(), MODE_IS)) {}
+
 AutoGetCollectionOrViewForReadCommand::AutoGetCollectionOrViewForReadCommand(
     OperationContext* opCtx, const NamespaceString& nss)
     : AutoGetCollectionForReadCommand(opCtx, nss, AutoGetCollection::ViewMode::kViewsPermitted),
+      _view(_autoCollForRead->getDb() && !getCollection()
+                ? _autoCollForRead->getDb()->getViewCatalog()->lookup(opCtx, nss.ns())
+                : nullptr) {}
+
+AutoGetCollectionOrViewForReadCommand::AutoGetCollectionOrViewForReadCommand(
+    OperationContext* opCtx, const NamespaceString& nss, Lock::DBLock lock)
+    : AutoGetCollectionForReadCommand(
+          opCtx, nss, AutoGetCollection::ViewMode::kViewsPermitted, std::move(lock)),
       _view(_autoCollForRead->getDb() && !getCollection()
                 ? _autoCollForRead->getDb()->getViewCatalog()->lookup(opCtx, nss.ns())
                 : nullptr) {}

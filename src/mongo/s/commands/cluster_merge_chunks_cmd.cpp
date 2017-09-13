@@ -39,7 +39,7 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_common.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 
 namespace mongo {
@@ -54,9 +54,9 @@ namespace {
 /**
  * Mongos-side command for merging chunks, passes command to appropriate shard.
  */
-class ClusterMergeChunksCommand : public Command {
+class ClusterMergeChunksCommand : public ErrmsgCommandDeprecated {
 public:
-    ClusterMergeChunksCommand() : Command("mergeChunks") {}
+    ClusterMergeChunksCommand() : ErrmsgCommandDeprecated("mergeChunks") {}
 
     void help(stringstream& h) const override {
         h << "Merge Chunks command\n"
@@ -99,11 +99,11 @@ public:
     static BSONField<string> configField;
 
 
-    bool run(OperationContext* opCtx,
-             const string& dbname,
-             const BSONObj& cmdObj,
-             string& errmsg,
-             BSONObjBuilder& result) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const string& dbname,
+                   const BSONObj& cmdObj,
+                   string& errmsg,
+                   BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbname, cmdObj));
 
         auto routingInfo = uassertStatusOK(
@@ -181,7 +181,7 @@ public:
 
         Grid::get(opCtx)->catalogCache()->onStaleConfigError(std::move(routingInfo));
 
-        result.appendElements(remoteResult);
+        filterCommandReplyForPassthrough(remoteResult, &result);
         return ok;
     }
 

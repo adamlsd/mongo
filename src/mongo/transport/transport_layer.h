@@ -166,16 +166,6 @@ public:
     virtual void end(const SessionHandle& session) = 0;
 
     /**
-     * End all active sessions in the TransportLayer. Tickets that have already been started via
-     * wait() or asyncWait() will complete, but may return a failed Status.  This method is
-     * asynchronous and will return after all sessions have been notified to end.
-     *
-     * If a non-empty TagMask is provided, endAllSessions() will skip over sessions with matching
-     * tags and leave them open.
-     */
-    virtual void endAllSessions(Session::TagMask tags) = 0;
-
-    /**
      * Start the TransportLayer. After this point, the TransportLayer will begin accepting active
      * sessions from new transport::Endpoints.
      */
@@ -190,6 +180,12 @@ public:
      */
     virtual void shutdown() = 0;
 
+    /**
+     * Optional method for subclasses to setup their state before being ready to accept
+     * connections.
+     */
+    virtual Status setup() = 0;
+
 protected:
     TransportLayer() = default;
 
@@ -198,6 +194,10 @@ protected:
      */
     TicketImpl* getTicketImpl(const Ticket& ticket) {
         return ticket.impl();
+    }
+
+    std::unique_ptr<TicketImpl> getOwnedTicketImpl(Ticket&& ticket) {
+        return std::move(ticket).releaseImpl();
     }
 
     /**

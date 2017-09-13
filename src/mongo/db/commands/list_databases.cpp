@@ -35,7 +35,6 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
@@ -55,7 +54,7 @@ using std::vector;
 // XXX: remove and put into storage api
 intmax_t dbSize(const string& database);
 
-class CmdListDatabases : public Command {
+class CmdListDatabases : public BasicCommand {
 public:
     virtual bool slaveOk() const {
         return false;
@@ -81,12 +80,11 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    CmdListDatabases() : Command("listDatabases") {}
+    CmdListDatabases() : BasicCommand("listDatabases") {}
 
     bool run(OperationContext* opCtx,
              const string& dbname,
              const BSONObj& jsobj,
-             string& errmsg,
              BSONObjBuilder& result) {
         // Parse the filter.
         std::unique_ptr<MatchExpression> filter;
@@ -101,8 +99,7 @@ public:
             // The collator is null because database metadata objects are compared using simple
             // binary comparison.
             const CollatorInterface* collator = nullptr;
-            auto statusWithMatcher = MatchExpressionParser::parse(
-                filterElt.Obj(), ExtensionsCallbackDisallowExtensions(), collator);
+            auto statusWithMatcher = MatchExpressionParser::parse(filterElt.Obj(), collator);
             if (!statusWithMatcher.isOK()) {
                 return appendCommandStatus(result, statusWithMatcher.getStatus());
             }
@@ -119,7 +116,9 @@ public:
 
         vector<BSONObj> dbInfos;
 
-        bool filterNameOnly = filter && filter->isLeaf() && filter->path() == kNameField;
+        bool filterNameOnly = filter &&
+            filter->getCategory() == MatchExpression::MatchCategory::kLeaf &&
+            filter->path() == kNameField;
         intmax_t totalSize = 0;
         for (vector<string>::iterator i = dbNames.begin(); i != dbNames.end(); ++i) {
             const string& dbname = *i;

@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -18,9 +18,16 @@ __ref_index_slot(WT_SESSION_IMPL *session,
 {
 	WT_PAGE_INDEX *pindex;
 	WT_REF **start, **stop, **p, **t;
+	uint64_t sleep_count, yield_count;
 	uint32_t entries, slot;
 
-	for (;;) {
+	/*
+	 * If we don't find our reference, the page split and our home
+	 * pointer references the wrong page. When internal pages
+	 * split, their WT_REF structure home values are updated; yield
+	 * and wait for that to happen.
+	 */
+	for (sleep_count = yield_count = 0;;) {
 		/*
 		 * Copy the parent page's index value: the page can split at
 		 * any time, but the index's value is always valid, even if
@@ -58,14 +65,14 @@ __ref_index_slot(WT_SESSION_IMPL *session,
 				goto found;
 			}
 		}
-
 		/*
-		 * If we don't find our reference, the page split and our home
-		 * pointer references the wrong page. When internal pages
-		 * split, their WT_REF structure home values are updated; yield
-		 * and wait for that to happen.
+		 * We failed to get the page index and slot reference, yield
+		 * before retrying, and if we've yielded enough times, start
+		 * sleeping so we don't burn CPU to no purpose.
 		 */
-		__wt_yield();
+		__wt_ref_state_yield_sleep(&yield_count, &sleep_count);
+		WT_STAT_CONN_INCRV(session, page_index_slot_ref_blocked,
+		    sleep_count);
 	}
 
 found:	WT_ASSERT(session, pindex->index[slot] == ref);
@@ -177,12 +184,13 @@ __ref_descend_prev(
     WT_SESSION_IMPL *session, WT_REF *ref, WT_PAGE_INDEX **pindexp)
 {
 	WT_PAGE_INDEX *pindex;
+	uint64_t yield_count;
 
 	/*
 	 * We're passed a child page into which we're descending, and on which
 	 * we have a hazard pointer.
 	 */
-	for (;; __wt_yield()) {
+	for (yield_count = 0;; yield_count++, __wt_yield()) {
 		/*
 		 * There's a split race when a cursor moving backwards through
 		 * the tree descends the tree. If we're splitting an internal
@@ -242,6 +250,7 @@ __ref_descend_prev(
 			break;
 	}
 	*pindexp = pindex;
+	WT_STAT_CONN_INCRV(session, tree_descend_blocked, yield_count);
 }
 
 /*
@@ -276,7 +285,9 @@ __ref_initial_descent_prev(
  */
 static inline int
 __tree_walk_internal(WT_SESSION_IMPL *session,
-    WT_REF **refp, uint64_t *walkcntp, uint64_t *skipleafcntp, uint32_t flags)
+    WT_REF **refp, uint64_t *walkcntp,
+    int (*skip_func)(WT_SESSION_IMPL *, WT_REF *, void *, bool *),
+    void *func_cookie, uint32_t flags)
 {
 	WT_BTREE *btree;
 	WT_DECL_RET;
@@ -477,14 +488,9 @@ restart:	/*
 				if (skip)
 					break;
 				empty_internal = false;
-			} else if (LF_ISSET(WT_READ_COMPACT)) {
-				/*
-				 * Compaction has relatively complex tests to
-				 * decide if a page can be skipped, call out
-				 * to a helper function.
-				 */
-				WT_ERR(__wt_compact_page_skip(
-				    session, ref, &skip));
+			} else if (skip_func != NULL) {
+				WT_ERR(skip_func(session,
+				    ref, func_cookie, &skip));
 				if (skip)
 					break;
 			} else {
@@ -495,31 +501,6 @@ restart:	/*
 				    __wt_delete_page_skip(session, ref, false))
 					break;
 			}
-
-			/*
-			 * Optionally skip leaf pages: skip all leaf pages if
-			 * WT_READ_SKIP_LEAF is set, when the skip-leaf-count
-			 * variable is non-zero, skip some count of leaf pages.
-			 * If this page is disk-based, crack the cell to figure
-			 * out it's a leaf page without reading it.
-			 *
-			 * If skipping some number of leaf pages, decrement the
-			 * count of pages to zero, and then take the next leaf
-			 * page we can. Be cautious around the page decrement,
-			 * if for some reason don't take this particular page,
-			 * we can take the next one, and, there are additional
-			 * tests/decrements when we're about to return a leaf
-			 * page.
-			 */
-			if (skipleafcntp != NULL || LF_ISSET(WT_READ_SKIP_LEAF))
-				if (__ref_is_leaf(ref)) {
-					if (LF_ISSET(WT_READ_SKIP_LEAF))
-						break;
-					if (*skipleafcntp > 0) {
-						--*skipleafcntp;
-						break;
-					}
-				}
 
 			ret = __wt_page_swap(session, couple, ref,
 			    WT_READ_NOTFOUND_OK | WT_READ_RESTART_OK | flags);
@@ -626,34 +607,18 @@ descend:			empty_internal = true;
 					    session, ref, &pindex);
 					slot = pindex->entries - 1;
 				}
-			} else {
-				/*
-				 * At the lowest tree level (considering a leaf
-				 * page), turn off the initial-descent state.
-				 * Descent race tests are different when moving
-				 * through the tree vs. the initial descent.
-				 */
-				initial_descent = false;
-
-				/*
-				 * Optionally skip leaf pages, the second half.
-				 * We didn't have an on-page cell to figure out
-				 * if it was a leaf page, we had to acquire the
-				 * hazard pointer and look at the page.
-				 */
-				if (skipleafcntp != NULL ||
-				    LF_ISSET(WT_READ_SKIP_LEAF)) {
-					if (LF_ISSET(WT_READ_SKIP_LEAF))
-						break;
-					if (*skipleafcntp > 0) {
-						--*skipleafcntp;
-						break;
-					}
-				}
-
-				*refp = ref;
-				goto done;
+				continue;
 			}
+
+			/*
+			 * The tree-walk restart code knows we return any leaf
+			 * page we acquire (never hazard-pointer coupling on
+			 * after acquiring a leaf page), and asserts no restart
+			 * happens while holding a leaf page. This page must be
+			 * returned to our caller.
+			 */
+			*refp = ref;
+			goto done;
 		}
 	}
 
@@ -669,7 +634,7 @@ err:	WT_LEAVE_PAGE_INDEX(session);
 int
 __wt_tree_walk(WT_SESSION_IMPL *session, WT_REF **refp, uint32_t flags)
 {
-	return (__tree_walk_internal(session, refp, NULL, NULL, flags));
+	return (__tree_walk_internal(session, refp, NULL, NULL, NULL, flags));
 }
 
 /*
@@ -681,7 +646,56 @@ int
 __wt_tree_walk_count(WT_SESSION_IMPL *session,
     WT_REF **refp, uint64_t *walkcntp, uint32_t flags)
 {
-	return (__tree_walk_internal(session, refp, walkcntp, NULL, flags));
+	return (__tree_walk_internal(
+	    session, refp, walkcntp, NULL, NULL, flags));
+}
+
+/*
+ * __wt_tree_walk_custom_skip --
+ *	Walk the tree calling a custom function to decide whether to skip refs.
+ */
+int
+__wt_tree_walk_custom_skip(
+    WT_SESSION_IMPL *session, WT_REF **refp,
+   int (*skip_func)(WT_SESSION_IMPL *, WT_REF *, void *, bool *),
+   void *func_cookie, uint32_t flags)
+{
+	return (__tree_walk_internal(
+	    session, refp, NULL, skip_func, func_cookie, flags));
+}
+
+/*
+ * __tree_walk_skip_count_callback --
+ *	Optionally skip leaf pages.
+ * When the skip-leaf-count variable is non-zero, skip some count of leaf
+ * pages, then take the next leaf page we can.
+ *
+ * The reason to do some of this work here, is because we can look at the cell
+ * and know it's a leaf page without reading it into memory. If this page is
+ * disk-based, crack the cell to figure out it's a leaf page without reading
+ * it.
+ */
+static int
+__tree_walk_skip_count_callback(
+    WT_SESSION_IMPL *session, WT_REF *ref, void *context, bool *skipp)
+{
+	uint64_t *skipleafcntp;
+
+	skipleafcntp = (uint64_t *)context;
+	WT_ASSERT(session, skipleafcntp != NULL);
+
+	/*
+	 * Skip deleted pages visible to us.
+	 */
+	if (ref->state == WT_REF_DELETED &&
+	    __wt_delete_page_skip(session, ref, false))
+		*skipp = true;
+	else if (*skipleafcntp > 0 && __ref_is_leaf(ref)) {
+		--*skipleafcntp;
+		*skipp = true;
+	} else
+		*skipp = false;
+	return (0);
 }
 
 /*
@@ -690,8 +704,30 @@ __wt_tree_walk_count(WT_SESSION_IMPL *session,
  *	of leaf pages before returning.
  */
 int
-__wt_tree_walk_skip(WT_SESSION_IMPL *session,
-    WT_REF **refp, uint64_t *skipleafcntp, uint32_t flags)
+__wt_tree_walk_skip(
+    WT_SESSION_IMPL *session, WT_REF **refp, uint64_t *skipleafcntp)
 {
-	return (__tree_walk_internal(session, refp, NULL, skipleafcntp, flags));
+	/*
+	 * Optionally skip leaf pages, the second half. The tree-walk function
+	 * didn't have an on-page cell it could use to figure out if the page
+	 * was a leaf page or not, it had to acquire the hazard pointer and look
+	 * at the page. The tree-walk code never acquires a hazard pointer on a
+	 * leaf page without returning it, and it's not trivial to change that.
+	 * So, the tree-walk code returns all leaf pages here and we deal with
+	 * decrementing the count.
+	 */
+	do {
+		WT_RET(__tree_walk_internal(session, refp, NULL,
+		    __tree_walk_skip_count_callback, skipleafcntp,
+		    WT_READ_NO_GEN | WT_READ_SKIP_INTL | WT_READ_WONT_NEED));
+
+		/*
+		 * The walk skipped internal pages, any page returned must be a
+		 * leaf page.
+		 */
+		if (*skipleafcntp > 0)
+			--*skipleafcntp;
+	} while (*skipleafcntp > 0);
+
+	return (0);
 }

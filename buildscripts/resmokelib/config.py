@@ -49,13 +49,16 @@ DEFAULTS = {
     "mongosSetParameters": None,
     "nojournal": False,
     "numClientsPerFixture": 1,
+    "shellPort": None,
+    "shellConnString": None,
     "repeat": 1,
     "reportFailureStatus": "fail",
     "reportFile": None,
     "seed": long(time.time() * 256),  # Taken from random.py code in Python 2.7.
+    "serviceExecutor": None,
     "shellReadMode": None,
     "shellWriteMode": None,
-    "shuffle": False,
+    "shuffle": None,
     "staggerJobs": None,
     "storageEngine": None,
     "storageEngineCacheSizeGB": None,
@@ -141,6 +144,13 @@ REPORT_FAILURE_STATUS = None
 # If set, then resmoke.py will write out a report file with the status of each test that ran.
 REPORT_FILE = None
 
+# IF set, then mongod/mongos's started by resmoke.py will use the specified service executor
+SERVICE_EXECUTOR = None
+
+# If set, resmoke will override the default fixture and connect to the fixture specified by this
+# connection string instead.
+SHELL_CONN_STRING = None
+
 # If set, then mongo shells started by resmoke.py will use the specified read mode.
 SHELL_READ_MODE = None
 
@@ -198,6 +208,3 @@ EXTERNAL_SUITE_SELECTORS = [DEFAULT_UNIT_TEST_LIST,
                             DEFAULT_INTEGRATION_TEST_LIST,
                             DEFAULT_DBTEST_EXECUTABLE]
 
-# This is used internally to store the executor name that is passed on the command line.
-# Specifically it's used to record in the logs which executor a test is being run under.
-INTERNAL_EXECUTOR_NAME = None

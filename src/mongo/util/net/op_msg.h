@@ -44,6 +44,33 @@ struct OpMsg {
         std::vector<BSONObj> objs;
     };
 
+    static constexpr uint32_t kChecksumPresent = 1 << 0;
+    static constexpr uint32_t kMoreToCome = 1 << 1;
+
+    /**
+     * Returns the unvalidated flags for the given message if it is an OP_MSG message.
+     * Returns 0 for other message kinds since they are the equivalent of no flags set.
+     * Throws if the message is too small to hold flags.
+     */
+    static uint32_t flags(const Message& message);
+    static bool isFlagSet(const Message& message, uint32_t flag) {
+        return flags(message) & flag;
+    }
+
+    /**
+     * Replaces the flags in message with the supplied flags.
+     * Only legal on an otherwise valid OP_MSG message.
+     */
+    static void replaceFlags(Message* message, uint32_t flags);
+
+    /**
+     * Adds flag to the list of set flags in message.
+     * Only legal on an otherwise valid OP_MSG message.
+     */
+    static void setFlag(Message* message, uint32_t flag) {
+        replaceFlags(message, flags(*message) | flag);
+    }
+
     /**
      * Parses and returns an OpMsg containing unowned BSON.
      */
@@ -77,22 +104,49 @@ struct OpMsg {
         return it == sequences.end() ? nullptr : &*it;
     }
 
-    // "Mandatory" flags
-    static constexpr uint32_t kChecksumPresent = 1 << 0;
-    static constexpr uint32_t kMoreToCome = 1 << 1;
-
-    // "Optional" flags
-    static constexpr uint32_t kExhaustAllowed = 1 << 16;
-
-    static constexpr uint32_t kAllKnownFlags = kChecksumPresent | kMoreToCome | kExhaustAllowed;
-
-    bool isFlagSet(uint32_t flag) const {
-        return flags & flag;
-    }
-
-    uint32_t flags = 0;
     BSONObj body;
     std::vector<DocumentSequence> sequences;
+};
+
+/**
+ * An OpMsg that represents a request. This is a separate type from OpMsg only to provide better
+ * type-safety along with a place to hang request-specific methods.
+ */
+struct OpMsgRequest : public OpMsg {
+    // TODO in C++17 remove constructors so we can use aggregate initialization.
+    OpMsgRequest() = default;
+    explicit OpMsgRequest(OpMsg&& generic) : OpMsg(std::move(generic)) {}
+
+    static OpMsgRequest parse(const Message& message) {
+        return OpMsgRequest(OpMsg::parse(message));
+    }
+
+    static OpMsgRequest fromDBAndBody(StringData db,
+                                      BSONObj body,
+                                      const BSONObj& extraFields = {}) {
+        OpMsgRequest request;
+        request.body = ([&] {
+            BSONObjBuilder bodyBuilder(std::move(body));
+            bodyBuilder.appendElements(extraFields);
+            bodyBuilder.append("$db", db);
+            return bodyBuilder.obj();
+        }());
+        return request;
+    }
+
+    StringData getDatabase() const {
+        if (auto elem = body["$db"])
+            return elem.checkAndGetStringData();
+        uasserted(40571, "OP_MSG requests require a $db argument");
+    }
+
+    StringData getCommandName() const {
+        return body.firstElementFieldName();
+    }
+
+    // DO NOT ADD MEMBERS!  Since this type is essentially a strong typedef (see the class comment),
+    // it should not hold more data than an OpMsg. It should be freely interconvertible with OpMsg
+    // without issues like slicing.
 };
 
 /**
@@ -140,14 +194,6 @@ public:
         resumeBody().appendElements(body);
     }
 
-
-    /**
-     * The OP_MSG flags can be modified at any time prior to calling finish().
-     */
-    uint32_t& flags() {
-        return _flags;
-    }
-
     /**
      * Finish building and return a Message ready to give to the networking layer for transmission.
      * It is illegal to call any methods on this object after calling this.
@@ -162,11 +208,17 @@ public:
 
         _buf.reset();
         skipHeaderAndFlags();
-        _flags = 0;
         _bodyStart = 0;
         _state = kEmpty;
         _openBuilder = false;
     }
+
+    /**
+     * Set to true in tests that need to be able to generate duplicate top-level fields to see how
+     * the server handles them. Is false by default, although the check only happens in debug
+     * builds.
+     */
+    static AtomicBool disableDupeFieldCheck_forTest;
 
 private:
     friend class DocSequenceBuilder;
@@ -181,12 +233,12 @@ private:
     void finishDocumentStream(DocSequenceBuilder* docSequenceBuilder);
 
     void skipHeaderAndFlags() {
-        _buf.skip(sizeof(MSGHEADER::Layout) + sizeof(_flags));  // These are filled in by finish().
+        _buf.skip(sizeof(MSGHEADER::Layout));  // This is filled in by finish().
+        _buf.appendNum(uint32_t(0));           // flags (currently always 0).
     }
 
     // When adding members, remember to update reset().
     BufBuilder _buf;
-    uint32_t _flags = 0;
     int _bodyStart = 0;
     State _state = kEmpty;
     bool _openBuilder = false;

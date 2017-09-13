@@ -34,7 +34,6 @@
 #include <list>
 #include <string>
 
-#include <boost/thread/shared_mutex.hpp>
 #include <wiredtiger.h>
 
 #include "mongo/db/storage/journal_listener.h"
@@ -97,7 +96,9 @@ public:
 
     void releaseCursor(uint64_t id, WT_CURSOR* cursor);
 
-    void closeAllCursors();
+    void closeCursorsForQueuedDrops(WiredTigerKVEngine* engine);
+
+    void closeAllCursors(const std::string& uri);
 
     int cursorsOut() const {
         return _cursorsOut;
@@ -167,10 +168,15 @@ public:
     void closeAll();
 
     /**
+     * Closes cached cursors for tables that are queued to be dropped.
+     */
+    void closeCursorsForQueuedDrops();
+
+    /**
      * Closes all cached cursors and ensures that previously opened cursors will be closed on
      * release.
      */
-    void closeAllCursors();
+    void closeAllCursors(const std::string& uri);
 
     /**
      * Transitions the cache to shutting down mode. Any already released sessions are freed and
@@ -185,7 +191,7 @@ public:
      * the log or forcing a checkpoint if forceCheckpoint is true or the journal is disabled.
      * Uses a temporary session. Safe to call without any locks, even during shutdown.
      */
-    void waitUntilDurable(bool forceCheckpoint);
+    void waitUntilDurable(bool forceCheckpoint, bool stableCheckpoint);
 
     WT_CONNECTION* conn() const {
         return _conn;
@@ -202,6 +208,10 @@ public:
 
     uint64_t getCursorEpoch() const {
         return _cursorEpoch.load();
+    }
+
+    WiredTigerKVEngine* getKVEngine() const {
+        return _engine;
     }
 
 private:
@@ -229,10 +239,10 @@ private:
     AtomicUInt32 _lastSyncTime;
     stdx::mutex _lastSyncMutex;
 
-    // Notified when we commit to the journal.
-    JournalListener* _journalListener = &NoOpJournalListener::instance;
     // Protects _journalListener.
     stdx::mutex _journalListenerMutex;
+    // Notified when we commit to the journal.
+    JournalListener* _journalListener = &NoOpJournalListener::instance;
 
     /**
      * Returns a session to the cache for later reuse. If closeAll was called between getting this

@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2016 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -29,22 +29,42 @@
 #include "format.h"
 
 static int   col_insert(TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t *);
+static int   col_modify(
+		TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t, bool);
 static int   col_remove(WT_CURSOR *, WT_ITEM *, uint64_t, bool);
+static int   col_reserve(WT_CURSOR *, uint64_t, bool);
 static int   col_update(
 		TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t, bool);
 static int   nextprev(WT_CURSOR *, int);
-static void *ops(void *);
+static WT_THREAD_RET ops(void *);
 static int   row_insert(
 		TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t, bool);
+static int   row_modify(
+		TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t, bool);
 static int   row_remove(WT_CURSOR *, WT_ITEM *, uint64_t, bool);
+static int   row_reserve(WT_CURSOR *, WT_ITEM *, uint64_t, bool);
 static int   row_update(
 		TINFO *, WT_CURSOR *, WT_ITEM *, WT_ITEM *, uint64_t, bool);
 static void  table_append_init(void);
 
 #ifdef HAVE_BERKELEY_DB
 static int   notfound_chk(const char *, int, int, uint64_t);
-static void  print_item(const char *, WT_ITEM *);
 #endif
+
+static char modify_repl[256];
+
+/*
+ * modify_repl_init --
+ *	Initialize the replacement information.
+ */
+static void
+modify_repl_init(void)
+{
+	size_t i;
+
+	for (i = 0; i < sizeof(modify_repl); ++i)
+		modify_repl[i] = "zyxwvutsrqponmlkjihgfedcba"[i % 26];
+}
 
 /*
  * wts_ops --
@@ -56,7 +76,7 @@ wts_ops(int lastrun)
 	TINFO **tinfo_list, *tinfo, total;
 	WT_CONNECTION *conn;
 	WT_SESSION *session;
-	pthread_t alter_tid, backup_tid, compact_tid, lrt_tid;
+	wt_thread_t alter_tid, backup_tid, compact_tid, lrt_tid;
 	int64_t fourths, thread_ops;
 	uint32_t i;
 	int running;
@@ -68,6 +88,8 @@ wts_ops(int lastrun)
 	memset(&backup_tid, 0, sizeof(backup_tid));
 	memset(&compact_tid, 0, sizeof(compact_tid));
 	memset(&lrt_tid, 0, sizeof(lrt_tid));
+
+	modify_repl_init();
 
 	/*
 	 * There are two mechanisms to specify the length of the run, a number
@@ -115,7 +137,8 @@ wts_ops(int lastrun)
 		tinfo_list[i] = tinfo = dcalloc(1, sizeof(TINFO));
 		tinfo->id = (int)i + 1;
 		tinfo->state = TINFO_RUNNING;
-		testutil_check(pthread_create(&tinfo->tid, NULL, ops, tinfo));
+		testutil_check(
+		    __wt_thread_create(NULL, &tinfo->tid, ops, tinfo));
 	}
 
 	/*
@@ -123,14 +146,16 @@ wts_ops(int lastrun)
 	 * long-running reader threads.
 	 */
 	if (g.c_alter)
-		testutil_check(pthread_create(&alter_tid, NULL, alter, NULL));
+		testutil_check(
+		    __wt_thread_create(NULL, &alter_tid, alter, NULL));
 	if (g.c_backups)
-		testutil_check(pthread_create(&backup_tid, NULL, backup, NULL));
+		testutil_check(
+		    __wt_thread_create(NULL, &backup_tid, backup, NULL));
 	if (g.c_compact)
 		testutil_check(
-		    pthread_create(&compact_tid, NULL, compact, NULL));
+		    __wt_thread_create(NULL, &compact_tid, compact, NULL));
 	if (!SINGLETHREADED && g.c_long_running_txn)
-		testutil_check(pthread_create(&lrt_tid, NULL, lrt, NULL));
+		testutil_check(__wt_thread_create(NULL, &lrt_tid, lrt, NULL));
 
 	/* Spin on the threads, calculating the totals. */
 	for (;;) {
@@ -152,7 +177,8 @@ wts_ops(int lastrun)
 				break;
 			case TINFO_COMPLETE:
 				tinfo->state = TINFO_JOINED;
-				(void)pthread_join(tinfo->tid, NULL);
+				testutil_check(
+				    __wt_thread_join(NULL, tinfo->tid));
 				break;
 			case TINFO_JOINED:
 				break;
@@ -187,16 +213,16 @@ wts_ops(int lastrun)
 		free(tinfo_list[i]);
 	free(tinfo_list);
 
-	/* Wait for the backup, compaction, long-running reader threads. */
+	/* Wait for the other threads. */
 	g.workers_finished = 1;
 	if (g.c_alter)
-		(void)pthread_join(alter_tid, NULL);
+		testutil_check(__wt_thread_join(NULL, alter_tid));
 	if (g.c_backups)
-		(void)pthread_join(backup_tid, NULL);
+		testutil_check(__wt_thread_join(NULL, backup_tid));
 	if (g.c_compact)
-		(void)pthread_join(compact_tid, NULL);
+		testutil_check(__wt_thread_join(NULL, compact_tid));
 	if (!SINGLETHREADED && g.c_long_running_txn)
-		(void)pthread_join(lrt_tid, NULL);
+		testutil_check(__wt_thread_join(NULL, lrt_tid));
 	g.workers_finished = 0;
 
 	if (g.logging != 0) {
@@ -210,25 +236,29 @@ wts_ops(int lastrun)
  * isolation_config --
  *	Return an isolation configuration.
  */
-static inline const char *
-isolation_config(WT_RAND_STATE *rnd, bool *iso_snapshotp)
+static inline u_int
+isolation_config(WT_RAND_STATE *rnd, WT_SESSION *session)
 {
+	const char *config;
 	u_int v;
 
 	if ((v = g.c_isolation_flag) == ISOLATION_RANDOM)
 		v = mmrand(rnd, 2, 4);
 	switch (v) {
 	case ISOLATION_READ_UNCOMMITTED:
-		*iso_snapshotp = false;
-		return ("isolation=read-uncommitted");
+		config = "isolation=read-uncommitted";
+		break;
 	case ISOLATION_READ_COMMITTED:
-		*iso_snapshotp = false;
-		return ("isolation=read-committed");
+		config = "isolation=read-committed";
+		break;
 	case ISOLATION_SNAPSHOT:
 	default:
-		*iso_snapshotp = true;
-		return ("isolation=snapshot");
+		v = ISOLATION_SNAPSHOT;
+		config = "isolation=snapshot";
+		break;
 	}
+	testutil_check(session->reconfigure(session, config));
+	return (v);
 }
 
 typedef struct {
@@ -366,28 +396,44 @@ snap_check(WT_CURSOR *cursor,
 			    ret == WT_NOTFOUND ? 0 : *(uint8_t *)value->data);
 			/* NOTREACHED */
 		case ROW:
+			fprintf(stderr,
+			    "snapshot-isolation %.*s search mismatch\n",
+			    (int)key->size, (const char *)key->data);
+
+			if (start->deleted)
+				fprintf(stderr, "expected {deleted}\n");
+			else
+				print_item_data(
+				    "expected", start->vdata, start->vsize);
+			if (ret == WT_NOTFOUND)
+				fprintf(stderr, "found {deleted}\n");
+			else
+				print_item_data(
+				    "   found", value->data, value->size);
+
 			testutil_die(ret,
-			    "snapshot-isolation: %.*s search: "
-			    "expected {%.*s}, found {%.*s}",
-			    (int)key->size, key->data,
-			    start->deleted ?
-			    (int)strlen("deleted") : (int)start->vsize,
-			    start->deleted ? "deleted" : start->vdata,
-			    ret == WT_NOTFOUND ?
-			    (int)strlen("deleted") : (int)value->size,
-			    ret == WT_NOTFOUND ? "deleted" : value->data);
+			    "snapshot-isolation: %.*s search mismatch",
+			    (int)key->size, key->data);
 			/* NOTREACHED */
 		case VAR:
+			fprintf(stderr,
+			    "snapshot-isolation %" PRIu64 " search mismatch\n",
+			    start->keyno);
+
+			if (start->deleted)
+				fprintf(stderr, "expected {deleted}\n");
+			else
+				print_item_data(
+				    "expected", start->vdata, start->vsize);
+			if (ret == WT_NOTFOUND)
+				fprintf(stderr, "found {deleted}\n");
+			else
+				print_item_data(
+				    "   found", value->data, value->size);
+
 			testutil_die(ret,
-			    "snapshot-isolation: %" PRIu64 " search: "
-			    "expected {%.*s}, found {%.*s}",
-			    start->keyno,
-			    start->deleted ?
-			    (int)strlen("deleted") : (int)start->vsize,
-			    start->deleted ? "deleted" : start->vdata,
-			    ret == WT_NOTFOUND ?
-			    (int)strlen("deleted") : (int)value->size,
-			    ret == WT_NOTFOUND ? "deleted" : value->data);
+			    "snapshot-isolation: %" PRIu64 " search mismatch",
+			    start->keyno);
 			/* NOTREACHED */
 		}
 	}
@@ -395,13 +441,48 @@ snap_check(WT_CURSOR *cursor,
 }
 
 /*
+ * commit_transaction --
+ *     Commit a transaction
+ */
+static void
+commit_transaction(TINFO *tinfo, WT_SESSION *session)
+{
+	WT_CONNECTION *conn;
+	uint64_t ts;
+	char *commit_conf, config_buf[64];
+
+	conn = g.wts_conn;
+
+	if (g.c_txn_timestamps) {
+		ts = __wt_atomic_addv64(&g.timestamp, 1);
+
+		/* Periodically bump the oldest timestamp. */
+		if (ts > 100 && ts % 100 == 0) {
+			testutil_check(__wt_snprintf(
+			    config_buf, sizeof(config_buf),
+			    "oldest_timestamp=%" PRIx64, ts));
+			testutil_check(conn->set_timestamp(conn, config_buf));
+		}
+
+		testutil_check(__wt_snprintf(
+		    config_buf, sizeof(config_buf),
+		    "commit_timestamp=%" PRIx64, ts));
+		commit_conf = config_buf;
+	} else
+		commit_conf = NULL;
+
+	testutil_check(session->commit_transaction(session, commit_conf));
+	++tinfo->commit;
+}
+
+/*
  * ops --
  *     Per-thread operations.
  */
-static void *
+static WT_THREAD_RET
 ops(void *arg)
 {
-	enum { INSERT, READ, REMOVE, UPDATE } op;
+	enum { INSERT, MODIFY, READ, REMOVE, UPDATE } op;
 	SNAP_OPS *snap, snap_list[64];
 	TINFO *tinfo;
 	WT_CONNECTION *conn;
@@ -411,10 +492,10 @@ ops(void *arg)
 	WT_SESSION *session;
 	uint64_t keyno, ckpt_op, reset_op, session_op;
 	uint32_t rnd;
-	u_int i;
+	u_int i, iso_config;
 	int dir;
 	char *ckpt_config, ckpt_name[64];
-	bool ckpt_available, intxn, iso_snapshot, positioned, readonly;
+	bool ckpt_available, intxn, positioned, readonly;
 
 	tinfo = arg;
 
@@ -423,7 +504,7 @@ ops(void *arg)
 
 	/* Initialize tracking of snapshot isolation transaction returns. */
 	snap = NULL;
-	iso_snapshot = false;
+	iso_config = 0;
 	memset(snap_list, 0, sizeof(snap_list));
 
 	/* Initialize the per-thread random number generator. */
@@ -431,9 +512,9 @@ ops(void *arg)
 
 	/* Set up the default key and value buffers. */
 	key = &_key;
-	key_gen_setup(key);
+	key_gen_init(key);
 	value = &_value;
-	val_gen_setup(&tinfo->rnd, value);
+	val_gen_init(value);
 
 	/* Set the first operation where we'll create sessions and cursors. */
 	cursor = NULL;
@@ -454,9 +535,7 @@ ops(void *arg)
 		 */
 		if (intxn &&
 		    (tinfo->ops == ckpt_op || tinfo->ops == session_op)) {
-			testutil_check(
-			    session->commit_transaction(session, NULL));
-			++tinfo->commit;
+			commit_transaction(tinfo, session);
 			intxn = false;
 		}
 
@@ -482,8 +561,14 @@ ops(void *arg)
 			 */
 			if (!SINGLETHREADED && !DATASOURCE("lsm") &&
 			    ckpt_available && mmrand(&tinfo->rnd, 1, 10) == 1) {
-				testutil_check(session->open_cursor(session,
-				    g.uri, NULL, ckpt_name, &cursor));
+				/*
+				 * open_cursor can return EBUSY if concurrent
+				 * with a metadata operation, retry.
+				 */
+				while ((ret = session->open_cursor(session,
+				    g.uri, NULL, ckpt_name, &cursor)) == EBUSY)
+					__wt_yield();
+				testutil_check(ret);
 
 				/* Pick the next session/cursor close/open. */
 				session_op += 250;
@@ -494,9 +579,13 @@ ops(void *arg)
 				/*
 				 * Configure "append", in the case of column
 				 * stores, we append when inserting new rows.
+				 * open_cursor can return EBUSY if concurrent
+				 * with a metadata operation, retry.
 				 */
-				testutil_check(session->open_cursor(
-				    session, g.uri, NULL, "append", &cursor));
+				while ((ret = session->open_cursor(session,
+				    g.uri, NULL, "append", &cursor)) == EBUSY)
+					__wt_yield();
+				testutil_check(ret);
 
 				/* Pick the next session/cursor close/open. */
 				session_op += mmrand(&tinfo->rnd, 100, 5000);
@@ -586,13 +675,12 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 		 */
 		if (!SINGLETHREADED &&
 		    !intxn && mmrand(&tinfo->rnd, 1, 100) >= g.c_txn_freq) {
-			testutil_check(
-			    session->reconfigure(session,
-				isolation_config(&tinfo->rnd, &iso_snapshot)));
+			iso_config = isolation_config(&tinfo->rnd, session);
 			testutil_check(
 			    session->begin_transaction(session, NULL));
 
-			snap = iso_snapshot ? snap_list : NULL;
+			snap =
+			    iso_config == ISOLATION_SNAPSHOT ? snap_list : NULL;
 			intxn = true;
 		}
 
@@ -608,11 +696,12 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 				op = REMOVE;
 			else if (i < g.c_delete_pct + g.c_insert_pct)
 				op = INSERT;
-			else if (i <
-			    g.c_delete_pct + g.c_insert_pct + g.c_write_pct)
+			else if (i < g.c_delete_pct +
+			    g.c_insert_pct + g.c_modify_pct)
+				op = MODIFY;
+			else if (i < g.c_delete_pct +
+			    g.c_insert_pct + g.c_modify_pct + g.c_write_pct)
 				op = UPDATE;
-			else
-				op = READ;
 		}
 
 		/*
@@ -636,7 +725,7 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 				testutil_assert(ret == WT_NOTFOUND);
 			}
 		}
-#if 0
+
 		/* Optionally reserve a row. */
 		if (!readonly && intxn && mmrand(&tinfo->rnd, 0, 20) == 1) {
 			switch (g.type) {
@@ -659,7 +748,7 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 				testutil_assert(ret == WT_NOTFOUND);
 			}
 		}
-#endif
+
 		/* Perform the operation. */
 		switch (op) {
 		case INSERT:
@@ -676,7 +765,7 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 				 * of inserting.
 				 */
 				if (g.append_cnt >= g.append_max)
-					goto update_instead_of_insert;
+					goto update_instead_of_chosen_op;
 
 				ret = col_insert(
 				    tinfo, cursor, key, value, &keyno);
@@ -693,7 +782,38 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 			} else {
 				if (ret == WT_ROLLBACK && intxn)
 					goto deadlock;
-				testutil_assert(ret == 0 || ret == WT_ROLLBACK);
+				testutil_assert(ret == WT_ROLLBACK);
+			}
+			break;
+		case MODIFY:
+			/*
+			 * Change modify into update if in a read-uncommitted
+			 * transaction, modify isn't supported in that case.
+			 */
+			if (iso_config == ISOLATION_READ_UNCOMMITTED)
+				goto update_instead_of_chosen_op;
+
+			++tinfo->update;
+			switch (g.type) {
+			case ROW:
+				ret = row_modify(tinfo, cursor,
+				    key, value, keyno, positioned);
+				break;
+			case VAR:
+				ret = col_modify(tinfo, cursor,
+				    key, value, keyno, positioned);
+				break;
+			}
+			if (ret == 0) {
+				positioned = true;
+				if (SNAP_TRACK)
+					snap_track(snap++, keyno, NULL, value);
+			} else {
+				positioned = false;
+				if (ret == WT_ROLLBACK && intxn)
+					goto deadlock;
+				testutil_assert(
+				    ret == WT_NOTFOUND || ret == WT_ROLLBACK);
 			}
 			break;
 		case READ:
@@ -738,19 +858,17 @@ skip_checkpoint:	/* Pick the next checkpoint operation. */
 			}
 			break;
 		case UPDATE:
-update_instead_of_insert:
+update_instead_of_chosen_op:
 			++tinfo->update;
-
-			/* Update the row. */
 			switch (g.type) {
 			case ROW:
-				ret = row_update(tinfo,
-				    cursor, key, value, keyno, positioned);
+				ret = row_update(tinfo, cursor,
+				    key, value, keyno, positioned);
 				break;
 			case FIX:
 			case VAR:
-				ret = col_update(tinfo,
-				    cursor, key, value, keyno, positioned);
+				ret = col_update(tinfo, cursor,
+				    key, value, keyno, positioned);
 				break;
 			}
 			if (ret == 0) {
@@ -761,7 +879,7 @@ update_instead_of_insert:
 				positioned = false;
 				if (ret == WT_ROLLBACK && intxn)
 					goto deadlock;
-				testutil_assert(ret == 0 || ret == WT_ROLLBACK);
+				testutil_assert(ret == WT_ROLLBACK);
 			}
 			break;
 		}
@@ -778,6 +896,7 @@ update_instead_of_insert:
 					continue;
 				if (ret == WT_ROLLBACK && intxn)
 					goto deadlock;
+				testutil_assert(ret == WT_NOTFOUND);
 				break;
 			}
 		}
@@ -806,9 +925,7 @@ update_instead_of_insert:
 		 */
 		switch (rnd) {
 		case 1: case 2: case 3: case 4:			/* 40% */
-			testutil_check(
-			    session->commit_transaction(session, NULL));
-			++tinfo->commit;
+			commit_transaction(tinfo, session);
 			break;
 		case 5:						/* 10% */
 			if (0) {
@@ -831,11 +948,11 @@ deadlock:			++tinfo->deadlock;
 		free(snap_list[i].kdata);
 		free(snap_list[i].vdata);
 	}
-	free(key->mem);
-	free(value->mem);
+	key_gen_teardown(key);
+	val_gen_teardown(value);
 
 	tinfo->state = TINFO_COMPLETE;
-	return (NULL);
+	return (WT_THREAD_RET_VALUE);
 }
 
 /*
@@ -855,13 +972,19 @@ wts_read_scan(void)
 	conn = g.wts_conn;
 
 	/* Set up the default key/value buffers. */
-	key_gen_setup(&key);
-	val_gen_setup(NULL, &value);
+	key_gen_init(&key);
+	val_gen_init(&value);
 
 	/* Open a session and cursor pair. */
 	testutil_check(conn->open_session(conn, NULL, NULL, &session));
-	testutil_check(
-	    session->open_cursor(session, g.uri, NULL, NULL, &cursor));
+	/*
+	 * open_cursor can return EBUSY if concurrent with a metadata
+	 * operation, retry in that case.
+	 */
+	while ((ret = session->open_cursor(
+	    session, g.uri, NULL, NULL, &cursor)) == EBUSY)
+		__wt_yield();
+	testutil_check(ret);
 
 	/* Check a random subset of the records using the key. */
 	for (last_keyno = keyno = 0; keyno < g.key_cnt;) {
@@ -886,8 +1009,8 @@ wts_read_scan(void)
 
 	testutil_check(session->close(session, NULL));
 
-	free(key.mem);
-	free(value.mem);
+	key_gen_teardown(&key);
+	val_gen_teardown(&value);
 }
 
 /*
@@ -1044,7 +1167,7 @@ nextprev(WT_CURSOR *cursor, int next)
 
 	session = cursor->session;
 
-	/* Retrieve the BDB value. */
+	/* Retrieve the BDB key/value. */
 	bdb_np(next, &bdb_key.data, &bdb_key.size,
 	    &bdb_value.data, &bdb_value.size, &notfound);
 	if (notfound_chk(
@@ -1052,28 +1175,25 @@ nextprev(WT_CURSOR *cursor, int next)
 		return (ret);
 
 	/* Compare the two. */
-	if (g.type == ROW) {
-		if (key.size != bdb_key.size ||
-		    memcmp(key.data, bdb_key.data, key.size) != 0) {
-			fprintf(stderr, "nextprev: %s key mismatch:\n", which);
-			print_item("bdb-key", &bdb_key);
-			print_item(" wt-key", &key);
-			testutil_die(0, NULL);
-		}
-	} else {
-		if (keyno != (uint64_t)atoll(bdb_key.data)) {
-			if ((p = strchr((char *)bdb_key.data, '.')) != NULL)
-				*p = '\0';
-			fprintf(stderr,
-			    "nextprev: %s key mismatch: %.*s != %" PRIu64 "\n",
-			    which,
-			    (int)bdb_key.size, (char *)bdb_key.data, keyno);
-			testutil_die(0, NULL);
-		}
+	if ((g.type == ROW &&
+	    (key.size != bdb_key.size ||
+	    memcmp(key.data, bdb_key.data, key.size) != 0)) ||
+	    (g.type != ROW && keyno != (uint64_t)atoll(bdb_key.data))) {
+		fprintf(stderr, "nextprev: %s KEY mismatch:\n", which);
+		goto mismatch;
 	}
 	if (value.size != bdb_value.size ||
 	    memcmp(value.data, bdb_value.data, value.size) != 0) {
-		fprintf(stderr, "nextprev: %s value mismatch:\n", which);
+		fprintf(stderr, "nextprev: %s VALUE mismatch:\n", which);
+mismatch:	if (g.type == ROW) {
+			print_item("bdb-key", &bdb_key);
+			print_item(" wt-key", &key);
+		} else {
+			if ((p = (char *)strchr(bdb_key.data, '.')) != NULL)
+				*p = '\0';
+			fprintf(stderr, "\t%.*s != %" PRIu64 "\n",
+			    (int)bdb_key.size, (char *)bdb_key.data, keyno);
+		}
 		print_item("bdb-value", &bdb_value);
 		print_item(" wt-value", &value);
 		testutil_die(0, NULL);
@@ -1088,7 +1208,7 @@ nextprev(WT_CURSOR *cursor, int next)
 			break;
 		case ROW:
 			(void)g.wt_api->msg_printf(
-			    g.wt_api, session, "%-10s{%.*s/%.*s}", which,
+			    g.wt_api, session, "%-10s{%.*s}, {%.*s}", which,
 			    (int)key.size, (char *)key.data,
 			    (int)value.size, (char *)value.data);
 			break;
@@ -1103,7 +1223,6 @@ nextprev(WT_CURSOR *cursor, int next)
 	return (ret);
 }
 
-#if 0
 /*
  * row_reserve --
  *	Reserve a row in a row-store file.
@@ -1166,7 +1285,126 @@ col_reserve(WT_CURSOR *cursor, uint64_t keyno, bool positioned)
 	}
 	return (0);
 }
+
+/*
+ * modify_build --
+ *	Generate a set of modify vectors.
+ */
+static void
+modify_build(TINFO *tinfo, WT_MODIFY *entries, int *nentriesp)
+{
+	int i, nentries;
+
+	/* Randomly select a number of byte changes, offsets and lengths. */
+	nentries = (int)mmrand(&tinfo->rnd, 1, MAX_MODIFY_ENTRIES);
+	for (i = 0; i < nentries; ++i) {
+		entries[i].data.data = modify_repl +
+		    mmrand(&tinfo->rnd, 1, sizeof(modify_repl) - 10);
+		entries[i].data.size = (size_t)mmrand(&tinfo->rnd, 0, 10);
+		/*
+		 * Start at least 11 bytes into the buffer so we skip leading
+		 * key information.
+		 */
+		entries[i].offset = (size_t)mmrand(&tinfo->rnd, 20, 40);
+		entries[i].size = (size_t)mmrand(&tinfo->rnd, 0, 10);
+	}
+
+	*nentriesp = (int)nentries;
+}
+
+/*
+ * row_modify --
+ *	Modify a row in a row-store file.
+ */
+static int
+row_modify(TINFO *tinfo, WT_CURSOR *cursor,
+    WT_ITEM *key, WT_ITEM *value, uint64_t keyno, bool positioned)
+{
+	WT_DECL_RET;
+	WT_MODIFY entries[MAX_MODIFY_ENTRIES];
+	int nentries;
+
+	if (!positioned) {
+		key_gen(key, keyno);
+		cursor->set_key(cursor, key);
+	}
+
+	modify_build(tinfo, entries, &nentries);
+	switch (ret = cursor->modify(cursor, entries, nentries)) {
+	case 0:
+		testutil_check(cursor->get_value(cursor, value));
+		break;
+	case WT_CACHE_FULL:
+	case WT_ROLLBACK:
+		return (WT_ROLLBACK);
+	case WT_NOTFOUND:
+		return (WT_NOTFOUND);
+	default:
+		testutil_die(ret,
+		    "row_modify: modify row %" PRIu64 " by key", keyno);
+	}
+
+	if (g.logging == LOG_OPS)
+		(void)g.wt_api->msg_printf(g.wt_api, cursor->session,
+		    "%-10s{%.*s}, {%.*s}",
+		    "modify",
+		    (int)key->size, key->data, (int)value->size, value->data);
+
+#ifdef HAVE_BERKELEY_DB
+	if (!SINGLETHREADED)
+		return (0);
+
+	bdb_update(key->data, key->size, value->data, value->size);
 #endif
+	return (0);
+}
+
+/*
+ * col_modify --
+ *	Modify a row in a column-store file.
+ */
+static int
+col_modify(TINFO *tinfo, WT_CURSOR *cursor,
+    WT_ITEM *key, WT_ITEM *value, uint64_t keyno, bool positioned)
+{
+	WT_DECL_RET;
+	WT_MODIFY entries[MAX_MODIFY_ENTRIES];
+	int nentries;
+
+	if (!positioned)
+		cursor->set_key(cursor, keyno);
+
+	modify_build(tinfo, entries, &nentries);
+	switch (ret = cursor->modify(cursor, entries, nentries)) {
+	case 0:
+		testutil_check(cursor->get_value(cursor, value));
+		break;
+	case WT_CACHE_FULL:
+	case WT_ROLLBACK:
+		return (WT_ROLLBACK);
+	case WT_NOTFOUND:
+		return (WT_NOTFOUND);
+	default:
+		testutil_die(ret, "col_modify: modify row %" PRIu64, keyno);
+	}
+
+	if (g.logging == LOG_OPS)
+		(void)g.wt_api->msg_printf(g.wt_api, cursor->session,
+		    "%-10s{%.*s}, {%.*s}",
+		    "modify",
+		    (int)key->size, key->data, (int)value->size, value->data);
+
+#ifdef HAVE_BERKELEY_DB
+	if (!SINGLETHREADED)
+		return (0);
+
+	key_gen(key, keyno);
+	bdb_update(key->data, key->size, value->data, value->size);
+#else
+	(void)key;				/* [-Wunused-variable] */
+#endif
+	return (0);
+}
 
 /*
  * row_update --
@@ -1596,36 +1834,5 @@ notfound_chk(const char *f, int wt_ret, int bdb_notfound, uint64_t keyno)
 		testutil_die(0, NULL);
 	}
 	return (0);
-}
-
-/*
- * print_item --
- *	Display a single data/size pair, with a tag.
- */
-static void
-print_item(const char *tag, WT_ITEM *item)
-{
-	static const char hex[] = "0123456789abcdef";
-	const uint8_t *data;
-	size_t size;
-	u_char ch;
-
-	data = item->data;
-	size = item->size;
-
-	fprintf(stderr, "\t%s {", tag);
-	if (g.type == FIX)
-		fprintf(stderr, "0x%02x", data[0]);
-	else
-		for (; size > 0; --size, ++data) {
-			ch = data[0];
-			if (__wt_isprint(ch))
-				fprintf(stderr, "%c", (int)ch);
-			else
-				fprintf(stderr, "%x%x",
-				    hex[(data[0] & 0xf0) >> 4],
-				    hex[data[0] & 0x0f]);
-		}
-	fprintf(stderr, "}\n");
 }
 #endif

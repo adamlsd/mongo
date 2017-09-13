@@ -28,10 +28,13 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
+
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_unwind.h"
 #include "mongo/db/pipeline/expression.h"
+#include "mongo/db/pipeline/lite_parsed_pipeline.h"
 #include "mongo/db/pipeline/lookup_set_cache.h"
 #include "mongo/db/pipeline/value_comparator.h"
 
@@ -44,8 +47,41 @@ namespace mongo {
 class DocumentSourceLookUp final : public DocumentSourceNeedsMongod,
                                    public SplittableDocumentSource {
 public:
-    static std::unique_ptr<LiteParsedDocumentSourceOneForeignCollection> liteParse(
-        const AggregationRequest& request, const BSONElement& spec);
+    class LiteParsed final : public LiteParsedDocumentSource {
+    public:
+        static std::unique_ptr<LiteParsed> parse(const AggregationRequest& request,
+                                                 const BSONElement& spec);
+
+        LiteParsed(NamespaceString fromNss,
+                   stdx::unordered_set<NamespaceString> foreignNssSet,
+                   boost::optional<LiteParsedPipeline> liteParsedPipeline)
+            : _fromNss{std::move(fromNss)},
+              _foreignNssSet(std::move(foreignNssSet)),
+              _liteParsedPipeline(std::move(liteParsedPipeline)) {}
+
+        stdx::unordered_set<NamespaceString> getInvolvedNamespaces() const final {
+            return {_foreignNssSet};
+        }
+
+        PrivilegeVector requiredPrivileges(bool isMongos) const final {
+            PrivilegeVector requiredPrivileges;
+            Privilege::addPrivilegeToPrivilegeVector(
+                &requiredPrivileges,
+                Privilege(ResourcePattern::forExactNamespace(_fromNss), ActionType::find));
+
+            if (_liteParsedPipeline) {
+                Privilege::addPrivilegesToPrivilegeVector(
+                    &requiredPrivileges, _liteParsedPipeline->requiredPrivileges(isMongos));
+            }
+
+            return requiredPrivileges;
+        }
+
+    private:
+        const NamespaceString _fromNss;
+        const stdx::unordered_set<NamespaceString> _foreignNssSet;
+        const boost::optional<LiteParsedPipeline> _liteParsedPipeline;
+    };
 
     GetNextResult getNext() final;
     const char* getSourceName() const final;
@@ -58,18 +94,17 @@ public:
      */
     GetModPathsReturn getModifiedPaths() const final;
 
-    bool canSwapWithMatch() const final {
-        return true;
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.canSwapWithMatch = true;
+        constraints.hostRequirement = HostTypeRequirement::kPrimaryShard;
+        return constraints;
     }
 
     GetDepsReturn getDependencies(DepsTracker* deps) const final;
 
     BSONObjSet getOutputSorts() final {
         return DocumentSource::truncateSortSet(pSource->getOutputSorts(), {_as.fullPath()});
-    }
-
-    bool needsPrimaryShard() const final {
-        return true;
     }
 
     boost::intrusive_ptr<DocumentSource> getShardSource() final {
@@ -115,6 +150,14 @@ public:
         return !static_cast<bool>(_localField);
     }
 
+    const Variables& getVariables_forTest() {
+        return _variables;
+    }
+
+    const VariablesParseState& getVariablesParseState_forTest() {
+        return _variablesParseState;
+    }
+
 protected:
     void doDispose() final;
 
@@ -126,6 +169,15 @@ protected:
                                                      Pipeline::SourceContainer* container) final;
 
 private:
+    struct LetVariable {
+        LetVariable(std::string name, boost::intrusive_ptr<Expression> expression, Variables::Id id)
+            : name(std::move(name)), expression(std::move(expression)), id(id) {}
+
+        std::string name;
+        boost::intrusive_ptr<Expression> expression;
+        Variables::Id id;
+    };
+
     /**
      * Target constructor. Handles common-field initialization for the syntax-specific delegating
      * constructors.
@@ -151,6 +203,7 @@ private:
     DocumentSourceLookUp(NamespaceString fromNs,
                          std::string as,
                          std::vector<BSONObj> pipeline,
+                         BSONObj letVariables,
                          const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
 
     /**
@@ -161,6 +214,19 @@ private:
     }
 
     GetNextResult unwindResult();
+
+    /**
+     * Copies 'vars' and 'vps' to the Variables and VariablesParseState objects in 'expCtx'. These
+     * copies provide access to 'let' defined variables in sub-pipeline execution.
+     */
+    static void copyVariablesToExpCtx(const Variables& vars,
+                                      const VariablesParseState& vps,
+                                      ExpressionContext* expCtx);
+
+    /**
+     * Resolves let defined variables against 'localDoc' and stores the results in 'variables'.
+     */
+    void resolveLetVariables(const Document& localDoc, Variables* variables);
 
     /**
      * The pipeline supplied via the $lookup 'pipeline' argument. This may differ from pipeline that
@@ -177,15 +243,24 @@ private:
     boost::optional<FieldPath> _localField;
     boost::optional<FieldPath> _foreignField;
 
-    // The ExpressionContext used when performing aggregation pipelines against the '_fromNs'
+    // Holds 'let' defined variables defined both in this stage and in parent pipelines. These are
+    // copied to the '_fromExpCtx' ExpressionContext's 'variables' and 'variablesParseState' for use
+    // in foreign pipeline execution.
+    Variables _variables;
+    VariablesParseState _variablesParseState;
+
+    // The ExpressionContext used when performing aggregation pipelines against the '_resolvedNs'
     // namespace.
     boost::intrusive_ptr<ExpressionContext> _fromExpCtx;
 
-    // The aggregation pipeline to perform against the '_fromNs' namespace.
-    std::vector<BSONObj> _fromPipeline;
-    // The pipeline defined with the user request, prior to optimization and addition of any view
-    // definitions.
+    // The aggregation pipeline to perform against the '_resolvedNs' namespace. Referenced view
+    // namespaces have been resolved.
+    std::vector<BSONObj> _resolvedPipeline;
+    // The aggregation pipeline defined with the user request, prior to optimization and view
+    // resolution.
     std::vector<BSONObj> _userPipeline;
+
+    std::vector<LetVariable> _letVariables;
 
     boost::intrusive_ptr<DocumentSourceMatch> _matchSrc;
     boost::intrusive_ptr<DocumentSourceUnwind> _unwindSrc;

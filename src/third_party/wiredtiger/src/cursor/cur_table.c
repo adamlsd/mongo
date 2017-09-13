@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -91,8 +91,10 @@ __wt_apply_single_idx(WT_SESSION_IMPL *session, WT_INDEX *idx,
 	    __wt_cursor_notsup,			/* search */
 	    __wt_cursor_search_near_notsup,	/* search-near */
 	    __curextract_insert,		/* insert */
+	    __wt_cursor_modify_notsup,		/* modify */
 	    __wt_cursor_notsup,			/* update */
 	    __wt_cursor_notsup,			/* remove */
+	    __wt_cursor_notsup,			/* reserve */
 	    __wt_cursor_reconfigure_notsup,	/* reconfigure */
 	    __wt_cursor_notsup);		/* close */
 	WT_CURSOR_EXTRACTOR extract_cursor;
@@ -110,8 +112,7 @@ __wt_apply_single_idx(WT_SESSION_IMPL *session, WT_INDEX *idx,
 		WT_RET(__wt_cursor_get_raw_key(&ctable->iface, &key));
 		WT_RET(__wt_cursor_get_raw_value(&ctable->iface, &value));
 		ret = idx->extractor->extract(idx->extractor,
-		    &session->iface, &key, &value,
-		    &extract_cursor.iface);
+		    &session->iface, &key, &value, &extract_cursor.iface);
 
 		__wt_buf_free(session, &extract_cursor.iface.key);
 		WT_RET(ret);
@@ -190,12 +191,13 @@ __wt_curtable_get_value(WT_CURSOR *cursor, ...)
 	WT_SESSION_IMPL *session;
 	va_list ap;
 
-	va_start(ap, cursor);
 	JOINABLE_CURSOR_API_CALL(cursor, session, get_value, NULL);
-	WT_ERR(__wt_curtable_get_valuev(cursor, ap));
 
-err:	va_end(ap);
-	API_END_RET(session, ret);
+	va_start(ap, cursor);
+	ret = __wt_curtable_get_valuev(cursor, ap);
+	va_end(ap);
+
+err:	API_END_RET(session, ret);
 }
 
 /*
@@ -323,8 +325,8 @@ __curtable_compare(WT_CURSOR *a, WT_CURSOR *b, int *cmpp)
 	if (strcmp(a->internal_uri, b->internal_uri) != 0)
 		WT_ERR_MSG(session, EINVAL,
 		    "comparison method cursors must reference the same object");
-	WT_CURSOR_CHECKKEY(WT_CURSOR_PRIMARY(a));
-	WT_CURSOR_CHECKKEY(WT_CURSOR_PRIMARY(b));
+	WT_ERR(__cursor_checkkey(WT_CURSOR_PRIMARY(a)));
+	WT_ERR(__cursor_checkkey(WT_CURSOR_PRIMARY(b)));
 
 	ret = WT_CURSOR_PRIMARY(a)->compare(
 	    WT_CURSOR_PRIMARY(a), WT_CURSOR_PRIMARY(b), cmpp);
@@ -483,7 +485,7 @@ __curtable_insert(WT_CURSOR *cursor)
 	u_int i;
 
 	ctable = (WT_CURSOR_TABLE *)cursor;
-	JOINABLE_CURSOR_UPDATE_API_CALL(cursor, session, insert, NULL);
+	JOINABLE_CURSOR_UPDATE_API_CALL(cursor, session, insert);
 	WT_ERR(__curtable_open_indices(ctable));
 
 	/*
@@ -562,7 +564,7 @@ __curtable_update(WT_CURSOR *cursor)
 	WT_SESSION_IMPL *session;
 
 	ctable = (WT_CURSOR_TABLE *)cursor;
-	JOINABLE_CURSOR_UPDATE_API_CALL(cursor, session, update, NULL);
+	JOINABLE_CURSOR_UPDATE_API_CALL(cursor, session, update);
 	WT_ERR(__curtable_open_indices(ctable));
 
 	/*
@@ -658,6 +660,47 @@ notfound:
 
 err:	CURSOR_UPDATE_API_END(session, ret);
 	return (ret);
+}
+
+/*
+ * __curtable_reserve --
+ *	WT_CURSOR->reserve method for the table cursor type.
+ */
+static int
+__curtable_reserve(WT_CURSOR *cursor)
+{
+	WT_CURSOR_TABLE *ctable;
+	WT_DECL_RET;
+	WT_SESSION_IMPL *session;
+
+	ctable = (WT_CURSOR_TABLE *)cursor;
+	JOINABLE_CURSOR_UPDATE_API_CALL(cursor, session, update);
+
+	/*
+	 * We don't have to open the indices here, but it makes the code similar
+	 * to other cursor functions, and it's odd for a reserve call to succeed
+	 * but the subsequent update fail opening indices.
+	 *
+	 * Check for a transaction before index open, opening the indices will
+	 * start a transaction if one isn't running.
+	 */
+	WT_ERR(__wt_txn_context_check(session, true));
+	WT_ERR(__curtable_open_indices(ctable));
+
+	/* Reserve in column groups, ignore indices. */
+	APPLY_CG(ctable, reserve);
+
+err:	CURSOR_UPDATE_API_END(session, ret);
+
+	/*
+	 * The application might do a WT_CURSOR.get_value call when we return,
+	 * so we need a value and the underlying functions didn't set one up.
+	 * For various reasons, those functions may not have done a search and
+	 * any previous value in the cursor might race with WT_CURSOR.reserve
+	 * (and in cases like LSM, the reserve never encountered the original
+	 * key). For simplicity, repeat the search here.
+	 */
+	return (ret == 0 ? cursor->search(cursor) : ret);
 }
 
 /*
@@ -786,7 +829,8 @@ __curtable_close(WT_CURSOR *cursor)
 	__wt_free(session, ctable->cg_cursors);
 	__wt_free(session, ctable->cg_valcopy);
 	__wt_free(session, ctable->idx_cursors);
-	__wt_schema_release_table(session, ctable->table);
+
+	WT_TRET(__wt_schema_release_table(session, ctable->table));
 	/* The URI is owned by the table. */
 	cursor->internal_uri = NULL;
 	WT_TRET(__wt_cursor_close(cursor));
@@ -811,7 +855,7 @@ __curtable_complete(WT_SESSION_IMPL *session, WT_TABLE *table)
 	if (!complete)
 		WT_RET_MSG(session, EINVAL,
 		    "'%s' not available until all column groups are created",
-		    table->name);
+		    table->iface.name);
 	return (0);
 }
 
@@ -907,8 +951,10 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 	    __curtable_search,			/* search */
 	    __curtable_search_near,		/* search-near */
 	    __curtable_insert,			/* insert */
+	    __wt_cursor_modify_notsup,		/* modify */
 	    __curtable_update,			/* update */
 	    __curtable_remove,			/* remove */
+	    __curtable_reserve,			/* reserve */
 	    __wt_cursor_reconfigure,		/* reconfigure */
 	    __curtable_close);			/* close */
 	WT_CONFIG_ITEM cval;
@@ -926,14 +972,16 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 	ctable = NULL;
 
 	tablename = uri;
-	if (!WT_PREFIX_SKIP(tablename, "table:"))
-		return (__wt_unexpected_object_type(session, uri, "table:"));
+	WT_PREFIX_SKIP_REQUIRED(session, tablename, "table:");
 	columns = strchr(tablename, '(');
 	if (columns == NULL)
-		size = strlen(tablename);
-	else
+		WT_RET(__wt_schema_get_table_uri(
+		    session, uri, false, 0, &table));
+	else {
 		size = WT_PTRDIFF(columns, tablename);
-	WT_RET(__wt_schema_get_table(session, tablename, size, false, &table));
+		WT_RET(__wt_schema_get_table(
+		    session, tablename, size, false, 0, &table));
+	}
 
 	WT_RET(__curtable_complete(session, table));	/* completeness check */
 
@@ -942,7 +990,13 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 		ret = __wt_open_cursor(session,
 		    table->cgroups[0]->source, NULL, cfg, cursorp);
 
-		__wt_schema_release_table(session, table);
+		WT_TRET(__wt_schema_release_table(session, table));
+		if (ret == 0) {
+			/* Fix up the public URI to match what was passed in. */
+			cursor = *cursorp;
+			__wt_free(session, cursor->uri);
+			WT_TRET(__wt_strdup(session, uri, &cursor->uri));
+		}
 		return (ret);
 	}
 
@@ -951,7 +1005,7 @@ __wt_curtable_open(WT_SESSION_IMPL *session,
 	cursor = &ctable->iface;
 	*cursor = iface;
 	cursor->session = &session->iface;
-	cursor->internal_uri = table->name;
+	cursor->internal_uri = table->iface.name;
 	cursor->key_format = table->key_format;
 	cursor->value_format = table->value_format;
 

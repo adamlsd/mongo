@@ -53,7 +53,7 @@ class CollectionBulkLoaderMock : public CollectionBulkLoader {
 public:
     CollectionBulkLoaderMock(CollectionMockStats* collStats) : stats(collStats){};
     virtual ~CollectionBulkLoaderMock() = default;
-    virtual Status init(Collection* coll, const std::vector<BSONObj>& secondaryIndexSpecs) override;
+    virtual Status init(const std::vector<BSONObj>& secondaryIndexSpecs) override;
 
     virtual Status insertDocuments(const std::vector<BSONObj>::const_iterator begin,
                                    const std::vector<BSONObj>::const_iterator end) override;
@@ -75,8 +75,6 @@ public:
                           const std::vector<BSONObj>::const_iterator) { return Status::OK(); };
     stdx::function<Status()> abortFn = []() { return Status::OK(); };
     stdx::function<Status()> commitFn = []() { return Status::OK(); };
-    stdx::function<Status(Collection* coll, const std::vector<BSONObj>& secondaryIndexSpecs)>
-        initFn = [](Collection*, const std::vector<BSONObj>&) { return Status::OK(); };
 };
 
 class StorageInterfaceMock : public StorageInterface {
@@ -92,14 +90,17 @@ public:
             const BSONObj idIndexSpec,
             const std::vector<BSONObj>& secondaryIndexSpecs)>;
     using InsertDocumentFn = stdx::function<Status(
-        OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc)>;
-    using InsertDocumentsFn = stdx::function<Status(
-        OperationContext* opCtx, const NamespaceString& nss, const std::vector<BSONObj>& docs)>;
+        OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc)>;
+    using InsertDocumentsFn = stdx::function<Status(OperationContext* opCtx,
+                                                    const NamespaceString& nss,
+                                                    const std::vector<InsertStatement>& docs)>;
     using DropUserDatabasesFn = stdx::function<Status(OperationContext* opCtx)>;
     using CreateOplogFn =
         stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using CreateCollectionFn = stdx::function<Status(
         OperationContext* opCtx, const NamespaceString& nss, const CollectionOptions& options)>;
+    using TruncateCollectionFn =
+        stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using DropCollectionFn =
         stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using FindDocumentsFn =
@@ -122,20 +123,9 @@ public:
 
     StorageInterfaceMock() = default;
 
-    bool getInitialSyncFlag(OperationContext* opCtx) const override;
-    void setInitialSyncFlag(OperationContext* opCtx) override;
-    void clearInitialSyncFlag(OperationContext* opCtx) override;
-
-    OpTime getMinValid(OperationContext* opCtx) const override;
-    void setMinValid(OperationContext* opCtx, const OpTime& minValid) override;
-    void setMinValidToAtLeast(OperationContext* opCtx, const OpTime& minValid) override;
     StatusWith<int> getRollbackID(OperationContext* opCtx) override;
     Status initializeRollbackID(OperationContext* opCtx) override;
     Status incrementRollbackID(OperationContext* opCtx) override;
-    void setOplogDeleteFromPoint(OperationContext* opCtx, const Timestamp& timestamp) override;
-    Timestamp getOplogDeleteFromPoint(OperationContext* opCtx) override;
-    void setAppliedThrough(OperationContext* opCtx, const OpTime& optime) override;
-    OpTime getAppliedThrough(OperationContext* opCtx) override;
 
     StatusWith<std::unique_ptr<CollectionBulkLoader>> createCollectionForBulkLoading(
         const NamespaceString& nss,
@@ -147,13 +137,13 @@ public:
 
     Status insertDocument(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const BSONObj& doc) override {
+                          const TimestampedBSONObj& doc) override {
         return insertDocumentFn(opCtx, nss, doc);
     };
 
     Status insertDocuments(OperationContext* opCtx,
                            const NamespaceString& nss,
-                           const std::vector<BSONObj>& docs) override {
+                           const std::vector<InsertStatement>& docs) override {
         return insertDocumentsFn(opCtx, nss, docs);
     }
 
@@ -179,6 +169,18 @@ public:
     Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) override {
         return dropCollFn(opCtx, nss);
     };
+
+    Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) override {
+        return truncateCollFn(opCtx, nss);
+    }
+
+    Status renameCollection(OperationContext* opCtx,
+                            const NamespaceString& fromNS,
+                            const NamespaceString& toNS,
+                            bool stayTemp) override {
+
+        return Status{ErrorCodes::IllegalOperation, "renameCollection not implemented."};
+    }
 
     StatusWith<std::vector<BSONObj>> findDocuments(OperationContext* opCtx,
                                                    const NamespaceString& nss,
@@ -248,10 +250,25 @@ public:
         return 0;
     }
 
+    void setStableTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
+
+    void setInitialDataTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) override;
+
+    SnapshotName getStableTimestamp() const;
+
+    SnapshotName getInitialDataTimestamp() const;
+
+    Status recoverToStableTimestamp(ServiceContext* serviceCtx) override {
+        return Status{ErrorCodes::IllegalOperation, "recoverToStableTimestamp not implemented."};
+    }
+
     Status isAdminDbValid(OperationContext* opCtx) override {
         return isAdminDbValidFn(opCtx);
     };
 
+    void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) override {
+        return;
+    }
 
     // Testing functions.
     CreateCollectionForBulkFn createCollectionForBulkFn =
@@ -263,13 +280,14 @@ public:
         return Status{ErrorCodes::IllegalOperation, "CreateCollectionForBulkFn not implemented."};
     };
     InsertDocumentFn insertDocumentFn =
-        [](OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc) {
+        [](OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc) {
             return Status{ErrorCodes::IllegalOperation, "InsertDocumentFn not implemented."};
         };
-    InsertDocumentsFn insertDocumentsFn =
-        [](OperationContext* opCtx, const NamespaceString& nss, const std::vector<BSONObj>& docs) {
-            return Status{ErrorCodes::IllegalOperation, "InsertDocumentsFn not implemented."};
-        };
+    InsertDocumentsFn insertDocumentsFn = [](OperationContext* opCtx,
+                                             const NamespaceString& nss,
+                                             const std::vector<InsertStatement>& docs) {
+        return Status{ErrorCodes::IllegalOperation, "InsertDocumentsFn not implemented."};
+    };
     DropUserDatabasesFn dropUserDBsFn = [](OperationContext* opCtx) {
         return Status{ErrorCodes::IllegalOperation, "DropUserDatabasesFn not implemented."};
     };
@@ -280,6 +298,9 @@ public:
         [](OperationContext* opCtx, const NamespaceString& nss, const CollectionOptions& options) {
             return Status{ErrorCodes::IllegalOperation, "CreateCollectionFn not implemented."};
         };
+    TruncateCollectionFn truncateCollFn = [](OperationContext* opCtx, const NamespaceString& nss) {
+        return Status{ErrorCodes::IllegalOperation, "TruncateCollectionFn not implemented."};
+    };
     DropCollectionFn dropCollFn = [](OperationContext* opCtx, const NamespaceString& nss) {
         return Status{ErrorCodes::IllegalOperation, "DropCollectionFn not implemented."};
     };
@@ -306,15 +327,11 @@ public:
     };
 
 private:
-    mutable stdx::mutex _initialSyncFlagMutex;
-    bool _initialSyncFlag = false;
-
-    mutable stdx::mutex _minValidBoundariesMutex;
-    OpTime _appliedThrough;
-    OpTime _minValid;
+    mutable stdx::mutex _mutex;
     int _rbid;
     bool _rbidInitialized = false;
-    Timestamp _oplogDeleteFromPoint;
+    SnapshotName _stableTimestamp = SnapshotName::min();
+    SnapshotName _initialDataTimestamp = SnapshotName::min();
 };
 
 }  // namespace repl

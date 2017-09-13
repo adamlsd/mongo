@@ -67,8 +67,8 @@ public:
     SessionHandle get(Session::Id id);
     bool owns(Session::Id id);
     void end(const SessionHandle& session) override;
-    void endAllSessions(Session::TagMask tags) override;
 
+    Status setup() override;
     Status start() override;
     void shutdown() override;
     bool inShutdown() const;

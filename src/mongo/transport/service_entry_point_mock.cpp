@@ -46,14 +46,7 @@ ServiceEntryPointMock::ServiceEntryPointMock(transport::TransportLayer* tl)
     : _tl(tl), _inShutdown(false) {}
 
 ServiceEntryPointMock::~ServiceEntryPointMock() {
-    {
-        stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
-        _inShutdown = true;
-    }
-
-    for (auto& t : _threads) {
-        t.join();
-    }
+    endAllSessions(transport::Session::kEmptyTagMask);
 }
 
 void ServiceEntryPointMock::startSession(transport::SessionHandle session) {
@@ -74,7 +67,7 @@ void ServiceEntryPointMock::run(transport::SessionHandle session) {
             break;
         }
 
-        auto resp = handleRequest(nullptr, inMessage, session->remote());
+        auto resp = handleRequest(nullptr, inMessage);
 
         // sinkMessage()
         if (!session->sinkMessage(resp.response).wait().isOK()) {
@@ -83,9 +76,7 @@ void ServiceEntryPointMock::run(transport::SessionHandle session) {
     }
 }
 
-DbResponse ServiceEntryPointMock::handleRequest(OperationContext* opCtx,
-                                                const Message& request,
-                                                const HostAndPort& client) {
+DbResponse ServiceEntryPointMock::handleRequest(OperationContext* opCtx, const Message& request) {
     // Need to set up our { ok : 1 } response.
     BufBuilder b{};
 
@@ -106,6 +97,17 @@ DbResponse ServiceEntryPointMock::handleRequest(OperationContext* opCtx,
     msg.setOperation(dbCommandReply);
 
     return {Message(b.release()), ""};
+}
+
+void ServiceEntryPointMock::endAllSessions(transport::Session::TagMask) {
+    {
+        stdx::lock_guard<stdx::mutex> lk(_shutdownLock);
+        _inShutdown = true;
+    }
+
+    for (auto& t : _threads) {
+        t.join();
+    }
 }
 
 }  // namespace mongo

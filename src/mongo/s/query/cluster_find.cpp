@@ -190,8 +190,7 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
     params.limit = query.getQueryRequest().getLimit();
     params.batchSize = query.getQueryRequest().getEffectiveBatchSize();
     params.skip = query.getQueryRequest().getSkip();
-    params.isTailable = query.getQueryRequest().isTailable();
-    params.isAwaitData = query.getQueryRequest().isAwaitData();
+    params.tailableMode = query.getQueryRequest().getTailableMode();
     params.isAllowPartialResults = query.getQueryRequest().isAllowPartialResults();
 
     // This is the batchSize passed to each subsequent getMore command issued by the cursor. We
@@ -209,7 +208,7 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
     }
 
     // Tailable cursors can't have a sort, which should have already been validated.
-    invariant(params.sort.isEmpty() || !params.isTailable);
+    invariant(params.sort.isEmpty() || !query.getQueryRequest().isTailable());
 
     const auto qrToForward = transformQueryForShards(query.getQueryRequest());
     if (!qrToForward.isOK()) {
@@ -257,6 +256,12 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
         return swCursors.getStatus();
     }
 
+    // Determine whether the cursor we may eventually register will be single- or multi-target.
+
+    const auto cursorType = swCursors.getValue().size() > 1
+        ? ClusterCursorManager::CursorType::MultiTarget
+        : ClusterCursorManager::CursorType::SingleTarget;
+
     // Transfer the established cursors to a ClusterClientCursor.
 
     params.remotes = std::move(swCursors.getValue());
@@ -267,8 +272,9 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
 
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
     int bytesBuffered = 0;
+
     while (!FindCommon::enoughForFirstBatch(query.getQueryRequest(), results->size())) {
-        auto next = ccc->next(opCtx);
+        auto next = ccc->next();
 
         if (!next.isOK()) {
             return next.getStatus();
@@ -300,6 +306,8 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
         results->push_back(std::move(nextObj));
     }
 
+    ccc->detachFromOperationContext();
+
     if (!query.getQueryRequest().wantMore() && !ccc->isTailable()) {
         cursorState = ClusterCursorManager::CursorState::Exhausted;
     }
@@ -313,8 +321,6 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
     // Register the cursor with the cursor manager for subsequent getMore's.
 
     auto cursorManager = Grid::get(opCtx)->getCursorManager();
-    const auto cursorType = chunkManager ? ClusterCursorManager::CursorType::NamespaceSharded
-                                         : ClusterCursorManager::CursorType::NamespaceNotSharded;
     const auto cursorLifetime = query.getQueryRequest().isNoCursorTimeout()
         ? ClusterCursorManager::CursorLifetime::Immortal
         : ClusterCursorManager::CursorLifetime::Mortal;
@@ -427,15 +433,22 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     long long batchSize = request.batchSize.value_or(0);
     long long startingFrom = pinnedCursor.getValue().getNumReturnedSoFar();
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
+
+    pinnedCursor.getValue().reattachToOperationContext(opCtx);
+
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
-        auto next = pinnedCursor.getValue().next(opCtx);
+        auto next = pinnedCursor.getValue().next();
         if (!next.isOK()) {
             return next.getStatus();
         }
 
         if (next.getValue().isEOF()) {
-            // We reached end-of-stream.
-            if (!pinnedCursor.getValue().isTailable()) {
+            // We reached end-of-stream. If the cursor is not tailable, then we mark it as
+            // exhausted. If it is tailable, usually we keep it open (i.e. "NotExhausted") even when
+            // we reach end-of-stream. However, if all the remote cursors are exhausted, there is no
+            // hope of returning data and thus we need to close the mongos cursor as well.
+            if (!pinnedCursor.getValue().isTailable() ||
+                pinnedCursor.getValue().remotesExhausted()) {
                 cursorState = ClusterCursorManager::CursorState::Exhausted;
             }
             break;
@@ -454,6 +467,8 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         batch.push_back(std::move(*next.getValue().getResult()));
     }
 
+    pinnedCursor.getValue().detachFromOperationContext();
+
     // Transfer ownership of the cursor back to the cursor manager.
     pinnedCursor.getValue().returnCursor(cursorState);
 
@@ -461,22 +476,6 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         ? CursorId(0)
         : request.cursorid;
     return CursorResponse(request.nss, idToReturn, std::move(batch), startingFrom);
-}
-
-StatusWith<ReadPreferenceSetting> ClusterFind::extractUnwrappedReadPref(const BSONObj& cmdObj) {
-    BSONElement queryOptionsElt;
-    auto status = bsonExtractTypedField(
-        cmdObj, QueryRequest::kUnwrappedReadPrefField, BSONType::Object, &queryOptionsElt);
-    if (status.isOK()) {
-        // There must be a nested object containing the read preference if there is a queryOptions
-        // field.
-        return ReadPreferenceSetting::fromContainingBSON(queryOptionsElt.Obj());
-    } else if (status != ErrorCodes::NoSuchKey) {
-        return status;
-    }
-
-    // If there is no explicit read preference, that means primary only.
-    return ReadPreferenceSetting(mongo::ReadPreference::PrimaryOnly);
 }
 
 }  // namespace mongo

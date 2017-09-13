@@ -36,11 +36,9 @@
 #include "mongo/client/remote_command_targeter_factory_mock.h"
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/query/query_request.h"
-#include "mongo/db/repl/member_state.h"
+#include "mongo/db/ops/write_ops.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/s/type_shard_identity.h"
-#include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/s/catalog/config_server_version.h"
 #include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
@@ -50,11 +48,7 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/config_server_test_fixture.h"
-#include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
-#include "mongo/s/write_ops/batched_insert_request.h"
-#include "mongo/s/write_ops/batched_update_document.h"
-#include "mongo/s/write_ops/batched_update_request.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -66,13 +60,6 @@ using executor::RemoteCommandRequest;
 using executor::RemoteCommandResponse;
 using std::vector;
 using unittest::assertGet;
-
-const BSONObj kReplSecondaryOkMetadata{[] {
-    BSONObjBuilder o;
-    o.appendElements(ReadPreferenceSetting::secondaryPreferredMetadata());
-    o.append(rpc::kReplSetMetadataFieldName, 1);
-    return o.obj();
-}()};
 
 // TODO (SERVER-27029): This value was chosen to be greater than the time it takes for the hang
 // analyzer to kick in. Remove once the cause for the test failure has been figured out.
@@ -88,7 +75,8 @@ protected:
         ConfigServerTestFixture::setUp();
 
         // Make sure clusterID is written to the config.version collection.
-        ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+        ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()));
 
         auto clusterIdLoader = ClusterIdentityLoader::get(operationContext());
         ASSERT_OK(clusterIdLoader->loadClusterId(operationContext(),
@@ -132,6 +120,19 @@ protected:
         });
     }
 
+    void expectSetFeatureCompatibilityVersion(const HostAndPort& target,
+                                              StatusWith<BSONObj> response) {
+        onCommandForAddShard([&, target, response](const RemoteCommandRequest& request) {
+            ASSERT_EQ(request.target, target);
+            ASSERT_EQ(request.dbname, "admin");
+            ASSERT_BSONOBJ_EQ(request.cmdObj,
+                              BSON("setFeatureCompatibilityVersion"
+                                   << "3.4"));
+
+            return response;
+        });
+    }
+
     /**
      * Waits for a request for the shardIdentity document to be upserted into a shard from the
      * config server on addShard.
@@ -139,34 +140,30 @@ protected:
     void expectShardIdentityUpsertReturnSuccess(const HostAndPort& expectedHost,
                                                 const std::string& expectedShardName) {
         // Create the expected upsert shardIdentity command for this shardType.
-        auto upsertCmdObj = catalogManager()->createShardIdentityUpsertForAddShard(
-            operationContext(), expectedShardName);
+        auto upsertCmdObj =
+            ShardingCatalogManager::get(operationContext())
+                ->createShardIdentityUpsertForAddShard(operationContext(), expectedShardName);
 
-        // Get the BatchedUpdateRequest from the upsert command.
-        BatchedCommandRequest request(BatchedCommandRequest::BatchType::BatchType_Update);
-        std::string errMsg;
-        invariant(request.parseBSON("admin", upsertCmdObj, &errMsg) || !request.isValid(&errMsg));
-
+        const auto opMsgRequest =
+            OpMsgRequest::fromDBAndBody(NamespaceString::kAdminDb, upsertCmdObj);
         expectUpdatesReturnSuccess(expectedHost,
-                                   NamespaceString(NamespaceString::kConfigCollectionNamespace),
-                                   request.getUpdateRequest());
+                                   NamespaceString(NamespaceString::kServerConfigurationNamespace),
+                                   UpdateOp::parse(opMsgRequest));
     }
 
     void expectShardIdentityUpsertReturnFailure(const HostAndPort& expectedHost,
                                                 const std::string& expectedShardName,
                                                 const Status& statusToReturn) {
         // Create the expected upsert shardIdentity command for this shardType.
-        auto upsertCmdObj = catalogManager()->createShardIdentityUpsertForAddShard(
-            operationContext(), expectedShardName);
+        auto upsertCmdObj =
+            ShardingCatalogManager::get(operationContext())
+                ->createShardIdentityUpsertForAddShard(operationContext(), expectedShardName);
 
-        // Get the BatchedUpdateRequest from the upsert command.
-        BatchedCommandRequest request(BatchedCommandRequest::BatchType::BatchType_Update);
-        std::string errMsg;
-        invariant(request.parseBSON("admin", upsertCmdObj, &errMsg) || !request.isValid(&errMsg));
-
+        const auto opMsgRequest =
+            OpMsgRequest::fromDBAndBody(NamespaceString::kAdminDb, upsertCmdObj);
         expectUpdatesReturnFailure(expectedHost,
-                                   NamespaceString(NamespaceString::kConfigCollectionNamespace),
-                                   request.getUpdateRequest(),
+                                   NamespaceString(NamespaceString::kServerConfigurationNamespace),
+                                   UpdateOp::parse(opMsgRequest),
                                    statusToReturn);
     }
 
@@ -176,24 +173,19 @@ protected:
      */
     void expectUpdatesReturnSuccess(const HostAndPort& expectedHost,
                                     const NamespaceString& expectedNss,
-                                    BatchedUpdateRequest* expectedBatchedUpdates) {
+                                    const write_ops::Update& expectedUpdateOp) {
         onCommandForAddShard([&](const RemoteCommandRequest& request) {
-
             ASSERT_EQUALS(expectedHost, request.target);
 
             // Check that the db name in the request matches the expected db name.
             ASSERT_EQUALS(expectedNss.db(), request.dbname);
 
-            BatchedUpdateRequest actualBatchedUpdates;
-            std::string errmsg;
-            ASSERT_TRUE(actualBatchedUpdates.parseBSON(request.dbname, request.cmdObj, &errmsg));
+            const auto opMsgRequest = OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
+            const auto updateOp = UpdateOp::parse(opMsgRequest);
+            ASSERT_EQUALS(expectedNss, expectedUpdateOp.getNamespace());
 
-            // Check that the db and collection names in the BatchedUpdateRequest match the
-            // expected.
-            ASSERT_EQUALS(expectedNss, actualBatchedUpdates.getNS());
-
-            auto expectedUpdates = expectedBatchedUpdates->getUpdates();
-            auto actualUpdates = actualBatchedUpdates.getUpdates();
+            const auto& expectedUpdates = expectedUpdateOp.getUpdates();
+            const auto& actualUpdates = updateOp.getUpdates();
 
             ASSERT_EQUALS(expectedUpdates.size(), actualUpdates.size());
 
@@ -201,10 +193,10 @@ protected:
             auto itActual = actualUpdates.begin();
 
             for (; itActual != actualUpdates.end(); itActual++, itExpected++) {
-                ASSERT_EQ((*itExpected)->getUpsert(), (*itActual)->getUpsert());
-                ASSERT_EQ((*itExpected)->getMulti(), (*itActual)->getMulti());
-                ASSERT_BSONOBJ_EQ((*itExpected)->getQuery(), (*itActual)->getQuery());
-                ASSERT_BSONOBJ_EQ((*itExpected)->getUpdateExpr(), (*itActual)->getUpdateExpr());
+                ASSERT_EQ(itExpected->getUpsert(), itActual->getUpsert());
+                ASSERT_EQ(itExpected->getMulti(), itActual->getMulti());
+                ASSERT_BSONOBJ_EQ(itExpected->getQ(), itActual->getQ());
+                ASSERT_BSONOBJ_EQ(itExpected->getU(), itActual->getU());
             }
 
             BatchedCommandResponse response;
@@ -221,25 +213,20 @@ protected:
      */
     void expectUpdatesReturnFailure(const HostAndPort& expectedHost,
                                     const NamespaceString& expectedNss,
-                                    BatchedUpdateRequest* expectedBatchedUpdates,
+                                    const write_ops::Update& expectedUpdateOp,
                                     const Status& statusToReturn) {
         onCommandForAddShard([&](const RemoteCommandRequest& request) {
-
             ASSERT_EQUALS(expectedHost, request.target);
 
             // Check that the db name in the request matches the expected db name.
             ASSERT_EQUALS(expectedNss.db(), request.dbname);
 
-            BatchedUpdateRequest actualBatchedUpdates;
-            std::string errmsg;
-            ASSERT_TRUE(actualBatchedUpdates.parseBSON(request.dbname, request.cmdObj, &errmsg));
+            const auto opMsgRequest = OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
+            const auto updateOp = UpdateOp::parse(opMsgRequest);
+            ASSERT_EQUALS(expectedNss, expectedUpdateOp.getNamespace());
 
-            // Check that the db and collection names in the BatchedUpdateRequest match the
-            // expected.
-            ASSERT_EQUALS(expectedNss, actualBatchedUpdates.getNS());
-
-            auto expectedUpdates = expectedBatchedUpdates->getUpdates();
-            auto actualUpdates = actualBatchedUpdates.getUpdates();
+            const auto& expectedUpdates = expectedUpdateOp.getUpdates();
+            const auto& actualUpdates = updateOp.getUpdates();
 
             ASSERT_EQUALS(expectedUpdates.size(), actualUpdates.size());
 
@@ -247,10 +234,10 @@ protected:
             auto itActual = actualUpdates.begin();
 
             for (; itActual != actualUpdates.end(); itActual++, itExpected++) {
-                ASSERT_EQ((*itExpected)->getUpsert(), (*itActual)->getUpsert());
-                ASSERT_EQ((*itExpected)->getMulti(), (*itActual)->getMulti());
-                ASSERT_BSONOBJ_EQ((*itExpected)->getQuery(), (*itActual)->getQuery());
-                ASSERT_BSONOBJ_EQ((*itExpected)->getUpdateExpr(), (*itActual)->getUpdateExpr());
+                ASSERT_EQ(itExpected->getUpsert(), itActual->getUpsert());
+                ASSERT_EQ(itExpected->getMulti(), itActual->getMulti());
+                ASSERT_BSONOBJ_EQ(itExpected->getQ(), itActual->getQ());
+                ASSERT_BSONOBJ_EQ(itExpected->getU(), itActual->getU());
             }
 
             return statusToReturn;
@@ -325,6 +312,10 @@ TEST_F(AddShardTest, CreateShardIdentityUpsertForAddShard) {
 
     BSONObj expectedBSON = BSON("update"
                                 << "system.version"
+                                << "bypassDocumentValidation"
+                                << false
+                                << "ordered"
+                                << true
                                 << "updates"
                                 << BSON_ARRAY(
                                        BSON("q" << BSON("_id"
@@ -339,6 +330,8 @@ TEST_F(AddShardTest, CreateShardIdentityUpsertForAddShard) {
                                                                               ->getConfig()
                                                                               .getConnectionString()
                                                                               .toString()))
+                                                << "multi"
+                                                << false
                                                 << "upsert"
                                                 << true))
                                 << "writeConcern"
@@ -346,9 +339,9 @@ TEST_F(AddShardTest, CreateShardIdentityUpsertForAddShard) {
                                         << "majority"
                                         << "wtimeout"
                                         << 15000));
-    ASSERT_BSONOBJ_EQ(
-        expectedBSON,
-        catalogManager()->createShardIdentityUpsertForAddShard(operationContext(), shardName));
+    ASSERT_BSONOBJ_EQ(expectedBSON,
+                      ShardingCatalogManager::get(operationContext())
+                          ->createShardIdentityUpsertForAddShard(operationContext(), shardName));
 }
 
 TEST_F(AddShardTest, StandaloneBasicSuccess) {
@@ -382,11 +375,12 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
 
     auto future = launchAsync([this, expectedShardName] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(
-            catalogManager()->addShard(operationContext(),
-                                       &expectedShardName,
-                                       assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                       100));
+        auto shardName =
+            assertGet(ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     &expectedShardName,
+                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
+                                     100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -406,6 +400,9 @@ TEST_F(AddShardTest, StandaloneBasicSuccess) {
 
     // The shardIdentity doc inserted into the admin.system.version collection on the shard.
     expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1));
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -464,8 +461,9 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
 
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(
-            operationContext(), nullptr, ConnectionString(shardTarget), 100));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), nullptr, ConnectionString(shardTarget), 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -485,6 +483,9 @@ TEST_F(AddShardTest, StandaloneGenerateName) {
 
     // The shardIdentity doc inserted into the admin.system.version collection on the shard.
     expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1));
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -508,7 +509,8 @@ TEST_F(AddShardTest, AddSCCCConnectionStringAsShard) {
 
     auto future = launchAsync([this, invalidConn] {
         const std::string shardName("StandaloneShard");
-        auto status = catalogManager()->addShard(operationContext(), &shardName, invalidConn, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &shardName, invalidConn, 100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "Invalid connection string");
     });
@@ -522,11 +524,11 @@ TEST_F(AddShardTest, EmptyShardName) {
     std::string expectedShardName = "";
 
     auto future = launchAsync([this, expectedShardName] {
-        auto status =
-            catalogManager()->addShard(operationContext(),
-                                       &expectedShardName,
-                                       assertGet(ConnectionString::parse("StandaloneHost:12345")),
-                                       100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     &expectedShardName,
+                                     assertGet(ConnectionString::parse("StandaloneHost:12345")),
+                                     100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_EQUALS("shard name cannot be empty", status.getStatus().reason());
     });
@@ -547,8 +549,10 @@ TEST_F(AddShardTest, UnreachableHost) {
 
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         Client::initThreadIfNotAlready();
-        auto status = catalogManager()->addShard(
-            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
+        auto status =
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host unreachable");
     });
@@ -572,8 +576,10 @@ TEST_F(AddShardTest, AddMongosAsShard) {
 
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         Client::initThreadIfNotAlready();
-        auto status = catalogManager()->addShard(
-            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
+        auto status =
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::RPCProtocolNegotiationFailed, status);
     });
 
@@ -597,8 +603,10 @@ TEST_F(AddShardTest, AddVersion32Shard) {
 
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         Client::initThreadIfNotAlready();
-        auto status = catalogManager()->addShard(
-            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
+        auto status =
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::IncompatibleServerVersion, status);
     });
 
@@ -623,8 +631,10 @@ TEST_F(AddShardTest, AddReplicaSetShardAsStandalone) {
 
     auto future = launchAsync([this, expectedShardName, shardTarget] {
         Client::initThreadIfNotAlready();
-        auto status = catalogManager()->addShard(
-            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
+        auto status =
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "use replica set url format");
     });
@@ -653,8 +663,8 @@ TEST_F(AddShardTest, AddStandaloneHostShardAsReplicaSet) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "host did not return a set name");
     });
@@ -681,8 +691,8 @@ TEST_F(AddShardTest, ReplicaSetMistmatchedReplicaSetName) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(), "does not match the actual set name");
     });
@@ -711,8 +721,8 @@ TEST_F(AddShardTest, ShardIsCSRSConfigServer) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(),
                                "as a shard since it is a config server");
@@ -744,8 +754,8 @@ TEST_F(AddShardTest, ReplicaSetMissingHostsProvidedInSeedList) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(status.getStatus().reason(),
                                "host2:12345 does not belong to replica set");
@@ -779,8 +789,8 @@ TEST_F(AddShardTest, AddShardWithNameConfigFails) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::BadValue, status);
         ASSERT_EQUALS(status.getStatus().reason(),
                       "use of shard replica set with name 'config' is not allowed");
@@ -827,8 +837,8 @@ TEST_F(AddShardTest, ShardContainsExistingDatabase) {
 
     auto future = launchAsync([this, expectedShardName, connString] {
         Client::initThreadIfNotAlready();
-        auto status =
-            catalogManager()->addShard(operationContext(), &expectedShardName, connString, 100);
+        auto status = ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(), &expectedShardName, connString, 100);
         ASSERT_EQUALS(ErrorCodes::OperationFailed, status);
         ASSERT_STRING_CONTAINS(
             status.getStatus().reason(),
@@ -877,8 +887,8 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
 
     auto future = launchAsync([this, &expectedShardName, &connString] {
         Client::initThreadIfNotAlready();
-        auto shardName =
-            assertGet(catalogManager()->addShard(operationContext(), nullptr, connString, 100));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(), nullptr, connString, 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -898,6 +908,9 @@ TEST_F(AddShardTest, SuccessfullyAddReplicaSet) {
 
     // The shardIdentity doc inserted into the admin.system.version collection on the shard.
     expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1));
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -939,8 +952,8 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
 
     auto future = launchAsync([this, &expectedShardName, &seedString] {
         Client::initThreadIfNotAlready();
-        auto shardName =
-            assertGet(catalogManager()->addShard(operationContext(), nullptr, seedString, 100));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(), nullptr, seedString, 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -960,6 +973,9 @@ TEST_F(AddShardTest, ReplicaSetExtraHostsDiscovered) {
 
     // The shardIdentity doc inserted into the admin.system.version collection on the shard.
     expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1));
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -1015,8 +1031,10 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
 
     auto future = launchAsync([this, &expectedShardName, &shardTarget] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(
-            operationContext(), &expectedShardName, ConnectionString(shardTarget), 100));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &expectedShardName, ConnectionString(shardTarget), 100));
         ASSERT_EQUALS(expectedShardName, shardName);
     });
 
@@ -1036,6 +1054,9 @@ TEST_F(AddShardTest, AddShardSucceedsEvenIfAddingDBsFromNewShardFails) {
 
     // The shardIdentity doc inserted into the admin.system.version collection on the shard.
     expectShardIdentityUpsertReturnSuccess(shardTarget, expectedShardName);
+
+    // The shard receives the setFeatureCompatibilityVersion command.
+    expectSetFeatureCompatibilityVersion(shardTarget, BSON("ok" << 1));
 
     // Wait for the addShard to complete before checking the config database
     future.timed_get(kLongFutureTimeout);
@@ -1093,10 +1114,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future1 = launchAsync([&] {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      catalogManager()->addShard(operationContext(),
-                                                 &differentName,
-                                                 ConnectionString(shardTarget),
-                                                 existingShard.getMaxSizeMB()));
+                      ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     &differentName,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB()));
     });
     future1.timed_get(kLongFutureTimeout);
 
@@ -1107,10 +1129,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     auto future2 = launchAsync([&] {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      catalogManager()->addShard(operationContext(),
-                                                 nullptr,
-                                                 ConnectionString(shardTarget),
-                                                 existingShard.getMaxSizeMB() + 100));
+                      ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     nullptr,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB() + 100));
     });
     future2.timed_get(kLongFutureTimeout);
 
@@ -1120,12 +1143,12 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     // by calling addShard.
     auto future3 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        ASSERT_EQUALS(
-            ErrorCodes::IllegalOperation,
-            catalogManager()->addShard(operationContext(),
-                                       nullptr,
-                                       ConnectionString::forReplicaSet("mySet", {shardTarget}),
-                                       existingShard.getMaxSizeMB()));
+        ASSERT_EQUALS(ErrorCodes::IllegalOperation,
+                      ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     nullptr,
+                                     ConnectionString::forReplicaSet("mySet", {shardTarget}),
+                                     existingShard.getMaxSizeMB()));
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1135,10 +1158,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     // Adding the same standalone host with the same options should succeed.
     auto future4 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(operationContext(),
-                                                              &existingShardName,
-                                                              ConnectionString(shardTarget),
-                                                              existingShard.getMaxSizeMB()));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(),
+                                                  &existingShardName,
+                                                  ConnectionString(shardTarget),
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future4.timed_get(kLongFutureTimeout);
@@ -1150,10 +1174,11 @@ TEST_F(AddShardTest, AddExistingShardStandalone) {
     // shard name) should succeed.
     auto future5 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(operationContext(),
-                                                              nullptr,
-                                                              ConnectionString(shardTarget),
-                                                              existingShard.getMaxSizeMB()));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(),
+                                                  nullptr,
+                                                  ConnectionString(shardTarget),
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1194,8 +1219,9 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(
             ErrorCodes::IllegalOperation,
-            catalogManager()->addShard(
-                operationContext(), &differentName, connString, existingShard.getMaxSizeMB()));
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), &differentName, connString, existingShard.getMaxSizeMB()));
     });
     future1.timed_get(kLongFutureTimeout);
 
@@ -1207,8 +1233,9 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(
             ErrorCodes::IllegalOperation,
-            catalogManager()->addShard(
-                operationContext(), nullptr, connString, existingShard.getMaxSizeMB() + 100));
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(
+                    operationContext(), nullptr, connString, existingShard.getMaxSizeMB() + 100));
     });
     future2.timed_get(kLongFutureTimeout);
 
@@ -1223,10 +1250,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future3 = launchAsync([&] {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      catalogManager()->addShard(operationContext(),
-                                                 nullptr,
-                                                 ConnectionString(shardTarget),
-                                                 existingShard.getMaxSizeMB()));
+                      ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     nullptr,
+                                     ConnectionString(shardTarget),
+                                     existingShard.getMaxSizeMB()));
     });
     future3.timed_get(kLongFutureTimeout);
 
@@ -1240,11 +1268,12 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     auto future4 = launchAsync([&] {
         Client::initThreadIfNotAlready();
         ASSERT_EQUALS(ErrorCodes::IllegalOperation,
-                      catalogManager()->addShard(operationContext(),
-                                                 nullptr,
-                                                 ConnectionString::forReplicaSet(
-                                                     differentSetName, connString.getServers()),
-                                                 existingShard.getMaxSizeMB()));
+                      ShardingCatalogManager::get(operationContext())
+                          ->addShard(operationContext(),
+                                     nullptr,
+                                     ConnectionString::forReplicaSet(differentSetName,
+                                                                     connString.getServers()),
+                                     existingShard.getMaxSizeMB()));
     });
     future4.timed_get(kLongFutureTimeout);
 
@@ -1254,8 +1283,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     // Adding the same host with the same options should succeed.
     auto future5 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(
-            operationContext(), &existingShardName, connString, existingShard.getMaxSizeMB()));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(),
+                                                  &existingShardName,
+                                                  connString,
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future5.timed_get(kLongFutureTimeout);
@@ -1264,8 +1296,9 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     // should succeed.
     auto future6 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(
-            operationContext(), nullptr, connString, existingShard.getMaxSizeMB()));
+        auto shardName = assertGet(
+            ShardingCatalogManager::get(operationContext())
+                ->addShard(operationContext(), nullptr, connString, existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future6.timed_get(kLongFutureTimeout);
@@ -1287,8 +1320,11 @@ TEST_F(AddShardTest, AddExistingShardReplicaSet) {
     }
     auto future7 = launchAsync([&] {
         Client::initThreadIfNotAlready();
-        auto shardName = assertGet(catalogManager()->addShard(
-            operationContext(), nullptr, otherHostConnString, existingShard.getMaxSizeMB()));
+        auto shardName = assertGet(ShardingCatalogManager::get(operationContext())
+                                       ->addShard(operationContext(),
+                                                  nullptr,
+                                                  otherHostConnString,
+                                                  existingShard.getMaxSizeMB()));
         ASSERT_EQUALS(existingShardName, shardName);
     });
     future7.timed_get(kLongFutureTimeout);

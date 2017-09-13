@@ -32,7 +32,7 @@
 
 #include "mongo/db/commands.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_common.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 
 namespace mongo {
@@ -40,9 +40,9 @@ namespace {
 
 using std::vector;
 
-class DBStatsCmd : public Command {
+class DBStatsCmd : public ErrmsgCommandDeprecated {
 public:
-    DBStatsCmd() : Command("dbStats", "dbstats") {}
+    DBStatsCmd() : ErrmsgCommandDeprecated("dbStats", "dbstats") {}
 
     bool slaveOk() const override {
         return true;
@@ -63,13 +63,18 @@ public:
         return false;
     }
 
-    bool run(OperationContext* opCtx,
-             const std::string& dbName,
-             const BSONObj& cmdObj,
-             std::string& errmsg,
-             BSONObjBuilder& output) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbName,
+                   const BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& output) override {
         auto shardResponses =
-            uassertStatusOK(scatterGather(opCtx, dbName, cmdObj, getReadPref(cmdObj)));
+            uassertStatusOK(scatterGather(opCtx,
+                                          dbName,
+                                          boost::none,
+                                          filterCommandRequestForPassthrough(cmdObj),
+                                          ReadPreferenceSetting::get(opCtx),
+                                          ShardTargetingPolicy::BroadcastToAllShards));
         if (!appendRawResponses(opCtx, &errmsg, &output, shardResponses)) {
             return false;
         }

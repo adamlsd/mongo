@@ -44,9 +44,11 @@ ExpressionContext::ExpressionContext(OperationContext* opCtx,
                                      std::unique_ptr<CollatorInterface> collator,
                                      StringMap<ResolvedNamespace> resolvedNamespaces)
     : explain(request.getExplain()),
-      inShard(request.isFromRouter()),
+      fromMongos(request.isFromMongos()),
+      needsMerge(request.needsMerge()),
       extSortAllowed(request.shouldAllowDiskUse()),
       bypassDocumentValidation(request.shouldBypassDocumentValidation()),
+      from34Mongos(request.isFrom34Mongos()),
       ns(request.getNamespaceString()),
       opCtx(opCtx),
       collation(request.getCollation()),
@@ -73,15 +75,16 @@ void ExpressionContext::setCollator(std::unique_ptr<CollatorInterface> coll) {
 }
 
 intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(NamespaceString ns) const {
-    intrusive_ptr<ExpressionContext> expCtx = new ExpressionContext();
+    intrusive_ptr<ExpressionContext> expCtx = new ExpressionContext(std::move(ns));
 
     expCtx->explain = explain;
-    expCtx->inShard = inShard;
-    expCtx->inRouter = inRouter;
+    expCtx->needsMerge = needsMerge;
+    expCtx->fromMongos = fromMongos;
+    expCtx->from34Mongos = from34Mongos;
+    expCtx->inMongos = inMongos;
     expCtx->extSortAllowed = extSortAllowed;
     expCtx->bypassDocumentValidation = bypassDocumentValidation;
 
-    expCtx->ns = std::move(ns);
     expCtx->tempDir = tempDir;
 
     expCtx->opCtx = opCtx;

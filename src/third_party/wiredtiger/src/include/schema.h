@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -52,9 +52,10 @@ struct __wt_index {
  *	in an index key that can be used to reconstruct the primary key.
  */
 struct __wt_table {
-	const char *name, *config, *plan;
+	WT_DATA_HANDLE iface;
+
+	const char *plan;
 	const char *key_format, *value_format;
-	uint64_t name_hash;		/* Hash of name */
 
 	WT_CONFIG_ITEM cgconf, colconf;
 
@@ -62,14 +63,8 @@ struct __wt_table {
 	WT_INDEX **indices;
 	size_t idx_alloc;
 
-	TAILQ_ENTRY(__wt_table) q;
-	TAILQ_ENTRY(__wt_table) hashq;
-
 	bool cg_complete, idx_complete, is_simple;
 	u_int ncolgroups, nindices, nkey_columns;
-
-	uint32_t refcnt;	/* Number of open cursors */
-	uint32_t schema_gen;	/* Cached schema generation number */
 };
 
 /*
@@ -323,7 +318,7 @@ struct __wt_table {
 		F_SET(session, WT_SESSION_LOCKED_HANDLE_LIST_READ);	\
 	}								\
 	if (__handle_write_locked) {					\
-		__wt_writelock(session, &__conn->dhandle_lock);	\
+		__wt_writelock(session, &__conn->dhandle_lock);		\
 		F_SET(session, WT_SESSION_LOCKED_HANDLE_LIST_WRITE);	\
 	}								\
 } while (0)

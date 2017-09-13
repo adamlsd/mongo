@@ -101,7 +101,8 @@ void DatabaseClonerTest::setUp() {
                const std::vector<BSONObj>& secondaryIndexSpecs) {
             const auto collInfo = &_collections[nss];
             (collInfo->loader = new CollectionBulkLoaderMock(&collInfo->stats))
-                ->init(nullptr, secondaryIndexSpecs);
+                ->init(secondaryIndexSpecs)
+                .transitional_ignore();
 
             return StatusWith<std::unique_ptr<CollectionBulkLoader>>(
                 std::unique_ptr<CollectionBulkLoader>(collInfo->loader));
@@ -135,21 +136,21 @@ TEST_F(DatabaseClonerTest, InvalidConstruction) {
     // Null executor -- error from Fetcher, not _databaseCloner.
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(nullptr, dbWorkThreadPool.get(), target, dbname, filter, pred, si, ccb, cb),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "task executor cannot be null");
 
     // Null db worker thread pool.
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(&executor, nullptr, target, dbname, filter, pred, si, ccb, cb),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "db worker thread pool cannot be null");
 
     // Empty database name -- error from Fetcher, not _databaseCloner.
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(&executor, dbWorkThreadPool.get(), target, "", filter, pred, si, ccb, cb),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "database name in remote command request cannot be empty");
 
@@ -157,7 +158,7 @@ TEST_F(DatabaseClonerTest, InvalidConstruction) {
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(
             &executor, dbWorkThreadPool.get(), target, dbname, filter, pred, si, ccb, nullptr),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "callback function cannot be null");
 
@@ -165,7 +166,7 @@ TEST_F(DatabaseClonerTest, InvalidConstruction) {
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(
             &executor, dbWorkThreadPool.get(), target, dbname, filter, pred, nullptr, ccb, cb),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "storage interface cannot be null");
 
@@ -173,7 +174,7 @@ TEST_F(DatabaseClonerTest, InvalidConstruction) {
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(
             &executor, dbWorkThreadPool.get(), target, dbname, filter, pred, si, nullptr, cb),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "collection callback function cannot be null");
 
@@ -181,7 +182,7 @@ TEST_F(DatabaseClonerTest, InvalidConstruction) {
     ASSERT_THROWS_CODE_AND_WHAT(
         DatabaseCloner(
             &executor, dbWorkThreadPool.get(), target, dbname, filter, pred, si, ccb, nullptr),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "callback function cannot be null");
 }

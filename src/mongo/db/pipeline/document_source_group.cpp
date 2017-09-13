@@ -110,7 +110,7 @@ DocumentSource::GetNextResult DocumentSourceGroup::getNextSpilled() {
         _firstPartOfNextGroup = _sorterIterator->next();
     }
 
-    return makeDocument(_currentId, _currentAccumulators, pExpCtx->inShard);
+    return makeDocument(_currentId, _currentAccumulators, pExpCtx->needsMerge);
 }
 
 DocumentSource::GetNextResult DocumentSourceGroup::getNextStandard() {
@@ -118,7 +118,7 @@ DocumentSource::GetNextResult DocumentSourceGroup::getNextStandard() {
     if (_groups->empty())
         return GetNextResult::makeEOF();
 
-    Document out = makeDocument(groupsIterator->first, groupsIterator->second, pExpCtx->inShard);
+    Document out = makeDocument(groupsIterator->first, groupsIterator->second, pExpCtx->needsMerge);
 
     if (++groupsIterator == _groups->end())
         dispose();
@@ -158,7 +158,7 @@ DocumentSource::GetNextResult DocumentSourceGroup::getNextStreaming() {
         id = computeId(*_firstDocOfNextGroup);
     } while (pExpCtx->getValueComparator().evaluate(_currentId == id));
 
-    Document out = makeDocument(_currentId, _currentAccumulators, pExpCtx->inShard);
+    Document out = makeDocument(_currentId, _currentAccumulators, pExpCtx->needsMerge);
     _currentId = std::move(id);
 
     return std::move(out);
@@ -266,7 +266,7 @@ DocumentSourceGroup::DocumentSourceGroup(const intrusive_ptr<ExpressionContext>&
       _initialized(false),
       _groups(pExpCtx->getValueComparator().makeUnorderedValueMap<Accumulators>()),
       _spilled(false),
-      _extSortAllowed(pExpCtx->extSortAllowed && !pExpCtx->inRouter) {}
+      _extSortAllowed(pExpCtx->extSortAllowed && !pExpCtx->inMongos) {}
 
 void DocumentSourceGroup::addAccumulator(AccumulationStatement accumulationStatement) {
     _accumulatedFields.push_back(accumulationStatement);
@@ -530,7 +530,7 @@ DocumentSource::GetNextResult DocumentSourceGroup::initialize() {
         if (kDebugBuild && !storageGlobalParams.readOnly) {
             // In debug mode, spill every time we have a duplicate id to stress merge logic.
             if (!inserted &&                 // is a dup
-                !pExpCtx->inRouter &&        // can't spill to disk in router
+                !pExpCtx->inMongos &&        // can't spill to disk in mongos
                 !_extSortAllowed &&          // don't change behavior when testing external sort
                 _sortedFiles.size() < 20) {  // don't open too many FDs
 

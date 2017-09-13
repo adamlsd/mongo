@@ -47,11 +47,11 @@ enum ModifierType {
     MOD_PULL,
     MOD_PULL_ALL,
     MOD_PUSH,
-    MOD_PUSH_ALL,
     MOD_SET,
     MOD_SET_ON_INSERT,
     MOD_RENAME,
     MOD_UNSET,
+    MOD_CONFLICT_PLACEHOLDER,
     MOD_UNKNOWN
 };
 

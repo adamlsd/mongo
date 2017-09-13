@@ -41,22 +41,11 @@ public:
     ShardingCatalogClientMock(std::unique_ptr<DistLockManager> distLockManager);
     ~ShardingCatalogClientMock();
 
-    Status startup() override;
+    void startup() override;
 
     void shutDown(OperationContext* opCtx) override;
 
     Status enableSharding(OperationContext* opCtx, const std::string& dbName);
-
-    Status shardCollection(OperationContext* opCtx,
-                           const std::string& ns,
-                           const ShardKeyPattern& fieldsAndOrder,
-                           const BSONObj& defaultCollation,
-                           bool unique,
-                           const std::vector<BSONObj>& initPoints,
-                           const std::set<ShardId>& initShardIds) override;
-
-    StatusWith<ShardDrainingStatus> removeShard(OperationContext* opCtx,
-                                                const ShardId& name) override;
 
     Status updateDatabase(OperationContext* opCtx,
                           const std::string& dbName,
@@ -166,6 +155,15 @@ public:
 
 private:
     std::unique_ptr<DistLockManager> _distLockManager;
+
+    StatusWith<repl::OpTimeWith<std::vector<BSONObj>>> _exhaustiveFindOnConfig(
+        OperationContext* opCtx,
+        const ReadPreferenceSetting& readPref,
+        const repl::ReadConcernLevel& readConcern,
+        const NamespaceString& nss,
+        const BSONObj& query,
+        const BSONObj& sort,
+        boost::optional<long long> limit) override;
 };
 
 }  // namespace mongo

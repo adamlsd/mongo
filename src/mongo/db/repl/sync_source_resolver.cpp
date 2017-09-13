@@ -174,7 +174,8 @@ std::unique_ptr<Fetcher> SyncSourceResolver::_makeFirstOplogEntryFetcher(
                    candidate,
                    earliestOpTimeSeen),
         ReadPreferenceSetting::secondaryPreferredMetadata(),
-        kFetcherTimeout);
+        kFetcherTimeout /* find network timeout */,
+        kFetcherTimeout /* getMore network timeout */);
 }
 
 std::unique_ptr<Fetcher> SyncSourceResolver::_makeRequiredOpTimeFetcher(HostAndPort candidate,
@@ -194,7 +195,8 @@ std::unique_ptr<Fetcher> SyncSourceResolver::_makeRequiredOpTimeFetcher(HostAndP
                    candidate,
                    earliestOpTimeSeen),
         ReadPreferenceSetting::secondaryPreferredMetadata(),
-        kFetcherTimeout);
+        kFetcherTimeout /* find network timeout */,
+        kFetcherTimeout /* getMore network timeout */);
 }
 
 Status SyncSourceResolver::_scheduleFetcher(std::unique_ptr<Fetcher> fetcher) {
@@ -256,12 +258,13 @@ void SyncSourceResolver::_firstOplogEntryFetcherCallback(
         _finishCallback(Status(ErrorCodes::CallbackCanceled,
                                str::stream()
                                    << "sync source resolver shut down while probing candidate: "
-                                   << candidate));
+                                   << candidate))
+            .transitional_ignore();
         return;
     }
 
     if (ErrorCodes::CallbackCanceled == queryResult.getStatus()) {
-        _finishCallback(queryResult.getStatus());
+        _finishCallback(queryResult.getStatus()).transitional_ignore();
         return;
     }
 
@@ -272,14 +275,14 @@ void SyncSourceResolver::_firstOplogEntryFetcherCallback(
               << "' for " << kFetcherErrorBlacklistDuration << " until: " << until;
         _syncSourceSelector->blacklistSyncSource(candidate, until);
 
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
     const auto& queryResponse = queryResult.getValue();
     const auto remoteEarliestOpTime = _parseRemoteEarliestOpTime(candidate, queryResponse);
     if (remoteEarliestOpTime.isNull()) {
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
@@ -306,7 +309,7 @@ void SyncSourceResolver::_firstOplogEntryFetcherCallback(
             earliestOpTimeSeen = remoteEarliestOpTime;
         }
 
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
@@ -323,7 +326,7 @@ void SyncSourceResolver::_scheduleRBIDRequest(HostAndPort candidate, OpTime earl
                    stdx::placeholders::_1));
 
     if (!handle.isOK()) {
-        _finishCallback(handle.getStatus());
+        _finishCallback(handle.getStatus()).transitional_ignore();
         return;
     }
 
@@ -339,7 +342,7 @@ void SyncSourceResolver::_rbidRequestCallback(
     OpTime earliestOpTimeSeen,
     const executor::TaskExecutor::RemoteCommandCallbackArgs& rbidReply) {
     if (rbidReply.response.status == ErrorCodes::CallbackCanceled) {
-        _finishCallback(rbidReply.response.status);
+        _finishCallback(rbidReply.response.status).transitional_ignore();
         return;
     }
 
@@ -352,7 +355,7 @@ void SyncSourceResolver::_rbidRequestCallback(
         log() << "Blacklisting " << candidate << " due to error: '" << ex << "' for "
               << kFetcherErrorBlacklistDuration << " until: " << until;
         _syncSourceSelector->blacklistSyncSource(candidate, until);
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
@@ -361,11 +364,11 @@ void SyncSourceResolver::_rbidRequestCallback(
         // Unittest requires that this kind of failure be handled specially.
         auto status = _scheduleFetcher(_makeRequiredOpTimeFetcher(candidate, earliestOpTimeSeen));
         if (!status.isOK()) {
-            _finishCallback(status);
+            _finishCallback(status).transitional_ignore();
         }
         return;
     }
-    _finishCallback(candidate);
+    _finishCallback(candidate).transitional_ignore();
 }
 
 Status SyncSourceResolver::_compareRequiredOpTimeWithQueryResponse(
@@ -405,12 +408,13 @@ void SyncSourceResolver::_requiredOpTimeFetcherCallback(
                                                 "required optime "
                                              << _requiredOpTime.toString()
                                              << " in candidate's oplog: "
-                                             << candidate));
+                                             << candidate))
+            .transitional_ignore();
         return;
     }
 
     if (ErrorCodes::CallbackCanceled == queryResult.getStatus()) {
-        _finishCallback(queryResult.getStatus());
+        _finishCallback(queryResult.getStatus()).transitional_ignore();
         return;
     }
 
@@ -422,7 +426,7 @@ void SyncSourceResolver::_requiredOpTimeFetcherCallback(
               << " until: " << until << ". required optime: " << _requiredOpTime;
         _syncSourceSelector->blacklistSyncSource(candidate, until);
 
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
@@ -439,11 +443,11 @@ void SyncSourceResolver::_requiredOpTimeFetcherCallback(
                   << " until: " << until;
         _syncSourceSelector->blacklistSyncSource(candidate, until);
 
-        _chooseAndProbeNextSyncSource(earliestOpTimeSeen);
+        _chooseAndProbeNextSyncSource(earliestOpTimeSeen).transitional_ignore();
         return;
     }
 
-    _finishCallback(candidate);
+    _finishCallback(candidate).transitional_ignore();
 }
 
 Status SyncSourceResolver::_chooseAndProbeNextSyncSource(OpTime earliestOpTimeSeen) {

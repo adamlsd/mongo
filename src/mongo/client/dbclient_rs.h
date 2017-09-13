@@ -108,7 +108,7 @@ public:
 
     virtual void update(const std::string& ns, Query query, BSONObj obj, int flags);
 
-    virtual void killCursor(long long cursorID);
+    virtual void killCursor(const NamespaceString& ns, long long cursorID);
 
     // ---- access raw connections ----
 
@@ -132,9 +132,9 @@ public:
     // ---- callback pieces -------
 
     virtual void say(Message& toSend, bool isRetry = false, std::string* actualServer = 0);
-    virtual bool recv(Message& toRecv);
-    virtual void checkResponse(const char* data,
-                               int nReturned,
+    virtual bool recv(Message& toRecv, int lastRequestId);
+    virtual void checkResponse(const std::vector<BSONObj>& batch,
+                               bool networkError,
                                bool* retry = NULL,
                                std::string* targetHost = NULL);
 
@@ -186,16 +186,9 @@ public:
         return true;
     }
 
-    rpc::UniqueReply runCommandWithMetadata(StringData database,
-                                            StringData command,
-                                            const BSONObj& metadata,
-                                            const BSONObj& commandArgs) final;
-
-    std::tuple<rpc::UniqueReply, DBClientWithCommands*> runCommandWithMetadataAndTarget(
-        StringData database,
-        StringData command,
-        const BSONObj& metadata,
-        const BSONObj& commandArgs) final;
+    using DBClientBase::runCommandWithTarget;
+    std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) final;
+    DBClientBase* runFireAndForgetCommand(OpMsgRequest request) final;
 
     void setRequestMetadataWriter(rpc::RequestMetadataWriter writer) final;
 
@@ -224,6 +217,10 @@ public:
      * returning secondary connections to the pool.
      */
     virtual void reset();
+
+    bool isMongos() const override {
+        return false;
+    }
 
     /**
      * @bool setting if true, DBClientReplicaSet connections will make sure that secondary

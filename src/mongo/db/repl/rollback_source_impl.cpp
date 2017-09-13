@@ -53,6 +53,11 @@ const OplogInterface& RollbackSourceImpl::getOplog() const {
     return _oplog;
 }
 
+const HostAndPort& RollbackSourceImpl::getSource() const {
+    return _source;
+}
+
+
 int RollbackSourceImpl::getRollbackId() const {
     bo info;
     _getConnection()->simpleCommand("admin", &info, "replSetGetRBID");
@@ -66,6 +71,12 @@ BSONObj RollbackSourceImpl::getLastOperation() const {
 
 BSONObj RollbackSourceImpl::findOne(const NamespaceString& nss, const BSONObj& filter) const {
     return _getConnection()->findOne(nss.toString(), filter, NULL, QueryOption_SlaveOk).getOwned();
+}
+
+std::pair<BSONObj, NamespaceString> RollbackSourceImpl::findOneByUUID(const std::string& db,
+                                                                      UUID uuid,
+                                                                      const BSONObj& filter) const {
+    return _getConnection()->findOneByUUID(db, uuid, filter);
 }
 
 void RollbackSourceImpl::copyCollectionFromRemote(OperationContext* opCtx,
@@ -83,6 +94,21 @@ void RollbackSourceImpl::copyCollectionFromRemote(OperationContext* opCtx,
             str::stream() << "replSet rollback error resyncing collection " << nss.ns() << ' '
                           << errmsg,
             cloner.copyCollection(opCtx, nss.ns(), BSONObj(), errmsg, true));
+}
+
+StatusWith<BSONObj> RollbackSourceImpl::getCollectionInfoByUUID(const std::string& db,
+                                                                const UUID& uuid) const {
+    std::list<BSONObj> info = _getConnection()->getCollectionInfos(db, BSON("info.uuid" << uuid));
+    if (info.empty()) {
+        return StatusWith<BSONObj>(ErrorCodes::NoSuchKey,
+                                   str::stream()
+                                       << "No collection info found for collection with uuid: "
+                                       << uuid.toString()
+                                       << " in db: "
+                                       << db);
+    }
+    invariant(info.size() == 1U);
+    return info.front();
 }
 
 StatusWith<BSONObj> RollbackSourceImpl::getCollectionInfo(const NamespaceString& nss) const {

@@ -6,12 +6,17 @@
     "use strict";
 
     /**
-     * @param {Object} params - Configuration options for the test.
-     * @param {string} params.readMode - The read mode to use for the parallel shell. This allows
+     * @param {string} readMode - The read mode to use for the parallel shell. This allows
      * testing currentOp() output for both OP_QUERY and OP_GET_MORE queries, as well as "find" and
      * "getMore" commands.
+     * @params {function} currentOp - Function which takes a database object and a filter, and
+     * returns an array of matching current operations. This allows us to test output for both the
+     * currentOp command and the $currentOp aggregation stage.
+     * @params {boolean} truncatedOps - if true, we expect operations that exceed the maximum
+     * currentOp size to be truncated in the output 'command' field. If false, we expect the entire
+     * operation to be returned.
      */
-    function runTest(params) {
+    function runTest({readMode, currentOp, truncatedOps}) {
         var conn = MongoRunner.runMongod({smallfiles: "", nojournal: ""});
         assert.neq(null, conn, "mongod was unable to start up");
 
@@ -44,7 +49,7 @@
                 {configureFailPoint: "setYieldAllLocksHang", mode: "alwaysOn"}));
 
             // Set shell read mode for the parallel shell test.
-            TestData.shellReadMode = params.readMode;
+            TestData.shellReadMode = readMode;
             TestData.currentOpTest = testObj.test;
             testObj.test = function() {
                 db.getMongo().forceReadMode(TestData.shellReadMode);
@@ -67,7 +72,7 @@
                         testObj.currentOpFilter.op = testObj.operation;
                     }
 
-                    var result = testDB.currentOp(testObj.currentOpFilter);
+                    var result = currentOp(testDB, testObj.currentOpFilter);
                     assert.commandWorked(result);
 
                     if (result.inprog.length === 1) {
@@ -83,7 +88,7 @@
                 },
                 function() {
                     return "Failed to find operation from " + tojson(testObj) +
-                        " in currentOp() output: " + tojson(testDB.currentOp());
+                        " in currentOp() output: " + tojson(currentOp(testDB, {}));
                 });
 
             // Allow the query to complete.
@@ -246,7 +251,7 @@
         //
         // Confirm currentOp contains collation for find command.
         //
-        if (params.readMode === "commands") {
+        if (readMode === "commands") {
             confirmCurrentOpContents({
                 test: function() {
                     assert.eq(db.currentop_query.find({a: 1})
@@ -324,7 +329,7 @@
         // Confirm that currentOp displays upconverted getMore and originatingCommand in the case of
         // a legacy query.
         //
-        if (params.readMode === "legacy") {
+        if (readMode === "legacy") {
             let filter = {
                 "command.getMore": {$gt: 0},
                 "command.collection": "currentop_query",
@@ -364,7 +369,8 @@
         }
 
         //
-        // Confirm ~1000 byte size limit for currentOp query field.
+        // Confirm ~1000 byte size limit for query field in the case of the currentOp command. For
+        // $currentOp aggregations, this limit does not apply.
         //
         coll.drop();
         assert.writeOK(coll.insert({a: 1}));
@@ -386,6 +392,20 @@
             "1: \"1{149}\", 2: \"2{149}\", 3: \"3{149}\", 4: \"4{149}\", 5: \"5{149}\", " +
             "6: \"6{149}\", 7: \"7+\\.\\.\\.";
 
+        let currentOpFilter;
+
+        if (truncatedOps) {
+            currentOpFilter = {
+                "command.$truncated": {$regex: truncatedQueryString},
+                "command.comment": "currentop_query"
+            };
+        } else {
+            currentOpFilter = {
+                "command.filter": TestData.queryFilter,
+                "command.comment": "currentop_query"
+            };
+        }
+
         confirmCurrentOpContents({
             test: function() {
                 assert.eq(db.currentop_query.find(TestData.queryFilter)
@@ -394,10 +414,7 @@
                           0);
             },
             planSummary: "COLLSCAN",
-            currentOpFilter: {
-                "command.$truncated": {$regex: truncatedQueryString},
-                "command.comment": "currentop_query"
-            }
+            currentOpFilter: currentOpFilter
         });
 
         // Verify that an originatingCommand truncated by currentOp appears as { $truncated:
@@ -412,11 +429,19 @@
 
         TestData.commandResult = cmdRes;
 
-        filter = {
-            "command.getMore": TestData.commandResult.cursor.id,
-            "originatingCommand.$truncated": {$regex: truncatedQueryString},
-            "originatingCommand.comment": "currentop_query"
-        };
+        if (truncatedOps) {
+            currentOpFilter = {
+                "command.getMore": TestData.commandResult.cursor.id,
+                "originatingCommand.$truncated": {$regex: truncatedQueryString},
+                "originatingCommand.comment": "currentop_query"
+            };
+        } else {
+            currentOpFilter = {
+                "command.getMore": TestData.commandResult.cursor.id,
+                "originatingCommand.filter": TestData.queryFilter,
+                "originatingCommand.comment": "currentop_query"
+            };
+        }
 
         confirmCurrentOpContents({
             test: function() {
@@ -424,7 +449,7 @@
                 assert.eq(cursor.itcount(), 0);
             },
             planSummary: "COLLSCAN",
-            currentOpFilter: filter
+            currentOpFilter: currentOpFilter
         });
 
         delete TestData.commandResult;
@@ -436,6 +461,18 @@
             "1: \"1{149}\", 2: \"2{149}\", 3: \"3{149}\", 4: \"4{149}\", 5: \"5{149}\", " +
             "6: \"6{149}\", 7: \"7+\\.\\.\\.";
 
+        if (truncatedOps) {
+            currentOpFilter = {
+                "command.$truncated": {$regex: truncatedQueryString},
+                "command.comment": "currentop_query"
+            };
+        } else {
+            currentOpFilter = {
+                "command.pipeline.0.$match": TestData.queryFilter,
+                "command.comment": "currentop_query"
+            };
+        }
+
         confirmCurrentOpContents({
             test: function() {
                 assert.eq(
@@ -445,15 +482,28 @@
                     0);
             },
             planSummary: "COLLSCAN",
-            currentOpFilter: {
-                "command.$truncated": {$regex: truncatedQueryString},
-                "command.comment": "currentop_query"
-            }
+            currentOpFilter: currentOpFilter
         });
 
         delete TestData.queryFilter;
     }
 
-    runTest({readMode: "commands"});
-    runTest({readMode: "legacy"});
+    function currentOpCommand(inputDB, filter) {
+        return inputDB.currentOp(filter);
+    }
+
+    function currentOpAgg(inputDB, filter) {
+        return {
+            inprog: inputDB.getSiblingDB("admin")
+                        .aggregate([{$currentOp: {}}, {$match: filter}])
+                        .toArray(),
+            ok: 1
+        };
+    }
+
+    runTest({readMode: "commands", currentOp: currentOpCommand, truncatedOps: true});
+    runTest({readMode: "legacy", currentOp: currentOpCommand, truncatedOps: true});
+
+    runTest({readMode: "commands", currentOp: currentOpAgg, truncatedOps: false});
+    runTest({readMode: "legacy", currentOp: currentOpAgg, truncatedOps: false});
 })();

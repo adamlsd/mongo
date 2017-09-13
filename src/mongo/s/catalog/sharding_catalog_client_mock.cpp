@@ -49,11 +49,10 @@ ShardingCatalogClientMock::ShardingCatalogClientMock(
 
 ShardingCatalogClientMock::~ShardingCatalogClientMock() = default;
 
-Status ShardingCatalogClientMock::startup() {
+void ShardingCatalogClientMock::startup() {
     if (_distLockManager) {
         _distLockManager->startUp();
     }
-    return Status::OK();
 }
 
 void ShardingCatalogClientMock::shutDown(OperationContext* opCtx) {
@@ -65,21 +64,6 @@ void ShardingCatalogClientMock::shutDown(OperationContext* opCtx) {
 Status ShardingCatalogClientMock::enableSharding(OperationContext* opCtx,
                                                  const std::string& dbName) {
     return {ErrorCodes::InternalError, "Method not implemented"};
-}
-
-Status ShardingCatalogClientMock::shardCollection(OperationContext* opCtx,
-                                                  const string& ns,
-                                                  const ShardKeyPattern& fieldsAndOrder,
-                                                  const BSONObj& defaultCollation,
-                                                  bool unique,
-                                                  const vector<BSONObj>& initPoints,
-                                                  const std::set<ShardId>& initShardIds) {
-    return {ErrorCodes::InternalError, "Method not implemented"};
-}
-
-StatusWith<ShardDrainingStatus> ShardingCatalogClientMock::removeShard(OperationContext* opCtx,
-                                                                       const ShardId& name) {
-    return ShardDrainingStatus::COMPLETED;
 }
 
 Status ShardingCatalogClientMock::updateDatabase(OperationContext* opCtx,
@@ -234,6 +218,17 @@ StatusWith<std::vector<KeysCollectionDocument>> ShardingCatalogClientMock::getNe
     StringData purpose,
     const LogicalTime& newerThanThis,
     repl::ReadConcernLevel readConcernLevel) {
+    return {ErrorCodes::InternalError, "Method not implemented"};
+}
+
+StatusWith<repl::OpTimeWith<std::vector<BSONObj>>>
+ShardingCatalogClientMock::_exhaustiveFindOnConfig(OperationContext* opCtx,
+                                                   const ReadPreferenceSetting& readPref,
+                                                   const repl::ReadConcernLevel& readConcern,
+                                                   const NamespaceString& nss,
+                                                   const BSONObj& query,
+                                                   const BSONObj& sort,
+                                                   boost::optional<long long> limit) {
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 

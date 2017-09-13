@@ -85,7 +85,7 @@ class Document;
     MONGO_INITIALIZER(addToDocSourceParserMap_##key)(InitializerContext*) {                  \
         auto fullParserWrapper = [](BSONElement stageSpec,                                   \
                                     const boost::intrusive_ptr<ExpressionContext>& expCtx) { \
-            return std::vector<boost::intrusive_ptr<DocumentSource>>{                        \
+            return std::list<boost::intrusive_ptr<DocumentSource>>{                          \
                 (fullParser)(stageSpec, expCtx)};                                            \
         };                                                                                   \
         LiteParsedDocumentSource::registerParser("$" #key, liteParser);                      \
@@ -115,8 +115,51 @@ class Document;
 
 class DocumentSource : public IntrusiveCounterUnsigned {
 public:
-    using Parser = stdx::function<std::vector<boost::intrusive_ptr<DocumentSource>>(
+    using Parser = stdx::function<std::list<boost::intrusive_ptr<DocumentSource>>(
         BSONElement, const boost::intrusive_ptr<ExpressionContext>&)>;
+
+    /**
+     * A struct describing various constraints about where this stage can run, where it must be in
+     * the pipeline, and things like that.
+     */
+    struct StageConstraints {
+        /**
+         * A Position describes a requirement of the position of the stage within the pipeline.
+         */
+        enum class PositionRequirement { kNone, kFirst, kLast };
+
+        /**
+         * A HostTypeRequirement defines where this stage is permitted to be executed when the
+         * pipeline is run on a sharded cluster.
+         */
+        enum class HostTypeRequirement { kPrimaryShard, kAnyShard, kAnyShardOrMongoS };
+
+        // Set if this stage needs to be in a particular position of the pipeline.
+        PositionRequirement requiredPosition = PositionRequirement::kNone;
+
+        // Set if this stage can only be executed on specific components of a sharded cluster.
+        HostTypeRequirement hostRequirement = HostTypeRequirement::kAnyShard;
+
+        bool isAllowedInsideFacetStage = true;
+
+        // True if this stage does not generate results itself, and instead pulls inputs from an
+        // input DocumentSource (via 'pSource').
+        bool requiresInputDocSource = true;
+
+        // True if this stage operates on a global or database level, like $currentOp.
+        bool isIndependentOfAnyCollection = false;
+
+        // True if this stage can ever be safely swapped with a subsequent $match stage, provided
+        // that the match does not depend on the paths returned by getModifiedPaths().
+        //
+        // Stages that want to participate in match swapping should set this to true. Such a stage
+        // must also override getModifiedPaths() to provide information about which particular
+        // $match predicates be swapped before itself.
+        bool canSwapWithMatch = false;
+    };
+
+    using HostTypeRequirement = StageConstraints::HostTypeRequirement;
+    using PositionRequirement = StageConstraints::PositionRequirement;
 
     /**
      * This is what is returned from the main DocumentSource API: getNext(). It is essentially a
@@ -209,6 +252,14 @@ public:
     virtual GetNextResult getNext() = 0;
 
     /**
+     * Returns a struct containing information about any special constraints imposed on using this
+     * stage.
+     */
+    virtual StageConstraints constraints() const {
+        return StageConstraints{};
+    }
+
+    /**
      * Informs the stage that it is no longer needed and can release its resources. After dispose()
      * is called the stage must still be able to handle calls to getNext(), but can return kEOF.
      *
@@ -249,20 +300,6 @@ public:
         boost::optional<ExplainOptions::Verbosity> explain = boost::none) const;
 
     /**
-     * Returns true if doesn't require an input source (most DocumentSources do).
-     */
-    virtual bool isValidInitialSource() const {
-        return false;
-    }
-
-    /**
-     * Returns true if the DocumentSource needs to be run on the primary shard.
-     */
-    virtual bool needsPrimaryShard() const {
-        return false;
-    }
-
-    /**
      * If DocumentSource uses additional collections, it adds the namespaces to the input vector.
      */
     virtual void addInvolvedCollections(std::vector<NamespaceString>* collections) const {}
@@ -274,7 +311,7 @@ public:
     /**
      * Create a DocumentSource pipeline stage from 'stageObj'.
      */
-    static std::vector<boost::intrusive_ptr<DocumentSource>> parse(
+    static std::list<boost::intrusive_ptr<DocumentSource>> parse(
         const boost::intrusive_ptr<ExpressionContext>& expCtx, BSONObj stageObj);
 
     /**
@@ -398,18 +435,6 @@ public:
         return {GetModPathsReturn::Type::kNotSupported, std::set<std::string>{}, {}};
     }
 
-    /**
-     * Returns whether this stage can swap with a subsequent $match stage, provided that the match
-     * does not depend on the paths returned by getModifiedPaths().
-     *
-     * Subclasses which want to participate in match swapping should override this to return true.
-     * Such a subclass must also override getModifiedPaths() to provide information about which
-     * $match predicates be swapped before itself.
-     */
-    virtual bool canSwapWithMatch() const {
-        return false;
-    }
-
     enum GetDepsReturn {
         // The full object and all metadata may be required.
         NOT_SUPPORTED = 0x0,
@@ -424,7 +449,7 @@ public:
         EXHAUSTIVE_FIELDS = 0x2,
 
         // Later stages won't need more metadata from input. For example, a $group stage will group
-        // documents together, discarding their text score.
+        // documents together, discarding their text score and sort keys.
         EXHAUSTIVE_META = 0x4,
 
         // Later stages won't need either fields or metadata.
@@ -495,18 +520,27 @@ private:
         boost::optional<ExplainOptions::Verbosity> explain = boost::none) const = 0;
 };
 
-/** This class marks DocumentSources that should be split between the merger and the shards.
- *  See Pipeline::Optimizations::Sharded::findSplitPoint() for details.
+/**
+ * This class marks DocumentSources that should be split between the merger and the shards. See
+ * Pipeline::Optimizations::Sharded::findSplitPoint() for details.
  */
 class SplittableDocumentSource {
 public:
-    /** returns a source to be run on the shards.
-     *  if NULL, don't run on shards
+    /**
+     * Returns a source to be run on the shards, or NULL if no work should be done on the shards for
+     * this stage. Must not mutate the existing source object; if different behaviour is required in
+     * the split-pipeline case, a new source should be created and configured appropriately. It is
+     * an error for getShardSource() to return a pointer to the same object as getMergeSource(),
+     * since this can result in the source being stitched into both the shard and merge pipelines
+     * when the latter is executed on mongoS.
      */
     virtual boost::intrusive_ptr<DocumentSource> getShardSource() = 0;
 
-    /** returns a source that combines results from shards.
-     *  if NULL, don't run on merger
+    /**
+     * Returns a source that combines results from the shards, or NULL if no work should be done in
+     * the merge pipeline for this stage. Must not mutate the existing source object; if different
+     * behaviour is required, a new source should be created and configured appropriately. It is an
+     * error for getMergeSource() to return a pointer to the same object as getShardSource().
      */
     virtual boost::intrusive_ptr<DocumentSource> getMergeSource() = 0;
 
@@ -525,6 +559,10 @@ public:
     // Wraps mongod-specific functions to allow linking into mongos.
     class MongodInterface {
     public:
+        enum class CurrentOpConnectionsMode { kIncludeIdle, kExcludeIdle };
+        enum class CurrentOpUserMode { kIncludeAll, kExcludeOthers };
+        enum class CurrentOpTruncateMode { kNoTruncation, kTruncateOps };
+
         virtual ~MongodInterface(){};
 
         /**
@@ -568,6 +606,12 @@ public:
                                           BSONObjBuilder* builder) const = 0;
 
         /**
+         * Appends the record count for collection "nss" to "builder".
+         */
+        virtual Status appendRecordCount(const NamespaceString& nss,
+                                         BSONObjBuilder* builder) const = 0;
+
+        /**
          * Gets the collection options for the collection given by 'nss'.
          */
         virtual BSONObj getCollectionOptions(const NamespaceString& nss) = 0;
@@ -592,6 +636,21 @@ public:
         virtual StatusWith<std::unique_ptr<Pipeline, Pipeline::Deleter>> makePipeline(
             const std::vector<BSONObj>& rawPipeline,
             const boost::intrusive_ptr<ExpressionContext>& expCtx) = 0;
+
+        /**
+         * Returns a vector of owned BSONObjs, each of which contains details of an in-progress
+         * operation or, optionally, an idle connection. If userMode is kIncludeAllUsers, report
+         * operations for all authenticated users; otherwise, report only the current user's
+         * operations.
+         */
+        virtual std::vector<BSONObj> getCurrentOps(CurrentOpConnectionsMode connMode,
+                                                   CurrentOpUserMode userMode,
+                                                   CurrentOpTruncateMode) const = 0;
+
+        /**
+         * Returns the name of the local shard if sharding is enabled, or an empty string.
+         */
+        virtual std::string getShardName(OperationContext* opCtx) const = 0;
 
         // Add new methods as needed.
     };

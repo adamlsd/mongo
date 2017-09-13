@@ -95,26 +95,26 @@ private:
 TEST_F(DocumentSourceSortTest, RejectsNonObjectSpec) {
     BSONObj spec = BSON("$sort" << 1);
     BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), UserException);
+    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), AssertionException);
 }
 
 TEST_F(DocumentSourceSortTest, RejectsEmptyObjectSpec) {
     BSONObj spec = BSON("$sort" << BSONObj());
     BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), UserException);
+    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), AssertionException);
 }
 
 TEST_F(DocumentSourceSortTest, RejectsSpecWithNonNumericValues) {
     BSONObj spec = BSON("$sort" << BSON("a"
                                         << "b"));
     BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), UserException);
+    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), AssertionException);
 }
 
 TEST_F(DocumentSourceSortTest, RejectsSpecWithZeroAsValue) {
     BSONObj spec = BSON("$sort" << BSON("a" << 0));
     BSONElement specElement = spec.firstElement();
-    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), UserException);
+    ASSERT_THROWS(DocumentSourceSort::createFromBson(specElement, getExpCtx()), AssertionException);
 }
 
 TEST_F(DocumentSourceSortTest, SortWithLimit) {
@@ -348,9 +348,9 @@ TEST_F(DocumentSourceSortExecutionTest, MissingObjectWithinArray) {
 /** Compare nested values from within an array. */
 TEST_F(DocumentSourceSortExecutionTest, ExtractArrayValues) {
     checkResults({Document{{"_id", 0}, {"a", DOC_ARRAY(DOC("b" << 1) << DOC("b" << 2))}},
-                  Document{{"_id", 1}, {"a", DOC_ARRAY(DOC("b" << 1) << DOC("b" << 1))}}},
+                  Document{{"_id", 1}, {"a", DOC_ARRAY(DOC("b" << 1) << DOC("b" << 0))}}},
                  BSON("a.b" << 1),
-                 "[{_id:1,a:[{b:1},{b:1}]},{_id:0,a:[{b:1},{b:2}]}]");
+                 "[{_id:1,a:[{b:1},{b:0}]},{_id:0,a:[{b:1},{b:2}]}]");
 }
 
 TEST_F(DocumentSourceSortExecutionTest, ShouldPauseWhenAskedTo) {
@@ -446,7 +446,7 @@ TEST_F(DocumentSourceSortExecutionTest,
                                             Document{{"_id", 1}, {"largeStr", largeStr}}});
     sort->setSource(mock.get());
 
-    ASSERT_THROWS_CODE(sort->getNext(), UserException, 16819);
+    ASSERT_THROWS_CODE(sort->getNext(), AssertionException, 16819);
 }
 
 TEST_F(DocumentSourceSortExecutionTest, ShouldCorrectlyTrackMemoryUsageBetweenPauses) {
@@ -467,7 +467,7 @@ TEST_F(DocumentSourceSortExecutionTest, ShouldCorrectlyTrackMemoryUsageBetweenPa
     ASSERT_TRUE(sort->getNext().isPaused());
 
     // The next should realize it's used too much memory.
-    ASSERT_THROWS_CODE(sort->getNext(), UserException, 16819);
+    ASSERT_THROWS_CODE(sort->getNext(), AssertionException, 16819);
 }
 
 }  // namespace

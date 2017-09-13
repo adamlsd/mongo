@@ -31,13 +31,13 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
-#include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/cursor_manager.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/queued_data_stage.h"
 #include "mongo/db/exec/working_set.h"
@@ -74,7 +74,7 @@ namespace {
  *   ]
  * }
  */
-class CmdListIndexes : public Command {
+class CmdListIndexes : public BasicCommand {
 public:
     virtual bool slaveOk() const {
         return false;
@@ -114,13 +114,13 @@ public:
                                     << ns.coll());
     }
 
-    CmdListIndexes() : Command("listIndexes") {}
+    CmdListIndexes() : BasicCommand("listIndexes") {}
 
     bool run(OperationContext* opCtx,
              const string& dbname,
              const BSONObj& cmdObj,
-             string& errmsg,
              BSONObjBuilder& result) {
+        Lock::DBLock dbSLock(opCtx, dbname, MODE_IS);
         const NamespaceString ns(parseNsOrUUID(opCtx, dbname, cmdObj));
         const long long defaultBatchSize = std::numeric_limits<long long>::max();
         long long batchSize;
@@ -130,7 +130,7 @@ public:
             return appendCommandStatus(result, parseCursorStatus);
         }
 
-        AutoGetCollectionForReadCommand autoColl(opCtx, ns);
+        AutoGetCollectionForReadCommand autoColl(opCtx, ns, std::move(dbSLock));
         if (!autoColl.getDb()) {
             return appendCommandStatus(
                 result,
@@ -148,42 +148,19 @@ public:
         invariant(cce);
 
         vector<string> indexNames;
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+        writeConflictRetry(opCtx, "listIndexes", ns.ns(), [&indexNames, &cce, &opCtx] {
             indexNames.clear();
             cce->getAllIndexes(opCtx, &indexNames);
-        }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "listIndexes", ns.ns());
+        });
 
         auto ws = make_unique<WorkingSet>();
         auto root = make_unique<QueuedDataStage>(opCtx, ws.get());
 
         for (size_t i = 0; i < indexNames.size(); i++) {
-            BSONObj indexSpec;
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-                indexSpec = cce->getIndexSpec(opCtx, indexNames[i]);
-            }
-            MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "listIndexes", ns.ns());
-
-            if (ns.ns() == FeatureCompatibilityVersion::kCollection &&
-                indexNames[i] == FeatureCompatibilityVersion::k32IncompatibleIndexName) {
-                BSONObjBuilder bob;
-
-                for (auto&& indexSpecElem : indexSpec) {
-                    auto indexSpecElemFieldName = indexSpecElem.fieldNameStringData();
-                    if (indexSpecElemFieldName == IndexDescriptor::kIndexVersionFieldName) {
-                        // Include the index version in the command response as a decimal type
-                        // instead of as a 32-bit integer. This is a new BSON type that isn't
-                        // supported by versions of MongoDB earlier than 3.4 that will cause 3.2
-                        // secondaries to crash when performing initial sync.
-                        bob.append(IndexDescriptor::kIndexVersionFieldName,
-                                   indexSpecElem.numberDecimal());
-                    } else {
-                        bob.append(indexSpecElem);
-                    }
-                }
-
-                indexSpec = bob.obj();
-            }
+            BSONObj indexSpec =
+                writeConflictRetry(opCtx, "listIndexes", ns.ns(), [&cce, &opCtx, &indexNames, i] {
+                    return cce->getIndexSpec(opCtx, indexNames[i]);
+                });
 
             WorkingSetID id = ws->allocate();
             WorkingSetMember* member = ws->get(id);

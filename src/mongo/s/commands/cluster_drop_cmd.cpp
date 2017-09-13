@@ -38,8 +38,7 @@
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_common.h"
-#include "mongo/s/commands/sharded_command_processing.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/log.h"
@@ -47,9 +46,9 @@
 namespace mongo {
 namespace {
 
-class DropCmd : public Command {
+class DropCmd : public BasicCommand {
 public:
-    DropCmd() : Command("drop") {}
+    DropCmd() : BasicCommand("drop") {}
 
     bool slaveOk() const override {
         return true;
@@ -74,7 +73,6 @@ public:
     bool run(OperationContext* opCtx,
              const std::string& dbname,
              const BSONObj& cmdObj,
-             std::string& errmsg,
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
 
@@ -90,7 +88,7 @@ public:
         if (!routingInfo.cm()) {
             _dropUnshardedCollectionFromShard(opCtx, routingInfo.primaryId(), nss, &result);
         } else {
-            uassertStatusOK(Grid::get(opCtx)->catalogClient(opCtx)->dropCollection(opCtx, nss));
+            uassertStatusOK(Grid::get(opCtx)->catalogClient()->dropCollection(opCtx, nss));
             catalogCache->invalidateShardedCollection(nss);
         }
 
@@ -106,7 +104,7 @@ private:
                                                   const ShardId& shardId,
                                                   const NamespaceString& nss,
                                                   BSONObjBuilder* result) {
-        const auto catalogClient = Grid::get(opCtx)->catalogClient(opCtx);
+        const auto catalogClient = Grid::get(opCtx)->catalogClient();
         const auto shardRegistry = Grid::get(opCtx)->shardRegistry();
 
         auto scopedDistLock = uassertStatusOK(catalogClient->getDistLockManager()->lock(

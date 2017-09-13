@@ -34,9 +34,11 @@
 
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
@@ -50,6 +52,7 @@
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_change_stream.h"
 #include "mongo/db/pipeline/document_source_cursor.h"
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_merge_cursors.h"
@@ -63,16 +66,19 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/stats/storage_stats.h"
 #include "mongo/db/stats/top.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
+#include "mongo/util/net/sock.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -137,6 +143,10 @@ public:
                               const BSONObj& param,
                               BSONObjBuilder* builder) const final {
         return appendCollectionStorageStats(_ctx->opCtx, nss, param, builder);
+    }
+
+    Status appendRecordCount(const NamespaceString& nss, BSONObjBuilder* builder) const final {
+        return appendCollectionRecordCount(_ctx->opCtx, nss, builder);
     }
 
     BSONObj getCollectionOptions(const NamespaceString& nss) final {
@@ -207,9 +217,97 @@ public:
         uassert(4567, "from collection cannot be sharded", !bool(css->getMetadata()));
 
         PipelineD::prepareCursorSource(
-            autoColl.getCollection(), nullptr, pipeline.getValue().get());
+            autoColl.getCollection(), expCtx->ns, nullptr, pipeline.getValue().get());
 
         return pipeline;
+    }
+
+    std::vector<BSONObj> getCurrentOps(CurrentOpConnectionsMode connMode,
+                                       CurrentOpUserMode userMode,
+                                       CurrentOpTruncateMode truncateMode) const {
+        AuthorizationSession* ctxAuth = AuthorizationSession::get(_ctx->opCtx->getClient());
+
+        const std::string hostName = getHostNameCachedAndPort();
+
+        std::vector<BSONObj> ops;
+
+        for (ServiceContext::LockedClientsCursor cursor(
+                 _ctx->opCtx->getClient()->getServiceContext());
+             Client* client = cursor.next();) {
+            invariant(client);
+
+            stdx::lock_guard<Client> lk(*client);
+
+            // If auth is disabled, ignore the allUsers parameter.
+            if (ctxAuth->getAuthorizationManager().isAuthEnabled() &&
+                userMode == CurrentOpUserMode::kExcludeOthers &&
+                !ctxAuth->isCoauthorizedWithClient(client)) {
+                continue;
+            }
+
+            const OperationContext* clientOpCtx = client->getOperationContext();
+
+            if (!clientOpCtx && connMode == CurrentOpConnectionsMode::kExcludeIdle) {
+                continue;
+            }
+
+            BSONObjBuilder infoBuilder;
+
+            infoBuilder.append("host", hostName);
+
+            client->reportState(infoBuilder);
+
+            const auto& clientMetadata =
+                ClientMetadataIsMasterState::get(client).getClientMetadata();
+
+            if (clientMetadata) {
+                auto appName = clientMetadata.get().getApplicationName();
+                if (!appName.empty()) {
+                    infoBuilder.append("appName", appName);
+                }
+
+                auto clientMetadataDocument = clientMetadata.get().getDocument();
+                infoBuilder.append("clientMetadata", clientMetadataDocument);
+            }
+
+            // Fill out the rest of the BSONObj with opCtx specific details.
+            infoBuilder.appendBool("active", static_cast<bool>(clientOpCtx));
+            infoBuilder.append(
+                "currentOpTime",
+                _ctx->opCtx->getServiceContext()->getPreciseClockSource()->now().toString());
+
+            if (clientOpCtx) {
+                infoBuilder.append("opid", clientOpCtx->getOpID());
+                if (clientOpCtx->isKillPending()) {
+                    infoBuilder.append("killPending", true);
+                }
+
+                if (clientOpCtx->getLogicalSessionId()) {
+                    BSONObjBuilder bob(infoBuilder.subobjStart("lsid"));
+                    clientOpCtx->getLogicalSessionId()->serialize(&bob);
+                }
+
+                CurOp::get(clientOpCtx)
+                    ->reportState(&infoBuilder,
+                                  (truncateMode == CurrentOpTruncateMode::kTruncateOps));
+
+                Locker::LockerInfo lockerInfo;
+                clientOpCtx->lockState()->getLockerInfo(&lockerInfo);
+                fillLockerInfo(lockerInfo, infoBuilder);
+            }
+
+            ops.emplace_back(infoBuilder.obj());
+        }
+
+        return ops;
+    }
+
+    std::string getShardName(OperationContext* opCtx) const {
+        if (ShardingState::get(opCtx)->enabled()) {
+            return ShardingState::get(opCtx)->getShardName();
+        }
+
+        return std::string();
     }
 
 private:
@@ -293,13 +391,17 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> createRandomCursorEx
 StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExecutor(
     OperationContext* opCtx,
     Collection* collection,
+    const NamespaceString& nss,
     const intrusive_ptr<ExpressionContext>& pExpCtx,
+    bool oplogReplay,
     BSONObj queryObj,
     BSONObj projectionObj,
     BSONObj sortObj,
     const AggregationRequest* aggRequest,
     const size_t plannerOpts) {
-    auto qr = stdx::make_unique<QueryRequest>(pExpCtx->ns);
+    auto qr = stdx::make_unique<QueryRequest>(nss);
+    qr->setTailableMode(pExpCtx->tailableMode);
+    qr->setOplogReplay(oplogReplay);
     qr->setFilter(queryObj);
     qr->setProj(projectionObj);
     qr->setSort(sortObj);
@@ -318,9 +420,14 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
     qr->setCollation(pExpCtx->getCollator() ? pExpCtx->getCollator()->getSpec().toBSON()
                                             : pExpCtx->collation);
 
-    const ExtensionsCallbackReal extensionsCallback(pExpCtx->opCtx, &pExpCtx->ns);
+    const ExtensionsCallbackReal extensionsCallback(pExpCtx->opCtx, &nss);
 
-    auto cq = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+    auto cq = CanonicalQuery::canonicalize(opCtx,
+                                           std::move(qr),
+                                           pExpCtx,
+                                           extensionsCallback,
+                                           MatchExpressionParser::AllowedFeatures::kText |
+                                               MatchExpressionParser::AllowedFeatures::kExpr);
 
     if (!cq.isOK()) {
         // Return an error instead of uasserting, since there are cases where the combination of
@@ -331,16 +438,23 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
         return {cq.getStatus()};
     }
 
-    return getExecutor(
-        opCtx, collection, std::move(cq.getValue()), PlanExecutor::YIELD_AUTO, plannerOpts);
+    return getExecutorFind(
+        opCtx, collection, nss, std::move(cq.getValue()), PlanExecutor::YIELD_AUTO, plannerOpts);
+}
+
+BSONObj removeSortKeyMetaProjection(BSONObj projectionObj) {
+    if (!projectionObj[Document::metaFieldSortKey]) {
+        return projectionObj;
+    }
+    return projectionObj.removeField(Document::metaFieldSortKey);
 }
 }  // namespace
 
 void PipelineD::prepareCursorSource(Collection* collection,
+                                    const NamespaceString& nss,
                                     const AggregationRequest* aggRequest,
                                     Pipeline* pipeline) {
     auto expCtx = pipeline->getContext();
-    dassert(expCtx->opCtx->lockState()->isCollectionLockedForMode(expCtx->ns.ns(), MODE_IS));
 
     // We will be modifying the source vector as we go.
     Pipeline::SourceContainer& sources = pipeline->_sources;
@@ -354,11 +468,14 @@ void PipelineD::prepareCursorSource(Collection* collection,
         }
     }
 
-    if (!sources.empty()) {
-        if (sources.front()->isValidInitialSource()) {
-            return;  // don't need a cursor
-        }
+    if (!sources.empty() && !sources.front()->constraints().requiresInputDocSource) {
+        return;
+    }
 
+    // We are going to generate an input cursor, so we need to be holding the collection lock.
+    dassert(expCtx->opCtx->lockState()->isCollectionLockedForMode(nss.ns(), MODE_IS));
+
+    if (!sources.empty()) {
         auto sampleStage = dynamic_cast<DocumentSourceSample*>(sources.front().get());
         // Optimize an initial $sample stage if possible.
         if (collection && sampleStage) {
@@ -386,9 +503,12 @@ void PipelineD::prepareCursorSource(Collection* collection,
 
     // Look for an initial match. This works whether we got an initial query or not. If not, it
     // results in a "{}" query, which will be what we want in that case.
+    bool oplogReplay = false;
     const BSONObj queryObj = pipeline->getInitialQuery();
     if (!queryObj.isEmpty()) {
-        if (dynamic_cast<DocumentSourceMatch*>(sources.front().get())) {
+        auto matchStage = dynamic_cast<DocumentSourceMatch*>(sources.front().get());
+        if (matchStage) {
+            oplogReplay = dynamic_cast<DocumentSourceOplogMatch*>(matchStage) != nullptr;
             // If a $match query is pulled into the cursor, the $match is redundant, and can be
             // removed from the pipeline.
             sources.pop_front();
@@ -406,29 +526,28 @@ void PipelineD::prepareCursorSource(Collection* collection,
 
     BSONObj projForQuery = deps.toProjection();
 
-    /*
-      Look for an initial sort; we'll try to add this to the
-      Cursor we create.  If we're successful in doing that (further down),
-      we'll remove the $sort from the pipeline, because the documents
-      will already come sorted in the specified order as a result of the
-      index scan.
-    */
+    // Look for an initial sort; we'll try to add this to the Cursor we create. If we're successful
+    // in doing that, we'll remove the $sort from the pipeline, because the documents will already
+    // come sorted in the specified order as a result of the index scan.
     intrusive_ptr<DocumentSourceSort> sortStage;
     BSONObj sortObj;
     if (!sources.empty()) {
         sortStage = dynamic_cast<DocumentSourceSort*>(sources.front().get());
         if (sortStage) {
-            // build the sort key
-            sortObj = sortStage->serializeSortKey(/*explain*/ false).toBson();
+            sortObj = sortStage
+                          ->sortKeyPattern(
+                              DocumentSourceSort::SortKeySerialization::kForPipelineSerialization)
+                          .toBson();
         }
     }
 
     // Create the PlanExecutor.
     auto exec = uassertStatusOK(prepareExecutor(expCtx->opCtx,
                                                 collection,
-                                                expCtx->ns,
+                                                nss,
                                                 pipeline,
                                                 expCtx,
+                                                oplogReplay,
                                                 sortStage,
                                                 deps,
                                                 queryObj,
@@ -457,6 +576,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
     const NamespaceString& nss,
     Pipeline* pipeline,
     const intrusive_ptr<ExpressionContext>& expCtx,
+    bool oplogReplay,
     const intrusive_ptr<DocumentSourceSort>& sortStage,
     const DepsTracker& deps,
     const BSONObj& queryObj,
@@ -483,42 +603,44 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
     // order so we can then apply other optimizations there are tickets for, such as SERVER-4507.
     size_t plannerOpts = QueryPlannerParams::DEFAULT | QueryPlannerParams::NO_BLOCKING_SORT;
 
-    // If we are connecting directly to the shard rather than through a mongos, don't filter out
-    // orphaned documents.
-    if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, nss.ns())) {
-        plannerOpts |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
-    }
-
     if (deps.hasNoRequirements()) {
         // If we don't need any fields from the input document, performing a count is faster, and
         // will output empty documents, which is okay.
         plannerOpts |= QueryPlannerParams::IS_COUNT;
     }
 
-    // The only way to get a text score is to let the query system handle the projection. In all
-    // other cases, unless the query system can do an index-covered projection and avoid going to
-    // the raw record at all, it is faster to have ParsedDeps filter the fields we need.
-    if (!deps.getNeedTextScore()) {
+    // The only way to get a text score or the sort key is to let the query system handle the
+    // projection. In all other cases, unless the query system can do an index-covered projection
+    // and avoid going to the raw record at all, it is faster to have ParsedDeps filter the fields
+    // we need.
+    if (!deps.getNeedTextScore() && !deps.getNeedSortKey()) {
         plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
     }
 
-    BSONObj emptyProjection;
+    const BSONObj emptyProjection;
+    const BSONObj metaSortProjection = BSON("$meta"
+                                            << "sortKey");
     if (sortStage) {
         // See if the query system can provide a non-blocking sort.
-        auto swExecutorSort = attemptToGetExecutor(opCtx,
-                                                   collection,
-                                                   expCtx,
-                                                   queryObj,
-                                                   emptyProjection,
-                                                   *sortObj,
-                                                   aggRequest,
-                                                   plannerOpts);
+        auto swExecutorSort =
+            attemptToGetExecutor(opCtx,
+                                 collection,
+                                 nss,
+                                 expCtx,
+                                 oplogReplay,
+                                 queryObj,
+                                 expCtx->needsMerge ? metaSortProjection : emptyProjection,
+                                 *sortObj,
+                                 aggRequest,
+                                 plannerOpts);
 
         if (swExecutorSort.isOK()) {
             // Success! Now see if the query system can also cover the projection.
             auto swExecutorSortAndProj = attemptToGetExecutor(opCtx,
                                                               collection,
+                                                              nss,
                                                               expCtx,
+                                                              oplogReplay,
                                                               queryObj,
                                                               *projectionObj,
                                                               *sortObj,
@@ -562,10 +684,26 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
     // Either there was no $sort stage, or the query system could not provide a non-blocking
     // sort.
     dassert(sortObj->isEmpty());
+    *projectionObj = removeSortKeyMetaProjection(*projectionObj);
+    if (deps.getNeedSortKey() && !deps.getNeedTextScore()) {
+        // A sort key requirement would have prevented us from being able to add this parameter
+        // before, but now we know the query system won't cover the sort, so we will be able to
+        // compute the sort key ourselves during the $sort stage, and thus don't need a query
+        // projection to do so.
+        plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
+    }
 
     // See if the query system can cover the projection.
-    auto swExecutorProj = attemptToGetExecutor(
-        opCtx, collection, expCtx, queryObj, *projectionObj, *sortObj, aggRequest, plannerOpts);
+    auto swExecutorProj = attemptToGetExecutor(opCtx,
+                                               collection,
+                                               nss,
+                                               expCtx,
+                                               oplogReplay,
+                                               queryObj,
+                                               *projectionObj,
+                                               *sortObj,
+                                               aggRequest,
+                                               plannerOpts);
     if (swExecutorProj.isOK()) {
         // Success! We have a covered projection.
         return std::move(swExecutorProj.getValue());
@@ -579,8 +717,16 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
     // The query system couldn't provide a covered projection.
     *projectionObj = BSONObj();
     // If this doesn't work, nothing will.
-    return attemptToGetExecutor(
-        opCtx, collection, expCtx, queryObj, *projectionObj, *sortObj, aggRequest, plannerOpts);
+    return attemptToGetExecutor(opCtx,
+                                collection,
+                                nss,
+                                expCtx,
+                                oplogReplay,
+                                queryObj,
+                                *projectionObj,
+                                *sortObj,
+                                aggRequest,
+                                plannerOpts);
 }
 
 void PipelineD::addCursorSource(Collection* collection,

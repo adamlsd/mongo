@@ -1,12 +1,12 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
  * See the file LICENSE for redistribution information.
  */
 
-#define	WT_DEBUG_POINT	((void *)0xdeadbeef)
+#define	WT_DEBUG_POINT	((void *)(uintptr_t)0xdeadbeef)
 #define	WT_DEBUG_BYTE	(0xab)
 
 /* In DIAGNOSTIC mode, yield in places where we want to encourage races. */
@@ -118,9 +118,34 @@
 #ifdef HAVE_DIAGNOSTIC
 #define	WT_ASSERT(session, exp) do {					\
 	if (!(exp))							\
-		__wt_assert(session, 0, __FILE__, __LINE__, "%s", #exp);\
+		__wt_assert(session, 0, __func__, __LINE__, "%s", #exp);\
 } while (0)
 #else
 #define	WT_ASSERT(session, exp)						\
 	WT_UNUSED(session)
+#endif
+
+/*
+ * __wt_verbose --
+ *	Display a verbose message.
+ *
+ * Not an inlined function because you can't inline functions taking variadic
+ * arguments and we don't want to make a function call in production systems
+ * just to find out a verbose flag isn't set.
+ *
+ * The macro must take a format string and at least one additional argument,
+ * there's no portable way to remove the comma before an empty __VA_ARGS__
+ * value.
+ */
+#ifdef HAVE_VERBOSE
+#define	__wt_verbose(session, flag, fmt, ...) do {			\
+	if (WT_VERBOSE_ISSET(session, flag))				\
+		__wt_verbose_worker(session, fmt, __VA_ARGS__);		\
+} while (0)
+#else
+#define	__wt_verbose(session, flag, fmt, ...) do {			\
+	WT_UNUSED(session);						\
+	WT_UNUSED(flag);						\
+	WT_UNUSED(fmt);							\
+} while (0)
 #endif

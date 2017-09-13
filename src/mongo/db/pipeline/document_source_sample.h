@@ -35,9 +35,19 @@ namespace mongo {
 
 class DocumentSourceSample final : public DocumentSource, public SplittableDocumentSource {
 public:
+    static constexpr StringData kStageName = "$sample"_sd;
+
     GetNextResult getNext() final;
-    const char* getSourceName() const final;
+    const char* getSourceName() const final {
+        return kStageName.rawData();
+    }
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
+
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.hostRequirement = HostTypeRequirement::kAnyShardOrMongoS;
+        return constraints;
+    }
 
     GetDepsReturn getDependencies(DepsTracker* deps) const final {
         return SEE_NEXT;

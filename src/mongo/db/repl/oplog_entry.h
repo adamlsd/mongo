@@ -45,13 +45,14 @@ public:
         kNotCommand,
         kCreate,
         kRenameCollection,
+        kDbCheck,
         kDrop,
         kCollMod,
         kApplyOps,
         kDropDatabase,
         kEmptyCapped,
         kConvertToCapped,
-        kCreateIndex,
+        kCreateIndexes,
         kDropIndexes
     };
 

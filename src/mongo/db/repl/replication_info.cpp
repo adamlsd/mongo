@@ -40,7 +40,9 @@
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/lasterror.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/ops/write_ops.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/is_master_response.h"
 #include "mongo/db/repl/master_slave.h"
@@ -56,7 +58,6 @@
 #include "mongo/executor/network_interface.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
-#include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/util/map_util.h"
 
 namespace mongo {
@@ -200,7 +201,7 @@ public:
 
         const std::string& oplogNS =
             replCoord->getReplicationMode() == ReplicationCoordinator::modeReplSet
-            ? rsOplogName
+            ? NamespaceString::kRsOplogNamespace.ns()
             : masterSlaveOplogName;
         BSONObj o;
         uassert(17347,
@@ -211,9 +212,9 @@ public:
     }
 } oplogInfoServerStatus;
 
-class CmdIsMaster : public Command {
+class CmdIsMaster : public BasicCommand {
 public:
-    virtual bool requiresAuth() {
+    bool requiresAuth() const override {
         return false;
     }
     virtual bool slaveOk() const {
@@ -230,11 +231,10 @@ public:
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
                                        std::vector<Privilege>* out) {}  // No auth required
-    CmdIsMaster() : Command("isMaster", "ismaster") {}
+    CmdIsMaster() : BasicCommand("isMaster", "ismaster") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
-                     string& errmsg,
                      BSONObjBuilder& result) {
         /* currently request to arbiter is (somewhat arbitrarily) an ismaster request that is not
            authenticated.
@@ -282,25 +282,94 @@ public:
                 opCtx->getClient(), std::move(swParseClientMetadata.getValue()));
         }
 
+        // Parse the optional 'internalClient' field. This is provided by incoming connections from
+        // mongod and mongos.
+        auto internalClientElement = cmdObj["internalClient"];
+        if (internalClientElement) {
+            auto session = opCtx->getClient()->session();
+            if (session) {
+                session->replaceTags(session->getTags() | transport::Session::kInternalClient);
+            }
+
+            uassert(ErrorCodes::TypeMismatch,
+                    str::stream() << "'internalClient' must be of type Object, but was of type "
+                                  << typeName(internalClientElement.type()),
+                    internalClientElement.type() == BSONType::Object);
+
+            bool foundMaxWireVersion = false;
+            for (auto&& elem : internalClientElement.Obj()) {
+                auto fieldName = elem.fieldNameStringData();
+                if (fieldName == "minWireVersion") {
+                    // We do not currently use 'internalClient.minWireVersion'.
+                    continue;
+                } else if (fieldName == "maxWireVersion") {
+                    foundMaxWireVersion = true;
+
+                    uassert(ErrorCodes::TypeMismatch,
+                            str::stream() << "'maxWireVersion' field of 'internalClient' must be "
+                                             "of type int, but was of type "
+                                          << typeName(elem.type()),
+                            elem.type() == BSONType::NumberInt);
+
+                    // All incoming connections from mongod/mongos of earlier versions should be
+                    // closed if the featureCompatibilityVersion is bumped to 3.6.
+                    if (elem.numberInt() >= WireSpec::instance().incoming.maxWireVersion) {
+                        if (session) {
+                            session->replaceTags(
+                                session->getTags() |
+                                transport::Session::kLatestVersionInternalClientKeepOpen);
+                        }
+                    } else {
+                        if (session) {
+                            session->replaceTags(
+                                session->getTags() &
+                                ~transport::Session::kLatestVersionInternalClientKeepOpen);
+                        }
+                    }
+                } else {
+                    uasserted(ErrorCodes::BadValue,
+                              str::stream() << "Unrecognized field of 'internalClient': '"
+                                            << fieldName
+                                            << "'");
+                }
+            }
+
+            uassert(ErrorCodes::BadValue,
+                    "Missing required field 'maxWireVersion' of 'internalClient'",
+                    foundMaxWireVersion);
+        } else {
+            auto session = opCtx->getClient()->session();
+            if (session && !(session->getTags() & transport::Session::kInternalClient)) {
+                session->replaceTags(session->getTags() |
+                                     transport::Session::kExternalClientKeepOpen);
+            }
+        }
+
         appendReplicationInfo(opCtx, result, 0);
 
         if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-            // If we have feature compatibility version 3.4, use a config server mode that 3.2
-            // mongos won't understand. This should prevent a 3.2 mongos from joining the cluster or
-            // making a connection to the config servers.
-            int configServerModeNumber = (serverGlobalParams.featureCompatibility.version.load() ==
-                                          ServerGlobalParams::FeatureCompatibility::Version::k34)
-                ? 2
-                : 1;
+            const int configServerModeNumber = 2;
             result.append("configsvr", configServerModeNumber);
         }
 
         result.appendNumber("maxBsonObjectSize", BSONObjMaxUserSize);
         result.appendNumber("maxMessageSizeBytes", MaxMessageSizeBytes);
-        result.appendNumber("maxWriteBatchSize", BatchedCommandRequest::kMaxWriteBatchSize);
+        result.appendNumber("maxWriteBatchSize", write_ops::kMaxWriteBatchSize);
         result.appendDate("localTime", jsTime());
         result.append("maxWireVersion", WireSpec::instance().incoming.maxWireVersion);
-        result.append("minWireVersion", WireSpec::instance().incoming.minWireVersion);
+        result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
+
+        // If the featureCompatibilityVersion is 3.6, respond with minWireVersion=maxWireVersion.
+        // Then if the connection is from a mongod/mongos of an earlier version, it will fail to
+        // connect.
+        if (internalClientElement &&
+            serverGlobalParams.featureCompatibility.version.load() ==
+                ServerGlobalParams::FeatureCompatibility::Version::k36) {
+            result.append("minWireVersion", WireSpec::instance().incoming.maxWireVersion);
+        } else {
+            result.append("minWireVersion", WireSpec::instance().incoming.minWireVersion);
+        }
+
         result.append("readOnly", storageGlobalParams.readOnly);
 
         const auto parameter = mapFindWithDefault(ServerParameterSet::getGlobal()->getMap(),

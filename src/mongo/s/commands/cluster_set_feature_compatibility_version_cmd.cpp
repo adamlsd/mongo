@@ -40,7 +40,7 @@ namespace mongo {
 namespace {
 
 /**
- * Sets the minimum allowed version for the cluster. If it is 3.2, then shards should not use 3.4
+ * Sets the minimum allowed version for the cluster. If it is 3.4, then shards should not use 3.6
  * features.
  *
  * Format:
@@ -48,9 +48,9 @@ namespace {
  *   setFeatureCompatibilityVersion: <string version>
  * }
  */
-class SetFeatureCompatibilityVersionCmd : public Command {
+class SetFeatureCompatibilityVersionCmd : public BasicCommand {
 public:
-    SetFeatureCompatibilityVersionCmd() : Command("setFeatureCompatibilityVersion") {}
+    SetFeatureCompatibilityVersionCmd() : BasicCommand("setFeatureCompatibilityVersion") {}
 
     virtual bool slaveOk() const {
         return false;
@@ -65,10 +65,13 @@ public:
     }
 
     virtual void help(std::stringstream& help) const {
-        help << "Set the API version for the cluster. If set to \"3.2\", then 3.4 features are "
-                "disabled. If \"3.4\", then 3.4 features are enabled, and all nodes in the cluster "
-                "must be version 3.4. See "
-                "http://dochub.mongodb.org/core/3.4-feature-compatibility.";
+        help << "Set the API version for the cluster. If set to \""
+             << FeatureCompatibilityVersionCommandParser::kVersion34
+             << "\", then 3.6 features are disabled. If \""
+             << FeatureCompatibilityVersionCommandParser::kVersion36
+             << "\", then 3.6 features are enabled, and all nodes in the cluster must be version "
+                "3.6. See "
+             << feature_compatibility_version::kDochubLink << ".";
     }
 
     Status checkAuthForCommand(Client* client,
@@ -86,7 +89,6 @@ public:
     bool run(OperationContext* opCtx,
              const std::string& dbname,
              const BSONObj& cmdObj,
-             std::string& errmsg,
              BSONObjBuilder& result) {
         const auto version = uassertStatusOK(
             FeatureCompatibilityVersionCommandParser::extractVersionFromCommand(getName(), cmdObj));

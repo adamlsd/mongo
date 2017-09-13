@@ -45,7 +45,6 @@
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
-#include "mongo/db/server_options.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -59,9 +58,9 @@ namespace {
  * The group command is deprecated. Users should prefer the aggregation framework or mapReduce. See
  * http://dochub.mongodb.org/core/group-command-deprecation for more detail.
  */
-class GroupCommand : public Command {
+class GroupCommand : public BasicCommand {
 public:
-    GroupCommand() : Command("group") {}
+    GroupCommand() : BasicCommand("group") {}
 
 private:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -80,7 +79,7 @@ private:
         return true;
     }
 
-    bool supportsReadConcern() const final {
+    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
         return true;
     }
 
@@ -151,7 +150,6 @@ private:
     virtual bool run(OperationContext* opCtx,
                      const std::string& dbname,
                      const BSONObj& cmdObj,
-                     std::string& errmsg,
                      BSONObjBuilder& result) {
         RARELY {
             warning() << "The group command is deprecated. See "
@@ -272,13 +270,6 @@ private:
         }
         if (collationEltStatus.isOK()) {
             request->collation = collationElt.embeddedObject().getOwned();
-        }
-        if (!request->collation.isEmpty() &&
-            serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k32) {
-            return Status(ErrorCodes::InvalidOptions,
-                          "The featureCompatibilityVersion must be 3.4 to use collation. See "
-                          "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
         }
 
         BSONElement reduce = p["$reduce"];

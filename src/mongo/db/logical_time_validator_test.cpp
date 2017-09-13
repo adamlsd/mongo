@@ -30,10 +30,12 @@
 
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/keys_collection_manager.h"
+#include "mongo/db/keys_collection_manager_sharding.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/signed_logical_time.h"
 #include "mongo/db/time_proof_service.h"
@@ -58,19 +60,21 @@ protected:
     void setUp() override {
         ConfigServerTestFixture::setUp();
 
+        serverGlobalParams.featureCompatibility.version.store(
+            ServerGlobalParams::FeatureCompatibility::Version::k36);
+        serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(true);
+
         auto clockSource = stdx::make_unique<ClockSourceMock>();
         operationContext()->getServiceContext()->setFastClockSource(std::move(clockSource));
-        auto catalogClient = Grid::get(operationContext())->catalogClient(operationContext());
+        auto catalogClient = Grid::get(operationContext())->catalogClient();
 
         const LogicalTime currentTime(LogicalTime(Timestamp(1, 0)));
         LogicalClock::get(operationContext())->setClusterTimeFromTrustedSource(currentTime);
 
-        auto keyManager =
-            stdx::make_unique<KeysCollectionManager>("dummy", catalogClient, Seconds(1000));
-        _keyManager = keyManager.get();
-        _validator = stdx::make_unique<LogicalTimeValidator>(std::move(keyManager));
+        _keyManager =
+            std::make_shared<KeysCollectionManagerSharding>("dummy", catalogClient, Seconds(1000));
+        _validator = stdx::make_unique<LogicalTimeValidator>(_keyManager);
         _validator->init(operationContext()->getServiceContext());
-        _validator->enableKeyGenerator(operationContext(), true);
     }
 
     void tearDown() override {
@@ -93,10 +97,12 @@ protected:
 
 private:
     std::unique_ptr<LogicalTimeValidator> _validator;
-    KeysCollectionManager* _keyManager;
+    std::shared_ptr<KeysCollectionManagerSharding> _keyManager;
 };
 
 TEST_F(LogicalTimeValidatorTest, GetTimeWithIncreasingTimes) {
+    validator()->enableKeyGenerator(operationContext(), true);
+
     LogicalTime t1(Timestamp(10, 0));
     auto newTime = validator()->trySignLogicalTime(t1);
 
@@ -111,6 +117,8 @@ TEST_F(LogicalTimeValidatorTest, GetTimeWithIncreasingTimes) {
 }
 
 TEST_F(LogicalTimeValidatorTest, ValidateReturnsOkForValidSignature) {
+    validator()->enableKeyGenerator(operationContext(), true);
+
     LogicalTime t1(Timestamp(20, 0));
     refreshKeyManager();
     auto newTime = validator()->trySignLogicalTime(t1);
@@ -119,11 +127,13 @@ TEST_F(LogicalTimeValidatorTest, ValidateReturnsOkForValidSignature) {
 }
 
 TEST_F(LogicalTimeValidatorTest, ValidateErrorsOnInvalidTime) {
+    validator()->enableKeyGenerator(operationContext(), true);
+
     LogicalTime t1(Timestamp(20, 0));
     refreshKeyManager();
     auto newTime = validator()->trySignLogicalTime(t1);
 
-    TimeProofService::TimeProof invalidProof = {{1, 2, 3}};
+    TimeProofService::TimeProof invalidProof = {{{1, 2, 3}}};
     SignedLogicalTime invalidTime(LogicalTime(Timestamp(30, 0)), invalidProof, newTime.getKeyId());
     // ASSERT_THROWS_CODE(validator()->validate(operationContext(), invalidTime), DBException,
     // ErrorCodes::TimeProofMismatch);
@@ -132,6 +142,8 @@ TEST_F(LogicalTimeValidatorTest, ValidateErrorsOnInvalidTime) {
 }
 
 TEST_F(LogicalTimeValidatorTest, ValidateReturnsOkForValidSignatureWithImplicitRefresh) {
+    validator()->enableKeyGenerator(operationContext(), true);
+
     LogicalTime t1(Timestamp(20, 0));
     auto newTime = validator()->signLogicalTime(operationContext(), t1);
 
@@ -139,15 +151,37 @@ TEST_F(LogicalTimeValidatorTest, ValidateReturnsOkForValidSignatureWithImplicitR
 }
 
 TEST_F(LogicalTimeValidatorTest, ValidateErrorsOnInvalidTimeWithImplicitRefresh) {
+    validator()->enableKeyGenerator(operationContext(), true);
+
     LogicalTime t1(Timestamp(20, 0));
     auto newTime = validator()->signLogicalTime(operationContext(), t1);
 
-    TimeProofService::TimeProof invalidProof = {{1, 2, 3}};
+    TimeProofService::TimeProof invalidProof = {{{1, 2, 3}}};
     SignedLogicalTime invalidTime(LogicalTime(Timestamp(30, 0)), invalidProof, newTime.getKeyId());
     // ASSERT_THROWS_CODE(validator()->validate(operationContext(), invalidTime), DBException,
     // ErrorCodes::TimeProofMismatch);
     auto status = validator()->validate(operationContext(), invalidTime);
     ASSERT_EQ(ErrorCodes::TimeProofMismatch, status);
+}
+
+TEST_F(LogicalTimeValidatorTest, ShouldGossipLogicalTimeIsFalseUntilKeysAreFound) {
+    // shouldGossipLogicalTime initially returns false.
+    ASSERT_EQ(false, validator()->shouldGossipLogicalTime());
+
+    // shouldGossipLogicalTime still returns false after an unsuccessful refresh.
+    refreshKeyManager();
+
+    LogicalTime t1(Timestamp(20, 0));
+    validator()->trySignLogicalTime(t1);
+    ASSERT_EQ(false, validator()->shouldGossipLogicalTime());
+
+    // Once keys are successfully found, shouldGossipLogicalTime returns true.
+    validator()->enableKeyGenerator(operationContext(), true);
+    refreshKeyManager();
+    auto newTime = validator()->signLogicalTime(operationContext(), t1);
+
+    ASSERT_EQ(true, validator()->shouldGossipLogicalTime());
+    ASSERT_OK(validator()->validate(operationContext(), newTime));
 }
 
 }  // unnamed namespace

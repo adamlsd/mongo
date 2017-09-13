@@ -21,9 +21,8 @@ def write(suites):
 
     reports = []
     for suite in suites:
-        for group in suite.test_groups:
-            reports.extend(group.get_reports())
+        reports.extend(suite.get_reports())
 
-    combined_report_dict = _report.TestReport.combine(*reports).as_dict()
+    combined_report_dict = _report.TestReport.combine(*reports).as_dict(convert_failures=True)
     with open(config.REPORT_FILE, "w") as fp:
         json.dump(combined_report_dict, fp)

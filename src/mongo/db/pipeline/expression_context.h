@@ -43,6 +43,7 @@
 #include "mongo/db/pipeline/variables.h"
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/explain_options.h"
+#include "mongo/db/query/tailable_mode.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/string_map.h"
 
@@ -101,13 +102,27 @@ public:
         return it->second;
     };
 
+    /**
+     * Convenience call that returns true if the tailableMode indicate a tailable query.
+     */
+    bool isTailable() const {
+        return tailableMode == TailableMode::kTailableAndAwaitData;
+    }
+
     // The explain verbosity requested by the user, or boost::none if no explain was requested.
     boost::optional<ExplainOptions::Verbosity> explain;
 
-    bool inShard = false;
-    bool inRouter = false;
+    bool fromMongos = false;
+    bool needsMerge = false;
+    bool inMongos = false;
     bool extSortAllowed = false;
     bool bypassDocumentValidation = false;
+
+    // We track whether the aggregation request came from a 3.4 mongos. If so, the merge may occur
+    // on a 3.4 shard (which does not understand sort key metadata), and we should not serialize the
+    // sort key.
+    // TODO SERVER-30924: remove this.
+    bool from34Mongos = false;
 
     NamespaceString ns;
     std::string tempDir;  // Defaults to empty to prevent external sorting in mongos.
@@ -121,10 +136,13 @@ public:
     Variables variables;
     VariablesParseState variablesParseState;
 
+    TailableMode tailableMode = TailableMode::kNormal;
+
 protected:
     static const int kInterruptCheckPeriod = 128;
 
-    ExpressionContext() : variablesParseState(variables.useIdGenerator()) {}
+    ExpressionContext(NamespaceString nss)
+        : ns(std::move(nss)), variablesParseState(variables.useIdGenerator()) {}
 
     /**
      * Sets '_collator' and resets '_documentComparator' and '_valueComparator'.

@@ -144,6 +144,8 @@ public:
 
     virtual Role getRole() const;
     virtual MemberState getMemberState() const;
+    virtual bool isSteppingDown() const override;
+    virtual bool isUnconditionallySteppingDown() const override;
     virtual HostAndPort getSyncSourceAddress() const;
     virtual std::vector<HostAndPort> getMaybeUpHostAndPorts() const;
     virtual int getMaintenanceCount() const;
@@ -166,7 +168,7 @@ public:
     virtual bool updateLastCommittedOpTime();
     virtual bool advanceLastCommittedOpTime(const OpTime& committedOpTime);
     virtual OpTime getLastCommittedOpTime() const;
-    virtual void setFirstOpTimeOfMyTerm(const OpTime& newOpTime);
+    virtual void completeTransitionToPrimary(const OpTime& firstOpTimeOfTerm);
     virtual void adjustMaintenanceCountBy(int inc);
     virtual void prepareSyncFromResponse(const HostAndPort& target,
                                          BSONObjBuilder* response,
@@ -215,9 +217,11 @@ public:
     virtual void processLoseElection();
     virtual Status checkShouldStandForElection(Date_t now) const;
     virtual void setMyHeartbeatMessage(const Date_t now, const std::string& message);
-    virtual bool stepDown(Date_t until, bool force);
-    virtual bool stepDownIfPending();
-    virtual bool isStepDownPending() const;
+    virtual bool finishAttemptedStepDown(Date_t until, bool force) override;
+    virtual bool prepareForUnconditionalStepDown() override;
+    virtual Status prepareForStepDownAttempt() override;
+    virtual void abortAttemptedStepDownIfNeeded() override;
+    virtual void finishUnconditionalStepDown() override;
     virtual Date_t getStepDownTime() const;
     virtual rpc::ReplSetMetadata prepareReplSetMetadata(const OpTime& lastVisibleOpTime) const;
     virtual rpc::OplogQueryMetadata prepareOplogQueryMetadata(int rbid) const;
@@ -226,8 +230,8 @@ public:
     virtual void summarizeAsHtml(ReplSetHtmlSummary* output);
     virtual void loadLastVote(const LastVote& lastVote);
     virtual void voteForMyselfV1();
-    virtual void prepareForStepDown();
     virtual void setPrimaryIndex(long long primaryIndex);
+    virtual int getCurrentPrimaryIndex() const;
     virtual bool haveNumNodesReachedOpTime(const OpTime& opTime, int numNodes, bool durablyWritten);
     virtual bool haveTaggedNodesReachedOpTime(const OpTime& opTime,
                                               const ReplSetTagPattern& tagPattern,
@@ -235,7 +239,7 @@ public:
     virtual std::vector<HostAndPort> getHostsWrittenTo(const OpTime& op,
                                                        bool durablyWritten,
                                                        bool skipSelf);
-    virtual HeartbeatResponseAction setMemberAsDown(Date_t now, const int memberIndex);
+    virtual bool setMemberAsDown(Date_t now, const int memberIndex) override;
     virtual std::pair<int, Date_t> getStalestLiveMember() const;
     virtual HeartbeatResponseAction checkMemberTimeouts(Date_t now);
     virtual void resetAllMemberTimeouts(Date_t now);
@@ -247,7 +251,7 @@ public:
     virtual MemberData* findMemberDataByMemberId(const int memberId);
     virtual MemberData* findMemberDataByRid(const OID rid);
     virtual MemberData* addSlaveMemberData(const OID rid);
-    virtual Status becomeCandidateIfElectable(const Date_t now, bool isPriorityTakeover);
+    virtual Status becomeCandidateIfElectable(const Date_t now, StartElectionReason reason);
     virtual void setStorageEngineSupportsReadCommitted(bool supported);
 
     virtual void restartHeartbeats();
@@ -278,9 +282,6 @@ public:
     // Returns _electionId.  Only used in unittests.
     OID getElectionId() const;
 
-    // Returns _currentPrimaryIndex.  Only used in unittests.
-    int getCurrentPrimaryIndex() const;
-
 private:
     enum UnelectableReason {
         None = 0,
@@ -295,8 +296,13 @@ private:
         VotedTooRecently = 1 << 8,
         RefusesToStand = 1 << 9,
         NotCloseEnoughToLatestForPriorityTakeover = 1 << 10,
+        NotFreshEnoughForCatchupTakeover = 1 << 11,
     };
     typedef int UnelectableReasonMask;
+
+
+    // Set what type of PRIMARY this node currently is.
+    void _setLeaderMode(LeaderMode mode);
 
     // Returns the number of heartbeat pings which have occurred.
     int _getTotalPings();
@@ -327,8 +333,13 @@ private:
     // Is our optime close enough to the latest known optime to call for a priority takeover.
     bool _amIFreshEnoughForPriorityTakeover() const;
 
+    // Is the primary node still in catchup mode and is our optime the latest
+    // known optime of all the up nodes.
+    bool _amIFreshEnoughForCatchupTakeover() const;
+
     // Returns reason why "self" member is unelectable
-    UnelectableReasonMask _getMyUnelectableReason(const Date_t now, bool isPriorityTakeover) const;
+    UnelectableReasonMask _getMyUnelectableReason(const Date_t now,
+                                                  StartElectionReason reason) const;
 
     // Returns reason why memberIndex is unelectable
     UnelectableReasonMask _getUnelectableReason(int memberIndex) const;
@@ -391,6 +402,15 @@ private:
      **/
     bool _memberIsBlacklisted(const MemberConfig& memberConfig, Date_t now) const;
 
+    /**
+     * Returns true if we are a one-node replica set, we're the one member,
+     * we're electable, we're not in maintenance mode, and we are currently in followerMode
+     * SECONDARY.
+     *
+     * This is used to decide if we should transition to Role::candidate in a one-node replica set.
+     */
+    bool _isElectableNodeInSingleNodeReplicaSet() const;
+
     // This node's role in the replication protocol.
     Role _role;
 
@@ -437,9 +457,6 @@ private:
     // well.
     std::vector<MemberData> _memberData;
 
-    // Indicates that we've received a request to stepdown from PRIMARY (likely via a heartbeat)
-    bool _stepDownPending;
-
     // Time when stepDown command expires
     Date_t _stepDownUntil;
 
@@ -465,6 +482,10 @@ private:
     // Rather than accesing this variable direclty, one should use the getMemberState() method,
     // which computes the replica set node state on the fly.
     MemberState::MS _followerMode;
+
+    // What type of PRIMARY this node currently is.  Don't set this directly, call _setLeaderMode
+    // instead.
+    LeaderMode _leaderMode = LeaderMode::kNotLeader;
 
     typedef std::map<HostAndPort, PingStats> PingMap;
     // Ping stats for each member by HostAndPort;

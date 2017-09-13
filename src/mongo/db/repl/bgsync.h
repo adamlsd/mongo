@@ -36,6 +36,7 @@
 #include "mongo/db/repl/data_replicator_external_state.h"
 #include "mongo/db/repl/oplog_buffer.h"
 #include "mongo/db/repl/oplog_fetcher.h"
+#include "mongo/db/repl/oplog_interface_remote.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/rollback_impl.h"
 #include "mongo/db/repl/sync_source_resolver.h"
@@ -55,6 +56,7 @@ namespace repl {
 class OplogInterface;
 class ReplicationCoordinator;
 class ReplicationCoordinatorExternalState;
+class ReplicationProcess;
 class StorageInterface;
 
 class BackgroundSync {
@@ -76,6 +78,7 @@ public:
     enum class ProducerState { Starting, Running, Stopped };
 
     BackgroundSync(ReplicationCoordinatorExternalState* replicationCoordinatorExternalState,
+                   ReplicationProcess* replicationProcess,
                    std::unique_ptr<OplogBuffer> oplogBuffer);
 
     // stop syncing (when this node becomes a primary, e.g.)
@@ -173,22 +176,32 @@ private:
                       StorageInterface* storageInterface);
 
     /**
-     * Executes a rollback using the 3.4 algorithm in rs_rollback.cpp.
+     * Executes a rollback with the recover to checkpoint algorithm. This is the default rollback
+     * algorithm.
+     */
+    void _runRollbackViaRecoverToCheckpoint(OperationContext* opCtx,
+                                            const HostAndPort& source,
+                                            OplogInterface* localOplog,
+                                            StorageInterface* storageInterface,
+                                            OplogInterfaceRemote::GetConnectionFn getConnection);
+
+    /**
+     * Executes a rollback via refetch in either rs_rollback.cpp or rs_rollback_no_uuid.cpp
      *
-     * We fall back on the 3.4 rollback algorithm when:
-     * 1)  the server parameter "use3dot4Rollback" is enabled; or
-     * 2)  the current rollback algorithm in RollbackImpl determines that it cannot handle certain
-     *     3.4 operations (either in the local or remote oplog) and returns an error code of
-     *     MustFallBackOn3dot4Rollback.
+     * We fall back on the rollback via refetch algorithm when:
+     * 1)  the server parameter "rollbackMethod" is set to "rollbackViaRefetch" or
+     *     "rollbackViaRefetchNoUUID"; or
+     * 2)  the storage engine does not support "rollback to a checkpoint."
      *
      * Must be called from _runRollback() which ensures that all the conditions for entering
      * rollback have been met.
      */
-    void _fallBackOn3dot4Rollback(OperationContext* opCtx,
-                                  const HostAndPort& source,
-                                  int requiredRBID,
-                                  OplogInterface* localOplog,
-                                  StorageInterface* storageInterface);
+    void _fallBackOnRollbackViaRefetch(OperationContext* opCtx,
+                                       const HostAndPort& source,
+                                       int requiredRBID,
+                                       OplogInterface* localOplog,
+                                       bool useUUID,
+                                       OplogInterfaceRemote::GetConnectionFn getConnection);
 
     // restart syncing
     void start(OperationContext* opCtx);
@@ -203,6 +216,9 @@ private:
 
     // A pointer to the replication coordinator external state.
     ReplicationCoordinatorExternalState* _replicationCoordinatorExternalState;
+
+    // A pointer to the replication process.
+    ReplicationProcess* _replicationProcess;
 
     /**
       * All member variables are labeled with one of the following codes indicating the
@@ -252,7 +268,7 @@ private:
     // Current rollback process. If this component is active, we are currently reverting local
     // operations in the local oplog in order to bring this server to a consistent state relative
     // to the sync source.
-    std::unique_ptr<RollbackImpl> _rollback;
+    std::unique_ptr<RollbackImpl> _rollback;  // (PR)
 };
 
 

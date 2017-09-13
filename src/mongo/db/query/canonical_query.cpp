@@ -98,25 +98,39 @@ bool matchExpressionLessThan(const MatchExpression* lhs, const MatchExpression* 
     return matchExpressionComparator(lhs, rhs) < 0;
 }
 
+bool parsingCanProduceNoopMatchNodes(const ExtensionsCallback& extensionsCallback,
+                                     MatchExpressionParser::AllowedFeatureSet allowedFeatures) {
+    return extensionsCallback.hasNoopExtensions() &&
+        (allowedFeatures & MatchExpressionParser::AllowedFeatures::kText ||
+         allowedFeatures & MatchExpressionParser::AllowedFeatures::kJavascript);
+}
+
 }  // namespace
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
-    OperationContext* opCtx, const QueryMessage& qm, const ExtensionsCallback& extensionsCallback) {
+    OperationContext* opCtx,
+    const QueryMessage& qm,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const ExtensionsCallback& extensionsCallback,
+    MatchExpressionParser::AllowedFeatureSet allowedFeatures) {
     // Make QueryRequest.
     auto qrStatus = QueryRequest::fromLegacyQueryMessage(qm);
     if (!qrStatus.isOK()) {
         return qrStatus.getStatus();
     }
 
-    return CanonicalQuery::canonicalize(opCtx, std::move(qrStatus.getValue()), extensionsCallback);
+    return CanonicalQuery::canonicalize(
+        opCtx, std::move(qrStatus.getValue()), expCtx, extensionsCallback, allowedFeatures);
 }
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     OperationContext* opCtx,
     std::unique_ptr<QueryRequest> qr,
-    const ExtensionsCallback& extensionsCallback) {
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    const ExtensionsCallback& extensionsCallback,
+    MatchExpressionParser::AllowedFeatureSet allowedFeatures) {
     auto qrStatus = qr->validate();
     if (!qrStatus.isOK()) {
         return qrStatus;
@@ -133,8 +147,8 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     }
 
     // Make MatchExpression.
-    StatusWithMatchExpression statusWithMatcher =
-        MatchExpressionParser::parse(qr->getFilter(), extensionsCallback, collator.get());
+    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
+        qr->getFilter(), collator.get(), expCtx, extensionsCallback, allowedFeatures);
     if (!statusWithMatcher.isOK()) {
         return statusWithMatcher.getStatus();
     }
@@ -144,7 +158,10 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
     std::unique_ptr<CanonicalQuery> cq(new CanonicalQuery());
 
     Status initStatus =
-        cq->init(std::move(qr), extensionsCallback, me.release(), std::move(collator));
+        cq->init(std::move(qr),
+                 parsingCanProduceNoopMatchNodes(extensionsCallback, allowedFeatures),
+                 me.release(),
+                 std::move(collator));
 
     if (!initStatus.isOK()) {
         return initStatus;
@@ -154,10 +171,7 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 
 // static
 StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
-    OperationContext* opCtx,
-    const CanonicalQuery& baseQuery,
-    MatchExpression* root,
-    const ExtensionsCallback& extensionsCallback) {
+    OperationContext* opCtx, const CanonicalQuery& baseQuery, MatchExpression* root) {
     // TODO: we should be passing the filter corresponding to 'root' to the QR rather than the base
     // query's filter, baseQuery.getQueryRequest().getFilter().
     auto qr = stdx::make_unique<QueryRequest>(baseQuery.nss());
@@ -178,8 +192,10 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 
     // Make the CQ we'll hopefully return.
     std::unique_ptr<CanonicalQuery> cq(new CanonicalQuery());
-    Status initStatus = cq->init(
-        std::move(qr), extensionsCallback, root->shallowClone().release(), std::move(collator));
+    Status initStatus = cq->init(std::move(qr),
+                                 baseQuery.canHaveNoopMatchNodes(),
+                                 root->shallowClone().release(),
+                                 std::move(collator));
 
     if (!initStatus.isOK()) {
         return initStatus;
@@ -188,13 +204,13 @@ StatusWith<std::unique_ptr<CanonicalQuery>> CanonicalQuery::canonicalize(
 }
 
 Status CanonicalQuery::init(std::unique_ptr<QueryRequest> qr,
-                            const ExtensionsCallback& extensionsCallback,
+                            bool canHaveNoopMatchNodes,
                             MatchExpression* root,
                             std::unique_ptr<CollatorInterface> collator) {
     _qr = std::move(qr);
     _collator = std::move(collator);
 
-    _hasNoopExtensions = extensionsCallback.hasNoopExtensions();
+    _canHaveNoopMatchNodes = canHaveNoopMatchNodes;
     _isIsolated = QueryRequest::isQueryIsolated(_qr->getFilter());
 
     // Normalize, sort and validate tree.
@@ -210,8 +226,7 @@ Status CanonicalQuery::init(std::unique_ptr<QueryRequest> qr,
     // Validate the projection if there is one.
     if (!_qr->getProj().isEmpty()) {
         ParsedProjection* pp;
-        Status projStatus =
-            ParsedProjection::make(_qr->getProj(), _root.get(), &pp, extensionsCallback);
+        Status projStatus = ParsedProjection::make(_qr->getProj(), _root.get(), &pp);
         if (!projStatus.isOK()) {
             return projStatus;
         }
@@ -325,7 +340,7 @@ MatchExpression* CanonicalQuery::normalizeTree(MatchExpression* root) {
 
             // Make a NOT to be the new root and transfer ownership of the child to it.
             auto newRoot = stdx::make_unique<NotMatchExpression>();
-            newRoot->init(child.release());
+            newRoot->init(child.release()).transitional_ignore();
 
             return newRoot.release();
         }
@@ -358,7 +373,7 @@ MatchExpression* CanonicalQuery::normalizeTree(MatchExpression* root) {
 
             // Create a new RegexMatchExpression, because 'childRe' does not have a path.
             auto re = stdx::make_unique<RegexMatchExpression>();
-            re->init(in->path(), childRe->getString(), childRe->getFlags());
+            re->init(in->path(), childRe->getString(), childRe->getFlags()).transitional_ignore();
             if (in->getTag()) {
                 re->setTag(in->getTag()->clone());
             }
@@ -368,7 +383,7 @@ MatchExpression* CanonicalQuery::normalizeTree(MatchExpression* root) {
         // IN of 1 equality is the equality.
         if (in->getEqualities().size() == 1 && in->getRegexes().empty()) {
             auto eq = stdx::make_unique<EqualityMatchExpression>();
-            eq->init(in->path(), *(in->getEqualities().begin()));
+            eq->init(in->path(), *(in->getEqualities().begin())).transitional_ignore();
             eq->setCollator(in->getCollator());
             if (in->getTag()) {
                 eq->setTag(in->getTag()->clone());
@@ -521,7 +536,7 @@ Status CanonicalQuery::isValid(MatchExpression* root, const QueryRequest& parsed
 
 std::string CanonicalQuery::toString() const {
     str::stream ss;
-    ss << "ns=" << _qr->ns();
+    ss << "ns=" << _qr->nss().ns();
 
     if (_qr->getBatchSize()) {
         ss << " batchSize=" << *_qr->getBatchSize();

@@ -39,6 +39,7 @@
 namespace mongo {
 class Collection;
 class DocumentSourceCursor;
+class DocumentSourceMatch;
 class DocumentSourceSort;
 class ExpressionContext;
 class OperationContext;
@@ -71,11 +72,12 @@ public:
      *
      * The cursor is added to the front of the pipeline's sources.
      *
-     * Callers must take care to ensure that 'collection' is locked in at least IS-mode.
+     * Callers must take care to ensure that 'nss' is locked in at least IS-mode.
      *
      * When not null, 'aggRequest' provides access to pipeline command options such as hint.
      */
     static void prepareCursorSource(Collection* collection,
+                                    const NamespaceString& nss,
                                     const AggregationRequest* aggRequest,
                                     Pipeline* pipeline);
 
@@ -101,6 +103,7 @@ private:
         const NamespaceString& nss,
         Pipeline* pipeline,
         const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        bool oplogReplay,
         const boost::intrusive_ptr<DocumentSourceSort>& sortStage,
         const DepsTracker& deps,
         const BSONObj& queryObj,

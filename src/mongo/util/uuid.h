@@ -53,15 +53,26 @@ class UUID {
     using UUIDStorage = std::array<unsigned char, 16>;
 
     // Make the IDL generated parser a friend
+    friend class ConfigsvrShardCollectionResponse;
+    friend class DbCheckOplogCollection;
     friend class One_UUID;
-    friend class Logical_session_id;
+    friend class LogicalSessionId;
+    friend class LogicalSessionToClient;
+    friend class LogicalSessionIdToClient;
+    friend class LogicalSessionFromClient;
     friend class repl::OplogEntryBase;
+    friend class ResumeTokenInternal;
 
 public:
     /**
      * The number of bytes contained in a UUID.
      */
     static constexpr int kNumBytes = sizeof(UUIDStorage);
+
+    /**
+     * Creates an empty UUID.
+     */
+    UUID() = default;
 
     /**
      * Generate a new random v4 UUID per RFC 4122.
@@ -81,11 +92,18 @@ public:
     static StatusWith<UUID> parse(BSONElement from);
 
     /**
-     * Parse a BSON document of the form { uuid: BinData(4, "...") }.
+     * Parses a BSON document of the form { uuid: BinData(4, "...") }.
      *
      * For IDL.
      */
     static UUID parse(const BSONObj& obj);
+
+    static UUID fromCDR(ConstDataRange cdr) {
+        UUID uuid;
+        invariant(cdr.length() == uuid._uuid.size());
+        memcpy(uuid._uuid.data(), cdr.data(), uuid._uuid.size());
+        return uuid;
+    }
 
     /**
      * Returns whether this string represents a valid UUID.
@@ -100,17 +118,17 @@ public:
     }
 
     /**
-     * Append to builder as BinData(4, "...") element with the given name.
+     * Appends to builder as BinData(4, "...") element with the given name.
      */
     void appendToBuilder(BSONObjBuilder* builder, StringData name) const;
 
     /**
-     * Return a BSON object of the form { uuid: BinData(4, "...") }.
+     * Returns a BSON object of the form { uuid: BinData(4, "...") }.
      */
     BSONObj toBSON() const;
 
     /**
-     * Return a string representation of this UUID, in hexadecimal,
+     * Returns a string representation of this UUID, in hexadecimal,
      * as per RFC 4122:
      *
      * 4 Octets - 2 Octets - 2 Octets - 2 Octets - 6 Octets
@@ -124,6 +142,27 @@ public:
     inline bool operator!=(const UUID& rhs) const {
         return !(*this == rhs);
     }
+
+    inline bool operator<(const UUID& rhs) const {
+        return _uuid < rhs._uuid;
+    }
+
+    inline bool operator>(const UUID& rhs) const {
+        return _uuid > rhs._uuid;
+    }
+
+    inline bool operator<=(const UUID& rhs) const {
+        return _uuid <= rhs._uuid;
+    }
+
+    inline bool operator>=(const UUID& rhs) const {
+        return _uuid >= rhs._uuid;
+    }
+
+    /**
+     * Returns true only if the UUID is the RFC 4122 variant, v4 (random).
+     */
+    bool isRFC4122v4() const;
 
     /**
      * Custom hasher so UUIDs can be used in unordered data structures.
@@ -139,8 +178,6 @@ public:
     };
 
 private:
-    UUID() = default;
-
     UUID(const UUIDStorage& uuid) : _uuid(uuid) {}
 
     UUIDStorage _uuid;  // UUID in network byte order

@@ -28,18 +28,45 @@
  *    it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/matcher/expression_parser.h"
 
+#include <boost/container/flat_set.hpp>
+#include <pcrecpp.h>
+
+#include "mongo/base/init.h"
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/matcher/expression_always_boolean.h"
 #include "mongo/db/matcher/expression_array.h"
+#include "mongo/db/matcher/expression_expr.h"
+#include "mongo/db/matcher/expression_geo.h"
 #include "mongo/db/matcher/expression_leaf.h"
 #include "mongo/db/matcher/expression_tree.h"
+#include "mongo/db/matcher/expression_type.h"
+#include "mongo/db/matcher/expression_with_placeholder.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_all_elem_match_from_index.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_allowed_properties.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_cond.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_fmod.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_match_array_index.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_max_items.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_max_length.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_max_properties.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_min_items.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_min_length.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_min_properties.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_object_match.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_unique_items.h"
+#include "mongo/db/matcher/schema/expression_internal_schema_xor.h"
+#include "mongo/db/matcher/schema/json_schema_parser.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/mongoutils/str.h"
-
+#include "mongo/util/string_map.h"
 
 namespace {
 
@@ -60,18 +87,36 @@ bool hasNode(const MatchExpression* root, MatchExpression::MatchType type) {
     return false;
 }
 
+const boost::container::flat_set<StringData> topLevelOperators{"$_internalSchemaAllowedProperties",
+                                                               "$_internalSchemaMaxProperties",
+                                                               "$_internalSchemaMinProperties",
+                                                               "$_internalSchemaXor",
+                                                               "$and",
+                                                               "$nor",
+                                                               "$or",
+                                                               "$where"};
+
 }  // namespace
 
 namespace mongo {
 
+constexpr StringData MatchExpressionParser::kAggExpression;
+constexpr StringData AlwaysFalseMatchExpression::kName;
+constexpr StringData AlwaysTrueMatchExpression::kName;
+
 using std::string;
 using stdx::make_unique;
+
+const double MatchExpressionParser::kLongLongMaxPlusOneAsDouble =
+    scalbn(1, std::numeric_limits<long long>::digits);
 
 StatusWithMatchExpression MatchExpressionParser::_parseComparison(
     const char* name,
     ComparisonMatchExpression* cmp,
     const BSONElement& e,
-    const CollatorInterface* collator) {
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures) {
     std::unique_ptr<ComparisonMatchExpression> temp(cmp);
 
     // Non-equality comparison match expressions cannot have
@@ -82,55 +127,65 @@ StatusWithMatchExpression MatchExpressionParser::_parseComparison(
         return {Status(ErrorCodes::BadValue, ss)};
     }
 
-    Status s = temp->init(name, e);
-    if (!s.isOK())
+    auto s = temp->init(name, e);
+    if (!s.isOK()) {
         return s;
+    }
+
     temp->setCollator(collator);
 
     return {std::move(temp)};
 }
 
-StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& context,
-                                                                const AndMatchExpression* andSoFar,
-                                                                const char* name,
-                                                                const BSONElement& e,
-                                                                const CollatorInterface* collator,
-                                                                bool topLevel) {
-    // TODO: these should move to getGtLtOp, or its replacement
-
+StatusWithMatchExpression MatchExpressionParser::_parseSubField(
+    const BSONObj& context,
+    const AndMatchExpression* andSoFar,
+    const char* name,
+    const BSONElement& e,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures,
+    bool topLevel) {
     if (mongoutils::str::equals("$eq", e.fieldName()))
-        return _parseComparison(name, new EqualityMatchExpression(), e, collator);
+        return _parseComparison(
+            name, new EqualityMatchExpression(), e, collator, expCtx, allowedFeatures);
 
     if (mongoutils::str::equals("$not", e.fieldName())) {
-        return _parseNot(name, e, collator, topLevel);
+        return _parseNot(name, e, collator, expCtx, allowedFeatures, topLevel);
     }
 
-    int x = e.getGtLtOp(-1);
-    switch (x) {
-        case -1:
-            // $where cannot be a sub-expression because it works on top-level documents only.
-            if (mongoutils::str::equals("$where", e.fieldName())) {
-                return {Status(ErrorCodes::BadValue, "$where cannot be applied to a field")};
-            }
+    auto parseExpMatchType = MatchExpressionParser::parsePathAcceptingKeyword(e);
+    if (!parseExpMatchType) {
+        // $where cannot be a sub-expression because it works on top-level documents only.
+        if (mongoutils::str::equals("$where", e.fieldName())) {
+            return {Status(ErrorCodes::BadValue, "$where cannot be applied to a field")};
+        }
 
-            return {Status(ErrorCodes::BadValue,
-                           mongoutils::str::stream() << "unknown operator: " << e.fieldName())};
-        case BSONObj::LT:
-            return _parseComparison(name, new LTMatchExpression(), e, collator);
-        case BSONObj::LTE:
-            return _parseComparison(name, new LTEMatchExpression(), e, collator);
-        case BSONObj::GT:
-            return _parseComparison(name, new GTMatchExpression(), e, collator);
-        case BSONObj::GTE:
-            return _parseComparison(name, new GTEMatchExpression(), e, collator);
-        case BSONObj::NE: {
+        return {Status(ErrorCodes::BadValue,
+                       mongoutils::str::stream() << "unknown operator: " << e.fieldName())};
+    }
+
+    switch (*parseExpMatchType) {
+        case PathAcceptingKeyword::LESS_THAN:
+            return _parseComparison(
+                name, new LTMatchExpression(), e, collator, expCtx, allowedFeatures);
+        case PathAcceptingKeyword::LESS_THAN_OR_EQUAL:
+            return _parseComparison(
+                name, new LTEMatchExpression(), e, collator, expCtx, allowedFeatures);
+        case PathAcceptingKeyword::GREATER_THAN:
+            return _parseComparison(
+                name, new GTMatchExpression(), e, collator, expCtx, allowedFeatures);
+        case PathAcceptingKeyword::GREATER_THAN_OR_EQUAL:
+            return _parseComparison(
+                name, new GTEMatchExpression(), e, collator, expCtx, allowedFeatures);
+        case PathAcceptingKeyword::NOT_EQUAL: {
             if (RegEx == e.type()) {
                 // Just because $ne can be rewritten as the negation of an
                 // equality does not mean that $ne of a regex is allowed. See SERVER-1705.
                 return {Status(ErrorCodes::BadValue, "Can't have regex as arg to $ne.")};
             }
-            StatusWithMatchExpression s =
-                _parseComparison(name, new EqualityMatchExpression(), e, collator);
+            StatusWithMatchExpression s = _parseComparison(
+                name, new EqualityMatchExpression(), e, collator, expCtx, allowedFeatures);
             if (!s.isOK())
                 return s;
             std::unique_ptr<NotMatchExpression> n = stdx::make_unique<NotMatchExpression>();
@@ -139,30 +194,31 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
                 return s2;
             return {std::move(n)};
         }
-        case BSONObj::Equality:
-            return _parseComparison(name, new EqualityMatchExpression(), e, collator);
+        case PathAcceptingKeyword::EQUALITY:
+            return _parseComparison(
+                name, new EqualityMatchExpression(), e, collator, expCtx, allowedFeatures);
 
-        case BSONObj::opIN: {
+        case PathAcceptingKeyword::IN_EXPR: {
             if (e.type() != Array)
                 return {Status(ErrorCodes::BadValue, "$in needs an array")};
             std::unique_ptr<InMatchExpression> temp = stdx::make_unique<InMatchExpression>();
             Status s = temp->init(name);
             if (!s.isOK())
                 return s;
-            s = _parseInExpression(temp.get(), e.Obj(), collator);
+            s = _parseInExpression(temp.get(), e.Obj(), collator, expCtx);
             if (!s.isOK())
                 return s;
             return {std::move(temp)};
         }
 
-        case BSONObj::NIN: {
+        case PathAcceptingKeyword::NOT_IN: {
             if (e.type() != Array)
                 return {Status(ErrorCodes::BadValue, "$nin needs an array")};
             std::unique_ptr<InMatchExpression> temp = stdx::make_unique<InMatchExpression>();
             Status s = temp->init(name);
             if (!s.isOK())
                 return s;
-            s = _parseInExpression(temp.get(), e.Obj(), collator);
+            s = _parseInExpression(temp.get(), e.Obj(), collator, expCtx);
             if (!s.isOK())
                 return s;
 
@@ -174,7 +230,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
             return {std::move(temp2)};
         }
 
-        case BSONObj::opSIZE: {
+        case PathAcceptingKeyword::SIZE: {
             int size = 0;
             if (e.type() == NumberInt) {
                 size = e.numberInt();
@@ -205,7 +261,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
             return {std::move(temp)};
         }
 
-        case BSONObj::opEXISTS: {
+        case PathAcceptingKeyword::EXISTS: {
             if (e.eoo())
                 return {Status(ErrorCodes::BadValue, "$exists can't be eoo")};
             std::unique_ptr<ExistsMatchExpression> temp =
@@ -222,60 +278,185 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
             return {std::move(temp2)};
         }
 
-        case BSONObj::opTYPE:
-            return _parseType(name, e);
+        case PathAcceptingKeyword::TYPE:
+            return _parseType<TypeMatchExpression>(name, e);
 
-        case BSONObj::opMOD:
+        case PathAcceptingKeyword::MOD:
             return _parseMOD(name, e);
 
-        case BSONObj::opOPTIONS: {
+        case PathAcceptingKeyword::OPTIONS: {
             // TODO: try to optimize this
             // we have to do this since $options can be before or after a $regex
             // but we validate here
             BSONObjIterator i(context);
             while (i.more()) {
                 BSONElement temp = i.next();
-                if (temp.getGtLtOp(-1) == BSONObj::opREGEX)
+                if (MatchExpressionParser::parsePathAcceptingKeyword(temp) ==
+                    PathAcceptingKeyword::REGEX)
                     return {nullptr};
             }
 
             return {Status(ErrorCodes::BadValue, "$options needs a $regex")};
         }
 
-        case BSONObj::opREGEX: {
+        case PathAcceptingKeyword::REGEX: {
             return _parseRegexDocument(name, context);
         }
 
-        case BSONObj::opELEM_MATCH:
-            return _parseElemMatch(name, e, collator, topLevel);
+        case PathAcceptingKeyword::ELEM_MATCH:
+            return _parseElemMatch(name, e, collator, expCtx, allowedFeatures, topLevel);
 
-        case BSONObj::opALL:
-            return _parseAll(name, e, collator, topLevel);
+        case PathAcceptingKeyword::ALL:
+            return _parseAll(name, e, collator, expCtx, allowedFeatures, topLevel);
 
-        case BSONObj::opWITHIN:
-        case BSONObj::opGEO_INTERSECTS:
-            return expressionParserGeoCallback(name, x, context);
+        case PathAcceptingKeyword::WITHIN:
+        case PathAcceptingKeyword::GEO_INTERSECTS:
+            return _parseGeo(name, *parseExpMatchType, context, allowedFeatures);
 
-        case BSONObj::opNEAR:
+        case PathAcceptingKeyword::GEO_NEAR:
             return {Status(ErrorCodes::BadValue,
                            mongoutils::str::stream() << "near must be first in: " << context)};
 
 
         // Handles bitwise query operators.
-        case BSONObj::opBITS_ALL_SET: {
+        case PathAcceptingKeyword::BITS_ALL_SET: {
             return _parseBitTest<BitsAllSetMatchExpression>(name, e);
         }
 
-        case BSONObj::opBITS_ALL_CLEAR: {
+        case PathAcceptingKeyword::BITS_ALL_CLEAR: {
             return _parseBitTest<BitsAllClearMatchExpression>(name, e);
         }
 
-        case BSONObj::opBITS_ANY_SET: {
+        case PathAcceptingKeyword::BITS_ANY_SET: {
             return _parseBitTest<BitsAnySetMatchExpression>(name, e);
         }
 
-        case BSONObj::opBITS_ANY_CLEAR: {
+        case PathAcceptingKeyword::BITS_ANY_CLEAR: {
             return _parseBitTest<BitsAnyClearMatchExpression>(name, e);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_FMOD:
+            return _parseInternalSchemaFmod(name, e);
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_ITEMS: {
+            return _parseInternalSchemaSingleIntegerArgument<InternalSchemaMinItemsMatchExpression>(
+                name, e);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_ITEMS: {
+            return _parseInternalSchemaSingleIntegerArgument<InternalSchemaMaxItemsMatchExpression>(
+                name, e);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_OBJECT_MATCH: {
+            if (e.type() != BSONType::Object) {
+                return Status(ErrorCodes::FailedToParse,
+                              str::stream() << "$_internalSchemaObjectMatch must be an object");
+            }
+
+            auto parsedSubObjExpr = _parse(e.Obj(), collator, expCtx, allowedFeatures, topLevel);
+            if (!parsedSubObjExpr.isOK()) {
+                return parsedSubObjExpr;
+            }
+
+            auto expr = stdx::make_unique<InternalSchemaObjectMatchExpression>();
+            auto status = expr->init(std::move(parsedSubObjExpr.getValue()), name);
+            if (!status.isOK()) {
+                return status;
+            }
+            return {std::move(expr)};
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_UNIQUE_ITEMS: {
+            if (!e.isBoolean() || !e.boolean()) {
+                return {ErrorCodes::FailedToParse,
+                        str::stream() << name << " must be a boolean of value true"};
+            }
+
+            auto expr = stdx::make_unique<InternalSchemaUniqueItemsMatchExpression>();
+            auto status = expr->init(name);
+            if (!status.isOK()) {
+                return status;
+            }
+            return {std::move(expr)};
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_LENGTH: {
+            return _parseInternalSchemaSingleIntegerArgument<
+                InternalSchemaMinLengthMatchExpression>(name, e);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_LENGTH: {
+            return _parseInternalSchemaSingleIntegerArgument<
+                InternalSchemaMaxLengthMatchExpression>(name, e);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_MATCH_ARRAY_INDEX: {
+            return _parseInternalSchemaMatchArrayIndex(name, e, collator);
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_ALL_ELEM_MATCH_FROM_INDEX: {
+            if (e.type() != BSONType::Array) {
+                return Status(ErrorCodes::FailedToParse,
+                              str::stream()
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << " must be an array");
+            }
+            auto elemMatchObj = e.embeddedObject();
+            auto iter = elemMatchObj.begin();
+            if (!iter.more()) {
+                return Status(ErrorCodes::FailedToParse,
+                              str::stream()
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << " must be an array of size 2");
+            }
+            auto first = iter.next();
+            auto parsedIndex = parseIntegerElementToNonNegativeLong(first);
+            if (!parsedIndex.isOK()) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream()
+                                  << "first element of "
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << " must be a non-negative integer");
+            }
+            if (!iter.more()) {
+                return Status(ErrorCodes::FailedToParse,
+                              str::stream()
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << " must be an array of size 2");
+            }
+            auto second = iter.next();
+            if (iter.more()) {
+                return Status(ErrorCodes::FailedToParse,
+                              str::stream()
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << " has too many elements, must be an array of size 2");
+            }
+            if (second.type() != BSONType::Object) {
+                return Status(ErrorCodes::TypeMismatch,
+                              str::stream()
+                                  << "second element of "
+                                  << InternalSchemaAllElemMatchFromIndexMatchExpression::kName
+                                  << "must be an object");
+            }
+
+            auto exprWithPlaceholder =
+                ExpressionWithPlaceholder::parse(second.embeddedObject(), collator);
+            if (!exprWithPlaceholder.isOK()) {
+                return exprWithPlaceholder.getStatus();
+            }
+
+            auto expr = stdx::make_unique<InternalSchemaAllElemMatchFromIndexMatchExpression>();
+            auto status =
+                expr->init(name, parsedIndex.getValue(), std::move(exprWithPlaceholder.getValue()));
+            if (!status.isOK()) {
+                return status;
+            }
+            return {std::move(expr)};
+        }
+
+        case PathAcceptingKeyword::INTERNAL_SCHEMA_TYPE: {
+            return _parseType<InternalSchemaTypeExpression>(name, e);
         }
     }
 
@@ -283,9 +464,12 @@ StatusWithMatchExpression MatchExpressionParser::_parseSubField(const BSONObj& c
                    mongoutils::str::stream() << "not handled: " << e.fieldName())};
 }
 
-StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
-                                                        const CollatorInterface* collator,
-                                                        bool topLevel) {
+StatusWithMatchExpression MatchExpressionParser::_parse(
+    const BSONObj& obj,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures,
+    bool topLevel) {
     std::unique_ptr<AndMatchExpression> root = stdx::make_unique<AndMatchExpression>();
 
     const bool childIsTopLevel = false;
@@ -295,12 +479,12 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
         if (e.fieldName()[0] == '$') {
             const char* rest = e.fieldName() + 1;
 
-            // TODO: optimize if block?
             if (mongoutils::str::equals("or", rest)) {
                 if (e.type() != Array)
                     return {Status(ErrorCodes::BadValue, "$or must be an array")};
                 std::unique_ptr<OrMatchExpression> temp = stdx::make_unique<OrMatchExpression>();
-                Status s = _parseTreeList(e.Obj(), temp.get(), collator, childIsTopLevel);
+                Status s = _parseTreeList(
+                    e.Obj(), temp.get(), collator, expCtx, allowedFeatures, childIsTopLevel);
                 if (!s.isOK())
                     return s;
                 root->add(temp.release());
@@ -308,7 +492,8 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 if (e.type() != Array)
                     return {Status(ErrorCodes::BadValue, "$and must be an array")};
                 std::unique_ptr<AndMatchExpression> temp = stdx::make_unique<AndMatchExpression>();
-                Status s = _parseTreeList(e.Obj(), temp.get(), collator, childIsTopLevel);
+                Status s = _parseTreeList(
+                    e.Obj(), temp.get(), collator, expCtx, allowedFeatures, childIsTopLevel);
                 if (!s.isOK())
                     return s;
                 root->add(temp.release());
@@ -316,7 +501,8 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 if (e.type() != Array)
                     return {Status(ErrorCodes::BadValue, "$nor must be an array")};
                 std::unique_ptr<NorMatchExpression> temp = stdx::make_unique<NorMatchExpression>();
-                Status s = _parseTreeList(e.Obj(), temp.get(), collator, childIsTopLevel);
+                Status s = _parseTreeList(
+                    e.Obj(), temp.get(), collator, expCtx, allowedFeatures, childIsTopLevel);
                 if (!s.isOK())
                     return s;
                 root->add(temp.release());
@@ -328,11 +514,28 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 // Don't do anything with the expression; CanonicalQuery::init() will look through
                 // the BSONObj again for a $atomic/$isolated.
             } else if (mongoutils::str::equals("where", rest)) {
+                if ((allowedFeatures & AllowedFeatures::kJavascript) == 0u) {
+                    return {Status(ErrorCodes::BadValue, "$where is not allowed in this context")};
+                }
+
                 StatusWithMatchExpression s = _extensionsCallback->parseWhere(e);
                 if (!s.isOK())
                     return s;
                 root->add(s.getValue().release());
+            } else if (mongoutils::str::equals("expr", rest)) {
+                if (!topLevel) {
+                    return {Status(ErrorCodes::BadValue, "$expr has to be at the top level")};
+                }
+
+                auto status = _parseExpr(e, allowedFeatures, expCtx);
+                if (!status.isOK())
+                    return status;
+                root->add(status.getValue().release());
             } else if (mongoutils::str::equals("text", rest)) {
+                if ((allowedFeatures & AllowedFeatures::kText) == 0u) {
+                    return {Status(ErrorCodes::BadValue, "$text is not allowed in this context")};
+                }
+
                 StatusWithMatchExpression s = _extensionsCallback->parseText(e);
                 if (!s.isOK()) {
                     return s;
@@ -351,6 +554,91 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
                 eq->setCollator(str::equals("id", rest) ? collator : nullptr);
 
                 root->add(eq.release());
+            } else if (mongoutils::str::equals("_internalSchemaAllowedProperties", rest)) {
+                auto allowedProperties = _parseInternalSchemaAllowedProperties(e, collator);
+                if (!allowedProperties.isOK()) {
+                    return allowedProperties.getStatus();
+                }
+                root->add(allowedProperties.getValue().release());
+            } else if (mongoutils::str::equals("_internalSchemaCond", rest)) {
+                auto condExpr =
+                    _parseInternalSchemaFixedArityArgument<InternalSchemaCondMatchExpression>(
+                        InternalSchemaCondMatchExpression::kName,
+                        e,
+                        collator,
+                        expCtx,
+                        allowedFeatures);
+                if (!condExpr.isOK()) {
+                    return condExpr.getStatus();
+                }
+                root->add(condExpr.getValue().release());
+
+            } else if (mongoutils::str::equals("_internalSchemaXor", rest)) {
+                if (e.type() != BSONType::Array)
+                    return {
+                        Status(ErrorCodes::TypeMismatch, "$_internalSchemaXor must be an array")};
+                auto xorExpr = stdx::make_unique<InternalSchemaXorMatchExpression>();
+                Status s = _parseTreeList(
+                    e.Obj(), xorExpr.get(), collator, expCtx, allowedFeatures, childIsTopLevel);
+                if (!s.isOK())
+                    return s;
+                root->add(xorExpr.release());
+            } else if (mongoutils::str::equals("_internalSchemaMinProperties", rest)) {
+                auto minPropsExpr = _parseTopLevelInternalSchemaSingleIntegerArgument<
+                    InternalSchemaMinPropertiesMatchExpression>(e);
+                if (!minPropsExpr.isOK()) {
+                    return minPropsExpr.getStatus();
+                }
+                root->add(minPropsExpr.getValue().release());
+            } else if (mongoutils::str::equals("_internalSchemaMaxProperties", rest)) {
+                auto maxPropsExpr = _parseTopLevelInternalSchemaSingleIntegerArgument<
+                    InternalSchemaMaxPropertiesMatchExpression>(e);
+                if (!maxPropsExpr.isOK()) {
+                    return maxPropsExpr.getStatus();
+                }
+                root->add(maxPropsExpr.getValue().release());
+            } else if (mongoutils::str::equals("jsonSchema", rest)) {
+                if ((allowedFeatures & AllowedFeatures::kJSONSchema) == 0u) {
+                    return Status(ErrorCodes::JSONSchemaNotAllowed,
+                                  "$jsonSchema is not allowed in this context");
+                }
+
+                if (e.type() != BSONType::Object) {
+                    return {Status(ErrorCodes::TypeMismatch, "$jsonSchema must be an object")};
+                }
+
+                auto schemaMatch = JSONSchemaParser::parse(
+                    e.Obj(), internalQueryIgnoreUnknownJSONSchemaKeywords.load());
+                if (!schemaMatch.isOK()) {
+                    return schemaMatch.getStatus();
+                }
+                root->add(schemaMatch.getValue().release());
+            } else if (mongoutils::str::equals("alwaysFalse", rest)) {
+                auto statusWithLong = MatchExpressionParser::parseIntegerElementToLong(e);
+                if (!statusWithLong.isOK()) {
+                    return statusWithLong.getStatus();
+                }
+
+                if (statusWithLong.getValue() != 1) {
+                    return {Status(ErrorCodes::FailedToParse,
+                                   "$alwaysFalse must be an integer value of 1")};
+                }
+
+                auto alwaysFalseExpr = stdx::make_unique<AlwaysFalseMatchExpression>();
+                root->add(alwaysFalseExpr.release());
+            } else if (mongoutils::str::equals("alwaysTrue", rest)) {
+                auto statusWithLong = MatchExpressionParser::parseIntegerElementToLong(e);
+                if (!statusWithLong.isOK()) {
+                    return statusWithLong.getStatus();
+                }
+
+                if (statusWithLong.getValue() != 1) {
+                    return {Status(ErrorCodes::FailedToParse,
+                                   "$alwaysTrue must be an integer value of 1")};
+                }
+
+                auto alwaysTrueExpr = stdx::make_unique<AlwaysTrueMatchExpression>();
+                root->add(alwaysTrueExpr.release());
             } else {
                 return {Status(ErrorCodes::BadValue,
                                mongoutils::str::stream() << "unknown top level operator: "
@@ -361,7 +649,13 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
         }
 
         if (_isExpressionDocument(e, false)) {
-            Status s = _parseSub(e.fieldName(), e.Obj(), root.get(), collator, childIsTopLevel);
+            Status s = _parseSub(e.fieldName(),
+                                 e.Obj(),
+                                 root.get(),
+                                 collator,
+                                 expCtx,
+                                 allowedFeatures,
+                                 childIsTopLevel);
             if (!s.isOK())
                 return s;
             continue;
@@ -375,14 +669,12 @@ StatusWithMatchExpression MatchExpressionParser::_parse(const BSONObj& obj,
             continue;
         }
 
-        std::unique_ptr<ComparisonMatchExpression> eq =
-            stdx::make_unique<EqualityMatchExpression>();
-        Status s = eq->init(e.fieldName(), e);
-        if (!s.isOK())
-            return s;
-        eq->setCollator(collator);
+        auto eq = _parseComparison(
+            e.fieldName(), new EqualityMatchExpression(), e, collator, expCtx, allowedFeatures);
+        if (!eq.isOK())
+            return eq;
 
-        root->add(eq.release());
+        root->add(eq.getValue().release());
     }
 
     if (root->numChildren() == 1) {
@@ -398,6 +690,8 @@ Status MatchExpressionParser::_parseSub(const char* name,
                                         const BSONObj& sub,
                                         AndMatchExpression* root,
                                         const CollatorInterface* collator,
+                                        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                        AllowedFeatureSet allowedFeatures,
                                         bool topLevel) {
     // The one exception to {field : {fully contained argument} } is, of course, geo.  Example:
     // sub == { field : {$near[Sphere]: [0,0], $maxDistance: 1000, $minDistance: 10 } }
@@ -412,14 +706,10 @@ Status MatchExpressionParser::_parseSub(const char* name,
     if (geoIt.more()) {
         BSONElement firstElt = geoIt.next();
         if (firstElt.isABSONObj()) {
-            const char* fieldName = firstElt.fieldName();
-            // TODO: Having these $fields here isn't ideal but we don't want to pull in anything
-            // from db/geo at this point, since it may not actually be linked in...
-            if (mongoutils::str::equals(fieldName, "$near") ||
-                mongoutils::str::equals(fieldName, "$nearSphere") ||
-                mongoutils::str::equals(fieldName, "$geoNear")) {
+            if (MatchExpressionParser::parsePathAcceptingKeyword(firstElt) ==
+                PathAcceptingKeyword::GEO_NEAR) {
                 StatusWithMatchExpression s =
-                    expressionParserGeoCallback(name, firstElt.getGtLtOp(), sub);
+                    _parseGeo(name, PathAcceptingKeyword::GEO_NEAR, sub, allowedFeatures);
                 if (s.isOK()) {
                     root->add(s.getValue().release());
                 }
@@ -435,8 +725,8 @@ Status MatchExpressionParser::_parseSub(const char* name,
         BSONElement deep = j.next();
 
         const bool childIsTopLevel = false;
-        StatusWithMatchExpression s =
-            _parseSubField(sub, root, name, deep, collator, childIsTopLevel);
+        StatusWithMatchExpression s = _parseSubField(
+            sub, root, name, deep, collator, expCtx, allowedFeatures, childIsTopLevel);
         if (!s.isOK())
             return s.getStatus();
 
@@ -555,8 +845,13 @@ StatusWithMatchExpression MatchExpressionParser::_parseRegexDocument(const char*
     BSONObjIterator i(doc);
     while (i.more()) {
         BSONElement e = i.next();
-        switch (e.getGtLtOp()) {
-            case BSONObj::opREGEX:
+        auto matchType = MatchExpressionParser::parsePathAcceptingKeyword(e);
+        if (!matchType) {
+            continue;
+        }
+
+        switch (*matchType) {
+            case PathAcceptingKeyword::REGEX:
                 if (e.type() == String) {
                     regex = e.String();
                 } else if (e.type() == RegEx) {
@@ -567,7 +862,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseRegexDocument(const char*
                 }
 
                 break;
-            case BSONObj::opOPTIONS:
+            case PathAcceptingKeyword::OPTIONS:
                 if (e.type() != String)
                     return {Status(ErrorCodes::BadValue, "$options has to be a string")};
                 regexOptions = e.String();
@@ -584,10 +879,13 @@ StatusWithMatchExpression MatchExpressionParser::_parseRegexDocument(const char*
     return {std::move(temp)};
 }
 
-Status MatchExpressionParser::_parseInExpression(InMatchExpression* inExpression,
-                                                 const BSONObj& theArray,
-                                                 const CollatorInterface* collator) {
+Status MatchExpressionParser::_parseInExpression(
+    InMatchExpression* inExpression,
+    const BSONObj& theArray,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx) {
     inExpression->setCollator(collator);
+    std::vector<BSONElement> equalities;
     BSONObjIterator i(theArray);
     while (i.more()) {
         BSONElement e = i.next();
@@ -606,67 +904,42 @@ Status MatchExpressionParser::_parseInExpression(InMatchExpression* inExpression
             if (!s.isOK())
                 return s;
         } else {
-            Status s = inExpression->addEquality(e);
-            if (!s.isOK())
-                return s;
+            equalities.push_back(e);
         }
     }
-    return Status::OK();
+    return inExpression->setEqualities(std::move(equalities));
 }
 
+template <class T>
 StatusWithMatchExpression MatchExpressionParser::_parseType(const char* name,
                                                             const BSONElement& elt) {
-    if (!elt.isNumber() && elt.type() != BSONType::String) {
-        return Status(ErrorCodes::TypeMismatch, "argument to $type is not a number or a string");
+    auto typeSet = MatcherTypeSet::parse(elt, MatcherTypeSet::kTypeAliasMap);
+    if (!typeSet.isOK()) {
+        return typeSet.getStatus();
     }
 
-    std::unique_ptr<TypeMatchExpression> temp = stdx::make_unique<TypeMatchExpression>();
+    auto typeExpr = stdx::make_unique<T>();
 
-    int typeInt;
-
-    // The element can be a number (the BSON type number) or a string representing the name
-    // of the type.
-    if (elt.isNumber()) {
-        typeInt = elt.numberInt();
-        if (elt.type() != NumberInt && typeInt != elt.number()) {
-            typeInt = -1;
-        }
-    } else {
-        invariant(elt.type() == BSONType::String);
-        std::string typeAlias = elt.str();
-
-        // If typeAlias is 'number', initialize as matching against all number types.
-        if (typeAlias == TypeMatchExpression::kMatchesAllNumbersAlias) {
-            Status s = temp->initAsMatchingAllNumbers(name);
-            if (!s.isOK()) {
-                return s;
-            }
-            return {std::move(temp)};
-        }
-
-        // Search the string-int map for the typeAlias (case-sensitive).
-        stdx::unordered_map<std::string, BSONType>::const_iterator it =
-            TypeMatchExpression::typeAliasMap.find(typeAlias);
-        if (it == TypeMatchExpression::typeAliasMap.end()) {
-            std::stringstream ss;
-            ss << "unknown string alias for $type: " << typeAlias;
-            return Status(ErrorCodes::BadValue, ss.str());
-        }
-        typeInt = it->second;
+    if (typeSet.getValue().isEmpty()) {
+        return {Status(ErrorCodes::FailedToParse,
+                       str::stream() << typeExpr->name() << " must match at least one type")};
     }
 
-    Status s = temp->initWithBSONType(name, typeInt);
-    if (!s.isOK()) {
-        return s;
+    auto status = typeExpr->init(name, std::move(typeSet.getValue()));
+    if (!status.isOK()) {
+        return status;
     }
 
-    return {std::move(temp)};
+    return {std::move(typeExpr)};
 }
 
-StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* name,
-                                                                 const BSONElement& e,
-                                                                 const CollatorInterface* collator,
-                                                                 bool topLevel) {
+StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(
+    const char* name,
+    const BSONElement& e,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures,
+    bool topLevel) {
     if (e.type() != Object)
         return {Status(ErrorCodes::BadValue, "$elemMatch needs an Object")};
 
@@ -686,17 +959,15 @@ StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* nam
         BSONElement elt = o.firstElement();
         invariant(!elt.eoo());
 
-        isElemMatchValue = !mongoutils::str::equals("$and", elt.fieldName()) &&
-            !mongoutils::str::equals("$nor", elt.fieldName()) &&
-            !mongoutils::str::equals("$or", elt.fieldName()) &&
-            !mongoutils::str::equals("$where", elt.fieldName());
+        isElemMatchValue =
+            topLevelOperators.find(elt.fieldNameStringData()) == topLevelOperators.end();
     }
 
     if (isElemMatchValue) {
         // value case
 
         AndMatchExpression theAnd;
-        Status s = _parseSub("", obj, &theAnd, collator, topLevel);
+        Status s = _parseSub("", obj, &theAnd, collator, expCtx, allowedFeatures, topLevel);
         if (!s.isOK())
             return s;
 
@@ -720,7 +991,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* nam
 
     // object case
 
-    StatusWithMatchExpression subRaw = _parse(obj, collator, topLevel);
+    StatusWithMatchExpression subRaw = _parse(obj, collator, expCtx, allowedFeatures, topLevel);
     if (!subRaw.isOK())
         return subRaw;
     std::unique_ptr<MatchExpression> sub = std::move(subRaw.getValue());
@@ -740,10 +1011,13 @@ StatusWithMatchExpression MatchExpressionParser::_parseElemMatch(const char* nam
     return {std::move(temp)};
 }
 
-StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
-                                                           const BSONElement& e,
-                                                           const CollatorInterface* collator,
-                                                           bool topLevel) {
+StatusWithMatchExpression MatchExpressionParser::_parseAll(
+    const char* name,
+    const BSONElement& e,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures,
+    bool topLevel) {
     if (e.type() != Array)
         return {Status(ErrorCodes::BadValue, "$all needs an array")};
 
@@ -772,8 +1046,12 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
             }
 
             const bool childIsTopLevel = false;
-            StatusWithMatchExpression inner = _parseElemMatch(
-                name, hopefullyElemMatchObj.firstElement(), collator, childIsTopLevel);
+            StatusWithMatchExpression inner = _parseElemMatch(name,
+                                                              hopefullyElemMatchObj.firstElement(),
+                                                              collator,
+                                                              expCtx,
+                                                              allowedFeatures,
+                                                              childIsTopLevel);
             if (!inner.isOK())
                 return inner;
             myAnd->add(inner.getValue().release());
@@ -791,7 +1069,8 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
             if (!s.isOK())
                 return s;
             myAnd->add(r.release());
-        } else if (e.type() == Object && e.Obj().firstElement().getGtLtOp(-1) != -1) {
+        } else if (e.type() == Object &&
+                   MatchExpressionParser::parsePathAcceptingKeyword(e.Obj().firstElement())) {
             return {Status(ErrorCodes::BadValue, "no $ expressions in $all")};
         } else {
             std::unique_ptr<EqualityMatchExpression> x =
@@ -805,7 +1084,7 @@ StatusWithMatchExpression MatchExpressionParser::_parseAll(const char* name,
     }
 
     if (myAnd->numChildren() == 0) {
-        return {stdx::make_unique<FalseMatchExpression>(name)};
+        return {stdx::make_unique<AlwaysFalseMatchExpression>()};
     }
 
     return {std::move(myAnd)};
@@ -830,45 +1109,12 @@ StatusWithMatchExpression MatchExpressionParser::_parseBitTest(const char* name,
         }
     } else if (e.isNumber()) {
         // Integer bitmask provided as value.
-
-        if (e.type() == BSONType::NumberDouble) {
-            double eDouble = e.numberDouble();
-
-            // NaN doubles are rejected.
-            if (std::isnan(eDouble)) {
-                mongoutils::str::stream ss;
-                ss << name << " cannot take a NaN";
-                return Status(ErrorCodes::BadValue, ss);
-            }
-
-            // No integral doubles that are too large to be represented as a 64 bit signed integer.
-            // We use 'kLongLongMaxAsDouble' because if we just did eDouble > 2^63-1, it would be
-            // compared against 2^63. eDouble=2^63 would not get caught that way.
-            if (eDouble >= BitTestMatchExpression::kLongLongMaxPlusOneAsDouble ||
-                eDouble < std::numeric_limits<long long>::min()) {
-                mongoutils::str::stream ss;
-                ss << name << " cannot be represented as a 64-bit integer: " << e;
-                return Status(ErrorCodes::BadValue, ss);
-            }
-
-            // This checks if e is an integral double.
-            if (eDouble != static_cast<double>(static_cast<long long>(eDouble))) {
-                mongoutils::str::stream ss;
-                ss << name << " cannot have a fractional part but received: " << e;
-                return Status(ErrorCodes::BadValue, ss);
-            }
+        auto bitMask = parseIntegerElementToNonNegativeLong(e);
+        if (!bitMask.isOK()) {
+            return bitMask.getStatus();
         }
 
-        long long bitMask = e.numberLong();
-
-        // No negatives.
-        if (bitMask < 0) {
-            mongoutils::str::stream ss;
-            ss << name << " cannot take a negative number: " << e;
-            return Status(ErrorCodes::BadValue, ss);
-        }
-
-        Status s = bitTestMatchExpression->init(name, bitMask);
+        Status s = bitTestMatchExpression->init(name, bitMask.getValue());
         if (!s.isOK()) {
             return s;
         }
@@ -956,12 +1202,562 @@ StatusWith<std::vector<uint32_t>> MatchExpressionParser::_parseBitPositionsArray
     return bitPositions;
 }
 
-// Geo
-StatusWithMatchExpression expressionParserGeoCallbackDefault(const char* name,
-                                                             int type,
-                                                             const BSONObj& section) {
-    return {Status(ErrorCodes::BadValue, "geo not linked in")};
+StatusWith<long long> MatchExpressionParser::parseIntegerElementToNonNegativeLong(
+    BSONElement elem) {
+    auto number = parseIntegerElementToLong(elem);
+    if (!number.isOK()) {
+        return number;
+    }
+
+    if (number.getValue() < 0) {
+        return Status(ErrorCodes::FailedToParse,
+                      str::stream() << "Expected a positive number in: " << elem);
+    }
+
+    return number;
 }
 
-MatchExpressionParserGeoCallback expressionParserGeoCallback = expressionParserGeoCallbackDefault;
+StatusWith<long long> MatchExpressionParser::parseIntegerElementToLong(BSONElement elem) {
+    if (!elem.isNumber()) {
+        return Status(ErrorCodes::FailedToParse, str::stream() << "Expected a number in: " << elem);
+    }
+
+    long long number = 0;
+    if (elem.type() == BSONType::NumberDouble) {
+        double eDouble = elem.numberDouble();
+
+        // NaN doubles are rejected.
+        if (std::isnan(eDouble)) {
+            return Status(ErrorCodes::FailedToParse,
+                          str::stream() << "Expected an integer, but found NaN in: " << elem);
+        }
+
+        // No integral doubles that are too large to be represented as a 64 bit signed integer.
+        // We use 'kLongLongMaxAsDouble' because if we just did eDouble > 2^63-1, it would be
+        // compared against 2^63. eDouble=2^63 would not get caught that way.
+        if (eDouble >= MatchExpressionParser::kLongLongMaxPlusOneAsDouble ||
+            eDouble < std::numeric_limits<long long>::min()) {
+            return Status(ErrorCodes::FailedToParse,
+                          str::stream() << "Cannot represent as a 64-bit integer: " << elem);
+        }
+
+        // This checks if elem is an integral double.
+        if (eDouble != static_cast<double>(static_cast<long long>(eDouble))) {
+            return Status(ErrorCodes::FailedToParse,
+                          str::stream() << "Expected an integer: " << elem);
+        }
+
+        number = elem.numberLong();
+    } else if (elem.type() == BSONType::NumberDecimal) {
+        uint32_t signalingFlags = Decimal128::kNoFlag;
+        number = elem.numberDecimal().toLongExact(&signalingFlags);
+        if (signalingFlags != Decimal128::kNoFlag) {
+            return Status(ErrorCodes::FailedToParse,
+                          str::stream() << "Cannot represent as a 64-bit integer: " << elem);
+        }
+    } else {
+        number = elem.numberLong();
+    }
+
+    return number;
 }
+
+StatusWithMatchExpression MatchExpressionParser::_parseInternalSchemaFmod(const char* name,
+                                                                          const BSONElement& elem) {
+    StringData path(name);
+    if (elem.type() != Array)
+        return {ErrorCodes::BadValue,
+                str::stream() << path << " must be an array, but got type " << elem.type()};
+
+    BSONObjIterator i(elem.embeddedObject());
+
+    if (!i.more())
+        return {ErrorCodes::BadValue, str::stream() << path << " does not have enough elements"};
+    BSONElement d = i.next();
+    if (!d.isNumber())
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << path << " does not have a numeric divisor"};
+
+    if (!i.more())
+        return {ErrorCodes::BadValue, str::stream() << path << " does not have enough elements"};
+    BSONElement r = i.next();
+    if (!d.isNumber())
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << path << " does not have a numeric remainder"};
+
+    if (i.more())
+        return {ErrorCodes::BadValue, str::stream() << path << " has too many elements"};
+
+    std::unique_ptr<InternalSchemaFmodMatchExpression> result =
+        stdx::make_unique<InternalSchemaFmodMatchExpression>();
+    Status s = result->init(name, d.numberDecimal(), r.numberDecimal());
+    if (!s.isOK())
+        return s;
+    return {std::move(result)};
+}
+
+
+template <class T>
+StatusWithMatchExpression MatchExpressionParser::_parseInternalSchemaFixedArityArgument(
+    StringData name,
+    const BSONElement& input,
+    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    AllowedFeatureSet allowedFeatures) {
+    constexpr auto arity = T::arity();
+    if (input.type() != BSONType::Array) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << name << " must be an array of " << arity << " MatchExpressions"};
+    }
+
+    auto inputObj = input.embeddedObject();
+    if (static_cast<size_t>(inputObj.nFields()) != arity) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << name << " requires exactly " << arity
+                              << " MatchExpressions, but got "
+                              << inputObj.nFields()};
+    }
+
+    // Fill out 'expressions' with all of the parsed subexpressions contained in the array, tracking
+    // our location in the array with 'position'.
+    std::array<std::unique_ptr<MatchExpression>, arity> expressions;
+    auto position = expressions.begin();
+
+    for (const auto& elem : inputObj) {
+        if (elem.type() != BSONType::Object) {
+            return {ErrorCodes::FailedToParse,
+                    str::stream() << name
+                                  << " must be an array of objects, but found an element of type "
+                                  << elem.type()};
+        }
+
+        const bool isTopLevel = false;
+        auto subexpr = _parse(elem.embeddedObject(), collator, expCtx, allowedFeatures, isTopLevel);
+        if (!subexpr.isOK()) {
+            return subexpr.getStatus();
+        }
+        *position = std::move(subexpr.getValue());
+        ++position;
+    }
+
+    auto parsedExpression = stdx::make_unique<T>();
+    parsedExpression->init(std::move(expressions));
+    return {std::move(parsedExpression)};
+}
+
+template <class T>
+StatusWithMatchExpression MatchExpressionParser::_parseInternalSchemaSingleIntegerArgument(
+    const char* name, const BSONElement& elem) const {
+    auto parsedInt = parseIntegerElementToNonNegativeLong(elem);
+    if (!parsedInt.isOK()) {
+        return parsedInt.getStatus();
+    }
+
+    auto matchExpression = stdx::make_unique<T>();
+    auto status = matchExpression->init(name, parsedInt.getValue());
+    if (!status.isOK()) {
+        return status;
+    }
+
+    return {std::move(matchExpression)};
+}
+
+template <class T>
+StatusWithMatchExpression MatchExpressionParser::_parseTopLevelInternalSchemaSingleIntegerArgument(
+    const BSONElement& elem) const {
+    auto parsedInt = parseIntegerElementToNonNegativeLong(elem);
+    if (!parsedInt.isOK()) {
+        return parsedInt.getStatus();
+    }
+    auto matchExpression = stdx::make_unique<T>();
+    auto status = matchExpression->init(parsedInt.getValue());
+    if (!status.isOK()) {
+        return status;
+    }
+    return {std::move(matchExpression)};
+}
+
+namespace {
+/**
+ * Looks at the field named 'namePlaceholderFieldName' within 'containingObject' and parses a name
+ * placeholder from that element. 'expressionName' is the name of the expression that requires the
+ * name placeholder and is used to generate helpful error messages.
+ */
+StatusWith<StringData> parseNamePlaceholder(const BSONObj& containingObject,
+                                            StringData namePlaceholderFieldName,
+                                            StringData expressionName) {
+    auto namePlaceholderElem = containingObject[namePlaceholderFieldName];
+    if (!namePlaceholderElem) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << expressionName << " requires a '" << namePlaceholderFieldName
+                              << "'"};
+    } else if (namePlaceholderElem.type() != BSONType::String) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << expressionName << " requires '" << namePlaceholderFieldName
+                              << "' to be a string, not "
+                              << namePlaceholderElem.type()};
+    }
+    return {namePlaceholderElem.valueStringData()};
+}
+
+/**
+ * Looks at the field named 'exprWithPlaceholderFieldName' within 'containingObject' and parses an
+ * ExpressionWithPlaceholder from that element. Fails if an error occurs during parsing, or if the
+ * ExpressionWithPlaceholder has a different name placeholder than 'expectedPlaceholder'.
+ * 'expressionName' is the name of the expression that requires the ExpressionWithPlaceholder and is
+ * used to generate helpful error messages.
+ */
+StatusWith<std::unique_ptr<ExpressionWithPlaceholder>> parseExprWithPlaceholder(
+    const BSONObj& containingObject,
+    StringData exprWithPlaceholderFieldName,
+    StringData expressionName,
+    StringData expectedPlaceholder,
+    const CollatorInterface* collator) {
+    auto exprWithPlaceholderElem = containingObject[exprWithPlaceholderFieldName];
+    if (!exprWithPlaceholderElem) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << expressionName << " requires '" << exprWithPlaceholderFieldName
+                              << "'"};
+    } else if (exprWithPlaceholderElem.type() != BSONType::Object) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << expressionName << " found '" << exprWithPlaceholderFieldName
+                              << "', which is an incompatible type: "
+                              << exprWithPlaceholderElem.type()};
+    }
+
+    auto result =
+        ExpressionWithPlaceholder::parse(exprWithPlaceholderElem.embeddedObject(), collator);
+    if (!result.isOK()) {
+        return result.getStatus();
+    }
+
+    auto placeholder = result.getValue()->getPlaceholder();
+    if (placeholder && (*placeholder != expectedPlaceholder)) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << expressionName << " expected a name placeholder of "
+                              << expectedPlaceholder
+                              << ", but '"
+                              << exprWithPlaceholderElem.fieldName()
+                              << "' has a mismatching placeholder '"
+                              << *placeholder
+                              << "'"};
+    }
+    return result;
+}
+
+StatusWith<std::vector<InternalSchemaAllowedPropertiesMatchExpression::PatternSchema>>
+parsePatternProperties(BSONElement patternPropertiesElem,
+                       StringData expectedPlaceholder,
+                       const CollatorInterface* collator) {
+    if (!patternPropertiesElem) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires 'patternProperties'"};
+    } else if (patternPropertiesElem.type() != BSONType::Array) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires 'patternProperties' to be an array, not "
+                              << patternPropertiesElem.type()};
+    }
+
+    std::vector<InternalSchemaAllowedPropertiesMatchExpression::PatternSchema> patternProperties;
+    for (auto&& constraintElem : patternPropertiesElem.embeddedObject()) {
+        if (constraintElem.type() != BSONType::Object) {
+            return {ErrorCodes::TypeMismatch,
+                    str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                                  << " requires 'patternProperties' to be an array of objects"};
+        }
+
+        auto constraint = constraintElem.embeddedObject();
+        if (constraint.nFields() != 2) {
+            return {ErrorCodes::FailedToParse,
+                    str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                                  << " requires 'patternProperties' to be an array of objects "
+                                     "containing exactly two fields, 'regex' and 'expression'"};
+        }
+
+        auto expressionWithPlaceholder =
+            parseExprWithPlaceholder(constraint,
+                                     "expression"_sd,
+                                     InternalSchemaAllowedPropertiesMatchExpression::kName,
+                                     expectedPlaceholder,
+                                     collator);
+        if (!expressionWithPlaceholder.isOK()) {
+            return expressionWithPlaceholder.getStatus();
+        }
+
+        auto regexElem = constraint["regex"];
+        if (!regexElem) {
+            return {
+                ErrorCodes::FailedToParse,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires each object in 'patternProperties' to have a 'regex'"};
+        }
+        if (regexElem.type() != BSONType::RegEx) {
+            return {ErrorCodes::TypeMismatch,
+                    str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                                  << " requires 'patternProperties' to be an array of objects, "
+                                     "where 'regex' is a regular expression"};
+        } else if (*regexElem.regexFlags() != '\0') {
+            return {
+                ErrorCodes::BadValue,
+                str::stream()
+                    << InternalSchemaAllowedPropertiesMatchExpression::kName
+                    << " does not accept regex flags for pattern schemas in 'patternProperties'"};
+        }
+
+        patternProperties.emplace_back(
+            InternalSchemaAllowedPropertiesMatchExpression::Pattern(regexElem.regex()),
+            std::move(expressionWithPlaceholder.getValue()));
+    }
+
+    return std::move(patternProperties);
+}
+
+StatusWith<boost::container::flat_set<StringData>> parseProperties(BSONElement propertiesElem) {
+    if (!propertiesElem) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires 'properties' to be present"};
+    } else if (propertiesElem.type() != BSONType::Array) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires 'properties' to be an array, not "
+                              << propertiesElem.type()};
+    }
+
+    std::vector<StringData> properties;
+    for (auto&& property : propertiesElem.embeddedObject()) {
+        if (property.type() != BSONType::String) {
+            return {
+                ErrorCodes::TypeMismatch,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires 'properties' to be an array of strings, but found a "
+                              << property.type()};
+        }
+        properties.push_back(property.valueStringData());
+    }
+
+    return boost::container::flat_set<StringData>(properties.begin(), properties.end());
+}
+}  // namespace
+
+StatusWithMatchExpression MatchExpressionParser::_parseInternalSchemaMatchArrayIndex(
+    const char* path, const BSONElement& elem, const CollatorInterface* collator) {
+    if (elem.type() != BSONType::Object) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << InternalSchemaMatchArrayIndexMatchExpression::kName
+                              << " must be an object"};
+    }
+
+    auto subobj = elem.embeddedObject();
+    if (subobj.nFields() != 3) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << InternalSchemaMatchArrayIndexMatchExpression::kName
+                              << " requires exactly three fields: 'index', "
+                                 "'namePlaceholder' and 'expression'"};
+    }
+
+    auto index = parseIntegerElementToNonNegativeLong(subobj["index"]);
+    if (!index.isOK()) {
+        return index.getStatus();
+    }
+
+    auto namePlaceholder = parseNamePlaceholder(
+        subobj, "namePlaceholder"_sd, InternalSchemaMatchArrayIndexMatchExpression::kName);
+    if (!namePlaceholder.isOK()) {
+        return namePlaceholder.getStatus();
+    }
+
+    auto expressionWithPlaceholder =
+        parseExprWithPlaceholder(subobj,
+                                 "expression"_sd,
+                                 InternalSchemaMatchArrayIndexMatchExpression::kName,
+                                 namePlaceholder.getValue(),
+                                 collator);
+    if (!expressionWithPlaceholder.isOK()) {
+        return expressionWithPlaceholder.getStatus();
+    }
+
+    auto matchArrayIndexExpr = stdx::make_unique<InternalSchemaMatchArrayIndexMatchExpression>();
+    auto initStatus = matchArrayIndexExpr->init(
+        path, index.getValue(), std::move(expressionWithPlaceholder.getValue()));
+    if (!initStatus.isOK()) {
+        return initStatus;
+    }
+    return {std::move(matchArrayIndexExpr)};
+}
+
+StatusWithMatchExpression MatchExpressionParser::_parseInternalSchemaAllowedProperties(
+    const BSONElement& elem, const CollatorInterface* collator) {
+    if (elem.type() != BSONType::Object) {
+        return {ErrorCodes::TypeMismatch,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " must be an object"};
+    }
+
+    auto subobj = elem.embeddedObject();
+    if (subobj.nFields() != 4) {
+        return {ErrorCodes::FailedToParse,
+                str::stream() << InternalSchemaAllowedPropertiesMatchExpression::kName
+                              << " requires exactly four fields: 'properties', 'namePlaceholder', "
+                                 "'patternProperties' and 'otherwise'"};
+    }
+
+    auto namePlaceholder = parseNamePlaceholder(
+        subobj, "namePlaceholder"_sd, InternalSchemaAllowedPropertiesMatchExpression::kName);
+    if (!namePlaceholder.isOK()) {
+        return namePlaceholder.getStatus();
+    }
+
+    auto patternProperties =
+        parsePatternProperties(subobj["patternProperties"], namePlaceholder.getValue(), collator);
+    if (!patternProperties.isOK()) {
+        return patternProperties.getStatus();
+    }
+
+    auto otherwise = parseExprWithPlaceholder(subobj,
+                                              "otherwise"_sd,
+                                              InternalSchemaAllowedPropertiesMatchExpression::kName,
+                                              namePlaceholder.getValue(),
+                                              collator);
+    if (!otherwise.isOK()) {
+        return otherwise.getStatus();
+    }
+
+    auto properties = parseProperties(subobj["properties"]);
+    if (!properties.isOK()) {
+        return properties.getStatus();
+    }
+
+    auto allowedPropertiesExpr =
+        stdx::make_unique<InternalSchemaAllowedPropertiesMatchExpression>();
+    auto status = allowedPropertiesExpr->init(std::move(properties.getValue()),
+                                              namePlaceholder.getValue(),
+                                              std::move(patternProperties.getValue()),
+                                              std::move(otherwise.getValue()));
+    if (!status.isOK()) {
+        return status;
+    }
+
+    return {std::move(allowedPropertiesExpr)};
+}
+
+StatusWithMatchExpression MatchExpressionParser::_parseGeo(const char* name,
+                                                           PathAcceptingKeyword type,
+                                                           const BSONObj& section,
+                                                           AllowedFeatureSet allowedFeatures) {
+    if (PathAcceptingKeyword::WITHIN == type || PathAcceptingKeyword::GEO_INTERSECTS == type) {
+        std::unique_ptr<GeoExpression> gq = stdx::make_unique<GeoExpression>(name);
+        Status parseStatus = gq->parseFrom(section);
+
+        if (!parseStatus.isOK())
+            return StatusWithMatchExpression(parseStatus);
+
+        std::unique_ptr<GeoMatchExpression> e = stdx::make_unique<GeoMatchExpression>();
+
+        Status s = e->init(name, gq.release(), section);
+        if (!s.isOK())
+            return StatusWithMatchExpression(s);
+        return {std::move(e)};
+    } else {
+        invariant(PathAcceptingKeyword::GEO_NEAR == type);
+
+        if ((allowedFeatures & AllowedFeatures::kGeoNear) == 0u) {
+            return {Status(ErrorCodes::BadValue,
+                           "$geoNear, $near, and $nearSphere are not allowed in this context")};
+        }
+
+        std::unique_ptr<GeoNearExpression> nq = stdx::make_unique<GeoNearExpression>(name);
+        Status s = nq->parseFrom(section);
+        if (!s.isOK()) {
+            return StatusWithMatchExpression(s);
+        }
+        std::unique_ptr<GeoNearMatchExpression> e = stdx::make_unique<GeoNearMatchExpression>();
+        s = e->init(name, nq.release(), section);
+        if (!s.isOK())
+            return StatusWithMatchExpression(s);
+        return {std::move(e)};
+    }
+}
+
+StatusWithMatchExpression MatchExpressionParser::_parseExpr(
+    BSONElement elem,
+    AllowedFeatureSet allowedFeatures,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx) {
+    if ((allowedFeatures & AllowedFeatures::kExpr) == 0u) {
+        return {Status(ErrorCodes::BadValue, "$expr is not allowed in this context")};
+    }
+
+    invariant(expCtx);
+
+    return {stdx::make_unique<ExprMatchExpression>(std::move(elem), expCtx)};
+}
+
+namespace {
+// Maps from query operator string name to operator PathAcceptingKeyword.
+std::unique_ptr<StringMap<PathAcceptingKeyword>> queryOperatorMap;
+
+MONGO_INITIALIZER(MatchExpressionParser)(InitializerContext* context) {
+    queryOperatorMap =
+        stdx::make_unique<StringMap<PathAcceptingKeyword>>(StringMap<PathAcceptingKeyword>{
+            // TODO: SERVER-19565 Add $eq after auditing callers.
+            {"_internalSchemaAllElemMatchFromIndex",
+             PathAcceptingKeyword::INTERNAL_SCHEMA_ALL_ELEM_MATCH_FROM_INDEX},
+            {"_internalSchemaFmod", PathAcceptingKeyword::INTERNAL_SCHEMA_FMOD},
+            {"_internalSchemaMatchArrayIndex",
+             PathAcceptingKeyword::INTERNAL_SCHEMA_MATCH_ARRAY_INDEX},
+            {"_internalSchemaMaxItems", PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_ITEMS},
+            {"_internalSchemaMaxLength", PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_LENGTH},
+            {"_internalSchemaMaxLength", PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_LENGTH},
+            {"_internalSchemaMinItems", PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_ITEMS},
+            {"_internalSchemaMinItems", PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_ITEMS},
+            {"_internalSchemaMinLength", PathAcceptingKeyword::INTERNAL_SCHEMA_MIN_LENGTH},
+            {"_internalSchemaObjectMatch", PathAcceptingKeyword::INTERNAL_SCHEMA_OBJECT_MATCH},
+            {"_internalSchemaType", PathAcceptingKeyword::INTERNAL_SCHEMA_TYPE},
+            {"_internalSchemaUniqueItems", PathAcceptingKeyword::INTERNAL_SCHEMA_UNIQUE_ITEMS},
+            {"all", PathAcceptingKeyword::ALL},
+            {"bitsAllClear", PathAcceptingKeyword::BITS_ALL_CLEAR},
+            {"bitsAllSet", PathAcceptingKeyword::BITS_ALL_SET},
+            {"bitsAnyClear", PathAcceptingKeyword::BITS_ANY_CLEAR},
+            {"bitsAnySet", PathAcceptingKeyword::BITS_ANY_SET},
+            {"elemMatch", PathAcceptingKeyword::ELEM_MATCH},
+            {"exists", PathAcceptingKeyword::EXISTS},
+            {"geoIntersects", PathAcceptingKeyword::GEO_INTERSECTS},
+            {"geoNear", PathAcceptingKeyword::GEO_NEAR},
+            {"geoWithin", PathAcceptingKeyword::WITHIN},
+            {"gt", PathAcceptingKeyword::GREATER_THAN},
+            {"gte", PathAcceptingKeyword::GREATER_THAN_OR_EQUAL},
+            {"in", PathAcceptingKeyword::IN_EXPR},
+            {"lt", PathAcceptingKeyword::LESS_THAN},
+            {"lte", PathAcceptingKeyword::LESS_THAN_OR_EQUAL},
+            {"mod", PathAcceptingKeyword::MOD},
+            {"ne", PathAcceptingKeyword::NOT_EQUAL},
+            {"near", PathAcceptingKeyword::GEO_NEAR},
+            {"nearSphere", PathAcceptingKeyword::GEO_NEAR},
+            {"nin", PathAcceptingKeyword::NOT_IN},
+            {"options", PathAcceptingKeyword::OPTIONS},
+            {"regex", PathAcceptingKeyword::REGEX},
+            {"size", PathAcceptingKeyword::SIZE},
+            {"type", PathAcceptingKeyword::TYPE},
+            {"within", PathAcceptingKeyword::WITHIN},
+        });
+    return Status::OK();
+}
+}  // anonymous namespace
+
+boost::optional<PathAcceptingKeyword> MatchExpressionParser::parsePathAcceptingKeyword(
+    BSONElement typeElem, boost::optional<PathAcceptingKeyword> defaultKeyword) {
+    auto fieldName = typeElem.fieldName();
+    if (fieldName[0] == '$' && fieldName[1]) {
+        auto opName = typeElem.fieldNameStringData().substr(1);
+        auto queryOp = queryOperatorMap->find(opName);
+
+        if (queryOp == queryOperatorMap->end()) {
+            return defaultKeyword;
+        }
+        return queryOp->second;
+    }
+    return defaultKeyword;
+}
+}  // namespace mongo

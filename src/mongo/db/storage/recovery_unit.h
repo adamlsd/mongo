@@ -90,11 +90,11 @@ public:
      * committed snapshots should be used if available whenever implementations would normally
      * change snapshots.
      *
-     * If no snapshot has yet been marked as Majority Committed, returns a status with error
-     * code ReadConcernMajorityNotAvailableYet. After this returns successfully, at any point where
+     * If no snapshot has yet been marked as Majority Committed, returns a status with error code
+     * ReadConcernMajorityNotAvailableYet. After this returns successfully, at any point where
      * implementations attempt to acquire committed snapshot, if there are none available due to a
-     * call to SnapshotManager::dropAllSnapshots(), a UserException with the same code should be
-     * thrown.
+     * call to SnapshotManager::dropAllSnapshots(), a AssertionException with the same code should
+     * be thrown.
      *
      * StorageEngines that don't support a SnapshotManager should use the default
      * implementation.
@@ -131,6 +131,26 @@ public:
      * This is unrelated to SnapshotName which must be globally comparable.
      */
     virtual SnapshotId getSnapshotId() const = 0;
+
+    /**
+     * Sets a timestamp to assign to future writes in a transaction.
+     * All subsequent writes will be assigned this timestamp.
+     * If setTimestamp() is called again, specifying a new timestamp, future writes will use this
+     * new timestamp but past writes remain with their originally assigned timestamps.
+     * Writes that occur before any setTimestamp() is called will be assigned the timestamp
+     * specified in the last setTimestamp() call in the transaction, at commit time.
+     */
+    virtual Status setTimestamp(SnapshotName timestamp) {
+        return Status::OK();
+    }
+
+    /**
+     * Chooses which snapshot to use for read transactions.
+     */
+    virtual Status selectSnapshot(SnapshotName timestamp) {
+        return Status(ErrorCodes::CommandNotSupported,
+                      "point-in-time reads are not implemented for this storage engine");
+    }
 
     /**
      * A Change is an action that is registerChange()'d while a WriteUnitOfWork exists. The

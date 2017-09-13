@@ -88,7 +88,7 @@ public:
      */
     using DeferredComparison = BSONComparatorInterfaceBase<BSONElement>::DeferredComparison;
 
-    /** These functions, which start with a capital letter, throw a MsgAssertionException if the
+    /** These functions, which start with a capital letter, throw if the
         element is not of the required type. Example:
 
         std::string foo = obj["foo"].String(); // std::exception if not a std::string type or DNE
@@ -103,7 +103,12 @@ public:
         return chk(mongo::Date).date();
     }
     double Number() const {
-        return chk(isNumber()).number();
+        uassert(13118,
+                str::stream() << "expected " << fieldName()
+                              << " to have a numberic type, but it is a "
+                              << type(),
+                isNumber());
+        return number();
     }
     Decimal128 Decimal() const {
         return chk(NumberDecimal)._numberDecimal();
@@ -124,18 +129,12 @@ public:
     mongo::OID OID() const {
         return chk(jstOID).__oid();
     }
-    void Null() const {
-        chk(isNull());
-    }  // throw MsgAssertionException if not null
-    void OK() const {
-        chk(ok());
-    }  // throw MsgAssertionException if element DNE
 
     /** @return the embedded object associated with this field.
         Note the returned object is a reference to within the parent bson object. If that
         object is out of scope, this pointer will no longer be valid. Call getOwned() on the
         returned BSONObj if you need your own copy.
-        throws UserException if the element is not of type object.
+        throws AssertionException if the element is not of type object.
     */
     BSONObj Obj() const;
 
@@ -212,7 +211,7 @@ public:
     /** retrieve a field within this element
         throws exception if *this is not an embedded object
     */
-    BSONElement operator[](const std::string& field) const;
+    BSONElement operator[](StringData field) const;
 
     /** See canonicalizeBSONType in bsontypes.h */
     int canonicalType() const {
@@ -557,9 +556,6 @@ public:
         return data;
     }
 
-    /** 0 == Equality, just not defined yet */
-    int getGtLtOp(int def = 0) const;
-
     /** Constructs an empty element */
     BSONElement();
 
@@ -693,19 +689,15 @@ private:
 
     friend class BSONObjIterator;
     friend class BSONObj;
-    const BSONElement& chk(int t) const {
+    const BSONElement& chk(BSONType t) const {
         if (t != type()) {
             StringBuilder ss;
             if (eoo())
                 ss << "field not found, expected type " << t;
             else
                 ss << "wrong type for field (" << fieldName() << ") " << type() << " != " << t;
-            msgasserted(13111, ss.str());
+            uasserted(13111, ss.str());
         }
-        return *this;
-    }
-    const BSONElement& chk(bool expr) const {
-        massert(13118, "unexpected or missing type value in BSON object", expr);
         return *this;
     }
 };

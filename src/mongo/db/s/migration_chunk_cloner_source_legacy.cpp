@@ -34,6 +34,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/client/read_preference.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbhelpers.h"
@@ -327,7 +328,8 @@ void MigrationChunkClonerSourceLegacy::cancelClone(OperationContext* opCtx) {
         case kDone:
             break;
         case kCloning:
-            _callRecipient(createRequestWithSessionId(kRecvChunkAbort, _args.getNss(), _sessionId));
+            _callRecipient(createRequestWithSessionId(kRecvChunkAbort, _args.getNss(), _sessionId))
+                .status_with_transitional_ignore();
         // Intentional fall through
         case kNew:
             _cleanup(opCtx);
@@ -337,8 +339,7 @@ void MigrationChunkClonerSourceLegacy::cancelClone(OperationContext* opCtx) {
     }
 }
 
-bool MigrationChunkClonerSourceLegacy::isDocumentInMigratingChunk(OperationContext* opCtx,
-                                                                  const BSONObj& doc) {
+bool MigrationChunkClonerSourceLegacy::isDocumentInMigratingChunk(const BSONObj& doc) {
     return isInRange(doc, _args.getMinKey(), _args.getMaxKey(), _shardKeyPattern);
 }
 
@@ -590,6 +591,11 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* opC
     RecordId recordId;
     PlanExecutor::ExecState state;
     while (PlanExecutor::ADVANCED == (state = exec->getNext(&obj, &recordId))) {
+        Status interruptStatus = opCtx->checkForInterruptNoAssert();
+        if (!interruptStatus.isOK()) {
+            return interruptStatus;
+        }
+
         if (!isLargeChunk) {
             stdx::lock_guard<stdx::mutex> lk(_mutex);
             _cloneLocs.insert(recordId);

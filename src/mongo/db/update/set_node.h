@@ -28,7 +28,7 @@
 
 #pragma once
 
-#include "mongo/db/update/update_leaf_node.h"
+#include "mongo/db/update/modifier_node.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -36,8 +36,10 @@ namespace mongo {
 /**
  * Represents the application of a $set to the value at the end of a path.
  */
-class SetNode : public UpdateLeafNode {
+class SetNode : public ModifierNode {
 public:
+    explicit SetNode(Context context = Context::kAll) : ModifierNode(context) {}
+
     Status init(BSONElement modExpr, const CollatorInterface* collator) final;
 
     std::unique_ptr<UpdateNode> clone() const final {
@@ -46,15 +48,18 @@ public:
 
     void setCollator(const CollatorInterface* collator) final {}
 
-    Status apply(mutablebson::Element element,
-                 FieldRef* pathToCreate,
-                 FieldRef* pathTaken,
-                 StringData matchedField,
-                 bool fromReplication,
-                 const UpdateIndexData* indexData,
-                 LogBuilder* logBuilder,
-                 bool* indexesAffected,
-                 bool* noop) const final;
+protected:
+    ModifyResult updateExistingElement(mutablebson::Element* element,
+                                       std::shared_ptr<FieldRef> elementPath) const final;
+    void setValueForNewElement(mutablebson::Element* element) const final;
+
+    bool allowCreation() const final {
+        return true;
+    }
+
+    bool canSetObjectValue() const final {
+        return true;
+    }
 
 private:
     BSONElement _val;

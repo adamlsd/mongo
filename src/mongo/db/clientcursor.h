@@ -28,10 +28,13 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
+
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/cursor_id.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/record_id.h"
 #include "mongo/stdx/functional.h"
@@ -66,6 +69,20 @@ struct ClientCursorParams {
         while (authenticatedUsersIter.more()) {
             authenticatedUsers.emplace_back(authenticatedUsersIter.next());
         }
+    }
+
+    void setTailable(bool tailable) {
+        if (tailable)
+            queryOptions |= QueryOption_CursorTailable;
+        else
+            queryOptions &= ~QueryOption_CursorTailable;
+    }
+
+    void setAwaitData(bool awaitData) {
+        if (awaitData)
+            queryOptions |= QueryOption_AwaitData;
+        else
+            queryOptions &= ~QueryOption_AwaitData;
     }
 
     std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec;
@@ -108,6 +125,10 @@ public:
         return makeUserNameIterator(_authenticatedUsers.begin(), _authenticatedUsers.end());
     }
 
+    boost::optional<LogicalSessionId> getSessionId() const {
+        return _lsid;
+    }
+
     bool isReadCommitted() const {
         return _isReadCommitted;
     }
@@ -120,8 +141,21 @@ public:
         return _exec.get();
     }
 
+    /**
+     * Returns the query options bitmask.  If you'd like to know if the cursor is tailable or
+     * awaitData, prefer using the specific methods isTailable() and isAwaitData() over using this
+     * method.
+     */
     int queryOptions() const {
         return _queryOptions;
+    }
+
+    bool isTailable() const {
+        return _queryOptions & QueryOption_CursorTailable;
+    }
+
+    bool isAwaitData() const {
+        return _queryOptions & QueryOption_AwaitData;
     }
 
     const BSONObj& getOriginatingCommandObj() const {
@@ -196,6 +230,10 @@ public:
      */
     static long long totalOpen();
 
+    friend std::size_t partitionOf(const ClientCursor* cursor) {
+        return cursor->cursorid();
+    }
+
 private:
     friend class CursorManager;
     friend class ClientCursorPin;
@@ -214,9 +252,10 @@ private:
      * Constructs a ClientCursor. Since cursors must come into being registered and pinned, this is
      * private. See cursor_manager.h for more details.
      */
-    ClientCursor(ClientCursorParams&& params,
+    ClientCursor(ClientCursorParams params,
                  CursorManager* cursorManager,
                  CursorId cursorId,
+                 boost::optional<LogicalSessionId> lsid,
                  Date_t now);
 
     /**
@@ -252,6 +291,9 @@ private:
 
     // The set of authenticated users when this cursor was created.
     std::vector<UserName> _authenticatedUsers;
+
+    // A logical session id for this cursor, if it is running inside of a session.
+    const boost::optional<LogicalSessionId> _lsid;
 
     const bool _isReadCommitted = false;
 

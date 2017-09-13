@@ -68,6 +68,7 @@ public:
     virtual OldThreadPool* getDbWorkThreadPool() const override;
     virtual Status runRepairOnLocalDB(OperationContext* opCtx) override;
     virtual Status initializeReplSetStorage(OperationContext* opCtx, const BSONObj& config);
+    virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx);
     void onDrainComplete(OperationContext* opCtx) override;
     OpTime onTransitionToPrimary(OperationContext* opCtx, bool isV1ElectionProtocol) override;
     virtual void forwardSlaveProgress();
@@ -80,7 +81,6 @@ public:
     virtual Status storeLocalLastVoteDocument(OperationContext* opCtx, const LastVote& lastVote);
     virtual void setGlobalTimestamp(ServiceContext* service, const Timestamp& newTime);
     virtual StatusWith<OpTime> loadLastOpTime(OperationContext* opCtx);
-    virtual void cleanUpLastApplyBatch(OperationContext* opCtx);
     virtual void closeConnections();
     virtual void killAllUserOperations(OperationContext* opCtx);
     virtual void shardingOnStepDownHook();
@@ -88,7 +88,7 @@ public:
     virtual void stopProducer();
     virtual void startProducerIfStopped();
     virtual void dropAllSnapshots();
-    virtual void updateCommittedSnapshot(SnapshotName newCommitPoint);
+    virtual void updateCommittedSnapshot(SnapshotInfo newCommitPoint);
     virtual void createSnapshot(OperationContext* opCtx, SnapshotName name);
     virtual void forceSnapshotCreation();
     virtual bool snapshotsEnabled() const;

@@ -36,6 +36,7 @@
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/repl/optime.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
@@ -72,13 +73,20 @@ public:
 
         virtual const char* getProfilingNS() const = 0;
 
+        virtual void setDropPending(OperationContext* opCtx, bool dropPending) = 0;
+
+        virtual bool isDropPending(OperationContext* opCtx) const = 0;
+
         virtual void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale) = 0;
 
         virtual const DatabaseCatalogEntry* getDatabaseCatalogEntry() const = 0;
 
-        virtual Status dropCollection(OperationContext* opCtx, StringData fullns) = 0;
+        virtual Status dropCollection(OperationContext* opCtx,
+                                      StringData fullns,
+                                      repl::OpTime dropOpTime) = 0;
         virtual Status dropCollectionEvenIfSystem(OperationContext* opCtx,
-                                                  const NamespaceString& fullns) = 0;
+                                                  const NamespaceString& fullns,
+                                                  repl::OpTime dropOpTime) = 0;
 
         virtual Status dropView(OperationContext* opCtx, StringData fullns) = 0;
 
@@ -107,6 +115,9 @@ public:
         virtual const NamespaceString& getSystemIndexesName() const = 0;
 
         virtual const std::string& getSystemViewsName() const = 0;
+
+        virtual StatusWith<NamespaceString> makeUniqueCollectionNamespace(
+            OperationContext* opCtx, StringData collectionNameModel) = 0;
 
         virtual CollectionMap& collections() = 0;
         virtual const CollectionMap& collections() const = 0;
@@ -220,6 +231,26 @@ public:
         return this->_impl().getProfilingNS();
     }
 
+    /**
+     * Sets the 'drop-pending' state of this Database.
+     * This is done at the beginning of a dropDatabase operation and is used to reject subsequent
+     * collection creation requests on this database.
+     * Throws a UserAssertion if this is called on a Database that is already in a 'drop-pending'
+     * state.
+     * The database must be locked in MODE_X when calling this function.
+     */
+    inline void setDropPending(OperationContext* opCtx, bool dropPending) {
+        this->_impl().setDropPending(opCtx, dropPending);
+    }
+
+    /**
+     * Returns the 'drop-pending' state of this Database.
+     * The database must be locked in MODE_X when calling this function.
+     */
+    inline bool isDropPending(OperationContext* opCtx) const {
+        return this->_impl().isDropPending(opCtx);
+    }
+
     inline void getStats(OperationContext* const opCtx,
                          BSONObjBuilder* const output,
                          const double scale = 1) {
@@ -233,13 +264,19 @@ public:
     /**
      * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
      * that is required.
+     *
+     * If we are applying a 'drop' oplog entry on a secondary, 'dropOpTime' will contain the optime
+     * of the oplog entry.
      */
-    inline Status dropCollection(OperationContext* const opCtx, const StringData fullns) {
-        return this->_impl().dropCollection(opCtx, fullns);
+    inline Status dropCollection(OperationContext* const opCtx,
+                                 const StringData fullns,
+                                 repl::OpTime dropOpTime = {}) {
+        return this->_impl().dropCollection(opCtx, fullns, dropOpTime);
     }
     inline Status dropCollectionEvenIfSystem(OperationContext* const opCtx,
-                                             const NamespaceString& fullns) {
-        return this->_impl().dropCollectionEvenIfSystem(opCtx, fullns);
+                                             const NamespaceString& fullns,
+                                             repl::OpTime dropOpTime = {}) {
+        return this->_impl().dropCollectionEvenIfSystem(opCtx, fullns, dropOpTime);
     }
 
     inline Status dropView(OperationContext* const opCtx, const StringData fullns) {
@@ -316,6 +353,21 @@ public:
 
     inline const std::string& getSystemViewsName() const {
         return this->_impl().getSystemViewsName();
+    }
+
+    /**
+     * Generates a collection namespace suitable for creating a temporary collection.
+     * The namespace is based on a model that replaces each percent sign in 'collectionNameModel' by
+     * a random character in the range [0-9A-Za-z].
+     * Returns FailedToParse if 'collectionNameModel' does not contain any percent signs.
+     * Returns NamespaceExists if we are unable to generate a collection name that does not conflict
+     * with an existing collection in this database.
+     *
+     * The database must be locked in MODE_X when calling this function.
+     */
+    inline StatusWith<NamespaceString> makeUniqueCollectionNamespace(
+        OperationContext* opCtx, StringData collectionNameModel) {
+        return this->_impl().makeUniqueCollectionNamespace(opCtx, collectionNameModel);
     }
 
 private:

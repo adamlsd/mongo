@@ -97,9 +97,9 @@ void CmdAuthenticate::disableAuthMechanism(std::string authMechanism) {
    where <key> is md5(<nonce_str><username><pwd_digest_str>) as a string
 */
 
-class CmdGetNonce : public Command {
+class CmdGetNonce : public BasicCommand {
 public:
-    CmdGetNonce() : Command("getnonce"), _random(SecureRandom::create()) {}
+    CmdGetNonce() : BasicCommand("getnonce"), _random(SecureRandom::create()) {}
 
     virtual bool slaveOk() const {
         return true;
@@ -116,7 +116,6 @@ public:
     bool run(OperationContext* opCtx,
              const string&,
              const BSONObj& cmdObj,
-             string& errmsg,
              BSONObjBuilder& result) {
         nonce64 n = getNextNonce();
         stringstream ss;
@@ -145,7 +144,7 @@ void CmdAuthenticate::redactForLogging(mutablebson::Document* cmdObj) {
         for (mmb::Element element = mmb::findFirstChildNamed(cmdObj->root(), redactedFields[i]);
              element.ok();
              element = mmb::findElementNamed(element.rightSibling(), redactedFields[i])) {
-            element.setValueString("xxx");
+            element.setValueString("xxx").transitional_ignore();
         }
     }
 }
@@ -153,7 +152,6 @@ void CmdAuthenticate::redactForLogging(mutablebson::Document* cmdObj) {
 bool CmdAuthenticate::run(OperationContext* opCtx,
                           const string& dbname,
                           const BSONObj& cmdObj,
-                          string& errmsg,
                           BSONObjBuilder& result) {
     if (!serverGlobalParams.quiet.load()) {
         mutablebson::Document cmdToLog(cmdObj, mutablebson::Document::kInPlaceDisabled);
@@ -184,8 +182,10 @@ bool CmdAuthenticate::run(OperationContext* opCtx,
     audit::logAuthentication(Client::getCurrent(), mechanism, user, status.code());
     if (!status.isOK()) {
         if (!serverGlobalParams.quiet.load()) {
-            log() << "Failed to authenticate " << user << " with mechanism " << mechanism << ": "
-                  << status;
+            auto const client = opCtx->getClient();
+            log() << "Failed to authenticate " << user
+                  << (client->hasRemote() ? (" from client " + client->getRemote().toString()) : "")
+                  << " with mechanism " << mechanism << ": " << status;
         }
         if (status.code() == ErrorCodes::AuthenticationFailed) {
             // Statuses with code AuthenticationFailed may contain messages we do not wish to
@@ -263,8 +263,7 @@ Status CmdAuthenticate::_authenticateCR(OperationContext* opCtx,
     }
 
     User* userObj;
-    Status status =
-        getGlobalAuthorizationManager()->acquireUserForInitialAuth(opCtx, user, &userObj);
+    Status status = getGlobalAuthorizationManager()->acquireUser(opCtx, user, &userObj);
     if (!status.isOK()) {
         // Failure to find the privilege document indicates no-such-user, a fact that we do not
         // wish to reveal to the client.  So, we return AuthenticationFailed rather than passing
@@ -358,7 +357,7 @@ Status CmdAuthenticate::_authenticateX509(OperationContext* opCtx,
 #endif
 CmdAuthenticate cmdAuthenticate;
 
-class CmdLogout : public Command {
+class CmdLogout : public BasicCommand {
 public:
     virtual bool slaveOk() const {
         return true;
@@ -372,11 +371,10 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    CmdLogout() : Command("logout") {}
+    CmdLogout() : BasicCommand("logout") {}
     bool run(OperationContext* opCtx,
              const string& dbname,
              const BSONObj& cmdObj,
-             string& errmsg,
              BSONObjBuilder& result) {
         AuthorizationSession* authSession = AuthorizationSession::get(Client::getCurrent());
         authSession->logoutDatabase(dbname);

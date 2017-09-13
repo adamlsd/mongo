@@ -139,8 +139,8 @@ void ServiceEntryPointTestSuite::MockTLHarness::end(const SessionHandle& session
     return _end(session);
 }
 
-void ServiceEntryPointTestSuite::MockTLHarness::endAllSessions(Session::TagMask tags) {
-    return _endAllSessions(tags);
+Status ServiceEntryPointTestSuite::MockTLHarness::setup() {
+    return Status::OK();
 }
 
 Status ServiceEntryPointTestSuite::MockTLHarness::start() {

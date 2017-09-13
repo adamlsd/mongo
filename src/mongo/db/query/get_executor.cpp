@@ -39,6 +39,7 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/base/parse_number.h"
 #include "mongo/client/dbclientinterface.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/exec/cached_plan.h"
 #include "mongo/db/exec/count.h"
 #include "mongo/db/exec/delete.h"
@@ -54,7 +55,6 @@
 #include "mongo/db/exec/update.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_names.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/ops/update_lifecycle.h"
@@ -119,6 +119,7 @@ void filterAllowedIndexEntries(const AllowedIndicesFilter& allowedIndicesFilter,
 namespace {
 // The body is below in the "count hack" section but getExecutor calls it.
 bool turnIxscanIntoCount(QuerySolution* soln);
+
 }  // namespace
 
 
@@ -187,6 +188,10 @@ void fillOutPlannerParams(OperationContext* opCtx,
 
     if (internalQueryPlannerEnableIndexIntersection.load()) {
         plannerParams->options |= QueryPlannerParams::INDEX_INTERSECTION;
+    }
+
+    if (internalQueryPlannerGenerateCoveredWholeIndexScans.load()) {
+        plannerParams->options |= QueryPlannerParams::GENERATE_COVERED_IXSCANS;
     }
 
     plannerParams->options |= QueryPlannerParams::SPLIT_LIMITED_SORT;
@@ -290,19 +295,18 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
         // document, so we don't support covered projections. However, we might use the
         // simple inclusion fast path.
         if (NULL != canonicalQuery->getProj()) {
-            ProjectionStageParams params(ExtensionsCallbackReal(opCtx, &collection->ns()));
+            ProjectionStageParams params;
             params.projObj = canonicalQuery->getProj()->getProjObj();
             params.collator = canonicalQuery->getCollator();
 
             // Add a SortKeyGeneratorStage if there is a $meta sortKey projection.
             if (canonicalQuery->getProj()->wantSortKey()) {
-                root = make_unique<SortKeyGeneratorStage>(
-                    opCtx,
-                    root.release(),
-                    ws,
-                    canonicalQuery->getQueryRequest().getSort(),
-                    canonicalQuery->getQueryRequest().getFilter(),
-                    canonicalQuery->getCollator());
+                root =
+                    make_unique<SortKeyGeneratorStage>(opCtx,
+                                                       root.release(),
+                                                       ws,
+                                                       canonicalQuery->getQueryRequest().getSort(),
+                                                       canonicalQuery->getCollator());
             }
 
             // Stuff the right data into the params depending on what proj impl we use.
@@ -621,17 +625,17 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
     Collection* collection,
     const NamespaceString& nss,
     unique_ptr<CanonicalQuery> canonicalQuery,
-    PlanExecutor::YieldPolicy yieldPolicy) {
+    PlanExecutor::YieldPolicy yieldPolicy,
+    size_t plannerOptions) {
     if (NULL != collection && canonicalQuery->getQueryRequest().isOplogReplay()) {
         return getOplogStartHack(opCtx, collection, std::move(canonicalQuery));
     }
 
-    size_t options = QueryPlannerParams::DEFAULT;
     if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, nss.ns())) {
-        options |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
+        plannerOptions |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
     }
     return getExecutor(
-        opCtx, collection, std::move(canonicalQuery), PlanExecutor::YIELD_AUTO, options);
+        opCtx, collection, std::move(canonicalQuery), PlanExecutor::YIELD_AUTO, plannerOptions);
 }
 
 namespace {
@@ -653,8 +657,7 @@ StatusWith<unique_ptr<PlanStage>> applyProjection(OperationContext* opCtx,
     invariant(!proj.isEmpty());
 
     ParsedProjection* rawParsedProj;
-    Status ppStatus = ParsedProjection::make(
-        proj.getOwned(), cq->root(), &rawParsedProj, ExtensionsCallbackDisallowExtensions());
+    Status ppStatus = ParsedProjection::make(proj.getOwned(), cq->root(), &rawParsedProj);
     if (!ppStatus.isOK()) {
         return ppStatus;
     }
@@ -674,7 +677,7 @@ StatusWith<unique_ptr<PlanStage>> applyProjection(OperationContext* opCtx,
                 "Cannot use a $meta sortKey projection in findAndModify commands."};
     }
 
-    ProjectionStageParams params(ExtensionsCallbackReal(opCtx, &nsString));
+    ProjectionStageParams params;
     params.projObj = proj;
     params.collator = cq->getCollator();
     params.fullExpression = cq->root();
@@ -693,8 +696,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDelete(
 
     const NamespaceString& nss(request->getNamespaceString());
     if (!request->isGod()) {
-        if (nss.isSystem()) {
-            uassert(12050, "cannot delete from system namespace", legalClientSystemNS(nss.ns()));
+        if (nss.isSystem() && opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
+            uassert(12050, "cannot delete from system namespace", nss.isLegalClientSystemNS());
         }
         if (nss.isVirtualized()) {
             log() << "cannot delete from a virtual collection: " << nss;
@@ -722,6 +725,7 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDelete(
     deleteStageParams.returnDeleted = request->shouldReturnDeleted();
     deleteStageParams.sort = request->getSort();
     deleteStageParams.opDebug = opDebug;
+    deleteStageParams.stmtId = request->getStmtId();
 
     unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();
     const PlanExecutor::YieldPolicy policy = parsedDelete->yieldPolicy();
@@ -821,33 +825,23 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDelete(
 // Update
 //
 
-namespace {
-
-// TODO: Make this a function on NamespaceString, or make it cleaner.
-inline void validateUpdate(const char* ns, const BSONObj& updateobj, const BSONObj& patternOrig) {
-    uassert(10155, "cannot update reserved $ collection", strchr(ns, '$') == 0);
-    if (strstr(ns, ".system.")) {
-        /* dm: it's very important that system.indexes is never updated as IndexDetails
-           has pointers into it */
-        uassert(10156,
-                str::stream() << "cannot update system collection: " << ns << " q: " << patternOrig
-                              << " u: "
-                              << updateobj,
-                legalClientSystemNS(ns));
-    }
-}
-
-}  // namespace
-
 StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
     OperationContext* opCtx, OpDebug* opDebug, Collection* collection, ParsedUpdate* parsedUpdate) {
     const UpdateRequest* request = parsedUpdate->getRequest();
     UpdateDriver* driver = parsedUpdate->getDriver();
 
-    const NamespaceString& nsString = request->getNamespaceString();
+    const NamespaceString& nss = request->getNamespaceString();
     UpdateLifecycle* lifecycle = request->getLifecycle();
 
-    validateUpdate(nsString.ns().c_str(), request->getUpdates(), request->getQuery());
+    if (nss.isSystem() && opCtx->lockState()->shouldConflictWithSecondaryBatchApplication()) {
+        uassert(10156,
+                str::stream() << "cannot update a system namespace: " << nss.ns(),
+                nss.isLegalClientSystemNS());
+    }
+    if (nss.isVirtualized()) {
+        log() << "cannot update a virtual collection: " << nss;
+        uasserted(10155, "cannot update a virtual collection");
+    }
 
     // If there is no collection and this is an upsert, callers are supposed to create
     // the collection prior to calling this method. Explain, however, will never do
@@ -867,11 +861,11 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
     // writes on a secondary. If this is an update to a secondary from the replication system,
     // however, then we make an exception and let the write proceed.
     bool userInitiatedWritesAndNotPrimary = opCtx->writesAreReplicated() &&
-        !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, nsString);
+        !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, nss);
 
     if (userInitiatedWritesAndNotPrimary) {
         return Status(ErrorCodes::PrimarySteppedDown,
-                      str::stream() << "Not primary while performing update on " << nsString.ns());
+                      str::stream() << "Not primary while performing update on " << nss.ns());
     }
 
     if (lifecycle) {
@@ -893,12 +887,11 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
             // Treat collections that do not exist as empty collections. Note that the explain
             // reporting machinery always assumes that the root stage for an update operation is
             // an UpdateStage, so in this case we put an UpdateStage on top of an EOFStage.
-            LOG(2) << "Collection " << nsString.ns() << " does not exist."
+            LOG(2) << "Collection " << nss.ns() << " does not exist."
                    << " Using EOF stage: " << redact(unparsedQuery);
             auto updateStage = make_unique<UpdateStage>(
                 opCtx, updateStageParams, ws.get(), collection, new EOFStage(opCtx));
-            return PlanExecutor::make(
-                opCtx, std::move(ws), std::move(updateStage), nsString, policy);
+            return PlanExecutor::make(opCtx, std::move(ws), std::move(updateStage), nss, policy);
         }
 
         const IndexDescriptor* descriptor = collection->getIndexCatalog()->findIdIndex(opCtx);
@@ -954,13 +947,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
         // is invalid to use a positional projection because the query expression need not
         // match the array element after the update has been applied.
         const bool allowPositional = request->shouldReturnOldDocs();
-        StatusWith<unique_ptr<PlanStage>> projStatus = applyProjection(opCtx,
-                                                                       nsString,
-                                                                       cq.get(),
-                                                                       request->getProj(),
-                                                                       allowPositional,
-                                                                       ws.get(),
-                                                                       std::move(root));
+        StatusWith<unique_ptr<PlanStage>> projStatus = applyProjection(
+            opCtx, nss, cq.get(), request->getProj(), allowPositional, ws.get(), std::move(root));
         if (!projStatus.isOK()) {
             return projStatus.getStatus();
         }
@@ -1011,7 +999,14 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorGroup(
 
     const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
 
-    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
+    auto statusWithCQ =
+        CanonicalQuery::canonicalize(opCtx,
+                                     std::move(qr),
+                                     expCtx,
+                                     extensionsCallback,
+                                     MatchExpressionParser::kAllowAllSpecialFeatures &
+                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
     }
@@ -1056,21 +1051,23 @@ namespace {
 bool turnIxscanIntoCount(QuerySolution* soln) {
     QuerySolutionNode* root = soln->root.get();
 
-    // Root should be a fetch w/o any filters.
-    if (STAGE_FETCH != root->getType()) {
+    // Root should be an ixscan or fetch w/o any filters.
+    if (!(STAGE_FETCH == root->getType() || STAGE_IXSCAN == root->getType())) {
         return false;
     }
 
-    if (NULL != root->filter.get()) {
+    if (STAGE_FETCH == root->getType() && NULL != root->filter.get()) {
         return false;
     }
 
-    // Child should be an ixscan.
-    if (STAGE_IXSCAN != root->children[0]->getType()) {
+    // If the root is a fetch, its child should be an ixscan
+    if (STAGE_FETCH == root->getType() && STAGE_IXSCAN != root->children[0]->getType()) {
         return false;
     }
 
-    IndexScanNode* isn = static_cast<IndexScanNode*>(root->children[0]);
+    IndexScanNode* isn = (STAGE_FETCH == root->getType())
+        ? static_cast<IndexScanNode*>(root->children[0])
+        : static_cast<IndexScanNode*>(root);
 
     // No filters allowed and side-stepping isSimpleRange for now.  TODO: do we ever see
     // isSimpleRange here?  because we could well use it.  I just don't think we ever do see
@@ -1239,12 +1236,16 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
     qr->setHint(request.getHint());
     qr->setExplain(explain);
 
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ = CanonicalQuery::canonicalize(
         opCtx,
         std::move(qr),
+        expCtx,
         collection ? static_cast<const ExtensionsCallback&>(
                          ExtensionsCallbackReal(opCtx, &collection->ns()))
-                   : static_cast<const ExtensionsCallback&>(ExtensionsCallbackNoop()));
+                   : static_cast<const ExtensionsCallback&>(ExtensionsCallbackNoop()),
+        MatchExpressionParser::kAllowAllSpecialFeatures &
+            ~MatchExpressionParser::AllowedFeatures::kExpr);
 
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
@@ -1310,6 +1311,11 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
 
 bool turnIxscanIntoDistinctIxscan(QuerySolution* soln, const string& field) {
     QuerySolutionNode* root = soln->root.get();
+
+    // Solution must have a filter.
+    if (soln->filterData.isEmpty()) {
+        return false;
+    }
 
     // Root stage must be a project.
     if (STAGE_PROJECTION != root->getType()) {
@@ -1490,7 +1496,14 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
     auto qr = stdx::make_unique<QueryRequest>(parsedDistinct->getQuery()->getQueryRequest());
     qr->setProj(projection);
 
-    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
+    auto statusWithCQ =
+        CanonicalQuery::canonicalize(opCtx,
+                                     std::move(qr),
+                                     expCtx,
+                                     extensionsCallback,
+                                     MatchExpressionParser::kAllowAllSpecialFeatures &
+                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
     }

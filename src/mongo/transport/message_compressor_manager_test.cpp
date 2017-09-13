@@ -33,6 +33,8 @@
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/transport/message_compressor_noop.h"
 #include "mongo/transport/message_compressor_registry.h"
+#include "mongo/transport/message_compressor_snappy.h"
+#include "mongo/transport/message_compressor_zlib.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/net/message.h"
 
@@ -41,6 +43,12 @@
 
 namespace mongo {
 namespace {
+
+const auto assertOk = [](auto&& sw) {
+    ASSERT(sw.isOK());
+    return sw.getValue();
+};
+
 MessageCompressorRegistry buildRegistry() {
     MessageCompressorRegistry ret;
     auto compressor = stdx::make_unique<NoopMessageCompressor>();
@@ -48,7 +56,7 @@ MessageCompressorRegistry buildRegistry() {
     std::vector<std::string> compressorList = {compressor->getName()};
     ret.setSupportedCompressors(std::move(compressorList));
     ret.registerImplementation(std::move(compressor));
-    ret.finalizeSupportedCompressors();
+    ret.finalizeSupportedCompressors().transitional_ignore();
 
     return ret;
 }
@@ -90,7 +98,7 @@ void checkFidelity(const Message& msg, std::unique_ptr<MessageCompressorBase> co
     std::vector<std::string> compressorList = {compressorName};
     registry.setSupportedCompressors(std::move(compressorList));
     registry.registerImplementation(std::move(compressor));
-    registry.finalizeSupportedCompressors();
+    registry.finalizeSupportedCompressors().transitional_ignore();
 
     MessageCompressorManager mgr(&registry);
     auto negotiator = BSON("isMaster" << 1 << "compression" << BSON_ARRAY(compressorName));
@@ -179,7 +187,65 @@ TEST(NoopMessageCompressor, Fidelity) {
 
 TEST(SnappyMessageCompressor, Fidelity) {
     auto testMessage = buildMessage();
-    checkFidelity(testMessage, stdx::make_unique<NoopMessageCompressor>());
+    checkFidelity(testMessage, stdx::make_unique<SnappyMessageCompressor>());
+}
+
+TEST(ZlibMessageCompressor, Fidelity) {
+    auto testMessage = buildMessage();
+    checkFidelity(testMessage, stdx::make_unique<ZlibMessageCompressor>());
+}
+
+TEST(MessageCompressorManager, SERVER_28008) {
+
+    // Create a client and server that will negotiate the same compressors,
+    // but with a different ordering for the preferred compressor.
+
+    std::unique_ptr<MessageCompressorBase> zlibCompressor =
+        stdx::make_unique<ZlibMessageCompressor>();
+    const auto zlibId = zlibCompressor->getId();
+
+    std::unique_ptr<MessageCompressorBase> snappyCompressor =
+        stdx::make_unique<SnappyMessageCompressor>();
+    const auto snappyId = snappyCompressor->getId();
+
+    MessageCompressorRegistry registry;
+    registry.setSupportedCompressors({snappyCompressor->getName(), zlibCompressor->getName()});
+    registry.registerImplementation(std::move(zlibCompressor));
+    registry.registerImplementation(std::move(snappyCompressor));
+    ASSERT_OK(registry.finalizeSupportedCompressors());
+
+    MessageCompressorManager clientManager(&registry);
+    MessageCompressorManager serverManager(&registry);
+
+    // Do negotiation
+    BSONObjBuilder clientOutput;
+    clientManager.clientBegin(&clientOutput);
+    auto clientObj = clientOutput.done();
+    BSONObjBuilder serverOutput;
+    serverManager.serverNegotiate(clientObj, &serverOutput);
+    auto serverObj = serverOutput.done();
+    clientManager.clientFinish(serverObj);
+
+    // The preferred compressor is snappy. Check that we round trip as snappy by default.
+    auto toSend = buildMessage();
+    toSend = assertOk(clientManager.compressMessage(toSend, nullptr));
+    MessageCompressorId compressorId;
+    auto recvd = assertOk(serverManager.decompressMessage(toSend, &compressorId));
+    ASSERT_EQ(compressorId, snappyId);
+    toSend = assertOk(serverManager.compressMessage(recvd, nullptr));
+    recvd = assertOk(clientManager.decompressMessage(toSend, &compressorId));
+    ASSERT_EQ(compressorId, snappyId);
+
+    // Now, force the client to send as zLib. We should round trip as
+    // zlib if we feed the out compresor id parameter from
+    // decompressMessage back in to compressMessage.
+    toSend = buildMessage();
+    toSend = assertOk(clientManager.compressMessage(toSend, &zlibId));
+    recvd = assertOk(serverManager.decompressMessage(toSend, &compressorId));
+    ASSERT_EQ(compressorId, zlibId);
+    toSend = assertOk(serverManager.compressMessage(recvd, &compressorId));
+    recvd = assertOk(clientManager.decompressMessage(toSend, &compressorId));
+    ASSERT_EQ(compressorId, zlibId);
 }
 
 }  // namespace mongo

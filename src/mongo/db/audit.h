@@ -36,6 +36,7 @@
 #include "mongo/base/error_codes.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/user.h"
+#include "mongo/util/net/op_msg.h"
 
 namespace mongo {
 
@@ -69,8 +70,7 @@ void logAuthentication(Client* client,
  * Logs the result of a command authorization check.
  */
 void logCommandAuthzCheck(Client* client,
-                          const std::string& dbname,
-                          const BSONObj& cmdObj,
+                          const OpMsgRequest& cmdObj,
                           CommandInterface* command,
                           ErrorCodes::Error result);
 
@@ -132,7 +132,8 @@ void logCreateUser(Client* client,
                    const UserName& username,
                    bool password,
                    const BSONObj* customData,
-                   const std::vector<RoleName>& roles);
+                   const std::vector<RoleName>& roles,
+                   const boost::optional<BSONArray>& restrictions);
 
 /**
  * Logs the result of a dropUser command.
@@ -151,7 +152,8 @@ void logUpdateUser(Client* client,
                    const UserName& username,
                    bool password,
                    const BSONObj* customData,
-                   const std::vector<RoleName>* roles);
+                   const std::vector<RoleName>* roles,
+                   const boost::optional<BSONArray>& restrictions);
 
 /**
  * Logs the result of a grantRolesToUser command.
@@ -173,7 +175,8 @@ void logRevokeRolesFromUser(Client* client,
 void logCreateRole(Client* client,
                    const RoleName& role,
                    const std::vector<RoleName>& roles,
-                   const PrivilegeVector& privileges);
+                   const PrivilegeVector& privileges,
+                   const boost::optional<BSONArray>& restrictions);
 
 /**
  * Logs the result of a updateRole command.
@@ -181,7 +184,8 @@ void logCreateRole(Client* client,
 void logUpdateRole(Client* client,
                    const RoleName& role,
                    const std::vector<RoleName>* roles,
-                   const PrivilegeVector* privileges);
+                   const PrivilegeVector* privileges,
+                   const boost::optional<BSONArray>& restrictions);
 
 /**
  * Logs the result of a dropRole command.
@@ -300,40 +304,6 @@ void logShardCollection(Client* client, StringData ns, const BSONObj& keyPattern
  * They are to be the impersonated users and roles for a Command run by an internal user.
  */
 void writeImpersonatedUsersToMetadata(OperationContext* opCtx, BSONObjBuilder* metadataBob);
-
-/*
- * Looks for an 'impersonatedUsers' field.  This field is used by mongos to
- * transmit the usernames of the currently authenticated user when it runs commands
- * on a shard using internal user authentication.  Auditing uses this information
- * to properly ascribe users to actions.  This is necessary only for implicit actions that
- * mongos cannot properly audit itself; examples are implicit collection and database creation.
- * This function requires that the field is the last field in the bson object; it edits the
- * command BSON to efficiently remove the field before returning.
- *
- * cmdObj [in, out]: If any impersonated users field exists, it will be parsed and removed.
- * parsedUserNames [out]: populated with parsed usernames
- * fieldIsPresent [out]: true if impersonatedUsers field was present in the object
- */
-void parseAndRemoveImpersonatedUsersField(BSONObj cmdObj,
-                                          std::vector<UserName>* parsedUserNames,
-                                          bool* fieldIsPresent);
-
-/*
- * Looks for an 'impersonatedRoles' field.  This field is used by mongos to
- * transmit the roles of the currently authenticated user when it runs commands
- * on a shard using internal user authentication.  Auditing uses this information
- * to properly ascribe user roles to actions.  This is necessary only for implicit actions that
- * mongos cannot properly audit itself; examples are implicit collection and database creation.
- * This function requires that the field is the last field in the bson object; it edits the
- * command BSON to efficiently remove the field before returning.
- *
- * cmdObj [in, out]: If any impersonated roles field exists, it will be parsed and removed.
- * parsedRoleNames [out]: populated with parsed user rolenames
- * fieldIsPresent [out]: true if impersonatedRoles field was present in the object
- */
-void parseAndRemoveImpersonatedRolesField(BSONObj cmdObj,
-                                          std::vector<RoleName>* parsedRoleNames,
-                                          bool* fieldIsPresent);
 
 }  // namespace audit
 }  // namespace mongo

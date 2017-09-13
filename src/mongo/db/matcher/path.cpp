@@ -186,15 +186,18 @@ bool BSONElementIterator::subCursorHasMore() {
         if (_arrayIterationState.isArrayOffsetMatch(_arrayIterationState._current.fieldName())) {
             if (_arrayIterationState.nextEntireRest()) {
                 // Our path terminates at the array offset.  _next should point at the current
-                // array element.
-                _next.reset(_arrayIterationState._current, _arrayIterationState._current);
+                // array element. _next._arrayOffset should be EOO, since this is not an implicit
+                // array traversal.
+                _next.reset(_arrayIterationState._current, BSONElement());
                 _arrayIterationState._current = BSONElement();
                 return true;
             }
 
             _subCursorPath.reset(new ElementPath());
-            _subCursorPath->init(_arrayIterationState.restOfPath.substr(
-                _arrayIterationState.nextPieceOfPath.size() + 1));
+            _subCursorPath
+                ->init(_arrayIterationState.restOfPath.substr(
+                    _arrayIterationState.nextPieceOfPath.size() + 1))
+                .transitional_ignore();
             _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
 
             // If we're here, we must be able to traverse nonleaf arrays.
@@ -203,6 +206,10 @@ bool BSONElementIterator::subCursorHasMore() {
 
             _subCursor.reset(
                 new BSONElementIterator(_subCursorPath.get(), _arrayIterationState._current.Obj()));
+
+            // Set _arrayIterationState._current to EOO. This is not an implicit array traversal, so
+            // we should not override the array offset of the subcursor with the current array
+            // offset.
             _arrayIterationState._current = BSONElement();
         }
     }
@@ -270,7 +277,7 @@ bool BSONElementIterator::more() {
                 // The current array element is a subdocument.  See if the subdocument generates
                 // any elements matching the remaining subpath.
                 _subCursorPath.reset(new ElementPath());
-                _subCursorPath->init(_arrayIterationState.restOfPath);
+                _subCursorPath->init(_arrayIterationState.restOfPath).transitional_ignore();
                 _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
 
                 _subCursor.reset(new BSONElementIterator(_subCursorPath.get(), eltInArray.Obj()));
@@ -285,8 +292,9 @@ bool BSONElementIterator::more() {
 
                 if (_arrayIterationState.nextEntireRest()) {
                     // Our path terminates at the array offset.  _next should point at the
-                    // current array element.
-                    _next.reset(eltInArray, eltInArray);
+                    // current array element. _next._arrayOffset should be EOO, since this is not an
+                    // implicit array traversal.
+                    _next.reset(eltInArray, BSONElement());
                     return true;
                 }
 
@@ -295,8 +303,10 @@ bool BSONElementIterator::more() {
                     // The current array element is itself an array.  See if the nested array
                     // has any elements matching the remainihng.
                     _subCursorPath.reset(new ElementPath());
-                    _subCursorPath->init(_arrayIterationState.restOfPath.substr(
-                        _arrayIterationState.nextPieceOfPath.size() + 1));
+                    _subCursorPath
+                        ->init(_arrayIterationState.restOfPath.substr(
+                            _arrayIterationState.nextPieceOfPath.size() + 1))
+                        .transitional_ignore();
                     _subCursorPath->setTraverseLeafArray(_path->shouldTraverseLeafArray());
                     BSONElementIterator* real = new BSONElementIterator(
                         _subCursorPath.get(), _arrayIterationState._current.Obj());
@@ -304,7 +314,12 @@ bool BSONElementIterator::more() {
                     real->_arrayIterationState.reset(_subCursorPath->fieldRef(), 0);
                     real->_arrayIterationState.startIterator(eltInArray);
                     real->_state = IN_ARRAY;
+
+                    // Set _arrayIterationState._current to EOO. This is not an implicit array
+                    // traversal, so we should not override the array offset of the subcursor with
+                    // the current array offset.
                     _arrayIterationState._current = BSONElement();
+
                     if (subCursorHasMore()) {
                         return true;
                     }

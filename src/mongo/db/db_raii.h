@@ -58,6 +58,7 @@ class AutoGetDb {
 
 public:
     AutoGetDb(OperationContext* opCtx, StringData ns, LockMode mode);
+    AutoGetDb(OperationContext* opCtx, StringData ns, Lock::DBLock lock);
 
     Database* getDb() const {
         return _db;
@@ -94,6 +95,11 @@ public:
                       LockMode modeColl)
         : AutoGetCollection(opCtx, nss, modeDB, modeColl, ViewMode::kViewsForbidden) {}
 
+    AutoGetCollection(OperationContext* opCtx,
+                      const NamespaceString& nss,
+                      LockMode modeColl,
+                      ViewMode viewMode,
+                      Lock::DBLock lock);
     /**
      * This constructor is intended for internal use and should not be used outside this file.
      * AutoGetCollectionForReadCommand and AutoGetCollectionOrViewForReadCommand use 'viewMode' to
@@ -128,9 +134,52 @@ private:
     const Lock::CollectionLock _collLock;
     Collection* const _coll;
 
+    friend class AutoGetCollectionOrView;
     friend class AutoGetCollectionForRead;
     friend class AutoGetCollectionForReadCommand;
     friend class AutoGetCollectionOrViewForReadCommand;
+};
+
+/**
+ * RAII-style class which acquires the appropriate hierarchy of locks for a collection or
+ * view. The pointer to a view definition is nullptr if it does not exist.
+ *
+ * Use this when you have not yet determined if the namespace is a view or a collection.
+ * For example, you can use this to access a namespace's CursorManager.
+ *
+ * It is guaranteed that locks will be released when this object goes out of scope, therefore
+ * the view returned by this class should not be retained.
+ */
+class AutoGetCollectionOrView {
+    MONGO_DISALLOW_COPYING(AutoGetCollectionOrView);
+
+public:
+    AutoGetCollectionOrView(OperationContext* opCtx, const NamespaceString& nss, LockMode modeAll);
+
+    /**
+     * Returns nullptr if the database didn't exist.
+     */
+    Database* getDb() const {
+        return _autoColl.getDb();
+    }
+
+    /**
+     * Returns nullptr if the collection didn't exist.
+     */
+    Collection* getCollection() const {
+        return _autoColl.getCollection();
+    }
+
+    /**
+     * Returns nullptr if the view didn't exist.
+     */
+    ViewDefinition* getView() const {
+        return _view.get();
+    }
+
+private:
+    const AutoGetCollection _autoColl;
+    std::shared_ptr<ViewDefinition> _view;
 };
 
 /**
@@ -195,7 +244,6 @@ public:
     ~AutoStatsTracker();
 
 private:
-    const Timer _timer;
     OperationContext* _opCtx;
     Top::LockType _lockType;
 };
@@ -230,6 +278,10 @@ public:
                              const NamespaceString& nss,
                              AutoGetCollection::ViewMode viewMode);
 
+    AutoGetCollectionForRead(OperationContext* opCtx,
+                             const NamespaceString& nss,
+                             AutoGetCollection::ViewMode viewMode,
+                             Lock::DBLock lock);
     Database* getDb() const {
         return _autoColl->getDb();
     }
@@ -267,6 +319,12 @@ public:
         : AutoGetCollectionForReadCommand(
               opCtx, nss, AutoGetCollection::ViewMode::kViewsForbidden) {}
 
+    AutoGetCollectionForReadCommand(OperationContext* opCtx,
+                                    const NamespaceString& nss,
+                                    Lock::DBLock lock)
+        : AutoGetCollectionForReadCommand(
+              opCtx, nss, AutoGetCollection::ViewMode::kViewsForbidden, std::move(lock)) {}
+
     Database* getDb() const {
         return _autoCollForRead->getDb();
     }
@@ -279,6 +337,11 @@ protected:
     AutoGetCollectionForReadCommand(OperationContext* opCtx,
                                     const NamespaceString& nss,
                                     AutoGetCollection::ViewMode viewMode);
+
+    AutoGetCollectionForReadCommand(OperationContext* opCtx,
+                                    const NamespaceString& nss,
+                                    AutoGetCollection::ViewMode viewMode,
+                                    Lock::DBLock lock);
 
     // '_autoCollForRead' may need to be reset by AutoGetCollectionOrViewForReadCommand, so needs to
     // be a boost::optional.
@@ -301,6 +364,9 @@ class AutoGetCollectionOrViewForReadCommand final : public AutoGetCollectionForR
 
 public:
     AutoGetCollectionOrViewForReadCommand(OperationContext* opCtx, const NamespaceString& nss);
+    AutoGetCollectionOrViewForReadCommand(OperationContext* opCtx,
+                                          const NamespaceString& nss,
+                                          Lock::DBLock lock);
 
     ViewDefinition* getView() const {
         return _view.get();

@@ -298,7 +298,7 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* d
     const auto numRecords = _collection->numRecords(_opCtx);
     stdx::unique_lock<Client> lk(*_opCtx->getClient());
     ProgressMeterHolder progress(
-        *_opCtx->setMessage_inlock(curopMessage, curopMessage, numRecords));
+        CurOp::get(_opCtx)->setMessage_inlock(curopMessage, curopMessage, numRecords));
     lk.unlock();
 
     Timer t;
@@ -350,8 +350,12 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* d
                 // Fail the index build hard.
                 return ret;
             }
-            if (_buildInBackground)
-                exec->restoreState();  // Handles any WCEs internally.
+            if (_buildInBackground) {
+                auto restoreStatus = exec->restoreState();  // Handles any WCEs internally.
+                if (!restoreStatus.isOK()) {
+                    return restoreStatus;
+                }
+            }
 
             // Go to the next document
             progress->hit();
@@ -362,11 +366,14 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* d
             retries++;  // logAndBackoff expects this to be 1 on first call.
             wce.logAndBackoff(retries, "index creation", _collection->ns().ns());
 
-            // Can't use WRITE_CONFLICT_RETRY_LOOP macros since we need to save/restore exec
-            // around call to abandonSnapshot.
+            // Can't use writeConflictRetry since we need to save/restore exec around call to
+            // abandonSnapshot.
             exec->saveState();
             _opCtx->recoveryUnit()->abandonSnapshot();
-            exec->restoreState();  // Handles any WCEs internally.
+            auto restoreStatus = exec->restoreState();  // Handles any WCEs internally.
+            if (!restoreStatus.isOK()) {
+                return restoreStatus;
+            }
         }
     }
 

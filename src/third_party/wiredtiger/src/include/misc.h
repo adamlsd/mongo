@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -214,6 +214,12 @@
 #define	WT_PREFIX_SKIP(str, pfx)					\
 	(WT_PREFIX_MATCH(str, pfx) ? ((str) += strlen(pfx), 1) : 0)
 
+/* Assert that a string matches a prefix, and move past it. */
+#define	WT_PREFIX_SKIP_REQUIRED(session, str, pfx) do {			\
+	WT_ASSERT(session, WT_PREFIX_MATCH(str, pfx));			\
+	(str) += strlen(pfx);						\
+} while (0)
+
 /*
  * Check if a variable string equals a constant string.  Inline the common
  * case for WiredTiger of a single byte string.  This is required because not
@@ -249,17 +255,41 @@
 	(dst).size = (src).size;					\
 } while (0)
 
+/* Timestamp type and helper macros. */
+#if WT_TIMESTAMP_SIZE > 0
+#define	HAVE_TIMESTAMPS
+#else
+#undef	HAVE_TIMESTAMPS
+#endif
+
+#ifdef HAVE_TIMESTAMPS
+struct __wt_timestamp_t {
+#if WT_TIMESTAMP_SIZE == 8
+	uint64_t val;
+#else
+	uint8_t ts[WT_TIMESTAMP_SIZE];
+#endif
+};
+typedef struct __wt_timestamp_t wt_timestamp_t;
+#define	WT_DECL_TIMESTAMP(x)	wt_timestamp_t x;
+#define	WT_TIMESTAMP_NULL(x)	(x)
+#else
+typedef void wt_timestamp_t;
+#define	WT_TIMESTAMP_NULL(x)	(NULL)
+#define	WT_DECL_TIMESTAMP(x)
+#endif
+
 /*
  * In diagnostic mode we track the locations from which hazard pointers and
  * scratch buffers were acquired.
  */
 #ifdef HAVE_DIAGNOSTIC
 #define	__wt_scr_alloc(session, size, scratchp)				\
-	__wt_scr_alloc_func(session, size, scratchp, __FILE__, __LINE__)
+	__wt_scr_alloc_func(session, size, scratchp, __func__, __LINE__)
 #define	__wt_page_in(session, ref, flags)				\
-	__wt_page_in_func(session, ref, flags, __FILE__, __LINE__)
+	__wt_page_in_func(session, ref, flags, __func__, __LINE__)
 #define	__wt_page_swap(session, held, want, flags)			\
-	__wt_page_swap_func(session, held, want, flags, __FILE__, __LINE__)
+	__wt_page_swap_func(session, held, want, flags, __func__, __LINE__)
 #else
 #define	__wt_scr_alloc(session, size, scratchp)				\
 	__wt_scr_alloc_func(session, size, scratchp)
@@ -269,6 +299,10 @@
 	__wt_page_swap_func(session, held, want, flags)
 #endif
 
+/* Called on unexpected code path: locate the failure. */
+#define	__wt_illegal_value(session, msg)				\
+	__wt_illegal_value_func(session, msg, __func__, __LINE__)
+
 /* Random number generator state. */
 union __wt_rand_state {
 	uint64_t v;
@@ -276,3 +310,22 @@ union __wt_rand_state {
 		uint32_t w, z;
 	} x;
 };
+
+/*
+ * WT_TAILQ_SAFE_REMOVE_BEGIN/END --
+ *	Macro to safely walk a TAILQ where we're expecting some underlying
+ * function to remove elements from the list, but we don't want to stop on
+ * error, nor do we want an error to turn into an infinite loop. Used during
+ * shutdown, when we're shutting down various lists. Unlike TAILQ_FOREACH_SAFE,
+ * this macro works even when the next element gets removed along with the
+ * current one.
+ */
+#define	WT_TAILQ_SAFE_REMOVE_BEGIN(var, head, field, tvar)		\
+	for ((tvar) = NULL; ((var) = TAILQ_FIRST(head)) != NULL;	\
+	    (tvar) = (var)) {						\
+		if ((tvar) == (var)) {					\
+			/* Leak the structure. */			\
+			TAILQ_REMOVE(head, (var), field);		\
+			continue;					\
+		}
+#define	WT_TAILQ_SAFE_REMOVE_END }

@@ -52,9 +52,9 @@ struct CompressionHeader {
     uint8_t compressorId;
 
     void serialize(DataRangeCursor* cursor) {
-        cursor->writeAndAdvance<LittleEndian<int32_t>>(originalOpCode);
-        cursor->writeAndAdvance<LittleEndian<int32_t>>(uncompressedSize);
-        cursor->writeAndAdvance<LittleEndian<uint8_t>>(compressorId);
+        cursor->writeAndAdvance<LittleEndian<int32_t>>(originalOpCode).transitional_ignore();
+        cursor->writeAndAdvance<LittleEndian<int32_t>>(uncompressedSize).transitional_ignore();
+        cursor->writeAndAdvance<LittleEndian<uint8_t>>(compressorId).transitional_ignore();
     }
 
     CompressionHeader(int32_t _opcode, int32_t _size, uint8_t _id)
@@ -81,11 +81,18 @@ MessageCompressorManager::MessageCompressorManager()
 MessageCompressorManager::MessageCompressorManager(MessageCompressorRegistry* factory)
     : _registry{factory} {}
 
-StatusWith<Message> MessageCompressorManager::compressMessage(const Message& msg) {
-    if (_negotiated.size() == 0) {
+StatusWith<Message> MessageCompressorManager::compressMessage(
+    const Message& msg, const MessageCompressorId* compressorId) {
+
+    MessageCompressorBase* compressor = nullptr;
+    if (compressorId) {
+        compressor = _registry->getCompressor(*compressorId);
+        invariant(compressor);
+    } else if (!_negotiated.empty()) {
+        compressor = _negotiated[0];
+    } else {
         return {msg};
     }
-    auto compressor = _negotiated[0];
 
     LOG(3) << "Compressing message with " << compressor->getName();
 
@@ -125,7 +132,8 @@ StatusWith<Message> MessageCompressorManager::compressMessage(const Message& msg
     return {Message(outputMessageBuffer)};
 }
 
-StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& msg) {
+StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& msg,
+                                                                MessageCompressorId* compressorId) {
     auto inputHeader = msg.header();
     ConstDataRangeCursor input(inputHeader.data(), inputHeader.data() + inputHeader.dataLen());
     CompressionHeader compressionHeader(&input);
@@ -134,6 +142,10 @@ StatusWith<Message> MessageCompressorManager::decompressMessage(const Message& m
     if (!compressor) {
         return {ErrorCodes::InternalError,
                 "Compression algorithm specified in message is not available"};
+    }
+
+    if (compressorId) {
+        *compressorId = compressor->getId();
     }
 
     LOG(3) << "Decompressing message with " << compressor->getName();
@@ -182,7 +194,7 @@ void MessageCompressorManager::clientBegin(BSONObjBuilder* output) {
 
 void MessageCompressorManager::clientFinish(const BSONObj& input) {
     auto elem = input.getField("compression");
-    LOG(3) << "Finishing client-side compreession negotiation";
+    LOG(3) << "Finishing client-side compression negotiation";
 
     // We've just called clientBegin, so the list of compressors should be empty.
     invariant(_negotiated.empty());
@@ -221,6 +233,8 @@ void MessageCompressorManager::serverNegotiate(const BSONObj& input, BSONObjBuil
                 sub.append(algo->getName());
             }
             sub.doneFast();
+        } else {
+            LOG(3) << "Compression negotiation not requested by client";
         }
         return;
     }
@@ -231,6 +245,12 @@ void MessageCompressorManager::serverNegotiate(const BSONObj& input, BSONObjBuil
 
     // First we go through all the compressor names that the client has requested support for
     BSONObj theirObj = elem.Obj();
+
+    if (!theirObj.nFields()) {
+        LOG(3) << "No compressors provided";
+        return;
+    }
+
     for (const auto& elem : theirObj) {
         MessageCompressorBase* cur;
         auto curName = elem.checkAndGetStringData();
@@ -252,6 +272,8 @@ void MessageCompressorManager::serverNegotiate(const BSONObj& input, BSONObjBuil
             sub.append(algo->getName());
         }
         sub.doneFast();
+    } else {
+        LOG(3) << "Could not agree on compressor to use";
     }
 }
 

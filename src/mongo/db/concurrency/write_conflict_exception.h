@@ -36,30 +36,6 @@
 #include "mongo/db/curop.h"
 #include "mongo/util/assert_util.h"
 
-// Use of this macro is deprecated.  Prefer the writeConflictRetry template, below, instead.
-
-#define MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN \
-    do {                                      \
-        int wcr__Attempts = 0;                \
-        do {                                  \
-            try
-#define MONGO_WRITE_CONFLICT_RETRY_LOOP_END(PTXN, OPSTR, NSSTR) \
-    catch (const ::mongo::WriteConflictException& wce) {        \
-        const OperationContext* ptxn = (PTXN);                  \
-        ++CurOp::get(ptxn)->debug().writeConflicts;             \
-        wce.logAndBackoff(wcr__Attempts, (OPSTR), (NSSTR));     \
-        ++wcr__Attempts;                                        \
-        ptxn->recoveryUnit()->abandonSnapshot();                \
-        continue;                                               \
-    }                                                           \
-    break;                                                      \
-    }                                                           \
-    while (true)                                                \
-        ;                                                       \
-    }                                                           \
-    while (false)                                               \
-        ;
-
 namespace mongo {
 
 /**
@@ -86,16 +62,21 @@ public:
     static AtomicBool trace;
 };
 
+/**
+ * Runs the argument function f as many times as needed for f to complete or throw an exception
+ * other than WriteConflictException.  For each time f throws a WriteConflictException, logs the
+ * error, waits a spell, cleans up, and then tries f again.  Imposes no upper limit on the number
+ * of times to re-try f, so any required timeout behavior must be enforced within f.
+ */
 template <typename F>
-void writeConflictRetry(OperationContext* opCtx, StringData opStr, StringData ns, F&& f) {
+auto writeConflictRetry(OperationContext* opCtx, StringData opStr, StringData ns, F&& f) {
     int attempts = 0;
     while (true) {
         try {
-            f();
-            break;
-        } catch (WriteConflictException const& wce) {
+            return f();
+        } catch (WriteConflictException const&) {
             ++CurOp::get(opCtx)->debug().writeConflicts;
-            wce.logAndBackoff(attempts, opStr, ns);
+            WriteConflictException::logAndBackoff(attempts, opStr, ns);
             ++attempts;
             opCtx->recoveryUnit()->abandonSnapshot();
         }

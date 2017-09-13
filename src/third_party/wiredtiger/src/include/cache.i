@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -216,7 +216,7 @@ __wt_session_can_wait(WT_SESSION_IMPL *session)
 /*
  * __wt_eviction_clean_needed --
  *	Return if an application thread should do eviction due to the total
- *	volume of dirty data in cache.
+ *	volume of data in cache.
  */
 static inline bool
 __wt_eviction_clean_needed(WT_SESSION_IMPL *session, u_int *pct_fullp)

@@ -1,32 +1,30 @@
-// @file namespacestring.h
-
 /**
-*    Copyright (C) 2008 10gen Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2017 MongoDB, Inc.
+ *
+ *    This program is free software: you can redistribute it and/or  modify
+ *    it under the terms of the GNU Affero General Public License, version 3,
+ *    as published by the Free Software Foundation.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU Affero General Public License for more details.
+ *
+ *    You should have received a copy of the GNU Affero General Public License
+ *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #pragma once
 
@@ -43,14 +41,7 @@
 
 namespace mongo {
 
-/* in the mongo source code, "client" means "database". */
-
 const size_t MaxDatabaseNameLen = 128;  // max str len for the db name, including null char
-
-/** @return true if a client can modify this namespace even though it is under ".system."
-    For example <dbname>.system.users is ok for regular clients to update.
-*/
-bool legalClientSystemNS(StringData ns);
 
 /* e.g.
    NamespaceString ns("acme.orders");
@@ -72,12 +63,22 @@ public:
     // Name for the system views collection
     static constexpr StringData kSystemDotViewsCollectionName = "system.views"_sd;
 
+    // Name for a shard's collections metadata collection, each document of which indicates the
+    // state of a specific collection.
+    static constexpr StringData kShardConfigCollectionsCollectionName = "config.collections"_sd;
+
     // Namespace for storing configuration data, which needs to be replicated if the server is
     // running as a replica set. Documents in this collection should represent some configuration
     // state of the server, which needs to be recovered/consulted at startup. Each document in this
     // namespace should have its _id set to some string, which meaningfully describes what it
     // represents.
-    static const NamespaceString kConfigCollectionNamespace;
+    static const NamespaceString kServerConfigurationNamespace;
+
+    // Namespace for storing the transaction information for each session
+    static const NamespaceString kSessionTransactionsTableNamespace;
+
+    // Namespace of the the oplog collection.
+    static const NamespaceString kRsOplogNamespace;
 
     /**
      * Constructs an empty NamespaceString.
@@ -94,6 +95,12 @@ public:
      * "dbName" must not contain a ".", and "collectionName" must not start with one.
      */
     NamespaceString(StringData dbName, StringData collectionName);
+
+    /**
+     * Constructs the namespace '<dbName>.$cmd.aggregate', which we use as the namespace for
+     * aggregation commands with the format {aggregate: 1}.
+     */
+    static NamespaceString makeCollectionlessAggregateNSS(StringData dbName);
 
     /**
      * Constructs a NamespaceString representing a listCollections namespace. The format for this
@@ -163,6 +170,9 @@ public:
     // The following methods assume isValid() is true for this NamespaceString.
     //
 
+    bool isHealthlog() const {
+        return isLocal() && coll() == "system.healthlog";
+    }
     bool isSystem() const {
         return coll().startsWith("system.");
     }
@@ -187,9 +197,6 @@ public:
     bool isOplog() const {
         return oplog(_ns);
     }
-    bool isSpecialCommand() const {
-        return coll().startsWith("$cmd.sys");
-    }
     bool isSpecial() const {
         return special(_ns);
     }
@@ -213,8 +220,15 @@ public:
         return coll().startsWith("$cmd."_sd);
     }
 
+    bool isCollectionlessAggregateNS() const;
     bool isListCollectionsCursorNS() const;
     bool isListIndexesCursorNS() const;
+
+    /**
+     * Returns true if a client can modify this namespace even though it is under ".system."
+     * For example <dbname>.system.users is ok for regular clients to update.
+     */
+    bool isLegalClientSystemNS() const;
 
     /**
      * Given a NamespaceString for which isGloballyManagedNamespace() returns true, returns the

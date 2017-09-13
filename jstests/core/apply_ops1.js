@@ -310,8 +310,8 @@
 
     var res = assert.commandWorked(db.runCommand({
         applyOps: [
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}},
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}}
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 18}}},
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 19}}}
         ]
     }));
 
@@ -326,11 +326,31 @@
     // preCondition fully matches
     res = db.runCommand({
         applyOps: [
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}},
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}}
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 20}}},
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 21}}}
         ],
         preCondition: [{ns: t.getFullName(), q: {_id: 5}, res: {x: 19}}]
     });
+
+    // The use of preCondition requires applyOps to run atomically. Therefore, it is incompatible
+    // with {allowAtomic: false}.
+    assert.commandFailedWithCode(
+        db.runCommand({
+            applyOps: [{op: 'u', ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 22}}}],
+            preCondition: [{ns: t.getFullName(), q: {_id: 5}, res: {x: 21}}],
+            allowAtomic: false,
+        }),
+        ErrorCodes.InvalidOptions,
+        'applyOps should fail when preCondition is present and atomicAllowed is false.');
+
+    // The use of preCondition is also incompatible with operations that include commands.
+    assert.commandFailedWithCode(
+        db.runCommand({
+            applyOps: [{op: 'c', ns: t.getCollection('$cmd').getFullName(), o: {applyOps: []}}],
+            preCondition: [{ns: t.getFullName(), q: {_id: 5}, res: {x: 21}}],
+        }),
+        ErrorCodes.InvalidOptions,
+        'applyOps should fail when preCondition is present and operations includes commands.');
 
     o.x++;
     o.x++;
@@ -343,8 +363,8 @@
     // preCondition doesn't match ns
     res = db.runCommand({
         applyOps: [
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}},
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}}
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 22}}},
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 23}}}
         ],
         preCondition: [{ns: "foo.otherName", q: {_id: 5}, res: {x: 21}}]
     });
@@ -354,8 +374,8 @@
     // preCondition doesn't match query
     res = db.runCommand({
         applyOps: [
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}},
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}}
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 22}}},
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 23}}}
         ],
         preCondition: [{ns: t.getFullName(), q: {_id: 5}, res: {x: 19}}]
     });
@@ -364,8 +384,8 @@
 
     res = db.runCommand({
         applyOps: [
-            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$inc: {x: 1}}},
-            {op: "u", ns: t.getFullName(), o2: {_id: 6}, o: {$inc: {x: 1}}}
+            {op: "u", ns: t.getFullName(), o2: {_id: 5}, o: {$set: {x: 22}}},
+            {op: "u", ns: t.getFullName(), o2: {_id: 6}, o: {$set: {x: 23}}}
         ]
     });
 

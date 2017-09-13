@@ -54,11 +54,11 @@ const char kTermField[] = "term";
 /**
  * Implements the find command on mongos.
  */
-class ClusterFindCmd : public Command {
+class ClusterFindCmd : public BasicCommand {
     MONGO_DISALLOW_COPYING(ClusterFindCmd);
 
 public:
-    ClusterFindCmd() : Command("find") {}
+    ClusterFindCmd() : BasicCommand("find") {}
 
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -152,7 +152,6 @@ public:
     bool run(OperationContext* opCtx,
              const std::string& dbname,
              const BSONObj& cmdObj,
-             std::string& errmsg,
              BSONObjBuilder& result) final {
         // We count find command as a query op.
         globalOpCounters.gotQuery();
@@ -165,17 +164,15 @@ public:
             return appendCommandStatus(result, qr.getStatus());
         }
 
-        auto cq =
-            CanonicalQuery::canonicalize(opCtx, std::move(qr.getValue()), ExtensionsCallbackNoop());
+        const boost::intrusive_ptr<ExpressionContext> expCtx;
+        auto cq = CanonicalQuery::canonicalize(opCtx,
+                                               std::move(qr.getValue()),
+                                               expCtx,
+                                               ExtensionsCallbackNoop(),
+                                               MatchExpressionParser::kAllowAllSpecialFeatures &
+                                                   ~MatchExpressionParser::AllowedFeatures::kExpr);
         if (!cq.isOK()) {
             return appendCommandStatus(result, cq.getStatus());
-        }
-
-        // Extract read preference. If no read preference is specified in the query, will we pass
-        // down a "primaryOnly" or "secondary" read pref, depending on the slaveOk setting.
-        auto readPref = ClusterFind::extractUnwrappedReadPref(cmdObj);
-        if (!readPref.isOK()) {
-            return appendCommandStatus(result, readPref.getStatus());
         }
 
         // Do the work to generate the first batch of results. This blocks waiting to get responses
@@ -183,7 +180,7 @@ public:
         std::vector<BSONObj> batch;
         BSONObj viewDefinition;
         auto cursorId = ClusterFind::runQuery(
-            opCtx, *cq.getValue(), readPref.getValue(), &batch, &viewDefinition);
+            opCtx, *cq.getValue(), ReadPreferenceSetting::get(opCtx), &batch, &viewDefinition);
         if (!cursorId.isOK()) {
             if (cursorId.getStatus() == ErrorCodes::CommandOnShardedViewNotSupportedOnMongod) {
                 auto aggCmdOnView = cq.getValue()->getQueryRequest().asAggregationCommand();

@@ -72,7 +72,7 @@ namespace {
  * Extracts the names of the facets and the vectors of raw BSONObjs representing the stages within
  * that facet's pipeline.
  *
- * Throws a UserException if it fails to parse for any reason.
+ * Throws a AssertionException if it fails to parse for any reason.
  */
 vector<pair<string, vector<BSONObj>>> extractRawPipelines(const BSONElement& elem) {
     uassert(40169,
@@ -99,13 +99,6 @@ vector<pair<string, vector<BSONObj>>> extractRawPipelines(const BSONElement& ele
                                   << ": "
                                   << subPipeElem,
                     subPipeElem.type() == BSONType::Object);
-            auto stageName = subPipeElem.Obj().firstElementFieldName();
-            uassert(
-                40331,
-                str::stream() << "specified stage is not allowed to be used within a $facet stage: "
-                              << subPipeElem,
-                !str::equals(stageName, "$out") && !str::equals(stageName, "$facet"));
-
             rawPipeline.push_back(subPipeElem.embeddedObject());
         }
 
@@ -118,12 +111,24 @@ vector<pair<string, vector<BSONObj>>> extractRawPipelines(const BSONElement& ele
 std::unique_ptr<DocumentSourceFacet::LiteParsed> DocumentSourceFacet::LiteParsed::parse(
     const AggregationRequest& request, const BSONElement& spec) {
     std::vector<LiteParsedPipeline> liteParsedPipelines;
+
     for (auto&& rawPipeline : extractRawPipelines(spec)) {
         liteParsedPipelines.emplace_back(
             AggregationRequest(request.getNamespaceString(), rawPipeline.second));
     }
-    return std::unique_ptr<DocumentSourceFacet::LiteParsed>(
-        new DocumentSourceFacet::LiteParsed(std::move(liteParsedPipelines)));
+
+    PrivilegeVector requiredPrivileges;
+    for (auto&& pipeline : liteParsedPipelines) {
+
+        // A correct isMongos flag is only required for DocumentSourceCurrentOp which is disallowed
+        // in $facet pipelines.
+        const bool unusedIsMongosFlag = false;
+        Privilege::addPrivilegesToPrivilegeVector(&requiredPrivileges,
+                                                  pipeline.requiredPrivileges(unusedIsMongosFlag));
+    }
+
+    return stdx::make_unique<DocumentSourceFacet::LiteParsed>(std::move(liteParsedPipelines),
+                                                              std::move(requiredPrivileges));
 }
 
 stdx::unordered_set<NamespaceString> DocumentSourceFacet::LiteParsed::getInvolvedNamespaces()
@@ -232,16 +237,22 @@ void DocumentSourceFacet::doReattachToOperationContext(OperationContext* opCtx) 
     }
 }
 
-bool DocumentSourceFacet::needsPrimaryShard() const {
-    // Currently we don't split $facet to have a merger part and a shards part (see SERVER-24154).
-    // This means that if any stage in any of the $facet pipelines requires the primary shard, then
-    // the entire $facet must happen on the merger, and the merger must be the primary shard.
+DocumentSource::StageConstraints DocumentSourceFacet::constraints() const {
+    StageConstraints constraints;
+    constraints.isAllowedInsideFacetStage = false;  // Disallow nested $facets.
+
     for (auto&& facet : _facets) {
-        if (facet.pipeline->needsPrimaryShardMerger()) {
-            return true;
+        for (auto&& nestedStage : facet.pipeline->getSources()) {
+            if (nestedStage->constraints().hostRequirement == HostTypeRequirement::kPrimaryShard) {
+                // Currently we don't split $facet to have a merger part and a shards part (see
+                // SERVER-24154). This means that if any stage in any of the $facet pipelines
+                // requires the primary shard, then the entire $facet must happen on the merger, and
+                // the merger must be the primary shard.
+                constraints.hostRequirement = HostTypeRequirement::kPrimaryShard;
+            }
         }
     }
-    return false;
+    return constraints;
 }
 
 DocumentSource::GetDepsReturn DocumentSourceFacet::getDependencies(DepsTracker* deps) const {
@@ -270,21 +281,7 @@ intrusive_ptr<DocumentSource> DocumentSourceFacet::createFromBson(
     for (auto&& rawFacet : extractRawPipelines(elem)) {
         const auto facetName = rawFacet.first;
 
-        auto pipeline = uassertStatusOK(Pipeline::parse(rawFacet.second, expCtx));
-
-        uassert(40172,
-                str::stream() << "sub-pipeline in $facet stage cannot be empty: " << facetName,
-                !pipeline->getSources().empty());
-
-        // Disallow any stages that need to be the first stage in the pipeline.
-        for (auto&& stage : pipeline->getSources()) {
-            if (stage->isValidInitialSource()) {
-                uasserted(40173,
-                          str::stream() << stage->getSourceName()
-                                        << " is not allowed to be used within a $facet stage: "
-                                        << elem.toString());
-            }
-        }
+        auto pipeline = uassertStatusOK(Pipeline::parseFacetPipeline(rawFacet.second, expCtx));
 
         facetPipelines.emplace_back(facetName, std::move(pipeline));
     }

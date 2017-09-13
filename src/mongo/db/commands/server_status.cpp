@@ -51,6 +51,7 @@
 #include "mongo/transport/transport_layer.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/hostname_canonicalization.h"
+#include "mongo/util/net/sock.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/ramlog.h"
@@ -64,9 +65,9 @@ using std::map;
 using std::string;
 using std::stringstream;
 
-class CmdServerStatus : public Command {
+class CmdServerStatus : public BasicCommand {
 public:
-    CmdServerStatus() : Command("serverStatus"), _started(Date_t::now()), _runCalled(false) {}
+    CmdServerStatus() : BasicCommand("serverStatus"), _started(Date_t::now()), _runCalled(false) {}
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -88,7 +89,6 @@ public:
     bool run(OperationContext* opCtx,
              const string& dbname,
              const BSONObj& cmdObj,
-             string& errmsg,
              BSONObjBuilder& result) {
         _runCalled = true;
 
@@ -233,6 +233,9 @@ public:
 
     BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
         BSONObjBuilder bb;
+        if (!opCtx->getServiceContext()->getTransportLayer()) {
+            return bb.obj();
+        }
         auto stats = opCtx->getServiceContext()->getTransportLayer()->sessionStats();
         bb.append("current", static_cast<int>(stats.numOpenSessions));
         bb.append("available", static_cast<int>(stats.numAvailableSessions));
@@ -293,6 +296,10 @@ public:
         BSONObjBuilder b;
         networkCounter.append(b);
         appendMessageCompressionStats(&b);
+        auto executor = opCtx->getServiceContext()->getServiceExecutor();
+        if (executor)
+            executor->appendStats(&b);
+
         return b.obj();
     }
 

@@ -43,6 +43,9 @@
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/oplog_fetcher.h"
 #include "mongo/db/repl/optime.h"
+#include "mongo/db/repl/replication_consistency_markers_mock.h"
+#include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/replication_recovery_mock.h"
 #include "mongo/db/repl/reporter.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/storage_interface_mock.h"
@@ -213,6 +216,7 @@ public:
 protected:
     struct StorageInterfaceResults {
         bool createOplogCalled = false;
+        bool truncateCalled = false;
         bool insertedOplogEntries = false;
         int oplogEntriesInserted = 0;
         bool droppedUserDBs = false;
@@ -232,14 +236,21 @@ protected:
             _storageInterfaceWorkDone.createOplogCalled = true;
             return Status::OK();
         };
-        _storageInterface->insertDocumentFn =
-            [this](OperationContext* opCtx, const NamespaceString& nss, const BSONObj& doc) {
-                LockGuard lock(_storageInterfaceWorkDoneMutex);
-                ++_storageInterfaceWorkDone.documentsInsertedCount;
-                return Status::OK();
-            };
-        _storageInterface->insertDocumentsFn = [this](
-            OperationContext* opCtx, const NamespaceString& nss, const std::vector<BSONObj>& ops) {
+        _storageInterface->truncateCollFn = [this](OperationContext* opCtx,
+                                                   const NamespaceString& nss) {
+            LockGuard lock(_storageInterfaceWorkDoneMutex);
+            _storageInterfaceWorkDone.truncateCalled = true;
+            return Status::OK();
+        };
+        _storageInterface->insertDocumentFn = [this](
+            OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc) {
+            LockGuard lock(_storageInterfaceWorkDoneMutex);
+            ++_storageInterfaceWorkDone.documentsInsertedCount;
+            return Status::OK();
+        };
+        _storageInterface->insertDocumentsFn = [this](OperationContext* opCtx,
+                                                      const NamespaceString& nss,
+                                                      const std::vector<InsertStatement>& ops) {
             LockGuard lock(_storageInterfaceWorkDoneMutex);
             _storageInterfaceWorkDone.insertedOplogEntries = true;
             ++_storageInterfaceWorkDone.oplogEntriesInserted;
@@ -267,7 +278,8 @@ protected:
                     log() << "reusing collection during test which may cause problems, ns:" << nss;
                 }
                 (collInfo->loader = new CollectionBulkLoaderMock(&collInfo->stats))
-                    ->init(nullptr, secondaryIndexSpecs);
+                    ->init(secondaryIndexSpecs)
+                    .transitional_ignore();
 
                 return StatusWith<std::unique_ptr<CollectionBulkLoader>>(
                     std::unique_ptr<CollectionBulkLoader>(collInfo->loader));
@@ -280,6 +292,11 @@ protected:
 
         launchExecutorThread();
 
+        _replicationProcess = stdx::make_unique<ReplicationProcess>(
+            _storageInterface.get(),
+            stdx::make_unique<ReplicationConsistencyMarkersMock>(),
+            stdx::make_unique<ReplicationRecoveryMock>());
+
         _executorProxy = stdx::make_unique<TaskExecutorMock>(&getExecutor());
 
         _myLastOpTime = OpTime({3, 0}, 1);
@@ -288,6 +305,7 @@ protected:
         options.initialSyncRetryWait = Milliseconds(1);
         options.getMyLastOptime = [this]() { return _myLastOpTime; };
         options.setMyLastOptime = [this](const OpTime& opTime) { _setMyLastOptime(opTime); };
+        options.resetOptimes = [this]() { _setMyLastOptime(OpTime()); };
         options.getSlaveDelay = [this]() { return Seconds(0); };
         options.syncSourceSelector = this;
 
@@ -336,6 +354,7 @@ protected:
                 options,
                 std::move(dataReplicatorExternalState),
                 _storageInterface.get(),
+                _replicationProcess.get(),
                 [this](const StatusWith<OpTimeWithHash>& lastApplied) {
                     _onCompletion(lastApplied);
                 });
@@ -353,8 +372,8 @@ protected:
         if (_executorThreadShutdownComplete) {
             return;
         }
-        executor::ThreadPoolExecutorTest::shutdownExecutorThread();
-        executor::ThreadPoolExecutorTest::joinExecutorThread();
+        getExecutor().shutdown();
+        getExecutor().join();
         _executorThreadShutdownComplete = true;
     }
 
@@ -363,10 +382,8 @@ protected:
         _initialSyncer.reset();
         _dbWorkThreadPool->join();
         _dbWorkThreadPool.reset();
+        _replicationProcess.reset();
         _storageInterface.reset();
-
-        // tearDown() destroys the task executor which was referenced by the initial syncer.
-        executor::ThreadPoolExecutorTest::tearDown();
     }
 
     /**
@@ -393,6 +410,7 @@ protected:
     OpTime _myLastOpTime;
     std::unique_ptr<SyncSourceSelectorMock> _syncSourceSelector;
     std::unique_ptr<StorageInterfaceMock> _storageInterface;
+    std::unique_ptr<ReplicationProcess> _replicationProcess;
     std::unique_ptr<OldThreadPool> _dbWorkThreadPool;
     std::map<NamespaceString, CollectionMockStats> _collectionStats;
     std::map<NamespaceString, CollectionCloneInfo> _collections;
@@ -518,6 +536,7 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
     InitialSyncerOptions options;
     options.getMyLastOptime = []() { return OpTime(); };
     options.setMyLastOptime = [](const OpTime&) {};
+    options.resetOptimes = []() {};
     options.getSlaveDelay = []() { return Seconds(0); };
     options.syncSourceSelector = this;
     auto callback = [](const StatusWith<OpTimeWithHash>&) {};
@@ -525,12 +544,14 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
     // Null task executor in external state.
     {
         auto dataReplicatorExternalState = stdx::make_unique<DataReplicatorExternalStateMock>();
-        ASSERT_THROWS_CODE_AND_WHAT(
-            InitialSyncer(
-                options, std::move(dataReplicatorExternalState), _storageInterface.get(), callback),
-            UserException,
-            ErrorCodes::BadValue,
-            "task executor cannot be null");
+        ASSERT_THROWS_CODE_AND_WHAT(InitialSyncer(options,
+                                                  std::move(dataReplicatorExternalState),
+                                                  _storageInterface.get(),
+                                                  _replicationProcess.get(),
+                                                  callback),
+                                    AssertionException,
+                                    ErrorCodes::BadValue,
+                                    "task executor cannot be null");
     }
 
     // Null callback function.
@@ -540,8 +561,9 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
         ASSERT_THROWS_CODE_AND_WHAT(InitialSyncer(options,
                                                   std::move(dataReplicatorExternalState),
                                                   _storageInterface.get(),
+                                                  _replicationProcess.get(),
                                                   InitialSyncer::OnCompletionFn()),
-                                    UserException,
+                                    AssertionException,
                                     ErrorCodes::BadValue,
                                     "callback function cannot be null");
     }
@@ -598,13 +620,30 @@ TEST_F(InitialSyncerTest, StartupSetsInitialSyncFlagOnSuccess) {
     auto opCtx = makeOpCtx();
 
     // Initial sync flag should not be set before starting.
-    ASSERT_FALSE(getStorage().getInitialSyncFlag(opCtx.get()));
+    ASSERT_FALSE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
     ASSERT_TRUE(initialSyncer->isActive());
 
     // Initial sync flag should be set.
-    ASSERT_TRUE(getStorage().getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
+}
+
+TEST_F(InitialSyncerTest, StartupSetsInitialDataTimestampAndStableTimestampOnSuccess) {
+    auto initialSyncer = &getInitialSyncer();
+    auto opCtx = makeOpCtx();
+
+    // Set initial data timestamp forward first.
+    auto serviceCtx = opCtx.get()->getServiceContext();
+    _storageInterface->setInitialDataTimestamp(serviceCtx, SnapshotName(Timestamp(5, 5)));
+    _storageInterface->setStableTimestamp(serviceCtx, SnapshotName(Timestamp(6, 6)));
+
+    ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
+    ASSERT_TRUE(initialSyncer->isActive());
+
+    ASSERT_EQUALS(SnapshotName(Timestamp::kAllowUnstableCheckpointsSentinel),
+                  _storageInterface->getInitialDataTimestamp());
+    ASSERT_EQUALS(SnapshotName::min(), _storageInterface->getStableTimestamp());
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerReturnsCallbackCanceledIfShutdownImmediatelyAfterStartup) {
@@ -721,6 +760,32 @@ TEST_F(InitialSyncerTest,
         << progress;
 }
 
+TEST_F(InitialSyncerTest, InitialSyncerResetsOptimesOnNewAttempt) {
+    auto initialSyncer = &getInitialSyncer();
+    auto opCtx = makeOpCtx();
+
+    _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort());
+
+    // Set the last optime to an arbitrary nonzero value.
+    auto origOptime = OpTime(Timestamp(1000, 1), 1);
+    _setMyLastOptime(origOptime);
+
+    // Start initial sync.
+    const std::uint32_t initialSyncMaxAttempts = 1U;
+    ASSERT_OK(initialSyncer->startup(opCtx.get(), initialSyncMaxAttempts));
+
+    auto net = getNet();
+
+    // Simulate a failed initial sync attempt
+    _simulateChooseSyncSourceFailure(net, _options.syncSourceRetryWait);
+    advanceClock(net, _options.initialSyncRetryWait);
+
+    initialSyncer->join();
+
+    // Make sure the initial sync attempt reset optimes.
+    ASSERT_EQUALS(OpTime(), _options.getMyLastOptime());
+}
+
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsCallbackCanceledIfShutdownWhileRetryingSyncSourceSelection) {
     auto initialSyncer = &getInitialSyncer();
@@ -832,6 +897,7 @@ TEST_F(InitialSyncerTest, InitialSyncerResetsOnCompletionCallbackFunctionPointer
         _options,
         std::move(dataReplicatorExternalState),
         _storageInterface.get(),
+        _replicationProcess.get(),
         [&lastApplied, sharedCallbackData](const StatusWith<OpTimeWithHash>& result) {
             lastApplied = result;
         });
@@ -862,14 +928,13 @@ TEST_F(InitialSyncerTest, InitialSyncerResetsOnCompletionCallbackFunctionPointer
     ASSERT_TRUE(sharedCallbackStateDestroyed);
 }
 
-TEST_F(InitialSyncerTest, InitialSyncerRecreatesOplogAndDropsReplicatedDatabases) {
-    // We are not interested in proceeding beyond the oplog creation stage so we inject a failure
-    // after setting '_storageInterfaceWorkDone.createOplogCalled' to true.
-    auto oldCreateOplogFn = _storageInterface->createOplogFn;
-    _storageInterface->createOplogFn = [oldCreateOplogFn](OperationContext* opCtx,
-                                                          const NamespaceString& nss) {
-        oldCreateOplogFn(opCtx, nss);
-        return Status(ErrorCodes::OperationFailed, "oplog creation failed");
+TEST_F(InitialSyncerTest, InitialSyncerTruncatesOplogAndDropsReplicatedDatabases) {
+    // We are not interested in proceeding beyond the dropUserDB stage so we inject a failure
+    // after setting '_storageInterfaceWorkDone.droppedUserDBs' to true.
+    auto oldDropUserDBsFn = _storageInterface->dropUserDBsFn;
+    _storageInterface->dropUserDBsFn = [oldDropUserDBsFn](OperationContext* opCtx) {
+        ASSERT_OK(oldDropUserDBsFn(opCtx));
+        return Status(ErrorCodes::OperationFailed, "drop userdbs failed");
     };
 
     auto initialSyncer = &getInitialSyncer();
@@ -882,8 +947,8 @@ TEST_F(InitialSyncerTest, InitialSyncerRecreatesOplogAndDropsReplicatedDatabases
     ASSERT_EQUALS(ErrorCodes::OperationFailed, _lastApplied);
 
     LockGuard lock(_storageInterfaceWorkDoneMutex);
+    ASSERT_TRUE(_storageInterfaceWorkDone.truncateCalled);
     ASSERT_TRUE(_storageInterfaceWorkDone.droppedUserDBs);
-    ASSERT_TRUE(_storageInterfaceWorkDone.createOplogCalled);
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerPassesThroughGetRollbackIdScheduleError) {
@@ -914,13 +979,13 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughGetRollbackIdScheduleError) 
 TEST_F(
     InitialSyncerTest,
     InitialSyncerReturnsShutdownInProgressIfSchedulingRollbackCheckerFailedDueToExecutorShutdown) {
-    // The rollback id request is sent immediately after oplog creation. We shut the task executor
-    // down before returning from createOplog() to make the scheduleRemoteCommand() call for
+    // The rollback id request is sent immediately after oplog truncation. We shut the task executor
+    // down before returning from truncate() to make the scheduleRemoteCommand() call for
     // replSetGetRBID fail.
-    auto oldCreateOplogFn = _storageInterface->createOplogFn;
-    _storageInterface->createOplogFn = [oldCreateOplogFn, this](OperationContext* opCtx,
-                                                                const NamespaceString& nss) {
-        auto status = oldCreateOplogFn(opCtx, nss);
+    auto oldTruncateCollFn = _storageInterface->truncateCollFn;
+    _storageInterface->truncateCollFn = [oldTruncateCollFn, this](OperationContext* opCtx,
+                                                                  const NamespaceString& nss) {
+        auto status = oldTruncateCollFn(opCtx, nss);
         getExecutor().shutdown();
         return status;
     };
@@ -935,7 +1000,7 @@ TEST_F(
     ASSERT_EQUALS(ErrorCodes::ShutdownInProgress, _lastApplied);
 
     LockGuard lock(_storageInterfaceWorkDoneMutex);
-    ASSERT_TRUE(_storageInterfaceWorkDone.createOplogCalled);
+    ASSERT_TRUE(_storageInterfaceWorkDone.truncateCalled);
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerCancelsRollbackCheckerOnShutdown) {
@@ -1821,7 +1886,7 @@ TEST_F(InitialSyncerTest,
         net->blackHole(noi);
     }
 
-    initialSyncer->shutdown();
+    initialSyncer->shutdown().transitional_ignore();
     executor::NetworkInterfaceMock::InNetworkGuard(net)->runReadyNetworkOperations();
 
     initialSyncer->join();
@@ -1987,9 +2052,9 @@ TEST_F(
     auto opCtx = makeOpCtx();
 
     NamespaceString insertDocumentNss;
-    BSONObj insertDocumentDoc;
+    TimestampedBSONObj insertDocumentDoc;
     _storageInterface->insertDocumentFn = [&insertDocumentDoc, &insertDocumentNss](
-        OperationContext*, const NamespaceString& nss, const BSONObj& doc) {
+        OperationContext*, const NamespaceString& nss, const TimestampedBSONObj& doc) {
         insertDocumentNss = nss;
         insertDocumentDoc = doc;
         return Status(ErrorCodes::OperationFailed, "failed to insert oplog entry");
@@ -2036,7 +2101,7 @@ TEST_F(
     initialSyncer->join();
     ASSERT_EQUALS(ErrorCodes::OperationFailed, _lastApplied);
     ASSERT_EQUALS(_options.localOplogNS, insertDocumentNss);
-    ASSERT_BSONOBJ_EQ(oplogEntry, insertDocumentDoc);
+    ASSERT_BSONOBJ_EQ(oplogEntry, insertDocumentDoc.obj);
 }
 
 TEST_F(
@@ -2046,12 +2111,12 @@ TEST_F(
     auto opCtx = makeOpCtx();
 
     NamespaceString insertDocumentNss;
-    BSONObj insertDocumentDoc;
+    TimestampedBSONObj insertDocumentDoc;
     _storageInterface->insertDocumentFn = [initialSyncer, &insertDocumentDoc, &insertDocumentNss](
-        OperationContext*, const NamespaceString& nss, const BSONObj& doc) {
+        OperationContext*, const NamespaceString& nss, const TimestampedBSONObj& doc) {
         insertDocumentNss = nss;
         insertDocumentDoc = doc;
-        initialSyncer->shutdown();
+        initialSyncer->shutdown().transitional_ignore();
         return Status::OK();
     };
 
@@ -2096,7 +2161,7 @@ TEST_F(
     initialSyncer->join();
     ASSERT_EQUALS(ErrorCodes::CallbackCanceled, _lastApplied);
     ASSERT_EQUALS(_options.localOplogNS, insertDocumentNss);
-    ASSERT_BSONOBJ_EQ(oplogEntry, insertDocumentDoc);
+    ASSERT_BSONOBJ_EQ(oplogEntry, insertDocumentDoc.obj);
 }
 
 TEST_F(
@@ -2385,7 +2450,7 @@ TEST_F(InitialSyncerTest, LastOpTimeShouldBeSetEvenIfNoOperationsAreAppliedAfter
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     auto oplogEntry = makeOplogEntry(1);
     auto net = getNet();
@@ -2464,7 +2529,7 @@ TEST_F(InitialSyncerTest, LastOpTimeShouldBeSetEvenIfNoOperationsAreAppliedAfter
     initialSyncer->join();
     ASSERT_EQUALS(oplogEntry.getOpTime(), unittest::assertGet(_lastApplied).opTime);
     ASSERT_EQUALS(oplogEntry.getHash(), unittest::assertGet(_lastApplied).value);
-    ASSERT_FALSE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_FALSE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerPassesThroughGetNextApplierBatchScheduleError) {
@@ -2474,7 +2539,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughGetNextApplierBatchScheduleE
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     auto net = getNet();
     int baseRollbackId = 1;
@@ -2528,7 +2593,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughSecondGetNextApplierBatchSch
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     auto net = getNet();
     int baseRollbackId = 1;
@@ -2582,7 +2647,7 @@ TEST_F(InitialSyncerTest, InitialSyncerCancelsGetNextApplierBatchOnShutdown) {
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     auto net = getNet();
     int baseRollbackId = 1;
@@ -2632,7 +2697,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughGetNextApplierBatchInLockErr
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     // _getNextApplierBatch_inlock() returns BadValue when it gets an oplog entry with an unexpected
     // version (not OplogEntry::kOplogVersion).
@@ -2690,7 +2755,7 @@ TEST_F(
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     // _getNextApplierBatch_inlock() returns BadValue when it gets an oplog entry with an unexpected
     // version (not OplogEntry::kOplogVersion).
@@ -2757,7 +2822,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughMultiApplierScheduleError) {
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
 
-    ASSERT_TRUE(_storageInterface->getInitialSyncFlag(opCtx.get()));
+    ASSERT_TRUE(_replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx.get()));
 
     auto net = getNet();
     int baseRollbackId = 1;
@@ -2979,6 +3044,9 @@ TEST_F(InitialSyncerTest,
     initialSyncer->join();
     ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
     ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
+
+    ASSERT_EQUALS(SnapshotName(lastOp.getOpTime().getTimestamp()),
+                  _storageInterface->getInitialDataTimestamp());
 }
 
 TEST_F(InitialSyncerTest,
@@ -3095,7 +3163,7 @@ TEST_F(
                                           const MultiApplier::Operations& ops,
                                           MultiApplier::ApplyOperationFn applyOperation) {
         // 'OperationPtr*' is ignored by our overridden _multiInitialSyncApply().
-        applyOperation(nullptr);
+        applyOperation(nullptr).transitional_ignore();
         return ops.back().getOpTime();
     };
     bool fetchCountIncremented = false;

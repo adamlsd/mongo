@@ -45,15 +45,25 @@ public:
         ASSERT_NOT_OK(s);
 
         tll->end(session);
+
+        _sessions.emplace_back(std::move(session));
     }
 
-    DbResponse handleRequest(OperationContext* opCtx,
-                             const Message& request,
-                             const HostAndPort& client) override {
+    DbResponse handleRequest(OperationContext* opCtx, const Message& request) override {
         MONGO_UNREACHABLE;
     }
 
+    // Sessions end as soon as they're started, so this doesn't need to do anything.
+    void endAllSessions(transport::Session::TagMask tags) override {
+        for (auto& session : _sessions) {
+            tll->end(session);
+        }
+        _sessions.clear();
+    }
+
     transport::TransportLayerLegacy* tll = nullptr;
+
+    std::list<transport::SessionHandle> _sessions;
 };
 
 // This test verifies a fix for SERVER-28239.  The actual service entry point in use by mongod and
@@ -63,7 +73,6 @@ TEST(TransportLayerLegacy, endSessionsDoesntDoubleClose) {
     // Disabling this test until we can figure out the best way to allocate port numbers for unit
     // tests
     return;
-
     ServiceEntryPointUtil sepu;
 
     transport::TransportLayerLegacy::Options opts{};
@@ -72,8 +81,8 @@ TEST(TransportLayerLegacy, endSessionsDoesntDoubleClose) {
 
     sepu.tll = &tll;
 
-    tll.setup();
-    tll.start();
+    tll.setup().transitional_ignore();
+    tll.start().transitional_ignore();
 
     stdx::mutex mutex;
     bool end = false;
@@ -81,7 +90,7 @@ TEST(TransportLayerLegacy, endSessionsDoesntDoubleClose) {
 
     stdx::thread thr{[&] {
         Socket s;
-        SockAddr sa{"localhost", 27017};
+        SockAddr sa{"localhost", 27017, AF_INET};
         s.connect(sa);
 
         stdx::unique_lock<stdx::mutex> lk(mutex);
@@ -91,7 +100,7 @@ TEST(TransportLayerLegacy, endSessionsDoesntDoubleClose) {
     while (Listener::globalTicketHolder.used() == 0) {
     }
 
-    tll.endAllSessions(transport::Session::TagMask{});
+    sepu.endAllSessions(transport::Session::TagMask{});
 
     while (Listener::globalTicketHolder.used() == 1) {
     }

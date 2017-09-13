@@ -36,11 +36,13 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/string_data.h"
+#include "mongo/db/catalog/collection.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/index_bounds.h"
 #include "mongo/db/repl/collection_bulk_loader.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/storage/snapshot_name.h"
 
 namespace mongo {
 
@@ -49,6 +51,11 @@ struct CollectionOptions;
 class OperationContext;
 
 namespace repl {
+
+struct TimestampedBSONObj {
+    BSONObj obj;
+    SnapshotName timestamp;
+};
 
 /**
  * Storage interface used by the replication system to interact with storage.
@@ -61,28 +68,6 @@ namespace repl {
  *      * Drop database and all user databases
  *      * Drop a collection
  *      * Insert documents into a collection
- *      * Manage minvalid boundaries and initial sync state
- *
- * ***** MINVALID *****
- * This interface provides helper functions for maintaining a single document in the
- * local.replset.minvalid collection.
- *
- * When a member reaches its minValid optime it is in a consistent state.  Thus, minValid is
- * set as the last step in initial sync.  At the beginning of initial sync, doingInitialSync
- * is appended onto minValid to indicate that initial sync was started but has not yet
- * completed.
- *
- * The document is also updated during "normal" sync. The optime of the last op in each batch is
- * used to set minValid, along with a "begin" field to demark the start and the fact that a batch
- * is active. When the batch is done the "begin" field is removed to indicate that we are in a
- * consistent state when the batch has been fully applied.
- *
- * Example of all fields:
- * { _id:...,
- *      doingInitialSync: true // initial sync is active
- *      ts:..., t:...   // end-OpTime
- *      begin: {ts:..., t:...} // a batch is currently being applied, and not consistent
- * }
  */
 class StorageInterface {
     MONGO_DISALLOW_COPYING(StorageInterface);
@@ -98,69 +83,12 @@ public:
     StorageInterface() = default;
     virtual ~StorageInterface() = default;
 
-    // MinValid and Initial Sync Flag.
-    /**
-     * Returns true if initial sync was started but has not not completed.
-     */
-    virtual bool getInitialSyncFlag(OperationContext* opCtx) const = 0;
-
-    /**
-     * Sets the the initial sync flag to record that initial sync has not completed.
-     *
-     * This operation is durable and waits for durable writes (which will block on
-     *journaling/checkpointing).
-     */
-    virtual void setInitialSyncFlag(OperationContext* opCtx) = 0;
-
-    /**
-     * Clears the the initial sync flag to record that initial sync has completed.
-     *
-     * This operation is durable and waits for durable writes (which will block on
-     *journaling/checkpointing).
-     */
-    virtual void clearInitialSyncFlag(OperationContext* opCtx) = 0;
-
-    /**
-     * The minValid value is the earliest (minimum) Timestamp that must be applied in order to
-     * consider the dataset consistent.
-     */
-    virtual void setMinValid(OperationContext* opCtx, const OpTime& minValid) = 0;
-    virtual OpTime getMinValid(OperationContext* opCtx) const = 0;
-
-    /**
-     * Sets minValid only if it is not already higher than endOpTime.
-     * Warning, this compares the term and timestamp independently. Do not use if the current
-     * minValid could be from the other fork of a rollback.
-     */
-    virtual void setMinValidToAtLeast(OperationContext* opCtx, const OpTime& endOpTime) = 0;
-
     /**
      * Rollback ID is an increasing counter of how many rollbacks have occurred on this server.
      */
     virtual StatusWith<int> getRollbackID(OperationContext* opCtx) = 0;
     virtual Status initializeRollbackID(OperationContext* opCtx) = 0;
     virtual Status incrementRollbackID(OperationContext* opCtx) = 0;
-
-    /**
-     * On startup all oplog entries with a value >= the oplog delete from point should be deleted.
-     * If null, no documents should be deleted.
-     */
-    virtual void setOplogDeleteFromPoint(OperationContext* opCtx, const Timestamp& timestamp) = 0;
-    virtual Timestamp getOplogDeleteFromPoint(OperationContext* opCtx) = 0;
-
-    /**
-     * The applied through point is a persistent record of where we've applied through. If null, the
-     * applied through point is the top of the oplog.
-     */
-    virtual void setAppliedThrough(OperationContext* opCtx, const OpTime& optime) = 0;
-
-    /**
-     * You should probably be calling ReplicationCoordinator::getLastAppliedOpTime() instead.
-     *
-     * This reads the value from storage which isn't always updated when the ReplicationCoordinator
-     * is.
-     */
-    virtual OpTime getAppliedThrough(OperationContext* opCtx) = 0;
 
 
     // Collection creation and population for initial sync.
@@ -176,22 +104,23 @@ public:
         const std::vector<BSONObj>& secondaryIndexSpecs) = 0;
 
     /**
-     * Inserts a document into a collection.
+     * Inserts a document with a timestamp into a collection.
      *
      * NOTE: If the collection doesn't exist, it will not be created, and instead
      * an error is returned.
      */
     virtual Status insertDocument(OperationContext* opCtx,
                                   const NamespaceString& nss,
-                                  const BSONObj& doc) = 0;
+                                  const TimestampedBSONObj& doc) = 0;
 
     /**
-     * Inserts the given documents into the collection.
+     * Inserts the given documents, with associated timestamps and statement id's, into the
+     * collection.
      * It is an error to call this function with an empty set of documents.
      */
     virtual Status insertDocuments(OperationContext* opCtx,
                                    const NamespaceString& nss,
-                                   const std::vector<BSONObj>& docs) = 0;
+                                   const std::vector<InsertStatement>& docs) = 0;
 
     /**
      * Creates the initial oplog, errors if it exists.
@@ -215,9 +144,23 @@ public:
                                     const CollectionOptions& options) = 0;
 
     /**
-     * Drops a collection, like the oplog.
+     * Drops a collection.
      */
     virtual Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) = 0;
+
+    /**
+     * Truncates a collection.
+     */
+    virtual Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) = 0;
+
+    /**
+     * Renames a collection from the "fromNS" to the "toNS". Fails if the new collection already
+     * exists.
+     */
+    virtual Status renameCollection(OperationContext* opCtx,
+                                    const NamespaceString& fromNS,
+                                    const NamespaceString& toNS,
+                                    bool stayTemp) = 0;
 
     /**
      * Drops all databases except "local".
@@ -344,6 +287,36 @@ public:
      */
     virtual StatusWith<CollectionCount> getCollectionCount(OperationContext* opCtx,
                                                            const NamespaceString& nss) = 0;
+
+    /**
+     * Sets the highest timestamp at which the storage engine is allowed to take a checkpoint.
+     * This timestamp can never decrease, and thus should be a timestamp that can never roll back.
+     */
+    virtual void setStableTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) = 0;
+
+    /**
+     * Tells the storage engine the timestamp of the data at startup. This is necessary because
+     * timestamps are not persisted in the storage layer.
+     */
+    virtual void setInitialDataTimestamp(ServiceContext* serviceCtx, SnapshotName snapshotName) = 0;
+
+    /**
+     * Reverts the state of all database data to the last stable timestamp.
+     *
+     * The "local" database is exempt and none of its state should be reverted except for
+     * "local.replset.minvalid" and "local.replset.checkpointTimestamp" which should be reverted to
+     * the last stable timestamp.
+     *
+     * The 'stable' timestamp is set by calling StorageInterface::setStableTimestamp.
+     */
+    virtual Status recoverToStableTimestamp(ServiceContext* serviceCtx) = 0;
+
+    /**
+     * Waits for oplog writes to be visible in the oplog.
+     * This function is used to ensure tests do not fail due to initial sync receiving an empty
+     * batch.
+     */
+    virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) = 0;
 };
 
 }  // namespace repl

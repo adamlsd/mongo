@@ -37,7 +37,7 @@
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/collation/collation_index_key.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_common.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/util/log.h"
@@ -319,7 +319,7 @@ Status ChunkManagerTargeter::targetInsert(OperationContext* opCtx,
 
 Status ChunkManagerTargeter::targetUpdate(
     OperationContext* opCtx,
-    const BatchedUpdateDocument& updateDoc,
+    const write_ops::UpdateOpEntry& updateDoc,
     std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     //
     // Update targeting may use either the query or the update.  This is to support save-style
@@ -337,10 +337,10 @@ Status ChunkManagerTargeter::targetUpdate(
     // that extracted key.
     //
 
-    BSONObj query = updateDoc.getQuery();
-    BSONObj updateExpr = updateDoc.getUpdateExpr();
+    BSONObj query = updateDoc.getQ();
+    BSONObj updateExpr = updateDoc.getU();
 
-    UpdateType updateType = getUpdateExprType(updateDoc.getUpdateExpr());
+    UpdateType updateType = getUpdateExprType(updateExpr);
 
     if (updateType == UpdateType_Unknown) {
         return {ErrorCodes::UnsupportedFormat,
@@ -382,7 +382,7 @@ Status ChunkManagerTargeter::targetUpdate(
         }
     }
 
-    const BSONObj collation = updateDoc.isCollationSet() ? updateDoc.getCollation() : BSONObj();
+    const auto collation = write_ops::collationOf(updateDoc);
 
     // Target the shard key, query, or replacement doc
     if (!shardKey.isEmpty()) {
@@ -409,14 +409,20 @@ Status ChunkManagerTargeter::targetUpdate(
 
     // Parse update query.
     auto qr = stdx::make_unique<QueryRequest>(getNS());
-    qr->setFilter(updateDoc.getQuery());
+    qr->setFilter(updateDoc.getQ());
     if (!collation.isEmpty()) {
         qr->setCollation(collation);
     }
-    auto cq = CanonicalQuery::canonicalize(opCtx, std::move(qr), ExtensionsCallbackNoop());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
+    auto cq = CanonicalQuery::canonicalize(opCtx,
+                                           std::move(qr),
+                                           expCtx,
+                                           ExtensionsCallbackNoop(),
+                                           MatchExpressionParser::kAllowAllSpecialFeatures &
+                                               ~MatchExpressionParser::AllowedFeatures::kExpr);
     if (!cq.isOK()) {
         return Status(cq.getStatus().code(),
-                      str::stream() << "Could not parse update query " << updateDoc.getQuery()
+                      str::stream() << "Could not parse update query " << updateDoc.getQ()
                                     << causedBy(cq.getStatus()));
     }
 
@@ -443,7 +449,7 @@ Status ChunkManagerTargeter::targetUpdate(
 
 Status ChunkManagerTargeter::targetDelete(
     OperationContext* opCtx,
-    const BatchedDeleteDocument& deleteDoc,
+    const write_ops::DeleteOpEntry& deleteDoc,
     std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
     BSONObj shardKey;
 
@@ -457,7 +463,7 @@ Status ChunkManagerTargeter::targetDelete(
         // Get the shard key
         StatusWith<BSONObj> status =
             _routingInfo->cm()->getShardKeyPattern().extractShardKeyFromQuery(opCtx,
-                                                                              deleteDoc.getQuery());
+                                                                              deleteDoc.getQ());
 
         // Bad query
         if (!status.isOK())
@@ -466,8 +472,7 @@ Status ChunkManagerTargeter::targetDelete(
         shardKey = status.getValue();
     }
 
-    const BSONObj collation = deleteDoc.isCollationSet() ? deleteDoc.getCollation() : BSONObj();
-
+    const auto collation = write_ops::collationOf(deleteDoc);
 
     // Target the shard key or delete query
     if (!shardKey.isEmpty()) {
@@ -483,19 +488,25 @@ Status ChunkManagerTargeter::targetDelete(
 
     // Parse delete query.
     auto qr = stdx::make_unique<QueryRequest>(getNS());
-    qr->setFilter(deleteDoc.getQuery());
+    qr->setFilter(deleteDoc.getQ());
     if (!collation.isEmpty()) {
         qr->setCollation(collation);
     }
-    auto cq = CanonicalQuery::canonicalize(opCtx, std::move(qr), ExtensionsCallbackNoop());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
+    auto cq = CanonicalQuery::canonicalize(opCtx,
+                                           std::move(qr),
+                                           expCtx,
+                                           ExtensionsCallbackNoop(),
+                                           MatchExpressionParser::kAllowAllSpecialFeatures &
+                                               ~MatchExpressionParser::AllowedFeatures::kExpr);
     if (!cq.isOK()) {
         return Status(cq.getStatus().code(),
-                      str::stream() << "Could not parse delete query " << deleteDoc.getQuery()
+                      str::stream() << "Could not parse delete query " << deleteDoc.getQ()
                                     << causedBy(cq.getStatus()));
     }
 
     // Single deletes must target a single shard or be exact-ID.
-    if (_routingInfo->cm() && deleteDoc.getLimit() == 1 &&
+    if (_routingInfo->cm() && !deleteDoc.getMulti() &&
         !isExactIdQuery(opCtx, *cq.getValue(), _routingInfo->cm().get())) {
         return Status(ErrorCodes::ShardKeyNotFound,
                       str::stream()
@@ -508,7 +519,7 @@ Status ChunkManagerTargeter::targetDelete(
                           << _routingInfo->cm()->getShardKeyPattern().toString());
     }
 
-    return targetQuery(opCtx, deleteDoc.getQuery(), collation, endpoints);
+    return targetQuery(opCtx, deleteDoc.getQ(), collation, endpoints);
 }
 
 Status ChunkManagerTargeter::targetDoc(

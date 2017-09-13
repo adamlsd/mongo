@@ -37,13 +37,18 @@
 #include "mongo/db/pipeline/dependencies.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_change_stream.h"
+#include "mongo/db/pipeline/document_source_lookup_change_post_image.h"
+#include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_mock.h"
+#include "mongo/db/pipeline/document_source_project.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
 #include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/db/pipeline/field_path.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/query/query_test_service_context.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/dbtests/dbtests.h"
 
 namespace PipelineTests {
@@ -51,6 +56,16 @@ namespace PipelineTests {
 using boost::intrusive_ptr;
 using std::string;
 using std::vector;
+
+const NamespaceString kTestNss = NamespaceString("a.collection");
+
+namespace {
+void setMockReplicationCoordinatorOnOpCtx(OperationContext* opCtx) {
+    repl::ReplicationCoordinator::set(
+        opCtx->getServiceContext(),
+        stdx::make_unique<repl::ReplicationCoordinatorMock>(opCtx->getServiceContext()));
+}
+}  // namespace
 
 namespace Optimizations {
 using namespace mongo;
@@ -77,7 +92,7 @@ void assertPipelineOptimizesAndSerializesTo(std::string inputPipeJson,
         ASSERT_EQUALS(stageElem.type(), BSONType::Object);
         rawPipeline.push_back(stageElem.embeddedObject());
     }
-    AggregationRequest request(NamespaceString("a.collection"), rawPipeline);
+    AggregationRequest request(kTestNss, rawPipeline);
     intrusive_ptr<ExpressionContextForTest> ctx =
         new ExpressionContextForTest(opCtx.get(), request);
 
@@ -229,14 +244,14 @@ TEST(PipelineOptimizationTest, LookupShouldCoalesceWithUnwindOnAs) {
 
 TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldCoalesceWithUnwindOnAs) {
     string inputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$same'}}"
         "]";
     string outputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: [], "
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: [], "
         "unwinding: {preserveNullAndEmptyArrays: false}}}]";
     string serializedPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$same'}}"
         "]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
@@ -297,7 +312,7 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldNotCoalesceWithUnwi
         ",{$unwind: {path: '$from'}}"
         "]";
     string outputPipe =
-        "[{$lookup: {from : 'lookupColl', as : 'same', pipeline: []}}"
+        "[{$lookup: {from : 'lookupColl', as : 'same', let: {}, pipeline: []}}"
         ",{$unwind: {path: '$from'}}"
         "]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
@@ -321,7 +336,7 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldSwapWithMatch) {
         " {$match: {'independent': 0}}]";
     string outputPipe =
         "[{$match: {independent: 0}}, "
-        " {$lookup: {from: 'lookupColl', as: 'asField', pipeline: []}}]";
+        " {$lookup: {from: 'lookupColl', as: 'asField', let: {}, pipeline: []}}]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
@@ -374,12 +389,12 @@ TEST(PipelineOptimizationTest, LookupWithPipelineSyntaxShouldAbsorbUnwindMatch) 
         "{$unwind: '$asField'}, "
         "{$match: {'asField.subfield': {$eq: 1}}}]";
     string outputPipe =
-        "[{$lookup: {from: 'lookupColl', as: 'asField', pipeline: [{$match: {subfield: {$eq: "
-        "1}}}], "
+        "[{$lookup: {from: 'lookupColl', as: 'asField', let: {}, "
+        "pipeline: [{$match: {subfield: {$eq: 1}}}], "
         "unwinding: {preserveNullAndEmptyArrays: false} } } ]";
     string serializedPipe =
-        "[{$lookup: {from: 'lookupColl', as: 'asField', pipeline: [{$match: {subfield: {$eq: "
-        "1}}}]}}, "
+        "[{$lookup: {from: 'lookupColl', as: 'asField', let: {}, "
+        "pipeline: [{$match: {subfield: {$eq: 1}}}]}}, "
         "{$unwind: {path: '$asField'}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
@@ -551,7 +566,8 @@ TEST(PipelineOptimizationTest, LookupDoesNotAbsorbUnwindOnSubfieldOfAsButStillMo
 
 TEST(PipelineOptimizationTest, MatchShouldDuplicateItselfBeforeRedact) {
     string inputPipe = "[{$redact: '$$PRUNE'}, {$match: {a: 1, b:12}}]";
-    string outputPipe = "[{$match: {a: 1, b:12}}, {$redact: '$$PRUNE'}, {$match: {a: 1, b:12}}]";
+    string outputPipe =
+        "[{$match: {a: 1, b:12}}, {$redact: {$const: 'prune'}}, {$match: {a: 1, b:12}}]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
@@ -892,10 +908,124 @@ TEST(PipelineOptimizationTest, MatchCannotMoveAcrossProjectRenameOfDottedPath) {
 
 TEST(PipelineOptimizationTest, MatchWithTypeShouldMoveAcrossRename) {
     string inputPipe = "[{$addFields: {a: '$b'}}, {$match: {a: {$type: 4}}}]";
-    string outputPipe = "[{$match: {b: {$type: 4}}}, {$addFields: {a: '$b'}}]";
+    string outputPipe = "[{$match: {b: {$type: [4]}}}, {$addFields: {a: '$b'}}]";
     assertPipelineOptimizesTo(inputPipe, outputPipe);
 }
 
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndProject) {
+    string inputPipe =
+        "[{$project: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$project: {_id: true, d: {$map: {input: '$a', as: 'iter', "
+        "in: {e: '$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: "
+        "1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchOnArrayFieldCanSplitAcrossRenameWithMapAndAddFields) {
+    string inputPipe =
+        "[{$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: '$$iter.b', f: {$add: "
+        "['$$iter.c', 1]}}}}}}, {$match: {'d.e': 1, 'd.f': 1}}]";
+    string outputPipe =
+        "[{$match: {'a.b': {$eq: 1}}}, {$addFields: {d: {$map: {input: '$a', as: 'iter', in: {e: "
+        "'$$iter.b', f: {$add: ['$$iter.c', {$const: 1}]}}}}}}, {$match: {'d.f': {$eq: 1}}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchCannotSwapWithLimit) {
+    string pipeline = "[{$limit: 3}, {$match: {x: {$gt: 0}}}]";
+    assertPipelineOptimizesTo(pipeline, pipeline);
+}
+
+TEST(PipelineOptimizationTest, MatchCannotSwapWithSortLimit) {
+    string inputPipe = "[{$sort: {x: -1}}, {$limit: 3}, {$match: {x: {$gt: 0}}}]";
+    string outputPipe = "[{$sort: {sortKey: {x: -1}, limit: 3}}, {$match: {x: {$gt: 0}}}]";
+    assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, inputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchOnMinItemsShouldNotMoveAcrossRename) {
+    string pipeline =
+        "[{$project: {_id: true, a: '$b'}}, "
+        "{$match: {a: {$_internalSchemaMinItems: 1}}}]";
+    assertPipelineOptimizesTo(pipeline, pipeline);
+}
+
+TEST(PipelineOptimizationTest, MatchOnMaxItemsShouldNotMoveAcrossRename) {
+    string pipeline =
+        "[{$project: {_id: true, a: '$b'}}, "
+        "{$match: {a: {$_internalSchemaMaxItems: 1}}}]";
+    assertPipelineOptimizesTo(pipeline, pipeline);
+}
+
+TEST(PipelineOptimizationTest, MatchOnMinLengthShouldMoveAcrossRename) {
+    string inputPipe =
+        "[{$project: {_id: true, a: '$b'}}, "
+        "{$match: {a: {$_internalSchemaMinLength: 1}}}]";
+    string outputPipe =
+        "[{$match: {b: {$_internalSchemaMinLength: 1}}},"
+        "{$project: {_id: true, a: '$b'}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, MatchOnMaxLengthShouldMoveAcrossRename) {
+    string inputPipe =
+        "[{$project: {_id: true, a: '$b'}}, "
+        "{$match: {a: {$_internalSchemaMaxLength: 1}}}]";
+    string outputPipe =
+        "[{$match: {b: {$_internalSchemaMaxLength: 1}}},"
+        "{$project: {_id: true, a: '$b'}}]";
+    assertPipelineOptimizesTo(inputPipe, outputPipe);
+}
+
+TEST(PipelineOptimizationTest, ChangeStreamLookupSwapsWithIndependentMatch) {
+    QueryTestServiceContext testServiceContext;
+    auto opCtx = testServiceContext.makeOperationContext();
+
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContextForTest(kTestNss));
+    expCtx->opCtx = opCtx.get();
+    setMockReplicationCoordinatorOnOpCtx(expCtx->opCtx);
+
+    auto spec = BSON("$changeStream" << BSON("fullDocument"
+                                             << "updateLookup"));
+    auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
+    ASSERT_EQ(stages.size(), 4UL);
+    // Make sure the change lookup is at the end.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
+
+    auto matchPredicate = BSON("extra"
+                               << "predicate");
+    stages.push_back(DocumentSourceMatch::create(matchPredicate, expCtx));
+    auto pipeline = uassertStatusOK(Pipeline::create(stages, expCtx));
+    pipeline->optimizePipeline();
+
+    // Make sure the $match stage has swapped before the change look up.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(pipeline->getSources().back().get()));
+}
+
+TEST(PipelineOptimizationTest, ChangeStreamLookupDoesNotSwapWithMatchOnPostImage) {
+    QueryTestServiceContext testServiceContext;
+    auto opCtx = testServiceContext.makeOperationContext();
+
+    intrusive_ptr<ExpressionContext> expCtx(new ExpressionContextForTest(kTestNss));
+    expCtx->opCtx = opCtx.get();
+    setMockReplicationCoordinatorOnOpCtx(expCtx->opCtx);
+
+    auto spec = BSON("$changeStream" << BSON("fullDocument"
+                                             << "updateLookup"));
+    auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
+    ASSERT_EQ(stages.size(), 4UL);
+    // Make sure the change lookup is at the end.
+    ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
+
+    stages.push_back(DocumentSourceMatch::create(
+        BSON(DocumentSourceLookupChangePostImage::kFullDocumentFieldName << BSONNULL), expCtx));
+    auto pipeline = uassertStatusOK(Pipeline::create(stages, expCtx));
+    pipeline->optimizePipeline();
+
+    // Make sure the $match stage stays at the end.
+    ASSERT(dynamic_cast<DocumentSourceMatch*>(pipeline->getSources().back().get()));
+}
 }  // namespace Local
 
 namespace Sharded {
@@ -920,7 +1050,7 @@ public:
             ASSERT_EQUALS(stageElem.type(), BSONType::Object);
             rawPipeline.push_back(stageElem.embeddedObject());
         }
-        AggregationRequest request(NamespaceString("a.collection"), rawPipeline);
+        AggregationRequest request(kTestNss, rawPipeline);
         intrusive_ptr<ExpressionContextForTest> ctx =
             new ExpressionContextForTest(&_opCtx, request);
 
@@ -929,11 +1059,23 @@ public:
         NamespaceString lookupCollNs("a", "lookupColl");
         ctx->setResolvedNamespace(lookupCollNs, {lookupCollNs, std::vector<BSONObj>{}});
 
+        // Test that we can both split the pipeline and reassemble it into its original form.
         mergePipe = uassertStatusOK(Pipeline::parse(request.getPipeline(), ctx));
         mergePipe->optimizePipeline();
 
+        auto beforeSplit = Value(mergePipe->serialize());
+
         shardPipe = mergePipe->splitForSharded();
-        ASSERT(shardPipe != nullptr);
+        ASSERT(shardPipe);
+
+        shardPipe->unsplitFromSharded(std::move(mergePipe));
+        ASSERT_FALSE(mergePipe);
+
+        ASSERT_VALUE_EQ(Value(shardPipe->serialize()), beforeSplit);
+
+        mergePipe = std::move(shardPipe);
+        shardPipe = mergePipe->splitForSharded();
+        ASSERT(shardPipe);
 
         ASSERT_VALUE_EQ(Value(shardPipe->writeExplainOps(ExplainOptions::Verbosity::kQueryPlanner)),
                         Value(shardPipeExpected["pipeline"]));
@@ -1275,6 +1417,101 @@ TEST(PipelineInitialSource, MatchInitialQuery) {
     ASSERT_BSONOBJ_EQ(pipe->getInitialQuery(), BSON("a" << 4));
 }
 
+namespace Namespaces {
+
+using PipelineInitialSourceNSTest = AggregationContextFixture;
+
+class DocumentSourceCollectionlessMock : public DocumentSourceMock {
+public:
+    DocumentSourceCollectionlessMock() : DocumentSourceMock({}) {}
+
+    StageConstraints constraints() const final {
+        StageConstraints constraints;
+        constraints.isIndependentOfAnyCollection = true;
+        return constraints;
+    }
+
+    static boost::intrusive_ptr<DocumentSourceCollectionlessMock> create() {
+        return new DocumentSourceCollectionlessMock();
+    }
+};
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidForEmptyPipeline) {
+    const std::vector<BSONObj> rawPipeline = {};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSNotValidIfInitialStageRequiresCollection) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {}}")};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_NOT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("a");
+
+    ASSERT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, CollectionNSNotValidIfInitialStageIsCollectionless) {
+    auto collectionlessSource = DocumentSourceCollectionlessMock::create();
+    auto ctx = getExpCtx();
+
+    ctx->ns = kTestNss;
+
+    ASSERT_NOT_OK(Pipeline::create({collectionlessSource}, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, AggregateOneNSValidForFacetPipelineRegardlessOfInitialStage) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {}}")};
+    auto ctx = getExpCtx();
+
+    ctx->ns = NamespaceString::makeCollectionlessAggregateNSS("unittests");
+
+    ASSERT_OK(Pipeline::parseFacetPipeline(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsValidAsFirstStage) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    ASSERT_OK(Pipeline::parse(rawPipeline, ctx).getStatus());
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStage) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {custom: 'filter'}}"),
+                                              fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    auto parseStatus = Pipeline::parse(rawPipeline, ctx).getStatus();
+    ASSERT_EQ(parseStatus, ErrorCodes::fromInt(40602));
+}
+
+TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStageInFacet) {
+    const std::vector<BSONObj> rawPipeline = {fromjson("{$match: {custom: 'filter'}}"),
+                                              fromjson("{$changeStream: {}}")};
+    auto ctx = getExpCtx();
+    setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
+    ctx->ns = NamespaceString("a.collection");
+    auto parseStatus = Pipeline::parseFacetPipeline(rawPipeline, ctx).getStatus();
+    ASSERT_EQ(parseStatus, ErrorCodes::fromInt(40600));
+    ASSERT(std::string::npos != parseStatus.reason().find("$changeStream"));
+}
+
+}  // namespace Namespaces
+
 namespace Dependencies {
 
 using PipelineDependenciesTest = AggregationContextFixture;
@@ -1300,8 +1537,8 @@ class DocumentSourceDependencyDummy : public DocumentSourceMock {
 public:
     DocumentSourceDependencyDummy() : DocumentSourceMock({}) {}
 
-    bool isValidInitialSource() const final {
-        return false;
+    StageConstraints constraints() const final {
+        return StageConstraints{};  // Overrides DocumentSourceMock's required position.
     }
 };
 
@@ -1433,7 +1670,7 @@ TEST_F(PipelineDependenciesTest, ShouldThrowIfTextScoreIsNeededButNotPresent) {
     auto pipeline = unittest::assertGet(Pipeline::create({needsText}, ctx));
 
     ASSERT_THROWS(pipeline->getDependencies(DepsTracker::MetadataAvailable::kNoMetadata),
-                  UserException);
+                  AssertionException);
 }
 
 TEST_F(PipelineDependenciesTest, ShouldRequireTextScoreIfAvailableAndNoStageReturnsExhaustiveMeta) {

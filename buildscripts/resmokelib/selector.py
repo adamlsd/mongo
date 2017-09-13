@@ -19,18 +19,7 @@ from . import errors
 from . import utils
 from .utils import globstar
 from .utils import jscomment
-
-
-def _get_file_tags(pathname):
-    """
-    Attempts to read a YAML configuration from 'pathname' that describes
-    the associations of files to tags.
-    """
-
-    if pathname is None:
-        return {}
-
-    return utils.load_yaml_file(pathname).pop("selector")
+from ..ciconfig import tags as _tags
 
 
 def _parse_tag_file(test_kind):
@@ -38,17 +27,32 @@ def _parse_tag_file(test_kind):
     Parse the tag file and return a dict of tagged tests, with the key the filename and
     a list of tags, i.e., {'file1.js': ['tag1', 'tag2'], 'file2.js': ['tag2', 'tag3']}
     """
-    file_tag_selector = _get_file_tags(config.TAG_FILE)
+    if config.TAG_FILE:
+        tags_conf = _tags.TagsConfig.from_file(config.TAG_FILE)
+        tagged_roots = tags_conf.get_test_patterns(test_kind)
+    else:
+        tagged_roots = []
     tagged_tests = collections.defaultdict(list)
-    tagged_roots = utils.default_if_none(file_tag_selector.get(test_kind, None), [])
     for tagged_root in tagged_roots:
         # Multiple tests could be returned for a set of tags.
         tests = globstar.iglob(tagged_root)
-        test_tags = tagged_roots[tagged_root]
+        test_tags = tags_conf.get_tags(test_kind, tagged_root)
         for test in tests:
             # A test could have a tag in more than one place, due to wildcards in the selector.
             tagged_tests[test].extend(test_tags)
     return tagged_tests
+
+
+def _tags_from_list(tags):
+    """
+    Returns list of tags from tag list.
+    Each tag in the list may be a list of comma separated tags, with empty strings ignored.
+    """
+
+    if tags is not None:
+        for tag in tags:
+            return [t for t in tag.split(",") if t != ""]
+    return []
 
 
 def _filter_cpp_tests(kind, root, include_files, exclude_files):
@@ -56,6 +60,13 @@ def _filter_cpp_tests(kind, root, include_files, exclude_files):
     Generic filtering logic for C++ tests that are sourced from a list
     of test executables.
     """
+
+    # TODO: SERVER-22170 Implement full tagging support
+    # If --includeWithAnyTags is supplied, then no tests should be run since
+    # C++ tests cannot be tagged.
+    if _tags_from_list(config.INCLUDE_WITH_ANY_TAGS):
+        return []
+
     include_files = utils.default_if_none(include_files, [])
     exclude_files = utils.default_if_none(exclude_files, [])
 
@@ -69,27 +80,44 @@ def _filter_cpp_tests(kind, root, include_files, exclude_files):
 
 
 def filter_cpp_unit_tests(root=config.DEFAULT_UNIT_TEST_LIST,
+                          roots=None,
                           include_files=None,
                           exclude_files=None):
     """
     Filters out what C++ unit tests to run.
     """
+    # 'roots' is provided only if a file list is given from the command line.
+    if roots is not None:
+        return roots
     return _filter_cpp_tests("C++ unit test", root, include_files, exclude_files)
 
 
 def filter_cpp_integration_tests(root=config.DEFAULT_INTEGRATION_TEST_LIST,
+                                 roots=None,
                                  include_files=None,
                                  exclude_files=None):
     """
     Filters out what C++ integration tests to run.
     """
+    # 'roots' is provided only if a file list is given from the command line.
+    if roots is not None:
+        return roots
     return _filter_cpp_tests("C++ integration test", root, include_files, exclude_files)
 
 
-def filter_dbtests(binary=None, include_suites=None):
+def filter_dbtests(binary=None, roots=None, include_suites=None):
     """
     Filters out what dbtests to run.
     """
+    # 'roots' is provided only if a file list is given from the command line.
+    if roots is not None:
+        return roots
+
+    # TODO: SERVER-22170 Implement full tagging support
+    # If --includeWithAnyTags is supplied, then no tests should be run since
+    # dbtests tests cannot be tagged.
+    if _tags_from_list(config.INCLUDE_WITH_ANY_TAGS):
+        return []
 
     # Command line option overrides the YAML configuration.
     binary = utils.default_if_none(config.DBTEST_EXECUTABLE, binary)
@@ -166,7 +194,7 @@ def filter_jstests(roots,
             # command line has no effect and allows a user to more easily synthesize a resmoke.py
             # invocation in their Evergreen project configuration.
             for cmd_line_tags in cmd_line_list:
-                tags[tag_category] |= set(tag for tag in cmd_line_tags.split(",") if tag != "")
+                tags[tag_category] |= set(_tags_from_list([cmd_line_tags]))
 
     jstests_list = []
     for root in roots:
@@ -205,6 +233,26 @@ def filter_jstests(roots,
     # Specifying include_files overrides tags.
     return list((jstests_set - excluded) | set(include_files))
 
+def filter_json_schema_tests(roots,
+                             include_files=None,
+                             exclude_files=None):
+    """
+    Filters out what json test cases to load.
+    """
+    include_files = utils.default_if_none(include_files, [])
+    exclude_files = utils.default_if_none(exclude_files, [])
+
+    # TODO: SERVER-22170 Implement full tagging support
+    # If --includeWithAnyTags is supplied, then no tests should be run since
+    # JSON Schema tests cannot be tagged.
+    if _tags_from_list(config.INCLUDE_WITH_ANY_TAGS):
+        return []
+
+    tests = []
+    for root in roots:
+        tests.extend(globstar.iglob(root))
+
+    return list(_filter_by_filename("JSON Schema Test", tests, include_files, exclude_files))
 
 def _filter_by_filename(kind, universe, include_files, exclude_files):
     """

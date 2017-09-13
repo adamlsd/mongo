@@ -47,7 +47,6 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/s/type_shard_identity.h"
@@ -55,7 +54,6 @@
 #include "mongo/executor/task_executor.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata/repl_set_metadata.h"
-#include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/config_server_version.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
@@ -117,111 +115,6 @@ void toBatchError(const Status& status, BatchedCommandResponse* response) {
     response->setOk(false);
 }
 
-/**
- * Creates and writes to the config server the first chunks for a newly sharded collection. Returns
- * the version generated for the collection.
- */
-StatusWith<ChunkVersion> createFirstChunks(OperationContext* opCtx,
-                                           const NamespaceString& nss,
-                                           const ShardKeyPattern& shardKeyPattern,
-                                           const ShardId& primaryShardId,
-                                           const std::vector<BSONObj>& initPoints,
-                                           const std::set<ShardId>& initShardIds) {
-
-    const KeyPattern keyPattern = shardKeyPattern.getKeyPattern();
-
-    vector<BSONObj> splitPoints;
-    vector<ShardId> shardIds;
-
-    if (initPoints.empty()) {
-        // If no split points were specified use the shard's data distribution to determine them
-        auto primaryShard =
-            uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, primaryShardId));
-
-        auto result = uassertStatusOK(primaryShard->runCommandWithFixedRetryAttempts(
-            opCtx,
-            ReadPreferenceSetting{ReadPreference::PrimaryPreferred},
-            nss.db().toString(),
-            BSON("count" << nss.coll()),
-            Shard::RetryPolicy::kIdempotent));
-
-        long long numObjects = 0;
-        uassertStatusOK(result.commandStatus);
-        uassertStatusOK(bsonExtractIntegerField(result.response, "n", &numObjects));
-
-        if (numObjects > 0) {
-            splitPoints = uassertStatusOK(shardutil::selectChunkSplitPoints(
-                opCtx,
-                primaryShardId,
-                nss,
-                shardKeyPattern,
-                ChunkRange(keyPattern.globalMin(), keyPattern.globalMax()),
-                Grid::get(opCtx)->getBalancerConfiguration()->getMaxChunkSizeBytes(),
-                0));
-        }
-
-        // Since docs already exist for the collection, must use primary shard
-        shardIds.push_back(primaryShardId);
-    } else {
-        // Make sure points are unique and ordered
-        auto orderedPts = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
-
-        for (const auto& initPoint : initPoints) {
-            orderedPts.insert(initPoint);
-        }
-
-        for (const auto& initPoint : orderedPts) {
-            splitPoints.push_back(initPoint);
-        }
-
-        if (initShardIds.empty()) {
-            // If not specified, only use the primary shard (note that it's not safe for mongos to
-            // put initial chunks on other shards without the primary mongod knowing)
-            shardIds.push_back(primaryShardId);
-        } else {
-            std::copy(initShardIds.begin(), initShardIds.end(), std::back_inserter(shardIds));
-        }
-    }
-
-    // This is the first chunk; start the versioning from scratch
-    const OID epoch = OID::gen();
-    ChunkVersion version(1, 0, epoch);
-
-    log() << "going to create " << splitPoints.size() + 1 << " chunk(s) for: " << nss
-          << " using new epoch " << version.epoch();
-
-    for (unsigned i = 0; i <= splitPoints.size(); i++) {
-        const BSONObj min = (i == 0) ? keyPattern.globalMin() : splitPoints[i - 1];
-        const BSONObj max = (i < splitPoints.size()) ? splitPoints[i] : keyPattern.globalMax();
-
-        // The correct version must be returned as part of this call so only increment for versions,
-        // which get written
-        if (i > 0) {
-            version.incMinor();
-        }
-
-        ChunkType chunk;
-        chunk.setNS(nss.ns());
-        chunk.setMin(min);
-        chunk.setMax(max);
-        chunk.setShard(shardIds[i % shardIds.size()]);
-        chunk.setVersion(version);
-
-        Status status = Grid::get(opCtx)->catalogClient(opCtx)->insertConfigDocument(
-            opCtx,
-            ChunkType::ConfigNS,
-            chunk.toConfigBSON(),
-            ShardingCatalogClient::kMajorityWriteConcern);
-        if (!status.isOK()) {
-            return {status.code(),
-                    str::stream() << "Creating first chunks failed due to "
-                                  << redact(status.reason())};
-        }
-    }
-
-    return version;
-}
-
 }  // namespace
 
 ShardingCatalogClientImpl::ShardingCatalogClientImpl(
@@ -230,14 +123,14 @@ ShardingCatalogClientImpl::ShardingCatalogClientImpl(
 
 ShardingCatalogClientImpl::~ShardingCatalogClientImpl() = default;
 
-Status ShardingCatalogClientImpl::startup() {
+void ShardingCatalogClientImpl::startup() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     if (_started) {
-        return Status::OK();
+        return;
     }
+
     _started = true;
     _distLockManager->startUp();
-    return Status::OK();
 }
 
 void ShardingCatalogClientImpl::shutDown(OperationContext* opCtx) {
@@ -251,18 +144,19 @@ void ShardingCatalogClientImpl::shutDown(OperationContext* opCtx) {
     _distLockManager->shutDown(opCtx);
 }
 
-Status ShardingCatalogClientImpl::_updateCollection(OperationContext* opCtx,
-                                                    const std::string& collNs,
-                                                    const CollectionType& coll,
-                                                    bool upsert) {
+Status ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
+    OperationContext* opCtx,
+    const std::string& collNs,
+    const CollectionType& coll,
+    const bool upsert) {
     fassert(28634, coll.validate());
 
-    auto status = updateConfigDocument(opCtx,
-                                       CollectionType::ConfigNS,
-                                       BSON(CollectionType::fullNs(collNs)),
-                                       coll.toBSON(),
-                                       upsert,
-                                       ShardingCatalogClient::kMajorityWriteConcern);
+    auto status = _updateConfigDocument(opCtx,
+                                        CollectionType::ConfigNS,
+                                        BSON(CollectionType::fullNs(collNs)),
+                                        coll.toBSON(),
+                                        upsert,
+                                        ShardingCatalogClient::kMajorityWriteConcern);
     if (!status.isOK()) {
         return {status.getStatus().code(),
                 str::stream() << "Collection metadata write failed due to "
@@ -290,52 +184,6 @@ Status ShardingCatalogClientImpl::updateDatabase(OperationContext* opCtx,
     }
 
     return Status::OK();
-}
-
-Status ShardingCatalogClientImpl::createDatabase(OperationContext* opCtx,
-                                                 const std::string& dbName) {
-    invariant(nsIsDbOnly(dbName));
-
-    // The admin and config databases should never be explicitly created. They "just exist",
-    // i.e. getDatabase will always return an entry for them.
-    invariant(dbName != "admin");
-    invariant(dbName != "config");
-
-    // Lock the database globally to prevent conflicts with simultaneous database creation.
-    auto scopedDistLock = getDistLockManager()->lock(
-        opCtx, dbName, "createDatabase", DistLockManager::kDefaultLockTimeout);
-    if (!scopedDistLock.isOK()) {
-        return scopedDistLock.getStatus();
-    }
-
-    // check for case sensitivity violations
-    Status status = _checkDbDoesNotExist(opCtx, dbName, nullptr);
-    if (!status.isOK()) {
-        return status;
-    }
-
-    // Database does not exist, pick a shard and create a new entry
-    auto newShardIdStatus = _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
-    if (!newShardIdStatus.isOK()) {
-        return newShardIdStatus.getStatus();
-    }
-
-    const ShardId& newShardId = newShardIdStatus.getValue();
-
-    log() << "Placing [" << dbName << "] on: " << newShardId;
-
-    DatabaseType db;
-    db.setName(dbName);
-    db.setPrimary(newShardId);
-    db.setSharded(false);
-
-    status = insertConfigDocument(
-        opCtx, DatabaseType::ConfigNS, db.toBSON(), ShardingCatalogClient::kMajorityWriteConcern);
-    if (status.code() == ErrorCodes::DuplicateKey) {
-        return Status(ErrorCodes::NamespaceExists, "database " + dbName + " already exists");
-    }
-
-    return status;
 }
 
 Status ShardingCatalogClientImpl::logAction(OperationContext* opCtx,
@@ -384,99 +232,6 @@ Status ShardingCatalogClientImpl::logChange(OperationContext* opCtx,
     return _log(opCtx, kChangeLogCollectionName, what, ns, detail, writeConcern);
 }
 
-// static
-StatusWith<ShardId> ShardingCatalogClientImpl::_selectShardForNewDatabase(
-    OperationContext* opCtx, ShardRegistry* shardRegistry) {
-    vector<ShardId> allShardIds;
-
-    shardRegistry->getAllShardIds(&allShardIds);
-    if (allShardIds.empty()) {
-        shardRegistry->reload(opCtx);
-        shardRegistry->getAllShardIds(&allShardIds);
-
-        if (allShardIds.empty()) {
-            return Status(ErrorCodes::ShardNotFound, "No shards found");
-        }
-    }
-
-    ShardId candidateShardId = allShardIds[0];
-
-    auto candidateSizeStatus = shardutil::retrieveTotalShardSize(opCtx, candidateShardId);
-    if (!candidateSizeStatus.isOK()) {
-        return candidateSizeStatus.getStatus();
-    }
-
-    for (size_t i = 1; i < allShardIds.size(); i++) {
-        const ShardId shardId = allShardIds[i];
-
-        const auto sizeStatus = shardutil::retrieveTotalShardSize(opCtx, shardId);
-        if (!sizeStatus.isOK()) {
-            return sizeStatus.getStatus();
-        }
-
-        if (sizeStatus.getValue() < candidateSizeStatus.getValue()) {
-            candidateSizeStatus = sizeStatus;
-            candidateShardId = shardId;
-        }
-    }
-
-    return candidateShardId;
-}
-
-Status ShardingCatalogClientImpl::enableSharding(OperationContext* opCtx,
-                                                 const std::string& dbName) {
-    invariant(nsIsDbOnly(dbName));
-
-    if (dbName == NamespaceString::kConfigDb || dbName == NamespaceString::kAdminDb) {
-        return {
-            ErrorCodes::IllegalOperation,
-            str::stream() << "Enabling sharding on system configuration databases is not allowed"};
-    }
-
-    // Lock the database globally to prevent conflicts with simultaneous database
-    // creation/modification.
-    auto scopedDistLock = getDistLockManager()->lock(
-        opCtx, dbName, "enableSharding", DistLockManager::kDefaultLockTimeout);
-    if (!scopedDistLock.isOK()) {
-        return scopedDistLock.getStatus();
-    }
-
-    // Check for case sensitivity violations
-    DatabaseType db;
-
-    Status status = _checkDbDoesNotExist(opCtx, dbName, &db);
-    if (status.isOK()) {
-        // Database does not exist, create a new entry
-        auto newShardIdStatus =
-            _selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry());
-        if (!newShardIdStatus.isOK()) {
-            return newShardIdStatus.getStatus();
-        }
-
-        const ShardId& newShardId = newShardIdStatus.getValue();
-
-        log() << "Placing [" << dbName << "] on: " << newShardId;
-
-        db.setName(dbName);
-        db.setPrimary(newShardId);
-        db.setSharded(true);
-    } else if (status.code() == ErrorCodes::NamespaceExists) {
-        if (db.getSharded()) {
-            return Status(ErrorCodes::AlreadyInitialized,
-                          str::stream() << "sharding already enabled for database " << dbName);
-        }
-
-        // Database exists, so just update it
-        db.setSharded(true);
-    } else {
-        return status;
-    }
-
-    log() << "Enabling sharding for database [" << dbName << "] in config db";
-
-    return updateDatabase(opCtx, dbName, db);
-}
-
 Status ShardingCatalogClientImpl::_log(OperationContext* opCtx,
                                        const StringData& logCollName,
                                        const std::string& what,
@@ -508,266 +263,6 @@ Status ShardingCatalogClientImpl::_log(OperationContext* opCtx,
     }
 
     return result;
-}
-
-Status ShardingCatalogClientImpl::shardCollection(OperationContext* opCtx,
-                                                  const string& ns,
-                                                  const ShardKeyPattern& fieldsAndOrder,
-                                                  const BSONObj& defaultCollation,
-                                                  bool unique,
-                                                  const vector<BSONObj>& initPoints,
-                                                  const set<ShardId>& initShardIds) {
-    // Lock the collection globally so that no other mongos can try to shard or drop the collection
-    // at the same time.
-    auto scopedDistLock = getDistLockManager()->lock(
-        opCtx, ns, "shardCollection", DistLockManager::kDefaultLockTimeout);
-    if (!scopedDistLock.isOK()) {
-        return scopedDistLock.getStatus();
-    }
-
-    auto getDBStatus = getDatabase(opCtx, nsToDatabase(ns));
-    if (!getDBStatus.isOK()) {
-        return getDBStatus.getStatus();
-    }
-
-    auto const shardRegistry = Grid::get(opCtx)->shardRegistry();
-
-    ShardId dbPrimaryShardId = getDBStatus.getValue().value.getPrimary();
-    const auto primaryShardStatus = shardRegistry->getShard(opCtx, dbPrimaryShardId);
-    if (!primaryShardStatus.isOK()) {
-        return primaryShardStatus.getStatus();
-    }
-
-    {
-        // This is an extra safety check that there aren't any partially written chunks from a
-        // previous failed invocation of 'shardCollection'
-        auto countStatus = _runCountCommandOnConfig(
-            opCtx, NamespaceString(ChunkType::ConfigNS), BSON(ChunkType::ns(ns)));
-        if (!countStatus.isOK()) {
-            return countStatus.getStatus();
-        }
-
-        if (countStatus.getValue() > 0) {
-            return {ErrorCodes::AlreadyInitialized,
-                    str::stream() << "collection " << ns << " already sharded with "
-                                  << countStatus.getValue()
-                                  << " chunks."};
-        }
-    }
-
-    // Record start in changelog
-    {
-        BSONObjBuilder collectionDetail;
-        collectionDetail.append("shardKey", fieldsAndOrder.toBSON());
-        collectionDetail.append("collection", ns);
-        collectionDetail.append("primary", primaryShardStatus.getValue()->toString());
-
-        {
-            BSONArrayBuilder initialShards(collectionDetail.subarrayStart("initShards"));
-            for (const ShardId& shardId : initShardIds) {
-                initialShards.append(shardId.toString());
-            }
-        }
-
-        collectionDetail.append("numChunks", static_cast<int>(initPoints.size() + 1));
-
-        logChange(opCtx,
-                  "shardCollection.start",
-                  ns,
-                  collectionDetail.obj(),
-                  ShardingCatalogClientImpl::kMajorityWriteConcern);
-    }
-
-    const NamespaceString nss(ns);
-
-    // Construct the collection default collator.
-    std::unique_ptr<CollatorInterface> defaultCollator;
-    if (!defaultCollation.isEmpty()) {
-        auto statusWithCollator = CollatorFactoryInterface::get(opCtx->getServiceContext())
-                                      ->makeFromBSON(defaultCollation);
-        if (!statusWithCollator.isOK()) {
-            return statusWithCollator.getStatus();
-        }
-        defaultCollator = std::move(statusWithCollator.getValue());
-    }
-
-    auto createFirstChunksStatus =
-        createFirstChunks(opCtx, nss, fieldsAndOrder, dbPrimaryShardId, initPoints, initShardIds);
-    if (!createFirstChunksStatus.isOK()) {
-        return createFirstChunksStatus.getStatus();
-    }
-
-    const auto& collVersion = createFirstChunksStatus.getValue();
-
-    {
-        CollectionType coll;
-        coll.setNs(nss);
-        coll.setEpoch(collVersion.epoch());
-
-        // TODO(schwerin): The following isn't really a date, but is stored as one in-memory and in
-        // config.collections, as a historical oddity.
-        coll.setUpdatedAt(Date_t::fromMillisSinceEpoch(collVersion.toLong()));
-        coll.setKeyPattern(fieldsAndOrder.toBSON());
-        coll.setDefaultCollation(defaultCollator ? defaultCollator->getSpec().toBSON() : BSONObj());
-        coll.setUnique(unique);
-
-        const bool upsert = true;
-        Status updateCollStatus = _updateCollection(opCtx, ns, coll, upsert);
-        if (!updateCollStatus.isOK()) {
-            return updateCollStatus;
-        }
-    }
-
-    // Tell the primary mongod to refresh its data
-    // TODO:  Think the real fix here is for mongos to just
-    //        assume that all collections are sharded, when we get there
-    SetShardVersionRequest ssv = SetShardVersionRequest::makeForVersioningNoPersist(
-        shardRegistry->getConfigServerConnectionString(),
-        dbPrimaryShardId,
-        primaryShardStatus.getValue()->getConnString(),
-        NamespaceString(ns),
-        collVersion,
-        true);
-
-    auto shardStatus = shardRegistry->getShard(opCtx, dbPrimaryShardId);
-    if (!shardStatus.isOK()) {
-        return shardStatus.getStatus();
-    }
-    auto shard = shardStatus.getValue();
-
-    auto ssvResponse =
-        shard->runCommandWithFixedRetryAttempts(opCtx,
-                                                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-                                                "admin",
-                                                ssv.toBSON(),
-                                                Shard::RetryPolicy::kIdempotent);
-    auto status = ssvResponse.isOK() ? std::move(ssvResponse.getValue().commandStatus)
-                                     : std::move(ssvResponse.getStatus());
-    if (!status.isOK()) {
-        warning() << "could not update initial version of " << ns << " on shard primary "
-                  << dbPrimaryShardId << causedBy(redact(status));
-    }
-
-    logChange(opCtx,
-              "shardCollection.end",
-              ns,
-              BSON("version" << collVersion.toString()),
-              ShardingCatalogClientImpl::kMajorityWriteConcern);
-
-    return Status::OK();
-}
-
-StatusWith<ShardDrainingStatus> ShardingCatalogClientImpl::removeShard(OperationContext* opCtx,
-                                                                       const ShardId& shardId) {
-    // Check preconditions for removing the shard
-    string name = shardId.toString();
-    auto countStatus = _runCountCommandOnConfig(
-        opCtx,
-        NamespaceString(ShardType::ConfigNS),
-        BSON(ShardType::name() << NE << name << ShardType::draining(true)));
-    if (!countStatus.isOK()) {
-        return countStatus.getStatus();
-    }
-    if (countStatus.getValue() > 0) {
-        return Status(ErrorCodes::ConflictingOperationInProgress,
-                      "Can't have more than one draining shard at a time");
-    }
-
-    countStatus = _runCountCommandOnConfig(
-        opCtx, NamespaceString(ShardType::ConfigNS), BSON(ShardType::name() << NE << name));
-    if (!countStatus.isOK()) {
-        return countStatus.getStatus();
-    }
-    if (countStatus.getValue() == 0) {
-        return Status(ErrorCodes::IllegalOperation, "Can't remove last shard");
-    }
-
-    // Figure out if shard is already draining
-    countStatus =
-        _runCountCommandOnConfig(opCtx,
-                                 NamespaceString(ShardType::ConfigNS),
-                                 BSON(ShardType::name() << name << ShardType::draining(true)));
-    if (!countStatus.isOK()) {
-        return countStatus.getStatus();
-    }
-
-    auto* const shardRegistry = Grid::get(opCtx)->shardRegistry();
-
-    if (countStatus.getValue() == 0) {
-        log() << "going to start draining shard: " << name;
-
-        auto updateStatus = updateConfigDocument(opCtx,
-                                                 ShardType::ConfigNS,
-                                                 BSON(ShardType::name() << name),
-                                                 BSON("$set" << BSON(ShardType::draining(true))),
-                                                 false,
-                                                 ShardingCatalogClient::kMajorityWriteConcern);
-        if (!updateStatus.isOK()) {
-            log() << "error starting removeShard: " << name
-                  << causedBy(redact(updateStatus.getStatus()));
-            return updateStatus.getStatus();
-        }
-
-        shardRegistry->reload(opCtx);
-
-        // Record start in changelog
-        logChange(opCtx,
-                  "removeShard.start",
-                  "",
-                  BSON("shard" << name),
-                  ShardingCatalogClientImpl::kMajorityWriteConcern);
-
-        return ShardDrainingStatus::STARTED;
-    }
-
-    // Draining has already started, now figure out how many chunks and databases are still on the
-    // shard.
-    countStatus = _runCountCommandOnConfig(
-        opCtx, NamespaceString(ChunkType::ConfigNS), BSON(ChunkType::shard(name)));
-    if (!countStatus.isOK()) {
-        return countStatus.getStatus();
-    }
-    const long long chunkCount = countStatus.getValue();
-
-    countStatus = _runCountCommandOnConfig(
-        opCtx, NamespaceString(DatabaseType::ConfigNS), BSON(DatabaseType::primary(name)));
-    if (!countStatus.isOK()) {
-        return countStatus.getStatus();
-    }
-    const long long databaseCount = countStatus.getValue();
-
-    if (chunkCount > 0 || databaseCount > 0) {
-        // Still more draining to do
-        return ShardDrainingStatus::ONGOING;
-    }
-
-    // Draining is done, now finish removing the shard.
-    log() << "going to remove shard: " << name;
-    audit::logRemoveShard(opCtx->getClient(), name);
-
-    Status status = removeConfigDocuments(opCtx,
-                                          ShardType::ConfigNS,
-                                          BSON(ShardType::name() << name),
-                                          ShardingCatalogClient::kMajorityWriteConcern);
-    if (!status.isOK()) {
-        log() << "Error concluding removeShard operation on: " << name
-              << "; err: " << status.reason();
-        return status;
-    }
-
-    shardConnectionPool.removeHost(name);
-    ReplicaSetMonitor::remove(name);
-
-    shardRegistry->reload(opCtx);
-
-    // Record finish in changelog
-    logChange(opCtx,
-              "removeShard",
-              "",
-              BSON("shard" << name),
-              ShardingCatalogClientImpl::kMajorityWriteConcern);
-
-    return ShardDrainingStatus::COMPLETED;
 }
 
 StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::getDatabase(
@@ -813,7 +308,7 @@ StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::_fetchData
                                               NamespaceString(DatabaseType::ConfigNS),
                                               BSON(DatabaseType::name(dbName)),
                                               BSONObj(),
-                                              1);
+                                              boost::none);
     if (!findStatus.isOK()) {
         return findStatus.getStatus();
     }
@@ -921,7 +416,8 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
               "dropCollection.start",
               ns.ns(),
               BSONObj(),
-              ShardingCatalogClientImpl::kMajorityWriteConcern);
+              ShardingCatalogClientImpl::kMajorityWriteConcern)
+        .ignore();
 
     auto shardsStatus = getAllShards(opCtx, repl::ReadConcernLevel::kMajorityReadConcern);
     if (!shardsStatus.isOK()) {
@@ -1037,7 +533,7 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
     coll.setUpdatedAt(Grid::get(opCtx)->getNetwork()->now());
 
     const bool upsert = false;
-    result = _updateCollection(opCtx, ns.ns(), coll, upsert);
+    result = updateShardingCatalogEntryForCollection(opCtx, ns.ns(), coll, upsert);
     if (!result.isOK()) {
         return result;
     }
@@ -1099,7 +595,8 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
               "dropCollection",
               ns.ns(),
               BSONObj(),
-              ShardingCatalogClientImpl::kMajorityWriteConcern);
+              ShardingCatalogClientImpl::kMajorityWriteConcern)
+        .ignore();
 
     return Status::OK();
 }
@@ -1391,7 +888,7 @@ bool ShardingCatalogClientImpl::runUserManagementWriteCommand(OperationContext* 
         return Command::appendCommandStatus(*result, response.getValue().writeConcernStatus);
     }
 
-    result->appendElements(response.getValue().response);
+    Command::filterCommandReplyForPassthrough(response.getValue().response, result);
     return true;
 }
 
@@ -1427,7 +924,7 @@ bool ShardingCatalogClientImpl::runUserManagementReadCommand(OperationContext* o
             Shard::kDefaultConfigCommandTimeout,
             Shard::RetryPolicy::kIdempotent);
     if (resultStatus.isOK()) {
-        result->appendElements(resultStatus.getValue().response);
+        Command::filterCommandReplyForPassthrough(resultStatus.getValue().response, result);
         return resultStatus.getValue().commandStatus.isOK();
     }
 
@@ -1487,7 +984,7 @@ Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCt
         // mod made it to the config server, then applyOps was successful.
         std::vector<ChunkType> newestChunk;
         BSONObjBuilder query;
-        lastChunkVersion.addToBSON(query, ChunkType::DEPRECATED_lastmod());
+        lastChunkVersion.addToBSON(query, ChunkType::lastmod());
         query.append(ChunkType::ns(), nss);
         Status chunkStatus =
             getChunks(opCtx, query.obj(), BSONObj(), 1, &newestChunk, nullptr, readConcern);
@@ -1523,16 +1020,6 @@ DistLockManager* ShardingCatalogClientImpl::getDistLockManager() {
 void ShardingCatalogClientImpl::writeConfigServerDirect(OperationContext* opCtx,
                                                         const BatchedCommandRequest& batchRequest,
                                                         BatchedCommandResponse* batchResponse) {
-    // We only support batch sizes of one for config writes
-    if (batchRequest.sizeWriteOps() != 1) {
-        toBatchError(Status(ErrorCodes::InvalidOptions,
-                            str::stream() << "Writes to config servers must have batch size of 1, "
-                                          << "found "
-                                          << batchRequest.sizeWriteOps()),
-                     batchResponse);
-        return;
-    }
-
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
     *batchResponse = configShard->runBatchWriteCommand(opCtx,
                                                        Shard::kDefaultConfigCommandTimeout,
@@ -1545,16 +1032,16 @@ Status ShardingCatalogClientImpl::insertConfigDocument(OperationContext* opCtx,
                                                        const BSONObj& doc,
                                                        const WriteConcernOptions& writeConcern) {
     const NamespaceString nss(ns);
-    invariant(nss.db() == "config" || nss.db() == "admin");
+    invariant(nss.db() == NamespaceString::kAdminDb || nss.db() == NamespaceString::kConfigDb);
 
     const BSONElement idField = doc.getField("_id");
     invariant(!idField.eoo());
 
-    auto insert(stdx::make_unique<BatchedInsertRequest>());
-    insert->addToDocuments(doc);
-
-    BatchedCommandRequest request(insert.release());
-    request.setNS(nss);
+    BatchedCommandRequest request([&] {
+        write_ops::Insert insertOp(nss);
+        insertOp.setDocuments({doc});
+        return insertOp;
+    }());
     request.setWriteConcern(writeConcern.toBSON());
 
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
@@ -1622,23 +1109,34 @@ StatusWith<bool> ShardingCatalogClientImpl::updateConfigDocument(
     const BSONObj& update,
     bool upsert,
     const WriteConcernOptions& writeConcern) {
+    return _updateConfigDocument(opCtx, ns, query, update, upsert, writeConcern);
+}
+
+StatusWith<bool> ShardingCatalogClientImpl::_updateConfigDocument(
+    OperationContext* opCtx,
+    const string& ns,
+    const BSONObj& query,
+    const BSONObj& update,
+    bool upsert,
+    const WriteConcernOptions& writeConcern) {
     const NamespaceString nss(ns);
     invariant(nss.db() == "config");
 
     const BSONElement idField = query.getField("_id");
     invariant(!idField.eoo());
 
-    unique_ptr<BatchedUpdateDocument> updateDoc(new BatchedUpdateDocument());
-    updateDoc->setQuery(query);
-    updateDoc->setUpdateExpr(update);
-    updateDoc->setUpsert(upsert);
-    updateDoc->setMulti(false);
-
-    unique_ptr<BatchedUpdateRequest> updateRequest(new BatchedUpdateRequest());
-    updateRequest->addToUpdates(updateDoc.release());
-
-    BatchedCommandRequest request(updateRequest.release());
-    request.setNS(nss);
+    BatchedCommandRequest request([&] {
+        write_ops::Update updateOp(nss);
+        updateOp.setUpdates({[&] {
+            write_ops::UpdateOpEntry entry;
+            entry.setQ(query);
+            entry.setU(update);
+            entry.setUpsert(upsert);
+            entry.setMulti(false);
+            return entry;
+        }()});
+        return updateOp;
+    }());
     request.setWriteConcern(writeConcern.toBSON());
 
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
@@ -1662,68 +1160,22 @@ Status ShardingCatalogClientImpl::removeConfigDocuments(OperationContext* opCtx,
     const NamespaceString nss(ns);
     invariant(nss.db() == "config");
 
-    auto deleteDoc(stdx::make_unique<BatchedDeleteDocument>());
-    deleteDoc->setQuery(query);
-    deleteDoc->setLimit(0);
-
-    auto deleteRequest(stdx::make_unique<BatchedDeleteRequest>());
-    deleteRequest->addToDeletes(deleteDoc.release());
-
-    BatchedCommandRequest request(deleteRequest.release());
-    request.setNS(nss);
+    BatchedCommandRequest request([&] {
+        write_ops::Delete deleteOp(nss);
+        deleteOp.setDeletes({[&] {
+            write_ops::DeleteOpEntry entry;
+            entry.setQ(query);
+            entry.setMulti(true);
+            return entry;
+        }()});
+        return deleteOp;
+    }());
     request.setWriteConcern(writeConcern.toBSON());
 
     auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
     auto response = configShard->runBatchWriteCommand(
         opCtx, Shard::kDefaultConfigCommandTimeout, request, Shard::RetryPolicy::kIdempotent);
     return response.toStatus();
-}
-
-Status ShardingCatalogClientImpl::_checkDbDoesNotExist(OperationContext* opCtx,
-                                                       const string& dbName,
-                                                       DatabaseType* db) {
-    BSONObjBuilder queryBuilder;
-    queryBuilder.appendRegex(
-        DatabaseType::name(), (string) "^" + pcrecpp::RE::QuoteMeta(dbName) + "$", "i");
-
-    auto findStatus = _exhaustiveFindOnConfig(opCtx,
-                                              kConfigReadSelector,
-                                              repl::ReadConcernLevel::kMajorityReadConcern,
-                                              NamespaceString(DatabaseType::ConfigNS),
-                                              queryBuilder.obj(),
-                                              BSONObj(),
-                                              1);
-    if (!findStatus.isOK()) {
-        return findStatus.getStatus();
-    }
-
-    const auto& docs = findStatus.getValue().value;
-    if (docs.empty()) {
-        return Status::OK();
-    }
-
-    BSONObj dbObj = docs.front();
-    std::string actualDbName = dbObj[DatabaseType::name()].String();
-    if (actualDbName == dbName) {
-        if (db) {
-            auto parseDBStatus = DatabaseType::fromBSON(dbObj);
-            if (!parseDBStatus.isOK()) {
-                return parseDBStatus.getStatus();
-            }
-
-            *db = parseDBStatus.getValue();
-        }
-
-        return Status(ErrorCodes::NamespaceExists,
-                      str::stream() << "database " << dbName << " already exists");
-    }
-
-    return Status(ErrorCodes::DatabaseDifferCase,
-                  str::stream() << "can't have 2 databases that just differ on case "
-                                << " have: "
-                                << actualDbName
-                                << " want to add: "
-                                << dbName);
 }
 
 Status ShardingCatalogClientImpl::_createCappedConfigCollection(
@@ -1763,44 +1215,10 @@ Status ShardingCatalogClientImpl::_createCappedConfigCollection(
     return result.getValue().writeConcernStatus;
 }
 
-StatusWith<long long> ShardingCatalogClientImpl::_runCountCommandOnConfig(OperationContext* opCtx,
-                                                                          const NamespaceString& ns,
-                                                                          BSONObj query) {
-    BSONObjBuilder countBuilder;
-    countBuilder.append("count", ns.coll());
-    countBuilder.append("query", query);
-    _appendReadConcern(&countBuilder);
-
-    auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
-    auto resultStatus =
-        configShard->runCommandWithFixedRetryAttempts(opCtx,
-                                                      kConfigReadSelector,
-                                                      ns.db().toString(),
-                                                      countBuilder.done(),
-                                                      Shard::kDefaultConfigCommandTimeout,
-                                                      Shard::RetryPolicy::kIdempotent);
-    if (!resultStatus.isOK()) {
-        return resultStatus.getStatus();
-    }
-    if (!resultStatus.getValue().commandStatus.isOK()) {
-        return resultStatus.getValue().commandStatus;
-    }
-
-    auto responseObj = std::move(resultStatus.getValue().response);
-
-    long long result;
-    auto status = bsonExtractIntegerField(responseObj, "n", &result);
-    if (!status.isOK()) {
-        return status;
-    }
-
-    return result;
-}
-
 StatusWith<repl::OpTimeWith<vector<BSONObj>>> ShardingCatalogClientImpl::_exhaustiveFindOnConfig(
     OperationContext* opCtx,
     const ReadPreferenceSetting& readPref,
-    repl::ReadConcernLevel readConcern,
+    const repl::ReadConcernLevel& readConcern,
     const NamespaceString& nss,
     const BSONObj& query,
     const BSONObj& sort,

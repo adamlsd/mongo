@@ -210,6 +210,19 @@ error_code("StaleClusterTime", 209)
 error_code("CannotVerifyAndSignLogicalTime", 210)
 error_code("KeyNotFound", 211)
 error_code("IncompatibleRollbackAlgorithm", 212)
+error_code("DuplicateSession", 213)
+error_code("AuthenticationRestrictionUnmet", 214)
+error_code("DatabaseDropPending", 215)
+error_code("ElectionInProgress", 216)
+error_code("IncompleteTransactionHistory", 217);
+error_code("UpdateOperationFailed", 218)
+error_code("FTDCPathNotSet", 219)
+error_code("FTDCPathAlreadySet", 220)
+error_code("IndexModified", 221)
+error_code("CloseChangeStream", 222)
+error_code("IllegalOpMsgFlag", 223)
+error_code("JSONSchemaNotAllowed", 224)
+error_code("TransactionTooOld", 225)
 
 # Error codes 4000-8999 are reserved.
 
@@ -239,7 +252,17 @@ error_class("Interruption", ["Interrupted",
                              "InterruptedAtShutdown",
                              "InterruptedDueToReplStateChange",
                              "ExceededTimeLimit"])
-error_class("NotMasterError", ["NotMaster", "NotMasterNoSlaveOk"])
+
+# isNotMasterError() includes all codes that indicate that the node that received the request was
+# not master at some point during command processing, regardless of whether some write may have
+# happened. If you care about whether a write could have happened, check for individual codes.
+error_class("NotMasterError", [
+    "NotMaster",
+    "NotMasterNoSlaveOk",
+    "NotMasterOrSecondary",
+    "InterruptedDueToReplStateChange",
+    "PrimarySteppedDown",
+    ])
 error_class("StaleShardingError",
             ["RecvStaleConfig", "SendStaleConfig", "StaleShardVersion", "StaleEpoch"])
 error_class("WriteConcernError", ["WriteConcernFailed",
@@ -247,3 +270,6 @@ error_class("WriteConcernError", ["WriteConcernFailed",
                                   "UnknownReplWriteConcern",
                                   "CannotSatisfyWriteConcern"])
 error_class("ShutdownError", ["ShutdownInProgress", "InterruptedAtShutdown"])
+
+#TODO SERVER-28679 add checksum failure.
+error_class("ConnectionFatalMessageParseError", ["IllegalOpMsgFlag"])

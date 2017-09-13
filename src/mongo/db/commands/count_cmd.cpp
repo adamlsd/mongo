@@ -41,7 +41,6 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/view_response_formatter.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/util/log.h"
 
@@ -55,9 +54,9 @@ using std::stringstream;
 /**
  * Implements the MongoD side of the count command.
  */
-class CmdCount : public Command {
+class CmdCount : public BasicCommand {
 public:
-    CmdCount() : Command("count") {}
+    CmdCount() : BasicCommand("count") {}
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -80,7 +79,7 @@ public:
         return false;
     }
 
-    bool supportsReadConcern() const final {
+    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
         return true;
     }
 
@@ -109,14 +108,6 @@ public:
         auto request = CountRequest::parseFromBSON(dbname, cmdObj, isExplain);
         if (!request.isOK()) {
             return request.getStatus();
-        }
-
-        if (!request.getValue().getCollation().isEmpty() &&
-            serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k32) {
-            return Status(ErrorCodes::InvalidOptions,
-                          "The featureCompatibilityVersion must be 3.4 to use collation. See "
-                          "http://dochub.mongodb.org/core/3.4-feature-compatibility.");
         }
 
         // Acquire the db read lock.
@@ -167,22 +158,11 @@ public:
     virtual bool run(OperationContext* opCtx,
                      const string& dbname,
                      const BSONObj& cmdObj,
-                     string& errmsg,
                      BSONObjBuilder& result) {
         const bool isExplain = false;
         auto request = CountRequest::parseFromBSON(dbname, cmdObj, isExplain);
         if (!request.isOK()) {
             return appendCommandStatus(result, request.getStatus());
-        }
-
-        if (!request.getValue().getCollation().isEmpty() &&
-            serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k32) {
-            return appendCommandStatus(
-                result,
-                Status(ErrorCodes::InvalidOptions,
-                       "The featureCompatibilityVersion must be 3.4 to use collation. See "
-                       "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
         }
 
         AutoGetCollectionOrViewForReadCommand ctx(opCtx, request.getValue().getNs());
@@ -196,16 +176,15 @@ public:
                 return appendCommandStatus(result, viewAggregation.getStatus());
             }
 
-            BSONObjBuilder aggResult;
-            (void)Command::findCommand("aggregate")
-                ->run(opCtx, dbname, viewAggregation.getValue(), errmsg, aggResult);
+            BSONObj aggResult = Command::runCommandDirectly(
+                opCtx, OpMsgRequest::fromDBAndBody(dbname, std::move(viewAggregation.getValue())));
 
-            if (ResolvedView::isResolvedViewErrorResponse(aggResult.asTempObj())) {
-                result.appendElements(aggResult.obj());
+            if (ResolvedView::isResolvedViewErrorResponse(aggResult)) {
+                result.appendElements(aggResult);
                 return false;
             }
 
-            ViewResponseFormatter formatter(aggResult.obj());
+            ViewResponseFormatter formatter(aggResult);
             Status formatStatus = formatter.appendAsCountResponse(&result);
             if (!formatStatus.isOK()) {
                 return appendCommandStatus(result, formatStatus);

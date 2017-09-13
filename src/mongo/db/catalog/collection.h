@@ -1,4 +1,4 @@
-/*-
+/**
  *    Copyright (C) 2017 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -38,13 +38,17 @@
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection_info_cache.h"
-#include "mongo/db/catalog/cursor_manager.h"
-#include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/catalog/collection_options.h"
+#include "mongo/db/catalog/index_consistency.h"
+#include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/cursor_manager.h"
 #include "mongo/db/exec/collection_scan_common.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/repl/oplog.h"
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/snapshot.h"
@@ -57,11 +61,13 @@ class CollectionCatalogEntry;
 class DatabaseCatalogEntry;
 class ExtentManager;
 class IndexCatalog;
+class IndexDescriptor;
 class DatabaseImpl;
 class MatchExpression;
 class MultiIndexBlock;
 class OpDebug;
 class OperationContext;
+struct OplogUpdateEntryArgs;
 class RecordCursor;
 class RecordFetcher;
 class UpdateDriver;
@@ -169,6 +175,7 @@ class Collection final : CappedCallback, UpdateNotifier {
 public:
     enum ValidationAction { WARN, ERROR_V };
     enum ValidationLevel { OFF, MODERATE, STRICT_V };
+    enum class StoreDeletedDoc { Off, On };
 
     class Impl : virtual CappedCallback, virtual UpdateNotifier {
     public:
@@ -201,6 +208,8 @@ public:
         virtual const NamespaceString& ns() const = 0;
         virtual OptionalCollectionUUID uuid() const = 0;
 
+        virtual void refreshUUID(OperationContext* opCtx) = 0;
+
         virtual const IndexCatalog* getIndexCatalog() const = 0;
         virtual IndexCatalog* getIndexCatalog() = 0;
 
@@ -224,26 +233,29 @@ public:
             OperationContext* opCtx) const = 0;
 
         virtual void deleteDocument(OperationContext* opCtx,
+                                    StmtId stmtId,
                                     const RecordId& loc,
                                     OpDebug* opDebug,
                                     bool fromMigrate,
-                                    bool noWarn) = 0;
+                                    bool noWarn,
+                                    StoreDeletedDoc storeDeletedDoc) = 0;
 
         virtual Status insertDocuments(OperationContext* opCtx,
-                                       std::vector<BSONObj>::const_iterator begin,
-                                       std::vector<BSONObj>::const_iterator end,
+                                       std::vector<InsertStatement>::const_iterator begin,
+                                       std::vector<InsertStatement>::const_iterator end,
                                        OpDebug* opDebug,
                                        bool enforceQuota,
                                        bool fromMigrate) = 0;
 
         virtual Status insertDocument(OperationContext* opCtx,
-                                      const BSONObj& doc,
+                                      const InsertStatement& doc,
                                       OpDebug* opDebug,
                                       bool enforceQuota,
                                       bool fromMigrate) = 0;
 
         virtual Status insertDocumentsForOplog(OperationContext* opCtx,
                                                const DocWriter* const* docs,
+                                               Timestamp* timestamps,
                                                size_t nDocs) = 0;
 
         virtual Status insertDocument(OperationContext* opCtx,
@@ -251,14 +263,14 @@ public:
                                       const std::vector<MultiIndexBlock*>& indexBlocks,
                                       bool enforceQuota) = 0;
 
-        virtual StatusWith<RecordId> updateDocument(OperationContext* opCtx,
-                                                    const RecordId& oldLocation,
-                                                    const Snapshotted<BSONObj>& oldDoc,
-                                                    const BSONObj& newDoc,
-                                                    bool enforceQuota,
-                                                    bool indexesAffected,
-                                                    OpDebug* opDebug,
-                                                    OplogUpdateEntryArgs* args) = 0;
+        virtual RecordId updateDocument(OperationContext* opCtx,
+                                        const RecordId& oldLocation,
+                                        const Snapshotted<BSONObj>& oldDoc,
+                                        const BSONObj& newDoc,
+                                        bool enforceQuota,
+                                        bool indexesAffected,
+                                        OpDebug* opDebug,
+                                        OplogUpdateEntryArgs* args) = 0;
 
         virtual bool updateWithDamagesSupported() const = 0;
 
@@ -277,6 +289,8 @@ public:
 
         virtual Status validate(OperationContext* opCtx,
                                 ValidateCmdLevel level,
+                                bool background,
+                                std::unique_ptr<Lock::CollectionLock> collLk,
                                 ValidateResults* results,
                                 BSONObjBuilder* output) = 0;
 
@@ -287,7 +301,9 @@ public:
 
         virtual void cappedTruncateAfter(OperationContext* opCtx, RecordId end, bool inclusive) = 0;
 
-        virtual StatusWithMatchExpression parseValidator(const BSONObj& validator) const = 0;
+        virtual StatusWithMatchExpression parseValidator(
+            const BSONObj& validator,
+            MatchExpressionParser::AllowedFeatureSet allowedFeatures) const = 0;
 
         virtual Status setValidator(OperationContext* opCtx, BSONObj validator) = 0;
 
@@ -316,6 +332,11 @@ public:
         virtual void notifyCappedWaitersIfNeeded() = 0;
 
         virtual const CollatorInterface* getDefaultCollator() const = 0;
+
+        virtual void informIndexObserver(OperationContext* opCtx,
+                                         const IndexDescriptor* descriptor,
+                                         const IndexKeyEntry& indexEntry,
+                                         const ValidationOperation operation) const = 0;
     };
 
 private:
@@ -373,6 +394,10 @@ public:
 
     inline OptionalCollectionUUID uuid() const {
         return this->_impl().uuid();
+    }
+
+    inline void refreshUUID(OperationContext* opCtx) {
+        return this->_impl().refreshUUID(opCtx);
     }
 
     inline const IndexCatalog* getIndexCatalog() const {
@@ -439,11 +464,14 @@ public:
      * will not be logged.
      */
     inline void deleteDocument(OperationContext* const opCtx,
+                               StmtId stmtId,
                                const RecordId& loc,
                                OpDebug* const opDebug,
                                const bool fromMigrate = false,
-                               const bool noWarn = false) {
-        return this->_impl().deleteDocument(opCtx, loc, opDebug, fromMigrate, noWarn);
+                               const bool noWarn = false,
+                               StoreDeletedDoc storeDeletedDoc = StoreDeletedDoc::Off) {
+        return this->_impl().deleteDocument(
+            opCtx, stmtId, loc, opDebug, fromMigrate, noWarn, storeDeletedDoc);
     }
 
     /*
@@ -454,8 +482,8 @@ public:
      * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
      */
     inline Status insertDocuments(OperationContext* const opCtx,
-                                  const std::vector<BSONObj>::const_iterator begin,
-                                  const std::vector<BSONObj>::const_iterator end,
+                                  const std::vector<InsertStatement>::const_iterator begin,
+                                  const std::vector<InsertStatement>::const_iterator end,
                                   OpDebug* const opDebug,
                                   const bool enforceQuota,
                                   const bool fromMigrate = false) {
@@ -470,7 +498,7 @@ public:
      * 'enforceQuota' If false, quotas will be ignored.
      */
     inline Status insertDocument(OperationContext* const opCtx,
-                                 const BSONObj& doc,
+                                 const InsertStatement& doc,
                                  OpDebug* const opDebug,
                                  const bool enforceQuota,
                                  const bool fromMigrate = false) {
@@ -483,8 +511,9 @@ public:
      */
     inline Status insertDocumentsForOplog(OperationContext* const opCtx,
                                           const DocWriter* const* const docs,
+                                          Timestamp* timestamps,
                                           const size_t nDocs) {
-        return this->_impl().insertDocumentsForOplog(opCtx, docs, nDocs);
+        return this->_impl().insertDocumentsForOplog(opCtx, docs, timestamps, nDocs);
     }
 
     /**
@@ -508,14 +537,14 @@ public:
      * 'opDebug' Optional argument. When not null, will be used to record operation statistics.
      * @return the post update location of the doc (may or may not be the same as oldLocation)
      */
-    inline StatusWith<RecordId> updateDocument(OperationContext* const opCtx,
-                                               const RecordId& oldLocation,
-                                               const Snapshotted<BSONObj>& oldDoc,
-                                               const BSONObj& newDoc,
-                                               const bool enforceQuota,
-                                               const bool indexesAffected,
-                                               OpDebug* const opDebug,
-                                               OplogUpdateEntryArgs* const args) {
+    inline RecordId updateDocument(OperationContext* const opCtx,
+                                   const RecordId& oldLocation,
+                                   const Snapshotted<BSONObj>& oldDoc,
+                                   const BSONObj& newDoc,
+                                   const bool enforceQuota,
+                                   const bool indexesAffected,
+                                   OpDebug* const opDebug,
+                                   OplogUpdateEntryArgs* const args) {
         return this->_impl().updateDocument(
             opCtx, oldLocation, oldDoc, newDoc, enforceQuota, indexesAffected, opDebug, args);
     }
@@ -565,9 +594,11 @@ public:
      */
     inline Status validate(OperationContext* const opCtx,
                            const ValidateCmdLevel level,
+                           bool background,
+                           std::unique_ptr<Lock::CollectionLock> collLk,
                            ValidateResults* const results,
                            BSONObjBuilder* const output) {
-        return this->_impl().validate(opCtx, level, results, output);
+        return this->_impl().validate(opCtx, level, background, std::move(collLk), results, output);
     }
 
     /**
@@ -595,8 +626,9 @@ public:
     /**
      * Returns a non-ok Status if validator is not legal for this collection.
      */
-    inline StatusWithMatchExpression parseValidator(const BSONObj& validator) const {
-        return this->_impl().parseValidator(validator);
+    inline StatusWithMatchExpression parseValidator(
+        const BSONObj& validator, MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
+        return this->_impl().parseValidator(validator, allowedFeatures);
     }
 
     static StatusWith<ValidationLevel> parseValidationLevel(StringData);
@@ -698,6 +730,16 @@ public:
      */
     inline const CollatorInterface* getDefaultCollator() const {
         return this->_impl().getDefaultCollator();
+    }
+
+    /**
+     * Calls the Inforn function in the IndexObserver if it's hooked.
+     */
+    inline void informIndexObserver(OperationContext* opCtx,
+                                    const IndexDescriptor* descriptor,
+                                    const IndexKeyEntry& indexEntry,
+                                    const ValidationOperation operation) const {
+        return this->_impl().informIndexObserver(opCtx, descriptor, indexEntry, operation);
     }
 
 private:

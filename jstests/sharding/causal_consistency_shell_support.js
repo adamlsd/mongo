@@ -9,12 +9,18 @@
     load("jstests/replsets/rslib.js");  // For startSetIfSupportsReadMajority.
 
     // Verifies causal consistency is either enabled or disabled for each given command name.
-    function checkCausalConsistencySupportForCommandNames(cmdNames, isEnabled) {
-        cmdNames.forEach(function(cmdName) {
-            assert.eq(testDB.getMongo().isCausalConsistencyEnabled(cmdName, {}),
-                      isEnabled,
-                      "expected causal consistency support for command, " + cmdName + ", to be " +
-                          isEnabled);
+    function checkCausalConsistencySupportForCommandNames(cmdObjs, isReadCommand) {
+        cmdObjs.forEach(function(cmdObj) {
+            let cmdName = Object.keys(cmdObj)[0];
+            if (cmdName === "query" || cmdName === "$query") {
+                cmdObj = cmdObj[cmdName];
+                cmdName = Object.keys(cmdObj)[0];
+            }
+
+            assert.eq(testDB.getMongo()._isReadCommand(cmdObj),
+                      isReadCommand,
+                      "expected causal consistency support for command, " + tojson(cmdObj) +
+                          ", to be " + isReadCommand);
         });
     }
 
@@ -50,7 +56,7 @@
     function commandReturnsExpectedResult(cmdObj, db, resCallback) {
         const mongo = db.getMongo();
 
-        // Use the latest logical time returned as a new operationTime and run command.
+        // Use the latest cluster time returned as a new operationTime and run command.
         const clusterTimeObj = mongo.getClusterTime();
         mongo.setOperationTime(clusterTimeObj.clusterTime);
         const res = assert.commandWorked(testDB.runCommand(cmdObj));
@@ -64,26 +70,45 @@
 
     // All commands currently enabled to use causal consistency in the shell.
     const supportedCommandNames = [
-        "aggregate",
-        "count",
-        "distinct",
-        "find",
-        "geoNear",
-        "geoSearch",
-        "mapReduce",
-        "parallelCollectionScan"
+        {"query": {"aggregate": "test", "pipeline": [{"$match": {"x": 1}}]}},
+        {"aggregate": "test", "pipeline": [{"$match": {"x": 1}}]},
+        {"group": {"key": {"x": 1}}},
+        {"query": {"group": {"key": {"x": 1}}}},
+        {"query": {"explain": {"group": {"key": {"x": 1}}}}},
+        {"count": "test", "query": {}},
+        {"query": {"count": "test", "query": {}}},
+        {"query": {"explain": {"count": "test", "query": {}}}},
+        {"explain": {"count": "test", "query": {}}},
+        {"distinct": "test", "query": {}},
+        {"query": {"distinct": "test", "query": {}}},
+        {"query": {"explain": {"distinct": "test", "query": {}}}},
+        {"find": "test", "query": {}},
+        {"query": {"find": "test", "query": {}}},
+        {"query": {"explain": {"find": "test", "query": {}}}},
+        {"geoNear": "test", "near": {}},
+        {"query": {"geoNear": "test", "near": {}}},
+        {"query": {"explain": {"geoNear": "test", "near": {}}}},
+        {"geoSearch": "test", "near": {}},
+        {"mapReduce": "test"},
+        {"parallelCollectionScan": "test"},
+        {"getMore": NumberLong("5888577173997830861")}
     ];
 
     // Omitting some commands for simplicity. Every command not listed above should be unsupported.
     const unsupportedCommandNames = [
-        "delete",
-        "findAndModify",
-        "getLastError",
-        "getMore",
-        "getPrevError",
-        "insert",
-        "resetError",
-        "update"
+        {"aggregate": "test", "pipeline": [{"$match": {"x": 1}}], "explain": true},
+        {"explain": {"aggregate": "test", "pipeline": [{"$match": {"x": 1}}]}},
+        {"delete": "coll", "query": {"x": 1}},
+        {"explain": {"delete": "coll", "query": {"x": 1}}},
+        {"findAndModify": "coll", "query": {"x": 1}},
+        {"explain": {"findAndModify": "coll", "query": {"x": 1}}},
+        {"query": {"explain": {"findAndModify": "coll", "query": {"x": 1}}}},
+        {"insert": "coll"},
+        {"explain": {"insert": "coll"}},
+        {"explain": {"update": "coll"}},
+        {"update": "coll"},
+        {"getLastError": {"x": 1}},
+        {"getPrevError": {"x": 1}}
     ];
 
     // Manually create a shard so tests on storage engines that don't support majority readConcern
@@ -106,11 +131,8 @@
 
     // Start the sharding test and add the majority readConcern enabled replica set.
     const name = "causal_consistency_shell_support";
-    const st = new ShardingTest({
-        name: name,
-        shards: 1,
-        manualAddShard: true,
-    });
+    const st =
+        new ShardingTest({name: name, shards: 1, manualAddShard: true, mongosWaitsForKeys: true});
     assert.commandWorked(st.s.adminCommand({addShard: rst.getURL()}));
 
     const testDB = st.s.getDB("test");
@@ -118,10 +140,6 @@
 
     // Verify causal consistency is disabled unless explicitly set.
     assert.eq(!!mongo._isCausal, false);
-    checkCausalConsistencySupportForCommandNames(supportedCommandNames, false);
-    checkCausalConsistencySupportForCommandNames(unsupportedCommandNames, false);
-
-    // Enable causal consistency.
     mongo.setCausalConsistency(true);
 
     // Verify causal consistency is enabled for the connection and for each supported command.
@@ -129,15 +147,8 @@
     checkCausalConsistencySupportForCommandNames(supportedCommandNames, true);
     checkCausalConsistencySupportForCommandNames(unsupportedCommandNames, false);
 
-    // Verify causal consistency can be disabled.
-    mongo.setCausalConsistency(false);
-
-    assert.eq(!!mongo._isCausal, false);
-    checkCausalConsistencySupportForCommandNames(supportedCommandNames, false);
-    checkCausalConsistencySupportForCommandNames(unsupportedCommandNames, false);
-
-    // Verify logical times are tracked even before causal consistency is set (so the first
-    // operation with causal consistency set can use valid logical times).
+    // Verify cluster times are tracked even before causal consistency is set (so the first
+    // operation with causal consistency set can use valid cluster times).
     mongo._operationTime = null;
     mongo._clusterTime = null;
 
@@ -157,7 +168,7 @@
     runCommandAndCheckLogicalTimes(
         {update: "foo", updates: [{q: {x: 2}, u: {$set: {x: 3}}}]}, testDB, true);
 
-    // Test that each supported command works as expected and the shell's logical times are properly
+    // Test that each supported command works as expected and the shell's cluster times are properly
     // forwarded to the server and updated based on the response.
     mongo.setCausalConsistency(true);
 

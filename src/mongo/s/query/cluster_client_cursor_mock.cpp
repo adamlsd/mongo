@@ -36,14 +36,15 @@
 
 namespace mongo {
 
-ClusterClientCursorMock::ClusterClientCursorMock(stdx::function<void(void)> killCallback)
-    : _killCallback(std::move(killCallback)) {}
+ClusterClientCursorMock::ClusterClientCursorMock(boost::optional<LogicalSessionId> lsid,
+                                                 stdx::function<void(void)> killCallback)
+    : _killCallback(std::move(killCallback)), _lsid(lsid) {}
 
 ClusterClientCursorMock::~ClusterClientCursorMock() {
     invariant(_exhausted || _killed);
 }
 
-StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(OperationContext* opCtx) {
+StatusWith<ClusterQueryResult> ClusterClientCursorMock::next() {
     invariant(!_killed);
 
     if (_resultsQueue.empty()) {
@@ -103,6 +104,10 @@ void ClusterClientCursorMock::queueError(Status status) {
 
 Status ClusterClientCursorMock::setAwaitDataTimeout(Milliseconds awaitDataTimeout) {
     MONGO_UNREACHABLE;
+}
+
+boost::optional<LogicalSessionId> ClusterClientCursorMock::getLsid() const {
+    return _lsid;
 }
 
 }  // namespace mongo

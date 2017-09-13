@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -251,27 +251,45 @@ __wt_realloc_aligned(WT_SESSION_IMPL *session,
 }
 
 /*
+ * __wt_memdup --
+ *	Duplicate a byte string of a given length.
+ */
+int
+__wt_memdup(WT_SESSION_IMPL *session, const void *str, size_t len, void *retp)
+{
+	void *p;
+
+	WT_RET(__wt_malloc(session, len, &p));
+
+	WT_ASSERT(session, p != NULL);		/* quiet clang scan-build */
+
+	memcpy(p, str, len);
+
+	*(void **)retp = p;
+	return (0);
+}
+
+/*
  * __wt_strndup --
- *	Duplicate a byte string of a given length (and NUL-terminate).
+ *	ANSI strndup function.
  */
 int
 __wt_strndup(WT_SESSION_IMPL *session, const void *str, size_t len, void *retp)
 {
-	void *p;
+	uint8_t *p;
 
 	if (str == NULL) {
 		*(void **)retp = NULL;
 		return (0);
 	}
 
+	/* Copy and nul-terminate. */
 	WT_RET(__wt_malloc(session, len + 1, &p));
 
-	/*
-	 * Don't change this to strncpy, we rely on this function to duplicate
-	 * "strings" that contain nul bytes.
-	 */
+	WT_ASSERT(session, p != NULL);		/* quiet clang scan-build */
+
 	memcpy(p, str, len);
-	((uint8_t *)p)[len] = '\0';
+	p[len] = '\0';
 
 	*(void **)retp = p;
 	return (0);

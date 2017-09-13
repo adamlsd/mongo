@@ -34,7 +34,7 @@
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/json.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
+#include "mongo/db/matcher/expression_always_boolean.h"
 #include "mongo/db/query/collation/collator_interface_mock.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_test_fixture.h"
@@ -42,6 +42,24 @@
 namespace {
 
 using namespace mongo;
+
+TEST_F(QueryPlannerTest, PlannerUsesCoveredIxscanForCountWhenIndexSatisfiesQuery) {
+    params.options = QueryPlannerParams::IS_COUNT;
+    addIndex(BSON("x" << 1));
+    runQuery(BSON("x" << 5));
+    ASSERT_EQUALS(getNumSolutions(), 1U);
+    assertSolutionExists("{ixscan: {pattern: {x: 1}, bounds: {x: [[5,5,true,true]]}}}");
+}
+
+TEST_F(QueryPlannerTest, PlannerAddsFetchToIxscanForCountWhenFetchFilterNonempty) {
+    params.options = QueryPlannerParams::IS_COUNT;
+    addIndex(BSON("x" << 1));
+    runQuery(BSON("y" << 3 << "x" << 5));
+    ASSERT_EQUALS(getNumSolutions(), 1U);
+    assertSolutionExists(
+        "{fetch: {filter: {y: 3}, node: {ixscan: "
+        "{pattern: {x: 1}, bounds: {x: [[5,5,true,true]]}}}}}");
+}
 
 //
 // Equality
@@ -4249,8 +4267,7 @@ TEST_F(QueryPlannerTest, CacheDataFromTaggedTreeFailsOnBadInput) {
 
     auto qr = stdx::make_unique<QueryRequest>(NamespaceString("test.collection"));
     qr->setFilter(BSON("a" << 3));
-    auto statusWithCQ = CanonicalQuery::canonicalize(
-        opCtx.get(), std::move(qr), ExtensionsCallbackDisallowExtensions());
+    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx.get(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> scopedCq = std::move(statusWithCQ.getValue());
     scopedCq->root()->setTag(new IndexTag(1));
@@ -4265,8 +4282,7 @@ TEST_F(QueryPlannerTest, TagAccordingToCacheFailsOnBadInput) {
 
     auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->setFilter(BSON("a" << 3));
-    auto statusWithCQ = CanonicalQuery::canonicalize(
-        opCtx.get(), std::move(qr), ExtensionsCallbackDisallowExtensions());
+    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx.get(), std::move(qr));
     ASSERT_OK(statusWithCQ.getStatus());
     std::unique_ptr<CanonicalQuery> scopedCq = std::move(statusWithCQ.getValue());
 
@@ -4295,8 +4311,7 @@ TEST_F(QueryPlannerTest, TagAccordingToCacheFailsOnBadInput) {
     // Regenerate canonical query in order to clear tags.
     auto newQR = stdx::make_unique<QueryRequest>(nss);
     newQR->setFilter(BSON("a" << 3));
-    statusWithCQ = CanonicalQuery::canonicalize(
-        opCtx.get(), std::move(newQR), ExtensionsCallbackDisallowExtensions());
+    statusWithCQ = CanonicalQuery::canonicalize(opCtx.get(), std::move(newQR));
     ASSERT_OK(statusWithCQ.getStatus());
     scopedCq = std::move(statusWithCQ.getValue());
 
@@ -5269,4 +5284,165 @@ TEST_F(QueryPlannerTest, ContainedOrPathLevelMultikeyCannotCompoundTrailingField
     assertSolutionExists("{cscan: {dir: 1}}}}");
 }
 
+TEST_F(QueryPlannerTest, EmptyQueryWithoutProjectionUsesCollscan) {
+    addIndex(BSON("a" << 1));
+    runQuery(BSONObj());
+    assertNumSolutions(1);
+    assertSolutionExists("{cscan: {dir: 1}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCoveredIxscanIfEnabled) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{ixscan: {filter: null, pattern: {a: 1},"
+        "bounds: {a: [['MinKey', 'MaxKey', true, true]]}}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionDoesNotUseCoveredIxscanIfDisabled) {
+    params.options &= ~QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCoveredIxscanOnCompoundIndexIfEnabled) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1 << "b" << 1 << "c" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1, c: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1, c: 1}, node: "
+        "{ixscan: {filter: null, pattern: {a: 1, b: 1, c: 1}, bounds:"
+        "{a: [['MinKey', 'MaxKey', true, true]], b: [['MinKey', 'MaxKey', true, true]],"
+        "c: [['MinKey', 'MaxKey', true, true]]}}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionDoesNotUseCoveredIxscanOnCompoundIndexIfDisabled) {
+    params.options &= ~QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1 << "b" << 1 << "c" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1, c: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1, c: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionDoesNotConsiderNonHintedIndices) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}, hint: {_id: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{fetch: {filter: null, node: "
+        "{ixscan: {filter: null, pattern: {_id: 1}, "
+        "bounds: {_id: [['MinKey', 'MaxKey', true, true]]}}}}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfNoCoveredIxscans) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {a: 1}, node:"
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest,
+       EmptyQueryWithProjectionUsesCoveredIxscanOnDotttedNonMultikeyIndexIfEnabled) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a.b" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, 'a.b': 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, 'a.b': 1}, node: "
+        "{ixscan: {filter: null, pattern: {'a.b': 1},"
+        "bounds: {'a.b': [['MinKey', 'MaxKey', true, true]]}}}}}");
+}
+
+TEST_F(QueryPlannerTest,
+       EmptyQueryWithProjectionDoesNotUseCoveredIxscanOnDotttedNonMultikeyIndexIfDisabled) {
+    params.options &= ~QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a.b" << 1));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, 'a.b': 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, 'a.b': 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexIsMultikey) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    constexpr bool isMultikey = true;
+    addIndex(BSON("a" << 1 << "b" << 1), isMultikey);
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1, b: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1, b: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexIsSparse) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    constexpr bool isMultikey = false;
+    constexpr bool isSparse = true;
+    addIndex(BSON("a" << 1), isMultikey, isSparse);
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1, b: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1, b: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexIsPartial) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    AlwaysFalseMatchExpression matchExpr;
+    addIndex(BSON("a" << 1), &matchExpr);
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexIsText) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a"
+                  << "text"));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexIsGeo) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    addIndex(BSON("a"
+                  << "2dsphere"));
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
+
+TEST_F(QueryPlannerTest, EmptyQueryWithProjectionUsesCollscanIfIndexCollationDiffers) {
+    params.options = QueryPlannerParams::GENERATE_COVERED_IXSCANS;
+    CollatorInterfaceMock collator(CollatorInterfaceMock::MockType::kReverseString);
+    addIndex(BSON("a" << 1), &collator);
+    runQueryAsCommand(fromjson("{find: 'testns', projection: {_id: 0, a: 1}}"));
+    assertNumSolutions(1);
+    assertSolutionExists(
+        "{proj: {spec: {_id: 0, a: 1}, node: "
+        "{cscan: {dir: 1}}}}");
+}
 }  // namespace

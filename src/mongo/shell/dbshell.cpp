@@ -90,12 +90,12 @@ static AtomicBool atPrompt(false);  // can eval before getting to prompt
 namespace {
 const auto kDefaultMongoURL = "mongodb://127.0.0.1:27017"_sd;
 
-// We set the featureCompatibilityVersion to 3.4 in the mongo shell so that BSON validation always
-// uses BSONVersion::kLatest.
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion34, ("EndStartupOptionSetup"))
+// We set the featureCompatibilityVersion to 3.6 in the mongo shell and rely on the server to reject
+// usages of new features if its featureCompatibilityVersion is lower.
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion36, ("EndStartupOptionSetup"))
 (InitializerContext* context) {
     mongo::serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k34);
+        ServerGlobalParams::FeatureCompatibility::Version::k36);
     return Status::OK();
 }
 }
@@ -143,12 +143,18 @@ void shellHistoryInit() {
     ss << ".dbshell";
     historyFile = ss.str();
 
-    linenoiseHistoryLoad(historyFile.c_str());
+    Status res = linenoiseHistoryLoad(historyFile.c_str());
+    if (!res.isOK()) {
+        error() << "Error loading history file: " << res;
+    }
     linenoiseSetCompletionCallback(completionHook);
 }
 
 void shellHistoryDone() {
-    linenoiseHistorySave(historyFile.c_str());
+    Status res = linenoiseHistorySave(historyFile.c_str());
+    if (!res.isOK()) {
+        error() << "Error saving history file: " << res;
+    }
     linenoiseHistoryFree();
 }
 void shellHistoryAdd(const char* line) {

@@ -28,11 +28,10 @@
 
 #pragma once
 
-#include "mongo/db/signed_logical_time.h"
+#include "mongo/db/logical_time.h"
 #include "mongo/stdx/mutex.h"
 
 namespace mongo {
-class TimeProofService;
 class ServiceContext;
 class OperationContext;
 
@@ -47,7 +46,9 @@ public:
     static LogicalClock* get(OperationContext* ctx);
     static void set(ServiceContext* service, std::unique_ptr<LogicalClock> logicalClock);
 
-    static constexpr Seconds kMaxAcceptableLogicalClockDrift =
+    static const uint32_t kMaxSignedInt = ((1U << 31) - 1);
+
+    static constexpr Seconds kMaxAcceptableLogicalClockDriftSecs =
         Seconds(365 * 24 * 60 * 60);  // 1 year
 
     /**
@@ -83,8 +84,8 @@ public:
 
 private:
     /**
-     * Rate limiter for advancing logical time. Rejects newTime if its seconds value is more than
-     * kMaxAcceptableLogicalClockDrift seconds ahead of this node's wall clock.
+     * Rate limiter for advancing cluster time. Rejects newTime if its seconds value is more than
+     * kMaxAcceptableLogicalClockDriftSecs seconds ahead of this node's wall clock.
      */
     Status _passesRateLimiter_inlock(LogicalTime newTime);
 

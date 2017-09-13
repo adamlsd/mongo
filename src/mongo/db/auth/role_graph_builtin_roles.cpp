@@ -186,6 +186,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::getShardMap
         << ActionType::hostInfo
         << ActionType::listDatabases
+        << ActionType::listSessions // clusterManager gets this also
         << ActionType::listShards  // clusterManager gets this also
         << ActionType::netstat
         << ActionType::replSetGetConfig  // clusterManager gets this also
@@ -216,7 +217,9 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::flushRouterConfig  // clusterManager gets this also
         << ActionType::fsync
         << ActionType::invalidateUserCache // userAdminAnyDatabase gets this also
+        << ActionType::killAnySession
         << ActionType::killop
+        << ActionType::replSetResizeOplog
         << ActionType::resync;  // clusterManager gets this also
 
     // hostManager role actions that target the database resource
@@ -236,6 +239,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::resync  // hostManager gets this also
         << ActionType::addShard 
         << ActionType::removeShard
+        << ActionType::listSessions  // clusterMonitor gets this also
         << ActionType::listShards  // clusterMonitor gets this also
         << ActionType::flushRouterConfig  // hostManager gets this also
         << ActionType::cleanupOrphaned;
@@ -691,6 +695,8 @@ bool RoleGraph::addPrivilegesForBuiltinRole(const RoleName& roleName, PrivilegeV
     } else {
         return false;
     }
+
+    // One of the roles has matched, otherwise we would have returned already.
     return true;
 }
 

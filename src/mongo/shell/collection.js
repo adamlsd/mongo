@@ -266,15 +266,18 @@ DBCollection.prototype.find = function(query, fields, limit, skip, batchSize, op
                              batchSize,
                              options || this.getQueryOptions());
 
-    var connObj = this.getMongo();
-    var readPrefMode = connObj.getReadPrefMode();
-    if (readPrefMode != null) {
-        cursor.readPref(readPrefMode, connObj.getReadPrefTagSet());
-    }
+    {
+        const session = this.getDB().getSession();
 
-    var rc = connObj.getReadConcern();
-    if (rc) {
-        cursor.readConcern(rc);
+        const readPreference = session._serverSession.client.getReadPreference(session);
+        if (readPreference !== null) {
+            cursor.readPref(readPreference.mode, readPreference.tags);
+        }
+
+        const readConcern = session._serverSession.client.getReadConcern(session);
+        if (readConcern !== null) {
+            cursor.readConcern(readConcern.level);
+        }
     }
 
     return cursor;
@@ -359,8 +362,8 @@ DBCollection.prototype.insert = function(obj, options, _allow_dot) {
             } else if (ex instanceof WriteCommandError) {
                 result = isMultiInsert ? ex : ex.toSingleResult();
             } else {
-                // Other exceptions thrown
-                throw Error(ex);
+                // Other exceptions rethrown as-is.
+                throw ex;
             }
         }
     } else {
@@ -771,6 +774,19 @@ DBCollection.prototype.findAndModify = function(args) {
     var cmd = {findandmodify: this.getName()};
     for (var key in args) {
         cmd[key] = args[key];
+    }
+
+    {
+        const kWireVersionSupportingRetryableWrites = 6;
+        const serverSupportsRetryableWrites =
+            this.getMongo().getMinWireVersion() <= kWireVersionSupportingRetryableWrites &&
+            kWireVersionSupportingRetryableWrites <= this.getMongo().getMaxWireVersion();
+
+        const session = this.getDB().getSession();
+        if (serverSupportsRetryableWrites && session.getOptions().shouldRetryWrites() &&
+            session._serverSession.canRetryWrites(cmd)) {
+            cmd = session._serverSession.assignTransactionNumber(cmd);
+        }
     }
 
     var ret = this._db.runCommand(cmd);
@@ -1257,88 +1273,16 @@ DBCollection.prototype.isCapped = function() {
 //
 DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
     if (!(pipeline instanceof Array)) {
-        // support legacy varargs form. (Also handles db.foo.aggregate())
+        // Support legacy varargs form. Also handles db.foo.aggregate().
         pipeline = Array.from(arguments);
         aggregateOptions = {};
     } else if (aggregateOptions === undefined) {
         aggregateOptions = {};
     }
 
-    // Copy the aggregateOptions
-    var copy = Object.extend({}, aggregateOptions);
+    const cmdObj = this._makeCommand("aggregate", {pipeline: pipeline});
 
-    // Ensure handle crud API aggregateOptions
-    var keys = Object.keys(copy);
-
-    for (var i = 0; i < keys.length; i++) {
-        var name = keys[i];
-
-        if (name == 'batchSize') {
-            if (copy.cursor == null) {
-                copy.cursor = {};
-            }
-
-            copy.cursor.batchSize = copy['batchSize'];
-            delete copy['batchSize'];
-        } else if (name == 'useCursor') {
-            if (copy.cursor == null) {
-                copy.cursor = {};
-            }
-
-            delete copy['useCursor'];
-        }
-    }
-
-    // Assign the cleaned up options
-    aggregateOptions = copy;
-    // Create the initial command document
-    var cmd = {pipeline: pipeline};
-    Object.extend(cmd, aggregateOptions);
-
-    if (!('cursor' in cmd)) {
-        // implicitly use cursors
-        cmd.cursor = {};
-    }
-
-    // in a well formed pipeline, $out must be the last stage. If it isn't then the server
-    // will reject the pipeline anyway.
-    var hasOutStage = pipeline.length >= 1 && pipeline[pipeline.length - 1].hasOwnProperty("$out");
-
-    var doAgg = function(cmd) {
-        // if we don't have an out stage, we could run on a secondary
-        // so we need to attach readPreference
-        return hasOutStage ? this.runCommand("aggregate", cmd)
-                           : this.runReadCommand("aggregate", cmd);
-    }.bind(this);
-
-    var res = doAgg(cmd);
-
-    if (!res.ok && (res.code == 17020 || res.errmsg == "unrecognized field \"cursor") &&
-        !("cursor" in aggregateOptions)) {
-        // If the command failed because cursors aren't supported and the user didn't explicitly
-        // request a cursor, try again without requesting a cursor.
-        delete cmd.cursor;
-
-        res = doAgg(cmd);
-
-        if ('result' in res && !("cursor" in res)) {
-            // convert old-style output to cursor-style output
-            res.cursor = {ns: '', id: NumberLong(0)};
-            res.cursor.firstBatch = res.result;
-            delete res.result;
-        }
-    }
-
-    assert.commandWorked(res, "aggregate failed");
-
-    if ("cursor" in res) {
-        if (cmd["cursor"]["batchSize"] > 0) {
-            var batchSizeValue = cmd["cursor"]["batchSize"];
-        }
-        return new DBCommandCursor(res._mongo, res, batchSizeValue);
-    }
-
-    return res;
+    return this._db._runAggregate(cmdObj, aggregateOptions);
 };
 
 DBCollection.prototype.group = function(params) {
@@ -1492,7 +1436,7 @@ DBCollection.prototype.getShardDistribution = function() {
         return;
     }
 
-    var config = this.getMongo().getDB("config");
+    var config = this.getDB().getSiblingDB("config");
 
     var numChunks = 0;
 
@@ -1543,7 +1487,7 @@ DBCollection.prototype.getSplitKeysForChunks = function(chunkSize) {
         return;
     }
 
-    var config = this.getMongo().getDB("config");
+    var config = this.getDB().getSiblingDB("config");
 
     if (!chunkSize) {
         chunkSize = config.settings.findOne({_id: "chunksize"}).value;
@@ -1600,7 +1544,7 @@ DBCollection.prototype.getSplitKeysForChunks = function(chunkSize) {
         print("\nMost recent migration activity was on " + migration.ns + " at " + migration.time);
     }
 
-    var admin = this.getMongo().getDB("admin");
+    var admin = this.getDB().getSiblingDB("admin");
     var coll = this;
     var splitFunction = function() {
 

@@ -38,6 +38,7 @@
 #include "mongo/client/remote_command_targeter_factory_impl.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/keys_collection_manager.h"
+#include "mongo/db/keys_collection_manager_sharding.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/repl/replication_coordinator.h"
@@ -58,18 +59,19 @@
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
-#include "mongo/s/catalog/sharding_catalog_manager_impl.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/sharding_network_connection_hook.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/periodic_balancer_settings_refresher.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/net/sock.h"
 
 namespace mongo {
 
@@ -79,6 +81,14 @@ MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolHostTimeoutMS,
                                       int,
                                       ConnectionPool::kDefaultHostTimeout.count());
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMaxSize, int, -1);
+
+// By default, limit us to two concurrent pending connection attempts
+// in any one pool. Since pools are currently per-cpu, we still may
+// have something like 64 concurrent total connection attempts on a
+// modestly sized system. We could set it to one, but that seems too
+// restrictive.
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMaxConnecting, int, 2);
+
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolMinSize,
                                       int,
                                       static_cast<int>(ConnectionPool::kDefaultMinConns));
@@ -88,6 +98,9 @@ MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolRefreshRequirement
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(ShardingTaskExecutorPoolRefreshTimeoutMS,
                                       int,
                                       ConnectionPool::kDefaultRefreshTimeout.count());
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(KeysRotationIntervalSec,
+                                      int,
+                                      KeysCollectionManager::kKeyValidInterval.count());
 
 namespace {
 
@@ -95,23 +108,14 @@ using executor::NetworkInterface;
 using executor::NetworkInterfaceThreadPool;
 using executor::TaskExecutorPool;
 using executor::ThreadPoolTaskExecutor;
-using executor::ShardingTaskExecutor;
 
 static constexpr auto kRetryInterval = Seconds{2};
-const std::string kKeyManagerPurposeString = "SigningClusterTime";
+const std::string kKeyManagerPurposeString = "HMAC";
 const Seconds kKeyValidInterval(3 * 30 * 24 * 60 * 60);  // ~3 months
 
-auto makeTaskExecutor(std::unique_ptr<NetworkInterface> net) {
-    auto netPtr = net.get();
-    auto executor = stdx::make_unique<ThreadPoolTaskExecutor>(
-        stdx::make_unique<NetworkInterfaceThreadPool>(netPtr), std::move(net));
-    return stdx::make_unique<ShardingTaskExecutor>(std::move(executor));
-}
-
 std::unique_ptr<ShardingCatalogClient> makeCatalogClient(ServiceContext* service,
-                                                         ShardRegistry* shardRegistry,
                                                          StringData distLockProcessId) {
-    auto distLockCatalog = stdx::make_unique<DistLockCatalogImpl>(shardRegistry);
+    auto distLockCatalog = stdx::make_unique<DistLockCatalogImpl>();
     auto distLockManager =
         stdx::make_unique<ReplSetDistLockManager>(service,
                                                   distLockProcessId,
@@ -122,14 +126,14 @@ std::unique_ptr<ShardingCatalogClient> makeCatalogClient(ServiceContext* service
     return stdx::make_unique<ShardingCatalogClientImpl>(std::move(distLockManager));
 }
 
-std::unique_ptr<TaskExecutorPool> makeTaskExecutorPool(
+std::unique_ptr<TaskExecutorPool> makeShardingTaskExecutorPool(
     std::unique_ptr<NetworkInterface> fixedNet,
     rpc::ShardingEgressMetadataHookBuilder metadataHookBuilder,
     ConnectionPool::Options connPoolOptions) {
     std::vector<std::unique_ptr<executor::TaskExecutor>> executors;
 
     for (size_t i = 0; i < TaskExecutorPool::getSuggestedPoolSize(); ++i) {
-        auto exec = makeTaskExecutor(executor::makeNetworkInterface(
+        auto exec = makeShardingTaskExecutor(executor::makeNetworkInterface(
             "NetworkInterfaceASIO-TaskExecutorPool-" + std::to_string(i),
             stdx::make_unique<ShardingNetworkConnectionHook>(),
             metadataHookBuilder(),
@@ -139,7 +143,7 @@ std::unique_ptr<TaskExecutorPool> makeTaskExecutorPool(
     }
 
     // Add executor used to perform non-performance critical work.
-    auto fixedExec = makeTaskExecutor(std::move(fixedNet));
+    auto fixedExec = makeShardingTaskExecutor(std::move(fixedNet));
 
     auto executorPool = stdx::make_unique<TaskExecutorPool>();
     executorPool->addExecutors(std::move(executors), std::move(fixedExec));
@@ -148,7 +152,14 @@ std::unique_ptr<TaskExecutorPool> makeTaskExecutorPool(
 
 }  // namespace
 
-const StringData kDistLockProcessIdForConfigServer("ConfigServer");
+std::unique_ptr<executor::TaskExecutor> makeShardingTaskExecutor(
+    std::unique_ptr<NetworkInterface> net) {
+    auto netPtr = net.get();
+    auto executor = stdx::make_unique<ThreadPoolTaskExecutor>(
+        stdx::make_unique<NetworkInterfaceThreadPool>(netPtr), std::move(net));
+
+    return stdx::make_unique<executor::ShardingTaskExecutor>(std::move(executor));
+}
 
 std::string generateDistLockProcessId(OperationContext* opCtx) {
     std::unique_ptr<SecureRandom> rng(SecureRandom::create());
@@ -165,8 +176,7 @@ Status initializeGlobalShardingState(OperationContext* opCtx,
                                      StringData distLockProcessId,
                                      std::unique_ptr<ShardFactory> shardFactory,
                                      std::unique_ptr<CatalogCache> catalogCache,
-                                     rpc::ShardingEgressMetadataHookBuilder hookBuilder,
-                                     ShardingCatalogManagerBuilder catalogManagerBuilder) {
+                                     rpc::ShardingEgressMetadataHookBuilder hookBuilder) {
     if (configCS.type() == ConnectionString::INVALID) {
         return {ErrorCodes::BadValue, "Unrecognized connection string."};
     }
@@ -179,6 +189,9 @@ Status initializeGlobalShardingState(OperationContext* opCtx,
     connPoolOptions.maxConnections = (ShardingTaskExecutorPoolMaxSize != -1)
         ? ShardingTaskExecutorPoolMaxSize
         : ConnectionPool::kDefaultMaxConns;
+    connPoolOptions.maxConnecting = (ShardingTaskExecutorPoolMaxConnecting != -1)
+        ? ShardingTaskExecutorPoolMaxConnecting
+        : ConnectionPool::kDefaultMaxConnecting;
     connPoolOptions.minConnections = ShardingTaskExecutorPoolMinSize;
     connPoolOptions.refreshRequirement = Milliseconds(ShardingTaskExecutorPoolRefreshRequirementMS);
     connPoolOptions.refreshTimeout = Milliseconds(ShardingTaskExecutorPoolRefreshTimeoutMS);
@@ -189,64 +202,54 @@ Status initializeGlobalShardingState(OperationContext* opCtx,
                                        hookBuilder(),
                                        connPoolOptions);
     auto networkPtr = network.get();
-    auto executorPool = makeTaskExecutorPool(std::move(network), hookBuilder, connPoolOptions);
+    auto executorPool =
+        makeShardingTaskExecutorPool(std::move(network), hookBuilder, connPoolOptions);
     executorPool->startup();
 
-    auto shardRegistry(stdx::make_unique<ShardRegistry>(std::move(shardFactory), configCS));
-
-    auto catalogClient =
-        makeCatalogClient(opCtx->getServiceContext(), shardRegistry.get(), distLockProcessId);
-
-    auto rawCatalogClient = catalogClient.get();
-
-    std::unique_ptr<ShardingCatalogManager> catalogManager = catalogManagerBuilder(
-        rawCatalogClient,
-        makeTaskExecutor(executor::makeNetworkInterface("AddShard-TaskExecutor")));
-    auto rawCatalogManager = catalogManager.get();
-
-    auto grid = Grid::get(opCtx);
+    auto const grid = Grid::get(opCtx);
     grid->init(
-        std::move(catalogClient),
-        std::move(catalogManager),
+        makeCatalogClient(opCtx->getServiceContext(), distLockProcessId),
         std::move(catalogCache),
-        std::move(shardRegistry),
+        stdx::make_unique<ShardRegistry>(std::move(shardFactory), configCS),
         stdx::make_unique<ClusterCursorManager>(getGlobalServiceContext()->getPreciseClockSource()),
         stdx::make_unique<BalancerConfiguration>(),
         std::move(executorPool),
         networkPtr);
 
-    // must be started once the grid is initialized
+    // The shard registry must be started once the grid is initialized
     grid->shardRegistry()->startup(opCtx);
 
-    auto status = rawCatalogClient->startup();
-    if (!status.isOK()) {
-        return status;
-    }
+    // The catalog client must be started after the shard registry has been started up
+    grid->catalogClient()->startup();
 
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        // Only config servers get a ShardingCatalogManager.
-        status = rawCatalogManager->startup();
-        if (!status.isOK()) {
-            return status;
-        }
-    }
-
-    auto keyManager = stdx::make_unique<KeysCollectionManager>(
-        kKeyManagerPurposeString, grid->catalogClient(opCtx), kKeyValidInterval);
+    auto keyManager = std::make_shared<KeysCollectionManagerSharding>(
+        kKeyManagerPurposeString, grid->catalogClient(), Seconds(KeysRotationIntervalSec));
     keyManager->startMonitoring(opCtx->getServiceContext());
 
     LogicalTimeValidator::set(opCtx->getServiceContext(),
-                              stdx::make_unique<LogicalTimeValidator>(std::move(keyManager)));
+                              stdx::make_unique<LogicalTimeValidator>(keyManager));
+    opCtx->getServiceContext()->setKeyManager(keyManager);
 
     auto replCoord = repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer &&
         replCoord->getMemberState().primary()) {
         LogicalTimeValidator::get(opCtx)->enableKeyGenerator(opCtx, true);
+    } else if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
+        // Determine primary/secondary/standalone state in order to properly set up the refresher.
+        bool isReplSet =
+            replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
+        bool isStandaloneOrPrimary =
+            !isReplSet || (repl::ReplicationCoordinator::get(opCtx)->getMemberState() ==
+                           repl::MemberState::RS_PRIMARY);
+
+        PeriodicBalancerSettingsRefresher::create(opCtx->getServiceContext(),
+                                                  isStandaloneOrPrimary);
     }
+
     return Status::OK();
 }
 
-Status reloadShardRegistryUntilSuccess(OperationContext* opCtx) {
+Status waitForShardRegistryReload(OperationContext* opCtx) {
     if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         return Status::OK();
     }

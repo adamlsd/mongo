@@ -39,11 +39,11 @@ namespace mongo {
 class OperationContext;
 class ServiceContext;
 class KeysCollectionDocument;
-class KeysCollectionManager;
+class KeysCollectionManagerSharding;
 
 /**
- * This is responsible for signing logical times that can be used to sent to other servers and
- * verifying signatures of signed logical times.
+ * This is responsible for signing cluster times that can be used to sent to other servers and
+ * verifying signatures of signed cluster times.
  */
 class LogicalTimeValidator {
 public:
@@ -52,7 +52,11 @@ public:
     static LogicalTimeValidator* get(OperationContext* ctx);
     static void set(ServiceContext* service, std::unique_ptr<LogicalTimeValidator> validator);
 
-    explicit LogicalTimeValidator(std::unique_ptr<KeysCollectionManager> keyManager);
+    /**
+     * Constructs a new LogicalTimeValidator that uses the given key manager. The passed-in
+     * key manager must outlive this object.
+     */
+    explicit LogicalTimeValidator(std::shared_ptr<KeysCollectionManagerSharding> keyManager);
 
     /**
      * Tries to sign the newTime with a valid signature. Can return an empty signature and keyId
@@ -91,13 +95,24 @@ public:
      */
     static bool isAuthorizedToAdvanceClock(OperationContext* opCtx);
 
+    /**
+     * Returns true if the server should gossip, sign, and validate cluster times. False until there
+     * are keys in the config server.
+     */
+    bool shouldGossipLogicalTime();
+
+    /**
+     * Makes the KeysCollectionManager refresh synchronously.
+     */
+    void forceKeyRefreshNow(OperationContext* opCtx);
+
 private:
     SignedLogicalTime _getProof(const KeysCollectionDocument& keyDoc, LogicalTime newTime);
 
     stdx::mutex _mutex;
     SignedLogicalTime _lastSeenValidTime;
     TimeProofService _timeProofService;
-    std::unique_ptr<KeysCollectionManager> _keyManager;
+    std::shared_ptr<KeysCollectionManagerSharding> _keyManager;
 };
 
 }  // namespace mongo

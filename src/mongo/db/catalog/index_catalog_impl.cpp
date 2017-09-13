@@ -55,7 +55,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/matcher/expression.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/query/collation/collation_spec.h"
@@ -432,7 +431,7 @@ void IndexCatalogImpl::IndexBuildBlock::fail() {
     invariant(entry == _entry);
 
     if (entry) {
-        IndexCatalogImpl::_dropIndex(_catalog, _opCtx, entry);
+        IndexCatalogImpl::_dropIndex(_catalog, _opCtx, entry).transitional_ignore();
     } else {
         IndexCatalog::_deleteIndexFromDisk(_catalog, _opCtx, _indexName, _indexNamespace);
     }
@@ -590,12 +589,17 @@ Status IndexCatalogImpl::_isSpecOk(OperationContext* opCtx, const BSONObj& spec)
     if (name.empty())
         return Status(ErrorCodes::CannotCreateIndex, "index name cannot be empty");
 
-    const std::string indexNamespace = IndexDescriptor::makeIndexNamespace(nss.ns(), name);
-    if (indexNamespace.length() > NamespaceString::MaxNsLen)
-        return Status(ErrorCodes::CannotCreateIndex,
-                      str::stream() << "namespace name generated from index name \""
-                                    << indexNamespace
-                                    << "\" is too long (127 byte max)");
+    // Drop pending collections are internal to the server and will not be exported to another
+    // storage engine. The indexes contained in these collections are not subject to the same
+    // namespace length constraints as the ones in created by users.
+    if (!nss.isDropPendingNamespace()) {
+        auto indexNamespace = IndexDescriptor::makeIndexNamespace(nss.ns(), name);
+        if (indexNamespace.length() > NamespaceString::MaxNsLen)
+            return Status(ErrorCodes::CannotCreateIndex,
+                          str::stream() << "namespace name generated from index name \""
+                                        << indexNamespace
+                                        << "\" is too long (127 byte max)");
+    }
 
     const BSONObj key = spec.getObjectField("key");
     const Status keyStatus = index_key_validate::validateKeyPattern(key, indexVersion);
@@ -662,8 +666,8 @@ Status IndexCatalogImpl::_isSpecOk(OperationContext* opCtx, const BSONObj& spec)
         }
 
         // The collator must outlive the constructed MatchExpression.
-        StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-            filterElement.Obj(), ExtensionsCallbackDisallowExtensions(), collator.get());
+        StatusWithMatchExpression statusWithMatcher =
+            MatchExpressionParser::parse(filterElement.Obj(), collator.get());
         if (!statusWithMatcher.isOK()) {
             return statusWithMatcher.getStatus();
         }
@@ -890,7 +894,7 @@ void IndexCatalogImpl::dropAllIndexes(OperationContext* opCtx,
         LOG(1) << "\t dropAllIndexes dropping: " << desc->toString();
         IndexCatalogEntry* entry = _entries.find(desc);
         invariant(entry);
-        _dropIndex(opCtx, entry);
+        _dropIndex(opCtx, entry).transitional_ignore();
 
         if (droppedIndexes != nullptr) {
             droppedIndexes->emplace(desc->indexName(), desc->infoObj());
@@ -1403,7 +1407,7 @@ void IndexCatalogImpl::unindexRecord(OperationContext* opCtx,
 
         // If it's a background index, we DO NOT want to log anything.
         bool logIfError = entry->isReady(opCtx) ? !noWarn : false;
-        _unindexRecord(opCtx, entry, obj, loc, logIfError, keysDeletedOut);
+        _unindexRecord(opCtx, entry, obj, loc, logIfError, keysDeletedOut).transitional_ignore();
     }
 }
 

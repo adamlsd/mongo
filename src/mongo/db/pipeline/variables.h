@@ -35,10 +35,10 @@
 
 namespace mongo {
 
-/// The state used as input and working space for Expressions.
+/**
+ * The state used as input and working space for Expressions.
+ */
 class Variables {
-    MONGO_DISALLOW_COPYING(Variables);
-
 public:
     // Each unique variable is assigned a unique id of this type. Negative ids are reserved for
     // system variables and non-negative ids are allocated for user variables.
@@ -64,6 +64,10 @@ public:
     static void uassertValidNameForUserWrite(StringData varName);
     static void uassertValidNameForUserRead(StringData varName);
 
+    static bool isUserDefinedVariable(Variables::Id id) {
+        return id >= 0;
+    }
+
     // Ids for builtin variables.
     static constexpr Variables::Id kRootId = Id(-1);
     static constexpr Variables::Id kRemoveId = Id(-2);
@@ -84,6 +88,20 @@ public:
     Value getValue(Variables::Id id, const Document& root) const;
 
     /**
+     * Gets the value of a user-defined variable. Should only be called when we know 'id' represents
+     * a user-defined variable.
+     */
+    Value getUserDefinedValue(Variables::Id id) const;
+
+    /**
+     * Returns whether a value for 'id' has been stored in this Variables instance.
+     */
+    bool hasUserDefinedValue(Variables::Id id) const {
+        invariant(isUserDefinedVariable(id));
+        return _valueList.size() > static_cast<size_t>(id);
+    }
+
+    /**
      * Returns Document() for non-document values, but otherwise identical to getValue(). If the
      * 'id' provided represents the special ROOT variable, then we return 'root'.
      */
@@ -92,7 +110,6 @@ public:
     IdGenerator* useIdGenerator() {
         return &_idGenerator;
     }
-
 
 private:
     IdGenerator _idGenerator;
@@ -127,6 +144,16 @@ public:
      * Returns the current Id for a variable. uasserts if the variable isn't defined.
      */
     Variables::Id getVariable(StringData name) const;
+
+    /**
+     * Return a copy of this VariablesParseState. Will replace the copy's '_idGenerator' pointer
+     * with 'idGenerator'.
+     */
+    VariablesParseState copyWith(Variables::IdGenerator* idGenerator) const {
+        VariablesParseState vps = *this;
+        vps._idGenerator = idGenerator;
+        return vps;
+    }
 
 private:
     // Not owned here.

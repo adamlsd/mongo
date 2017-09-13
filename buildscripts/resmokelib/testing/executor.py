@@ -14,14 +14,13 @@ from . import report as _report
 from . import testcases
 from .. import config as _config
 from .. import errors
-from .. import logging
 from .. import utils
 from ..utils import queue as _queue
 
 
-class TestGroupExecutor(object):
+class TestSuiteExecutor(object):
     """
-    Executes a test group.
+    Executes a test suite.
 
     Responsible for setting up and tearing down the fixtures that the
     tests execute against.
@@ -31,35 +30,50 @@ class TestGroupExecutor(object):
 
     def __init__(self,
                  exec_logger,
-                 test_group,
+                 suite,
                  config=None,
                  fixture=None,
                  hooks=None):
         """
-        Initializes the TestGroupExecutor with the test group to run.
+        Initializes the TestSuiteExecutor with the test suite to run.
         """
+        self.logger = exec_logger
 
-        # Build a logger for executing this group of tests.
-        self.testgroup_logger = exec_logger.new_testgroup_logger(test_group.test_kind)
+        if _config.SHELL_CONN_STRING is not None:
+            # Specifying the shellConnString command line option should override the fixture
+            # specified in the YAML configuration to be the no-op fixture.
+            self.fixture_config = {"class": fixtures.NOOP_FIXTURE_CLASS}
+        else:
+            self.fixture_config = fixture
 
-        self.fixture_config = fixture
         self.hooks_config = utils.default_if_none(hooks, [])
         self.test_config = utils.default_if_none(config, {})
 
-        self._test_group = test_group
+        self._suite = suite
+
+        # Only start as many jobs as we need. Note this means that the number of jobs we run may not
+        # actually be _config.JOBS.
+        jobs_to_start = _config.JOBS
+        num_tests = len(suite.tests)
+
+        if num_tests < jobs_to_start:
+            self.logger.info("Reducing the number of jobs from %d to %d since there are only %d "
+                             "test(s) to run.",
+                _config.JOBS, num_tests, num_tests)
+            jobs_to_start = num_tests
 
         # Must be done after getting buildlogger configuration.
-        self._jobs = [self._make_job(job_num) for job_num in xrange(_config.JOBS)]
+        self._jobs = [self._make_job(job_num) for job_num in xrange(jobs_to_start)]
 
     def run(self):
         """
-        Executes the test group.
+        Executes the test suite.
 
         Any exceptions that occur during setting up or tearing down a
         fixture are propagated.
         """
 
-        self.testgroup_logger.info("Starting execution of %ss...", self._test_group.test_kind)
+        self.logger.info("Starting execution of %ss...", self._suite.test_kind)
 
         return_code = 0
         teardown_flag = None
@@ -73,7 +87,7 @@ class TestGroupExecutor(object):
                 test_queue = self._make_test_queue()
 
                 partial_reports = [job.report for job in self._jobs]
-                self._test_group.record_start(partial_reports)
+                self._suite.record_test_start(partial_reports)
 
                 # Have the Job threads destroy their fixture during the final repetition after they
                 # finish running their last test. This avoids having a large number of processes
@@ -82,7 +96,7 @@ class TestGroupExecutor(object):
                 teardown_flag = threading.Event() if num_repeats == 1 else None
                 (report, interrupted) = self._run_tests(test_queue, teardown_flag)
 
-                self._test_group.record_end(report)
+                self._suite.record_test_end(report)
 
                 # If the user triggered a KeyboardInterrupt, then we should stop.
                 if interrupted:
@@ -92,8 +106,8 @@ class TestGroupExecutor(object):
                     return_code = 2
 
                 sb = []  # String builder.
-                self._test_group.summarize_latest(sb)
-                self.testgroup_logger.info("Summary: %s", "\n    ".join(sb))
+                self._suite.summarize_latest(sb)
+                self.logger.info("Summary: %s", "\n    ".join(sb))
 
                 if not report.wasSuccessful():
                     return_code = 1
@@ -108,7 +122,7 @@ class TestGroupExecutor(object):
             if not teardown_flag:
                 if not self._teardown_fixtures():
                     return_code = 2
-            self._test_group.return_code = return_code
+            self._suite.return_code = return_code
 
     def _setup_fixtures(self):
         """
@@ -118,7 +132,7 @@ class TestGroupExecutor(object):
             try:
                 job.fixture.setup()
             except:
-                self.testgroup_logger.exception(
+                self.logger.exception(
                     "Encountered an error while setting up %s.", job.fixture)
                 return False
 
@@ -127,7 +141,7 @@ class TestGroupExecutor(object):
             try:
                 job.fixture.await_ready()
             except:
-                self.testgroup_logger.exception(
+                self.logger.exception(
                     "Encountered an error while waiting for %s to be ready", job.fixture)
                 return False
         return True
@@ -165,7 +179,7 @@ class TestGroupExecutor(object):
             while not joined:
                 # Need to pass a timeout to join() so that KeyboardInterrupt exceptions
                 # are propagated.
-                joined = test_queue.join(TestGroupExecutor._TIMEOUT)
+                joined = test_queue.join(TestSuiteExecutor._TIMEOUT)
         except (KeyboardInterrupt, SystemExit):
             interrupt_flag.set()
             user_interrupted = True
@@ -179,7 +193,7 @@ class TestGroupExecutor(object):
 
         # We cannot return 'interrupt_flag.is_set()' because the interrupt flag can be set by a Job
         # instance if a test fails and it decides to drain the queue. We only want to raise a
-        # StopExecution exception in TestGroupExecutor.run() if the user triggered the interrupt.
+        # StopExecution exception in TestSuiteExecutor.run() if the user triggered the interrupt.
         return (combined_report, user_interrupted)
 
     def _teardown_fixtures(self):
@@ -193,11 +207,10 @@ class TestGroupExecutor(object):
         for job in self._jobs:
             try:
                 if not job.fixture.teardown(finished=True):
-                    self.testgroup_logger.warn("Teardown of %s was not successful.", job.fixture)
+                    self.logger.warn("Teardown of %s was not successful.", job.fixture)
                     success = False
             except:
-                self.testgroup_logger.exception("Encountered an error while tearing down %s.",
-                                                job.fixture)
+                self.logger.exception("Encountered an error while tearing down %s.", job.fixture)
                 success = False
         return success
 
@@ -217,7 +230,7 @@ class TestGroupExecutor(object):
 
         return fixtures.make_fixture(fixture_class, fixture_logger, job_num, **fixture_config)
 
-    def _make_hooks(self, job_num, fixture, job_logger):
+    def _make_hooks(self, job_num, fixture):
         """
         Creates the custom behaviors for the job's fixture.
         """
@@ -228,7 +241,7 @@ class TestGroupExecutor(object):
             behavior_config = behavior_config.copy()
             behavior_class = behavior_config.pop("class")
 
-            hook_logger = job_logger.new_hook_logger(behavior_class, job_num)
+            hook_logger = self.logger.new_hook_logger(behavior_class, job_num)
             behavior = _hooks.make_custom_behavior(behavior_class,
                                                    hook_logger,
                                                    fixture,
@@ -242,10 +255,10 @@ class TestGroupExecutor(object):
         Returns a Job instance with its own fixture, hooks, and test
         report.
         """
-        job_logger = self.testgroup_logger.new_job_logger(job_num)
+        job_logger = self.logger.new_job_logger(self._suite.test_kind, job_num)
 
         fixture = self._make_fixture(job_num, job_logger)
-        hooks = self._make_hooks(job_num, fixture, job_logger)
+        hooks = self._make_hooks(job_num, fixture)
 
         report = _report.TestReport(job_logger)
 
@@ -259,18 +272,18 @@ class TestGroupExecutor(object):
         that the test cases can be dispatched to multiple threads.
         """
 
-        test_kind_logger = self.testgroup_logger.new_testqueue_logger()
+        test_queue_logger = self.logger.new_testqueue_logger(self._suite.test_kind)
         # Put all the test cases in a queue.
         queue = _queue.Queue()
-        for test_name in self._test_group.tests:
-            test_case = testcases.make_test_case(self._test_group.test_kind,
-                                                 test_kind_logger,
+        for test_name in self._suite.tests:
+            test_case = testcases.make_test_case(self._suite.test_kind,
+                                                 test_queue_logger,
                                                  test_name,
                                                  **self.test_config)
             queue.put(test_case)
 
         # Add sentinel value for each job to indicate when there are no more items to process.
-        for _ in xrange(_config.JOBS):
+        for _ in xrange(len(self._jobs)):
             queue.put(None)
 
         return queue

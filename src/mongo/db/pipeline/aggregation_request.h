@@ -50,7 +50,9 @@ public:
     static constexpr StringData kCommandName = "aggregate"_sd;
     static constexpr StringData kCursorName = "cursor"_sd;
     static constexpr StringData kBatchSizeName = "batchSize"_sd;
-    static constexpr StringData kFromRouterName = "fromRouter"_sd;
+    static constexpr StringData kFromMongosName = "fromMongos"_sd;
+    static constexpr StringData kNeedsMergeName = "needsMerge"_sd;
+    static constexpr StringData kNeedsMerge34Name = "fromRouter"_sd;
     static constexpr StringData kPipelineName = "pipeline"_sd;
     static constexpr StringData kCollationName = "collation"_sd;
     static constexpr StringData kExplainName = "explain"_sd;
@@ -79,6 +81,22 @@ public:
         NamespaceString nss,
         const BSONObj& cmdObj,
         boost::optional<ExplainOptions::Verbosity> explainVerbosity = boost::none);
+
+    /**
+     * Convenience overload which constructs the request's NamespaceString from the given database
+     * name and command object.
+     */
+    static StatusWith<AggregationRequest> parseFromBSON(
+        const std::string& dbName,
+        const BSONObj& cmdObj,
+        boost::optional<ExplainOptions::Verbosity> explainVerbosity = boost::none);
+
+    /*
+     * The first field in 'cmdObj' must be a string representing a valid collection name, or the
+     * number 1. In the latter case, returns a reserved namespace that does not represent a user
+     * collection. See 'NamespaceString::makeCollectionlessAggregateNSS()'.
+     */
+    static NamespaceString parseNs(const std::string& dbname, const BSONObj& cmdObj);
 
     /**
      * Constructs an AggregationRequest over the given namespace with the given pipeline. All
@@ -115,8 +133,26 @@ public:
         return _pipeline;
     }
 
-    bool isFromRouter() const {
-        return _fromRouter;
+    /**
+     * Returns true if this request originated from a mongoS.
+     */
+    bool isFromMongos() const {
+        return _fromMongos;
+    }
+
+    /**
+     * Returns true if this request originated from a 3.4 mongos.
+     */
+    bool isFrom34Mongos() const {
+        return _from34Mongos;
+    }
+
+    /**
+     * Returns true if this request represents the shards part of a split pipeline, and should
+     * produce mergeable output.
+     */
+    bool needsMerge() const {
+        return _needsMerge;
     }
 
     bool shouldAllowDiskUse() const {
@@ -190,8 +226,16 @@ public:
         _allowDiskUse = allowDiskUse;
     }
 
-    void setFromRouter(bool isFromRouter) {
-        _fromRouter = isFromRouter;
+    void setFromMongos(bool isFromMongos) {
+        _fromMongos = isFromMongos;
+    }
+
+    void setFrom34Mongos(bool isFrom34Mongos) {
+        _from34Mongos = isFrom34Mongos;
+    }
+
+    void setNeedsMerge(bool needsMerge) {
+        _needsMerge = needsMerge;
     }
 
     void setBypassDocumentValidation(bool shouldBypassDocumentValidation) {
@@ -244,8 +288,15 @@ private:
     boost::optional<ExplainOptions::Verbosity> _explainMode;
 
     bool _allowDiskUse = false;
-    bool _fromRouter = false;
+    bool _fromMongos = false;
+    bool _needsMerge = false;
     bool _bypassDocumentValidation = false;
+
+    // We track whether the aggregation request came from a 3.4 mongos. If so, the merge may occur
+    // on a 3.4 shard (which does not understand sort key metadata), and we should not serialize the
+    // sort key.
+    // TODO SERVER-30924: remove this.
+    bool _from34Mongos = false;
 
     // A user-specified maxTimeMS limit, or a value of '0' if not specified.
     unsigned int _maxTimeMS = 0;

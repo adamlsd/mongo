@@ -113,7 +113,8 @@ void updateShardIdentityConfigStringCB(const string& setName, const string& newC
 }  // namespace
 
 ShardingState::ShardingState()
-    : _initializationState(static_cast<uint32_t>(InitializationState::kNew)),
+    : _chunkSplitter(stdx::make_unique<ChunkSplitter>()),
+      _initializationState(static_cast<uint32_t>(InitializationState::kNew)),
       _initializationStatus(Status(ErrorCodes::InternalError, "Uninitialized value")),
       _globalInit(&initializeGlobalShardingStateForMongod) {}
 
@@ -129,6 +130,11 @@ ShardingState* ShardingState::get(OperationContext* operationContext) {
 
 bool ShardingState::enabled() const {
     return _getInitializationState() == InitializationState::kInitialized;
+}
+
+void ShardingState::setEnabledForTest(const std::string& shardName) {
+    _setInitializationState(InitializationState::kInitialized);
+    _shardName = shardName;
 }
 
 Status ShardingState::canAcceptShardedCommands() const {
@@ -159,8 +165,8 @@ string ShardingState::getShardName() {
 void ShardingState::shutDown(OperationContext* opCtx) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     if (enabled()) {
-        grid.getExecutorPool()->shutdownAndJoin();
-        grid.catalogClient(opCtx)->shutDown(opCtx);
+        Grid::get(opCtx)->getExecutorPool()->shutdownAndJoin();
+        Grid::get(opCtx)->catalogClient()->shutDown(opCtx);
     }
 }
 
@@ -178,7 +184,7 @@ Status ShardingState::updateConfigServerOpTimeFromMetadata(OperationContext* opC
             return Status(ErrorCodes::Unauthorized, "Unauthorized to update config opTime");
         }
 
-        grid.advanceConfigOpTime(*opTime);
+        Grid::get(opCtx)->advanceConfigOpTime(*opTime);
     }
 
     return Status::OK();
@@ -197,6 +203,18 @@ CollectionShardingState* ShardingState::getNS(const std::string& ns, OperationCo
     }
 
     return it->second.get();
+}
+
+ChunkSplitter* ShardingState::getChunkSplitter() {
+    return _chunkSplitter.get();
+}
+
+void ShardingState::initiateChunkSplitter() {
+    _chunkSplitter->initiateChunkSplitter();
+}
+
+void ShardingState::interruptChunkSplitter() {
+    _chunkSplitter->interruptChunkSplitter();
 }
 
 void ShardingState::markCollectionsNotShardedAtStepdown() {
@@ -293,7 +311,8 @@ Status ShardingState::initializeFromShardIdentity(OperationContext* opCtx,
         invariant(!_shardName.empty());
         fassert(40372, _shardName == shardIdentity.getShardName());
 
-        auto prevConfigsvrConnStr = grid.shardRegistry()->getConfigServerConnectionString();
+        auto prevConfigsvrConnStr =
+            Grid::get(opCtx)->shardRegistry()->getConfigServerConnectionString();
         invariant(prevConfigsvrConnStr.type() == ConnectionString::SET);
         fassert(40373, prevConfigsvrConnStr.getSetName() == configSvrConnStr.getSetName());
 
@@ -319,7 +338,8 @@ Status ShardingState::initializeFromShardIdentity(OperationContext* opCtx,
                 &ShardRegistry::replicaSetChangeShardRegistryUpdateHook);
             ReplicaSetMonitor::setAsynchronousConfigChangeHook(&updateShardIdentityConfigStringCB);
 
-            // Determine primary/secondary/standalone state in order to set it on the CatalogCache.
+            // Determine primary/secondary/standalone state in order to properly initialize sharding
+            // components.
             auto replCoord = repl::ReplicationCoordinator::get(opCtx);
             bool isReplSet =
                 replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
@@ -327,7 +347,8 @@ Status ShardingState::initializeFromShardIdentity(OperationContext* opCtx,
                 !isReplSet || (repl::ReplicationCoordinator::get(opCtx)->getMemberState() ==
                                repl::MemberState::RS_PRIMARY);
 
-            Grid::get(opCtx)->catalogCache()->initializeReplicaSetRole(isStandaloneOrPrimary);
+            CatalogCacheLoader::get(opCtx).initializeReplicaSetRole(isStandaloneOrPrimary);
+            _chunkSplitter->setReplicaSetMode(isStandaloneOrPrimary);
 
             log() << "initialized sharding components for "
                   << (isStandaloneOrPrimary ? "primary" : "secondary") << " node.";
@@ -339,7 +360,6 @@ Status ShardingState::initializeFromShardIdentity(OperationContext* opCtx,
         }
         _shardName = shardIdentity.getShardName();
         _clusterId = shardIdentity.getClusterId();
-
 
         return status;
     } catch (const DBException& ex) {
@@ -412,7 +432,7 @@ StatusWith<bool> ShardingState::initializeShardingAwarenessIfNeeded(OperationCon
                                  "queryableBackupMode. If not in queryableBackupMode, you can edit "
                                  "the shardIdentity document by starting the server *without* "
                                  "--shardsvr, manually updating the shardIdentity document in the "
-                              << NamespaceString::kConfigCollectionNamespace.toString()
+                              << NamespaceString::kServerConfigurationNamespace.toString()
                               << " collection, and restarting the server with --shardsvr."};
         }
 
@@ -420,7 +440,8 @@ StatusWith<bool> ShardingState::initializeShardingAwarenessIfNeeded(OperationCon
         BSONObj shardIdentityBSON;
         bool foundShardIdentity = false;
         try {
-            AutoGetCollection autoColl(opCtx, NamespaceString::kConfigCollectionNamespace, MODE_IS);
+            AutoGetCollection autoColl(
+                opCtx, NamespaceString::kServerConfigurationNamespace, MODE_IS);
             foundShardIdentity = Helpers::findOne(opCtx,
                                                   autoColl.getCollection(),
                                                   BSON("_id" << ShardIdentityType::IdName),
@@ -433,7 +454,7 @@ StatusWith<bool> ShardingState::initializeShardingAwarenessIfNeeded(OperationCon
             if (!foundShardIdentity) {
                 warning() << "Started with --shardsvr, but no shardIdentity document was found on "
                              "disk in "
-                          << NamespaceString::kConfigCollectionNamespace
+                          << NamespaceString::kServerConfigurationNamespace
                           << ". This most likely means this server has not yet been added to a "
                              "sharded cluster.";
                 return false;
@@ -459,7 +480,7 @@ StatusWith<bool> ShardingState::initializeShardingAwarenessIfNeeded(OperationCon
             if (!shardIdentityBSON.isEmpty()) {
                 warning() << "Not started with --shardsvr, but a shardIdentity document was found "
                              "on disk in "
-                          << NamespaceString::kConfigCollectionNamespace << ": "
+                          << NamespaceString::kServerConfigurationNamespace << ": "
                           << shardIdentityBSON;
             }
             return false;
@@ -489,23 +510,7 @@ ChunkVersion ShardingState::_refreshMetadata(OperationContext* opCtx, const Name
             return nullptr;
         }
 
-        RangeMap shardChunksMap =
-            SimpleBSONObjComparator::kInstance.makeBSONObjIndexedMap<CachedChunkInfo>();
-
-        for (const auto& chunkMapEntry : cm->chunkMap()) {
-            const auto& chunk = chunkMapEntry.second;
-
-            if (chunk->getShardId() != shardId)
-                continue;
-
-            shardChunksMap.emplace(chunk->getMin(),
-                                   CachedChunkInfo(chunk->getMax(), chunk->getLastmod()));
-        }
-
-        return stdx::make_unique<CollectionMetadata>(cm->getShardKeyPattern().toBSON(),
-                                                     cm->getVersion(),
-                                                     cm->getVersion(shardId),
-                                                     std::move(shardChunksMap));
+        return stdx::make_unique<CollectionMetadata>(cm, shardId);
     }();
 
     // Exclusive collection lock needed since we're now changing the metadata
@@ -548,7 +553,7 @@ void ShardingState::appendInfo(OperationContext* opCtx, BSONObjBuilder& builder)
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     builder.append("configServer",
-                   grid.shardRegistry()->getConfigServerConnectionString().toString());
+                   Grid::get(opCtx)->shardRegistry()->getConfigServerConnectionString().toString());
     builder.append("shardName", _shardName);
     builder.append("clusterId", _clusterId);
 
@@ -583,14 +588,15 @@ Status ShardingState::updateShardIdentityConfigString(OperationContext* opCtx,
                                                       const std::string& newConnectionString) {
     BSONObj updateObj(ShardIdentityType::createConfigServerUpdateObject(newConnectionString));
 
-    UpdateRequest updateReq(NamespaceString::kConfigCollectionNamespace);
+    UpdateRequest updateReq(NamespaceString::kServerConfigurationNamespace);
     updateReq.setQuery(BSON("_id" << ShardIdentityType::IdName));
     updateReq.setUpdates(updateObj);
-    UpdateLifecycleImpl updateLifecycle(NamespaceString::kConfigCollectionNamespace);
+    UpdateLifecycleImpl updateLifecycle(NamespaceString::kServerConfigurationNamespace);
     updateReq.setLifecycle(&updateLifecycle);
 
     try {
-        AutoGetOrCreateDb autoDb(opCtx, NamespaceString::kConfigCollectionNamespace.db(), MODE_X);
+        AutoGetOrCreateDb autoDb(
+            opCtx, NamespaceString::kServerConfigurationNamespace.db(), MODE_X);
 
         auto result = update(opCtx, autoDb.getDb(), updateReq);
         if (result.numMatched == 0) {

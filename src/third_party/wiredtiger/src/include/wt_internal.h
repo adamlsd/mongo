@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -250,8 +250,6 @@ struct __wt_ovfl_reuse;
     typedef struct __wt_ovfl_reuse WT_OVFL_REUSE;
 struct __wt_ovfl_track;
     typedef struct __wt_ovfl_track WT_OVFL_TRACK;
-struct __wt_ovfl_txnc;
-    typedef struct __wt_ovfl_txnc WT_OVFL_TXNC;
 struct __wt_page;
     typedef struct __wt_page WT_PAGE;
 struct __wt_page_deleted;
@@ -268,6 +266,8 @@ struct __wt_ref;
     typedef struct __wt_ref WT_REF;
 struct __wt_row;
     typedef struct __wt_row WT_ROW;
+struct __wt_rwlock;
+    typedef struct __wt_rwlock WT_RWLOCK;
 struct __wt_salvage_cookie;
     typedef struct __wt_salvage_cookie WT_SALVAGE_COOKIE;
 struct __wt_save_upd;
@@ -276,18 +276,22 @@ struct __wt_scratch_track;
     typedef struct __wt_scratch_track WT_SCRATCH_TRACK;
 struct __wt_session_impl;
     typedef struct __wt_session_impl WT_SESSION_IMPL;
+struct __wt_session_stash;
+    typedef struct __wt_session_stash WT_SESSION_STASH;
 struct __wt_size;
     typedef struct __wt_size WT_SIZE;
 struct __wt_spinlock;
     typedef struct __wt_spinlock WT_SPINLOCK;
-struct __wt_split_stash;
-    typedef struct __wt_split_stash WT_SPLIT_STASH;
+struct __wt_stash;
+    typedef struct __wt_stash WT_STASH;
 struct __wt_table;
     typedef struct __wt_table WT_TABLE;
 struct __wt_thread;
     typedef struct __wt_thread WT_THREAD;
 struct __wt_thread_group;
     typedef struct __wt_thread_group WT_THREAD_GROUP;
+struct __wt_timestamp_t;
+    typedef struct __wt_timestamp_t WT_TIMESTAMP_T;
 struct __wt_txn;
     typedef struct __wt_txn WT_TXN;
 struct __wt_txn_global;
@@ -302,8 +306,6 @@ union __wt_lsn;
     typedef union __wt_lsn WT_LSN;
 union __wt_rand_state;
     typedef union __wt_rand_state WT_RAND_STATE;
-union __wt_rwlock;
-    typedef union __wt_rwlock WT_RWLOCK;
 /*
  * Forward type declarations for internal types: END
  * DO NOT EDIT: automatically built by dist/s_typedef.

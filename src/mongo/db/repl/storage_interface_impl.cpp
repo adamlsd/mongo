@@ -49,6 +49,7 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -70,20 +71,14 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/rollback_gen.h"
-#include "mongo/db/repl/task_runner.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/assert_util.h"
-#include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
 
-const char StorageInterfaceImpl::kDefaultMinValidNamespace[] = "local.replset.minvalid";
-const char StorageInterfaceImpl::kInitialSyncFlagFieldName[] = "doingInitialSync";
-const char StorageInterfaceImpl::kBeginFieldName[] = "begin";
-const char StorageInterfaceImpl::kOplogDeleteFromPointFieldName[] = "oplogDeleteFromPoint";
 const char StorageInterfaceImpl::kDefaultRollbackIdNamespace[] = "local.system.rollback.id";
 const char StorageInterfaceImpl::kRollbackIdFieldName[] = "rollbackId";
 const char StorageInterfaceImpl::kRollbackIdDocumentId[] = "rollbackId";
@@ -91,48 +86,12 @@ const char StorageInterfaceImpl::kRollbackIdDocumentId[] = "rollbackId";
 namespace {
 using UniqueLock = stdx::unique_lock<stdx::mutex>;
 
-const BSONObj kInitialSyncFlag(BSON(StorageInterfaceImpl::kInitialSyncFlagFieldName << true));
-
 const auto kIdIndexName = "_id_"_sd;
 
 }  // namespace
 
 StorageInterfaceImpl::StorageInterfaceImpl()
-    : StorageInterfaceImpl(NamespaceString(StorageInterfaceImpl::kDefaultMinValidNamespace)) {}
-
-StorageInterfaceImpl::StorageInterfaceImpl(const NamespaceString& minValidNss)
-    : _minValidNss(minValidNss),
-      _rollbackIdNss(StorageInterfaceImpl::kDefaultRollbackIdNamespace) {}
-
-NamespaceString StorageInterfaceImpl::getMinValidNss() const {
-    return _minValidNss;
-}
-
-BSONObj StorageInterfaceImpl::getMinValidDocument(OperationContext* opCtx) const {
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-        Lock::DBLock dblk(opCtx, _minValidNss.db(), MODE_IS);
-        Lock::CollectionLock lk(opCtx->lockState(), _minValidNss.ns(), MODE_IS);
-        BSONObj doc;
-        bool found = Helpers::getSingleton(opCtx, _minValidNss.ns().c_str(), doc);
-        invariant(found || doc.isEmpty());
-        return doc;
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
-        opCtx, "StorageInterfaceImpl::getMinValidDocument", _minValidNss.ns());
-
-    MONGO_UNREACHABLE;
-}
-
-void StorageInterfaceImpl::updateMinValidDocument(OperationContext* opCtx,
-                                                  const BSONObj& updateSpec) {
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-        // For now this needs to be MODE_X because it sometimes creates the collection.
-        Lock::DBLock dblk(opCtx, _minValidNss.db(), MODE_X);
-        Helpers::putSingleton(opCtx, _minValidNss.ns().c_str(), updateSpec);
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
-        opCtx, "StorageInterfaceImpl::updateMinValidDocument", _minValidNss.ns());
-}
+    : _rollbackIdNss(StorageInterfaceImpl::kDefaultRollbackIdNamespace) {}
 
 StatusWith<int> StorageInterfaceImpl::getRollbackID(OperationContext* opCtx) {
     BSONObjBuilder bob;
@@ -167,7 +126,8 @@ Status StorageInterfaceImpl::initializeRollbackID(OperationContext* opCtx) {
 
     BSONObjBuilder bob;
     rbid.serialize(&bob);
-    return insertDocument(opCtx, _rollbackIdNss, bob.done());
+    SnapshotName noTimestamp;  // This write is not replicated.
+    return insertDocument(opCtx, _rollbackIdNss, TimestampedBSONObj{bob.done(), noTimestamp});
 }
 
 Status StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
@@ -201,114 +161,6 @@ Status StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
     return status;
 }
 
-bool StorageInterfaceImpl::getInitialSyncFlag(OperationContext* opCtx) const {
-    const BSONObj doc = getMinValidDocument(opCtx);
-    const auto flag = doc[kInitialSyncFlagFieldName].trueValue();
-    LOG(3) << "returning initial sync flag value of " << flag;
-    return flag;
-}
-
-void StorageInterfaceImpl::setInitialSyncFlag(OperationContext* opCtx) {
-    LOG(3) << "setting initial sync flag";
-    updateMinValidDocument(opCtx, BSON("$set" << kInitialSyncFlag));
-    opCtx->recoveryUnit()->waitUntilDurable();
-}
-
-void StorageInterfaceImpl::clearInitialSyncFlag(OperationContext* opCtx) {
-    LOG(3) << "clearing initial sync flag";
-
-    auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-    OpTime time = replCoord->getMyLastAppliedOpTime();
-    updateMinValidDocument(
-        opCtx,
-        BSON("$unset" << kInitialSyncFlag << "$set"
-                      << BSON("ts" << time.getTimestamp() << "t" << time.getTerm()
-                                   << kBeginFieldName
-                                   << time)));
-
-    if (getGlobalServiceContext()->getGlobalStorageEngine()->isDurable()) {
-        opCtx->recoveryUnit()->waitUntilDurable();
-        replCoord->setMyLastDurableOpTime(time);
-    }
-}
-
-OpTime StorageInterfaceImpl::getMinValid(OperationContext* opCtx) const {
-    const BSONObj doc = getMinValidDocument(opCtx);
-    const auto opTimeStatus = OpTime::parseFromOplogEntry(doc);
-    // If any of the keys (fields) are missing from the minvalid document, we return
-    // a null OpTime.
-    if (opTimeStatus == ErrorCodes::NoSuchKey) {
-        return {};
-    }
-
-    if (!opTimeStatus.isOK()) {
-        severe() << "Error parsing minvalid entry: " << redact(doc)
-                 << ", with status:" << opTimeStatus.getStatus();
-        fassertFailedNoTrace(40052);
-    }
-
-    OpTime minValid = opTimeStatus.getValue();
-    LOG(3) << "returning minvalid: " << minValid.toString() << "(" << minValid.toBSON() << ")";
-
-    return minValid;
-}
-
-void StorageInterfaceImpl::setMinValid(OperationContext* opCtx, const OpTime& minValid) {
-    LOG(3) << "setting minvalid to exactly: " << minValid.toString() << "(" << minValid.toBSON()
-           << ")";
-    updateMinValidDocument(
-        opCtx, BSON("$set" << BSON("ts" << minValid.getTimestamp() << "t" << minValid.getTerm())));
-}
-
-void StorageInterfaceImpl::setMinValidToAtLeast(OperationContext* opCtx, const OpTime& minValid) {
-    LOG(3) << "setting minvalid to at least: " << minValid.toString() << "(" << minValid.toBSON()
-           << ")";
-    updateMinValidDocument(
-        opCtx, BSON("$max" << BSON("ts" << minValid.getTimestamp() << "t" << minValid.getTerm())));
-}
-
-void StorageInterfaceImpl::setOplogDeleteFromPoint(OperationContext* opCtx,
-                                                   const Timestamp& timestamp) {
-    LOG(3) << "setting oplog delete from point to: " << timestamp.toStringPretty();
-    updateMinValidDocument(opCtx,
-                           BSON("$set" << BSON(kOplogDeleteFromPointFieldName << timestamp)));
-}
-
-Timestamp StorageInterfaceImpl::getOplogDeleteFromPoint(OperationContext* opCtx) {
-    const BSONObj doc = getMinValidDocument(opCtx);
-    Timestamp out = {};
-    if (auto field = doc[kOplogDeleteFromPointFieldName]) {
-        out = field.timestamp();
-    }
-
-    LOG(3) << "returning oplog delete from point: " << out;
-    return out;
-}
-
-void StorageInterfaceImpl::setAppliedThrough(OperationContext* opCtx, const OpTime& optime) {
-    LOG(3) << "setting appliedThrough to: " << optime.toString() << "(" << optime.toBSON() << ")";
-    if (optime.isNull()) {
-        updateMinValidDocument(opCtx, BSON("$unset" << BSON(kBeginFieldName << 1)));
-    } else {
-        updateMinValidDocument(opCtx, BSON("$set" << BSON(kBeginFieldName << optime)));
-    }
-}
-
-OpTime StorageInterfaceImpl::getAppliedThrough(OperationContext* opCtx) {
-    const BSONObj doc = getMinValidDocument(opCtx);
-    const auto opTimeStatus = OpTime::parseFromOplogEntry(doc.getObjectField(kBeginFieldName));
-    if (!opTimeStatus.isOK()) {
-        // Return null OpTime on any parse failure, including if "begin" is missing.
-        return {};
-    }
-
-    OpTime appliedThrough = opTimeStatus.getValue();
-    LOG(3) << "returning appliedThrough: " << appliedThrough.toString() << "("
-           << appliedThrough.toBSON() << ")";
-
-    return appliedThrough;
-}
-
 StatusWith<std::unique_ptr<CollectionBulkLoader>>
 StorageInterfaceImpl::createCollectionForBulkLoading(
     const NamespaceString& nss,
@@ -317,72 +169,103 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
     const std::vector<BSONObj>& secondaryIndexSpecs) {
 
     LOG(2) << "StorageInterfaceImpl::createCollectionForBulkLoading called for ns: " << nss.ns();
-    auto threadPool =
-        stdx::make_unique<OldThreadPool>(1, str::stream() << "InitialSyncInserters-" << nss.ns());
-    std::unique_ptr<TaskRunner> runner = stdx::make_unique<TaskRunner>(threadPool.get());
 
-    // Setup cond_var for signalling when done.
-    std::unique_ptr<CollectionBulkLoader> loaderToReturn;
-    Collection* collection;
-
-    auto status = runner->runSynchronousTask([&](OperationContext* opCtx) -> Status {
-        // We are not replicating nor validating writes under this OperationContext*.
-        // The OperationContext* is used for all writes to the (newly) cloned collection.
-        UnreplicatedWritesBlock uwb(opCtx);
-        documentValidationDisabled(opCtx) = true;
-
-        // Retry if WCE.
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-            // Get locks and create the collection.
-            auto db = stdx::make_unique<AutoGetOrCreateDb>(opCtx, nss.db(), MODE_IX);
-            auto coll = stdx::make_unique<AutoGetCollection>(opCtx, nss, MODE_X);
-            collection = coll->getCollection();
-
-            if (collection) {
-                return {ErrorCodes::NamespaceExists, "Collection already exists."};
+    class StashClient {
+    public:
+        StashClient() {
+            if (Client::getCurrent()) {
+                _stashedClient = Client::releaseCurrent();
             }
-
-            // Create the collection.
-            WriteUnitOfWork wunit(opCtx);
-            collection = db->getDb()->createCollection(opCtx, nss.ns(), options, false);
-            invariant(collection);
-            wunit.commit();
-            coll = stdx::make_unique<AutoGetCollection>(opCtx, nss, MODE_IX);
-
-            // Move locks into loader, so it now controls their lifetime.
-            auto loader = stdx::make_unique<CollectionBulkLoaderImpl>(opCtx,
-                                                                      collection,
-                                                                      idIndexSpec,
-                                                                      std::move(threadPool),
-                                                                      std::move(runner),
-                                                                      std::move(db),
-                                                                      std::move(coll));
-
-            // Move the loader into the StatusWith.
-            loaderToReturn = std::move(loader);
-            return Status::OK();
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "beginCollectionClone", nss.ns());
-        MONGO_UNREACHABLE;
+        ~StashClient() {
+            if (Client::getCurrent()) {
+                Client::releaseCurrent();
+            }
+            if (_stashedClient) {
+                Client::setCurrent(std::move(_stashedClient));
+            }
+        }
+
+    private:
+        ServiceContext::UniqueClient _stashedClient;
+    } stash;
+    Client::setCurrent(
+        getGlobalServiceContext()->makeClient(str::stream() << nss.ns() << " loader"));
+    auto opCtx = cc().makeOperationContext();
+
+    documentValidationDisabled(opCtx.get()) = true;
+
+    std::unique_ptr<AutoGetCollection> autoColl;
+    // Retry if WCE.
+    Status status = writeConflictRetry(opCtx.get(), "beginCollectionClone", nss.ns(), [&] {
+        UnreplicatedWritesBlock uwb(opCtx.get());
+
+        // Get locks and create the collection.
+        AutoGetOrCreateDb db(opCtx.get(), nss.db(), MODE_X);
+        AutoGetCollection coll(opCtx.get(), nss, MODE_IX);
+
+        if (coll.getCollection()) {
+            return Status(ErrorCodes::NamespaceExists,
+                          str::stream() << "Collection " << nss.ns() << " already exists.");
+        }
+        {
+            // Create the collection.
+            WriteUnitOfWork wunit(opCtx.get());
+            fassert(40332, db.getDb()->createCollection(opCtx.get(), nss.ns(), options, false));
+            wunit.commit();
+        }
+
+        autoColl = stdx::make_unique<AutoGetCollection>(opCtx.get(), nss, MODE_IX);
+
+        // Build empty capped indexes.  Capped indexes cannot be built by the MultiIndexBlock
+        // because the cap might delete documents off the back while we are inserting them into
+        // the front.
+        if (options.capped) {
+            WriteUnitOfWork wunit(opCtx.get());
+            if (!idIndexSpec.isEmpty()) {
+                auto status =
+                    autoColl->getCollection()->getIndexCatalog()->createIndexOnEmptyCollection(
+                        opCtx.get(), idIndexSpec);
+                if (!status.getStatus().isOK()) {
+                    return status.getStatus();
+                }
+            }
+            for (auto&& spec : secondaryIndexSpecs) {
+                auto status =
+                    autoColl->getCollection()->getIndexCatalog()->createIndexOnEmptyCollection(
+                        opCtx.get(), spec);
+                if (!status.getStatus().isOK()) {
+                    return status.getStatus();
+                }
+            }
+            wunit.commit();
+        }
+
+        return Status::OK();
     });
 
     if (!status.isOK()) {
         return status;
     }
 
-    invariant(collection);
-    status = loaderToReturn->init(collection, secondaryIndexSpecs);
+    // Move locks into loader, so it now controls their lifetime.
+    auto loader =
+        stdx::make_unique<CollectionBulkLoaderImpl>(Client::releaseCurrent(),
+                                                    std::move(opCtx),
+                                                    std::move(autoColl),
+                                                    options.capped ? BSONObj() : idIndexSpec);
+
+    status = loader->init(options.capped ? std::vector<BSONObj>() : secondaryIndexSpecs);
     if (!status.isOK()) {
         return status;
     }
-    return std::move(loaderToReturn);
+    return {std::move(loader)};
 }
-
 
 Status StorageInterfaceImpl::insertDocument(OperationContext* opCtx,
                                             const NamespaceString& nss,
-                                            const BSONObj& doc) {
-    return insertDocuments(opCtx, nss, {doc});
+                                            const TimestampedBSONObj& doc) {
+    return insertDocuments(opCtx, nss, {InsertStatement(doc.obj, doc.timestamp)});
 }
 
 namespace {
@@ -411,8 +294,8 @@ StatusWith<Collection*> getCollection(const AutoGetCollectionType& autoGetCollec
 
 Status insertDocumentsSingleBatch(OperationContext* opCtx,
                                   const NamespaceString& nss,
-                                  std::vector<BSONObj>::const_iterator begin,
-                                  std::vector<BSONObj>::const_iterator end) {
+                                  std::vector<InsertStatement>::const_iterator begin,
+                                  std::vector<InsertStatement>::const_iterator end) {
     AutoGetCollection autoColl(opCtx, nss, MODE_IX);
 
     auto collectionResult =
@@ -437,7 +320,7 @@ Status insertDocumentsSingleBatch(OperationContext* opCtx,
 
 Status StorageInterfaceImpl::insertDocuments(OperationContext* opCtx,
                                              const NamespaceString& nss,
-                                             const std::vector<BSONObj>& docs) {
+                                             const std::vector<InsertStatement>& docs) {
     if (docs.size() > 1U) {
         try {
             if (insertDocumentsSingleBatch(opCtx, nss, docs.cbegin(), docs.cend()).isOK()) {
@@ -451,14 +334,19 @@ Status StorageInterfaceImpl::insertDocuments(OperationContext* opCtx,
 
     // Try to insert the batch one-at-a-time because the batch failed all-at-once inserting.
     for (auto it = docs.cbegin(); it != docs.cend(); ++it) {
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
-            auto status = insertDocumentsSingleBatch(opCtx, nss, it, it + 1);
-            if (!status.isOK()) {
-                return status;
-            }
+        auto status =
+            writeConflictRetry(opCtx, "StorageInterfaceImpl::insertDocuments", nss.ns(), [&] {
+                auto status = insertDocumentsSingleBatch(opCtx, nss, it, it + 1);
+                if (!status.isOK()) {
+                    return status;
+                }
+
+                return Status::OK();
+            });
+
+        if (!status.isOK()) {
+            return status;
         }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(
-            opCtx, "StorageInterfaceImpl::insertDocuments", nss.ns());
     }
 
     return Status::OK();
@@ -493,29 +381,29 @@ StatusWith<size_t> StorageInterfaceImpl::getOplogMaxSize(OperationContext* opCtx
 Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
                                               const NamespaceString& nss,
                                               const CollectionOptions& options) {
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::createCollection", nss.ns(), [&] {
         AutoGetOrCreateDb databaseWriteGuard(opCtx, nss.db(), MODE_X);
         auto db = databaseWriteGuard.getDb();
         invariant(db);
         if (db->getCollection(opCtx, nss)) {
-            return {ErrorCodes::NamespaceExists,
-                    str::stream() << "Collection " << nss.ns() << " already exists."};
+            return Status(ErrorCodes::NamespaceExists,
+                          str::stream() << "Collection " << nss.ns() << " already exists.");
         }
         WriteUnitOfWork wuow(opCtx);
         try {
             auto coll = db->createCollection(opCtx, nss.ns(), options);
             invariant(coll);
-        } catch (const UserException& ex) {
+        } catch (const AssertionException& ex) {
             return ex.toStatus();
         }
         wuow.commit();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "StorageInterfaceImpl::createCollection", nss.ns());
-    return Status::OK();
+
+        return Status::OK();
+    });
 }
 
 Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::dropCollection", nss.ns(), [&] {
         AutoGetDb autoDB(opCtx, nss.db(), MODE_X);
         if (!autoDB.getDb()) {
             // Database does not exist - nothing to do.
@@ -523,12 +411,72 @@ Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const Names
         }
         WriteUnitOfWork wunit(opCtx);
         const auto status = autoDB.getDb()->dropCollectionEvenIfSystem(opCtx, nss);
-        if (status.isOK()) {
-            wunit.commit();
+        if (!status.isOK()) {
+            return status;
         }
-        return status;
+        wunit.commit();
+        return Status::OK();
+    });
+}
+
+Status StorageInterfaceImpl::truncateCollection(OperationContext* opCtx,
+                                                const NamespaceString& nss) {
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::truncateCollection", nss.ns(), [&] {
+        AutoGetCollection autoColl(opCtx, nss, MODE_X);
+        auto collectionResult =
+            getCollection(autoColl, nss, "The collection must exist before truncating.");
+        if (!collectionResult.isOK()) {
+            return collectionResult.getStatus();
+        }
+        auto collection = collectionResult.getValue();
+
+        WriteUnitOfWork wunit(opCtx);
+        const auto status = collection->truncate(opCtx);
+        if (!status.isOK()) {
+            return status;
+        }
+        wunit.commit();
+        return Status::OK();
+    });
+}
+
+Status StorageInterfaceImpl::renameCollection(OperationContext* opCtx,
+                                              const NamespaceString& fromNS,
+                                              const NamespaceString& toNS,
+                                              bool stayTemp) {
+    if (fromNS.db() != toNS.db()) {
+        return Status(ErrorCodes::InvalidNamespace,
+                      str::stream() << "Cannot rename collection between databases. From NS: "
+                                    << fromNS.ns()
+                                    << "; to NS: "
+                                    << toNS.ns());
     }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "StorageInterfaceImpl::dropCollection", nss.ns());
+
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::renameCollection", fromNS.ns(), [&] {
+        AutoGetDb autoDB(opCtx, fromNS.db(), MODE_X);
+        if (!autoDB.getDb()) {
+            return Status(ErrorCodes::NamespaceNotFound,
+                          str::stream() << "Cannot rename collection from " << fromNS.ns() << " to "
+                                        << toNS.ns()
+                                        << ". Database "
+                                        << fromNS.db()
+                                        << " not found.");
+        }
+        WriteUnitOfWork wunit(opCtx);
+        const auto status =
+            autoDB.getDb()->renameCollection(opCtx, fromNS.ns(), toNS.ns(), stayTemp);
+        if (!status.isOK()) {
+            return status;
+        }
+
+        auto newColl = autoDB.getDb()->getCollection(opCtx, toNS);
+        if (newColl->uuid()) {
+            UUIDCatalog::get(opCtx).onRenameCollection(
+                opCtx, [newColl] { return newColl; }, newColl->uuid().get());
+        }
+        wunit.commit();
+        return status;
+    });
 }
 
 namespace {
@@ -561,13 +509,18 @@ StatusWith<std::vector<BSONObj>> _findOrDeleteDocuments(
     auto isFind = mode == FindDeleteMode::kFind;
     auto opStr = isFind ? "StorageInterfaceImpl::find" : "StorageInterfaceImpl::delete";
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+
+    return writeConflictRetry(opCtx, opStr, nss.ns(), [&] {
+        // We need to explicitly use this in a few places to help the type inference.  Use a
+        // shorthand.
+        using Result = StatusWith<std::vector<BSONObj>>;
+
         auto collectionAccessMode = isFind ? MODE_IS : MODE_IX;
         AutoGetCollection autoColl(opCtx, nss, collectionAccessMode);
         auto collectionResult = getCollection(
             autoColl, nss, str::stream() << "Unable to proceed with " << opStr << ".");
         if (!collectionResult.isOK()) {
-            return collectionResult.getStatus();
+            return Result(collectionResult.getStatus());
         }
         auto collection = collectionResult.getValue();
 
@@ -577,13 +530,13 @@ StatusWith<std::vector<BSONObj>> _findOrDeleteDocuments(
         std::unique_ptr<PlanExecutor, PlanExecutor::Deleter> planExecutor;
         if (!indexName) {
             if (!startKey.isEmpty()) {
-                return {ErrorCodes::NoSuchKey,
-                        "non-empty startKey not allowed for collection scan"};
+                return Result(ErrorCodes::NoSuchKey,
+                              "non-empty startKey not allowed for collection scan");
             }
             if (boundInclusion != BoundInclusion::kIncludeStartKeyOnly) {
-                return {ErrorCodes::InvalidOptions,
-                        "bound inclusion must be BoundInclusion::kIncludeStartKeyOnly for "
-                        "collection scan"};
+                return Result(ErrorCodes::InvalidOptions,
+                              "bound inclusion must be BoundInclusion::kIncludeStartKeyOnly for "
+                              "collection scan");
             }
             // Use collection scan.
             planExecutor = isFind
@@ -603,16 +556,17 @@ StatusWith<std::vector<BSONObj>> _findOrDeleteDocuments(
             IndexDescriptor* indexDescriptor =
                 indexCatalog->findIndexByName(opCtx, *indexName, includeUnfinishedIndexes);
             if (!indexDescriptor) {
-                return {ErrorCodes::IndexNotFound,
-                        str::stream() << "Index not found, ns:" << nss.ns() << ", index: "
-                                      << *indexName};
+                return Result(ErrorCodes::IndexNotFound,
+                              str::stream() << "Index not found, ns:" << nss.ns() << ", index: "
+                                            << *indexName);
             }
             if (indexDescriptor->isPartial()) {
-                return {ErrorCodes::IndexOptionsConflict,
-                        str::stream() << "Partial index is not allowed for this operation, ns:"
-                                      << nss.ns()
-                                      << ", index: "
-                                      << *indexName};
+                return Result(ErrorCodes::IndexOptionsConflict,
+                              str::stream()
+                                  << "Partial index is not allowed for this operation, ns:"
+                                  << nss.ns()
+                                  << ", index: "
+                                  << *indexName);
             }
 
             KeyPattern keyPattern(indexDescriptor->keyPattern());
@@ -658,10 +612,8 @@ StatusWith<std::vector<BSONObj>> _findOrDeleteDocuments(
                 break;
             }
         }
-        return docs;
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, opStr, nss.ns());
-    MONGO_UNREACHABLE;
+        return Result(docs);
+    });
 }
 
 StatusWith<BSONObj> _findOrDeleteById(OperationContext* opCtx,
@@ -797,7 +749,7 @@ Status _upsertWithQuery(OperationContext* opCtx,
     invariant(!request.shouldReturnAnyDocs());
     invariant(PlanExecutor::NO_YIELD == request.getYieldPolicy());
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "_upsertWithQuery", nss.ns(), [&] {
         // ParsedUpdate needs to be inside the write conflict retry loop because it may create a
         // CanonicalQuery whose ownership will be transferred to the plan executor in
         // getExecutorUpdate().
@@ -826,10 +778,7 @@ Status _upsertWithQuery(OperationContext* opCtx,
         auto planExecutor = std::move(planExecutorResult.getValue());
 
         return planExecutor->executePlan();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "_upsertWithQuery", nss.ns());
-
-    MONGO_UNREACHABLE;
+    });
 }
 
 }  // namespace
@@ -854,7 +803,7 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
     invariant(!request.shouldReturnAnyDocs());
     invariant(PlanExecutor::NO_YIELD == request.getYieldPolicy());
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::upsertById", nss.ns(), [&] {
         // ParsedUpdate needs to be inside the write conflict retry loop because it contains
         // the UpdateDriver whose state may be modified while we are applying the update.
         ParsedUpdate parsedUpdate(opCtx, &request);
@@ -874,8 +823,8 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
         // without an _id index.
         auto descriptor = collection->getIndexCatalog()->findIdIndex(opCtx);
         if (!descriptor) {
-            return {ErrorCodes::IndexNotFound,
-                    "Unable to update document in a collection without an _id index."};
+            return Status(ErrorCodes::IndexNotFound,
+                          "Unable to update document in a collection without an _id index.");
         }
 
         UpdateStageParams updateStageParams(
@@ -888,10 +837,7 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
                                                               parsedUpdate.yieldPolicy());
 
         return planExecutor->executePlan();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "StorageInterfaceImpl::upsertById", nss.ns());
-
-    MONGO_UNREACHABLE;
+    });
 }
 
 Status StorageInterfaceImpl::putSingleton(OperationContext* opCtx,
@@ -908,11 +854,11 @@ Status StorageInterfaceImpl::deleteByFilter(OperationContext* opCtx,
     request.setMulti(true);
     request.setYieldPolicy(PlanExecutor::NO_YIELD);
 
-    // This disables the legalClientSystemNS() check in getExecutorDelete() which is used to
+    // This disables the isLegalClientSystemNS() check in getExecutorDelete() which is used to
     // disallow client deletes from unrecognized system collections.
     request.setGod();
 
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::deleteByFilter", nss.ns(), [&] {
         // ParsedDelete needs to be inside the write conflict retry loop because it may create a
         // CanonicalQuery whose ownership will be transferred to the plan executor in
         // getExecutorDelete().
@@ -941,10 +887,7 @@ Status StorageInterfaceImpl::deleteByFilter(OperationContext* opCtx,
         auto planExecutor = std::move(planExecutorResult.getValue());
 
         return planExecutor->executePlan();
-    }
-    MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "StorageInterfaceImpl::deleteByFilter", nss.ns());
-
-    MONGO_UNREACHABLE;
+    });
 }
 
 StatusWith<StorageInterface::CollectionSize> StorageInterfaceImpl::getCollectionSize(
@@ -973,6 +916,20 @@ StatusWith<StorageInterface::CollectionCount> StorageInterfaceImpl::getCollectio
     auto collection = collectionResult.getValue();
 
     return collection->numRecords(opCtx);
+}
+
+void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx,
+                                              SnapshotName snapshotName) {
+    serviceCtx->getGlobalStorageEngine()->setStableTimestamp(snapshotName);
+}
+
+void StorageInterfaceImpl::setInitialDataTimestamp(ServiceContext* serviceCtx,
+                                                   SnapshotName snapshotName) {
+    serviceCtx->getGlobalStorageEngine()->setInitialDataTimestamp(snapshotName);
+}
+
+Status StorageInterfaceImpl::recoverToStableTimestamp(ServiceContext* serviceCtx) {
+    return serviceCtx->getGlobalStorageEngine()->recoverToStableTimestamp();
 }
 
 Status StorageInterfaceImpl::isAdminDbValid(OperationContext* opCtx) {
@@ -1030,6 +987,11 @@ Status StorageInterfaceImpl::isAdminDbValid(OperationContext* opCtx) {
     }
 
     return Status::OK();
+}
+
+void StorageInterfaceImpl::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) {
+    AutoGetCollection oplog(opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
+    oplog.getCollection()->getRecordStore()->waitForAllEarlierOplogWritesToBeVisible(opCtx);
 }
 
 }  // namespace repl

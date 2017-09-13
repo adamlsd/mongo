@@ -631,7 +631,7 @@ void doNothing(const BSONObj&) {}
  * single object in the query result set (or the empty object, if the result set is empty).
  * If 'qr' doesn't have these options set, then nullptr must be passed for 'objOut'.
  *
- * On error, throws a UserException.
+ * On error, throws a AssertionException.
  */
 int runQueryWithReadCommands(DBClientBase* conn,
                              unique_ptr<QueryRequest> qr,
@@ -683,7 +683,7 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
     invariant(bsonTemplateEvaluator.setId(_id) == BsonTemplateEvaluator::StatusSuccess);
 
     if (_config->username != "") {
-        string errmsg;
+        std::string errmsg;
         if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
             uasserted(15931, "Authenticating to connection for _benchThread failed: " + errmsg);
         }
@@ -746,7 +746,10 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                             runQueryWithReadCommands(conn, std::move(qr), &result);
                         } else {
                             BenchRunEventTrace _bret(&stats.findOneCounter);
-                            result = conn->findOne(op.ns, fixedQuery);
+                            result = conn->findOne(op.ns,
+                                                   fixedQuery,
+                                                   nullptr,
+                                                   DBClientCursor::QueryOptionLocal_forceOpQuery);
                         }
 
                         if (op.useCheck) {
@@ -858,17 +861,22 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                 BenchRunEventTrace _bret(&stats.queryCounter);
                                 stdx::function<void(const BSONObj&)> castedDoNothing(doNothing);
                                 count = conn->query(
-                                    castedDoNothing, op.ns, fixedQuery, &op.projection, op.options);
+                                    castedDoNothing,
+                                    op.ns,
+                                    fixedQuery,
+                                    &op.projection,
+                                    op.options | DBClientCursor::QueryOptionLocal_forceOpQuery);
                             } else {
                                 BenchRunEventTrace _bret(&stats.queryCounter);
                                 unique_ptr<DBClientCursor> cursor;
-                                cursor = conn->query(op.ns,
-                                                     fixedQuery,
-                                                     op.limit,
-                                                     op.skip,
-                                                     &op.projection,
-                                                     op.options,
-                                                     op.batchSize);
+                                cursor = conn->query(
+                                    op.ns,
+                                    fixedQuery,
+                                    op.limit,
+                                    op.skip,
+                                    &op.projection,
+                                    op.options | DBClientCursor::QueryOptionLocal_forceOpQuery,
+                                    op.batchSize);
                                 count = cursor->itcount();
                             }
                         }
@@ -916,7 +924,13 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                                  builder.done(),
                                                  result);
                             } else {
-                                conn->update(op.ns, query, update, op.upsert, op.multi);
+                                auto toSend =
+                                    makeUpdateMessage(op.ns,
+                                                      query,
+                                                      update,
+                                                      (op.upsert ? UpdateOption_Upsert : 0) |
+                                                          (op.multi ? UpdateOption_Multi : 0));
+                                conn->say(toSend);
                                 if (op.safe)
                                     result = conn->getLastErrorDetailed();
                             }
@@ -940,9 +954,9 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
-                                throw DBException((string) "From benchRun GLE" +
-                                                      causedBy(result["err"].String()),
-                                                  result["code"].eoo() ? 0 : result["code"].Int());
+                                throw DBException(result["code"].eoo() ? 0 : result["code"].Int(),
+                                                  (std::string) "From benchRun GLE" +
+                                                      causedBy(result["err"].String()));
                         }
                     } break;
                     case OpType::INSERT: {
@@ -972,17 +986,20 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                                  builder.done(),
                                                  result);
                             } else {
+                                std::vector<BSONObj> insertArray;
                                 if (op.isDocAnArray) {
-                                    std::vector<BSONObj> insertArray;
                                     for (const auto& element : op.doc) {
                                         BSONObj e = fixQuery(element.Obj(), bsonTemplateEvaluator);
                                         insertArray.push_back(e);
                                     }
-                                    conn->insert(op.ns, insertArray);
                                 } else {
-                                    insertDoc = fixQuery(op.doc, bsonTemplateEvaluator);
-                                    conn->insert(op.ns, insertDoc);
+                                    insertArray.push_back(fixQuery(op.doc, bsonTemplateEvaluator));
                                 }
+
+                                auto toSend = makeInsertMessage(
+                                    op.ns, insertArray.data(), insertArray.size());
+                                conn->say(toSend);
+
                                 if (op.safe)
                                     result = conn->getLastErrorDetailed();
                             }
@@ -1006,9 +1023,9 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
-                                throw DBException((string) "From benchRun GLE" +
-                                                      causedBy(result["err"].String()),
-                                                  result["code"].eoo() ? 0 : result["code"].Int());
+                                throw DBException(result["code"].eoo() ? 0 : result["code"].Int(),
+                                                  (std::string) "From benchRun GLE" +
+                                                      causedBy(result["err"].String()));
                         }
                     } break;
                     case OpType::REMOVE: {
@@ -1029,7 +1046,9 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
                                                  builder.done(),
                                                  result);
                             } else {
-                                conn->remove(op.ns, predicate, !op.multi);
+                                auto toSend = makeRemoveMessage(
+                                    op.ns, predicate, op.multi ? 0 : RemoveOption_JustOne);
+                                conn->say(toSend);
                                 if (op.safe)
                                     result = conn->getLastErrorDetailed();
                             }
@@ -1053,9 +1072,9 @@ void BenchRunWorker::generateLoadOnConnection(DBClientBase* conn) {
 
                             if (!result["err"].eoo() && result["err"].type() == String &&
                                 (_config->throwGLE || op.throwGLE))
-                                throw DBException((string) "From benchRun GLE " +
-                                                      causedBy(result["err"].String()),
-                                                  result["code"].eoo() ? 0 : result["code"].Int());
+                                throw DBException(result["code"].eoo() ? 0 : result["code"].Int(),
+                                                  (std::string) "From benchRun GLE " +
+                                                      causedBy(result["err"].String()));
                         }
                     } break;
                     case OpType::CREATEINDEX:
@@ -1155,7 +1174,7 @@ void BenchRunWorker::run() {
     try {
         std::unique_ptr<DBClientBase> conn(_config->createConnection());
         if (!_config->username.empty()) {
-            string errmsg;
+            std::string errmsg;
             if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
                 uasserted(15932, "Authenticating to connection for benchThread failed: " + errmsg);
             }
@@ -1187,7 +1206,7 @@ void BenchRunner::start() {
         std::unique_ptr<DBClientBase> conn(_config->createConnection());
         // Must authenticate to admin db in order to run serverStatus command
         if (_config->username != "") {
-            string errmsg;
+            std::string errmsg;
             if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
                 uasserted(
                     16704,
@@ -1223,7 +1242,7 @@ void BenchRunner::stop() {
     {
         std::unique_ptr<DBClientBase> conn(_config->createConnection());
         if (_config->username != "") {
-            string errmsg;
+            std::string errmsg;
             // this can only fail if admin access was revoked since start of run
             if (!conn->auth("admin", _config->username, _config->password, errmsg)) {
                 uasserted(

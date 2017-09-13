@@ -76,6 +76,11 @@ BSONObj BaseClonerTest::createCursorResponse(CursorId cursorId, const BSONArray&
 }
 
 // static
+BSONObj BaseClonerTest::createFinalCursorResponse(const BSONArray& docs) {
+    return createCursorResponse(0, docs, "nextBatch");
+}
+
+// static
 BSONObj BaseClonerTest::createListCollectionsResponse(CursorId cursorId,
                                                       const BSONArray& colls,
                                                       const char* fieldName) {
@@ -111,14 +116,12 @@ void BaseClonerTest::setUp() {
 }
 
 void BaseClonerTest::tearDown() {
-    executor::ThreadPoolExecutorTest::shutdownExecutorThread();
-    executor::ThreadPoolExecutorTest::joinExecutorThread();
+    getExecutor().shutdown();
+    getExecutor().join();
 
     storageInterface.reset();
     dbWorkThreadPool->join();
     dbWorkThreadPool.reset();
-
-    executor::ThreadPoolExecutorTest::tearDown();
 }
 
 void BaseClonerTest::clear() {

@@ -36,6 +36,7 @@
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
@@ -52,7 +53,6 @@
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
-#include "mongo/db/server_options.h"
 #include "mongo/platform/unordered_map.h"
 #include "mongo/util/log.h"
 
@@ -61,9 +61,9 @@ namespace mongo {
 using std::unique_ptr;
 using std::stringstream;
 
-class Geo2dFindNearCmd : public Command {
+class Geo2dFindNearCmd : public ErrmsgCommandDeprecated {
 public:
-    Geo2dFindNearCmd() : Command("geoNear") {}
+    Geo2dFindNearCmd() : ErrmsgCommandDeprecated("geoNear") {}
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -74,7 +74,7 @@ public:
     bool slaveOverrideOk() const {
         return true;
     }
-    bool supportsReadConcern() const final {
+    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
         return true;
     }
 
@@ -98,11 +98,11 @@ public:
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    bool run(OperationContext* opCtx,
-             const string& dbname,
-             const BSONObj& cmdObj,
-             string& errmsg,
-             BSONObjBuilder& result) {
+    bool errmsgRun(OperationContext* opCtx,
+                   const string& dbname,
+                   const BSONObj& cmdObj,
+                   string& errmsg,
+                   BSONObjBuilder& result) {
         if (!cmdObj["start"].eoo()) {
             errmsg = "using deprecated 'start' argument to geoNear";
             return false;
@@ -183,15 +183,6 @@ public:
                 collation = collationElt.Obj();
             }
         }
-        if (!collation.isEmpty() &&
-            serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k32) {
-            return appendCommandStatus(
-                result,
-                Status(ErrorCodes::InvalidOptions,
-                       "The featureCompatibilityVersion must be 3.4 to use collation. See "
-                       "http://dochub.mongodb.org/core/3.4-feature-compatibility."));
-        }
 
         long long numWanted = 100;
         const char* limitName = !cmdObj["num"].eoo() ? "num" : "limit";
@@ -224,7 +215,14 @@ public:
         qr->setLimit(numWanted);
         qr->setCollation(collation);
         const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
-        auto statusWithCQ = CanonicalQuery::canonicalize(opCtx, std::move(qr), extensionsCallback);
+        const boost::intrusive_ptr<ExpressionContext> expCtx;
+        auto statusWithCQ =
+            CanonicalQuery::canonicalize(opCtx,
+                                         std::move(qr),
+                                         expCtx,
+                                         extensionsCallback,
+                                         MatchExpressionParser::kAllowAllSpecialFeatures &
+                                             ~MatchExpressionParser::AllowedFeatures::kExpr);
         if (!statusWithCQ.isOK()) {
             errmsg = "Can't parse filter / create query";
             return false;
@@ -235,14 +233,8 @@ public:
         // version on initial entry into geoNear.
         auto rangePreserver = CollectionShardingState::get(opCtx, nss)->getMetadata();
 
-        auto statusWithPlanExecutor =
-            getExecutor(opCtx, collection, std::move(cq), PlanExecutor::YIELD_AUTO, 0);
-        if (!statusWithPlanExecutor.isOK()) {
-            errmsg = "can't get query executor";
-            return false;
-        }
-
-        auto exec = std::move(statusWithPlanExecutor.getValue());
+        auto exec = uassertStatusOK(
+            getExecutor(opCtx, collection, std::move(cq), PlanExecutor::YIELD_AUTO, 0));
 
         auto curOp = CurOp::get(opCtx);
         {
@@ -330,7 +322,8 @@ public:
             stats.append("avgDistance", totalDistance / results);
         }
         stats.append("maxDistance", farthestDist);
-        stats.appendIntOrLL("time", curOp->elapsedMicros() / 1000);
+        stats.appendIntOrLL("time",
+                            durationCount<Microseconds>(curOp->elapsedTimeExcludingPauses()));
         stats.done();
 
         collection->infoCache()->notifyOfQuery(opCtx, summary.indexesUsed);

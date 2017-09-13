@@ -44,6 +44,9 @@ var Cluster = function(options) {
             'sharded.enableBalancer',
             'sharded.numMongos',
             'sharded.numShards',
+            'sharded.stepdownOptions',
+            'sharded.stepdownOptions.configStepdown',
+            'sharded.stepdownOptions.shardStepdown',
             'teardownFunctions'
         ];
 
@@ -219,6 +222,11 @@ var Cluster = function(options) {
                 shardConfig.rsOptions = {};
             }
 
+            if (this.shouldPerformContinuousStepdowns()) {
+                load('jstests/libs/override_methods/continuous_stepdown.js');
+                ContinuousStepdown.configure(options.sharded.stepdownOptions);
+            }
+
             st = new ShardingTest(shardConfig);
 
             conn = st.s;  // mongos
@@ -229,6 +237,16 @@ var Cluster = function(options) {
 
                 st.stop();
             };
+
+            if (this.shouldPerformContinuousStepdowns()) {
+                this.startContinuousFailover = function() {
+                    st.startContinuousFailover();
+                };
+
+                this.stopContinuousFailover = function() {
+                    st.stopContinuousFailover({waitForPrimary: true});
+                };
+            }
 
             // Save all mongos and mongod connections
             var i = 0;
@@ -340,7 +358,7 @@ var Cluster = function(options) {
             throw new Error('mongos function must be a function that takes a db as an argument');
         }
         _conns.mongos.forEach(function(mongosConn) {
-            fn(mongosConn.getDB('admin'));
+            fn(mongosConn.getDB('admin'), true /* isMongos */);
         });
     };
 
@@ -369,7 +387,7 @@ var Cluster = function(options) {
     };
 
     this.isReplication = function isReplication() {
-        return options.replication.enabled;
+        return Cluster.isReplication(options);
     };
 
     this.shardCollection = function shardCollection() {
@@ -474,11 +492,24 @@ var Cluster = function(options) {
     this.validateAllCollections = function validateAllCollections(phase) {
         assert(initialized, 'cluster must be initialized first');
 
-        var _validateCollections = function _validateCollections(db) {
+        const isSteppingDownConfigServers = this.isSteppingDownConfigServers();
+        var _validateCollections = function _validateCollections(db, isMongos = false) {
             // Validate all the collections on each node.
             var res = db.adminCommand({listDatabases: 1});
             assert.commandWorked(res);
             res.databases.forEach(dbInfo => {
+                // Don't perform listCollections on the admin or config database through a mongos
+                // connection when stepping down the config server primary, because both are stored
+                // on the config server, and listCollections may return a not master error if the
+                // mongos is stale.
+                //
+                // TODO SERVER-30949: listCollections through mongos should automatically retry on
+                // NotMaster errors. Once that is true, remove this check.
+                if (isSteppingDownConfigServers && isMongos &&
+                    (dbInfo.name === "admin" || dbInfo.name === "config")) {
+                    return;
+                }
+
                 if (!validateCollections(db.getSiblingDB(dbInfo.name), {full: true})) {
                     throw new Error(phase + ' collection validation failed');
                 }
@@ -592,6 +623,15 @@ var Cluster = function(options) {
 
         return wiredTigerConfigString === 'type=lsm';
     };
+
+    this.shouldPerformContinuousStepdowns = function shouldPerformContinuousStepdowns() {
+        return this.isSharded() && (typeof options.sharded.stepdownOptions !== 'undefined');
+    };
+
+    this.isSteppingDownConfigServers = function isSteppingDownConfigServers() {
+        return this.shouldPerformContinuousStepdowns() &&
+            options.sharded.stepdownOptions.configStepdown;
+    };
 };
 
 /**
@@ -601,4 +641,11 @@ var Cluster = function(options) {
 Cluster.isStandalone = function isStandalone(clusterOptions) {
     return !clusterOptions.sharded.enabled && !clusterOptions.replication.enabled &&
         !clusterOptions.masterSlave;
+};
+
+/**
+ * Returns true if 'clusterOptions' represents a replica set, and returns false otherwise.
+ */
+Cluster.isReplication = function isReplication(clusterOptions) {
+    return clusterOptions.replication.enabled;
 };

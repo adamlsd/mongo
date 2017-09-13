@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/pipeline/lite_parsed_document_source.h"
 #include "mongo/db/stats/top.h"
+#include "mongo/util/net/sock.h"
 #include "mongo/util/time_support.h"
 
 using boost::intrusive_ptr;
@@ -77,6 +78,12 @@ intrusive_ptr<DocumentSource> DocumentSourceCollStats::createFromBson(
                                   << " of type "
                                   << typeName(elem.type()),
                     elem.type() == BSONType::Object);
+        } else if ("count" == fieldName) {
+            uassert(40480,
+                    str::stream() << "count argument must be an object, but got " << elem
+                                  << " of type "
+                                  << typeName(elem.type()),
+                    elem.type() == BSONType::Object);
         } else {
             uasserted(40168, str::stream() << "unrecognized option to $collStats: " << fieldName);
         }
@@ -87,6 +94,8 @@ intrusive_ptr<DocumentSource> DocumentSourceCollStats::createFromBson(
 }
 
 DocumentSource::GetNextResult DocumentSourceCollStats::getNext() {
+    pExpCtx->checkForInterrupt();
+
     if (_finished) {
         return GetNextResult::makeEOF();
     }
@@ -94,7 +103,16 @@ DocumentSource::GetNextResult DocumentSourceCollStats::getNext() {
     _finished = true;
 
     BSONObjBuilder builder;
+
     builder.append("ns", pExpCtx->ns.ns());
+
+    auto shardName = _mongod->getShardName(pExpCtx->opCtx);
+
+    if (!shardName.empty()) {
+        builder.append("shard", shardName);
+    }
+
+    builder.append("host", getHostNameCachedAndPort());
     builder.appendDate("localTime", jsTime());
 
     if (_collStatsSpec.hasField("latencyStats")) {
@@ -119,11 +137,16 @@ DocumentSource::GetNextResult DocumentSourceCollStats::getNext() {
         }
     }
 
-    return {Document(builder.obj())};
-}
+    if (_collStatsSpec.hasField("count")) {
+        Status status = _mongod->appendRecordCount(pExpCtx->ns, &builder);
+        if (!status.isOK()) {
+            uasserted(40481,
+                      str::stream() << "Unable to retrieve count in $collStats stage: "
+                                    << status.reason());
+        }
+    }
 
-bool DocumentSourceCollStats::isValidInitialSource() const {
-    return true;
+    return {Document(builder.obj())};
 }
 
 Value DocumentSourceCollStats::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {

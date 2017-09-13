@@ -26,15 +26,41 @@ from . import bson
 from . import common
 from . import writer
 
+_STD_ARRAY_UINT8_16 = 'std::array<std::uint8_t,16>'
+
+
+def is_primitive_scalar_type(cpp_type):
+    # type: (unicode) -> bool
+    """
+    Return True if a cpp_type is a primitive scalar type.
+
+    Primitive scalar types need to have a default value to prevent warnings from Coverity.
+    """
+    cpp_type = cpp_type.replace(' ', '')
+    return cpp_type in [
+        'bool', 'double', 'std::int32_t', 'std::uint32_t', 'std::uint64_t', 'std::int64_t'
+    ]
+
+
+def get_primitive_scalar_type_default_value(cpp_type):
+    # type: (unicode) -> unicode
+    """
+    Return a default value for a primitive scalar type.
+
+    Assumes the IDL generated code verifies the user sets the value before serialization.
+    """
+    # pylint: disable=invalid-name
+    assert is_primitive_scalar_type(cpp_type)
+    if cpp_type == 'bool':
+        return 'false'
+    return '-1'
+
 
 def _is_primitive_type(cpp_type):
     # type: (unicode) -> bool
     """Return True if a cpp_type is a primitive type and should not be returned as reference."""
     cpp_type = cpp_type.replace(' ', '')
-    return cpp_type in [
-        'bool', 'double', 'std::int32_t', 'std::uint32_t', 'std::uint64_t', 'std::int64_t',
-        'std::array<std::uint8_t,16>'
-    ]
+    return is_primitive_scalar_type(cpp_type) or cpp_type == _STD_ARRAY_UINT8_16
 
 
 def _qualify_optional_type(cpp_type):
@@ -75,6 +101,12 @@ class CppTypeBase(object):
     def get_getter_setter_type(self):
         # type: () -> unicode
         """Get the C++ type name for the getter/setter parameter for a field."""
+        pass
+
+    @abstractmethod
+    def is_const_type(self):
+        # type: () -> bool
+        """Return True if the type should be returned by const."""
         pass
 
     @abstractmethod
@@ -144,6 +176,11 @@ class _CppTypeBasic(CppTypeBase):
         # type: () -> unicode
         return self.get_type_name()
 
+    def is_const_type(self):
+        # type: () -> bool
+        type_name = self.get_type_name().replace(' ', '')
+        return not _is_primitive_type(type_name) or type_name == _STD_ARRAY_UINT8_16
+
     def return_by_reference(self):
         # type: () -> bool
         return not _is_primitive_type(self.get_type_name()) and not self._field.enum_type
@@ -158,7 +195,7 @@ class _CppTypeBasic(CppTypeBase):
 
     def get_getter_body(self, member_name):
         # type: (unicode) -> unicode
-        return common.template_args('return $member_name;', member_name=member_name)
+        return common.template_args('return ${member_name};', member_name=member_name)
 
     def get_setter_body(self, member_name):
         # type: (unicode) -> unicode
@@ -194,6 +231,10 @@ class _CppTypeView(CppTypeBase):
         # type: () -> unicode
         return self._view_type
 
+    def is_const_type(self):
+        # type: () -> bool
+        return True
+
     def return_by_reference(self):
         # type: () -> bool
         return False
@@ -208,12 +249,12 @@ class _CppTypeView(CppTypeBase):
 
     def get_getter_body(self, member_name):
         # type: (unicode) -> unicode
-        return common.template_args('return $member_name;', member_name=member_name)
+        return common.template_args('return ${member_name};', member_name=member_name)
 
     def get_setter_body(self, member_name):
         # type: (unicode) -> unicode
         return common.template_args(
-            '$member_name = ${value};',
+            '${member_name} = ${value};',
             member_name=member_name,
             value=self.get_transform_to_storage_type("value"))
 
@@ -224,7 +265,7 @@ class _CppTypeView(CppTypeBase):
     def get_transform_to_storage_type(self, expression):
         # type: (unicode) -> Optional[unicode]
         return common.template_args(
-            '$expression.toString()',
+            '${expression}.toString()',
             expression=expression, )
 
 
@@ -247,6 +288,10 @@ class _CppTypeVector(CppTypeBase):
         # type: () -> unicode
         return 'ConstDataRange'
 
+    def is_const_type(self):
+        # type: () -> bool
+        return True
+
     def return_by_reference(self):
         # type: () -> bool
         return False
@@ -262,13 +307,13 @@ class _CppTypeVector(CppTypeBase):
     def get_getter_body(self, member_name):
         # type: (unicode) -> unicode
         return common.template_args(
-            'return ConstDataRange(reinterpret_cast<const char*>($member_name.data()), $member_name.size());',
+            'return ConstDataRange(reinterpret_cast<const char*>(${member_name}.data()), ${member_name}.size());',
             member_name=member_name)
 
     def get_setter_body(self, member_name):
         # type: (unicode) -> unicode
         return common.template_args(
-            '$member_name = ${value};',
+            '${member_name} = ${value};',
             member_name=member_name,
             value=self.get_transform_to_storage_type("value"))
 
@@ -303,6 +348,10 @@ class _CppTypeDelegating(CppTypeBase):
     def get_getter_setter_type(self):
         # type: () -> unicode
         return self._base.get_getter_setter_type()
+
+    def is_const_type(self):
+        # type: () -> bool
+        return True
 
     def return_by_reference(self):
         # type: () -> bool
@@ -379,7 +428,7 @@ class _CppTypeArray(_CppTypeDelegating):
         # type: (unicode) -> Optional[unicode]
         if self._base.get_storage_type() != self._base.get_getter_setter_type():
             return common.template_args(
-                'transformVector($expression)',
+                'transformVector(${expression})',
                 expression=expression, )
         else:
             return None
@@ -388,7 +437,7 @@ class _CppTypeArray(_CppTypeDelegating):
         # type: (unicode) -> Optional[unicode]
         if self._base.get_storage_type() != self._base.get_getter_setter_type():
             return common.template_args(
-                'transformVector($expression)',
+                'transformVector(${expression})',
                 expression=expression, )
         else:
             return None
@@ -415,7 +464,9 @@ class _CppTypeOptional(_CppTypeDelegating):
 
     def return_by_reference(self):
         # type: () -> bool
-        return False
+        if self._base.is_view_type():
+            return False
+        return self._base.return_by_reference()
 
     def get_getter_body(self, member_name):
         # type: (unicode) -> unicode
@@ -436,11 +487,14 @@ class _CppTypeOptional(_CppTypeDelegating):
                 """),
                 member_name=member_name,
                 convert=convert)
-        else:
+        elif self.is_view_type():
+            # For optionals around view types, do an explicit construction
             return common.template_args(
                 'return ${param_type}{${member_name}};',
                 param_type=self.get_getter_setter_type(),
                 member_name=member_name)
+        else:
+            return common.template_args('return ${member_name};', member_name=member_name)
 
     def get_setter_body(self, member_name):
         # type: (unicode) -> unicode

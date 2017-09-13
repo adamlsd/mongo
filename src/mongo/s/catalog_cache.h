@@ -34,7 +34,6 @@
 #include "mongo/s/chunk_manager.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard.h"
-#include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/notification.h"
@@ -46,7 +45,7 @@ class CachedDatabaseInfo;
 class CachedCollectionRoutingInfo;
 class OperationContext;
 
-static constexpr int kMaxNumStaleVersionRetries = 3;
+static constexpr int kMaxNumStaleVersionRetries = 10;
 
 /**
  * This is the root of the "read-only" hierarchy of cached catalog metadata. It is read only
@@ -57,35 +56,8 @@ class CatalogCache {
     MONGO_DISALLOW_COPYING(CatalogCache);
 
 public:
-    /**
-     * Defaults to instantiating a ConfigServerCatalogCacheLoader.
-     */
-    CatalogCache();
-
-    CatalogCache(std::unique_ptr<CatalogCacheLoader> cacheLoader);
-
+    CatalogCache(CatalogCacheLoader& cacheLoader);
     ~CatalogCache();
-
-    /**
-     * Intializes the catalog cache loader state for primary or secondary depending on 'isPrimary'.
-     *
-     * This can only be called on a shard, and only once during sharding state intiailization!
-     */
-    void initializeReplicaSetRole(bool isPrimary);
-
-    /**
-     * Tells the catalog cache loader that it should be in secondary mode.
-     *
-     * This can only be called on a shard!
-     */
-    void onStepDown();
-
-    /**
-     * Tells the catalog cache loader that it should be in primary mode.
-     *
-     * This can only be called on a shard!
-     */
-    void onStepUp();
 
     /**
      * Retrieves the cached metadata for the specified database. The returned value is still owned
@@ -134,13 +106,14 @@ public:
     void invalidateShardedCollection(StringData ns);
 
     /**
-     * Blocking method, which removes the entire specified database (including its collections) from
-     * the cache.
+     * Non-blocking method, which removes the entire specified database (including its collections)
+     * from the cache.
      */
     void purgeDatabase(StringData dbName);
 
     /**
-     * Blocking method, which removes all databases (including their collections) from the cache.
+     * Non-blocking method, which removes all databases (including their collections) from the
+     * cache.
      */
     void purgeAllDatabases();
 
@@ -194,7 +167,7 @@ private:
                                            int refreshAttempt);
 
     // Interface from which chunks will be retrieved
-    const std::unique_ptr<CatalogCacheLoader> _cacheLoader;
+    CatalogCacheLoader& _cacheLoader;
 
     // Mutex to serialize access to the structures below
     stdx::mutex _mutex;

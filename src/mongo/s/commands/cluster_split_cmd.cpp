@@ -41,7 +41,7 @@
 #include "mongo/db/field_parser.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_commands_common.h"
+#include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
@@ -84,9 +84,9 @@ BSONObj selectMedianKey(OperationContext* opCtx,
               "Unable to find median in chunk, possibly because chunk is empty.");
 }
 
-class SplitCollectionCmd : public Command {
+class SplitCollectionCmd : public ErrmsgCommandDeprecated {
 public:
-    SplitCollectionCmd() : Command("split", "split") {}
+    SplitCollectionCmd() : ErrmsgCommandDeprecated("split", "split") {}
 
     bool slaveOk() const override {
         return true;
@@ -123,11 +123,11 @@ public:
         return parseNsFullyQualified(dbname, cmdObj);
     }
 
-    bool run(OperationContext* opCtx,
-             const std::string& dbname,
-             const BSONObj& cmdObj,
-             std::string& errmsg,
-             BSONObjBuilder& result) override {
+    bool errmsgRun(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& cmdObj,
+                   std::string& errmsg,
+                   BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbname, cmdObj));
 
         auto routingInfo = uassertStatusOK(

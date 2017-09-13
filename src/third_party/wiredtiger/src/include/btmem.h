@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -162,41 +162,16 @@ struct __wt_ovfl_reuse {
 };
 
 /*
- * Overflow tracking for cached values: When a page is reconciled, we write new
- * K/V overflow items, and discard previous underlying blocks.  If there's a
- * transaction in the system that needs to read the previous value, we have to
- * cache the old value until no running transaction needs it.
- */
-struct __wt_ovfl_txnc {
-	uint64_t current;		/* Maximum transaction ID at store */
-
-	uint32_t value_offset;		/* Overflow value offset */
-	uint32_t value_size;		/* Overflow value size */
-	uint8_t  addr_offset;		/* Overflow addr offset */
-	uint8_t  addr_size;		/* Overflow addr size */
-
-	/*
-	 * The untyped address immediately follows the WT_OVFL_TXNC
-	 * structure, the untyped value immediately follows the address.
-	 */
-#define	WT_OVFL_TXNC_ADDR(p)						\
-	((void *)((uint8_t *)(p) + (p)->addr_offset))
-#define	WT_OVFL_TXNC_VALUE(p)						\
-	((void *)((uint8_t *)(p) + (p)->value_offset))
-
-	WT_OVFL_TXNC *next[0];		/* Forward-linked skip list */
-};
-
-/*
  * Lookaside table support: when a page is being reconciled for eviction and has
  * updates that might be required by earlier readers in the system, the updates
  * are written into a lookaside table, and restored as necessary if the page is
  * read. The key is a unique marker for the page (a file ID plus an address),
  * a counter (used to ensure the update records remain in the original order),
- * the on-page item's transaction ID (so we can discard any update records from
- * the lookaside table once the on-page item's transaction is globally visible),
- * and the page key (byte-string for row-store, record number for column-store).
- * The value is the WT_UPDATE structure's transaction ID, update size and value.
+ * the on-page item's transaction ID and timestamp (so we can discard any
+ * update records from the lookaside table once the on-page item's transaction
+ * is globally visible), and the page key (byte-string for row-store, record
+ * number for column-store).  The value is the WT_UPDATE structure's
+ * transaction ID, update size and value.
  *
  * As the key for the lookaside table is different for row- and column-store, we
  * store both key types in a WT_ITEM, building/parsing them in the code, because
@@ -207,8 +182,8 @@ struct __wt_ovfl_txnc {
  * the row-store key is relatively large.
  */
 #define	WT_LAS_FORMAT							\
-    "key_format=" WT_UNCHECKED_STRING(IuQQu)				\
-    ",value_format=" WT_UNCHECKED_STRING(QIu)
+    "key_format=" WT_UNCHECKED_STRING(IuQQuu)				\
+    ",value_format=" WT_UNCHECKED_STRING(QuBu)
 
 /*
  * WT_PAGE_MODIFY --
@@ -229,8 +204,9 @@ struct __wt_page_modify {
 	/* Avoid checking for obsolete updates during checkpoints. */
 	uint64_t obsolete_check_txn;
 
-	/* The largest transaction ID seen on the page by reconciliation. */
+	/* The largest transaction seen on the page by reconciliation. */
 	uint64_t rec_max_txn;
+	WT_DECL_TIMESTAMP(rec_max_timestamp)
 
 	/* The largest update transaction ID (approximate). */
 	uint64_t update_txn;
@@ -287,18 +263,19 @@ struct __wt_page_modify {
 		void	*disk_image;
 
 		/*
-		 * List of unresolved updates. Updates are either a WT_INSERT
-		 * or a row-store leaf page entry; when creating lookaside
-		 * records, there is an additional value, the committed item's
-		 * transaction ID.
+		 * List of unresolved updates. Updates are either a row-store
+		 * insert or update list, or column-store insert list. When
+		 * creating lookaside records, there is an additional value,
+		 * the committed item's transaction information.
 		 *
 		 * If there are unresolved updates, the block wasn't written and
 		 * there will always be a disk image.
 		 */
 		struct __wt_save_upd {
-			WT_INSERT *ins;
-			WT_ROW	  *rip;
+			WT_INSERT *ins;		/* Insert list reference */
+			WT_ROW	  *ripcip;	/* Original on-page reference */
 			uint64_t   onpage_txn;
+			WT_DECL_TIMESTAMP(onpage_timestamp)
 		} *supd;
 		uint32_t supd_entries;
 
@@ -400,31 +377,36 @@ struct __wt_page_modify {
 		WT_OVFL_REUSE	*ovfl_reuse[WT_SKIP_MAXDEPTH];
 
 		/*
-		 * Overflow value address/byte-string pairs cached until no
-		 * running transaction will possibly read them.
-		 */
-		WT_OVFL_TXNC	*ovfl_txnc[WT_SKIP_MAXDEPTH];
-
-		/*
 		 * Overflow key/value addresses to be discarded from the block
 		 * manager after reconciliation completes successfully.
 		 */
 		WT_CELL **discard;
 		size_t	  discard_entries;
 		size_t	  discard_allocated;
+
+		/* Cached overflow value cell/update address pairs. */
+		struct {
+			WT_CELL	*cell;
+			uint8_t	*data;
+			size_t	 size;
+		} *remove;
+		size_t	 remove_allocated;
+		uint32_t remove_next;
 	} *ovfl_track;
+
+#define	WT_PAGE_LOCK(s, p) 						\
+	__wt_spin_lock((s), &(p)->modify->page_lock)
+#define	WT_PAGE_TRYLOCK(s, p)						\
+	__wt_spin_trylock((s), &(p)->modify->page_lock)
+#define	WT_PAGE_UNLOCK(s, p) 						\
+	__wt_spin_unlock((s), &(p)->modify->page_lock)
+	WT_SPINLOCK page_lock;		/* Page's spinlock */
 
 	/*
 	 * The write generation is incremented when a page is modified, a page
 	 * is clean if the write generation is 0.
 	 */
 	uint32_t write_gen;
-
-#define	WT_PAGE_LOCK(s, p)						\
-	__wt_spin_lock((s), &S2C(s)->page_lock[(p)->modify->page_lock])
-#define	WT_PAGE_UNLOCK(s, p)						\
-	__wt_spin_unlock((s), &S2C(s)->page_lock[(p)->modify->page_lock])
-	uint8_t page_lock;		/* Page's spinlock */
 
 #define	WT_PM_REC_EMPTY		1	/* Reconciliation: no replacement */
 #define	WT_PM_REC_MULTIBLOCK	2	/* Reconciliation: multiple blocks */
@@ -507,7 +489,8 @@ struct __wt_page {
 #define	WT_INTL_INDEX_GET_SAFE(page)					\
 	((page)->u.intl.__index)
 #define	WT_INTL_INDEX_GET(session, page, pindex) do {			\
-	WT_ASSERT(session, (session)->split_gen != 0);			\
+	WT_ASSERT(session,						\
+	    __wt_session_gen(session, WT_GEN_SPLIT) != 0);		\
 	(pindex) = WT_INTL_INDEX_GET_SAFE(page);			\
 } while (0)
 #define	WT_INTL_INDEX_SET(page, v) do {					\
@@ -603,13 +586,6 @@ struct __wt_page {
 	uint8_t unused[2];		/* Unused padding */
 
 	/*
-	 * Used to protect and co-ordinate splits for internal pages and
-	 * reconciliation for all pages. Only used to co-ordinate among the
-	 * uncommon cases that require exclusive access to a page.
-	 */
-	WT_RWLOCK page_lock;
-
-	/*
 	 * The page's read generation acts as an LRU value for each page in the
 	 * tree; it is used by the eviction server thread to select pages to be
 	 * discarded from the in-memory tree.
@@ -635,8 +611,6 @@ struct __wt_page {
 #define	WT_READGEN_STEP		100
 	uint64_t read_gen;
 
-	uint64_t evict_pass_gen;	/* Eviction pass generation */
-
 	size_t memory_footprint;	/* Memory attached to the page */
 
 	/* Page's on-disk representation: NULL for pages created in memory. */
@@ -644,6 +618,11 @@ struct __wt_page {
 
 	/* If/when the page is modified, we need lots more information. */
 	WT_PAGE_MODIFY *modify;
+
+	/* This is the 64 byte boundary, try to keep hot fields above here. */
+
+	uint64_t cache_create_gen;	/* Page create timestamp */
+	uint64_t evict_pass_gen;	/* Eviction pass generation */
 };
 
 /*
@@ -717,7 +696,8 @@ struct __wt_page {
  *	Related information for fast-delete, on-disk pages.
  */
 struct __wt_page_deleted {
-	uint64_t txnid;			/* Transaction ID */
+	volatile uint64_t txnid;			/* Transaction ID */
+	WT_DECL_TIMESTAMP(timestamp)
 
 	WT_UPDATE **update_list;	/* List of updates for abort */
 };
@@ -808,11 +788,11 @@ struct __wt_row {	/* On-page key, on-page cell, or off-page WT_IKEY */
  *	Walk the entries of an in-memory row-store leaf page.
  */
 #define	WT_ROW_FOREACH(page, rip, i)					\
-	for ((i) = (page)->entries,				\
+	for ((i) = (page)->entries,					\
 	    (rip) = (page)->pg_row; (i) > 0; ++(rip), --(i))
 #define	WT_ROW_FOREACH_REVERSE(page, rip, i)				\
-	for ((i) = (page)->entries,				\
-	    (rip) = (page)->pg_row + ((page)->entries - 1);	\
+	for ((i) = (page)->entries,					\
+	    (rip) = (page)->pg_row + ((page)->entries - 1);		\
 	    (i) > 0; --(rip), --(i))
 
 /*
@@ -860,7 +840,7 @@ struct __wt_col {
  *	Walk the entries of variable-length column-store leaf page.
  */
 #define	WT_COL_FOREACH(page, cip, i)					\
-	for ((i) = (page)->entries,				\
+	for ((i) = (page)->entries,					\
 	    (cip) = (page)->pg_var; (i) > 0; ++(cip), --(i))
 
 /*
@@ -906,34 +886,59 @@ struct __wt_ikey {
  * is done for an entry, WT_UPDATE structures are formed into a forward-linked
  * list.
  */
-WT_PACKED_STRUCT_BEGIN(__wt_update)
-	uint64_t txnid;			/* update transaction */
+struct __wt_update {
+	volatile uint64_t txnid;	/* transaction ID */
+#if WT_TIMESTAMP_SIZE == 8
+	WT_DECL_TIMESTAMP(timestamp)	/* aligned uint64_t timestamp */
+#endif
 
 	WT_UPDATE *next;		/* forward-linked list */
 
-	/*
-	 * We use the maximum size as an is-deleted flag, which means we can't
-	 * store 4GB objects; I'd rather do that than increase the size of this
-	 * structure for a flag bit.
-	 */
-#define	WT_UPDATE_DELETED_VALUE		UINT32_MAX
-#define	WT_UPDATE_DELETED_SET(upd)	((upd)->size = WT_UPDATE_DELETED_VALUE)
-#define	WT_UPDATE_DELETED_ISSET(upd)	((upd)->size == WT_UPDATE_DELETED_VALUE)
-	uint32_t size;			/* update length */
+	uint32_t size;			/* data length */
 
-	/* The untyped value immediately follows the WT_UPDATE structure. */
-#define	WT_UPDATE_DATA(upd)						\
-	((void *)((uint8_t *)(upd) + sizeof(WT_UPDATE)))
+#define	WT_UPDATE_INVALID	0	/* diagnostic check */
+#define	WT_UPDATE_DELETED	1	/* deleted */
+#define	WT_UPDATE_MODIFIED	2	/* partial-update modify value */
+#define	WT_UPDATE_RESERVED	3	/* reserved */
+#define	WT_UPDATE_STANDARD	4	/* complete value */
+	uint8_t type;			/* type (one byte to conserve memory) */
+
+	/* If the update includes a complete value. */
+#define	WT_UPDATE_DATA_VALUE(upd)					\
+	((upd)->type == WT_UPDATE_STANDARD || (upd)->type == WT_UPDATE_DELETED)
+
+#if WT_TIMESTAMP_SIZE != 8
+	WT_DECL_TIMESTAMP(timestamp)	/* unaligned uint8_t array timestamp */
+#endif
 
 	/*
-	 * The memory size of an update: include some padding because this is
-	 * such a common case that overhead of tiny allocations can swamp our
-	 * cache overhead calculation.
+	 * Zero or more bytes of value (the payload) immediately follows the
+	 * WT_UPDATE structure.  We use a C99 flexible array member which has
+	 * the semantics we want.
 	 */
+	uint8_t data[];			/* start of the data */
+};
+
+/*
+ * WT_UPDATE_SIZE is the expected structure size excluding the payload data --
+ * we verify the build to ensure the compiler hasn't inserted padding.
+ */
+#define	WT_UPDATE_SIZE	(21 + WT_TIMESTAMP_SIZE)
+
+/*
+ * The memory size of an update: include some padding because this is such a
+ * common case that overhead of tiny allocations can swamp our cache overhead
+ * calculation.
+ */
 #define	WT_UPDATE_MEMSIZE(upd)						\
-	WT_ALIGN(sizeof(WT_UPDATE) +					\
-	    (WT_UPDATE_DELETED_ISSET(upd) ? 0 : (upd)->size), 32)
-WT_PACKED_STRUCT_END
+	WT_ALIGN(WT_UPDATE_SIZE + (upd)->size, 32)
+
+/*
+ * WT_MAX_MODIFY_UPDATE --
+ *	Limit update chains to a small value to avoid penalizing reads and
+ * permit truncation.
+ */
+#define	WT_MAX_MODIFY_UPDATE	10
 
 /*
  * WT_INSERT --
@@ -1097,22 +1102,16 @@ struct __wt_insert_head {
  * already have a split generation, leave it alone.  If our caller is examining
  * an index, we don't want the oldest split generation to move forward and
  * potentially free it.
- *
- * Check that we haven't raced with a split_gen update after publishing: we
- * rely on the published value not being missed when scanning for the oldest
- * active split_gen.
  */
 #define	WT_ENTER_PAGE_INDEX(session) do {				\
-	uint64_t __prev_split_gen = (session)->split_gen;		\
+	uint64_t __prev_split_gen =					\
+	    __wt_session_gen(session, WT_GEN_SPLIT);			\
 	if (__prev_split_gen == 0)					\
-		do {                                                    \
-			WT_PUBLISH((session)->split_gen,		\
-			    S2C(session)->split_gen);                   \
-		} while ((session)->split_gen != S2C(session)->split_gen)
+		__wt_session_gen_enter(session, WT_GEN_SPLIT);
 
 #define	WT_LEAVE_PAGE_INDEX(session)					\
 	if (__prev_split_gen == 0)					\
-		(session)->split_gen = 0;				\
+		__wt_session_gen_leave(session, WT_GEN_SPLIT);		\
 	} while (0)
 
 #define	WT_WITH_PAGE_INDEX(session, e)					\

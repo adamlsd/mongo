@@ -88,7 +88,8 @@ TEST_F(ConfigInitializationTest, UpgradeNotNeeded) {
     ASSERT_OK(insertToConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), version.toBSON()));
 
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto versionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -109,7 +110,8 @@ TEST_F(ConfigInitializationTest, InitIncompatibleVersion) {
         operationContext(), NamespaceString(VersionType::ConfigNS), version.toBSON()));
 
     ASSERT_EQ(ErrorCodes::IncompatibleShardingConfigVersion,
-              catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+              ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto versionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -135,7 +137,8 @@ TEST_F(ConfigInitializationTest, InitClusterMultipleVersionDocs) {
                                             << "a second document")));
 
     ASSERT_EQ(ErrorCodes::TooManyMatchingDocuments,
-              catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+              ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
 TEST_F(ConfigInitializationTest, InitInvalidConfigVersionDoc) {
@@ -149,7 +152,8 @@ TEST_F(ConfigInitializationTest, InitInvalidConfigVersionDoc) {
         operationContext(), NamespaceString(VersionType::ConfigNS), versionDoc));
 
     ASSERT_EQ(ErrorCodes::TypeMismatch,
-              catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+              ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
 
@@ -159,7 +163,8 @@ TEST_F(ConfigInitializationTest, InitNoVersionDocEmptyConfig) {
                   findOneOnConfigCollection(
                       operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
 
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto versionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -180,11 +185,13 @@ TEST_F(ConfigInitializationTest, InitVersionTooHigh) {
         operationContext(), NamespaceString(VersionType::ConfigNS), version.toBSON()));
 
     ASSERT_EQ(ErrorCodes::IncompatibleShardingConfigVersion,
-              catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+              ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
 TEST_F(ConfigInitializationTest, OnlyRunsOnce) {
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto versionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -196,11 +203,13 @@ TEST_F(ConfigInitializationTest, OnlyRunsOnce) {
     ASSERT_EQUALS(MIN_COMPATIBLE_CONFIG_VERSION, foundVersion.getMinCompatibleVersion());
 
     ASSERT_EQUALS(ErrorCodes::AlreadyInitialized,
-                  catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+                  ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
 TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto versionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -214,13 +223,14 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
     // Now remove the version document and re-run initializeConfigDatabaseIfNeeded().
     {
         // Mirror what happens if the config.version document is rolled back.
-        ON_BLOCK_EXIT(
-            [&] { replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY); });
-        replicationCoordinator()->setFollowerMode(repl::MemberState::RS_ROLLBACK);
+        ON_BLOCK_EXIT([&] {
+            replicationCoordinator()->setFollowerMode(repl::MemberState::RS_PRIMARY).ignore();
+        });
+        ASSERT_OK(replicationCoordinator()->setFollowerMode(repl::MemberState::RS_ROLLBACK));
         auto opCtx = operationContext();
         repl::UnreplicatedWritesBlock uwb(opCtx);
         auto nss = NamespaceString(VersionType::ConfigNS);
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_BEGIN {
+        writeConflictRetry(opCtx, "removeConfigDocuments", nss.ns(), [&] {
             AutoGetCollection autoColl(opCtx, nss, MODE_IX);
             auto coll = autoColl.getCollection();
             ASSERT_TRUE(coll);
@@ -231,12 +241,11 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
             }
             mongo::WriteUnitOfWork wuow(opCtx);
             for (auto recordId : recordIds) {
-                coll->deleteDocument(opCtx, recordId, nullptr);
+                coll->deleteDocument(opCtx, kUninitializedStmtId, recordId, nullptr);
             }
             wuow.commit();
             ASSERT_EQUALS(0UL, coll->numRecords(opCtx));
-        }
-        MONGO_WRITE_CONFLICT_RETRY_LOOP_END(opCtx, "removeConfigDocuments", nss.ns());
+        });
     }
 
     // Verify the document was actually removed.
@@ -245,7 +254,8 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
                       operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
 
     // Re-create the config.version document.
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto newVersionDoc = assertGet(findOneOnConfigCollection(
         operationContext(), NamespaceString(VersionType::ConfigNS), BSONObj()));
@@ -259,67 +269,68 @@ TEST_F(ConfigInitializationTest, ReRunsIfDocRolledBackThenReElected) {
 }
 
 TEST_F(ConfigInitializationTest, BuildsNecessaryIndexes) {
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto expectedChunksIndexes = std::vector<BSONObj>{
-        BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                  << "_id_"
                  << "ns"
                  << "config.chunks"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("ns" << 1 << "min" << 1) << "name"
+        BSON("v" << 2 << "unique" << true << "key" << BSON("ns" << 1 << "min" << 1) << "name"
                  << "ns_1_min_1"
                  << "ns"
                  << "config.chunks"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("ns" << 1 << "shard" << 1 << "min" << 1)
+        BSON("v" << 2 << "unique" << true << "key" << BSON("ns" << 1 << "shard" << 1 << "min" << 1)
                  << "name"
                  << "ns_1_shard_1_min_1"
                  << "ns"
                  << "config.chunks"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("ns" << 1 << "lastmod" << 1) << "name"
+        BSON("v" << 2 << "unique" << true << "key" << BSON("ns" << 1 << "lastmod" << 1) << "name"
                  << "ns_1_lastmod_1"
                  << "ns"
                  << "config.chunks")};
     auto expectedLockpingsIndexes =
-        std::vector<BSONObj>{BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        std::vector<BSONObj>{BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                                       << "_id_"
                                       << "ns"
                                       << "config.lockpings"),
-                             BSON("v" << 1 << "key" << BSON("ping" << 1) << "name"
+                             BSON("v" << 2 << "key" << BSON("ping" << 1) << "name"
                                       << "ping_1"
                                       << "ns"
                                       << "config.lockpings")};
     auto expectedLocksIndexes = std::vector<BSONObj>{
-        BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                  << "_id_"
                  << "ns"
                  << "config.locks"),
-        BSON("v" << 1 << "key" << BSON("ts" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("ts" << 1) << "name"
                  << "ts_1"
                  << "ns"
                  << "config.locks"),
-        BSON("v" << 1 << "key" << BSON("state" << 1 << "process" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("state" << 1 << "process" << 1) << "name"
                  << "state_1_process_1"
                  << "ns"
                  << "config.locks")};
     auto expectedShardsIndexes = std::vector<BSONObj>{
-        BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                  << "_id_"
                  << "ns"
                  << "config.shards"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("host" << 1) << "name"
+        BSON("v" << 2 << "unique" << true << "key" << BSON("host" << 1) << "name"
                  << "host_1"
                  << "ns"
                  << "config.shards")};
     auto expectedTagsIndexes = std::vector<BSONObj>{
-        BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                  << "_id_"
                  << "ns"
                  << "config.tags"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("ns" << 1 << "min" << 1) << "name"
+        BSON("v" << 2 << "unique" << true << "key" << BSON("ns" << 1 << "min" << 1) << "name"
                  << "ns_1_min_1"
                  << "ns"
                  << "config.tags"),
-        BSON("v" << 1 << "key" << BSON("ns" << 1 << "tag" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("ns" << 1 << "tag" << 1) << "name"
                  << "ns_1_tag_1"
                  << "ns"
                  << "config.tags")};
@@ -346,17 +357,20 @@ TEST_F(ConfigInitializationTest, BuildsNecessaryIndexes) {
 }
 
 TEST_F(ConfigInitializationTest, CompatibleIndexAlreadyExists) {
-    getConfigShard()->createIndexOnConfig(
-        operationContext(), NamespaceString(ShardType::ConfigNS), BSON("host" << 1), true);
+    getConfigShard()
+        ->createIndexOnConfig(
+            operationContext(), NamespaceString(ShardType::ConfigNS), BSON("host" << 1), true)
+        .transitional_ignore();
 
-    ASSERT_OK(catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+    ASSERT_OK(ShardingCatalogManager::get(operationContext())
+                  ->initializeConfigDatabaseIfNeeded(operationContext()));
 
     auto expectedShardsIndexes = std::vector<BSONObj>{
-        BSON("v" << 1 << "key" << BSON("_id" << 1) << "name"
+        BSON("v" << 2 << "key" << BSON("_id" << 1) << "name"
                  << "_id_"
                  << "ns"
                  << "config.shards"),
-        BSON("v" << 1 << "unique" << true << "key" << BSON("host" << 1) << "name"
+        BSON("v" << 2 << "unique" << true << "key" << BSON("host" << 1) << "name"
                  << "host_1"
                  << "ns"
                  << "config.shards")};
@@ -370,11 +384,14 @@ TEST_F(ConfigInitializationTest, CompatibleIndexAlreadyExists) {
 TEST_F(ConfigInitializationTest, IncompatibleIndexAlreadyExists) {
     // Make the index non-unique even though its supposed to be unique, make sure initialization
     // fails
-    getConfigShard()->createIndexOnConfig(
-        operationContext(), NamespaceString(ShardType::ConfigNS), BSON("host" << 1), false);
+    getConfigShard()
+        ->createIndexOnConfig(
+            operationContext(), NamespaceString(ShardType::ConfigNS), BSON("host" << 1), false)
+        .transitional_ignore();
 
     ASSERT_EQUALS(ErrorCodes::IndexOptionsConflict,
-                  catalogManager()->initializeConfigDatabaseIfNeeded(operationContext()));
+                  ShardingCatalogManager::get(operationContext())
+                      ->initializeConfigDatabaseIfNeeded(operationContext()));
 }
 
 }  // unnamed namespace

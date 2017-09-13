@@ -31,14 +31,15 @@
 
 #pragma once
 
+#include <list>
 #include <memory>
-#include <queue>
 #include <string>
 
 #include <wiredtiger.h>
 
 #include "mongo/bson/ordering.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_oplog_manager.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
@@ -48,6 +49,7 @@ namespace mongo {
 
 class ClockSource;
 class JournalListener;
+class WiredTigerRecordStore;
 class WiredTigerSessionCache;
 class WiredTigerSizeStorer;
 
@@ -160,6 +162,12 @@ public:
 
     void setJournalListener(JournalListener* jl) final;
 
+    virtual void setStableTimestamp(SnapshotName stableTimestamp) override;
+
+    virtual void setInitialDataTimestamp(SnapshotName initialDataTimestamp) override;
+
+    virtual bool supportsRecoverToStableTimestamp() const override;
+
     // wiredtiger specific
     // Calls WT_CONNECTION::reconfigure on the underlying WT_CONNECTION
     // held by this class
@@ -169,9 +177,35 @@ public:
         return _conn;
     }
     void dropSomeQueuedIdents();
+    std::list<WiredTigerCachedCursor> filterCursorsWithQueuedDrops(
+        std::list<WiredTigerCachedCursor>* cache);
     bool haveDropsQueued() const;
 
     void syncSizeInfo(bool sync) const;
+
+    /*
+     * Initializes and reference counts an oplog manager, to control oplog entry visibility for
+     * reads.
+     * The oplogManager object is held by this class but is constructed and deleted as per
+     * the Oplog record store (the record store corresponding to the oplog collection).  If
+     * multiple oplog record stores are created, the first oplog record store to be constructed will
+     * construct the Manager, and the last oplog record store to be deleted will destruct the
+     * Manager.
+     */
+    void initializeOplogManager(OperationContext* opCtx,
+                                const std::string& uri,
+                                WiredTigerRecordStore* oplogRecordStore);
+    void deleteOplogManager();
+
+    WiredTigerOplogManager* getOplogManager() const {
+        return _oplogManager.get();
+    }
+
+    /*
+     * This function is called when replication has completed a batch.  In this function, we
+     * refresh our oplog visiblity read-at-timestamp value.
+     */
+    void replicationBatchIsComplete() const override;
 
     /**
      * Sets the implementation for `initRsOplogBackgroundThread` (allowing tests to skip the
@@ -192,6 +226,7 @@ public:
 
 private:
     class WiredTigerJournalFlusher;
+    class WiredTigerCheckpointThread;
 
     Status _salvageIfNeeded(const char* uri);
     void _checkIdentPath(StringData ident);
@@ -201,11 +236,23 @@ private:
     std::string _uri(StringData ident) const;
     bool _drop(StringData ident);
 
+    void _setOldestTimestamp(SnapshotName oldestTimestamp);
+
     WT_CONNECTION* _conn;
     WT_EVENT_HANDLER _eventHandler;
     std::unique_ptr<WiredTigerSessionCache> _sessionCache;
+
+    // Mutex to protect use of _oplogManager and _oplogManagerCount by this instance of KV
+    // engine.
+    // Uses of _oplogManager by the oplog record stores themselves are safe without locking, since
+    // those record stores manage the oplogManager lifetime.
+    mutable stdx::mutex _oplogManagerMutex;
+    std::unique_ptr<WiredTigerOplogManager> _oplogManager;
+    std::size_t _oplogManagerCount = 0;
+
     std::string _canonicalName;
     std::string _path;
+    std::string _wtOpenConfig;
 
     std::unique_ptr<WiredTigerSizeStorer> _sizeStorer;
     std::string _sizeStorerUri;
@@ -215,13 +262,14 @@ private:
     bool _ephemeral;
     bool _readOnly;
     std::unique_ptr<WiredTigerJournalFlusher> _journalFlusher;  // Depends on _sizeStorer
+    std::unique_ptr<WiredTigerCheckpointThread> _checkpointThread;
 
     std::string _rsOptions;
     std::string _indexOptions;
 
     mutable stdx::mutex _dropAllQueuesMutex;
     mutable stdx::mutex _identToDropMutex;
-    std::queue<std::string> _identToDrop;
+    std::list<std::string> _identToDrop;
 
     mutable Date_t _previousCheckedDropsQueued;
 

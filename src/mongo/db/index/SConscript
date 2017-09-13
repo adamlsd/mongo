@@ -11,6 +11,8 @@ env.Library(
         ],
         LIBDEPS=[
             '$BUILD_DIR/mongo/base',
+            '$BUILD_DIR/mongo/db/catalog/collection',
+            '$BUILD_DIR/mongo/db/catalog/index_catalog',
         ],
 )
 
@@ -19,10 +21,9 @@ env.Library(
         source=[
             'btree_key_generator.cpp',
             'expression_keys_private.cpp',
+            'sort_key_generator.cpp',
         ],
         LIBDEPS=[
-            'expression_params',
-            'index_descriptor',
             '$BUILD_DIR/mongo/base',
             '$BUILD_DIR/mongo/db/bson/dotted_path_support',
             '$BUILD_DIR/mongo/db/fts/base',
@@ -31,6 +32,8 @@ env.Library(
             '$BUILD_DIR/mongo/db/mongohasher',
             '$BUILD_DIR/mongo/db/query/collation/collator_interface',
             '$BUILD_DIR/third_party/s2/s2',
+            'expression_params',
+            'index_descriptor',
         ],
 )
 
@@ -70,9 +73,11 @@ env.CppUnitTest(
             'btree_key_generator_test.cpp',
             'hash_key_generator_test.cpp',
             's2_key_generator_test.cpp',
+            'sort_key_generator_test.cpp',
         ],
         LIBDEPS=[
             'key_generator',
+            "$BUILD_DIR/mongo/db/matcher/expressions",
             '$BUILD_DIR/mongo/db/mongohasher',
             '$BUILD_DIR/mongo/db/query/collation/collator_interface_mock',
         ],

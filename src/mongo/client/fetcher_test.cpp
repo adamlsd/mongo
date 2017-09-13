@@ -117,7 +117,8 @@ void FetcherTest::setUp() {
 }
 
 void FetcherTest::tearDown() {
-    executor::ThreadPoolExecutorTest::tearDown();
+    getExecutor().shutdown();
+    getExecutor().join();
     // Executor may still invoke fetcher's callback before shutting down.
     fetcher.reset();
 }
@@ -204,32 +205,32 @@ TEST_F(FetcherTest, InvalidConstruction) {
 
     // Null executor.
     ASSERT_THROWS_CODE_AND_WHAT(Fetcher(nullptr, source, "db", findCmdObj, unreachableCallback),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::BadValue,
                                 "task executor cannot be null");
 
     // Empty source.
     ASSERT_THROWS_CODE_AND_WHAT(
         Fetcher(&executor, HostAndPort(), "db", findCmdObj, unreachableCallback),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "source in remote command request cannot be empty");
 
     // Empty database name.
     ASSERT_THROWS_CODE_AND_WHAT(Fetcher(&executor, source, "", findCmdObj, unreachableCallback),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::BadValue,
                                 "database name in remote command request cannot be empty");
 
     // Empty command object.
     ASSERT_THROWS_CODE_AND_WHAT(Fetcher(&executor, source, "db", BSONObj(), unreachableCallback),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::BadValue,
                                 "command object in remote command request cannot be empty");
 
     // Callback function cannot be null.
     ASSERT_THROWS_CODE_AND_WHAT(Fetcher(&executor, source, "db", findCmdObj, Fetcher::CallbackFn()),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::BadValue,
                                 "callback function cannot be null");
 
@@ -242,8 +243,9 @@ TEST_F(FetcherTest, InvalidConstruction) {
                 unreachableCallback,
                 rpc::makeEmptyMetadata(),
                 RemoteCommandRequest::kNoTimeout,
+                RemoteCommandRequest::kNoTimeout,
                 std::unique_ptr<RemoteCommandRetryScheduler::RetryPolicy>()),
-        UserException,
+        AssertionException,
         ErrorCodes::BadValue,
         "retry policy cannot be null");
 }
@@ -273,7 +275,6 @@ TEST_F(FetcherTest, RemoteCommandRequestShouldContainCommandParametersPassedToCo
     ASSERT_EQUALS(source, fetcher->getSource());
     ASSERT_BSONOBJ_EQ(findCmdObj, fetcher->getCommandObject());
     ASSERT_BSONOBJ_EQ(metadataObj, fetcher->getMetadataObject());
-    ASSERT_EQUALS(timeout, fetcher->getTimeout());
 
     ASSERT_OK(fetcher->schedule());
 
@@ -284,6 +285,7 @@ TEST_F(FetcherTest, RemoteCommandRequestShouldContainCommandParametersPassedToCo
         ASSERT_TRUE(net->hasReadyRequests());
         auto noi = net->getNextReadyRequest();
         request = noi->getRequest();
+        ASSERT_EQUALS(timeout, request.timeout);
     }
 
     ASSERT_EQUALS(source, request.target);
@@ -757,7 +759,7 @@ TEST_F(FetcherTest, CancelDuringCallbackPutsFetcherInShutdown) {
         fetchStatus1 = fetchResult.getStatus();
         fetcher->shutdown();
     };
-    fetcher->schedule();
+    fetcher->schedule().transitional_ignore();
     const BSONObj doc = BSON("_id" << 1);
     processNetworkResponse(BSON("cursor" << BSON("id" << 1LL << "ns"
                                                       << "db.coll"
@@ -1047,6 +1049,7 @@ TEST_F(FetcherTest, FetcherAppliesRetryPolicyToFirstCommandButNotToGetMoreReques
                                          findCmdObj,
                                          makeCallback(),
                                          rpc::makeEmptyMetadata(),
+                                         executor::RemoteCommandRequest::kNoTimeout,
                                          executor::RemoteCommandRequest::kNoTimeout,
                                          std::move(policy));
 

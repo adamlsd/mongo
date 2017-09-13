@@ -86,6 +86,10 @@ public:
         std::abort();
     }
 
+    void refreshUUID(OperationContext* opCtx) {
+        std::abort();
+    }
+
     const IndexCatalog* getIndexCatalog() const {
         std::abort();
     }
@@ -125,16 +129,18 @@ public:
     }
 
     void deleteDocument(OperationContext* opCtx,
+                        StmtId stmtId,
                         const RecordId& loc,
                         OpDebug* opDebug,
                         bool fromMigrate,
-                        bool noWarn) {
+                        bool noWarn,
+                        Collection::StoreDeletedDoc storeDeletedDoc) {
         std::abort();
     }
 
     Status insertDocuments(OperationContext* opCtx,
-                           std::vector<BSONObj>::const_iterator begin,
-                           std::vector<BSONObj>::const_iterator end,
+                           std::vector<InsertStatement>::const_iterator begin,
+                           std::vector<InsertStatement>::const_iterator end,
                            OpDebug* opDebug,
                            bool enforceQuota,
                            bool fromMigrate) {
@@ -142,7 +148,7 @@ public:
     }
 
     Status insertDocument(OperationContext* opCtx,
-                          const BSONObj& doc,
+                          const InsertStatement& doc,
                           OpDebug* opDebug,
                           bool enforceQuota,
                           bool fromMigrate) {
@@ -151,6 +157,7 @@ public:
 
     Status insertDocumentsForOplog(OperationContext* opCtx,
                                    const DocWriter* const* docs,
+                                   Timestamp* timestamps,
                                    size_t nDocs) {
         std::abort();
     }
@@ -162,14 +169,14 @@ public:
         std::abort();
     }
 
-    StatusWith<RecordId> updateDocument(OperationContext* opCtx,
-                                        const RecordId& oldLocation,
-                                        const Snapshotted<BSONObj>& oldDoc,
-                                        const BSONObj& newDoc,
-                                        bool enforceQuota,
-                                        bool indexesAffected,
-                                        OpDebug* opDebug,
-                                        OplogUpdateEntryArgs* args) {
+    RecordId updateDocument(OperationContext* opCtx,
+                            const RecordId& oldLocation,
+                            const Snapshotted<BSONObj>& oldDoc,
+                            const BSONObj& newDoc,
+                            bool enforceQuota,
+                            bool indexesAffected,
+                            OpDebug* opDebug,
+                            OplogUpdateEntryArgs* args) {
         std::abort();
     }
 
@@ -195,6 +202,8 @@ public:
 
     Status validate(OperationContext* opCtx,
                     ValidateCmdLevel level,
+                    bool background,
+                    std::unique_ptr<Lock::CollectionLock> collLk,
                     ValidateResults* results,
                     BSONObjBuilder* output) {
         std::abort();
@@ -211,7 +220,8 @@ public:
         std::abort();
     }
 
-    StatusWithMatchExpression parseValidator(const BSONObj& validator) const {
+    StatusWithMatchExpression parseValidator(
+        const BSONObj& validator, MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
         std::abort();
     }
 
@@ -266,6 +276,13 @@ public:
     }
 
     const CollatorInterface* getDefaultCollator() const {
+        std::abort();
+    }
+
+    void informIndexObserver(OperationContext* opCtx,
+                             const IndexDescriptor* descriptor,
+                             const IndexKeyEntry& indexEntry,
+                             const ValidationOperation operation) const {
         std::abort();
     }
 

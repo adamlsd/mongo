@@ -25,7 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplicationRollback
 
 #include "mongo/db/repl/rollback_common_point_resolver.h"
 
@@ -123,8 +123,7 @@ BSONObj RollbackCommonPointResolver::_makeFindCommandObject(const NamespaceStrin
     cmdBob.append("find", nss.coll());
     cmdBob.append("filter", BSON("ts" << BSON("$lt" << lastOpTimeFetched.getTimestamp())));
     cmdBob.append("sort", BSON("$natural" << -1));
-    cmdBob.append("maxTimeMS",
-                  durationCount<Milliseconds>(AbstractOplogFetcher::kOplogInitialFindMaxTime));
+    cmdBob.append("maxTimeMS", durationCount<Milliseconds>(_getFindMaxTime()));
     return cmdBob.obj();
 }
 
@@ -250,7 +249,7 @@ StatusWith<BSONObj> RollbackCommonPointResolver::_onSuccessfulBatch(
     resetLocalOplogIteratorGuard.Dismiss();
 
     return makeGetMoreCommandObject(
-        queryResponse.nss, queryResponse.cursorId, AbstractOplogFetcher::kOplogGetMoreMaxTime);
+        queryResponse.nss, queryResponse.cursorId, _getGetMoreMaxTime());
 }
 
 }  // namespace repl

@@ -9,14 +9,8 @@
     // fixture. Please do not use it with other master/slave clusters.
     var MasterSlaveDBHashTest = function(primaryHost) {
         var master = new Mongo(primaryHost);
-        var resolvedHost = getHostName();
         var masterPort = master.host.split(':')[1];
-        // The 'host' property is modified manually because 'localhost' is used by default in a new
-        // Mongo() connection. We set the value to the real hostname because that is what the server
-        // uses.
-        master.host = resolvedHost + ':' + masterPort;
-
-        var slave = new Mongo(resolvedHost + ':' + String(parseInt(masterPort) + 1));
+        var slave = new Mongo('localhost:' + String(parseInt(masterPort) + 1));
 
         this.nodeList = function() {
             return [master.host, slave.host];
@@ -91,7 +85,8 @@
     var isMasterSlave = cmdLineOpts.parsed.master === true;
     var testFixture = isMasterSlave ? new MasterSlaveDBHashTest(db.getMongo().host)
                                     : new ReplSetTest(db.getMongo().host);
-    testFixture.checkReplicatedDataHashes();
+    var excludedDBs = jsTest.options().excludedDBsFromDBHash || [];
+    testFixture.checkReplicatedDataHashes(undefined, excludedDBs);
 
     var totalTime = Date.now() - startTime;
     print('Finished consistency checks of cluster in ' + totalTime + ' ms.');

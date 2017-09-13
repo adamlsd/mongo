@@ -32,93 +32,87 @@
 
 #include "mongo/base/status_with.h"
 #include "mongo/db/logical_session_id_gen.h"
+#include "mongo/stdx/unordered_set.h"
 #include "mongo/util/uuid.h"
 
 namespace mongo {
 
+using TxnNumber = std::int64_t;
+using StmtId = std::int32_t;
+
+const StmtId kUninitializedStmtId = -1;
+const TxnNumber kUninitializedTxnNumber = -1;
+
 class BSONObjBuilder;
-class TxnId;
+class OperationContext;
 
-/**
- * A 128-bit identifier for a logical session.
- */
-class LogicalSessionId : public Logical_session_id {
-public:
-    friend class Logical_session_id;
-    friend class Logical_session_record;
+const Minutes kLogicalSessionDefaultTimeout = Minutes(30);
+extern int localLogicalSessionTimeoutMinutes;
 
-    /**
-     * Create and return a new LogicalSessionId with a random UUID.
-     */
-    static LogicalSessionId gen();
+inline bool operator==(const LogicalSessionId& lhs, const LogicalSessionId& rhs) {
+    auto makeEqualityLens = [](const auto& lsid) { return std::tie(lsid.getId(), lsid.getUid()); };
 
-    /**
-     * Construct a new LogicalSessionId out of a txnId received with an operation.
-     */
-    static StatusWith<LogicalSessionId> parse(const TxnId& txnId);
+    return makeEqualityLens(lhs) == makeEqualityLens(rhs);
+}
 
-    /**
-     * If the given string represents a valid LogicalSessionId, constructs and returns,
-     * the id, otherwise returns an error.
-     */
-    static StatusWith<LogicalSessionId> parse(const std::string& s);
+inline bool operator!=(const LogicalSessionId& lhs, const LogicalSessionId& rhs) {
+    return !(lhs == rhs);
+}
 
-    /**
-     * Constructs a new LogicalSessionId out of a BSONObj. For IDL.
-     */
-    static LogicalSessionId parse(const BSONObj& doc);
+inline bool operator==(const LogicalSessionRecord& lhs, const LogicalSessionRecord& rhs) {
+    return lhs.getId() == rhs.getId();
+}
 
-    /**
-     * Returns a string representation of this session id.
-     */
-    std::string toString() const;
+inline bool operator!=(const LogicalSessionRecord& lhs, const LogicalSessionRecord& rhs) {
+    return !(lhs == rhs);
+}
 
-    /**
-     * Serialize this object to BSON.
-     */
-    BSONObj toBSON() const;
+LogicalSessionId makeLogicalSessionIdForTest();
 
-    inline bool operator==(const LogicalSessionId& rhs) const {
-        return getId() == rhs.getId();
+LogicalSessionRecord makeLogicalSessionRecordForTest();
+
+struct LogicalSessionIdHash {
+    std::size_t operator()(const LogicalSessionId& lsid) const {
+        return _hasher(lsid.getId());
     }
-
-    inline bool operator!=(const LogicalSessionId& rhs) const {
-        return !(*this == rhs);
-    }
-
-    /**
-     * Custom hasher so LogicalSessionIds can be used in unordered data structures.
-     *
-     * ex: std::unordered_set<LogicalSessionId, LogicalSessionId::Hash> lsidSet;
-     */
-    struct Hash {
-        std::size_t operator()(const LogicalSessionId& lsid) const {
-            return _hasher(lsid.getId());
-        }
-
-    private:
-        UUID::Hash _hasher;
-    };
-
 
 private:
-    /**
-     * This constructor exists for IDL only.
-     */
-    LogicalSessionId();
-
-    /**
-     * Construct a LogicalSessionId from a UUID.
-     */
-    LogicalSessionId(UUID id);
+    UUID::Hash _hasher;
 };
 
+struct LogicalSessionRecordHash {
+    std::size_t operator()(const LogicalSessionRecord& lsid) const {
+        return _hasher(lsid.getId().getId());
+    }
+
+private:
+    UUID::Hash _hasher;
+};
+
+
 inline std::ostream& operator<<(std::ostream& s, const LogicalSessionId& lsid) {
-    return (s << lsid.toString());
+    return (s << lsid.getId() << " - " << lsid.getUid());
 }
 
 inline StringBuilder& operator<<(StringBuilder& s, const LogicalSessionId& lsid) {
-    return (s << lsid.toString());
+    return (s << lsid.getId().toString() << " - " << lsid.getUid().toString());
 }
+
+inline std::ostream& operator<<(std::ostream& s, const LogicalSessionFromClient& lsid) {
+    return (s << lsid.getId() << " - " << (lsid.getUid() ? lsid.getUid()->toString() : ""));
+}
+
+inline StringBuilder& operator<<(StringBuilder& s, const LogicalSessionFromClient& lsid) {
+    return (s << lsid.getId() << " - " << (lsid.getUid() ? lsid.getUid()->toString() : ""));
+}
+
+/**
+ * An alias for sets of session ids.
+ */
+using LogicalSessionIdSet = stdx::unordered_set<LogicalSessionId, LogicalSessionIdHash>;
+using LogicalSessionRecordSet = stdx::unordered_set<LogicalSessionRecord, LogicalSessionRecordHash>;
+
+template <typename T>
+using LogicalSessionIdMap = stdx::unordered_map<LogicalSessionId, T, LogicalSessionIdHash>;
 
 }  // namespace mongo

@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -53,13 +53,21 @@ __wt_verify_build(void)
 	WT_SIZE_CHECK(WT_BLOCK_DESC, WT_BLOCK_DESC_SIZE);
 	WT_SIZE_CHECK(WT_REF, WT_REF_SIZE);
 
+	/*
+	 * WT_UPDATE is special: we arrange fields to avoid padding within the
+	 * structure but it could be padded at the end depending on the
+	 * timestamp size.  Further check that the data field in the update
+	 * structure is where we expect it.
+	 */
+	WT_SIZE_CHECK(WT_UPDATE, WT_ALIGN(WT_UPDATE_SIZE, 8));
+	WT_STATIC_ASSERT(offsetof(WT_UPDATE, data) == WT_UPDATE_SIZE);
+
 	/* Check specific structures were padded. */
 #define	WT_PADDING_CHECK(s)						\
 	WT_STATIC_ASSERT(						\
 	    sizeof(s) > WT_CACHE_LINE_ALIGNMENT ||			\
 	    sizeof(s) % WT_CACHE_LINE_ALIGNMENT == 0)
 	WT_PADDING_CHECK(WT_LOGSLOT);
-	WT_PADDING_CHECK(WT_SPINLOCK);
 	WT_PADDING_CHECK(WT_TXN_STATE);
 
 	/*

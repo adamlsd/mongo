@@ -28,20 +28,19 @@
 
 #pragma once
 
-#include <vector>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/platform/atomic_word.h"
+#include "mongo/stdx/list.h"
+#include "mongo/stdx/mutex.h"
 #include "mongo/transport/service_entry_point.h"
+#include "mongo/transport/service_state_machine.h"
 
 namespace mongo {
-
-struct DbResponse;
-class OperationContext;
+class ServiceContext;
 
 namespace transport {
 class Session;
-class TransportLayer;
 }  // namespace transport
 
 /**
@@ -55,19 +54,23 @@ class ServiceEntryPointImpl : public ServiceEntryPoint {
     MONGO_DISALLOW_COPYING(ServiceEntryPointImpl);
 
 public:
-    explicit ServiceEntryPointImpl(transport::TransportLayer* tl) : _tl(tl) {}
+    explicit ServiceEntryPointImpl(ServiceContext* svcCtx) : _svcCtx(svcCtx) {}
 
     void startSession(transport::SessionHandle session) final;
 
-    std::size_t getNumberOfActiveWorkerThreads() const {
-        return _nWorkers.load();
-    }
+    void endAllSessions(transport::Session::TagMask tags) final;
+
+    std::size_t getNumberOfConnections() const;
 
 private:
-    void _sessionLoop(const transport::SessionHandle& session);
+    using SSMList = stdx::list<std::shared_ptr<ServiceStateMachine>>;
+    using SSMListIterator = SSMList::iterator;
 
-    transport::TransportLayer* _tl;
+    ServiceContext* const _svcCtx;
     AtomicWord<std::size_t> _nWorkers;
+
+    mutable stdx::mutex _sessionsMutex;
+    SSMList _sessions;
 };
 
 }  // namespace mongo

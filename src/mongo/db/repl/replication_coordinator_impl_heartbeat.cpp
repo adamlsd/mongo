@@ -262,10 +262,13 @@ stdx::unique_lock<stdx::mutex> ReplicationCoordinatorImpl::_handleHeartbeatRespo
             break;
         case HeartbeatResponseAction::StepDownSelf:
             invariant(action.getPrimaryConfigIndex() == _selfIndex);
-            log() << "Stepping down from primary in response to heartbeat";
-            _topCoord->prepareForStepDown();
-            // Don't need to wait for stepdown to finish.
-            _stepDownStart();
+            if (_topCoord->prepareForUnconditionalStepDown()) {
+                log() << "Stepping down from primary in response to heartbeat";
+                _stepDownStart();
+            } else {
+                LOG(2) << "Heartbeat would have triggered a stepdown, but we're already in the "
+                          "process of stepping down";
+            }
             break;
         case HeartbeatResponseAction::StepDownRemotePrimary: {
             invariant(action.getPrimaryConfigIndex() != _selfIndex);
@@ -274,8 +277,8 @@ stdx::unique_lock<stdx::mutex> ReplicationCoordinatorImpl::_handleHeartbeatRespo
             break;
         }
         case HeartbeatResponseAction::PriorityTakeover: {
-            // Don't schedule a takeover if one is already scheduled.
-            if (!_priorityTakeoverCbh.isValid()) {
+            // Don't schedule a priority takeover if any takeover is already scheduled.
+            if (!_priorityTakeoverCbh.isValid() && !_catchupTakeoverCbh.isValid()) {
 
                 // Add randomized offset to calculated priority takeover delay.
                 Milliseconds priorityTakeoverDelay = _rsConfig.getPriorityTakeoverDelay(_selfIndex);
@@ -286,7 +289,21 @@ stdx::unique_lock<stdx::mutex> ReplicationCoordinatorImpl::_handleHeartbeatRespo
                     _priorityTakeoverWhen,
                     stdx::bind(&ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1,
                                this,
-                               StartElectionV1Reason::kPriorityTakeover));
+                               TopologyCoordinator::StartElectionReason::kPriorityTakeover));
+            }
+            break;
+        }
+        case HeartbeatResponseAction::CatchupTakeover: {
+            // Don't schedule a catchup takeover if any takeover is already scheduled.
+            if (!_catchupTakeoverCbh.isValid() && !_priorityTakeoverCbh.isValid()) {
+                Milliseconds catchupTakeoverDelay = _rsConfig.getCatchUpTakeoverDelay();
+                _catchupTakeoverWhen = _replExecutor->now() + catchupTakeoverDelay;
+                log() << "Scheduling catchup takeover at " << _catchupTakeoverWhen;
+                _catchupTakeoverCbh = _scheduleWorkAt(
+                    _catchupTakeoverWhen,
+                    stdx::bind(&ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1,
+                               this,
+                               TopologyCoordinator::StartElectionReason::kCatchupTakeover));
             }
             break;
         }
@@ -337,8 +354,12 @@ executor::TaskExecutor::EventHandle ReplicationCoordinatorImpl::_stepDownStart()
         return finishEvent;
     }
 
-    _replExecutor->scheduleWork(stdx::bind(
-        &ReplicationCoordinatorImpl::_stepDownFinish, this, stdx::placeholders::_1, finishEvent));
+    _replExecutor
+        ->scheduleWork(stdx::bind(&ReplicationCoordinatorImpl::_stepDownFinish,
+                                  this,
+                                  stdx::placeholders::_1,
+                                  finishEvent))
+        .status_with_transitional_ignore();
     return finishEvent;
 }
 
@@ -357,11 +378,10 @@ void ReplicationCoordinatorImpl::_stepDownFinish(
     // TODO Add invariant that we've got global shared or global exclusive lock, when supported
     // by lock manager.
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    if (_topCoord->stepDownIfPending()) {
-        const auto action = _updateMemberStateFromTopologyCoordinator_inlock();
-        lk.unlock();
-        _performPostMemberStateUpdateAction(action);
-    }
+    _topCoord->finishUnconditionalStepDown();
+    const auto action = _updateMemberStateFromTopologyCoordinator_inlock();
+    lk.unlock();
+    _performPostMemberStateUpdateAction(action);
     _replExecutor->signalEvent(finishedEvent);
 }
 
@@ -398,17 +418,21 @@ void ReplicationCoordinatorImpl::_scheduleHeartbeatReconfig_inlock(const ReplSet
                               << newConfig.getConfigVersion()
                               << " to be processed after election is cancelled.";
 
-        _replExecutor->onEvent(electionFinishedEvent,
-                               stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigStore,
-                                          this,
-                                          stdx::placeholders::_1,
-                                          newConfig));
+        _replExecutor
+            ->onEvent(electionFinishedEvent,
+                      stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigStore,
+                                 this,
+                                 stdx::placeholders::_1,
+                                 newConfig))
+            .status_with_transitional_ignore();
         return;
     }
-    _replExecutor->scheduleWork(stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigStore,
-                                           this,
-                                           stdx::placeholders::_1,
-                                           newConfig));
+    _replExecutor
+        ->scheduleWork(stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigStore,
+                                  this,
+                                  stdx::placeholders::_1,
+                                  newConfig))
+        .status_with_transitional_ignore();
 }
 
 void ReplicationCoordinatorImpl::_heartbeatReconfigStore(
@@ -490,13 +514,14 @@ void ReplicationCoordinatorImpl::_heartbeatReconfigFinish(
     if (MONGO_FAIL_POINT(blockHeartbeatReconfigFinish)) {
         LOG_FOR_HEARTBEATS(0) << "blockHeartbeatReconfigFinish fail point enabled. Rescheduling "
                                  "_heartbeatReconfigFinish until fail point is disabled.";
-        _replExecutor->scheduleWorkAt(
-            _replExecutor->now() + Milliseconds{10},
-            stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigFinish,
-                       this,
-                       stdx::placeholders::_1,
-                       newConfig,
-                       myIndex));
+        _replExecutor
+            ->scheduleWorkAt(_replExecutor->now() + Milliseconds{10},
+                             stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigFinish,
+                                        this,
+                                        stdx::placeholders::_1,
+                                        newConfig,
+                                        myIndex))
+            .status_with_transitional_ignore();
         return;
     }
 
@@ -522,12 +547,14 @@ void ReplicationCoordinatorImpl::_heartbeatReconfigFinish(
             << "Waiting for election to complete before finishing reconfig to version "
             << newConfig.getConfigVersion();
         // Wait for the election to complete and the node's Role to be set to follower.
-        _replExecutor->onEvent(electionFinishedEvent,
-                               stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigFinish,
-                                          this,
-                                          stdx::placeholders::_1,
-                                          newConfig,
-                                          myIndex));
+        _replExecutor
+            ->onEvent(electionFinishedEvent,
+                      stdx::bind(&ReplicationCoordinatorImpl::_heartbeatReconfigFinish,
+                                 this,
+                                 stdx::placeholders::_1,
+                                 newConfig,
+                                 myIndex))
+            .status_with_transitional_ignore();
         return;
     }
 
@@ -694,6 +721,15 @@ void ReplicationCoordinatorImpl::_cancelPriorityTakeover_inlock() {
     }
 }
 
+void ReplicationCoordinatorImpl::_cancelCatchupTakeover_inlock() {
+    if (_catchupTakeoverCbh.isValid()) {
+        log() << "Canceling catchup takeover callback";
+        _replExecutor->cancel(_catchupTakeoverCbh);
+        _catchupTakeoverCbh = CallbackHandle();
+        _catchupTakeoverWhen = Date_t();
+    }
+}
+
 void ReplicationCoordinatorImpl::_cancelAndRescheduleElectionTimeout_inlock() {
     if (_handleElectionTimeoutCbh.isValid()) {
         LOG(4) << "Canceling election timeout callback at " << _handleElectionTimeoutWhen;
@@ -732,10 +768,11 @@ void ReplicationCoordinatorImpl::_cancelAndRescheduleElectionTimeout_inlock() {
         _scheduleWorkAt(when,
                         stdx::bind(&ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1,
                                    this,
-                                   StartElectionV1Reason::kElectionTimeout));
+                                   TopologyCoordinator::StartElectionReason::kElectionTimeout));
 }
 
-void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(StartElectionV1Reason reason) {
+void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(
+    TopologyCoordinator::StartElectionReason reason) {
     if (!isV1ElectionProtocol()) {
         return;
     }
@@ -744,6 +781,7 @@ void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(StartElectionV1Reas
     // We should always reschedule this callback even if we do not make it to the election
     // process.
     {
+        _cancelCatchupTakeover_inlock();
         _cancelPriorityTakeover_inlock();
         _cancelAndRescheduleElectionTimeout_inlock();
         if (_inShutdown) {
@@ -752,20 +790,23 @@ void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(StartElectionV1Reas
         }
     }
 
-    const auto status = _topCoord->becomeCandidateIfElectable(
-        _replExecutor->now(), reason == StartElectionV1Reason::kPriorityTakeover);
+    const auto status = _topCoord->becomeCandidateIfElectable(_replExecutor->now(), reason);
     if (!status.isOK()) {
         switch (reason) {
-            case StartElectionV1Reason::kElectionTimeout:
+            case TopologyCoordinator::StartElectionReason::kElectionTimeout:
                 log() << "Not starting an election, since we are not electable due to: "
                       << status.reason();
                 break;
-            case StartElectionV1Reason::kPriorityTakeover:
+            case TopologyCoordinator::StartElectionReason::kPriorityTakeover:
                 log() << "Not starting an election for a priority takeover, "
                       << "since we are not electable due to: " << status.reason();
                 break;
-            case StartElectionV1Reason::kStepUpRequest:
+            case TopologyCoordinator::StartElectionReason::kStepUpRequest:
                 log() << "Not starting an election for a replSetStepUp request, "
+                      << "since we are not electable due to: " << status.reason();
+                break;
+            case TopologyCoordinator::StartElectionReason::kCatchupTakeover:
+                log() << "Not starting an election for a catchup takeover, "
                       << "since we are not electable due to: " << status.reason();
                 break;
         }
@@ -773,19 +814,22 @@ void ReplicationCoordinatorImpl::_startElectSelfIfEligibleV1(StartElectionV1Reas
     }
 
     switch (reason) {
-        case StartElectionV1Reason::kElectionTimeout:
+        case TopologyCoordinator::StartElectionReason::kElectionTimeout:
             log() << "Starting an election, since we've seen no PRIMARY in the past "
                   << _rsConfig.getElectionTimeoutPeriod();
             break;
-        case StartElectionV1Reason::kPriorityTakeover:
+        case TopologyCoordinator::StartElectionReason::kPriorityTakeover:
             log() << "Starting an election for a priority takeover";
             break;
-        case StartElectionV1Reason::kStepUpRequest:
+        case TopologyCoordinator::StartElectionReason::kStepUpRequest:
             log() << "Starting an election due to step up request";
+            break;
+        case TopologyCoordinator::StartElectionReason::kCatchupTakeover:
+            log() << "Starting an election for a catchup takeover";
             break;
     }
 
-    _startElectSelfV1_inlock();
+    _startElectSelfV1_inlock(reason);
 }
 
 }  // namespace repl

@@ -23,7 +23,6 @@ flags = {
     ],
     'page_read' : [
         'READ_CACHE',
-        'READ_COMPACT',
         'READ_NOTFOUND_OK',
         'READ_NO_EMPTY',
         'READ_NO_EVICT',
@@ -32,7 +31,6 @@ flags = {
         'READ_PREV',
         'READ_RESTART_OK',
         'READ_SKIP_INTL',
-        'READ_SKIP_LEAF',
         'READ_TRUNCATE',
         'READ_WONT_NEED',
     ],
@@ -45,6 +43,11 @@ flags = {
         'EVICT_SCRUB',
         'EVICT_UPDATE_RESTORE',
         'VISIBILITY_ERR',
+    ],
+    'timing_stress_for_test' : [
+        'TIMING_STRESS_CHECKPOINT_SLOW',
+        'TIMING_STRESS_INTERNAL_PAGE_SPLIT_RACE',
+        'TIMING_STRESS_PAGE_SPLIT_RACE',
     ],
     'txn_log_checkpoint' : [
         'TXN_LOG_CKPT_CLEANUP',
@@ -68,6 +71,7 @@ flags = {
         'VERB_FILEOPS',
         'VERB_HANDLEOPS',
         'VERB_LOG',
+        'VERB_LOOKASIDE',
         'VERB_LSM',
         'VERB_LSM_MANAGER',
         'VERB_METADATA',
@@ -83,6 +87,7 @@ flags = {
         'VERB_SPLIT',
         'VERB_TEMPORARY',
         'VERB_THREAD_GROUP',
+        'VERB_TIMESTAMP',
         'VERB_TRANSACTION',
         'VERB_VERIFY',
         'VERB_VERSION',

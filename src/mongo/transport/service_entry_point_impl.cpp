@@ -34,136 +34,97 @@
 
 #include <vector>
 
-#include "mongo/db/assemble_response.h"
-#include "mongo/db/client.h"
-#include "mongo/db/dbmessage.h"
-#include "mongo/stdx/thread.h"
+#include "mongo/db/auth/restriction_environment.h"
 #include "mongo/transport/service_entry_point_utils.h"
+#include "mongo/transport/service_state_machine.h"
 #include "mongo/transport/session.h"
-#include "mongo/transport/ticket.h"
-#include "mongo/transport/transport_layer.h"
-#include "mongo/util/concurrency/idle_thread_block.h"
-#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/message.h"
-#include "mongo/util/net/socket_exception.h"
-#include "mongo/util/net/thread_idle_callback.h"
-#include "mongo/util/quick_exit.h"
+#include "mongo/util/processinfo.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-namespace {
-
-// Set up proper headers for formatting an exhaust request, if we need to
-bool setExhaustMessage(Message* m, const DbResponse& dbresponse) {
-    MsgData::View header = dbresponse.response.header();
-    QueryResult::View qr = header.view2ptr();
-    long long cursorid = qr.getCursorId();
-
-    if (!cursorid) {
-        return false;
-    }
-
-    verify(dbresponse.exhaustNS.size() && dbresponse.exhaustNS[0]);
-
-    auto ns = dbresponse.exhaustNS;  // reset() will free this
-
-    m->reset();
-
-    BufBuilder b(512);
-    b.appendNum(static_cast<int>(0) /* size set later in appendData() */);
-    b.appendNum(header.getId());
-    b.appendNum(header.getResponseToMsgId());
-    b.appendNum(static_cast<int>(dbGetMore));
-    b.appendNum(static_cast<int>(0));
-    b.appendStr(ns);
-    b.appendNum(static_cast<int>(0));  // ntoreturn
-    b.appendNum(cursorid);
-
-    MsgData::View(b.buf()).setLen(b.len());
-    m->setData(b.release());
-
-    return true;
-}
-
-}  // namespace
-
-using transport::Session;
-using transport::TransportLayer;
 
 void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
-    // Pass ownership of the transport::SessionHandle into our worker thread. When this
-    // thread exits, the session will end.
-    launchWrappedServiceEntryWorkerThread(
-        std::move(session), [this](const transport::SessionHandle& session) {
-            _nWorkers.fetchAndAdd(1);
-            auto guard = MakeGuard([&] { _nWorkers.fetchAndSubtract(1); });
+    // Setup the restriction environment on the Session, if the Session has local/remote Sockaddrs
+    const auto& remoteAddr = session->remote().sockAddr();
+    const auto& localAddr = session->local().sockAddr();
+    invariant(remoteAddr && localAddr);
+    auto restrictionEnvironment =
+        stdx::make_unique<RestrictionEnvironment>(*remoteAddr, *localAddr);
+    RestrictionEnvironment::set(session, std::move(restrictionEnvironment));
 
-            _sessionLoop(session);
-        });
+    SSMListIterator ssmIt;
+
+    const auto sync = (_svcCtx->getServiceExecutor() == nullptr);
+    auto ssm = ServiceStateMachine::create(_svcCtx, std::move(session), sync);
+    {
+        stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
+        ssmIt = _sessions.emplace(_sessions.begin(), ssm);
+    }
+
+    ssm->setCleanupHook([this, ssmIt] {
+        stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
+        _sessions.erase(ssmIt);
+    });
+
+    if (!sync) {
+        dassert(_svcCtx->getServiceExecutor());
+        ssm->scheduleNext();
+        return;
+    }
+
+    auto workerTask = [this, ssm]() mutable {
+        _nWorkers.addAndFetch(1);
+        const auto guard = MakeGuard([this, &ssm] { _nWorkers.subtractAndFetch(1); });
+
+        const auto numCores = [] {
+            ProcessInfo p;
+            if (auto availCores = p.getNumAvailableCores()) {
+                return static_cast<unsigned>(*availCores);
+            }
+            return static_cast<unsigned>(p.getNumCores());
+        }();
+
+        while (ssm->state() != ServiceStateMachine::State::Ended) {
+            ssm->runNext();
+
+            /*
+             * In perf testing we found that yielding after running a each request produced
+             * at 5% performance boost in microbenchmarks if the number of worker threads
+             * was greater than the number of available cores.
+             */
+            if (_nWorkers.load() > numCores)
+                stdx::this_thread::yield();
+        }
+    };
+
+    const auto launchResult = launchServiceWorkerThread(std::move(workerTask));
+    if (launchResult.isOK()) {
+        return;
+    }
+
+    // We never got off the ground. Manually remove the new SSM from
+    // the list of sessions and close the associated socket. The SSM
+    // will be destroyed.
+    stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
+    _sessions.erase(ssmIt);
+    ssm->terminateIfTagsDontMatch(0);
 }
 
-void ServiceEntryPointImpl::_sessionLoop(const transport::SessionHandle& session) {
-    Message inMessage;
-    bool inExhaust = false;
-    int64_t counter = 0;
-
-    while (true) {
-        // 1. Source a Message from the client (unless we are exhausting)
-        if (!inExhaust) {
-            inMessage.reset();
-            auto status = [&] {
-                MONGO_IDLE_THREAD_BLOCK;
-                return session->sourceMessage(&inMessage).wait();
-            }();
-
-            if (ErrorCodes::isInterruption(status.code()) ||
-                ErrorCodes::isNetworkError(status.code())) {
-                break;
-            }
-
-            // Our session may have been closed internally.
-            if (status == TransportLayer::TicketSessionClosedStatus) {
-                break;
-            }
-
-            uassertStatusOK(status);
-        }
-
-        // 2. Pass sourced Message to handler to generate response.
-        auto opCtx = cc().makeOperationContext();
-
-        // The handleRequest is implemented in a subclass for mongod/mongos and actually all the
-        // database work for this request.
-        DbResponse dbresponse = this->handleRequest(opCtx.get(), inMessage, session->remote());
-
-        // opCtx must be destroyed here so that the operation cannot show
-        // up in currentOp results after the response reaches the client
-        opCtx.reset();
-
-        // 3. Format our response, if we have one
-        Message& toSink = dbresponse.response;
-        if (!toSink.empty()) {
-            toSink.header().setId(nextMessageId());
-            toSink.header().setResponseToMsgId(inMessage.header().getId());
-
-            // If this is an exhaust cursor, don't source more Messages
-            if (dbresponse.exhaustNS.size() > 0 && setExhaustMessage(&inMessage, dbresponse)) {
-                inExhaust = true;
-            } else {
-                inExhaust = false;
-            }
-
-            // 4. Sink our response to the client
-            uassertStatusOK(session->sinkMessage(toSink).wait());
-        } else {
-            inExhaust = false;
-        }
-
-        if ((counter++ & 0xf) == 0) {
-            markThreadIdle();
+void ServiceEntryPointImpl::endAllSessions(transport::Session::TagMask tags) {
+    // While holding the _sesionsMutex, loop over all the current connections, and if their tags
+    // do not match the requested tags to skip, terminate the session.
+    {
+        stdx::unique_lock<decltype(_sessionsMutex)> lk(_sessionsMutex);
+        for (auto& ssm : _sessions) {
+            ssm->terminateIfTagsDontMatch(tags);
         }
     }
+}
+
+std::size_t ServiceEntryPointImpl::getNumberOfConnections() const {
+    stdx::unique_lock<decltype(_sessionsMutex)> lk(_sessionsMutex);
+    return _sessions.size();
 }
 
 }  // namespace mongo

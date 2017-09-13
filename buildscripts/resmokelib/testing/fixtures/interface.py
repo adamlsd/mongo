@@ -7,15 +7,36 @@ from __future__ import absolute_import
 import time
 
 import pymongo
+import pymongo.errors
 
 from ... import errors
 from ... import logging
+from ...utils import registry
+
+
+_FIXTURES = {}
+
+
+def make_fixture(class_name, *args, **kwargs):
+    """
+    Factory function for creating Fixture instances.
+    """
+
+    if class_name not in _FIXTURES:
+        raise ValueError("Unknown fixture class '%s'" % (class_name))
+    return _FIXTURES[class_name](*args, **kwargs)
 
 
 class Fixture(object):
     """
     Base class for all fixtures.
     """
+
+    __metaclass__ = registry.make_registry_metaclass(_FIXTURES)
+
+    # We explicitly set the 'REGISTERED_NAME' attribute so that PyLint realizes that the attribute
+    # is defined for all subclasses of Fixture.
+    REGISTERED_NAME = "Fixture"
 
     def __init__(self, logger, job_num):
         """
@@ -32,8 +53,6 @@ class Fixture(object):
 
         self.logger = logger
         self.job_num = job_num
-
-        self.port = None  # Port that the mongo shell should connect to.
 
     def setup(self):
         """
@@ -79,13 +98,39 @@ class Fixture(object):
         """
         return True
 
-    def get_connection_string(self):
+    def get_internal_connection_string(self):
         """
         Returns the connection string for this fixture. This is NOT a
         driver connection string, but a connection string of the format
         expected by the mongo::ConnectionString class.
         """
         raise NotImplementedError("get_connection_string must be implemented by Fixture subclasses")
+
+    def get_driver_connection_url(self):
+        """
+        Return the mongodb connection string as defined here:
+        https://docs.mongodb.com/manual/reference/connection-string/
+        """
+        raise NotImplementedError(
+            "get_driver_connection_url must be implemented by Fixture subclasses")
+
+    def mongo_client(self, read_preference=pymongo.ReadPreference.PRIMARY, timeout_millis=30000):
+        """
+        Returns a pymongo.MongoClient connecting to this fixture with a read
+        preference of 'read_preference'.
+
+        The PyMongo driver will wait up to 'timeout_millis' milliseconds
+        before concluding that the server is unavailable.
+        """
+
+        kwargs = {"connectTimeoutMS": timeout_millis}
+        if pymongo.version_tuple[0] >= 3:
+            kwargs["serverSelectionTimeoutMS"] = timeout_millis
+            kwargs["connect"] = True
+
+        return pymongo.MongoClient(host=self.get_driver_connection_url(),
+                                   read_preference=read_preference,
+                                   **kwargs)
 
     def __str__(self):
         return "%s (Job #%d)" % (self.__class__.__name__, self.job_num)
@@ -98,6 +143,8 @@ class ReplFixture(Fixture):
     """
     Base class for all fixtures that support replication.
     """
+
+    REGISTERED_NAME = registry.LEAVE_UNREGISTERED
 
     AWAIT_REPL_TIMEOUT_MINS = 5
 
@@ -136,5 +183,21 @@ class ReplFixture(Fixture):
             except pymongo.errors.ConnectionFailure:
                 remaining = deadline - time.time()
                 if remaining <= 0.0:
-                    raise errors.ServerFailure("Failed to connect to the primary on port %d" %
-                                               self.port)
+                    raise errors.ServerFailure(
+                        "Failed to connect to ".format(self.get_driver_connection_url()))
+
+
+class NoOpFixture(Fixture):
+    """A Fixture implementation that does not start any servers.
+
+    Used when the MongoDB deployment is started by the JavaScript test itself with MongoRunner,
+    ReplSetTest, or ShardingTest.
+    """
+
+    REGISTERED_NAME = "NoOpFixture"
+
+    def get_internal_connection_string(self):
+        return None
+
+    def get_driver_connection_url(self):
+        return None

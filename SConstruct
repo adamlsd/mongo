@@ -638,7 +638,7 @@ env_vars.Add('MAXLINELENGTH',
     # across our platforms.
     #
     # See https://support.microsoft.com/en-us/help/830473/command-prompt-cmd.-exe-command-line-string-limitation
-    default=8191)
+    default=4095)
 
 # Note: This is only really meaningful when configured via a variables file. See the
 # default_buildinfo_environment_data() function for examples of how to use this.
@@ -806,7 +806,7 @@ def printLocalInfo():
 
 printLocalInfo()
 
-boostLibs = [ "thread" , "filesystem" , "program_options", "system", "regex", "chrono", "iostreams" ]
+boostLibs = [ "filesystem", "program_options", "system", "iostreams" ]
 
 onlyServer = len( COMMAND_LINE_TARGETS ) == 0 or ( len( COMMAND_LINE_TARGETS ) == 1 and str( COMMAND_LINE_TARGETS[0] ) in [ "mongod" , "mongos" , "test" ] )
 
@@ -1489,7 +1489,7 @@ elif env.TargetOSIs('windows'):
     #     object called lock on the stack.
     env.Append( CCFLAGS=["/we4013", "/we4099", "/we4930"] )
 
-    env.Append( CPPDEFINES=["_CONSOLE","_CRT_SECURE_NO_WARNINGS"] )
+    env.Append( CPPDEFINES=["_CONSOLE","_CRT_SECURE_NO_WARNINGS", "_SCL_SECURE_NO_WARNINGS"] )
 
     # this would be for pre-compiled headers, could play with it later
     #env.Append( CCFLAGS=['/Yu"pch.h"'] )
@@ -1605,6 +1605,8 @@ if env.TargetOSIs('posix'):
             env.Append( CCFLAGS=["-Werror"] )
 
     env.Append( CXXFLAGS=["-Woverloaded-virtual"] )
+    if env.ToolchainIs('clang'):
+        env.Append( CXXFLAGS=['-Werror=unused-result'] )
 
     # On OS X, clang doesn't want the pthread flag at link time, or it
     # issues warnings which make it impossible for us to declare link
@@ -1716,14 +1718,14 @@ def doConfigure(myenv):
     # bare compilers, and we should re-check at the very end that TryCompile and TryLink still
     # work with the flags we have selected.
     if myenv.ToolchainIs('msvc'):
-        compiler_minimum_string = "Microsoft Visual Studio 2015 Update 2"
+        compiler_minimum_string = "Microsoft Visual Studio 2015 Update 3"
         compiler_test_body = textwrap.dedent(
         """
         #if !defined(_MSC_VER)
         #error
         #endif
 
-        #if _MSC_VER < 1900 || (_MSC_VER == 1900 && _MSC_FULL_VER < 190023918)
+        #if _MSC_VER < 1900 || (_MSC_VER == 1900 && _MSC_FULL_VER < 190024218)
         #error %s or newer is required to build MongoDB
         #endif
 
@@ -1748,7 +1750,7 @@ def doConfigure(myenv):
         }
         """ % compiler_minimum_string)
     elif myenv.ToolchainIs('clang'):
-        compiler_minimum_string = "clang 3.6 (or Apple XCode 6.3.0)"
+        compiler_minimum_string = "clang 3.8 (or Apple XCode 8.3.2)"
         compiler_test_body = textwrap.dedent(
         """
         #if !defined(__clang__)
@@ -1756,10 +1758,10 @@ def doConfigure(myenv):
         #endif
 
         #if defined(__apple_build_version__)
-        #if __apple_build_version__ < 6020049
+        #if __apple_build_version__ < 8020042
         #error %s or newer is required to build MongoDB
         #endif
-        #elif (__clang_major__ < 3) || (__clang_major__ == 3 && __clang_minor__ < 6)
+        #elif (__clang_major__ < 3) || (__clang_major__ == 3 && __clang_minor__ < 8)
         #error %s or newer is required to build MongoDB
         #endif
 
@@ -1991,6 +1993,12 @@ def doConfigure(myenv):
         # is a problem at least for the S2 headers.
         AddToCXXFLAGSIfSupported(myenv, "-Wno-undefined-var-template")
 
+        # This warning was added in clang-4.0, but it warns about code that is required on some
+        # platforms. Since the warning just states that 'explicit instantiation of [a template] that
+        # occurs after an explicit specialization has no effect', it is harmless on platforms where
+        # it isn't required
+        AddToCXXFLAGSIfSupported(myenv, "-Wno-instantiation-after-specialization")
+
         # Check if we can set "-Wnon-virtual-dtor" when "-Werror" is set. The only time we can't set it is on
         # clang 3.4, where a class with virtual function(s) and a non-virtual destructor throws a warning when
         # it shouldn't.
@@ -2066,31 +2074,6 @@ def doConfigure(myenv):
             # - fsanitize=cfi: Again, very interesting, however it
             #   requires LTO builds.
             pass
-
-    # Check if we need to disable null-conversion warnings
-    if myenv.ToolchainIs('clang'):
-        def CheckNullConversion(context):
-
-            test_body = """
-            #include <boost/shared_ptr.hpp>
-            struct TestType { int value; bool boolValue; };
-            bool foo() {
-                boost::shared_ptr<TestType> sp(new TestType);
-                return NULL != sp;
-            }
-            """
-
-            context.Message('Checking if implicit boost::shared_ptr null conversion is supported... ')
-            ret = context.TryCompile(textwrap.dedent(test_body), ".cpp")
-            context.Result(ret)
-            return ret
-
-        conf = Configure(myenv, help=False, custom_tests = {
-            'CheckNullConversion' : CheckNullConversion,
-        })
-        if conf.CheckNullConversion() == False:
-            env.Append( CCFLAGS="-Wno-null-conversion" )
-        conf.Finish()
 
     if has_option('osx-version-min'):
         message="""
@@ -2382,7 +2365,9 @@ def doConfigure(myenv):
         }
 
         blackfiles = set([v for (k, v) in blackfiles_map.iteritems() if k in sanitizer_list])
-        blacklist_options=["-fsanitize-blacklist=%s" % blackfile for blackfile in blackfiles]
+        blacklist_options=["-fsanitize-blacklist=%s" % blackfile
+                           for blackfile in blackfiles
+                           if os.stat(blackfile.path).st_size != 0]
 
         for blacklist_option in blacklist_options:
             if AddToCCFLAGSIfSupported(myenv, blacklist_option):
@@ -2523,33 +2508,24 @@ def doConfigure(myenv):
     if not myenv.ToolchainIs('msvc'):
         AddToCCFLAGSIfSupported(myenv, "-fno-builtin-memcmp")
 
-    def CheckStorageClass(context, storage_class):
+    def CheckThreadLocal(context):
         test_body = """
-        {0} int tsp_int = 1;
+        thread_local int tsp_int = 1;
         int main(int argc, char** argv) {{
             return !(tsp_int == argc);
         }}
-        """.format(storage_class)
-        context.Message('Checking for storage class {0} '.format(storage_class))
+        """
+        context.Message('Checking for storage class thread_local ')
         ret = context.TryLink(textwrap.dedent(test_body), ".cpp")
         context.Result(ret)
         return ret
 
     conf = Configure(myenv, help=False, custom_tests = {
-        'CheckStorageClass': CheckStorageClass
+        'CheckThreadLocal': CheckThreadLocal
     })
-    haveTriviallyConstructibleThreadLocals = False
-    for storage_class, macro_name in [
-            ('thread_local', 'MONGO_CONFIG_HAVE_THREAD_LOCAL'),
-            ('__thread', 'MONGO_CONFIG_HAVE___THREAD'),
-            ('__declspec(thread)', 'MONGO_CONFIG_HAVE___DECLSPEC_THREAD')]:
-        if conf.CheckStorageClass(storage_class):
-            haveTriviallyConstructibleThreadLocals = True
-            myenv.SetConfigHeaderDefine(macro_name)
+    if not conf.CheckThreadLocal():
+        env.ConfError("Compiler must support the thread_local storage class")
     conf.Finish()
-    if not haveTriviallyConstructibleThreadLocals:
-        env.ConfError("Compiler must support a thread local storage class for trivially constructible types")
-
 
     def CheckCXX14EnableIfT(context):
         test_body = """
@@ -2607,26 +2583,6 @@ def doConfigure(myenv):
     if conf.CheckCXX14MakeUnique():
         conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAVE_STD_MAKE_UNIQUE')
 
-    myenv = conf.Finish()
-
-    def CheckBoostMinVersion(context):
-        compile_test_body = textwrap.dedent("""
-        #include <boost/version.hpp>
-
-        #if BOOST_VERSION < 104900
-        #error
-        #endif
-        """)
-
-        context.Message("Checking if system boost version is 1.49 or newer...")
-        result = context.TryCompile(compile_test_body, ".cpp")
-        context.Result(result)
-        return result
-
-    conf = Configure(myenv, custom_tests = {
-        'CheckBoostMinVersion': CheckBoostMinVersion,
-    })
-
     # pthread_setname_np was added in GLIBC 2.12, and Solaris 11.3
     if posix_system:
         myenv = conf.Finish()
@@ -2655,6 +2611,26 @@ def doConfigure(myenv):
 
         if conf.CheckPThreadSetNameNP():
             conf.env.SetConfigHeaderDefine("MONGO_CONFIG_HAVE_PTHREAD_SETNAME_NP")
+
+    myenv = conf.Finish()
+
+    def CheckBoostMinVersion(context):
+        compile_test_body = textwrap.dedent("""
+        #include <boost/version.hpp>
+
+        #if BOOST_VERSION < 104900
+        #error
+        #endif
+        """)
+
+        context.Message("Checking if system boost version is 1.49 or newer...")
+        result = context.TryCompile(compile_test_body, ".cpp")
+        context.Result(result)
+        return result
+
+    conf = Configure(myenv, custom_tests = {
+        'CheckBoostMinVersion': CheckBoostMinVersion,
+    })
 
     libdeps.setup_conftests(conf)
 
@@ -2784,6 +2760,27 @@ def doConfigure(myenv):
             """):
             conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAVE_ASN1_ANY_DEFINITIONS')
 
+
+        def CheckOpenSSL_EC_DH(context):
+            compile_test_body = textwrap.dedent("""
+            #include <openssl/ssl.h>
+
+            int main() {
+                SSL_CTX_set_ecdh_auto(0, 0);
+                SSL_set_ecdh_auto(0, 0);
+                return 0;
+            }
+            """)
+
+            context.Message("Checking if SSL_[CTX_]_set_ecdh_auto is supported... ")
+            result = context.TryCompile(compile_test_body, ".cpp")
+            context.Result(result)
+            return result
+
+        conf.AddTest("CheckOpenSSL_EC_DH", CheckOpenSSL_EC_DH)
+        if conf.CheckOpenSSL_EC_DH():
+            conf.env.SetConfigHeaderDefine('MONGO_CONFIG_HAS_SSL_SET_ECDH_AUTO')
+
     else:
         env.Append( MONGO_CRYPTO=["tom"] )
 
@@ -2826,10 +2823,6 @@ def doConfigure(myenv):
 
     conf.env.Append(
         CPPDEFINES=[
-            ("BOOST_THREAD_VERSION", "4"),
-            # Boost thread v4's variadic thread support doesn't
-            # permit more than four parameters.
-            "BOOST_THREAD_DONT_PROVIDE_VARIADIC_THREAD",
             "BOOST_SYSTEM_NO_DEPRECATED",
             "BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS",
         ]
@@ -2853,21 +2846,6 @@ def doConfigure(myenv):
                     boostlib,
                     [boostlib + suffix for suffix in boostSuffixList],
                     language='C++')
-    else:
-        # For the built in boost, we can set these without risking ODR violations, so do so.
-        conf.env.Append(
-            CPPDEFINES=[
-                # We don't want interruptions because we don't use
-                # them and they have a performance cost.
-                "BOOST_THREAD_DONT_PROVIDE_INTERRUPTIONS",
-
-                # We believe that none of our platforms are affected
-                # by the EINTR bug. Setting this avoids a retry loop
-                # in boosts mutex.hpp that we don't want to pay for.
-                "BOOST_THREAD_HAS_NO_EINTR_BUG",
-            ],
-        )
-
     if posix_system:
         conf.env.SetConfigHeaderDefine("MONGO_CONFIG_HAVE_HEADER_UNISTD_H")
         conf.CheckLib('rt')
@@ -2925,6 +2903,7 @@ def doConfigure(myenv):
             x.fetch_sub(y);
             x.exchange(y);
             x.compare_exchange_strong(y, x);
+            x.is_lock_free();
             return x.load();
         }}
         """.format(base_type)
@@ -2952,6 +2931,71 @@ def doConfigure(myenv):
                 "no libatomic found")
         if not check_all_atomics(' with libatomic'):
             myenv.ConfError("The toolchain does not support std::atomic, cannot continue")
+
+    def CheckExtendedAlignment(context, size):
+        test_body = """
+            #include <atomic>
+            #include <mutex>
+            #include <cstddef>
+
+            static_assert(alignof(std::max_align_t) < {0}, "whatever");
+
+            alignas({0}) std::mutex aligned_mutex;
+            alignas({0}) std::atomic<int> aligned_atomic;
+
+            struct alignas({0}) aligned_struct_mutex {{
+                std::mutex m;
+            }};
+
+            struct alignas({0}) aligned_struct_atomic {{
+                std::atomic<int> m;
+            }};
+
+            struct holds_aligned_mutexes {{
+                alignas({0}) std::mutex m1;
+                alignas({0}) std::mutex m2;
+            }} hm;
+
+            struct holds_aligned_atomics {{
+                alignas({0}) std::atomic<int> a1;
+                alignas({0}) std::atomic<int> a2;
+            }} ha;
+        """.format(size)
+
+        context.Message('Checking for extended alignment {0} for concurrency types... '.format(size))
+        ret = context.TryCompile(textwrap.dedent(test_body), ".cpp")
+        context.Result(ret)
+        return ret
+
+    conf.AddTest('CheckExtendedAlignment', CheckExtendedAlignment)
+
+    # If we don't have a specialized search sequence for this
+    # architecture, assume 64 byte cache lines, which is pretty
+    # standard. If for some reason the compiler can't offer that, try
+    # 32.
+    default_alignment_search_sequence = [ 64, 32 ]
+
+    # The following are the target architectures for which we have
+    # some knowledge that they have larger cache line sizes. In
+    # particular, POWER8 uses 128 byte lines and zSeries uses 256. We
+    # start at the goal state, and work down until we find something
+    # the compiler can actualy do for us.
+    extended_alignment_search_sequence = {
+        'ppc64le' : [ 128, 64, 32 ],
+        's390x' : [ 256, 128, 64, 32 ],
+    }
+
+    for size in extended_alignment_search_sequence.get(env['TARGET_ARCH'], default_alignment_search_sequence):
+        if conf.CheckExtendedAlignment(size):
+            conf.env.SetConfigHeaderDefine("MONGO_CONFIG_MAX_EXTENDED_ALIGNMENT", size)
+            break
+ 
+    conf.env['MONGO_HAVE_LIBMONGOC'] = conf.CheckLibWithHeader(
+            ["mongoc-1.0"],
+            ["mongoc.h"],
+            "C",
+            "mongoc_get_major_version();",
+            autoadd=False )
 
     # ask each module to configure itself and the build environment.
     moduleconfig.configure_modules(mongo_modules, conf)

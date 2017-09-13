@@ -28,20 +28,23 @@
 
 #pragma once
 
-#include <boost/optional.hpp>
-#include <memory>
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/keys_collection_manager.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/unordered_set.h"
+#include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/transport/service_executor.h"
 #include "mongo/transport/session.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/decorable.h"
+#include "mongo/util/periodic_runner.h"
 #include "mongo/util/tick_source.h"
 
 namespace mongo {
@@ -54,7 +57,6 @@ class ServiceEntryPoint;
 
 namespace transport {
 class TransportLayer;
-class TransportLayerManager;
 }  // namespace transport
 
 /**
@@ -225,10 +227,8 @@ public:
      *
      * "client" must not have an active operation context.
      *
-     * If provided, the LogicalSessionId links this operation to a logical session.
      */
-    UniqueOperationContext makeOperationContext(
-        Client* client, boost::optional<LogicalSessionId> lsid = boost::none);
+    UniqueOperationContext makeOperationContext(Client* client);
 
     //
     // Storage
@@ -266,6 +266,28 @@ public:
      * Return the storage engine instance we're using.
      */
     virtual StorageEngine* getGlobalStorageEngine() = 0;
+
+    //
+    // Key manager, for HMAC keys.
+    //
+
+    /**
+     * Sets the key manager on this service context.
+     */
+    void setKeyManager(std::shared_ptr<KeysCollectionManager> keyManager) & {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        _keyManager = std::move(keyManager);
+    }
+
+    /**
+     * Returns a pointer to the keys collection manager owned by this service context.
+     */
+    std::shared_ptr<KeysCollectionManager> getKeyManager() & {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _keyManager;
+    }
+
+    std::shared_ptr<KeysCollectionManager> getKeyManager() && = delete;
 
     //
     // Global operation management.  This may not belong here and there may be too many methods
@@ -314,6 +336,23 @@ public:
     void registerKillOpListener(KillOpListenerInterface* listener);
 
     //
+    // Background tasks.
+    //
+
+    /**
+     * Set a periodic runner on the service context. The runner should already be
+     * started when it is moved onto the service context. The service context merely
+     * takes ownership of this object to allow it to continue running for the life of
+     * the process
+     */
+    void setPeriodicRunner(std::unique_ptr<PeriodicRunner> runner);
+
+    /**
+     * Returns a pointer to the global periodic runner owned by this service context.
+     */
+    PeriodicRunner* getPeriodicRunner() const;
+
+    //
     // Transport.
     //
 
@@ -333,12 +372,25 @@ public:
     ServiceEntryPoint* getServiceEntryPoint() const;
 
     /**
-     * Add a new TransportLayer to this service context. The new TransportLayer will
-     * be added to the TransportLayerManager accessible via getTransportLayer().
+     * Get the service executor for the service context.
      *
-     * It additionally calls start() on the TransportLayer after adding it.
+     * See ServiceStateMachine for how this is used. Some configurations may not have a service
+     * executor registered and this will return a nullptr.
      */
-    Status addAndStartTransportLayer(std::unique_ptr<transport::TransportLayer> tl);
+    transport::ServiceExecutor* getServiceExecutor() const;
+
+    /**
+     * Waits for the ServiceContext to be fully initialized and for all TransportLayers to have been
+     * added/started.
+     *
+     * If startup is already complete this returns immediately.
+     */
+    void waitForStartupComplete();
+
+    /*
+     * Marks initialization as complete and all transport layers as started.
+     */
+    void notifyStartupComplete();
 
     //
     // Global OpObserver.
@@ -389,9 +441,22 @@ public:
     void setPreciseClockSource(std::unique_ptr<ClockSource> newSource);
 
     /**
-     * Binds the service entry point implementation to the service context
+     * Binds the service entry point implementation to the service context.
      */
     void setServiceEntryPoint(std::unique_ptr<ServiceEntryPoint> sep);
+
+    /**
+     * Binds the TransportLayer to the service context. The TransportLayer should have already
+     * had setup() called successfully, but not startup().
+     *
+     * This should be a TransportLayerManager created with the global server configuration.
+     */
+    void setTransportLayer(std::unique_ptr<transport::TransportLayer> tl);
+
+    /**
+     * Binds the service executor to the service context
+     */
+    void setServiceExecutor(std::unique_ptr<transport::ServiceExecutor> exec);
 
 protected:
     ServiceContext();
@@ -406,9 +471,7 @@ private:
     /**
      * Returns a new OperationContext. Private, for use by makeOperationContext.
      */
-    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client,
-                                                        unsigned opId,
-                                                        boost::optional<LogicalSessionId>) = 0;
+    virtual std::unique_ptr<OperationContext> _newOpCtx(Client* client, unsigned opId) = 0;
 
     /**
      * Kills the given operation.
@@ -417,16 +480,30 @@ private:
      */
     void _killOperation_inlock(OperationContext* opCtx, ErrorCodes::Error killCode);
 
+    /**
+     * The key manager.
+     */
+    std::shared_ptr<KeysCollectionManager> _keyManager;
 
     /**
-     * The TransportLayerManager.
+     * The periodic runner.
      */
-    std::unique_ptr<transport::TransportLayerManager> _transportLayerManager;
+    std::unique_ptr<PeriodicRunner> _runner;
+
+    /**
+     * The TransportLayer.
+     */
+    std::unique_ptr<transport::TransportLayer> _transportLayer;
 
     /**
      * The service entry point
      */
     std::unique_ptr<ServiceEntryPoint> _serviceEntryPoint;
+
+    /**
+     * The ServiceExecutor
+     */
+    std::unique_ptr<transport::ServiceExecutor> _serviceExecutor;
 
     /**
      * Vector of registered observers.
@@ -455,6 +532,9 @@ private:
 
     // Counter for assigning operation ids.
     AtomicUInt32 _nextOpId{1};
+
+    bool _startupComplete = false;
+    stdx::condition_variable _startupCompleteCondVar;
 };
 
 /**
@@ -470,6 +550,17 @@ bool hasGlobalServiceContext();
  * Caller does not own pointer.
  */
 ServiceContext* getGlobalServiceContext();
+
+/**
+ * Warning - This function is temporary. Do not introduce new uses of this API.
+ *
+ * Returns the singleton ServiceContext for this server process.
+ *
+ * Waits until there is a valid global ServiceContext.
+ *
+ * Caller does not own pointer.
+ */
+ServiceContext* waitAndGetGlobalServiceContext();
 
 /**
  * Sets the global ServiceContext.  If 'serviceContext' is NULL, un-sets and deletes

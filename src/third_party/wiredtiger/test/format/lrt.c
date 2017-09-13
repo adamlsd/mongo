@@ -1,5 +1,5 @@
 /*-
- * Public Domain 2014-2016 MongoDB, Inc.
+ * Public Domain 2014-2017 MongoDB, Inc.
  * Public Domain 2008-2014 WiredTiger, Inc.
  *
  * This is free and unencumbered software released into the public domain.
@@ -32,7 +32,7 @@
  * lrt --
  *	Start a long-running transaction.
  */
-void *
+WT_THREAD_RET
 lrt(void *arg)
 {
 	WT_CONNECTION *conn;
@@ -50,8 +50,8 @@ lrt(void *arg)
 
 	saved_keyno = 0;		/* [-Werror=maybe-uninitialized] */
 
-	key_gen_setup(&key);
-	val_gen_setup(NULL, &value);
+	key_gen_init(&key);
+	val_gen_init(&value);
 
 	buf = NULL;
 	buf_len = buf_size = 0;
@@ -59,8 +59,14 @@ lrt(void *arg)
 	/* Open a session and cursor. */
 	conn = g.wts_conn;
 	testutil_check(conn->open_session(conn, NULL, NULL, &session));
-	testutil_check(session->open_cursor(
-	    session, g.uri, NULL, NULL, &cursor));
+	/*
+	 * open_cursor can return EBUSY if concurrent with a metadata
+	 * operation, retry in that case.
+	 */
+	while ((ret = session->open_cursor(
+	    session, g.uri, NULL, NULL, &cursor)) == EBUSY)
+		__wt_yield();
+	testutil_check(ret);
 
 	for (pinned = 0;;) {
 		if (pinned) {
@@ -178,9 +184,9 @@ lrt(void *arg)
 
 	testutil_check(session->close(session, NULL));
 
-	free(key.mem);
-	free(value.mem);
+	key_gen_teardown(&key);
+	val_gen_teardown(&value);
 	free(buf);
 
-	return (NULL);
+	return (WT_THREAD_RET_VALUE);
 }

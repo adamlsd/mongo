@@ -28,11 +28,12 @@
 
 #pragma once
 
+#include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
-#include "mongo/db/repl/storage_interface_mock.h"
+#include "mongo/db/repl/replication_process.h"
+#include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d_test_fixture.h"
-#include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 
 namespace mongo {
 namespace repl {
@@ -43,16 +44,10 @@ namespace repl {
  * - an "ephemeralForTest" storage engine for checking results of the rollback algorithm at the
  *   storage layer. The storage engine is initialized as part of the ServiceContextForMongoD test
  *   fixture.
- * - a task executor for simulating remote command responses from the sync source. The
- *   ThreadPoolExecutorTest is used to initialize the task executor.
  */
 class RollbackTest : public unittest::Test {
 public:
-    /**
-     * Initializes executor::ThreadPoolExecutorTest so that each thread is initialized with a
-     * Client.
-     */
-    RollbackTest();
+    RollbackTest() = default;
 
     /**
      * Initializes the service context and task executor.
@@ -63,9 +58,6 @@ public:
      * Destroys the service context and task executor.
      *
      * Note on overriding tearDown() in tests:
-     * Tests should explicitly shut down and join the task executor (by invoking
-     * TaskExecutorTest::shutdownExecutorThread() and TaskExecutorTest::joinExecutorThread()
-     * respectively) before calling RollbackTest::tearDown().
      * This cancels outstanding tasks and remote command requests scheduled using the task
      * executor.
      */
@@ -75,9 +67,6 @@ protected:
     // Test fixture used to manage the service context and global storage engine.
     ServiceContextMongoDTest _serviceContextMongoDTest;
 
-    // Test fixture used to manage the task executor.
-    executor::ThreadPoolExecutorTest _threadPoolExecutorTest;
-
     // OperationContext provided to test cases for storage layer operations.
     ServiceContext::UniqueOperationContext _opCtx;
 
@@ -86,8 +75,13 @@ protected:
     class ReplicationCoordinatorRollbackMock;
     ReplicationCoordinatorRollbackMock* _coordinator = nullptr;
 
-    // StorageInterface used to access minValid.
-    StorageInterfaceMock _storageInterface;
+    StorageInterfaceImpl _storageInterface;
+
+    // ReplicationProcess used to access consistency markers.
+    std::unique_ptr<ReplicationProcess> _replicationProcess;
+
+    // DropPendingCollectionReaper used to clean up and roll back dropped collections.
+    DropPendingCollectionReaper* _dropPendingCollectionReaper = nullptr;
 };
 
 /**
@@ -104,14 +98,24 @@ public:
     void resetLastOpTimesFromOplog(OperationContext* opCtx) override;
 
     /**
-     * Returns false (does not forward call to ReplicationCoordinatorMock::setFollowerMode())
+     * Returns IllegalOperation (does not forward call to
+     * ReplicationCoordinatorMock::setFollowerMode())
      * if new state requested is '_failSetFollowerModeOnThisMemberState'.
      * Otherwise, calls ReplicationCoordinatorMock::setFollowerMode().
      */
-    bool setFollowerMode(const MemberState& newState) override;
+    Status setFollowerMode(const MemberState& newState) override;
 
+    /**
+     * Set this to make transitioning to the given follower mode fail with the given error code.
+     */
+    void failSettingFollowerMode(const MemberState& transitionToFail,
+                                 ErrorCodes::Error codeToFailWith);
+
+private:
     // Override this to make setFollowerMode() fail when called with this state.
     MemberState _failSetFollowerModeOnThisMemberState = MemberState::RS_UNKNOWN;
+
+    ErrorCodes::Error _failSetFollowerModeWithThisCode = ErrorCodes::InternalError;
 };
 
 }  // namespace repl

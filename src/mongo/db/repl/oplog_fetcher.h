@@ -122,7 +122,8 @@ public:
                  bool requireFresherSyncSource,
                  DataReplicatorExternalState* dataReplicatorExternalState,
                  EnqueueDocumentsFn enqueueDocumentsFn,
-                 OnShutdownCallbackFn onShutdownCallbackFn);
+                 OnShutdownCallbackFn onShutdownCallbackFn,
+                 const int batchSize);
 
     virtual ~OplogFetcher();
 
@@ -149,6 +150,8 @@ private:
 
     BSONObj _makeMetadataObject() const override;
 
+    Milliseconds _getGetMoreMaxTime() const override;
+
     /**
      * This function is run by the AbstractOplogFetcher on a successful batch of oplog entries.
      */
@@ -169,6 +172,7 @@ private:
     DataReplicatorExternalState* const _dataReplicatorExternalState;
     const EnqueueDocumentsFn _enqueueDocumentsFn;
     const Milliseconds _awaitDataTimeout;
+    const int _batchSize;
 };
 
 }  // namespace repl

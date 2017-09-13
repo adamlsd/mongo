@@ -59,9 +59,17 @@ const char* kNameFieldName = "name";
 const char* kOptionsFieldName = "options";
 const char* kInfoFieldName = "info";
 const char* kUUIDFieldName = "uuid";
+// 16MB max batch size / 12 byte min doc size * 10 (for good measure) = defaultBatchSize to use.
+const auto defaultBatchSize = (16 * 1024 * 1024) / 12 * 10;
+
+// The batchSize to use for the find/getMore queries called by the CollectionCloner
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(collectionClonerBatchSize, int, defaultBatchSize);
 
 // The number of attempts for the listCollections commands.
 MONGO_EXPORT_SERVER_PARAMETER(numInitialSyncListCollectionsAttempts, int, 3);
+
+// The number of cursors to use in the collection cloning process.
+MONGO_EXPORT_SERVER_PARAMETER(maxNumInitialSyncCollectionClonerCursors, int, 1);
 
 /**
  * Default listCollections predicate.
@@ -115,7 +123,8 @@ DatabaseCloner::DatabaseCloner(executor::TaskExecutor* executor,
                                          stdx::placeholders::_2,
                                          stdx::placeholders::_3),
                               ReadPreferenceSetting::secondaryPreferredMetadata(),
-                              RemoteCommandRequest::kNoTimeout,
+                              RemoteCommandRequest::kNoTimeout /* find network timeout */,
+                              RemoteCommandRequest::kNoTimeout /* getMore network timeout */,
                               RemoteCommandRetryScheduler::makeRetryPolicy(
                                   numInitialSyncListCollectionsAttempts.load(),
                                   executor::RemoteCommandRequest::kNoTimeout,
@@ -358,8 +367,10 @@ void DatabaseCloner::_listCollectionsCallback(const StatusWith<Fetcher::QueryRes
                 options,
                 stdx::bind(
                     &DatabaseCloner::_collectionClonerCallback, this, stdx::placeholders::_1, nss),
-                _storageInterface);
-        } catch (const UserException& ex) {
+                _storageInterface,
+                collectionClonerBatchSize,
+                maxNumInitialSyncCollectionClonerCursors.load());
+        } catch (const AssertionException& ex) {
             _finishCallback_inlock(lk, ex.toStatus());
             return;
         }

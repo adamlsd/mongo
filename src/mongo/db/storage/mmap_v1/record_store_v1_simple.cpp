@@ -369,7 +369,8 @@ void SimpleRecordStoreV1::_compactExtent(OperationContext* opCtx,
                 // start of the compact, this insert will allocate a record in a new extent.
                 // See the comment in compact() for more details.
                 CompactDocWriter writer(recOld, rawDataSize, allocationSize);
-                StatusWith<RecordId> status = insertRecordWithDocWriter(opCtx, &writer);
+                StatusWith<RecordId> status =
+                    insertRecordWithDocWriter(opCtx, &writer, Timestamp());
                 uassertStatusOK(status.getStatus());
                 const MmapV1RecordHeader* newRec =
                     recordFor(DiskLoc::fromRecordId(status.getValue()));
@@ -459,8 +460,8 @@ Status SimpleRecordStoreV1::compact(OperationContext* opCtx,
     }
 
     stdx::unique_lock<Client> lk(*opCtx->getClient());
-    ProgressMeterHolder pm(
-        *opCtx->setMessage_inlock("compact extent", "Extent Compacting Progress", extents.size()));
+    ProgressMeterHolder pm(CurOp::get(opCtx)->setMessage_inlock(
+        "compact extent", "Extent Compacting Progress", extents.size()));
     lk.unlock();
 
     // Go through all old extents and move each record to a new set of extents.

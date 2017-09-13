@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -39,7 +39,6 @@ static int __debug_col_skip(WT_DBG *, WT_INSERT_HEAD *, const char *, bool);
 static int __debug_config(WT_SESSION_IMPL *, WT_DBG *, const char *);
 static int __debug_dsk_cell(WT_DBG *, const WT_PAGE_HEADER *);
 static int __debug_dsk_col_fix(WT_DBG *, const WT_PAGE_HEADER *);
-static int __debug_item(WT_DBG *, const char *, const void *, size_t);
 static int __debug_page(WT_DBG *, WT_REF *, uint32_t);
 static int __debug_page_col_fix(WT_DBG *, WT_REF *);
 static int __debug_page_col_int(WT_DBG *, WT_PAGE *, uint32_t);
@@ -78,6 +77,41 @@ __debug_hex_byte(WT_DBG *ds, uint8_t v)
 {
 	return (ds->f(
 	    ds, "#%c%c", __wt_hex((v & 0xf0) >> 4), __wt_hex(v & 0x0f)));
+}
+
+/*
+ * __debug_bytes --
+ *	Dump a single set of bytes.
+ */
+static int
+__debug_bytes(WT_DBG *ds, const void *data_arg, size_t size)
+{
+	size_t i;
+	u_char ch;
+	const uint8_t *data;
+
+	for (data = data_arg, i = 0; i < size; ++i, ++data) {
+		ch = data[0];
+		if (__wt_isprint(ch))
+			WT_RET(ds->f(ds, "%c", (int)ch));
+		else
+			WT_RET(__debug_hex_byte(ds, data[0]));
+	}
+	return (0);
+}
+
+/*
+ * __debug_item --
+ *	Dump a single data/size pair, with an optional tag.
+ */
+static int
+__debug_item(WT_DBG *ds, const char *tag, const void *data_arg, size_t size)
+{
+	WT_RET(ds->f(ds,
+	    "\t%s%s{", tag == NULL ? "" : tag, tag == NULL ? "" : " "));
+	WT_RET(__debug_bytes(ds, data_arg, size));
+	WT_RET(ds->f(ds, "}\n"));
+	return (0);
 }
 
 /*
@@ -445,18 +479,28 @@ static char *
 __debug_tree_shape_info(WT_PAGE *page)
 {
 	uint64_t v;
-	static char buf[32];
+	static char buf[128];
+	const char *unit;
 
 	v = page->memory_footprint;
-	if (v >= WT_GIGABYTE)
-		(void)__wt_snprintf(buf, sizeof(buf),
-		    "(%p %" PRIu64 "G)", (void *)page, v / WT_GIGABYTE);
-	else if (v >= WT_MEGABYTE)
-		(void)__wt_snprintf(buf, sizeof(buf),
-		    "(%p %" PRIu64 "M)", (void *)page, v / WT_MEGABYTE);
-	else
-		(void)__wt_snprintf(buf, sizeof(buf),
-		    "(%p %" PRIu64 ")", (void *)page, v);
+
+	if (v > WT_GIGABYTE) {
+		v /= WT_GIGABYTE;
+		unit = "G";
+	} else if (v > WT_MEGABYTE) {
+		v /= WT_MEGABYTE;
+		unit = "M";
+	} else if (v > WT_KILOBYTE) {
+		v /= WT_KILOBYTE;
+		unit = "K";
+	} else {
+		unit = "B";
+	}
+
+	(void)__wt_snprintf(buf, sizeof(buf), "(%p, %" PRIu64
+	    "%s, evict gen %" PRIu64 ", create gen %" PRIu64 ")",
+	    (void *)page, v, unit,
+	    page->evict_pass_gen, page->cache_create_gen);
 	return (buf);
 }
 
@@ -689,8 +733,6 @@ __debug_page_metadata(WT_DBG *ds, WT_REF *ref)
 	WT_RET(ds->f(ds, ", entries %" PRIu32, entries));
 	WT_RET(ds->f(ds,
 	    ", %s", __wt_page_is_modified(page) ? "dirty" : "clean"));
-	WT_RET(ds->f(ds, ", %s", __wt_rwlock_islocked(
-	    session, &page->page_lock) ? "locked" : "unlocked"));
 
 	if (F_ISSET_ATOMIC(page, WT_PAGE_BUILD_KEYS))
 		WT_RET(ds->f(ds, ", keys-built"));
@@ -978,23 +1020,83 @@ __debug_row_skip(WT_DBG *ds, WT_INSERT_HEAD *head)
 }
 
 /*
+ * __debug_modified --
+ *	Dump a modified update.
+ */
+static int
+__debug_modified(WT_DBG *ds, WT_UPDATE *upd)
+{
+	const size_t *p;
+	size_t nentries, data_size, offset, size;
+	const uint8_t *data;
+
+	p = (size_t *)upd->data;
+	memcpy(&nentries, p++, sizeof(size_t));
+	data = upd->data +
+	    sizeof(size_t) + ((size_t)nentries * 3 * sizeof(size_t));
+
+	WT_RET(ds->f(ds, "%" WT_SIZET_FMT ": ", nentries));
+	for (; nentries-- > 0; data += data_size) {
+		memcpy(&data_size, p++, sizeof(size_t));
+		memcpy(&offset, p++, sizeof(size_t));
+		memcpy(&size, p++, sizeof(size_t));
+		WT_RET(ds->f(ds,
+		    "{%" WT_SIZET_FMT ", %" WT_SIZET_FMT ", %" WT_SIZET_FMT
+		    ", ",
+		    data_size, offset, size));
+		WT_RET(__debug_bytes(ds, data, data_size));
+		WT_RET(ds->f(ds, "}%s", nentries == 0 ? "" : ", "));
+	}
+
+	return (0);
+}
+
+/*
  * __debug_update --
  *	Dump an update list.
  */
 static int
 __debug_update(WT_DBG *ds, WT_UPDATE *upd, bool hexbyte)
 {
-	for (; upd != NULL; upd = upd->next)
-		if (WT_UPDATE_DELETED_ISSET(upd))
+	for (; upd != NULL; upd = upd->next) {
+		switch (upd->type) {
+		case WT_UPDATE_DELETED:
 			WT_RET(ds->f(ds, "\tvalue {deleted}\n"));
-		else if (hexbyte) {
-			WT_RET(ds->f(ds, "\t{"));
-			WT_RET(__debug_hex_byte(ds,
-			    *(uint8_t *)WT_UPDATE_DATA(upd)));
+			break;
+		case WT_UPDATE_MODIFIED:
+			WT_RET(ds->f(ds, "\tvalue {modified: "));
+			WT_RET(__debug_modified(ds, upd));
 			WT_RET(ds->f(ds, "}\n"));
-		} else
-			WT_RET(__debug_item(ds,
-			    "value", WT_UPDATE_DATA(upd), upd->size));
+			break;
+		case WT_UPDATE_RESERVED:
+			WT_RET(ds->f(ds, "\tvalue {reserved}\n"));
+			break;
+		case WT_UPDATE_STANDARD:
+			if (hexbyte) {
+				WT_RET(ds->f(ds, "\t{"));
+				WT_RET(__debug_hex_byte(ds, *upd->data));
+				WT_RET(ds->f(ds, "}\n"));
+			} else
+				WT_RET(__debug_item(ds,
+				    "value", upd->data, upd->size));
+			break;
+		}
+		if (upd->txnid == WT_TXN_ABORTED)
+			WT_RET(ds->f(ds, "\t" "txn aborted"));
+		else
+			WT_RET(ds->f(ds, "\t" "txn id %" PRIu64, upd->txnid));
+
+#ifdef HAVE_TIMESTAMPS
+		if (!__wt_timestamp_iszero(
+		    WT_TIMESTAMP_NULL(&upd->timestamp))) {
+			char hex_timestamp[2 * WT_TIMESTAMP_SIZE + 1];
+			WT_RET(__wt_timestamp_to_hex_string(
+			    ds->session, hex_timestamp, &upd->timestamp));
+			WT_RET(ds->f(ds, ", stamp %s", hex_timestamp));
+		}
+#endif
+		WT_RET(ds->f(ds, "\n"));
+	}
 	return (0);
 }
 
@@ -1177,29 +1279,5 @@ __debug_cell_data(WT_DBG *ds,
 	}
 
 	return (ret);
-}
-
-/*
- * __debug_item --
- *	Dump a single data/size pair, with an optional tag.
- */
-static int
-__debug_item(WT_DBG *ds, const char *tag, const void *data_arg, size_t size)
-{
-	size_t i;
-	u_char ch;
-	const uint8_t *data;
-
-	WT_RET(ds->f(ds,
-	    "\t%s%s{", tag == NULL ? "" : tag, tag == NULL ? "" : " "));
-	for (data = data_arg, i = 0; i < size; ++i, ++data) {
-		ch = data[0];
-		if (__wt_isprint(ch))
-			WT_RET(ds->f(ds, "%c", (int)ch));
-		else
-			WT_RET(__debug_hex_byte(ds, data[0]));
-	}
-	WT_RET(ds->f(ds, "}\n"));
-	return (0);
 }
 #endif

@@ -62,13 +62,12 @@ public:
 
     virtual void deleteRecord(OperationContext* opCtx, const RecordId& dl);
 
-    virtual StatusWith<RecordId> insertRecord(OperationContext* opCtx,
-                                              const char* data,
-                                              int len,
-                                              bool enforceQuota);
+    virtual StatusWith<RecordId> insertRecord(
+        OperationContext* opCtx, const char* data, int len, Timestamp, bool enforceQuota);
 
     virtual Status insertRecordsWithDocWriter(OperationContext* opCtx,
                                               const DocWriter* const* docs,
+                                              const Timestamp*,
                                               size_t nDocs,
                                               RecordId* idsOut);
 
@@ -160,14 +159,6 @@ public:
     }
     void setCappedCallback(CappedCallback* cb) {
         _cappedCallback = cb;
-    }
-    bool cappedMaxDocs() const {
-        invariant(_isCapped);
-        return _cappedMaxDocs;
-    }
-    bool cappedMaxSize() const {
-        invariant(_isCapped);
-        return _cappedMaxSize;
     }
 
 private:

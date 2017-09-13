@@ -47,10 +47,53 @@
 #endif
 
 #include "mongo/bson/util/builder.h"
+#include "mongo/util/itoa.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/sock.h"
 
 namespace mongo {
+namespace {
+constexpr int SOCK_FAMILY_UNKNOWN_ERROR = 13078;
+
+using AddrInfo = std::unique_ptr<addrinfo, decltype(&freeaddrinfo)>;
+
+std::pair<int, AddrInfo> resolveAddrInfo(const std::string& hostOrIp,
+                                         int port,
+                                         sa_family_t familyHint) {
+    addrinfo hints;
+    memset(&hints, 0, sizeof(addrinfo));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags |= AI_NUMERICHOST;  // first pass tries w/o DNS lookup
+    hints.ai_family = familyHint;
+    addrinfo* addrs = nullptr;
+
+    ItoA portStr(port);
+    int ret = getaddrinfo(hostOrIp.c_str(), StringData(portStr).rawData(), &hints, &addrs);
+
+// old C compilers on IPv6-capable hosts return EAI_NODATA error
+#ifdef EAI_NODATA
+    int nodata = (ret == EAI_NODATA);
+#else
+    int nodata = false;
+#endif
+    if ((ret == EAI_NONAME) || nodata) {
+        // iporhost isn't an IP address, allow DNS lookup
+        hints.ai_flags &= ~AI_NUMERICHOST;
+        ret = getaddrinfo(hostOrIp.c_str(), StringData(portStr).rawData(), &hints, &addrs);
+    }
+
+    return {ret, AddrInfo(addrs, &freeaddrinfo)};
+}
+
+}  // namespace
+
+std::string getAddrInfoStrError(int code) {
+#if !defined(_WIN32)
+    return gai_strerror(code);
+#else
+    /* gai_strerrorA is not threadsafe on windows. don't use it. */
+    return errnoWithDescription(code);
+#endif
+}
 
 SockAddr::SockAddr() {
     addressSize = sizeof(sa);
@@ -68,56 +111,37 @@ SockAddr::SockAddr(int sourcePort) {
     _isValid = true;
 }
 
-SockAddr::SockAddr(const char* _iporhost, int port) : _hostOrIp(_iporhost) {
-    std::string target = _iporhost;
-    if (target == "localhost") {
-        target = "127.0.0.1";
+void SockAddr::initUnixDomainSocket(const std::string& path, int port) {
+#ifdef _WIN32
+    uassert(13080, "no unix socket support on windows", false);
+#endif
+    uassert(
+        13079, "path to unix socket too long", path.size() < sizeof(as<sockaddr_un>().sun_path));
+    as<sockaddr_un>().sun_family = AF_UNIX;
+    strcpy(as<sockaddr_un>().sun_path, path.c_str());
+    addressSize = sizeof(sockaddr_un);
+    _isValid = true;
+}
+
+SockAddr::SockAddr(StringData target, int port, sa_family_t familyHint)
+    : _hostOrIp(target.toString()) {
+    if (_hostOrIp == "localhost") {
+        _hostOrIp = "127.0.0.1";
     }
 
-    if (mongoutils::str::contains(target, '/')) {
-#ifdef _WIN32
-        uassert(13080, "no unix socket support on windows", false);
-#endif
-        uassert(13079,
-                "path to unix socket too long",
-                target.size() < sizeof(as<sockaddr_un>().sun_path));
-        as<sockaddr_un>().sun_family = AF_UNIX;
-        strcpy(as<sockaddr_un>().sun_path, target.c_str());
-        addressSize = sizeof(sockaddr_un);
-        _isValid = true;
+    if (mongoutils::str::contains(_hostOrIp, '/')) {
+        initUnixDomainSocket(_hostOrIp, port);
         return;
     }
 
-    addrinfo* addrs = NULL;
-    addrinfo hints;
-    memset(&hints, 0, sizeof(addrinfo));
-    hints.ai_socktype = SOCK_STREAM;
-    // hints.ai_flags = AI_ADDRCONFIG; // This is often recommended but don't do it.
-    // SERVER-1579
-    hints.ai_flags |= AI_NUMERICHOST;  // first pass tries w/o DNS lookup
-    hints.ai_family = (IPv6Enabled() ? AF_UNSPEC : AF_INET);
+    auto addrErr = resolveAddrInfo(_hostOrIp, port, familyHint);
 
-    StringBuilder ss;
-    ss << port;
-    int ret = getaddrinfo(target.c_str(), ss.str().c_str(), &hints, &addrs);
-
-// old C compilers on IPv6-capable hosts return EAI_NODATA error
-#ifdef EAI_NODATA
-    int nodata = (ret == EAI_NODATA);
-#else
-    int nodata = false;
-#endif
-    if ((ret == EAI_NONAME || nodata)) {
-        // iporhost isn't an IP address, allow DNS lookup
-        hints.ai_flags &= ~AI_NUMERICHOST;
-        ret = getaddrinfo(target.c_str(), ss.str().c_str(), &hints, &addrs);
-    }
-
-    if (ret) {
+    if (addrErr.first) {
         // we were unsuccessful
-        if (target != "0.0.0.0") {  // don't log if this as it is a
-                                    // CRT construction and log() may not work yet.
-            log() << "getaddrinfo(\"" << target << "\") failed: " << getAddrInfoStrError(ret);
+        if (_hostOrIp != "0.0.0.0") {  // don't log if this as it is a
+                                       // CRT construction and log() may not work yet.
+            log() << "getaddrinfo(\"" << _hostOrIp
+                  << "\") failed: " << getAddrInfoStrError(addrErr.first);
             _isValid = false;
             return;
         }
@@ -125,12 +149,53 @@ SockAddr::SockAddr(const char* _iporhost, int port) : _hostOrIp(_iporhost) {
         return;
     }
 
-    // TODO: handle other addresses in linked list;
+    // This throws away all but the first address.
+    // Use SockAddr::createAll() to get all addresses.
+    const auto* addrs = addrErr.second.get();
     fassert(16501, addrs->ai_addrlen <= sizeof(sa));
     memcpy(&sa, addrs->ai_addr, addrs->ai_addrlen);
     addressSize = addrs->ai_addrlen;
-    freeaddrinfo(addrs);
     _isValid = true;
+}
+
+std::vector<SockAddr> SockAddr::createAll(StringData target, int port, sa_family_t familyHint) {
+    std::string hostOrIp = target.toString();
+    if (mongoutils::str::contains(hostOrIp, '/')) {
+        std::vector<SockAddr> ret = {SockAddr()};
+        ret[0].initUnixDomainSocket(hostOrIp, port);
+        // Currently, this is always valid since initUnixDomainSocket()
+        // will uassert() on failure. Be defensive against future changes.
+        return ret[0].isValid() ? ret : std::vector<SockAddr>();
+    }
+
+    auto addrErr = resolveAddrInfo(hostOrIp, port, familyHint);
+    if (addrErr.first) {
+        log() << "getaddrinfo(\"" << hostOrIp
+              << "\") failed: " << getAddrInfoStrError(addrErr.first);
+        return {};
+    }
+
+    std::vector<SockAddr> ret;
+    struct sockaddr_storage storage;
+    memset(&storage, 0, sizeof(storage));
+    for (const auto* addrs = addrErr.second.get(); addrs; addrs = addrs->ai_next) {
+        fassert(40594, addrs->ai_addrlen <= sizeof(struct sockaddr_storage));
+        // Make a temp copy in a local sockaddr_storage so that the
+        // SockAddr constructor below can copy the entire buffer
+        // without over-running addrinfo's storage
+        memcpy(&storage, addrs->ai_addr, addrs->ai_addrlen);
+        ret.emplace_back(storage, addrs->ai_addrlen);
+    }
+    return ret;
+}
+
+SockAddr::SockAddr(struct sockaddr_storage& other, socklen_t size)
+    : addressSize(size), _hostOrIp(), sa(other), _isValid(true) {
+    _hostOrIp = toString(true);
+}
+
+bool SockAddr::isIP() const {
+    return (getType() == AF_INET) || (getType() == AF_INET6);
 }
 
 bool SockAddr::isLocalHost() const {

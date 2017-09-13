@@ -186,7 +186,7 @@ void DBClientReplicaSet::setRequestMetadataWriter(rpc::RequestMetadataWriter wri
     if (_lastSlaveOkConn.get()) {
         _lastSlaveOkConn->setRequestMetadataWriter(writer);
     }
-    DBClientWithCommands::setRequestMetadataWriter(std::move(writer));
+    DBClientBase::setRequestMetadataWriter(std::move(writer));
 }
 
 void DBClientReplicaSet::setReplyMetadataReader(rpc::ReplyMetadataReader reader) {
@@ -197,7 +197,7 @@ void DBClientReplicaSet::setReplyMetadataReader(rpc::ReplyMetadataReader reader)
     if (_lastSlaveOkConn.get()) {
         _lastSlaveOkConn->setReplyMetadataReader(reader);
     }
-    DBClientWithCommands::setReplyMetadataReader(std::move(reader));
+    DBClientBase::setReplyMetadataReader(std::move(reader));
 }
 
 int DBClientReplicaSet::getMinWireVersion() {
@@ -367,7 +367,7 @@ void DBClientReplicaSet::_authConnection(DBClientConnection* conn) {
     for (map<string, BSONObj>::const_iterator i = _auths.begin(); i != _auths.end(); ++i) {
         try {
             conn->auth(i->second);
-        } catch (const UserException&) {
+        } catch (const AssertionException&) {
             warning() << "cached auth failed for set: " << _setName
                       << " db: " << i->second[saslCommandUserDBFieldName].str()
                       << " user: " << i->second[saslCommandUserFieldName].str() << endl;
@@ -380,7 +380,7 @@ void DBClientReplicaSet::logoutAll(DBClientConnection* conn) {
         BSONObj response;
         try {
             conn->logout(i->first, response);
-        } catch (const UserException& ex) {
+        } catch (const AssertionException& ex) {
             warning() << "Failed to logout: " << conn->getServerAddress() << " on db: " << i->first
                       << causedBy(redact(ex));
         }
@@ -410,7 +410,7 @@ bool DBClientReplicaSet::connect() {
 }
 
 static bool isAuthenticationException(const DBException& ex) {
-    return ex.getCode() == ErrorCodes::AuthenticationFailed;
+    return ex.code() == ErrorCodes::AuthenticationFailed;
 }
 
 void DBClientReplicaSet::_auth(const BSONObj& params) {
@@ -617,7 +617,7 @@ BSONObj DBClientReplicaSet::findOne(const string& ns,
     return checkMaster()->findOne(ns, query, fieldsToReturn, queryOptions);
 }
 
-void DBClientReplicaSet::killCursor(long long cursorID) {
+void DBClientReplicaSet::killCursor(const NamespaceString& ns, long long cursorID) {
     // we should never call killCursor on a replica set connection
     // since we don't know which server it belongs to
     // can't assume master because of slave ok
@@ -651,9 +651,9 @@ unique_ptr<DBClientCursor> DBClientReplicaSet::checkSlaveQueryResult(
     BSONElement code = error["code"];
     if (code.isNumber() && code.Int() == ErrorCodes::NotMasterOrSecondary) {
         isntSecondary();
-        throw DBException(str::stream() << "slave " << _lastSlaveOkHost.toString()
-                                        << " is no longer secondary",
-                          14812);
+        throw DBException(14812,
+                          str::stream() << "slave " << _lastSlaveOkHost.toString()
+                                        << " is no longer secondary");
     }
 
     return result;
@@ -819,12 +819,12 @@ void DBClientReplicaSet::say(Message& toSend, bool isRetry, string* actualServer
     return;
 }
 
-bool DBClientReplicaSet::recv(Message& m) {
+bool DBClientReplicaSet::recv(Message& m, int lastRequestId) {
     verify(_lazyState._lastClient);
 
     // TODO: It would be nice if we could easily wrap a conn error as a result error
     try {
-        return _lazyState._lastClient->recv(m);
+        return _lazyState._lastClient->recv(m, lastRequestId);
     } catch (DBException& e) {
         log() << "could not receive data from " << _lazyState._lastClient->toString()
               << causedBy(redact(e));
@@ -832,17 +832,17 @@ bool DBClientReplicaSet::recv(Message& m) {
     }
 }
 
-void DBClientReplicaSet::checkResponse(const char* data,
-                                       int nReturned,
+void DBClientReplicaSet::checkResponse(const std::vector<BSONObj>& batch,
+                                       bool networkError,
                                        bool* retry,
                                        string* targetHost) {
     // For now, do exactly as we did before, so as not to break things.  In general though, we
     // should fix this so checkResponse has a more consistent contract.
     if (!retry) {
         if (_lazyState._lastClient)
-            return _lazyState._lastClient->checkResponse(data, nReturned);
+            return _lazyState._lastClient->checkResponse(batch, networkError);
         else
-            return checkMaster()->checkResponse(data, nReturned);
+            return checkMaster()->checkResponse(batch, networkError);
     }
 
     *retry = false;
@@ -855,23 +855,22 @@ void DBClientReplicaSet::checkResponse(const char* data,
         return;
 
     // nReturned == 1 means that we got one result back, which might be an error
-    // nReturned == -1 is a sentinel value for "no data returned" aka (usually) network problem
+    // networkError is a sentinel value for "no data returned" aka (usually) network problem
     // If neither, this must be a query result so our response is ok wrt the replica set
-    if (nReturned != 1 && nReturned != -1)
+    if (batch.size() != 1 && !networkError)
         return;
 
     BSONObj dataObj;
-    if (nReturned == 1)
-        dataObj = BSONObj(data);
+    if (batch.size() == 1)
+        dataObj = batch[0];
 
     // Check if we should retry here
     if (_lazyState._lastOp == dbQuery && _lazyState._secondaryQueryOk) {
         // query could potentially go to a secondary, so see if this is an error (or empty) and
         // retry if we're not past our retry limit.
 
-        if (nReturned == -1 /* no result, maybe network problem */ ||
-            (hasErrField(dataObj) && !dataObj["code"].eoo() &&
-             dataObj["code"].Int() == ErrorCodes::NotMasterOrSecondary)) {
+        if (networkError || (hasErrField(dataObj) && !dataObj["code"].eoo() &&
+                             dataObj["code"].Int() == ErrorCodes::NotMasterOrSecondary)) {
             if (_lazyState._lastClient == _lastSlaveOkConn.get()) {
                 isntSecondary();
             } else if (_lazyState._lastClient == _master.get()) {
@@ -893,9 +892,8 @@ void DBClientReplicaSet::checkResponse(const char* data,
     } else if (_lazyState._lastOp == dbQuery) {
         // if query could not potentially go to a secondary, just mark the master as bad
 
-        if (nReturned == -1 /* no result, maybe network problem */ ||
-            (hasErrField(dataObj) && !dataObj["code"].eoo() &&
-             dataObj["code"].Int() == ErrorCodes::NotMasterNoSlaveOk)) {
+        if (networkError || (hasErrField(dataObj) && !dataObj["code"].eoo() &&
+                             dataObj["code"].Int() == ErrorCodes::NotMasterNoSlaveOk)) {
             if (_lazyState._lastClient == _master.get()) {
                 isntMaster();
             }
@@ -903,19 +901,15 @@ void DBClientReplicaSet::checkResponse(const char* data,
     }
 }
 
-rpc::UniqueReply DBClientReplicaSet::runCommandWithMetadata(StringData database,
-                                                            StringData command,
-                                                            const BSONObj& metadata,
-                                                            const BSONObj& commandArgs) {
-    auto ret = runCommandWithMetadataAndTarget(database, command, metadata, commandArgs);
-    return std::move(std::get<0>(ret));
+DBClientBase* DBClientReplicaSet::runFireAndForgetCommand(OpMsgRequest request) {
+    // Assume all fire-and-forget commands should go to the primary node. It is currently used
+    // for writes which need to go to the primary and for killCursors which should be sent to a
+    // specific host rather than through DBClientReplicaSet.
+    return checkMaster()->runFireAndForgetCommand(std::move(request));
 }
 
-std::tuple<rpc::UniqueReply, DBClientWithCommands*>
-DBClientReplicaSet::runCommandWithMetadataAndTarget(StringData database,
-                                                    StringData command,
-                                                    const BSONObj& metadata,
-                                                    const BSONObj& commandArgs) {
+std::pair<rpc::UniqueReply, DBClientBase*> DBClientReplicaSet::runCommandWithTarget(
+    OpMsgRequest request) {
     // This overload exists so we can parse out the read preference and then use server
     // selection directly without having to re-parse the raw message.
 
@@ -923,15 +917,14 @@ DBClientReplicaSet::runCommandWithMetadataAndTarget(StringData database,
     // so we don't have to re-parse it, however, that will come with its own set of
     // complications (e.g. some kind of base class or concept for MetadataSerializable
     // objects). For now we do it the stupid way.
-    auto readPref = uassertStatusOK(ReadPreferenceSetting::fromContainingBSON(metadata));
+    auto readPref = uassertStatusOK(ReadPreferenceSetting::fromContainingBSON(request.body));
 
     if (readPref.pref == ReadPreference::PrimaryOnly ||
         // If the command is not runnable on a secondary, we run it on the primary
         // regardless of the read preference.
-        !_isSecondaryCommand(command, commandArgs)) {
+        !_isSecondaryCommand(request.getCommandName(), request.body)) {
         auto conn = checkMaster();
-        return std::make_tuple(
-            conn->runCommandWithMetadata(database, command, metadata, commandArgs), conn);
+        return conn->runCommandWithTarget(std::move(request));
     }
 
     auto rpShared = std::make_shared<ReadPreferenceSetting>(std::move(readPref));
@@ -942,10 +935,8 @@ DBClientReplicaSet::runCommandWithMetadataAndTarget(StringData database,
             if (conn == nullptr) {
                 break;
             }
-            // We can't move database and command in case this throws
-            // and we retry.
-            return std::make_tuple(
-                conn->runCommandWithMetadata(database, command, metadata, commandArgs), conn);
+            // We can't move the request since we need it to retry.
+            return conn->runCommandWithTarget(request);
         } catch (const DBException& ex) {
             _invalidateLastSlaveOkCache(ex.toStatus());
         }
@@ -954,7 +945,7 @@ DBClientReplicaSet::runCommandWithMetadataAndTarget(StringData database,
     uasserted(ErrorCodes::NodeNotFound,
               str::stream() << "Could not satisfy $readPreference of '" << readPref.toString()
                             << "' while attempting to run command "
-                            << command);
+                            << request.getCommandName());
 }
 
 bool DBClientReplicaSet::call(Message& toSend,

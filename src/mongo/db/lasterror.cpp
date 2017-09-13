@@ -52,6 +52,9 @@ void LastError::setLastError(int code, std::string msg) {
     reset(true);
     _code = code;
     _msg = std::move(msg);
+
+    if (ErrorCodes::isNotMasterError(ErrorCodes::fromInt(_code)))
+        _hadNotMasterError = true;
 }
 
 void LastError::recordUpdate(bool updateObjects, long long nObjects, BSONObj upsertedId) {
@@ -110,6 +113,7 @@ void LastError::disable() {
 void LastError::startRequest() {
     _disabled = false;
     ++_nPrev;
+    _hadNotMasterError = false;
 }
 
 }  // namespace mongo

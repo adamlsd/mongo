@@ -38,6 +38,8 @@
 #include <sched.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 #ifdef __UCLIBC__
@@ -71,7 +73,7 @@ public:
             stringstream ss;
             ss << "couldn't open [" << name << "] " << errnoWithDescription();
             string s = ss.str();
-            msgassertedNoTrace(13538, s.c_str());
+            msgasserted(13538, s.c_str());
         }
         int found = fscanf(f,
                            "%d %127s %c "
@@ -451,11 +453,12 @@ double ProcessInfo::getSystemMemoryPressurePercentage() {
 }
 
 void ProcessInfo::getExtraInfo(BSONObjBuilder& info) {
-    LinuxProc p(_pid);
-    if (p._maj_flt <= std::numeric_limits<long long>::max())
-        info.appendNumber("page_faults", static_cast<long long>(p._maj_flt));
+    struct rusage ru;
+    getrusage(RUSAGE_SELF, &ru);
+    if (ru.ru_majflt <= std::numeric_limits<long long>::max())
+        info.appendNumber("page_faults", static_cast<long long>(ru.ru_majflt));
     else
-        info.appendNumber("page_faults", static_cast<double>(p._maj_flt));
+        info.appendNumber("page_faults", static_cast<double>(ru.ru_majflt));
 }
 
 /**

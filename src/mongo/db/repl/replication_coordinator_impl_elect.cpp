@@ -142,9 +142,10 @@ void ReplicationCoordinatorImpl::_startElectSelf_inlock() {
         return;
     }
     fassert(18681, nextPhaseEvh.getStatus());
-    _replExecutor->onEvent(
-        nextPhaseEvh.getValue(),
-        stdx::bind(&ReplicationCoordinatorImpl::_onFreshnessCheckComplete, this));
+    _replExecutor
+        ->onEvent(nextPhaseEvh.getValue(),
+                  stdx::bind(&ReplicationCoordinatorImpl::_onFreshnessCheckComplete, this))
+        .status_with_transitional_ignore();
     lossGuard.dismiss();
 }
 
@@ -217,9 +218,10 @@ void ReplicationCoordinatorImpl::_onFreshnessCheckComplete() {
     }
     fassert(18685, nextPhaseEvh.getStatus());
 
-    _replExecutor->onEvent(
-        nextPhaseEvh.getValue(),
-        stdx::bind(&ReplicationCoordinatorImpl::_onElectCmdRunnerComplete, this));
+    _replExecutor
+        ->onEvent(nextPhaseEvh.getValue(),
+                  stdx::bind(&ReplicationCoordinatorImpl::_onElectCmdRunnerComplete, this))
+        .status_with_transitional_ignore();
     lossGuard.dismiss();
 }
 
@@ -282,7 +284,9 @@ void ReplicationCoordinatorImpl::_recoverFromElectionTie(
     if (!status.isOK()) {
         LOG(2) << "ReplicationCoordinatorImpl::_recoverFromElectionTie -- " << status.reason();
     } else {
-        fassertStatusOK(28817, _topCoord->becomeCandidateIfElectable(now, false));
+        fassertStatusOK(28817,
+                        _topCoord->becomeCandidateIfElectable(
+                            now, TopologyCoordinator::StartElectionReason::kElectionTimeout));
         _startElectSelf_inlock();
     }
 }

@@ -45,6 +45,8 @@ namespace repl {
 const size_t ReplSetConfig::kMaxMembers;
 const size_t ReplSetConfig::kMaxVotingMembers;
 const Milliseconds ReplSetConfig::kInfiniteCatchUpTimeout(-1);
+const Milliseconds ReplSetConfig::kCatchUpDisabled(0);
+const Milliseconds ReplSetConfig::kCatchUpTakeoverDisabled(-1);
 
 const std::string ReplSetConfig::kConfigServerFieldName = "configsvr";
 const std::string ReplSetConfig::kVersionFieldName = "version";
@@ -54,6 +56,7 @@ const Seconds ReplSetConfig::kDefaultHeartbeatTimeoutPeriod(10);
 const Milliseconds ReplSetConfig::kDefaultElectionTimeoutPeriod(10000);
 const Milliseconds ReplSetConfig::kDefaultCatchUpTimeoutPeriod(kInfiniteCatchUpTimeout);
 const bool ReplSetConfig::kDefaultChainingAllowed(true);
+const Milliseconds ReplSetConfig::kDefaultCatchUpTakeoverDelay(30000);
 
 namespace {
 
@@ -81,6 +84,7 @@ const std::string kHeartbeatIntervalFieldName = "heartbeatIntervalMillis";
 const std::string kHeartbeatTimeoutFieldName = "heartbeatTimeoutSecs";
 const std::string kCatchUpTimeoutFieldName = "catchUpTimeoutMillis";
 const std::string kReplicaSetIdFieldName = "replicaSetId";
+const std::string kCatchUpTakeoverDelayFieldName = "catchUpTakeoverDelayMillis";
 
 }  // namespace
 
@@ -271,19 +275,37 @@ Status ReplSetConfig::_parseSettingsSubdocument(const BSONObj& settings) {
     //
     // Parse catchUpTimeoutMillis
     //
-    auto validCatchUpTimeout = [](long long timeout) { return timeout >= 0LL || timeout == -1LL; };
+    auto validCatchUpParameter = [](long long timeout) {
+        return timeout >= 0LL || timeout == -1LL;
+    };
     long long catchUpTimeoutMillis;
     Status catchUpTimeoutStatus = bsonExtractIntegerFieldWithDefaultIf(
         settings,
         kCatchUpTimeoutFieldName,
         durationCount<Milliseconds>(kDefaultCatchUpTimeoutPeriod),
-        validCatchUpTimeout,
+        validCatchUpParameter,
         "catch-up timeout must be positive, 0 (no catch-up) or -1 (infinite catch-up).",
         &catchUpTimeoutMillis);
     if (!catchUpTimeoutStatus.isOK()) {
         return catchUpTimeoutStatus;
     }
     _catchUpTimeoutPeriod = Milliseconds(catchUpTimeoutMillis);
+
+    //
+    // Parse catchUpTakeoverDelayMillis
+    //
+    long long catchUpTakeoverDelayMillis;
+    Status catchUpTakeoverDelayStatus = bsonExtractIntegerFieldWithDefaultIf(
+        settings,
+        kCatchUpTakeoverDelayFieldName,
+        durationCount<Milliseconds>(kDefaultCatchUpTakeoverDelay),
+        validCatchUpParameter,
+        "catch-up takeover delay must be -1 (no catch-up takeover) or greater than or equal to 0.",
+        &catchUpTakeoverDelayMillis);
+    if (!catchUpTakeoverDelayStatus.isOK()) {
+        return catchUpTakeoverDelayStatus;
+    }
+    _catchUpTakeoverDelay = Milliseconds(catchUpTakeoverDelayMillis);
 
     //
     // Parse chainingAllowed
@@ -736,7 +758,7 @@ void ReplSetConfig::_initializeConnectionString() {
     try {
         _connectionString = ConnectionString::forReplicaSet(_replSetName, visibleMembers);
     } catch (const DBException& e) {
-        invariant(e.getCode() == ErrorCodes::FailedToParse);
+        invariant(e.code() == ErrorCodes::FailedToParse);
         // Failure to construct the ConnectionString means either an invalid replica set name
         // or members array, which should be caught in validate()
     }
@@ -783,6 +805,8 @@ BSONObj ReplSetConfig::toBSON() const {
                                   durationCount<Milliseconds>(_electionTimeoutPeriod));
     settingsBuilder.appendIntOrLL(kCatchUpTimeoutFieldName,
                                   durationCount<Milliseconds>(_catchUpTimeoutPeriod));
+    settingsBuilder.appendIntOrLL(kCatchUpTakeoverDelayFieldName,
+                                  durationCount<Milliseconds>(_catchUpTakeoverDelay));
 
 
     BSONObjBuilder gleModes(settingsBuilder.subobjStart(kGetLastErrorModesFieldName));

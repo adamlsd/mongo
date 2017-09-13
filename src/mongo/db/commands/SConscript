@@ -31,7 +31,22 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/commands',
-    ]
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/transport/service_executor',
+    ],
+)
+
+env.Library(
+    target="write_commands_common",
+    source=[
+        "write_commands/write_commands_common.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/commands',
+        '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
+    ],
 )
 
 env.Library(
@@ -48,11 +63,17 @@ env.Library(
         "generic.cpp",
         "hashcmd.cpp",
         "isself.cpp",
+        "kill_all_sessions_by_pattern_command.cpp",
+        "kill_all_sessions_command.cpp",
+        "kill_sessions_command.cpp",
         "mr_common.cpp",
         "parameters.cpp",
+        "refresh_logical_session_cache_now.cpp",
+        "refresh_sessions_command.cpp",
+        "refresh_sessions_command_internal.cpp",
         "rename_collection_common.cpp",
+        "start_session_command.cpp",
         "user_management_commands_common.cpp",
-        "write_commands/write_commands_common.cpp",
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/client/clientdriver',
@@ -67,10 +88,13 @@ env.Library(
         '$BUILD_DIR/mongo/db/exec/working_set',
         '$BUILD_DIR/mongo/db/index/key_generator',
         '$BUILD_DIR/mongo/db/index_names',
+        '$BUILD_DIR/mongo/db/kill_sessions',
         '$BUILD_DIR/mongo/db/lasterror',
         '$BUILD_DIR/mongo/db/log_process_details',
+        '$BUILD_DIR/mongo/db/logical_session_cache',
+        '$BUILD_DIR/mongo/db/logical_session_id',
+        '$BUILD_DIR/mongo/db/logical_session_id_helpers',
         '$BUILD_DIR/mongo/db/matcher/expressions',
-        '$BUILD_DIR/mongo/db/matcher/expressions_geo',
         '$BUILD_DIR/mongo/db/repl/isself',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
         '$BUILD_DIR/mongo/db/server_options',
@@ -115,7 +139,6 @@ env.Library(
         'core',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/db_raii',
-        '$BUILD_DIR/mongo/db/index_d',
     ],
 )
 
@@ -134,6 +157,7 @@ env.Library(
         "cpuload.cpp",
         "create_indexes.cpp",
         "current_op.cpp",
+        "dbcheck.cpp",
         "dbcommands.cpp",
         "dbhash.cpp",
         "distinct.cpp",
@@ -162,6 +186,7 @@ env.Library(
         "plan_cache_commands.cpp",
         "rename_collection_cmd.cpp",
         "repair_cursor.cpp",
+        "resize_oplog.cpp",
         "run_aggregate.cpp",
         "set_feature_compatibility_version_command.cpp",
         "snapshot_management.cpp",
@@ -187,10 +212,11 @@ env.Library(
         '$BUILD_DIR/mongo/db/index/index_access_methods',
         '$BUILD_DIR/mongo/db/index_d',
         '$BUILD_DIR/mongo/db/lasterror',
-        '$BUILD_DIR/mongo/db/ops/write_ops',
+        '$BUILD_DIR/mongo/db/write_ops',
         '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
         '$BUILD_DIR/mongo/db/pipeline/serveronly',
         '$BUILD_DIR/mongo/db/repair_database',
+        '$BUILD_DIR/mongo/db/repl/dbcheck',
         '$BUILD_DIR/mongo/db/repl/oplog',
         '$BUILD_DIR/mongo/db/repl/isself',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_impl',
@@ -200,11 +226,15 @@ env.Library(
         '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
         '$BUILD_DIR/mongo/db/views/views_mongod',
         '$BUILD_DIR/mongo/s/client/parallel',
-        'apply_ops_cmd_common',
         'core',
+        'current_op_common',
         'dcommands_fcv',
         'dcommands_fsync',
         'killcursors_common',
+        'write_commands_common',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/ops/write_ops_exec',
     ],
 )
 
@@ -222,20 +252,18 @@ env.Library(
 )
 
 env.Library(
-    target='apply_ops_cmd_common',
+    target='current_op_common',
     source=[
-        'apply_ops_cmd_common.cpp',
+        'current_op_common.cpp'
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/catalog/document_validation',
         '$BUILD_DIR/mongo/db/commands',
-        '$BUILD_DIR/mongo/db/auth/authcore',
         '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/pipeline/aggregation_request',
+        '$BUILD_DIR/mongo/db/query/command_request_response',
         '$BUILD_DIR/mongo/db/service_context',
-    ],
+    ]
 )
-
 
 env.Library(
     target="list_collections_filter",
@@ -292,13 +320,16 @@ env.CppUnitTest(
 if has_option('use-cpu-profiler'):
     profEnv = env.Clone()
     profEnv.InjectThirdPartyIncludePaths('gperftools')
-    profEnv.Library('cpuprofiler',
+    profEnv.Library(
+        target='cpuprofiler',
         source=[
             'cpuprofile.cpp',
         ],
         LIBDEPS=[
+            '$BUILD_DIR/mongo/db/commands',
+            '$BUILD_DIR/mongo/db/db_raii',
         ],
-        LIBDEPS_TAGS=[
-            'illegal_cyclic_or_unresolved_dependencies_whitelisted',
+        PROGDEPS_DEPENDENTS=[
+            '$BUILD_DIR/mongo/mongod',
         ],
     )

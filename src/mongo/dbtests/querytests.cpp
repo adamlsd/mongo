@@ -50,10 +50,10 @@
 #include "mongo/dbtests/dbtests.h"
 #include "mongo/util/timer.h"
 
+namespace {
 namespace QueryTests {
 
 using std::unique_ptr;
-using std::cout;
 using std::endl;
 using std::string;
 using std::vector;
@@ -66,7 +66,7 @@ public:
             _database = _context.db();
             _collection = _database->getCollection(&_opCtx, ns());
             if (_collection) {
-                _database->dropCollection(&_opCtx, ns());
+                _database->dropCollection(&_opCtx, ns()).transitional_ignore();
             }
             _collection = _database->createCollection(&_opCtx, ns());
             wunit.commit();
@@ -109,9 +109,11 @@ protected:
             oid.init();
             b.appendOID("_id", &oid);
             b.appendElements(o);
-            _collection->insertDocument(&_opCtx, b.obj(), nullOpDebug, false);
+            _collection->insertDocument(&_opCtx, InsertStatement(b.obj()), nullOpDebug, false)
+                .transitional_ignore();
         } else {
-            _collection->insertDocument(&_opCtx, o, nullOpDebug, false);
+            _collection->insertDocument(&_opCtx, InsertStatement(o), nullOpDebug, false)
+                .transitional_ignore();
         }
         wunit.commit();
     }
@@ -163,10 +165,9 @@ public:
                 .value());
 
         // Check findOne() returning object, requiring indexed scan without index.
-        ASSERT_THROWS(Helpers::findOne(&_opCtx, _collection, query, ret, true),
-                      MsgAssertionException);
+        ASSERT_THROWS(Helpers::findOne(&_opCtx, _collection, query, ret, true), AssertionException);
         // Check findOne() returning location, requiring indexed scan without index.
-        ASSERT_THROWS(Helpers::findOne(&_opCtx, _collection, query, true), MsgAssertionException);
+        ASSERT_THROWS(Helpers::findOne(&_opCtx, _collection, query, true), AssertionException);
 
         addIndex(IndexSpec().addKey("b").unique(false));
 
@@ -193,7 +194,7 @@ public:
             Database* db = ctx.db();
             if (db->getCollection(&_opCtx, ns())) {
                 _collection = NULL;
-                db->dropCollection(&_opCtx, ns());
+                db->dropCollection(&_opCtx, ns()).transitional_ignore();
             }
             _collection = db->createCollection(&_opCtx, ns(), CollectionOptions(), false);
             wunit.commit();
@@ -294,8 +295,7 @@ public:
 };
 
 /**
- * An exception triggered during a get more request destroys the ClientCursor used by the get
- * more, preventing further iteration of the cursor in subsequent get mores.
+ * Setting killAllOperations causes further getmores to fail.
  */
 class GetMoreKillOp : public ClientBase {
 public:
@@ -312,7 +312,6 @@ public:
 
         // Create a cursor on the collection, with a batch size of 200.
         unique_ptr<DBClientCursor> cursor = _client.query(ns, "", 0, 0, 0, 0, 200);
-        CursorId cursorId = cursor->getCursorId();
 
         // Count 500 results, spanning a few batches of documents.
         for (int i = 0; i < 500; ++i) {
@@ -323,23 +322,16 @@ public:
         // Set the killop kill all flag, forcing the next get more to fail with a kill op
         // exception.
         getGlobalServiceContext()->setKillAllOperations();
-        while (cursor->more()) {
-            cursor->next();
-        }
+        ASSERT_THROWS_CODE(([&] {
+                               while (cursor->more()) {
+                                   cursor->next();
+                               }
+                           }()),
+                           AssertionException,
+                           ErrorCodes::InterruptedAtShutdown);
 
         // Revert the killop kill all flag.
         getGlobalServiceContext()->unsetKillAllOperations();
-
-        // Check that the cursor has been removed.
-        {
-            AutoGetCollectionForReadCommand ctx(&_opCtx, NamespaceString(ns));
-            ASSERT(0 == ctx.getCollection()->getCursorManager()->numCursors());
-        }
-
-        ASSERT_FALSE(CursorManager::eraseCursorGlobal(&_opCtx, cursorId));
-
-        // Check that a subsequent get more fails with the cursor removed.
-        ASSERT_THROWS(_client.getMore(ns, cursorId), UserException);
     }
 };
 
@@ -375,8 +367,10 @@ public:
 
         // Send a get more with a namespace that is incorrect ('spoofed') for this cursor id.
         // This is the invalaid get more request described in the comment preceding this class.
-        _client.getMore("unittests.querytests.GetMoreInvalidRequest_WRONG_NAMESPACE_FOR_CURSOR",
-                        cursor->getCursorId());
+        ASSERT_THROWS(
+            _client.getMore("unittests.querytests.GetMoreInvalidRequest_WRONG_NAMESPACE_FOR_CURSOR",
+                            cursor->getCursorId()),
+            AssertionException);
 
         // Check that the cursor still exists
         {
@@ -485,9 +479,7 @@ public:
         insert(ns, BSON("a" << 3));
 
         // We have overwritten the previous cursor position and should encounter a dead cursor.
-        if (c->more()) {
-            ASSERT_THROWS(c->nextSafe(), AssertionException);
-        }
+        ASSERT_THROWS(c->more() ? c->nextSafe() : BSONObj(), AssertionException);
     }
 };
 
@@ -511,9 +503,7 @@ public:
         insert(ns, BSON("a" << 4));
 
         // We have overwritten the previous cursor position and should encounter a dead cursor.
-        if (c->more()) {
-            ASSERT_THROWS(c->nextSafe(), AssertionException);
-        }
+        ASSERT_THROWS(c->more() ? c->nextSafe() : BSONObj(), AssertionException);
     }
 };
 
@@ -549,9 +539,8 @@ public:
     void run() {
         const char* ns = "unittests.querytests.TailCappedOnly";
         _client.insert(ns, BSONObj());
-        unique_ptr<DBClientCursor> c =
-            _client.query(ns, BSONObj(), 0, 0, 0, QueryOption_CursorTailable);
-        ASSERT(c->isDead());
+        ASSERT_THROWS(_client.query(ns, BSONObj(), 0, 0, 0, QueryOption_CursorTailable),
+                      AssertionException);
     }
 };
 
@@ -686,7 +675,8 @@ public:
                           0,
                           0,
                           0,
-                          QueryOption_OplogReplay | QueryOption_CursorTailable);
+                          QueryOption_OplogReplay | QueryOption_CursorTailable |
+                              DBClientCursor::QueryOptionLocal_forceOpQuery);
         ASSERT(c->more());
         ASSERT_EQUALS(two, c->next()["ts"].Date());
         long long cursorId = c->getCursorId();
@@ -1188,7 +1178,6 @@ public:
         while (cursor->more()) {
             BSONObj o = cursor->next();
             verify(o.valid(BSONVersion::kLatest));
-            // cout << " foo " << o << endl;
         }
     }
     void run() {
@@ -1348,9 +1337,12 @@ public:
             insertNext();
         }
 
-        while (c->more()) {
-            c->next();
-        }
+        ASSERT_THROWS(([&] {
+                          while (c->more()) {
+                              c->nextSafe();
+                          }
+                      }()),
+                      AssertionException);
     }
 
     void insertNext() {
@@ -1406,7 +1398,7 @@ public:
             fast = t.micros();
         }
 
-        cout << "HelperTest  slow:" << slow << " fast:" << fast << endl;
+        std::cout << "HelperTest  slow:" << slow << " fast:" << fast << endl;
     }
 };
 
@@ -1449,7 +1441,6 @@ public:
     FindingStart() : CollectionBase("findingstart") {}
 
     void run() {
-        cout << "1 SFDSDF" << endl;
         BSONObj info;
         ASSERT(_client.runCommand("unittests",
                                   BSON("create"
@@ -1488,7 +1479,6 @@ public:
                 ASSERT(!next["ts"].eoo());
                 ASSERT_EQUALS((j > min ? j : min), next["ts"].numberInt());
             }
-            cout << k << endl;
         }
     }
 };
@@ -1498,7 +1488,6 @@ public:
     FindingStartPartiallyFull() : CollectionBase("findingstart") {}
 
     void run() {
-        cout << "2 ;kljsdf" << endl;
         size_t startNumCursors = numCursorsOpen();
 
         BSONObj info;
@@ -1529,7 +1518,6 @@ public:
                 ASSERT(!next["ts"].eoo());
                 ASSERT_EQUALS((j > min ? j : min), next["ts"].numberInt());
             }
-            cout << k << endl;
         }
 
         ASSERT_EQUALS(startNumCursors, numCursorsOpen());
@@ -1545,7 +1533,6 @@ public:
     FindingStartStale() : CollectionBase("findingstart") {}
 
     void run() {
-        cout << "3 xcxcv" << endl;
         size_t startNumCursors = numCursorsOpen();
 
         // Check OplogReplay mode with missing collection.
@@ -1763,3 +1750,4 @@ public:
 SuiteInstance<All> myall;
 
 }  // namespace QueryTests
+}  // namespace

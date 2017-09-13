@@ -52,14 +52,16 @@ OplogEntry::CommandType parseCommandType(const BSONObj& objectField) {
         return OplogEntry::CommandType::kCollMod;
     } else if (commandString == "applyOps") {
         return OplogEntry::CommandType::kApplyOps;
+    } else if (commandString == "dbCheck") {
+        return OplogEntry::CommandType::kDbCheck;
     } else if (commandString == "dropDatabase") {
         return OplogEntry::CommandType::kDropDatabase;
     } else if (commandString == "emptycapped") {
         return OplogEntry::CommandType::kEmptyCapped;
     } else if (commandString == "convertToCapped") {
         return OplogEntry::CommandType::kConvertToCapped;
-    } else if (commandString == "createIndex") {
-        return OplogEntry::CommandType::kCreateIndex;
+    } else if (commandString == "createIndexes") {
+        return OplogEntry::CommandType::kCreateIndexes;
     } else if (commandString == "dropIndexes") {
         return OplogEntry::CommandType::kDropIndexes;
     } else if (commandString == "deleteIndexes") {

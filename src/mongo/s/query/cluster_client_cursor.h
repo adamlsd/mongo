@@ -32,6 +32,7 @@
 
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/s/query/cluster_query_result.h"
 #include "mongo/util/time_support.h"
 
@@ -65,7 +66,7 @@ public:
      *
      * A non-ok status is returned in case of any error.
      */
-    virtual StatusWith<ClusterQueryResult> next(OperationContext* opCtx) = 0;
+    virtual StatusWith<ClusterQueryResult> next() = 0;
 
     /**
      * Must be called before destruction to abandon a not-yet-exhausted cursor. If next() has
@@ -74,6 +75,17 @@ public:
      * May block waiting for responses from remote hosts.
      */
     virtual void kill(OperationContext* opCtx) = 0;
+
+    /**
+     * Sets the operation context for the cursor.
+     */
+    virtual void reattachToOperationContext(OperationContext* opCtx) = 0;
+
+    /**
+     * Detaches the cursor from its current OperationContext. Must be called before the
+     * OperationContext in use is deleted.
+     */
+    virtual void detachFromOperationContext() = 0;
 
     /**
      * Returns whether or not this cursor is tailing a capped collection on a shard.
@@ -114,6 +126,11 @@ public:
      * the cursor is not tailable + awaitData).
      */
     virtual Status setAwaitDataTimeout(Milliseconds awaitDataTimeout) = 0;
+
+    /**
+     * Returns the logical session id for this cursor.
+     */
+    virtual boost::optional<LogicalSessionId> getLsid() const = 0;
 };
 
 }  // namespace mongo

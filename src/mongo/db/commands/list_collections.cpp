@@ -34,20 +34,21 @@
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
-#include "mongo/db/catalog/cursor_manager.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
+#include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/list_collections_filter.h"
+#include "mongo/db/cursor_manager.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/queued_data_stage.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/query/cursor_request.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/find_common.h"
@@ -147,7 +148,9 @@ BSONObj buildViewBson(const ViewDefinition& view) {
     return b.obj();
 }
 
-BSONObj buildCollectionBson(OperationContext* opCtx, const Collection* collection) {
+BSONObj buildCollectionBson(OperationContext* opCtx,
+                            const Collection* collection,
+                            bool includePendingDrops) {
 
     if (!collection) {
         return {};
@@ -161,8 +164,8 @@ BSONObj buildCollectionBson(OperationContext* opCtx, const Collection* collectio
 
     // Drop-pending collections are replicated collections that have been marked for deletion.
     // These collections are considered dropped and should not be returned in the results for this
-    // command.
-    if (nss.isDropPendingNamespace()) {
+    // command, unless specified explicitly by the 'includePendingDrops' command argument.
+    if (nss.isDropPendingNamespace() && !includePendingDrops) {
         return {};
     }
 
@@ -192,7 +195,7 @@ BSONObj buildCollectionBson(OperationContext* opCtx, const Collection* collectio
     return b.obj();
 }
 
-class CmdListCollections : public Command {
+class CmdListCollections : public BasicCommand {
 public:
     virtual bool slaveOk() const {
         return false;
@@ -224,14 +227,15 @@ public:
                       str::stream() << "Not authorized to list collections on db: " << dbname);
     }
 
-    CmdListCollections() : Command("listCollections") {}
+    CmdListCollections() : BasicCommand("listCollections") {}
 
     bool run(OperationContext* opCtx,
              const string& dbname,
              const BSONObj& jsobj,
-             string& errmsg,
              BSONObjBuilder& result) {
         unique_ptr<MatchExpression> matcher;
+
+        // Check for 'filter' argument.
         BSONElement filterElt = jsobj["filter"];
         if (!filterElt.eoo()) {
             if (filterElt.type() != mongo::Object) {
@@ -240,8 +244,8 @@ public:
             }
             // The collator is null because collection objects are compared using binary comparison.
             const CollatorInterface* collator = nullptr;
-            StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(
-                filterElt.Obj(), ExtensionsCallbackDisallowExtensions(), collator);
+            StatusWithMatchExpression statusWithMatcher =
+                MatchExpressionParser::parse(filterElt.Obj(), collator);
             if (!statusWithMatcher.isOK()) {
                 return appendCommandStatus(result, statusWithMatcher.getStatus());
             }
@@ -256,6 +260,16 @@ public:
             return appendCommandStatus(result, parseCursorStatus);
         }
 
+        // Check for 'includePendingDrops' flag. The default is to not include drop-pending
+        // collections.
+        bool includePendingDrops;
+        Status status = bsonExtractBooleanFieldWithDefault(
+            jsobj, "includePendingDrops", false, &includePendingDrops);
+
+        if (!status.isOK()) {
+            return appendCommandStatus(result, status);
+        }
+
         AutoGetDb autoDb(opCtx, dbname, MODE_S);
 
         Database* db = autoDb.getDb();
@@ -268,14 +282,14 @@ public:
                 for (auto&& collName : *collNames) {
                     auto nss = NamespaceString(db->name(), collName);
                     Collection* collection = db->getCollection(opCtx, nss);
-                    BSONObj collBson = buildCollectionBson(opCtx, collection);
+                    BSONObj collBson = buildCollectionBson(opCtx, collection, includePendingDrops);
                     if (!collBson.isEmpty()) {
                         _addWorkingSetMember(opCtx, collBson, matcher.get(), ws.get(), root.get());
                     }
                 }
             } else {
                 for (auto&& collection : *db) {
-                    BSONObj collBson = buildCollectionBson(opCtx, collection);
+                    BSONObj collBson = buildCollectionBson(opCtx, collection, includePendingDrops);
                     if (!collBson.isEmpty()) {
                         _addWorkingSetMember(opCtx, collBson, matcher.get(), ws.get(), root.get());
                     }

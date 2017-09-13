@@ -50,16 +50,20 @@
 #include "mongo/db/auth/authz_manager_external_state_s.h"
 #include "mongo/db/auth/user_cache_invalidator_job.h"
 #include "mongo/db/client.h"
+#include "mongo/db/ftdc/ftdc_mongos.h"
 #include "mongo/db/initialize_server_global_state.h"
+#include "mongo/db/kill_sessions.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/log_process_details.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/logical_session_cache_factory_mongos.h"
 #include "mongo/db/logical_time_metadata_hook.h"
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_noop.h"
+#include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_common.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -67,13 +71,14 @@
 #include "mongo/rpc/metadata/egress_metadata_hook_list.h"
 #include "mongo/s/balancer_configuration.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_factory.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/client/shard_remote.h"
 #include "mongo/s/client/sharding_connection_hook.h"
+#include "mongo/s/commands/kill_sessions_remote.h"
+#include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/is_mongos.h"
 #include "mongo/s/mongos_options.h"
@@ -87,7 +92,7 @@
 #include "mongo/s/version_mongos.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
-#include "mongo/transport/transport_layer_legacy.h"
+#include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/admin_access.h"
 #include "mongo/util/cmdline_utils/censor_cmdline.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
@@ -97,10 +102,13 @@
 #include "mongo/util/fast_clock_source_factory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/message.h"
+#include "mongo/util/net/sock.h"
 #include "mongo/util/net/socket_exception.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/ntservice.h"
 #include "mongo/util/options_parser/startup_options.h"
+#include "mongo/util/periodic_runner.h"
+#include "mongo/util/periodic_runner_factory.h"
 #include "mongo/util/processinfo.h"
 #include "mongo/util/quick_exit.h"
 #include "mongo/util/signal_handlers.h"
@@ -121,6 +129,45 @@ using logger::LogComponent;
 namespace {
 
 boost::optional<ShardingUptimeReporter> shardingUptimeReporter;
+
+static constexpr auto kRetryInterval = Seconds{1};
+
+Status waitForSigningKeys(OperationContext* opCtx) {
+    while (true) {
+        // this should be true when shard registry is up
+        invariant(grid.shardRegistry()->isUp());
+        auto configCS = grid.shardRegistry()->getConfigServerConnectionString();
+        auto rsm = ReplicaSetMonitor::get(configCS.getSetName());
+        // mongod will set minWireVersion == maxWireVersion for isMaster requests from
+        // internalClient.
+        if (rsm && (rsm->getMaxWireVersion() < WireVersion::SUPPORTS_OP_MSG ||
+                    rsm->getMaxWireVersion() != rsm->getMinWireVersion())) {
+            log() << "Not waiting for signing keys, not supported by the config shard "
+                  << configCS.getSetName();
+            return Status::OK();
+        }
+        auto stopStatus = opCtx->checkForInterruptNoAssert();
+        if (!stopStatus.isOK()) {
+            return stopStatus;
+        }
+
+        try {
+            if (LogicalTimeValidator::get(opCtx)->shouldGossipLogicalTime()) {
+                return Status::OK();
+            }
+            log() << "Waiting for signing keys, sleeping for " << kRetryInterval
+                  << " and trying again.";
+            sleepFor(kRetryInterval);
+            continue;
+        } catch (const DBException& ex) {
+            Status status = ex.toStatus();
+            warning() << "Error waiting for signing keys, sleeping for " << kRetryInterval
+                      << " and trying again " << causedBy(status);
+            sleepFor(kRetryInterval);
+            continue;
+        }
+    }
+}
 
 }  // namespace
 
@@ -145,37 +192,40 @@ static void cleanupTask() {
             opCtx = uniqueTxn.get();
         }
 
-        if (serviceContext)
+        if (serviceContext) {
             serviceContext->setKillAllOperations();
 
-        // Validator shutdown must be called after setKillAllOperations is called. Otherwise, this
-        // can deadlock.
+            // Shut down the background periodic task runner.
+            auto runner = serviceContext->getPeriodicRunner();
+            if (runner) {
+                runner->shutdown();
+            }
+        }
+
+        // Perform all shutdown operations after setKillAllOperations is called in order to ensure
+        // that any pending threads are about to terminate
+
         if (auto validator = LogicalTimeValidator::get(serviceContext)) {
             validator->shutDown();
         }
 
         if (auto cursorManager = Grid::get(opCtx)->getCursorManager()) {
-            cursorManager->shutdown();
+            cursorManager->shutdown(opCtx);
         }
+
         if (auto pool = Grid::get(opCtx)->getExecutorPool()) {
             pool->shutdownAndJoin();
         }
-        if (auto catalog = Grid::get(opCtx)->catalogClient(opCtx)) {
+
+        if (auto catalog = Grid::get(opCtx)->catalogClient()) {
             catalog->shutDown(opCtx);
         }
+
+        // Shutdown Full-Time Data Capture
+        stopMongoSFTDC();
     }
 
     audit::logShutdown(Client::getCurrent());
-}
-
-static BSONObj buildErrReply(const DBException& ex) {
-    BSONObjBuilder errB;
-    errB.append("$err", ex.what());
-    errB.append("code", ex.getCode());
-    if (!ex._shard.empty()) {
-        errB.append("shard", ex._shard);
-    }
-    return errB.obj();
 }
 
 }  // namespace mongo
@@ -206,28 +256,34 @@ static Status initializeSharding(OperationContext* opCtx) {
     auto shardFactory =
         stdx::make_unique<ShardFactory>(std::move(buildersMap), std::move(targeterFactory));
 
+    CatalogCacheLoader::set(opCtx->getServiceContext(),
+                            stdx::make_unique<ConfigServerCatalogCacheLoader>());
+
     Status status = initializeGlobalShardingState(
         opCtx,
         mongosGlobalParams.configdbs,
         generateDistLockProcessId(opCtx),
         std::move(shardFactory),
-        stdx::make_unique<CatalogCache>(),
+        stdx::make_unique<CatalogCache>(CatalogCacheLoader::get(opCtx)),
         [opCtx]() {
             auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
             hookList->addHook(
                 stdx::make_unique<rpc::LogicalTimeMetadataHook>(opCtx->getServiceContext()));
-            hookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+            hookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>(
+                opCtx->getServiceContext()));
             return hookList;
-        },
-        [](ShardingCatalogClient* catalogClient, std::unique_ptr<executor::TaskExecutor> executor) {
-            return nullptr;  // Only config servers get a real ShardingCatalogManager.
         });
 
     if (!status.isOK()) {
         return status;
     }
 
-    status = reloadShardRegistryUntilSuccess(opCtx);
+    status = waitForShardRegistryReload(opCtx);
+    if (!status.isOK()) {
+        return status;
+    }
+
+    status = waitForSigningKeys(opCtx);
     if (!status.isOK()) {
         return status;
     }
@@ -250,26 +306,23 @@ static ExitCode runMongosServer() {
 
     _initWireSpec();
 
-    transport::TransportLayerLegacy::Options opts;
-    opts.port = serverGlobalParams.port;
-    opts.ipList = serverGlobalParams.bind_ip;
-
-    auto sep =
-        stdx::make_unique<ServiceEntryPointMongos>(getGlobalServiceContext()->getTransportLayer());
-    auto sepPtr = sep.get();
-
+    auto sep = stdx::make_unique<ServiceEntryPointMongos>(getGlobalServiceContext());
     getGlobalServiceContext()->setServiceEntryPoint(std::move(sep));
 
-    auto transportLayer = stdx::make_unique<transport::TransportLayerLegacy>(opts, sepPtr);
-    auto res = transportLayer->setup();
+    auto tl = transport::TransportLayerManager::createWithConfig(&serverGlobalParams,
+                                                                 getGlobalServiceContext());
+    auto res = tl->setup();
     if (!res.isOK()) {
+        error() << "Failed to set up listener: " << res;
         return EXIT_NET_ERROR;
     }
+    getGlobalServiceContext()->setTransportLayer(std::move(tl));
 
     auto unshardedHookList = stdx::make_unique<rpc::EgressMetadataHookList>();
     unshardedHookList->addHook(
         stdx::make_unique<rpc::LogicalTimeMetadataHook>(getGlobalServiceContext()));
-    unshardedHookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+    unshardedHookList->addHook(
+        stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>(getGlobalServiceContext()));
 
     // Add sharding hooks to both connection pools - ShardingConnectionHook includes auth hooks
     globalConnPool.addHook(new ShardingConnectionHook(false, std::move(unshardedHookList)));
@@ -277,7 +330,8 @@ static ExitCode runMongosServer() {
     auto shardedHookList = stdx::make_unique<rpc::EgressMetadataHookList>();
     shardedHookList->addHook(
         stdx::make_unique<rpc::LogicalTimeMetadataHook>(getGlobalServiceContext()));
-    shardedHookList->addHook(stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>());
+    shardedHookList->addHook(
+        stdx::make_unique<rpc::ShardingEgressMetadataHookForMongos>(getGlobalServiceContext()));
 
     shardConnectionPool.addHook(new ShardingConnectionHook(true, std::move(shardedHookList)));
 
@@ -311,8 +365,13 @@ static ExitCode runMongosServer() {
             return EXIT_SHARDING_ERROR;
         }
 
-        Grid::get(opCtx.get())->getBalancerConfiguration()->refreshAndCheck(opCtx.get());
+        Grid::get(opCtx.get())
+            ->getBalancerConfiguration()
+            ->refreshAndCheck(opCtx.get())
+            .transitional_ignore();
     }
+
+    startMongoSFTDC();
 
     Status status = getGlobalAuthorizationManager()->initialize(NULL);
     if (!status.isOK()) {
@@ -335,11 +394,32 @@ static ExitCode runMongosServer() {
 
     PeriodicTask::startRunningPeriodicTasks();
 
-    auto start = getGlobalServiceContext()->addAndStartTransportLayer(std::move(transportLayer));
+    // Set up the periodic runner for background job execution
+    auto runner = makePeriodicRunner();
+    runner->startup().transitional_ignore();
+    getGlobalServiceContext()->setPeriodicRunner(std::move(runner));
+
+    SessionKiller::set(
+        getGlobalServiceContext(),
+        std::make_shared<SessionKiller>(getGlobalServiceContext(), killSessionsRemote));
+
+    // Set up the logical session cache
+    LogicalSessionCache::set(getGlobalServiceContext(), makeLogicalSessionCacheS());
+
+    auto start = getGlobalServiceContext()->getTransportLayer()->start();
     if (!start.isOK()) {
         return EXIT_NET_ERROR;
     }
 
+    if (auto svcExec = getGlobalServiceContext()->getServiceExecutor()) {
+        start = svcExec->start();
+        if (!start.isOK()) {
+            error() << "Failed to start the service executor: " << start;
+            return EXIT_NET_ERROR;
+        }
+    }
+
+    getGlobalServiceContext()->notifyStartupComplete();
 #if !defined(_WIN32)
     mongo::signalForkSuccess();
 #else
@@ -362,12 +442,12 @@ MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 }
 }  // namespace
 
-// We set the featureCompatibilityVersion to 3.4 in the mongos so that BSON validation always uses
-// BSONVersion::kLatest.
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion34, ("EndStartupOptionStorage"))
+// We set the featureCompatibilityVersion to 3.6 in the mongos and rely on the shards to reject
+// usages of new features if their featureCompatibilityVersion is lower.
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion36, ("EndStartupOptionStorage"))
 (InitializerContext* context) {
     mongo::serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k34);
+        ServerGlobalParams::FeatureCompatibility::Version::k36);
     return Status::OK();
 }
 
@@ -432,6 +512,7 @@ static ExitCode initService() {
 #endif
 
 namespace {
+
 std::unique_ptr<AuthzManagerExternalState> createAuthzManagerExternalStateMongos() {
     return stdx::make_unique<AuthzManagerExternalStateMongos>();
 }

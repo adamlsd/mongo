@@ -50,6 +50,7 @@ class DatabaseCatalogEntry;
 class IndexCatalog;
 class NamespaceDetails;
 class OperationContext;
+class PseudoRandom;
 
 /**
  * Represents a logical database containing Collections.
@@ -148,6 +149,10 @@ public:
         return _profileName.c_str();
     }
 
+    void setDropPending(OperationContext* opCtx, bool dropPending) final;
+
+    bool isDropPending(OperationContext* opCtx) const final;
+
     void getStats(OperationContext* opCtx, BSONObjBuilder* output, double scale = 1) final;
 
     const DatabaseCatalogEntry* getDatabaseCatalogEntry() const final;
@@ -155,9 +160,16 @@ public:
     /**
      * dropCollection() will refuse to drop system collections. Use dropCollectionEvenIfSystem() if
      * that is required.
+     *
+     * If we are applying a 'drop' oplog entry on a secondary, 'dropOpTime' will contain the optime
+     * of the oplog entry.
      */
-    Status dropCollection(OperationContext* opCtx, StringData fullns) final;
-    Status dropCollectionEvenIfSystem(OperationContext* opCtx, const NamespaceString& fullns) final;
+    Status dropCollection(OperationContext* opCtx,
+                          StringData fullns,
+                          repl::OpTime dropOpTime) final;
+    Status dropCollectionEvenIfSystem(OperationContext* opCtx,
+                                      const NamespaceString& fullns,
+                                      repl::OpTime dropOpTime) final;
 
     Status dropView(OperationContext* opCtx, StringData fullns) final;
 
@@ -212,6 +224,9 @@ public:
         return _viewsName;
     }
 
+    StatusWith<NamespaceString> makeUniqueCollectionNamespace(OperationContext* opCtx,
+                                                              StringData collectionNameModel) final;
+
     inline CollectionMap& collections() final {
         return _collections;
     }
@@ -238,11 +253,13 @@ private:
 
     /**
      * Deregisters and invalidates all cursors on collection 'fullns'.  Callers must specify
-     * 'reason' for why the cache is being cleared.
+     * 'reason' for why the cache is being cleared. If 'collectionGoingAway' is false,
+     * unpinned cursors will not be killed.
      */
     void _clearCollectionCache(OperationContext* opCtx,
                                StringData fullns,
-                               const std::string& reason);
+                               const std::string& reason,
+                               bool collectionGoingAway);
 
     /**
      * Completes a collection drop by removing all the indexes and removing the collection itself
@@ -267,6 +284,17 @@ private:
     const std::string _viewsName;        // "dbname.system.views"
 
     int _profile;  // 0=off.
+
+    // If '_dropPending' is true, this Database is in the midst of a two-phase drop. No new
+    // collections may be created in this Database.
+    // This variable may only be read/written while the database is locked in MODE_X.
+    bool _dropPending = false;
+
+    // Random number generator used to create unique collection namespaces suitable for temporary
+    // collections.
+    // Lazily created on first call to makeUniqueCollectionNamespace().
+    // This variable may only be read/written while the database is locked in MODE_X.
+    std::unique_ptr<PseudoRandom> _uniqueCollectionNamespacePseudoRandom;
 
     CollectionMap _collections;
 

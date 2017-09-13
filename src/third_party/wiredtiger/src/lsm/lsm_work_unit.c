@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2014-2016 MongoDB, Inc.
+ * Copyright (c) 2014-2017 MongoDB, Inc.
  * Copyright (c) 2008-2014 WiredTiger, Inc.
  *	All rights reserved.
  *
@@ -256,6 +256,63 @@ err:
 }
 
 /*
+ * __wt_lsm_chunk_visible_all --
+ *	Setup a timestamp and check visibility for a chunk, can be called
+ *	from multiple threads in parallel
+ */
+bool
+__wt_lsm_chunk_visible_all(
+    WT_SESSION_IMPL *session, WT_LSM_CHUNK *chunk)
+{
+	/* Once a chunk has been flushed it's contents must be visible */
+	if (F_ISSET(chunk, WT_LSM_CHUNK_ONDISK | WT_LSM_CHUNK_STABLE))
+		return (true);
+
+	if (chunk->switch_txn == WT_TXN_NONE ||
+	    !__wt_txn_visible_all(session, chunk->switch_txn, NULL))
+		return (false);
+
+#ifdef HAVE_TIMESTAMPS
+	{
+	WT_TXN_GLOBAL *txn_global;
+
+	txn_global = &S2C(session)->txn_global;
+
+	/*
+	 * Once all transactions with updates in the chunk are visible all
+	 * timestamps associated with those updates are assigned so setup a
+	 * timestamp for visibility checking.
+	 */
+	if (txn_global->has_commit_timestamp ||
+	    txn_global->has_pinned_timestamp) {
+		if (!F_ISSET(chunk, WT_LSM_CHUNK_HAS_TIMESTAMP)) {
+			__wt_spin_lock(session, &chunk->timestamp_spinlock);
+			/* Set the timestamp if we won the race */
+			if (!F_ISSET(chunk, WT_LSM_CHUNK_HAS_TIMESTAMP)) {
+				__wt_readlock(session, &txn_global->rwlock);
+				__wt_timestamp_set(&chunk->switch_timestamp,
+				    &txn_global->commit_timestamp);
+				__wt_readunlock(session, &txn_global->rwlock);
+				F_SET(chunk, WT_LSM_CHUNK_HAS_TIMESTAMP);
+			}
+			__wt_spin_unlock(session, &chunk->timestamp_spinlock);
+		}
+		if (!__wt_txn_visible_all(
+		    session, chunk->switch_txn, &chunk->switch_timestamp))
+			return (false);
+	} else
+		/*
+		 * If timestamps aren't in use when the chunk becomes visible
+		 * use the zero timestamp for visibility checks. Otherwise
+		 * there could be confusion if timestamps start being used.
+		 */
+		F_SET(chunk, WT_LSM_CHUNK_HAS_TIMESTAMP);
+	}
+#endif
+	return (true);
+}
+
+/*
  * __wt_lsm_checkpoint_chunk --
  *	Flush a single LSM chunk to disk.
  */
@@ -295,14 +352,12 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	/* Stop if a running transaction needs the chunk. */
 	WT_RET(__wt_txn_update_oldest(
 	    session, WT_TXN_OLDEST_STRICT | WT_TXN_OLDEST_WAIT));
-	if (chunk->switch_txn == WT_TXN_NONE ||
-	    !__wt_txn_visible_all(session, chunk->switch_txn)) {
+	if (!__wt_lsm_chunk_visible_all(session, chunk)) {
 		__wt_verbose(session, WT_VERB_LSM,
 		    "LSM worker %s: running transaction, return",
 		    chunk->uri);
 		return (0);
 	}
-
 	if (!__wt_atomic_cas8(&chunk->flushing, 0, 1))
 		return (0);
 	flush_set = true;
@@ -318,7 +373,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	 * We can wait here for checkpoints and fsyncs to complete, which can
 	 * take a long time.
 	 */
-	WT_ERR(__wt_session_get_btree(session, chunk->uri, NULL, NULL, 0));
+	WT_ERR(__wt_session_get_dhandle(session, chunk->uri, NULL, NULL, 0));
 	release_btree = true;
 
 	/*
@@ -328,8 +383,9 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	 */
 	saved_isolation = session->txn.isolation;
 	session->txn.isolation = WT_ISO_READ_UNCOMMITTED;
-	WT_ERR(__wt_cache_op(session, WT_SYNC_WRITE_LEAVES));
+	ret = __wt_cache_op(session, WT_SYNC_WRITE_LEAVES);
 	session->txn.isolation = saved_isolation;
+	WT_ERR(ret);
 
 	__wt_verbose(session, WT_VERB_LSM, "LSM worker checkpointing %s",
 	    chunk->uri);
@@ -352,13 +408,13 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 		WT_ERR_MSG(session, ret, "LSM checkpoint");
 
 	release_btree = false;
-	WT_ERR(__wt_session_release_btree(session));
+	WT_ERR(__wt_session_release_dhandle(session));
 
 	/* Now the file is written, get the chunk size. */
 	WT_ERR(__wt_lsm_tree_set_chunk_size(session, chunk));
 
 	/* Update the flush timestamp to help track ongoing progress. */
-	__wt_epoch(session, &lsm_tree->last_flush_ts);
+	__wt_epoch(session, &lsm_tree->last_flush_time);
 	++lsm_tree->chunks_flushed;
 
 	/* Lock the tree, mark the chunk as on disk and update the metadata. */
@@ -393,7 +449,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 err:	if (flush_set)
 		WT_PUBLISH(chunk->flushing, 0);
 	if (release_btree)
-		WT_TRET(__wt_session_release_btree(session));
+		WT_TRET(__wt_session_release_dhandle(session));
 
 	return (ret);
 }
@@ -483,11 +539,11 @@ __lsm_discard_handle(
     WT_SESSION_IMPL *session, const char *uri, const char *checkpoint)
 {
 	/* This will fail with EBUSY if the file is still in use. */
-	WT_RET(__wt_session_get_btree(session, uri, checkpoint, NULL,
+	WT_RET(__wt_session_get_dhandle(session, uri, checkpoint, NULL,
 	    WT_DHANDLE_EXCLUSIVE | WT_DHANDLE_LOCK_ONLY));
 
-	F_SET(session->dhandle, WT_DHANDLE_DISCARD_FORCE);
-	return (__wt_session_release_btree(session));
+	F_SET(session->dhandle, WT_DHANDLE_DISCARD_KILL);
+	return (__wt_session_release_dhandle(session));
 }
 
 /*

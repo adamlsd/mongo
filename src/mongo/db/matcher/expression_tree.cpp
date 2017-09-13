@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/db/matcher/expression_always_boolean.h"
 
 namespace mongo {
 
@@ -91,9 +92,9 @@ bool AndMatchExpression::matches(const MatchableDocument* doc, MatchDetails* det
     return true;
 }
 
-bool AndMatchExpression::matchesSingleElement(const BSONElement& e) const {
+bool AndMatchExpression::matchesSingleElement(const BSONElement& e, MatchDetails* details) const {
     for (size_t i = 0; i < numChildren(); i++) {
-        if (!getChild(i)->matchesSingleElement(e)) {
+        if (!getChild(i)->matchesSingleElement(e, details)) {
             return false;
         }
     }
@@ -130,9 +131,9 @@ bool OrMatchExpression::matches(const MatchableDocument* doc, MatchDetails* deta
     return false;
 }
 
-bool OrMatchExpression::matchesSingleElement(const BSONElement& e) const {
+bool OrMatchExpression::matchesSingleElement(const BSONElement& e, MatchDetails* details) const {
     for (size_t i = 0; i < numChildren(); i++) {
-        if (getChild(i)->matchesSingleElement(e)) {
+        if (getChild(i)->matchesSingleElement(e, details)) {
             return true;
         }
     }
@@ -147,6 +148,10 @@ void OrMatchExpression::debugString(StringBuilder& debug, int level) const {
 }
 
 void OrMatchExpression::serialize(BSONObjBuilder* out) const {
+    if (!numChildren()) {
+        out->append(AlwaysFalseMatchExpression::kName, 1);
+        return;
+    }
     BSONArrayBuilder arrBob(out->subarrayStart("$or"));
     _listToBSON(&arrBob);
 }
@@ -162,9 +167,9 @@ bool NorMatchExpression::matches(const MatchableDocument* doc, MatchDetails* det
     return true;
 }
 
-bool NorMatchExpression::matchesSingleElement(const BSONElement& e) const {
+bool NorMatchExpression::matchesSingleElement(const BSONElement& e, MatchDetails* details) const {
     for (size_t i = 0; i < numChildren(); i++) {
-        if (getChild(i)->matchesSingleElement(e)) {
+        if (getChild(i)->matchesSingleElement(e, details)) {
             return false;
         }
     }

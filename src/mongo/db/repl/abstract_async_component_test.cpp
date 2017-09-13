@@ -177,13 +177,11 @@ void AbstractAsyncComponentTest::setUp() {
 void AbstractAsyncComponentTest::tearDown() {
     shutdownExecutorThread();
     joinExecutorThread();
-
-    executor::ThreadPoolExecutorTest::tearDown();
 }
 
 TEST_F(AbstractAsyncComponentTest, ConstructorThrowsUserAssertionOnNullTaskExecutor) {
     ASSERT_THROWS_CODE_AND_WHAT(MockAsyncComponent(nullptr),
-                                UserException,
+                                AssertionException,
                                 ErrorCodes::BadValue,
                                 "task executor cannot be null");
 }

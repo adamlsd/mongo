@@ -28,9 +28,9 @@
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include <third_party/murmurhash3/MurmurHash3.h>
-
 #include "mongo/platform/basic.h"
+
+#include "mongo/db/catalog/private/record_store_validate_adaptor.h"
 
 #include "mongo/db/catalog/collection_impl.h"
 
@@ -44,7 +44,11 @@
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/index_consistency.h"
 #include "mongo/db/catalog/index_create.h"
+#include "mongo/db/catalog/index_observer.h"
+#include "mongo/db/catalog/namespace_uuid_cache.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -52,7 +56,6 @@
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/keypattern.h"
 #include "mongo/db/matcher/expression_parser.h"
-#include "mongo/db/matcher/extensions_callback_disallow_extensions.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/update_request.h"
@@ -64,12 +67,11 @@
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/record_fetcher.h"
 #include "mongo/db/storage/record_store.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
 #include "mongo/db/update/update_driver.h"
 
 #include "mongo/db/auth/user_document_parser.h"  // XXX-ANDY
 #include "mongo/rpc/object_check.h"
-#include "mongo/util/fail_point.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -104,28 +106,6 @@ MONGO_INITIALIZER(InitializeParseValidationActionImpl)(InitializerContext* const
 
 // Used below to fail during inserts.
 MONGO_FP_DECLARE(failCollectionInserts);
-
-const auto bannedExpressionsInValidators = std::set<StringData>{
-    "$geoNear", "$near", "$nearSphere", "$text", "$where",
-};
-
-Status checkValidatorForBannedExpressions(const BSONObj& validator) {
-    for (auto field : validator) {
-        const auto name = field.fieldNameStringData();
-        if (name[0] == '$' && bannedExpressionsInValidators.count(name)) {
-            return {ErrorCodes::InvalidOptions,
-                    str::stream() << name << " is not allowed in collection validators"};
-        }
-
-        if (field.type() == Object || field.type() == Array) {
-            auto status = checkValidatorForBannedExpressions(field.Obj());
-            if (!status.isOK())
-                return status;
-        }
-    }
-
-    return Status::OK();
-}
 
 // Uses the collator factory to convert the BSON representation of a collator to a
 // CollatorInterface. Returns null if the BSONObj is empty. We expect the stored collation to be
@@ -162,8 +142,6 @@ using std::vector;
 
 using logger::LogComponent;
 
-static const int IndexKeyMaxSize = 1024;  // this goes away with SERVER-3372
-
 CollectionImpl::CollectionImpl(Collection* _this_init,
                                OperationContext* opCtx,
                                StringData fullNS,
@@ -181,7 +159,10 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
       _indexCatalog(_this_init, this->getCatalogEntry()->getMaxAllowedIndexes()),
       _collator(parseCollation(opCtx, _ns, _details->getCollectionOptions(opCtx).collation)),
       _validatorDoc(_details->getCollectionOptions(opCtx).validator.getOwned()),
-      _validator(uassertStatusOK(parseValidator(_validatorDoc))),
+      _validator(
+          uassertStatusOK(parseValidator(_validatorDoc,
+                                         MatchExpressionParser::kAllowAllSpecialFeatures &
+                                             ~MatchExpressionParser::AllowedFeatures::kExpr))),
       _validationAction(uassertStatusOK(
           parseValidationAction(_details->getCollectionOptions(opCtx).validationAction))),
       _validationLevel(uassertStatusOK(
@@ -189,12 +170,11 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
       _cursorManager(_ns),
       _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
                                                : nullptr),
-      _mustTakeCappedLockOnInsert(isCapped() && !_ns.isSystemDotProfile() && !_ns.isOplog()),
       _this(_this_init) {}
 
 void CollectionImpl::init(OperationContext* opCtx) {
     _magic = kMagicNumber;
-    _indexCatalog.init(opCtx);
+    _indexCatalog.init(opCtx).transitional_ignore();
     if (isCapped())
         _recordStore->setCappedCallback(this);
 
@@ -206,6 +186,17 @@ CollectionImpl::~CollectionImpl() {
     if (isCapped()) {
         _recordStore->setCappedCallback(nullptr);
         _cappedNotifier->kill();
+    }
+
+    if (_uuid) {
+        if (auto opCtx = cc().getOperationContext()) {
+            auto& uuidCatalog = UUIDCatalog::get(opCtx);
+            invariant(uuidCatalog.lookupCollectionByUUID(_uuid.get()) != _this);
+            auto& cache = NamespaceUUIDCache::get(opCtx);
+            // TODO(geert): cache.verifyNotCached(ns(), uuid().get());
+            cache.evictNamespace(ns());
+        }
+        LOG(2) << "destructed collection " << ns() << " with UUID " << uuid()->toString();
     }
     _magic = 0;
 }
@@ -276,7 +267,8 @@ Status CollectionImpl::checkValidation(OperationContext* opCtx, const BSONObj& d
     return {ErrorCodes::DocumentValidationFailure, "Document failed validation"};
 }
 
-StatusWithMatchExpression CollectionImpl::parseValidator(const BSONObj& validator) const {
+StatusWithMatchExpression CollectionImpl::parseValidator(
+    const BSONObj& validator, MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
     if (validator.isEmpty())
         return {nullptr};
 
@@ -293,14 +285,8 @@ StatusWithMatchExpression CollectionImpl::parseValidator(const BSONObj& validato
                               << " database"};
     }
 
-    {
-        auto status = checkValidatorForBannedExpressions(validator);
-        if (!status.isOK())
-            return status;
-    }
-
     auto statusWithMatcher = MatchExpressionParser::parse(
-        validator, ExtensionsCallbackDisallowExtensions(), _collator.get());
+        validator, _collator.get(), nullptr, ExtensionsCallbackNoop(), allowedFeatures);
     if (!statusWithMatcher.isOK())
         return statusWithMatcher.getStatus();
 
@@ -309,6 +295,7 @@ StatusWithMatchExpression CollectionImpl::parseValidator(const BSONObj& validato
 
 Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
                                                const DocWriter* const* docs,
+                                               Timestamp* timestamps,
                                                size_t nDocs) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
 
@@ -317,9 +304,8 @@ Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
     // because it would defeat the purpose of using DocWriter.
     invariant(!_validator);
     invariant(!_indexCatalog.haveAnyIndexes());
-    invariant(!_mustTakeCappedLockOnInsert);
 
-    Status status = _recordStore->insertRecordsWithDocWriter(opCtx, docs, nDocs);
+    Status status = _recordStore->insertRecordsWithDocWriter(opCtx, docs, timestamps, nDocs);
     if (!status.isOK())
         return status;
 
@@ -330,8 +316,8 @@ Status CollectionImpl::insertDocumentsForOplog(OperationContext* opCtx,
 
 
 Status CollectionImpl::insertDocuments(OperationContext* opCtx,
-                                       const vector<BSONObj>::const_iterator begin,
-                                       const vector<BSONObj>::const_iterator end,
+                                       const vector<InsertStatement>::const_iterator begin,
+                                       const vector<InsertStatement>::const_iterator end,
                                        OpDebug* opDebug,
                                        bool enforceQuota,
                                        bool fromMigrate) {
@@ -343,7 +329,7 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
         if (!collElem || _ns == collElem.str()) {
             const std::string msg = str::stream()
                 << "Failpoint (failCollectionInserts) has been enabled (" << data
-                << "), so rejecting insert (first doc): " << *begin;
+                << "), so rejecting insert (first doc): " << begin->doc;
             log() << msg;
             return {ErrorCodes::FailPointEnabled, msg};
         }
@@ -353,22 +339,19 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
     const bool hasIdIndex = _indexCatalog.findIdIndex(opCtx);
 
     for (auto it = begin; it != end; it++) {
-        if (hasIdIndex && (*it)["_id"].eoo()) {
+        if (hasIdIndex && it->doc["_id"].eoo()) {
             return Status(ErrorCodes::InternalError,
                           str::stream()
                               << "Collection::insertDocument got document without _id for ns:"
                               << _ns.ns());
         }
 
-        auto status = checkValidation(opCtx, *it);
+        auto status = checkValidation(opCtx, it->doc);
         if (!status.isOK())
             return status;
     }
 
     const SnapshotId sid = opCtx->recoveryUnit()->getSnapshotId();
-
-    if (_mustTakeCappedLockOnInsert)
-        synchronizeOnCappedInFlightResource(opCtx->lockState(), _ns);
 
     Status status = _insertDocuments(opCtx, begin, end, enforceQuota, opDebug);
     if (!status.isOK())
@@ -384,11 +367,11 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
 }
 
 Status CollectionImpl::insertDocument(OperationContext* opCtx,
-                                      const BSONObj& docToInsert,
+                                      const InsertStatement& docToInsert,
                                       OpDebug* opDebug,
                                       bool enforceQuota,
                                       bool fromMigrate) {
-    vector<BSONObj> docs;
+    vector<InsertStatement> docs;
     docs.push_back(docToInsert);
     return insertDocuments(opCtx, docs.begin(), docs.end(), opDebug, enforceQuota, fromMigrate);
 }
@@ -419,11 +402,10 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
 
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
 
-    if (_mustTakeCappedLockOnInsert)
-        synchronizeOnCappedInFlightResource(opCtx->lockState(), _ns);
-
+    // TODO SERVER-30638: using timestamp 0 for these inserts, which are non-oplog so we don't yet
+    // care about their correct timestamps.
     StatusWith<RecordId> loc = _recordStore->insertRecord(
-        opCtx, doc.objdata(), doc.objsize(), _enforceQuota(enforceQuota));
+        opCtx, doc.objdata(), doc.objsize(), Timestamp(), _enforceQuota(enforceQuota));
 
     if (!loc.isOK())
         return loc.getStatus();
@@ -435,11 +417,18 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
         }
     }
 
-    vector<BSONObj> docs;
-    docs.push_back(doc);
+    vector<InsertStatement> inserts;
+    OplogSlot slot;
+    // Fetch a new optime now, if necessary.
+    auto replCoord = repl::ReplicationCoordinator::get(opCtx);
+    if (!replCoord->isOplogDisabledFor(opCtx, _ns)) {
+        // Populate 'slot' with a new optime.
+        slot = repl::getNextOpTime(opCtx);
+    }
+    inserts.emplace_back(kUninitializedStmtId, doc, slot);
 
     getGlobalServiceContext()->getOpObserver()->onInserts(
-        opCtx, ns(), uuid(), docs.begin(), docs.end(), false);
+        opCtx, ns(), uuid(), inserts.begin(), inserts.end(), false);
 
     opCtx->recoveryUnit()->onCommit([this]() { notifyCappedWaitersIfNeeded(); });
 
@@ -447,8 +436,8 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
 }
 
 Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
-                                        const vector<BSONObj>::const_iterator begin,
-                                        const vector<BSONObj>::const_iterator end,
+                                        const vector<InsertStatement>::const_iterator begin,
+                                        const vector<InsertStatement>::const_iterator end,
                                         bool enforceQuota,
                                         OpDebug* opDebug) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
@@ -473,11 +462,17 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
 
     std::vector<Record> records;
     records.reserve(count);
+    std::vector<Timestamp> timestamps;
+    timestamps.reserve(count);
+
     for (auto it = begin; it != end; it++) {
-        Record record = {RecordId(), RecordData(it->objdata(), it->objsize())};
+        Record record = {RecordId(), RecordData(it->doc.objdata(), it->doc.objsize())};
         records.push_back(record);
+        Timestamp timestamp = Timestamp(it->oplogSlot.opTime.getTimestamp());
+        timestamps.push_back(timestamp);
     }
-    Status status = _recordStore->insertRecords(opCtx, &records, _enforceQuota(enforceQuota));
+    Status status =
+        _recordStore->insertRecords(opCtx, &records, &timestamps, _enforceQuota(enforceQuota));
     if (!status.isOK())
         return status;
 
@@ -489,7 +484,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
         invariant(RecordId::min() < loc);
         invariant(loc < RecordId::max());
 
-        BsonRecord bsonRecord = {loc, &(*it)};
+        BsonRecord bsonRecord = {loc, &(it->doc)};
         bsonRecords.push_back(bsonRecord);
     }
 
@@ -529,8 +524,13 @@ Status CollectionImpl::aboutToDeleteCapped(OperationContext* opCtx,
     return Status::OK();
 }
 
-void CollectionImpl::deleteDocument(
-    OperationContext* opCtx, const RecordId& loc, OpDebug* opDebug, bool fromMigrate, bool noWarn) {
+void CollectionImpl::deleteDocument(OperationContext* opCtx,
+                                    StmtId stmtId,
+                                    const RecordId& loc,
+                                    OpDebug* opDebug,
+                                    bool fromMigrate,
+                                    bool noWarn,
+                                    Collection::StoreDeletedDoc storeDeletedDoc) {
     if (isCapped()) {
         log() << "failing remove on a capped ns " << _ns;
         uasserted(10089, "cannot remove from a capped collection");
@@ -541,6 +541,11 @@ void CollectionImpl::deleteDocument(
 
     auto deleteState =
         getGlobalServiceContext()->getOpObserver()->aboutToDelete(opCtx, ns(), doc.value());
+
+    boost::optional<BSONObj> deletedDoc;
+    if (storeDeletedDoc == Collection::StoreDeletedDoc::On) {
+        deletedDoc.emplace(doc.value().getOwned());
+    }
 
     /* check if any cursors point to us.  if so, advance them. */
     _cursorManager.invalidateDocument(opCtx, loc, INVALIDATION_DELETION);
@@ -554,31 +559,31 @@ void CollectionImpl::deleteDocument(
     _recordStore->deleteRecord(opCtx, loc);
 
     getGlobalServiceContext()->getOpObserver()->onDelete(
-        opCtx, ns(), uuid(), std::move(deleteState), fromMigrate);
+        opCtx, ns(), uuid(), stmtId, std::move(deleteState), fromMigrate, deletedDoc);
 }
 
 Counter64 moveCounter;
 ServerStatusMetricField<Counter64> moveCounterDisplay("record.moves", &moveCounter);
 
-StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
-                                                    const RecordId& oldLocation,
-                                                    const Snapshotted<BSONObj>& oldDoc,
-                                                    const BSONObj& newDoc,
-                                                    bool enforceQuota,
-                                                    bool indexesAffected,
-                                                    OpDebug* opDebug,
-                                                    OplogUpdateEntryArgs* args) {
+RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
+                                        const RecordId& oldLocation,
+                                        const Snapshotted<BSONObj>& oldDoc,
+                                        const BSONObj& newDoc,
+                                        bool enforceQuota,
+                                        bool indexesAffected,
+                                        OpDebug* opDebug,
+                                        OplogUpdateEntryArgs* args) {
     {
         auto status = checkValidation(opCtx, newDoc);
         if (!status.isOK()) {
             if (_validationLevel == ValidationLevel::STRICT_V) {
-                return status;
+                uassertStatusOK(status);
             }
             // moderate means we have to check the old doc
             auto oldDocStatus = checkValidation(opCtx, oldDoc.value());
             if (oldDocStatus.isOK()) {
                 // transitioning from good -> bad is not ok
-                return status;
+                uassertStatusOK(status);
             }
             // bad -> bad is ok in moderate mode
         }
@@ -600,8 +605,7 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
 
     BSONElement oldId = oldDoc.value()["_id"];
     if (!oldId.eoo() && SimpleBSONElementComparator::kInstance.evaluate(oldId != newDoc["_id"]))
-        return StatusWith<RecordId>(
-            ErrorCodes::InternalError, "in Collection::updateDocument _id mismatch", 13596);
+        uasserted(13596, "in Collection::updateDocument _id mismatch");
 
     // The MMAPv1 storage engine implements capped collections in a way that does not allow records
     // to grow beyond their original size. If MMAPv1 part of a replicaset with storage engines that
@@ -612,11 +616,11 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
     // all size changes.
     const auto oldSize = oldDoc.value().objsize();
     if (_recordStore->isCapped() && oldSize != newDoc.objsize())
-        return {ErrorCodes::CannotGrowDocumentInCappedNamespace,
-                str::stream() << "Cannot change the size of a document in a capped collection: "
-                              << oldSize
-                              << " != "
-                              << newDoc.objsize()};
+        uasserted(ErrorCodes::CannotGrowDocumentInCappedNamespace,
+                  str::stream() << "Cannot change the size of a document in a capped collection: "
+                                << oldSize
+                                << " != "
+                                << newDoc.objsize());
 
     // At the end of this step, we will have a map of UpdateTickets, one per index, which
     // represent the index updates needed to be done, based on the changes between oldDoc and
@@ -633,28 +637,26 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
             IndexCatalog::prepareInsertDeleteOptions(opCtx, descriptor, &options);
             UpdateTicket* updateTicket = new UpdateTicket();
             updateTickets.mutableMap()[descriptor] = updateTicket;
-            Status ret = iam->validateUpdate(opCtx,
-                                             oldDoc.value(),
-                                             newDoc,
-                                             oldLocation,
-                                             options,
-                                             updateTicket,
-                                             entry->getFilterExpression());
-            if (!ret.isOK()) {
-                return StatusWith<RecordId>(ret);
-            }
+            uassertStatusOK(iam->validateUpdate(opCtx,
+                                                oldDoc.value(),
+                                                newDoc,
+                                                oldLocation,
+                                                options,
+                                                updateTicket,
+                                                entry->getFilterExpression()));
         }
     }
+
+    args->preImageDoc = oldDoc.value().getOwned();
 
     Status updateStatus = _recordStore->updateRecord(
         opCtx, oldLocation, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota), this);
 
     if (updateStatus == ErrorCodes::NeedsDocumentMove) {
-        return _updateDocumentWithMove(
-            opCtx, oldLocation, oldDoc, newDoc, enforceQuota, opDebug, args, sid);
-    } else if (!updateStatus.isOK()) {
-        return updateStatus;
+        return uassertStatusOK(_updateDocumentWithMove(
+            opCtx, oldLocation, oldDoc, newDoc, enforceQuota, opDebug, args, sid));
     }
+    uassertStatusOK(updateStatus);
 
     // Object did not move.  We update each index with each respective UpdateTicket.
     if (indexesAffected) {
@@ -665,10 +667,8 @@ StatusWith<RecordId> CollectionImpl::updateDocument(OperationContext* opCtx,
 
             int64_t keysInserted;
             int64_t keysDeleted;
-            Status ret = iam->update(
-                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted);
-            if (!ret.isOK())
-                return StatusWith<RecordId>(ret);
+            uassertStatusOK(iam->update(
+                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted));
             if (opDebug) {
                 opDebug->keysInserted += keysInserted;
                 opDebug->keysDeleted += keysDeleted;
@@ -693,8 +693,9 @@ StatusWith<RecordId> CollectionImpl::_updateDocumentWithMove(OperationContext* o
                                                              OplogUpdateEntryArgs* args,
                                                              const SnapshotId& sid) {
     // Insert new record.
+    // TODO SERVER-30638, thread through actual timestamps.
     StatusWith<RecordId> newLocation = _recordStore->insertRecord(
-        opCtx, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota));
+        opCtx, newDoc.objdata(), newDoc.objsize(), Timestamp(), _enforceQuota(enforceQuota));
     if (!newLocation.isOK()) {
         return newLocation;
     }
@@ -702,6 +703,8 @@ StatusWith<RecordId> CollectionImpl::_updateDocumentWithMove(OperationContext* o
     invariant(newLocation.getValue() != oldLocation);
 
     _cursorManager.invalidateDocument(opCtx, oldLocation, INVALIDATION_DELETION);
+
+    args->preImageDoc = oldDoc.value().getOwned();
 
     // Remove indexes for old record.
     int64_t keysDeleted;
@@ -889,7 +892,11 @@ Status CollectionImpl::setValidator(OperationContext* opCtx, BSONObj validatorDo
     if (!validatorDoc.isOwned())
         validatorDoc = validatorDoc.getOwned();
 
-    auto statusWithMatcher = parseValidator(validatorDoc);
+    // Note that, by the time we reach this, we should have already done a pre-parse that checks for
+    // banned features, so we don't need to include that check again.
+    auto statusWithMatcher = parseValidator(validatorDoc,
+                                            MatchExpressionParser::kAllowAllSpecialFeatures &
+                                                ~MatchExpressionParser::AllowedFeatures::kExpr);
     if (!statusWithMatcher.isOK())
         return statusWithMatcher.getStatus();
 
@@ -986,352 +993,236 @@ const CollatorInterface* CollectionImpl::getDefaultCollator() const {
     return _collator.get();
 }
 
+void CollectionImpl::informIndexObserver(OperationContext* opCtx,
+                                         const IndexDescriptor* descriptor,
+                                         const IndexKeyEntry& indexEntry,
+                                         const ValidationOperation operation) const {
+    stdx::lock_guard<stdx::mutex> lock(_indexObserverMutex);
+    if (_indexObserver) {
+        _indexObserver->inform(opCtx, descriptor, std::move(indexEntry), operation);
+    }
+}
+
+void CollectionImpl::hookIndexObserver(IndexConsistency* consistency) {
+    stdx::lock_guard<stdx::mutex> lock(_indexObserverMutex);
+    _indexObserver = stdx::make_unique<IndexObserver>(consistency);
+}
+
+void CollectionImpl::unhookIndexObserver() {
+    stdx::lock_guard<stdx::mutex> lock(_indexObserverMutex);
+    _indexObserver.reset();
+}
+
 namespace {
 
-static const uint32_t kKeyCountTableSize = 1U << 22;
-
-using IndexKeyCountTable = std::array<uint64_t, kKeyCountTableSize>;
 using ValidateResultsMap = std::map<std::string, ValidateResults>;
 
-class RecordStoreValidateAdaptor : public ValidateAdaptor {
-public:
-    RecordStoreValidateAdaptor(OperationContext* opCtx,
-                               ValidateCmdLevel level,
-                               IndexCatalog* ic,
-                               ValidateResultsMap* irm)
-        : _opCtx(opCtx), _level(level), _indexCatalog(ic), _indexNsResultsMap(irm) {
-        _ikc = stdx::make_unique<IndexKeyCountTable>();
+void _validateRecordStore(OperationContext* opCtx,
+                          RecordStore* recordStore,
+                          ValidateCmdLevel level,
+                          bool background,
+                          RecordStoreValidateAdaptor* indexValidator,
+                          ValidateResults* results,
+                          BSONObjBuilder* output) {
+
+    // Validate RecordStore and, if `level == kValidateFull`, use the RecordStore's validate
+    // function.
+    if (background) {
+        indexValidator->traverseRecordStore(recordStore, level, results, output);
+    } else {
+        auto status = recordStore->validate(opCtx, level, indexValidator, results, output);
+        // RecordStore::validate always returns Status::OK(). Errors are reported through
+        // `results`.
+        dassert(status.isOK());
     }
+}
 
-    virtual Status validate(const RecordId& recordId, const RecordData& record, size_t* dataSize) {
-        BSONObj recordBson = record.toBson();
+void _validateIndexes(OperationContext* opCtx,
+                      IndexCatalog* indexCatalog,
+                      BSONObjBuilder* keysPerIndex,
+                      RecordStoreValidateAdaptor* indexValidator,
+                      ValidateCmdLevel level,
+                      ValidateResultsMap* indexNsResultsMap,
+                      ValidateResults* results) {
 
-        // Secondaries are configured to always validate using the latest enabled BSON version. But
-        // users should be able to run collection validation on a secondary in "3.2"
-        // featureCompatibilityVersion in order to be alerted to the presence of NumberDecimal.
-        auto bsonValidationVersion = (serverGlobalParams.featureCompatibility.version.load() ==
-                                      ServerGlobalParams::FeatureCompatibility::Version::k32)
-            ? BSONVersion::kV1_0
-            : Validator<BSONObj>::enabledBSONVersion();
+    IndexCatalog::IndexIterator i = indexCatalog->getIndexIterator(opCtx, false);
 
-        const Status status =
-            validateBSON(recordBson.objdata(), recordBson.objsize(), bsonValidationVersion);
-        if (status.isOK()) {
-            *dataSize = recordBson.objsize();
+    // Validate Indexes.
+    while (i.more()) {
+        opCtx->checkForInterrupt();
+        const IndexDescriptor* descriptor = i.next();
+        log(LogComponent::kIndex) << "validating index " << descriptor->indexNamespace() << endl;
+        IndexAccessMethod* iam = indexCatalog->getIndex(descriptor);
+        ValidateResults& curIndexResults = (*indexNsResultsMap)[descriptor->indexNamespace()];
+        bool checkCounts = false;
+        int64_t numTraversedKeys;
+        int64_t numValidatedKeys;
+
+        if (level == kValidateFull) {
+            iam->validate(opCtx, &numValidatedKeys, &curIndexResults);
+            checkCounts = true;
+        }
+
+        if (curIndexResults.valid) {
+            indexValidator->traverseIndex(iam, descriptor, &curIndexResults, &numTraversedKeys);
+
+            if (checkCounts && (numValidatedKeys != numTraversedKeys)) {
+                curIndexResults.valid = false;
+                string msg = str::stream()
+                    << "number of traversed index entries (" << numTraversedKeys
+                    << ") does not match the number of expected index entries (" << numValidatedKeys
+                    << ")";
+                results->errors.push_back(msg);
+                results->valid = false;
+            }
+
+            if (curIndexResults.valid) {
+                keysPerIndex->appendNumber(descriptor->indexNamespace(),
+                                           static_cast<long long>(numTraversedKeys));
+            } else {
+                results->valid = false;
+            }
         } else {
-            return status;
-        }
-
-        if (_level != kValidateFull || !_indexCatalog->haveAnyIndexes()) {
-            return status;
-        }
-
-        IndexCatalog::IndexIterator i = _indexCatalog->getIndexIterator(_opCtx, false);
-
-        while (i.more()) {
-            const IndexDescriptor* descriptor = i.next();
-            const string indexNs = descriptor->indexNamespace();
-            ValidateResults& results = (*_indexNsResultsMap)[indexNs];
-            if (!results.valid) {
-                // No point doing additional validation if the index is already invalid.
-                continue;
-            }
-
-            const IndexAccessMethod* iam = _indexCatalog->getIndex(descriptor);
-
-            if (descriptor->isPartial()) {
-                const IndexCatalogEntry* ice = _indexCatalog->getEntry(descriptor);
-                if (!ice->getFilterExpression()->matchesBSON(recordBson)) {
-                    continue;
-                }
-            }
-
-            BSONObjSet documentKeySet = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
-            // There's no need to compute the prefixes of the indexed fields that cause the
-            // index to be multikey when validating the index keys.
-            MultikeyPaths* multikeyPaths = nullptr;
-            iam->getKeys(recordBson,
-                         IndexAccessMethod::GetKeysMode::kEnforceConstraints,
-                         &documentKeySet,
-                         multikeyPaths);
-
-            if (!descriptor->isMultikey(_opCtx) && documentKeySet.size() > 1) {
-                string msg = str::stream() << "Index " << descriptor->indexName()
-                                           << " is not multi-key but has more than one"
-                                           << " key in document " << recordId;
-                results.errors.push_back(msg);
-                results.valid = false;
-            }
-
-            uint32_t indexNsHash;
-            MurmurHash3_x86_32(indexNs.c_str(), indexNs.size(), 0, &indexNsHash);
-
-            for (const auto& key : documentKeySet) {
-                if (key.objsize() >= IndexKeyMaxSize) {
-                    // Index keys >= 1024 bytes are not indexed.
-                    _longKeys[indexNs]++;
-                    continue;
-                }
-                uint32_t indexEntryHash = hashIndexEntry(key, recordId, indexNsHash);
-                uint64_t& indexEntryCount = (*_ikc)[indexEntryHash];
-
-                if (indexEntryCount != 0) {
-                    indexEntryCount--;
-                    dassert(indexEntryCount >= 0);
-                    if (indexEntryCount == 0) {
-                        _indexKeyCountTableNumEntries--;
-                    }
-                } else {
-                    _hasDocWithoutIndexEntry = true;
-                    results.valid = false;
-                }
-            }
-        }
-        return status;
-    }
-
-    bool tooManyIndexEntries() const {
-        return _indexKeyCountTableNumEntries != 0;
-    }
-
-    bool tooFewIndexEntries() const {
-        return _hasDocWithoutIndexEntry;
-    }
-
-    /**
-     * Traverse the index to validate the entries and cache index keys for later use.
-     */
-    void traverseIndex(const IndexAccessMethod* iam,
-                       const IndexDescriptor* descriptor,
-                       ValidateResults& results,
-                       long long numKeys) {
-        auto indexNs = descriptor->indexNamespace();
-        _keyCounts[indexNs] = numKeys;
-
-        uint32_t indexNsHash;
-        MurmurHash3_x86_32(indexNs.c_str(), indexNs.size(), 0, &indexNsHash);
-
-        if (_level == kValidateFull) {
-            const auto& key = descriptor->keyPattern();
-            BSONObj prevIndexEntryKey;
-            bool isFirstEntry = true;
-
-            std::unique_ptr<SortedDataInterface::Cursor> cursor = iam->newCursor(_opCtx, true);
-            // Seeking to BSONObj() is equivalent to seeking to the first entry of an index.
-            for (auto indexEntry = cursor->seek(BSONObj(), true); indexEntry;
-                 indexEntry = cursor->next()) {
-                // Ensure that the index entries are in increasing or decreasing order.
-                if (!isFirstEntry && (indexEntry->key).woCompare(prevIndexEntryKey, key) < 0) {
-                    if (results.valid) {
-                        results.errors.push_back(
-                            "one or more indexes are not in strictly ascending or descending "
-                            "order");
-                    }
-                    results.valid = false;
-                }
-                isFirstEntry = false;
-                prevIndexEntryKey = indexEntry->key;
-
-                // Cache the index keys to cross-validate with documents later.
-                uint32_t keyHash = hashIndexEntry(indexEntry->key, indexEntry->loc, indexNsHash);
-                if ((*_ikc)[keyHash] == 0) {
-                    _indexKeyCountTableNumEntries++;
-                }
-                (*_ikc)[keyHash]++;
-            }
+            results->valid = false;
         }
     }
+}
 
-    void validateIndexKeyCount(IndexDescriptor* idx, int64_t numRecs, ValidateResults& results) {
-        const string indexNs = idx->indexNamespace();
-        long long numIndexedKeys = _keyCounts[indexNs];
-        long long numLongKeys = _longKeys[indexNs];
-        auto totalKeys = numLongKeys + numIndexedKeys;
+void _markIndexEntriesInvalid(ValidateResultsMap* indexNsResultsMap, ValidateResults* results) {
 
-        bool hasTooFewKeys = false;
-        bool noErrorOnTooFewKeys = !failIndexKeyTooLong.load() && (_level != kValidateFull);
+    // The error message can't be more specific because even though the index is
+    // invalid, we won't know if the corruption occurred on the index entry or in
+    // the document.
+    for (auto& it : *indexNsResultsMap) {
+        // Marking all indexes as invalid since we don't know which one failed.
+        ValidateResults& r = it.second;
+        r.valid = false;
+    }
+    string msg = "one or more indexes contain invalid index entries.";
+    results->errors.push_back(msg);
+    results->valid = false;
+}
 
-        if (idx->isIdIndex() && totalKeys != numRecs) {
-            hasTooFewKeys = totalKeys < numRecs ? true : hasTooFewKeys;
-            string msg = str::stream() << "number of _id index entries (" << numIndexedKeys
-                                       << ") does not match the number of documents in the index ("
-                                       << numRecs - numLongKeys << ")";
-            if (noErrorOnTooFewKeys && (numIndexedKeys < numRecs)) {
-                results.warnings.push_back(msg);
-            } else {
-                results.errors.push_back(msg);
-                results.valid = false;
+void _validateIndexKeyCount(OperationContext* opCtx,
+                            IndexCatalog* indexCatalog,
+                            RecordStore* recordStore,
+                            RecordStoreValidateAdaptor* indexValidator,
+                            ValidateResultsMap* indexNsResultsMap) {
+
+    IndexCatalog::IndexIterator indexIterator = indexCatalog->getIndexIterator(opCtx, false);
+    while (indexIterator.more()) {
+        IndexDescriptor* descriptor = indexIterator.next();
+        ValidateResults& curIndexResults = (*indexNsResultsMap)[descriptor->indexNamespace()];
+
+        if (curIndexResults.valid) {
+            indexValidator->validateIndexKeyCount(
+                descriptor, recordStore->numRecords(opCtx), curIndexResults);
+        }
+    }
+}
+
+void _reportValidationResults(OperationContext* opCtx,
+                              IndexCatalog* indexCatalog,
+                              ValidateResultsMap* indexNsResultsMap,
+                              BSONObjBuilder* keysPerIndex,
+                              ValidateCmdLevel level,
+                              ValidateResults* results,
+                              BSONObjBuilder* output) {
+
+    std::unique_ptr<BSONObjBuilder> indexDetails;
+    if (level == kValidateFull) {
+        indexDetails = stdx::make_unique<BSONObjBuilder>();
+    }
+
+    // Report index validation results.
+    for (const auto& it : *indexNsResultsMap) {
+        const std::string indexNs = it.first;
+        const ValidateResults& vr = it.second;
+
+        if (!vr.valid) {
+            results->valid = false;
+        }
+
+        if (indexDetails.get()) {
+            BSONObjBuilder bob(indexDetails->subobjStart(indexNs));
+            bob.appendBool("valid", vr.valid);
+
+            if (!vr.warnings.empty()) {
+                bob.append("warnings", vr.warnings);
+            }
+
+            if (!vr.errors.empty()) {
+                bob.append("errors", vr.errors);
             }
         }
 
-        if (results.valid && !idx->isMultikey(_opCtx) && totalKeys > numRecs) {
-            string err = str::stream()
-                << "index " << idx->indexName() << " is not multi-key, but has more entries ("
-                << numIndexedKeys << ") than documents in the index (" << numRecs - numLongKeys
-                << ")";
-            results.errors.push_back(err);
-            results.valid = false;
-        }
-        // Ignore any indexes with a special access method. If an access method name is given, the
-        // index may be a full text, geo or special index plugin with different semantics.
-        if (results.valid && !idx->isSparse() && !idx->isPartial() && !idx->isIdIndex() &&
-            idx->getAccessMethodName() == "" && totalKeys < numRecs) {
-            hasTooFewKeys = true;
-            string msg = str::stream() << "index " << idx->indexName()
-                                       << " is not sparse or partial, but has fewer entries ("
-                                       << numIndexedKeys << ") than documents in the index ("
-                                       << numRecs - numLongKeys << ")";
-            if (noErrorOnTooFewKeys) {
-                results.warnings.push_back(msg);
-            } else {
-                results.errors.push_back(msg);
-                results.valid = false;
-            }
-        }
-
-        if ((_level != kValidateFull) && hasTooFewKeys) {
-            string warning = str::stream()
-                << "index " << idx->indexName()
-                << " has fewer keys than records. This may be the result of currently or "
-                   "previously running the server with the failIndexKeyTooLong parameter set to "
-                   "false. Please re-run the validate command with {full: true}";
-            results.warnings.push_back(warning);
-        }
+        results->warnings.insert(results->warnings.end(), vr.warnings.begin(), vr.warnings.end());
+        results->errors.insert(results->errors.end(), vr.errors.begin(), vr.errors.end());
     }
 
-private:
-    std::map<string, long long> _longKeys;
-    std::map<string, long long> _keyCounts;
-    std::unique_ptr<IndexKeyCountTable> _ikc;
-
-    uint32_t _indexKeyCountTableNumEntries = 0;
-    bool _hasDocWithoutIndexEntry = false;
-
-    OperationContext* _opCtx;  // Not owned.
-    ValidateCmdLevel _level;
-    IndexCatalog* _indexCatalog;             // Not owned.
-    ValidateResultsMap* _indexNsResultsMap;  // Not owned.
-
-    uint32_t hashIndexEntry(const BSONObj& key, const RecordId& loc, uint32_t hash) {
-        // We're only using KeyString to get something hashable here, so version doesn't matter.
-        KeyString ks(KeyString::Version::V1, key, Ordering::make(BSONObj()), loc);
-        MurmurHash3_x86_32(ks.getTypeBits().getBuffer(), ks.getTypeBits().getSize(), hash, &hash);
-        MurmurHash3_x86_32(ks.getBuffer(), ks.getSize(), hash, &hash);
-        return hash % kKeyCountTableSize;
+    output->append("nIndexes", indexCatalog->numIndexesReady(opCtx));
+    output->append("keysPerIndex", keysPerIndex->done());
+    if (indexDetails.get()) {
+        output->append("indexDetails", indexDetails->done());
     }
-};
+}
 }  // namespace
 
 Status CollectionImpl::validate(OperationContext* opCtx,
                                 ValidateCmdLevel level,
+                                bool background,
+                                std::unique_ptr<Lock::CollectionLock> collLk,
                                 ValidateResults* results,
                                 BSONObjBuilder* output) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IS));
 
     try {
         ValidateResultsMap indexNsResultsMap;
-        auto indexValidator = stdx::make_unique<RecordStoreValidateAdaptor>(
-            opCtx, level, &_indexCatalog, &indexNsResultsMap);
-
         BSONObjBuilder keysPerIndex;  // not using subObjStart to be exception safe
-        IndexCatalog::IndexIterator i = _indexCatalog.getIndexIterator(opCtx, false);
+        IndexConsistency indexConsistency(
+            opCtx, _this, ns(), _recordStore, std::move(collLk), background);
+        RecordStoreValidateAdaptor indexValidator = RecordStoreValidateAdaptor(
+            opCtx, &indexConsistency, level, &_indexCatalog, &indexNsResultsMap);
 
-        // Validate Indexes.
-        while (i.more()) {
-            opCtx->checkForInterrupt();
-            const IndexDescriptor* descriptor = i.next();
-            log(LogComponent::kIndex) << "validating index " << descriptor->indexNamespace()
-                                      << endl;
-            IndexAccessMethod* iam = _indexCatalog.getIndex(descriptor);
-            ValidateResults curIndexResults;
-            int64_t numKeys;
-            iam->validate(opCtx, &numKeys, &curIndexResults);
-            keysPerIndex.appendNumber(descriptor->indexNamespace(),
-                                      static_cast<long long>(numKeys));
 
-            if (curIndexResults.valid) {
-                indexValidator->traverseIndex(iam, descriptor, curIndexResults, numKeys);
-            } else {
-                results->valid = false;
-            }
-            indexNsResultsMap[descriptor->indexNamespace()] = curIndexResults;
-        }
+        // Validate the record store
+        log(LogComponent::kIndex) << "validating collection " << ns().toString() << endl;
+        _validateRecordStore(
+            opCtx, _recordStore, level, background, &indexValidator, results, output);
 
-        // Validate RecordStore and, if `level == kValidateFull`, cross validate indexes and
-        // RecordStore.
+        // Validate indexes and check for mismatches.
         if (results->valid) {
-            auto status =
-                _recordStore->validate(opCtx, level, indexValidator.get(), results, output);
-            // RecordStore::validate always returns Status::OK(). Errors are reported through
-            // `results`.
-            dassert(status.isOK());
+            _validateIndexes(opCtx,
+                             &_indexCatalog,
+                             &keysPerIndex,
+                             &indexValidator,
+                             level,
+                             &indexNsResultsMap,
+                             results);
 
-            if (indexValidator->tooManyIndexEntries()) {
-                for (auto& it : indexNsResultsMap) {
-                    // Marking all indexes as invalid since we don't know which one failed.
-                    ValidateResults& r = it.second;
-                    r.valid = false;
-                }
-                string msg = "One or more indexes contain invalid index entries.";
-                results->errors.push_back(msg);
-                results->valid = false;
-            } else if (indexValidator->tooFewIndexEntries()) {
-                results->valid = false;
+            if (indexConsistency.haveEntryMismatch()) {
+                _markIndexEntriesInvalid(&indexNsResultsMap, results);
             }
         }
 
         // Validate index key count.
         if (results->valid) {
-            IndexCatalog::IndexIterator i = _indexCatalog.getIndexIterator(opCtx, false);
-            while (i.more()) {
-                IndexDescriptor* descriptor = i.next();
-                ValidateResults& curIndexResults = indexNsResultsMap[descriptor->indexNamespace()];
-
-                if (curIndexResults.valid) {
-                    indexValidator->validateIndexKeyCount(
-                        descriptor, _recordStore->numRecords(opCtx), curIndexResults);
-                }
-            }
+            _validateIndexKeyCount(
+                opCtx, &_indexCatalog, _recordStore, &indexValidator, &indexNsResultsMap);
         }
 
-        std::unique_ptr<BSONObjBuilder> indexDetails;
-        if (level == kValidateFull)
-            indexDetails = stdx::make_unique<BSONObjBuilder>();
+        // Report the validation results for the user to see
+        _reportValidationResults(
+            opCtx, &_indexCatalog, &indexNsResultsMap, &keysPerIndex, level, results, output);
 
-        // Report index validation results.
-        for (const auto& it : indexNsResultsMap) {
-            const std::string indexNs = it.first;
-            const ValidateResults& vr = it.second;
-
-            if (!vr.valid) {
-                results->valid = false;
-            }
-
-            if (indexDetails.get()) {
-                BSONObjBuilder bob(indexDetails->subobjStart(indexNs));
-                bob.appendBool("valid", vr.valid);
-
-                if (!vr.warnings.empty()) {
-                    bob.append("warnings", vr.warnings);
-                }
-
-                if (!vr.errors.empty()) {
-                    bob.append("errors", vr.errors);
-                }
-            }
-
-            results->warnings.insert(
-                results->warnings.end(), vr.warnings.begin(), vr.warnings.end());
-            results->errors.insert(results->errors.end(), vr.errors.begin(), vr.errors.end());
-        }
-
-        output->append("nIndexes", _indexCatalog.numIndexesReady(opCtx));
-        output->append("keysPerIndex", keysPerIndex.done());
-        if (indexDetails.get()) {
-            output->append("indexDetails", indexDetails->done());
+        if (!results->valid) {
+            log(LogComponent::kIndex) << "validating collection " << ns().toString() << " failed"
+                                      << endl;
+        } else {
+            log(LogComponent::kIndex) << "validated collection " << ns().toString() << endl;
         }
     } catch (DBException& e) {
-        if (ErrorCodes::isInterruption(ErrorCodes::Error(e.getCode()))) {
+        if (ErrorCodes::isInterruption(e.code())) {
             return e.toStatus();
         }
         string err = str::stream() << "exception during index validation: " << e.toString();

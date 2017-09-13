@@ -37,11 +37,23 @@
 
 namespace mongo {
 
+class Client;
+
 /**
  * A PeriodicRunner implementation that uses the ASIO library's eventing system
  * to schedule and run jobs at regular intervals.
  *
  * This class takes a timer factory so that it may be mocked out for testing.
+ *
+ * The runner will set up a client on its internal thread. Scheduled jobs that require
+ * an operation context should use Client::getCurrent()->makeOperationContext() to
+ * create one for themselves, and MUST clear it before they return.
+ *
+ * The thread running internally will use the thread name "PeriodicRunnerASIO" and
+ * anything logged from within a scheduled background task will use this thread name.
+ * Scheduled tasks may set the thread name to a custom value as they run. However,
+ * if they do this, they MUST set the thread name back to its original value before
+ * they return.
  */
 class PeriodicRunnerASIO : public PeriodicRunner {
 public:
@@ -57,38 +69,54 @@ public:
     /**
      * Schedule a job to be run at periodic intervals.
      */
-    Status scheduleJob(PeriodicJob job) override;
+    void scheduleJob(PeriodicJob job) override;
 
     /**
      * Starts up this periodic runner.
+     *
+     * This periodic runner will only run once; if it is subsequently started up
+     * again, it will return an error.
      */
-    void startup() override;
+    Status startup() override;
 
     /**
-     * Shut down this periodic runner. Stops all jobs from running.
+     * Shut down this periodic runner. Stops all jobs from running. This method
+     * may safely be called multiple times, but only the first call will have any effect.
      */
     void shutdown() override;
 
 private:
     struct PeriodicJobASIO {
-        explicit PeriodicJobASIO(PeriodicJob callable, Date_t startTime)
-            : job(std::move(callable.job)), interval(callable.interval), start(startTime) {}
+        explicit PeriodicJobASIO(PeriodicJob callable,
+                                 Date_t startTime,
+                                 std::shared_ptr<executor::AsyncTimerInterface> sharedTimer)
+            : job(std::move(callable.job)),
+              interval(callable.interval),
+              start(startTime),
+              timer(sharedTimer) {}
         Job job;
         Milliseconds interval;
         Date_t start;
+        std::shared_ptr<executor::AsyncTimerInterface> timer;
     };
 
-    void _scheduleJob(PeriodicJobASIO job, std::shared_ptr<executor::AsyncTimerInterface> timer);
+    // Internally, we will transition through these states
+    enum class State { kReady, kRunning, kComplete };
+
+    void _scheduleJob(std::weak_ptr<PeriodicJobASIO> job);
 
     asio::io_service _io_service;
     asio::io_service::strand _strand;
 
+    Client* _client;
     stdx::thread _thread;
 
     std::unique_ptr<executor::AsyncTimerFactoryInterface> _timerFactory;
 
-    stdx::mutex _runningMutex;
-    bool _running;
+    stdx::mutex _stateMutex;
+    State _state;
+
+    std::vector<std::shared_ptr<PeriodicJobASIO>> _jobs;
 };
 
 }  // namespace mongo

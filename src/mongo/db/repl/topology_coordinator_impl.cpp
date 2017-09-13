@@ -137,7 +137,6 @@ TopologyCoordinatorImpl::TopologyCoordinatorImpl(Options options)
       _forceSyncSourceIndex(-1),
       _options(std::move(options)),
       _selfIndex(-1),
-      _stepDownPending(false),
       _maintenanceModeCalls(0),
       _followerMode(MemberState::RS_STARTUP2) {
     invariant(getMemberState() == MemberState::RS_STARTUP);
@@ -740,7 +739,7 @@ Status TopologyCoordinatorImpl::prepareHeartbeatResponse(Date_t now,
     const OpTime lastOpDurable = getMyLastDurableOpTime();
 
     // Are we electable
-    response->setElectable(!_getMyUnelectableReason(now, false));
+    response->setElectable(!_getMyUnelectableReason(now, StartElectionReason::kElectionTimeout));
 
     // Heartbeat status message
     response->setHbMsg(_getHbmsg(now));
@@ -1134,22 +1133,22 @@ bool TopologyCoordinatorImpl::haveTaggedNodesReachedOpTime(const OpTime& opTime,
 }
 
 HeartbeatResponseAction TopologyCoordinatorImpl::checkMemberTimeouts(Date_t now) {
-    HeartbeatResponseAction result = HeartbeatResponseAction::makeNoAction();
+    bool stepdown = false;
     for (int memberIndex = 0; memberIndex < static_cast<int>(_memberData.size()); memberIndex++) {
         auto& memberData = _memberData[memberIndex];
         if (!memberData.isSelf() && !memberData.lastUpdateStale() &&
             now - memberData.getLastUpdate() >= _rsConfig.getElectionTimeoutPeriod()) {
             memberData.markLastUpdateStale();
-            if (getMemberState().primary()) {
-                HeartbeatResponseAction action = setMemberAsDown(now, memberIndex);
-                if (action.getAction() != HeartbeatResponseAction::NoAction) {
-                    invariant(action.getAction() == HeartbeatResponseAction::StepDownSelf);
-                    result = action;
-                }
+            if (_iAmPrimary()) {
+                stepdown = stepdown || setMemberAsDown(now, memberIndex);
             }
         }
     }
-    return result;
+    if (stepdown) {
+        log() << "can't see a majority of the set, relinquishing primary";
+        return HeartbeatResponseAction::makeStepDownSelfAction(_selfIndex);
+    }
+    return HeartbeatResponseAction::makeNoAction();
 }
 
 std::vector<HostAndPort> TopologyCoordinatorImpl::getHostsWrittenTo(const OpTime& op,
@@ -1174,24 +1173,18 @@ std::vector<HostAndPort> TopologyCoordinatorImpl::getHostsWrittenTo(const OpTime
     return hosts;
 }
 
-HeartbeatResponseAction TopologyCoordinatorImpl::setMemberAsDown(Date_t now,
-                                                                 const int memberIndex) {
+bool TopologyCoordinatorImpl::setMemberAsDown(Date_t now, const int memberIndex) {
     invariant(memberIndex != _selfIndex);
     invariant(memberIndex != -1);
     invariant(_currentPrimaryIndex == _selfIndex);
     MemberData& hbData = _memberData.at(memberIndex);
     hbData.setDownValues(now, "no response within election timeout period");
 
-    if (CannotSeeMajority & _getMyUnelectableReason(now, false)) {
-        if (_stepDownPending) {
-            return HeartbeatResponseAction::makeNoAction();
-        }
-        _stepDownPending = true;
-        log() << "can't see a majority of the set, relinquishing primary";
-        return HeartbeatResponseAction::makeStepDownSelfAction(_selfIndex);
+    if (CannotSeeMajority & _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout)) {
+        return true;
     }
 
-    return HeartbeatResponseAction::makeNoAction();
+    return false;
 }
 
 std::pair<int, Date_t> TopologyCoordinatorImpl::getStalestLiveMember() const {
@@ -1301,20 +1294,38 @@ HeartbeatResponseAction TopologyCoordinatorImpl::_updatePrimaryFromHBDataV1(
     // Clear last heartbeat message on ourselves.
     setMyHeartbeatMessage(now, "");
 
-    // Priority takeover when the replset is stable.
+    // Takeover when the replset is stable.
     //
     // Take over the primary only if the remote primary is in the latest term I know.
     // This is done only when we get a heartbeat response from the primary.
     // Otherwise, there must be an outstanding election, which may succeed or not, but
     // the remote primary will become aware of that election eventually and step down.
-    if (_memberData.at(primaryIndex).getTerm() == _term && updatedConfigIndex == primaryIndex &&
-        _rsConfig.getMemberAt(primaryIndex).getPriority() <
-            _rsConfig.getMemberAt(_selfIndex).getPriority()) {
-        LOG(4) << "I can take over the primary due to higher priority."
-               << " Current primary index: " << primaryIndex << " in term "
-               << _memberData.at(primaryIndex).getTerm();
+    if (_memberData.at(primaryIndex).getTerm() == _term && updatedConfigIndex == primaryIndex) {
 
-        return HeartbeatResponseAction::makePriorityTakeoverAction();
+        // Don't schedule catchup takeover if catchup takeover or primary catchup is disabled.
+        bool catchupTakeoverDisabled =
+            ReplSetConfig::kCatchUpDisabled == _rsConfig.getCatchUpTimeoutPeriod() ||
+            ReplSetConfig::kCatchUpTakeoverDisabled == _rsConfig.getCatchUpTakeoverDelay();
+        if (!catchupTakeoverDisabled && (_memberData.at(primaryIndex).getLastAppliedOpTime() <
+                                         _memberData.at(_selfIndex).getLastAppliedOpTime())) {
+            LOG(2) << "I can take over the primary due to fresher data."
+                   << " Current primary index: " << primaryIndex << " in term "
+                   << _memberData.at(primaryIndex).getTerm() << "."
+                   << " Current primary optime: "
+                   << _memberData.at(primaryIndex).getLastAppliedOpTime()
+                   << " My optime: " << _memberData.at(_selfIndex).getLastAppliedOpTime();
+
+            return HeartbeatResponseAction::makeCatchupTakeoverAction();
+        }
+
+        if (_rsConfig.getMemberAt(primaryIndex).getPriority() <
+            _rsConfig.getMemberAt(_selfIndex).getPriority()) {
+            LOG(4) << "I can take over the primary due to higher priority."
+                   << " Current primary index: " << primaryIndex << " in term "
+                   << _memberData.at(primaryIndex).getTerm();
+
+            return HeartbeatResponseAction::makePriorityTakeoverAction();
+        }
     }
     return HeartbeatResponseAction::makeNoAction();
 }
@@ -1368,10 +1379,9 @@ HeartbeatResponseAction TopologyCoordinatorImpl::_updatePrimaryFromHBData(
                 const OpTime latestOpTime = _latestKnownOpTime();
 
                 if (_iAmPrimary()) {
-                    if (_stepDownPending) {
+                    if (_leaderMode == LeaderMode::kSteppingDown) {
                         return HeartbeatResponseAction::makeNoAction();
                     }
-                    _stepDownPending = true;
                     log() << "Stepping down self (priority " << currentPrimaryMember.getPriority()
                           << ") because " << highestPriorityMember.getHostAndPort()
                           << " has higher priority " << highestPriorityMember.getPriority()
@@ -1442,10 +1452,9 @@ HeartbeatResponseAction TopologyCoordinatorImpl::_updatePrimaryFromHBData(
 
                 // Step down whomever has the older election time.
                 if (remoteElectionTime > _electionTime) {
-                    if (_stepDownPending) {
+                    if (_leaderMode == LeaderMode::kSteppingDown) {
                         return HeartbeatResponseAction::makeNoAction();
                     }
-                    _stepDownPending = true;
                     log() << "stepping down; another primary was elected more recently";
                     return HeartbeatResponseAction::makeStepDownSelfAction(_selfIndex);
                 } else {
@@ -1469,11 +1478,11 @@ HeartbeatResponseAction TopologyCoordinatorImpl::_updatePrimaryFromHBData(
     // If we are primary, check if we can still see majority of the set;
     // stepdown if we can't.
     if (_iAmPrimary()) {
-        if (CannotSeeMajority & _getMyUnelectableReason(now, false)) {
-            if (_stepDownPending) {
+        if (CannotSeeMajority &
+            _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout)) {
+            if (_leaderMode == LeaderMode::kSteppingDown) {
                 return HeartbeatResponseAction::makeNoAction();
             }
-            _stepDownPending = true;
             log() << "can't see a majority of the set, relinquishing primary";
             return HeartbeatResponseAction::makeStepDownSelfAction(_selfIndex);
         }
@@ -1504,7 +1513,7 @@ HeartbeatResponseAction TopologyCoordinatorImpl::_updatePrimaryFromHBData(
         LOG(2) << "TopologyCoordinatorImpl::_updatePrimaryFromHBData - " << status.reason();
         return HeartbeatResponseAction::makeNoAction();
     }
-    fassertStatusOK(28816, becomeCandidateIfElectable(now, false));
+    fassertStatusOK(28816, becomeCandidateIfElectable(now, StartElectionReason::kElectionTimeout));
     return HeartbeatResponseAction::makeElectAction();
 }
 
@@ -1518,7 +1527,8 @@ Status TopologyCoordinatorImpl::checkShouldStandForElection(Date_t now) const {
         return {ErrorCodes::NodeNotElectable, "Not standing for election again; already candidate"};
     }
 
-    const UnelectableReasonMask unelectableReason = _getMyUnelectableReason(now, false);
+    const UnelectableReasonMask unelectableReason =
+        _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout);
     if (NotCloseEnoughToLatestOptime & unelectableReason) {
         return {ErrorCodes::NodeNotElectable,
                 str::stream() << "Not standing for election because "
@@ -1615,9 +1625,44 @@ bool TopologyCoordinatorImpl::_amIFreshEnoughForPriorityTakeover() const {
     }
 }
 
+bool TopologyCoordinatorImpl::_amIFreshEnoughForCatchupTakeover() const {
+
+    const OpTime latestKnownOpTime = _latestKnownOpTime();
+
+    // Rules are:
+    // - We must have the freshest optime of all the up nodes.
+    // - We must specifically have a fresher optime than the primary (can't be equal).
+    // - The term of our last applied op must be less than the current term. This ensures that no
+    // writes have happened since the most recent election and that the primary is still in
+    // catchup mode.
+
+    // There is no point to a catchup takeover if we aren't the freshest node because
+    // another node would immediately perform another catchup takeover when we become primary.
+    const OpTime ourLastOpApplied = getMyLastAppliedOpTime();
+    if (ourLastOpApplied < latestKnownOpTime) {
+        return false;
+    }
+
+    if (_currentPrimaryIndex == -1) {
+        return false;
+    }
+
+    // If we aren't ahead of the primary, there is no point to having a catchup takeover.
+    const OpTime primaryLastOpApplied = _memberData[_currentPrimaryIndex].getLastAppliedOpTime();
+
+    if (ourLastOpApplied <= primaryLastOpApplied) {
+        return false;
+    }
+
+    // If the term of our last applied op is less than the current term, the primary didn't write
+    // anything and it is still in catchup mode.
+    return ourLastOpApplied.getTerm() < _term;
+}
+
 bool TopologyCoordinatorImpl::_iAmPrimary() const {
     if (_role == Role::leader) {
         invariant(_currentPrimaryIndex == _selfIndex);
+        invariant(_leaderMode != LeaderMode::kNotLeader);
         return true;
     }
     return false;
@@ -1667,7 +1712,7 @@ int TopologyCoordinatorImpl::_getHighestPriorityElectableIndex(Date_t now) const
     int maxIndex = -1;
     for (int currentIndex = 0; currentIndex < _rsConfig.getNumMembers(); currentIndex++) {
         UnelectableReasonMask reason = currentIndex == _selfIndex
-            ? _getMyUnelectableReason(now, false)
+            ? _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout)
             : _getUnelectableReason(currentIndex);
         if (None == reason && _isMemberHigherPriority(currentIndex, maxIndex)) {
             maxIndex = currentIndex;
@@ -1677,8 +1722,31 @@ int TopologyCoordinatorImpl::_getHighestPriorityElectableIndex(Date_t now) const
     return maxIndex;
 }
 
-void TopologyCoordinatorImpl::prepareForStepDown() {
-    _stepDownPending = true;
+bool TopologyCoordinatorImpl::prepareForUnconditionalStepDown() {
+    if (_leaderMode == LeaderMode::kSteppingDown) {
+        // Can only be processing one required stepdown at a time.
+        return false;
+    }
+    // Heartbeat-initiated stepdowns take precedence over stepdown command initiated stepdowns, so
+    // it's safe to transition from kAttemptingStepDown to kSteppingDown.
+    _setLeaderMode(LeaderMode::kSteppingDown);
+    return true;
+}
+
+Status TopologyCoordinatorImpl::prepareForStepDownAttempt() {
+    if (_leaderMode == LeaderMode::kSteppingDown ||
+        _leaderMode == LeaderMode::kAttemptingStepDown) {
+        return Status{ErrorCodes::ConflictingOperationInProgress,
+                      "This node is already in the process of stepping down"};
+    }
+    _setLeaderMode(LeaderMode::kAttemptingStepDown);
+    return Status::OK();
+}
+
+void TopologyCoordinatorImpl::abortAttemptedStepDownIfNeeded() {
+    if (_leaderMode == TopologyCoordinator::LeaderMode::kAttemptingStepDown) {
+        _setLeaderMode(TopologyCoordinator::LeaderMode::kMaster);
+    }
 }
 
 void TopologyCoordinatorImpl::changeMemberState_forTest(const MemberState& newMemberState,
@@ -1700,7 +1768,7 @@ void TopologyCoordinatorImpl::changeMemberState_forTest(const MemberState& newMe
             _followerMode = newMemberState.s;
             if (_currentPrimaryIndex == _selfIndex) {
                 _currentPrimaryIndex = -1;
-                _stepDownPending = false;
+                _setLeaderMode(LeaderMode::kNotLeader);
             }
             break;
         case MemberState::RS_STARTUP:
@@ -1967,7 +2035,9 @@ StatusWith<BSONObj> TopologyCoordinatorImpl::prepareReplSetUpdatePositionCommand
 
     // Add metadata to command. Old style parsing logic will reject the metadata.
     if (commandStyle == ReplicationCoordinator::ReplSetUpdatePositionCommandStyle::kNewStyle) {
-        prepareReplSetMetadata(currentCommittedSnapshotOpTime).writeToMetadata(&cmdBuilder);
+        prepareReplSetMetadata(currentCommittedSnapshotOpTime)
+            .writeToMetadata(&cmdBuilder)
+            .transitional_ignore();
     }
     return cmdBuilder.obj();
 }
@@ -2082,11 +2152,10 @@ TopologyCoordinatorImpl::prepareFreezeResponse(Date_t now, int secs, BSONObjBuil
         log() << "'unfreezing'";
         response->append("info", "unfreezing");
 
-        if (_followerMode == MemberState::RS_SECONDARY && _rsConfig.getNumMembers() == 1 &&
-            _selfIndex == 0 && _rsConfig.getMemberAt(_selfIndex).isElectable()) {
+        if (_isElectableNodeInSingleNodeReplicaSet()) {
             // If we are a one-node replica set, we're the one member,
-            // we're electable, and we are currently in followerMode SECONDARY,
-            // we must transition to candidate now that our stepdown period
+            // we're electable, we're not in maintenance mode, and we are currently in followerMode
+            // SECONDARY, we must transition to candidate now that our stepdown period
             // is no longer active, in leiu of heartbeats.
             _role = Role::candidate;
             return PrepareFreezeResponseResult::kElectSelf;
@@ -2107,11 +2176,10 @@ bool TopologyCoordinatorImpl::becomeCandidateIfStepdownPeriodOverAndSingleNodeSe
         return false;
     }
 
-    if (_followerMode == MemberState::RS_SECONDARY && _rsConfig.getNumMembers() == 1 &&
-        _selfIndex == 0 && _rsConfig.getMemberAt(_selfIndex).isElectable()) {
+    if (_isElectableNodeInSingleNodeReplicaSet()) {
         // If the new config describes a one-node replica set, we're the one member,
-        // we're electable, and we are currently in followerMode SECONDARY,
-        // we must transition to candidate, in leiu of heartbeats.
+        // we're electable, we're not in maintenance mode, and we are currently in followerMode
+        // SECONDARY, we must transition to candidate, in leiu of heartbeats.
         _role = Role::candidate;
         return true;
     }
@@ -2207,7 +2275,6 @@ void TopologyCoordinatorImpl::updateConfig(const ReplSetConfig& newConfig,
     }
 
     _updateHeartbeatDataForReconfig(newConfig, selfIndex, now);
-    _stepDownPending = false;
     _rsConfig = newConfig;
     _selfIndex = selfIndex;
     _forceSyncSourceIndex = -1;
@@ -2223,16 +2290,16 @@ void TopologyCoordinatorImpl::updateConfig(const ReplSetConfig& newConfig,
             return;
         }
         _role = Role::follower;
+        _setLeaderMode(LeaderMode::kNotLeader);
     }
 
     // By this point we know we are in Role::follower
     _currentPrimaryIndex = -1;  // force secondaries to re-detect who the primary is
 
-    if (_followerMode == MemberState::RS_SECONDARY && _rsConfig.getNumMembers() == 1 &&
-        _selfIndex == 0 && _rsConfig.getMemberAt(_selfIndex).isElectable()) {
+    if (_isElectableNodeInSingleNodeReplicaSet()) {
         // If the new config describes a one-node replica set, we're the one member,
-        // we're electable, and we are currently in followerMode SECONDARY,
-        // we must transition to candidate, in leiu of heartbeats.
+        // we're electable, we're not in maintenance mode and we are currently in followerMode
+        // SECONDARY, we must transition to candidate, in leiu of heartbeats.
         _role = Role::candidate;
     }
 }
@@ -2293,7 +2360,7 @@ TopologyCoordinatorImpl::UnelectableReasonMask TopologyCoordinatorImpl::_getUnel
 }
 
 TopologyCoordinatorImpl::UnelectableReasonMask TopologyCoordinatorImpl::_getMyUnelectableReason(
-    const Date_t now, bool isPriorityTakeover) const {
+    const Date_t now, StartElectionReason reason) const {
     UnelectableReasonMask result = None;
     const OpTime lastApplied = getMyLastAppliedOpTime();
     if (lastApplied.isNull()) {
@@ -2334,8 +2401,14 @@ TopologyCoordinatorImpl::UnelectableReasonMask TopologyCoordinatorImpl::_getMyUn
     } else {
         // Election rules only for protocol version 1.
         invariant(_rsConfig.getProtocolVersion() == 1);
-        if (isPriorityTakeover && !_amIFreshEnoughForPriorityTakeover()) {
+        if (reason == StartElectionReason::kPriorityTakeover &&
+            !_amIFreshEnoughForPriorityTakeover()) {
             result |= NotCloseEnoughToLatestForPriorityTakeover;
+        }
+
+        if (reason == StartElectionReason::kCatchupTakeover &&
+            !_amIFreshEnoughForCatchupTakeover()) {
+            result |= NotFreshEnoughForCatchupTakeover;
         }
     }
     return result;
@@ -2408,6 +2481,14 @@ std::string TopologyCoordinatorImpl::_getUnelectableReasonString(
         ss << "member is not caught up enough to the most up-to-date member to call for priority "
               "takeover - must be within "
            << priorityTakeoverFreshnessWindowSeconds << " seconds";
+    }
+    if (ur & NotFreshEnoughForCatchupTakeover) {
+        if (hasWrittenToStream) {
+            ss << "; ";
+        }
+        hasWrittenToStream = true;
+        ss << "member is either not the most up-to-date member or not ahead of the primary, and "
+              "therefore cannot call for catchup takeover";
     }
     if (ur & NotInitialized) {
         if (hasWrittenToStream) {
@@ -2484,6 +2565,43 @@ bool TopologyCoordinatorImpl::voteForMyself(Date_t now) {
     return true;
 }
 
+bool TopologyCoordinatorImpl::isSteppingDown() const {
+    return _leaderMode == LeaderMode::kAttemptingStepDown ||
+        _leaderMode == LeaderMode::kSteppingDown;
+}
+
+bool TopologyCoordinatorImpl::isUnconditionallySteppingDown() const {
+    return _leaderMode == LeaderMode::kSteppingDown;
+}
+
+void TopologyCoordinatorImpl::_setLeaderMode(TopologyCoordinator::LeaderMode newMode) {
+    // Invariants for valid state transitions.
+    switch (_leaderMode) {
+        case LeaderMode::kNotLeader:
+            invariant(newMode == LeaderMode::kLeaderElect);
+            break;
+        case LeaderMode::kLeaderElect:
+            invariant(newMode == LeaderMode::kNotLeader ||  // TODO(SERVER-30852): remove this case
+                      newMode == LeaderMode::kMaster ||
+                      newMode == LeaderMode::kAttemptingStepDown ||
+                      newMode == LeaderMode::kSteppingDown);
+            break;
+        case LeaderMode::kMaster:
+            invariant(newMode == LeaderMode::kNotLeader ||  // TODO(SERVER-30852): remove this case
+                      newMode == LeaderMode::kAttemptingStepDown ||
+                      newMode == LeaderMode::kSteppingDown);
+            break;
+        case LeaderMode::kAttemptingStepDown:
+            invariant(newMode == LeaderMode::kNotLeader || newMode == LeaderMode::kMaster ||
+                      newMode == LeaderMode::kSteppingDown);
+            break;
+        case LeaderMode::kSteppingDown:
+            invariant(newMode == LeaderMode::kNotLeader);
+            break;
+    }
+    _leaderMode = std::move(newMode);
+}
+
 MemberState TopologyCoordinatorImpl::getMemberState() const {
     if (_selfIndex == -1) {
         if (_rsConfig.isInitialized()) {
@@ -2509,6 +2627,7 @@ MemberState TopologyCoordinatorImpl::getMemberState() const {
 
     if (_role == Role::leader) {
         invariant(_currentPrimaryIndex == _selfIndex);
+        invariant(_leaderMode != LeaderMode::kNotLeader);
         return MemberState::RS_PRIMARY;
     }
     const MemberConfig& myConfig = _selfConfig();
@@ -2530,15 +2649,21 @@ void TopologyCoordinatorImpl::setElectionInfo(OID electionId, Timestamp election
 
 void TopologyCoordinatorImpl::processWinElection(OID electionId, Timestamp electionOpTime) {
     invariant(_role == Role::candidate);
+    invariant(_leaderMode == LeaderMode::kNotLeader);
     _role = Role::leader;
+    _setLeaderMode(LeaderMode::kLeaderElect);
     setElectionInfo(electionId, electionOpTime);
     _currentPrimaryIndex = _selfIndex;
     _syncSource = HostAndPort();
     _forceSyncSourceIndex = -1;
+    // Prevent last committed optime from updating until we finish draining.
+    _firstOpTimeOfMyTerm =
+        OpTime(Timestamp(std::numeric_limits<int>::max(), 0), std::numeric_limits<int>::max());
 }
 
 void TopologyCoordinatorImpl::processLoseElection() {
     invariant(_role == Role::candidate);
+    invariant(_leaderMode == LeaderMode::kNotLeader);
     const HostAndPort syncSourceAddress = getSyncSourceAddress();
     _electionTime = Timestamp(0, 0);
     _electionId = OID();
@@ -2551,7 +2676,7 @@ void TopologyCoordinatorImpl::processLoseElection() {
     }
 }
 
-bool TopologyCoordinatorImpl::stepDown(Date_t until, bool force) {
+bool TopologyCoordinatorImpl::finishAttemptedStepDown(Date_t until, bool force) {
 
     // force==true overrides all other checks.
     if (force) {
@@ -2600,16 +2725,19 @@ void TopologyCoordinatorImpl::setFollowerMode(MemberState::MS newMode) {
     // be a candidate here.  This is necessary because a single node replica set has no
     // heartbeats that would normally change the role to candidate.
 
-    if (_rsConfig.getNumMembers() == 1 && _selfIndex == 0 &&
-        _rsConfig.getMemberAt(_selfIndex).isElectable()) {
+    if (_isElectableNodeInSingleNodeReplicaSet()) {
         _role = Role::candidate;
     }
 }
 
-bool TopologyCoordinatorImpl::stepDownIfPending() {
-    if (!_stepDownPending) {
-        return false;
-    }
+bool TopologyCoordinatorImpl::_isElectableNodeInSingleNodeReplicaSet() const {
+    return _followerMode == MemberState::RS_SECONDARY && _rsConfig.getNumMembers() == 1 &&
+        _selfIndex == 0 && _rsConfig.getMemberAt(_selfIndex).isElectable() &&
+        _maintenanceModeCalls == 0;
+}
+
+void TopologyCoordinatorImpl::finishUnconditionalStepDown() {
+    invariant(_leaderMode == LeaderMode::kSteppingDown);
 
     int remotePrimaryIndex = -1;
     for (std::vector<MemberData>::const_iterator it = _memberData.begin(); it != _memberData.end();
@@ -2631,11 +2759,6 @@ bool TopologyCoordinatorImpl::stepDownIfPending() {
         }
     }
     _stepDownSelfAndReplaceWith(remotePrimaryIndex);
-    return true;
-}
-
-bool TopologyCoordinatorImpl::isStepDownPending() const {
-    return _stepDownPending;
 }
 
 void TopologyCoordinatorImpl::_stepDownSelfAndReplaceWith(int newPrimary) {
@@ -2645,11 +2768,15 @@ void TopologyCoordinatorImpl::_stepDownSelfAndReplaceWith(int newPrimary) {
     invariant(_selfIndex == _currentPrimaryIndex);
     _currentPrimaryIndex = newPrimary;
     _role = Role::follower;
-    _stepDownPending = false;
+    _setLeaderMode(LeaderMode::kNotLeader);
 }
 
 bool TopologyCoordinatorImpl::updateLastCommittedOpTime() {
-    if (!getMemberState().primary() || isStepDownPending()) {
+    // If we're not primary or we're stepping down due to learning of a new term then  we must not
+    // advance the commit point.  If we are stepping down due to a user request, however, then it
+    // is safe to advance the commit point, and in fact we must since the stepdown request may be
+    // waiting for the commit point to advance enough to be able to safely complete the step down.
+    if (!_iAmPrimary() || _leaderMode == LeaderMode::kSteppingDown) {
         return false;
     }
 
@@ -2690,7 +2817,7 @@ bool TopologyCoordinatorImpl::advanceLastCommittedOpTime(const OpTime& committed
     }
 
     // This check is performed to ensure primaries do not commit an OpTime from a previous term.
-    if (getMemberState().primary() && committedOpTime < _firstOpTimeOfMyTerm) {
+    if (_iAmPrimary() && committedOpTime < _firstOpTimeOfMyTerm) {
         LOG(1) << "Ignoring older committed snapshot from before I became primary, optime: "
                << committedOpTime << ", firstOpTimeOfMyTerm: " << _firstOpTimeOfMyTerm;
         return false;
@@ -2705,8 +2832,10 @@ OpTime TopologyCoordinatorImpl::getLastCommittedOpTime() const {
     return _lastCommittedOpTime;
 }
 
-void TopologyCoordinatorImpl::setFirstOpTimeOfMyTerm(const OpTime& newOpTime) {
-    _firstOpTimeOfMyTerm = newOpTime;
+void TopologyCoordinatorImpl::completeTransitionToPrimary(const OpTime& firstOpTimeOfTerm) {
+    invariant(_leaderMode == LeaderMode::kLeaderElect);
+    _setLeaderMode(LeaderMode::kMaster);
+    _firstOpTimeOfMyTerm = firstOpTimeOfTerm;
 }
 
 void TopologyCoordinatorImpl::adjustMaintenanceCountBy(int inc) {
@@ -2964,7 +3093,7 @@ void TopologyCoordinatorImpl::setPrimaryIndex(long long primaryIndex) {
 }
 
 Status TopologyCoordinatorImpl::becomeCandidateIfElectable(const Date_t now,
-                                                           bool isPriorityTakeover) {
+                                                           StartElectionReason reason) {
     if (_role == Role::leader) {
         return {ErrorCodes::NodeNotElectable, "Not standing for election again; already primary"};
     }
@@ -2973,8 +3102,7 @@ Status TopologyCoordinatorImpl::becomeCandidateIfElectable(const Date_t now,
         return {ErrorCodes::NodeNotElectable, "Not standing for election again; already candidate"};
     }
 
-    const UnelectableReasonMask unelectableReason =
-        _getMyUnelectableReason(now, isPriorityTakeover);
+    const UnelectableReasonMask unelectableReason = _getMyUnelectableReason(now, reason);
     if (unelectableReason) {
         return {ErrorCodes::NodeNotElectable,
                 str::stream() << "Not standing for election because "

@@ -33,6 +33,7 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/matcher/expression.h"
+#include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/parsed_projection.h"
 #include "mongo/db/query/query_request.h"
@@ -48,26 +49,32 @@ public:
      * query (which will never be NULL).  If parsing fails, returns an error Status.
      *
      * 'opCtx' must point to a valid OperationContext, but 'opCtx' does not need to outlive the
-     * returned
-     * CanonicalQuery.
+     * returned CanonicalQuery.
      *
      * Used for legacy find through the OP_QUERY message.
      */
     static StatusWith<std::unique_ptr<CanonicalQuery>> canonicalize(
         OperationContext* opCtx,
         const QueryMessage& qm,
-        const ExtensionsCallback& extensionsCallback);
+        const boost::intrusive_ptr<ExpressionContext>& expCtx = nullptr,
+        const ExtensionsCallback& extensionsCallback = ExtensionsCallbackNoop(),
+        MatchExpressionParser::AllowedFeatureSet allowedFeatures =
+            MatchExpressionParser::kDefaultSpecialFeatures);
 
     /**
      * If parsing succeeds, returns a std::unique_ptr<CanonicalQuery> representing the parsed
      * query (which will never be NULL).  If parsing fails, returns an error Status.
      *
      * 'opCtx' must point to a valid OperationContext, but 'opCtx' does not need to outlive the
-     * returned
-     *  CanonicalQuery.
+     * returned CanonicalQuery.
      */
     static StatusWith<std::unique_ptr<CanonicalQuery>> canonicalize(
-        OperationContext* opCtx, std::unique_ptr<QueryRequest> qr, const ExtensionsCallback&);
+        OperationContext* opCtx,
+        std::unique_ptr<QueryRequest> qr,
+        const boost::intrusive_ptr<ExpressionContext>& expCtx = nullptr,
+        const ExtensionsCallback& extensionsCallback = ExtensionsCallbackNoop(),
+        MatchExpressionParser::AllowedFeatureSet allowedFeatures =
+            MatchExpressionParser::kDefaultSpecialFeatures);
 
     /**
      * For testing or for internal clients to use.
@@ -80,11 +87,9 @@ public:
      *
      * Does not take ownership of 'root'.
      */
-    static StatusWith<std::unique_ptr<CanonicalQuery>> canonicalize(
-        OperationContext* opCtx,
-        const CanonicalQuery& baseQuery,
-        MatchExpression* root,
-        const ExtensionsCallback& extensionsCallback);
+    static StatusWith<std::unique_ptr<CanonicalQuery>> canonicalize(OperationContext* opCtx,
+                                                                    const CanonicalQuery& baseQuery,
+                                                                    MatchExpression* root);
 
     /**
      * Returns true if "query" describes an exact-match query on _id, possibly with
@@ -161,14 +166,16 @@ public:
     static size_t countNodes(const MatchExpression* root, MatchExpression::MatchType type);
 
     /**
-     * Returns true if this canonical query converted extensions such as $where and $text into
-     * no-ops during parsing.
+     * Returns true if this canonical query may have converted extensions such as $where and $text
+     * into no-ops during parsing. This will be the case if it allowed $where and $text in parsing,
+     * but parsed using an ExtensionsCallbackNoop. This does not guarantee that a $where or $text
+     * existed in the query.
      *
      * Queries with a no-op extension context are special because they can be parsed and planned,
      * but they cannot be executed.
      */
-    bool hasNoopExtensions() const {
-        return _hasNoopExtensions;
+    bool canHaveNoopMatchNodes() const {
+        return _canHaveNoopMatchNodes;
     }
 
     /**
@@ -184,7 +191,7 @@ private:
     CanonicalQuery() {}
 
     Status init(std::unique_ptr<QueryRequest> qr,
-                const ExtensionsCallback& extensionsCallback,
+                bool canHaveNoopMatchNodes,
                 MatchExpression* root,
                 std::unique_ptr<CollatorInterface> collator);
 
@@ -197,7 +204,7 @@ private:
 
     std::unique_ptr<CollatorInterface> _collator;
 
-    bool _hasNoopExtensions = false;
+    bool _canHaveNoopMatchNodes = false;
 
     bool _isIsolated;
 };

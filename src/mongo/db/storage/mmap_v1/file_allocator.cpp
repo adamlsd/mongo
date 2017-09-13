@@ -259,8 +259,10 @@ void FileAllocator::ensureLength(int fd, long size) {
 
 #if defined(__linux__)
     int ret = posix_fallocate(fd, 0, size);
-    if (ret == 0)
+    if (ret == 0) {
+        LOG(1) << "used fallocate to create empty file";
         return;
+    }
 
     log() << "FileAllocator: posix_fallocate failed: " << errnoWithDescription(ret)
           << " falling back" << endl;
@@ -302,6 +304,7 @@ void FileAllocator::ensureLength(int fd, long size) {
 
         lseek(fd, 0, SEEK_SET);
 
+        log() << "filling with zeroes...";
         const long z = 256 * 1024;
         const std::unique_ptr<char[]> buf_holder(new char[z]);
         char* buf = buf_holder.get();
@@ -323,7 +326,7 @@ void FileAllocator::checkFailure() {
     if (_failed) {
         // we want to log the problem (diskfull.js expects it) but we do not want to dump a stack
         // trace
-        msgassertedNoTrace(12520, "new file allocation failure");
+        msgasserted(12520, "new file allocation failure");
     }
 }
 
@@ -394,7 +397,7 @@ void FileAllocator::run(FileAllocator* fa) {
             string tmp;
             long fd = 0;
             try {
-                log() << "allocating new datafile " << name << ", filling with zeroes..." << endl;
+                log() << "allocating new datafile " << name;
 
                 boost::filesystem::path parent = ensureParentDirCreated(name);
                 tmp = fa->makeTempFileName(parent);

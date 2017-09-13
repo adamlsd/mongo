@@ -17,6 +17,9 @@
  *     mongos {number|Object|Array.<Object>}: number of mongos or mongos
  *       configuration object(s)(*). @see MongoRunner.runMongos
  *
+ *     mongosWaitsForKeys {boolean}: if true, wait for mongos to discover keys from the config
+ *       server and to start sending cluster times.
+ *
  *     rs {Object|Array.<Object>}: replica set configuration object. Can
  *       contain:
  *       {
@@ -65,11 +68,16 @@
  *          Can be used to specify options that are common all mongos.
  *       enableBalancer {boolean} : if true, enable the balancer
  *       enableAutoSplit {boolean} : if true, enable autosplitting; else, default to the
- * enableBalancer setting
+ *          enableBalancer setting
  *       manualAddShard {boolean}: shards will not be added if true.
  *
  *       useBridge {boolean}: If true, then a mongobridge process is started for each node in the
  *          sharded cluster. Defaults to false.
+ *
+ *       causallyConsistent {boolean}: Specifies whether the connections to the replica set nodes
+ *          should be created with the 'causal consistency' flag enabled, which means they will
+ *          gossip the cluster time and add readConcern afterClusterTime where applicable.
+ *          Defaults to false.
  *
  *       bridgeOptions {Object}: Options to apply to all mongobridge processes. Defaults to {}.
  *
@@ -926,6 +934,60 @@ var ShardingTest = function(params) {
         assert(res.ok || res.errmsg == "it is already the primary", tojson(res));
     };
 
+    this.checkUUIDsConsistentAcrossCluster = function() {
+        print("Checking if UUIDs are consistent across the cluster");
+
+        let parseNs = function(dbDotColl) {
+            assert.gt(dbDotColl.indexOf('.'), 0);
+            let dbName = dbDotColl.substring(0, dbDotColl.indexOf('.'));
+            let collName = dbDotColl.substring(dbDotColl.indexOf('.') + 1, dbDotColl.length);
+            return [dbName, collName];
+        };
+
+        // Read from config.collections, config.shards, and config.chunks to construct a picture of
+        // which shards own data for which collections, and what the UUID for those collections are.
+        let authoritativeCollMetadatas =
+            this.s.getDB("config")
+                .chunks
+                .aggregate([
+                    {
+                      $lookup: {
+                          from: "shards",
+                          localField: "shard",
+                          foreignField: "_id",
+                          as: "shardHost"
+                      }
+                    },
+                    {$unwind: "$shardHost"},
+                    {$group: {_id: "$ns", shards: {$addToSet: "$shardHost.host"}}},
+                    {
+                      $lookup: {
+                          from: "collections",
+                          localField: "_id",
+                          foreignField: "_id",
+                          as: "collInfo"
+                      }
+                    },
+                    {$unwind: "$collInfo"}
+                ])
+                .toArray();
+
+        for (authoritativeCollMetadata of authoritativeCollMetadatas) {
+            let [dbName, collName] = parseNs(authoritativeCollMetadata._id);
+            for (shard of authoritativeCollMetadata.shards) {
+                let shardConn = new Mongo(shard);
+                let actualCollMetadata =
+                    shardConn.getDB(dbName).getCollectionInfos({name: collName})[0];
+                assert.eq(authoritativeCollMetadata.collInfo.uuid,
+                          actualCollMetadata.info.uuid,
+                          "authoritative collection info on config server: " +
+                              tojson(authoritativeCollMetadata.collInfo) +
+                              ", actual collection info on shard " + shard + ": " +
+                              tojson(actualCollMetadata));
+            }
+        }
+    };
+
     /**
      * Returns whether any settings to ShardingTest or jsTestOptions indicate this is a multiversion
      * cluster.
@@ -1004,7 +1066,7 @@ var ShardingTest = function(params) {
      * be manually changed if and when there is a new feature compatibility version.
      */
     function _hasNewFeatureCompatibilityVersion() {
-        return false;
+        return true;
     }
 
     // ShardingTest initialization
@@ -1083,6 +1145,7 @@ var ShardingTest = function(params) {
     otherParams.useHostname = otherParams.useHostname == undefined ? true : otherParams.useHostname;
     otherParams.useBridge = otherParams.useBridge || false;
     otherParams.bridgeOptions = otherParams.bridgeOptions || {};
+    otherParams.causallyConsistent = otherParams.causallyConsistent || false;
 
     if (jsTestOptions().networkMessageCompressors) {
         otherParams.bridgeOptions["networkMessageCompressors"] =
@@ -1313,9 +1376,7 @@ var ShardingTest = function(params) {
     var csrsPrimary = this.configRS.getPrimary();
 
     // If 'otherParams.mongosOptions.binVersion' is an array value, then we'll end up constructing a
-    // version iterator. We initialize the options for the mongos processes before checking whether
-    // we need to run {setFeatureCompatibilityVersion: "3.2"} on the CSRS primary so we know
-    // definitively what binVersions will be used for the mongos processes.
+    // version iterator.
     const mongosOptions = [];
     for (var i = 0; i < numMongos; ++i) {
         let options = {
@@ -1335,19 +1396,11 @@ var ShardingTest = function(params) {
 
         options.port = options.port || allocatePort();
 
-        // TODO(esha): remove after v3.4 ships.
-        // Legacy mongoses use a command line option to disable autosplit instead of reading the
-        // config.settings collection.
-        if (options.binVersion && MongoRunner.areBinVersionsTheSame('3.2', options.binVersion) &&
-            !otherParams.enableAutoSplit) {
-            options.noAutoSplit = "";
-        }
-
         mongosOptions.push(options);
     }
 
     const configRS = this.configRS;
-    if (_hasNewFeatureCompatibilityVersion && _isMixedVersionCluster()) {
+    if (_hasNewFeatureCompatibilityVersion() && _isMixedVersionCluster()) {
         function setFeatureCompatibilityVersion() {
             assert.commandWorked(csrsPrimary.adminCommand({setFeatureCompatibilityVersion: '3.4'}));
 
@@ -1421,6 +1474,10 @@ var ShardingTest = function(params) {
             throw new Error("Failed to start mongos " + i);
         }
 
+        if (options.causallyConsistent) {
+            conn.setCausalConsistency(true);
+        }
+
         if (otherParams.useBridge) {
             bridge.connectToBridge();
             this._mongos.push(bridge);
@@ -1481,5 +1538,22 @@ var ShardingTest = function(params) {
         jsTest.authenticate(configConnection);
         jsTest.authenticateNodes(this._configServers);
         jsTest.authenticateNodes(this._mongos);
+    }
+
+    // Mongos does not block for keys from the config servers at startup, so it may not initially
+    // return cluster times. If mongosWaitsForKeys is set, block until all mongos servers have found
+    // the keys and begun to send cluster times. Retry every 500 milliseconds and timeout after 60
+    // seconds.
+    if (params.mongosWaitsForKeys) {
+        assert.soon(function() {
+            for (let i = 0; i < numMongos; i++) {
+                const res = self._mongos[i].adminCommand({isMaster: 1});
+                if (!res.hasOwnProperty("$clusterTime")) {
+                    print("Waiting for mongos #" + i + " to start sending cluster times.");
+                    return false;
+                }
+            }
+            return true;
+        }, "waiting for all mongos servers to return cluster times", 60 * 1000, 500);
     }
 };

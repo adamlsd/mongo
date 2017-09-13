@@ -120,9 +120,7 @@ void ShardRemote::updateReplSetMonitor(const HostAndPort& remoteHost,
     if (remoteCommandStatus.isOK())
         return;
 
-    if (ErrorCodes::isNotMasterError(remoteCommandStatus.code()) ||
-        (remoteCommandStatus == ErrorCodes::InterruptedDueToReplStateChange) ||
-        (remoteCommandStatus == ErrorCodes::PrimarySteppedDown)) {
+    if (ErrorCodes::isNotMasterError(remoteCommandStatus.code())) {
         _targeter->markHostNotMaster(remoteHost, remoteCommandStatus);
     } else if (ErrorCodes::isNetworkError(remoteCommandStatus.code())) {
         _targeter->markHostUnreachable(remoteHost, remoteCommandStatus);
@@ -156,18 +154,11 @@ BSONObj ShardRemote::_appendMetadataForCommand(OperationContext* opCtx,
         metadata.writeToMetadata(&builder);
     }
 
-    if (isConfig()) {
-        if (readPref.pref == ReadPreference::PrimaryOnly) {
-            builder.appendElements(kReplMetadata);
-        } else {
-            builder.appendElements(ReadPreferenceSetting::secondaryPreferredMetadata());
-            builder.appendElements(kReplMetadata);
-        }
-    } else {
-        if (readPref.pref != ReadPreference::PrimaryOnly) {
-            builder.appendElements(ReadPreferenceSetting::secondaryPreferredMetadata());
-        }
-    }
+    readPref.toContainingBSON(&builder);
+
+    if (isConfig())
+        builder.appendElements(kReplMetadata);
+
     return builder.obj();
 }
 
@@ -199,7 +190,8 @@ StatusWith<Shard::CommandResponse> ShardRemote::_runCommand(OperationContext* op
         requestTimeout < Milliseconds::max() ? requestTimeout : RemoteCommandRequest::kNoTimeout);
 
     RemoteCommandResponse response =
-        Status(ErrorCodes::InternalError, "Internal error running command");
+        Status(ErrorCodes::InternalError,
+               str::stream() << "Failed to run remote command request " << request.toString());
 
     TaskExecutor* executor = Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
     auto swCallbackHandle = executor->scheduleRemoteCommand(
@@ -331,7 +323,8 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
                     findCmdBuilder.done(),
                     fetcherCallback,
                     _appendMetadataForCommand(opCtx, readPrefWithMinOpTime),
-                    maxTimeMS);
+                    maxTimeMS /* find network timeout */,
+                    maxTimeMS /* getMore network timeout */);
     Status scheduleStatus = fetcher.schedule();
     if (!scheduleStatus.isOK()) {
         return scheduleStatus;
@@ -342,7 +335,7 @@ StatusWith<Shard::QueryResponse> ShardRemote::_exhaustiveFindOnConfig(
     updateReplSetMonitor(host.getValue(), status);
 
     if (!status.isOK()) {
-        if (status.compareCode(ErrorCodes::ExceededTimeLimit)) {
+        if (status == ErrorCodes::ExceededTimeLimit) {
             LOG(0) << "Operation timed out " << causedBy(status);
         }
         return status;

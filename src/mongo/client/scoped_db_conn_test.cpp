@@ -38,7 +38,6 @@
 #include "mongo/db/wire_version.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/reply_builder_interface.h"
-#include "mongo/rpc/request_interface.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/service_entry_point.h"
@@ -91,13 +90,17 @@ public:
         _threads.emplace_back(&DummyServiceEntryPoint::run, this, std::move(session));
     }
 
+    // This is not used in this test, so it is only here to complete the interface of
+    // ServiceEntryPoint
+    void endAllSessions(transport::Session::TagMask tags) override {
+        MONGO_UNREACHABLE;
+    }
+
     void setReplyDelay(Milliseconds delay) {
         _replyDelay = delay;
     }
 
-    DbResponse handleRequest(OperationContext* opCtx,
-                             const Message& request,
-                             const HostAndPort& client) override {
+    DbResponse handleRequest(OperationContext* opCtx, const Message& request) override {
         MONGO_UNREACHABLE;
     }
 
@@ -108,20 +111,20 @@ private:
             return;
         }
 
-        auto request = rpc::makeRequest(&inMessage);
-        commandRequestHook(request.get());
+        auto request = rpc::opMsgRequestFromAnyProtocol(inMessage);
+        commandRequestHook(request);
 
-        auto reply = rpc::makeReplyBuilder(request->getProtocol());
+        auto reply = rpc::makeReplyBuilder(rpc::protocolForMessage(inMessage));
 
         BSONObjBuilder commandResponse;
 
         // We need to handle the isMaster received during connection.
-        if (request->getCommandName() == "isMaster") {
+        if (request.getCommandName() == "isMaster") {
             commandResponse.append("maxWireVersion", WireVersion::COMMANDS_ACCEPT_WRITE_CONCERN);
             commandResponse.append("minWireVersion", WireVersion::RELEASE_2_4_AND_BEFORE);
         }
 
-        auto response = reply->setCommandReply(commandResponse.done())
+        auto response = reply->setCommandReply(commandResponse.obj())
                             .setMetadata(rpc::makeEmptyMetadata())
                             .done();
 
@@ -139,7 +142,7 @@ private:
     /**
      * Subclasses can override this in order to make assertions about the command request.
      */
-    virtual void commandRequestHook(const rpc::RequestInterface* request) const {}
+    virtual void commandRequestHook(const OpMsgRequest& request) const {}
 
     std::vector<stdx::thread> _threads;
     Milliseconds _replyDelay{0};
@@ -219,8 +222,8 @@ public:
      * Helper method for running the server on a separate thread.
      */
     static void runServer(transport::TransportLayerLegacy* server) {
-        server->setup();
-        server->start();
+        server->setup().transitional_ignore();
+        server->start().transitional_ignore();
     }
 
 private:
@@ -355,8 +358,8 @@ protected:
 
 private:
     static void runServer(transport::TransportLayerLegacy* server) {
-        server->setup();
-        server->start();
+        server->setup().transitional_ignore();
+        server->start().transitional_ignore();
     }
 
     /**
@@ -418,7 +421,7 @@ TEST_F(DummyServerFixture, ScopedDbConnectionWithTimeout) {
 
     log() << "Testing MongoURI with explicit timeout";
     start = Date_t::now();
-    ASSERT_THROWS(ScopedDbConnection conn4(uri, overrideTimeout.count()), UserException);
+    ASSERT_THROWS(ScopedDbConnection conn4(uri, overrideTimeout.count()), AssertionException);
     end = Date_t::now();
     ASSERT_GTE((end - start) + gracePeriod, overrideTimeout);
     ASSERT_LT(end - start, uriTimeout);
@@ -533,14 +536,13 @@ TEST_F(DummyServerFixture, DontReturnConnGoneBadToPool) {
 
 class DummyServiceEntryPointWithInternalClientInfoCheck final : public DummyServiceEntryPoint {
 private:
-    void commandRequestHook(const rpc::RequestInterface* request) const final {
-        if (request->getCommandName() != "isMaster") {
+    void commandRequestHook(const OpMsgRequest& request) const final {
+        if (request.getCommandName() != "isMaster") {
             // It's not an isMaster request. Nothing to do.
             return;
         }
 
-        BSONObj commandArgs = request->getCommandArgs();
-        auto internalClientElem = commandArgs["internalClient"];
+        auto internalClientElem = request.body["internalClient"];
         ASSERT_EQ(internalClientElem.type(), BSONType::Object);
         auto minWireVersionElem = internalClientElem.Obj()["minWireVersion"];
         auto maxWireVersionElem = internalClientElem.Obj()["maxWireVersion"];
@@ -571,14 +573,13 @@ TEST_F(DummyServerFixtureWithInternalClientInfoCheck, VerifyIsMasterRequestOnCon
 
 class DummyServiceEntryPointWithInternalClientMissingCheck final : public DummyServiceEntryPoint {
 private:
-    void commandRequestHook(const rpc::RequestInterface* request) const final {
-        if (request->getCommandName() != "isMaster") {
+    void commandRequestHook(const OpMsgRequest& request) const final {
+        if (request.getCommandName() != "isMaster") {
             // It's not an isMaster request. Nothing to do.
             return;
         }
 
-        BSONObj commandArgs = request->getCommandArgs();
-        ASSERT_FALSE(commandArgs["internalClient"]);
+        ASSERT_FALSE(request.body["internalClient"]);
     }
 };
 

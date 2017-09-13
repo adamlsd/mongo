@@ -314,7 +314,7 @@ TEST_F(ReplCoordHBV1Test,
                                           << BSON("_id" << 2 << "host"
                                                         << "node2:12345"))),
                        HostAndPort("node1", 12345));
-    ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
+    ASSERT_OK(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
     // process heartbeat
     enterNetwork();
@@ -358,7 +358,7 @@ TEST_F(ReplCoordHBV1Test, IgnoreTheContentsOfMetadataWhenItsReplicaSetIdDoesNotM
                             << "protocolVersion"
                             << 1),
                        HostAndPort("node1", 12345));
-    ASSERT(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
+    ASSERT_OK(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
 
     auto rsConfig = getReplCoord()->getConfig();
 
@@ -379,7 +379,7 @@ TEST_F(ReplCoordHBV1Test, IgnoreTheContentsOfMetadataWhenItsReplicaSetIdDoesNotM
         rpc::ReplSetMetadata metadata(
             opTime.getTerm(), opTime, opTime, rsConfig.getConfigVersion(), unexpectedId, 1, -1);
         BSONObjBuilder metadataBuilder;
-        metadata.writeToMetadata(&metadataBuilder);
+        metadata.writeToMetadata(&metadataBuilder).transitional_ignore();
 
         heartbeatResponse = makeResponseStatus(responseBuilder.obj(), metadataBuilder.obj());
     }

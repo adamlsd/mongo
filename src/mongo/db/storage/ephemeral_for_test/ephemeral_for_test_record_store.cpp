@@ -385,16 +385,20 @@ StatusWith<RecordId> EphemeralForTestRecordStore::extractAndCheckLocForOplog(con
     if (!status.isOK())
         return status;
 
-    if (!_data->records.empty() && status.getValue() <= _data->records.rbegin()->first)
-        return StatusWith<RecordId>(ErrorCodes::BadValue, "ts not higher than highest");
+    if (!_data->records.empty() && status.getValue() <= _data->records.rbegin()->first) {
 
+        return StatusWith<RecordId>(ErrorCodes::BadValue,
+                                    str::stream() << "attempted out-of-order oplog insert of "
+                                                  << status.getValue()
+                                                  << " (oplog last insert was "
+                                                  << _data->records.rbegin()->first
+                                                  << " )");
+    }
     return status;
 }
 
-StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(OperationContext* opCtx,
-                                                               const char* data,
-                                                               int len,
-                                                               bool enforceQuota) {
+StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(
+    OperationContext* opCtx, const char* data, int len, Timestamp, bool enforceQuota) {
     if (_isCapped && len > _cappedMaxSize) {
         // We use dataSize for capped rollover and we don't want to delete everything if we know
         // this won't fit.
@@ -426,6 +430,7 @@ StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(OperationContext*
 
 Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext* opCtx,
                                                                const DocWriter* const* docs,
+                                                               const Timestamp*,
                                                                size_t nDocs,
                                                                RecordId* idsOut) {
     stdx::lock_guard<stdx::mutex> lock(_data->recordsMutex);
@@ -433,8 +438,8 @@ Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext*
     for (size_t i = 0; i < nDocs; i++) {
         const int len = docs[i]->documentSize();
         if (_isCapped && len > _cappedMaxSize) {
-            // We use dataSize for capped rollover and we don't want to delete everything if we know
-            // this won't fit.
+            // We use dataSize for capped rollover and we don't want to delete everything if we
+            // know this won't fit.
             return Status(ErrorCodes::BadValue, "object to insert exceeds cappedMaxSize");
         }
 
@@ -573,20 +578,18 @@ Status EphemeralForTestRecordStore::validate(OperationContext* opCtx,
     stdx::lock_guard<stdx::mutex> lock(_data->recordsMutex);
 
     results->valid = true;
-    if (level == kValidateFull) {
-        for (Records::const_iterator it = _data->records.begin(); it != _data->records.end();
-             ++it) {
-            const EphemeralForTestRecord& rec = it->second;
-            size_t dataSize;
-            const Status status = adaptor->validate(it->first, rec.toRecordData(), &dataSize);
-            if (!status.isOK()) {
-                if (results->valid) {
-                    // Only log once.
-                    results->errors.push_back("detected one or more invalid documents (see logs)");
-                }
-                results->valid = false;
-                log() << "Invalid object detected in " << _ns << ": " << status.reason();
+
+    for (Records::const_iterator it = _data->records.begin(); it != _data->records.end(); ++it) {
+        const EphemeralForTestRecord& rec = it->second;
+        size_t dataSize;
+        const Status status = adaptor->validate(it->first, rec.toRecordData(), &dataSize);
+        if (!status.isOK()) {
+            if (results->valid) {
+                // Only log once.
+                results->errors.push_back("detected one or more invalid documents (see logs)");
             }
+            results->valid = false;
+            log() << "Invalid object detected in " << _ns << ": " << status.reason();
         }
     }
 
@@ -646,8 +649,14 @@ boost::optional<RecordId> EphemeralForTestRecordStore::oplogStartHack(
         return RecordId();
 
     Records::const_iterator it = records.lower_bound(startingPosition);
-    if (it == records.end() || it->first > startingPosition)
+    if (it == records.end() || it->first > startingPosition) {
+        // If the startingPosition is before the oldest oplog entry, this ensures that we return
+        // RecordId() as specified in record_store.h.
+        if (it == records.begin()) {
+            return RecordId();
+        }
         --it;
+    }
 
     return it->first;
 }

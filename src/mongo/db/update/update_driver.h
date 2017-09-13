@@ -39,6 +39,7 @@
 #include "mongo/db/ops/modifier_interface.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/update/modifier_table.h"
+#include "mongo/db/update/update_object_node.h"
 #include "mongo/db/update_index_data.h"
 
 namespace mongo {
@@ -54,10 +55,19 @@ public:
     ~UpdateDriver();
 
     /**
-     * Returns OK and fills in '_mods' if 'updateExpr' is correct. Otherwise returns an
-     * error status with a corresponding description.
+     * Parses the update expression 'updateExpr'. If the featurCompatibilityVersion is 3.6,
+     * 'updateExpr' is parsed into '_root'. Otherwise, 'updateExpr' is parsed into '_mods'. This is
+     * done because applying updates via UpdateNode creates new fields in lexicographic order,
+     * whereas applying updates via ModifierInterface creates new fields in the order they are
+     * specified in 'updateExpr', so it is necessary that the whole replica set have version 3.6 in
+     * order to use UpdateNode. Uasserts if the featureCompatibilityVersion is 3.4 and
+     * 'arrayFilters' is non-empty. Uasserts or returns a non-ok status if 'updateExpr' fails to
+     * parse.
      */
-    Status parse(const BSONObj& updateExpr, const bool multi = false);
+    Status parse(
+        const BSONObj& updateExpr,
+        const std::map<StringData, std::unique_ptr<ExpressionWithPlaceholder>>& arrayFilters,
+        const bool multi = false);
 
     /**
      * Fills in document with any fields in the query which are valid.
@@ -69,14 +79,17 @@ public:
      *
      * Returns Status::OK() if the document can be used. If there are any error or
      * conflicts along the way then those errors will be returned.
+     *
+     * If the current update is a document replacement, only the 'immutablePaths' are extracted from
+     * 'query' and used to populate 'doc'.
      */
     Status populateDocumentWithQueryFields(OperationContext* opCtx,
                                            const BSONObj& query,
-                                           const std::vector<FieldRef*>* immutablePaths,
+                                           const FieldRefSet& immutablePaths,
                                            mutablebson::Document& doc) const;
 
     Status populateDocumentWithQueryFields(const CanonicalQuery& query,
-                                           const std::vector<FieldRef*>* immutablePaths,
+                                           const FieldRefSet& immutablePaths,
                                            mutablebson::Document& doc) const;
 
     /**
@@ -86,23 +99,26 @@ public:
     BSONObj makeOplogEntryQuery(const BSONObj& doc, bool multi) const;
 
     /**
-     * Returns OK and executes '_mods' over 'doc', generating 'newObj'. If any mod is
-     * positional, use 'matchedField' (index of the array item matched). If doc allows
-     * mods to be applied in place and no index updating is involved, then the mods may
-     * be applied "in place" over 'doc'.
+     * Executes the update over 'doc'. If any modifier is positional, use 'matchedField' (index of
+     * the array item matched). If 'doc' allows the modifiers to be applied in place and no index
+     * updating is involved, then the modifiers may be applied "in place" over 'doc'.
      *
-     * If the driver's '_logOp' mode is turned on, and if 'logOpRec' is not NULL, fills in
-     * the latter with the oplog entry corresponding to the update. If '_mods' can't be
-     * applied, returns an error status with a corresponding description.
+     * If the driver's '_logOp' mode is turned on, and if 'logOpRec' is not null, fills in the
+     * latter with the oplog entry corresponding to the update. If the modifiers can't be applied,
+     * returns an error status or uasserts with a corresponding description.
      *
-     * If a non-NULL updatedField vector* is supplied,
-     * then all updated fields will be added to it.
+     * If 'validateForStorage' is true, ensures that modified elements do not violate depth or DBRef
+     * constraints. Ensures that no paths in 'immutablePaths' are modified (though they may be
+     * created, if they do not yet exist). The original document 'original' is needed for checking
+     * immutable paths for the ModifierInterface implementation.
      */
     Status update(StringData matchedField,
+                  BSONObj original,
                   mutablebson::Document* doc,
-                  BSONObj* logOpRec = NULL,
-                  FieldRefSet* updatedFields = NULL,
-                  bool* docWasModified = NULL);
+                  bool validateForStorage,
+                  const FieldRefSet& immutablePaths,
+                  BSONObj* logOpRec = nullptr,
+                  bool* docWasModified = nullptr);
 
     //
     // Accessors
@@ -121,8 +137,9 @@ public:
     ModifierInterface::Options modOptions() const;
     void setModOptions(ModifierInterface::Options modOpts);
 
-    ModifierInterface::ExecInfo::UpdateContext context() const;
-    void setContext(ModifierInterface::ExecInfo::UpdateContext context);
+    void setInsert(bool insert) {
+        _insert = insert;
+    }
 
     mutablebson::Document& getDocument() {
         return _objDoc;
@@ -157,7 +174,12 @@ private:
     // Is there a list of $mod's on '_mods' or is it just full object replacement?
     bool _replacementMode;
 
-    // Collection of update mod instances. Owned here.
+    // The root of the UpdateNode tree. If the featureCompatibilityVersion is 3.6, the update
+    // expression is parsed into '_root'.
+    std::unique_ptr<UpdateNode> _root;
+
+    // Collection of update mod instances. Owned here. If the featureCompatibilityVersion is 3.4,
+    // the update expression is parsed into '_mods'.
     std::vector<ModifierInterface*> _mods;
 
     // What are the list of fields in the collection over which the update is going to be
@@ -184,7 +206,7 @@ private:
     bool _positional;
 
     // Is this update going to be an upsert?
-    ModifierInterface::ExecInfo::UpdateContext _context;
+    bool _insert = false;
 
     // The document used to represent or store the object being updated.
     mutablebson::Document _objDoc;

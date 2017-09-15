@@ -116,10 +116,10 @@ namespace mongo
 				{
 					UniqueRAII< DtorCheck *, decltype( release ) > raii2= std::move( raii );
 					ASSERT_FALSE( destroyed );
-					raii= std::move( raii2 );
+					//raii= std::move( raii2 );
 					ASSERT_FALSE( destroyed );
 				}
-				ASSERT_FALSE( destroyed );
+				ASSERT_TRUE( destroyed );
 			}
 			ASSERT_TRUE( destroyed );
 		}

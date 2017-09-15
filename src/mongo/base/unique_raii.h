@@ -136,8 +136,9 @@ namespace mongo
 				swap( this->active_, copy.active_ );
 			}
 
+#if 0
 			UniqueRAII &
-			operator= ( UniqueRAII copy )
+			operator= ( UniqueRAII &&copy )
 			{
 				using std::swap;
 				swap( this->dtor, copy.dtor );
@@ -145,6 +146,7 @@ namespace mongo
 				swap( this->active_, copy.active_ );
 				return *this;
 			}
+#endif
 
 			template< typename Ctor, typename D >
 			explicit

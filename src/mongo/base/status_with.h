@@ -101,8 +101,8 @@ public:
         return *_t;
     }
 
-    const Status& getStatus() const {
-        return _status;
+    const Status&& getStatus() const {
+        return std::move(_status);
     }
 
     bool isOK() const {

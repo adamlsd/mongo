@@ -43,5 +43,17 @@
         session1.endSession();
     }
 
+    // Test that getMore correctly gives an error, when using a cursor on a different session.
+    {
+        var session1 = conn.startSession();
+        var session2 = conn.startSession();
+        var cursor = session1.getDatabase("data_storage").test.find().batchSize(0);
+        cursor.next();
+        cursor.close();
+
+        session2.endSession();
+        session1.endSession();
+    }
+
     MongoRunner.stopMongod(conn);
 })();

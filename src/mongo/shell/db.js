@@ -263,7 +263,8 @@ var DB;
                 batchSizeValue = cmdObj["cursor"]["batchSize"];
             }
 
-            return new DBCommandCursor(res._mongo, res, batchSizeValue);
+            var newSession = new _DelegatingDriverSession(res._mongo, this._session);
+            return new DBCommandCursor(newSession.getDatabase(this._name), res, batchSizeValue);
         }
 
         return res;
@@ -940,7 +941,8 @@ var DB;
             throw _getErrorWithCode(res, "listCollections failed: " + tojson(res));
         }
 
-        return new DBCommandCursor(res._mongo, res).toArray().sort(compareOn("name"));
+        var newSession = new _DelegatingDriverSession(res._mongo, this._session);
+        return new DBCommandCursor(newSession.getDatabase(this._name), res).toArray().sort(compareOn("name"));
     };
 
     /**

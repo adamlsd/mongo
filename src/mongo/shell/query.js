@@ -114,7 +114,8 @@ DBQuery.prototype._exec = function() {
             var canAttachReadPref = true;
             var findCmd = this._convertToCommand(canAttachReadPref);
             var cmdRes = this._db.runReadCommand(findCmd, null, this._options);
-            this._cursor = new DBCommandCursor(cmdRes._mongo, cmdRes, this._batchSize);
+            var newSession = new _DelegatingDriverSession(cmdRes._mongo, this._session);
+            this._cursor = new DBCommandCursor(newSession.getDatbase(this._db._name), cmdRes, this._batchSize);
         } else {
             if (this._special && this._query.readConcern) {
                 throw new Error("readConcern requires use of read commands");
@@ -697,7 +698,7 @@ DBQuery.Option = {
     partial: 0x80
 };
 
-function DBCommandCursor(mongo, cmdResult, batchSize) {
+function DBCommandCursor(db, cmdResult, batchSize) {
     if (cmdResult.ok != 1) {
         throw _getErrorWithCode(cmdResult, "error: " + tojson(cmdResult));
     }
@@ -710,16 +711,16 @@ function DBCommandCursor(mongo, cmdResult, batchSize) {
         this._batchSize = batchSize;
 
         this._ns = cmdResult.cursor.ns;
-        this._db = mongo.getDB(this._ns.substr(0, this._ns.indexOf(".")));
+        this._db = db;
         this._collName = this._ns.substr(this._ns.indexOf(".") + 1);
 
         if (cmdResult.cursor.id) {
             // Note that setting this._cursorid to 0 should be accompanied by
             // this._cursorHandle.zeroCursorId().
-            this._cursorHandle = mongo.cursorHandleFromId(cmdResult.cursor.ns, cmdResult.cursor.id);
+            this._cursorHandle = this._db.getMongo().cursorHandleFromId(cmdResult.cursor.ns, cmdResult.cursor.id);
         }
     } else {
-        this._cursor = mongo.cursorFromId(cmdResult.cursor.ns, cmdResult.cursor.id, batchSize);
+        this._cursor = this._db.getMongo().cursorFromId(cmdResult.cursor.ns, cmdResult.cursor.id, batchSize);
     }
 }
 

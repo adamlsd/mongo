@@ -122,7 +122,8 @@ bool ComparisonMatchExpression::matchesSingleElement(const BSONElement& e,
         }
     }
 
-    int x = compareElementValues(e, _rhs, _collator);
+    int x = BSONElement::compareElements(
+        e, _rhs, BSONElement::ComparisonRules::kConsiderFieldName, _collator);
 
     switch (matchType()) {
         case LT:
@@ -242,10 +243,6 @@ Status RegexMatchExpression::init(StringData path, const BSONElement& e) {
 
 
 Status RegexMatchExpression::init(StringData path, StringData regex, StringData options) {
-    if (regex.size() > MaxPatternSize) {
-        return Status(ErrorCodes::BadValue, "Regular expression is too long");
-    }
-
     if (regex.find('\0') != std::string::npos) {
         return Status(ErrorCodes::BadValue,
                       "Regular expression cannot contain an embedded null byte");
@@ -259,6 +256,11 @@ Status RegexMatchExpression::init(StringData path, StringData regex, StringData 
     _regex = regex.toString();
     _flags = options.toString();
     _re.reset(new pcrecpp::RE(_regex.c_str(), flags2options(_flags.c_str())));
+
+    if (!_re->error().empty()) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream() << "Regular expression is invalid: " << _re->error());
+    }
 
     return setPath(path);
 }

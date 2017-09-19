@@ -206,7 +206,7 @@ bool handleError(OperationContext* opCtx,
     }
 
     if (ErrorCodes::isStaleShardingError(ex.code())) {
-        auto staleConfigException = dynamic_cast<const SendStaleConfigException*>(&ex);
+        auto staleConfigException = dynamic_cast<const StaleConfigException*>(&ex);
         if (!staleConfigException) {
             // We need to get extra info off of the SCE, but some common patterns can result in the
             // exception being converted to a Status then rethrown as a AssertionException, losing
@@ -225,8 +225,7 @@ bool handleError(OperationContext* opCtx,
                 ->onStaleShardVersion(opCtx, nss, staleConfigException->getVersionReceived())
                 .transitional_ignore();
         }
-        out->staleConfigException =
-            stdx::make_unique<SendStaleConfigException>(*staleConfigException);
+        out->staleConfigException = stdx::make_unique<StaleConfigException>(*staleConfigException);
         return false;
     }
 
@@ -522,6 +521,10 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::UpdateOpEntry& op) {
+    uassert(ErrorCodes::InvalidOptions,
+            "Cannot use (or request) retryable writes with multi=true",
+            !(opCtx->getTxnNumber() && op.getMulti()));
+
     globalOpCounters.gotUpdate();
     auto& curOp = *CurOp::get(opCtx);
     {
@@ -664,6 +667,10 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::DeleteOpEntry& op) {
+    uassert(ErrorCodes::InvalidOptions,
+            "Cannot use (or request) retryable writes with limit=0",
+            !(opCtx->getTxnNumber() && op.getMulti()));
+
     globalOpCounters.gotDelete();
     auto& curOp = *CurOp::get(opCtx);
     {

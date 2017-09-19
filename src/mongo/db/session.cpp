@@ -42,6 +42,8 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/transaction_history_iterator.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/transport/transport_layer.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -58,12 +60,45 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
                           << " collection has been manually deleted.",
             autoColl.getCollection());
 
-    const auto updateResult = update(opCtx, autoColl.getDb(), updateRequest);
+    try {
+        const auto updateResult = update(opCtx, autoColl.getDb(), updateRequest);
 
-    if (!updateResult.numDocsModified && updateResult.upserted.isEmpty()) {
-        throw WriteConflictException();
+        if (!updateResult.numDocsModified && updateResult.upserted.isEmpty()) {
+            throw WriteConflictException();
+        }
+    } catch (const DBException& excep) {
+        if (excep.code() == ErrorCodes::DuplicateKey) {
+            // Duplicate key means that another thread already created the session this is trying
+            // to upsert. Throw WriteCoflict to make it retry and check the current state again.
+            throw WriteConflictException();
+        }
+
+        throw;
     }
 }
+
+void fassertOnRepeatedExecution(OperationContext* opCtx,
+                                const LogicalSessionId& lsid,
+                                TxnNumber txnNumber,
+                                StmtId stmtId,
+                                Timestamp firstTs,
+                                Timestamp secondTs) {
+    severe() << "Statement id " << stmtId << " from transaction [ " << lsid.toBSON() << ":"
+             << txnNumber << " ] was committed once with timestamp " << firstTs
+             << " and a second time with timestamp " << secondTs
+             << ". This indicates possible data corruption or server bug and the process will be "
+                "terminated.";
+    fassertFailed(40526);
+}
+
+// Failpoint which allows different failure actions to happen after each write. Supports the
+// parameters below, which can be combined with each other (unless explicitly disallowed):
+//
+// closeConnection (bool, default = true): Closes the connection on which the write was executed.
+// failBeforeCommitExceptionCode (int, default = not specified): If set, the specified exception
+//      code will be thrown, which will cause the write to not commit; if not specified, the write
+//      will be allowed to commit.
+MONGO_FP_DECLARE(onPrimaryTransactionalWrite);
 
 }  // namespace
 
@@ -94,6 +129,27 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
                 IDLParserErrorContext("parse latest txn record for session"), result);
         }();
 
+        CommittedStatementTimestampMap activeTxnCommittedStatements;
+
+        if (lastWrittenTxnRecord) {
+            auto it = TransactionHistoryIterator(lastWrittenTxnRecord->getLastWriteOpTimeTs());
+            while (it.hasNext()) {
+                const auto entry = it.next(opCtx);
+                invariant(entry.getStatementId());
+                const auto insertRes = activeTxnCommittedStatements.emplace(*entry.getStatementId(),
+                                                                            entry.getTimestamp());
+                if (!insertRes.second) {
+                    const auto& existingTs = insertRes.first->second;
+                    fassertOnRepeatedExecution(opCtx,
+                                               _sessionId,
+                                               lastWrittenTxnRecord->getTxnNum(),
+                                               *entry.getStatementId(),
+                                               existingTs,
+                                               entry.getTimestamp());
+                }
+            }
+        }
+
         ul.lock();
 
         // Protect against concurrent refreshes or invalidations
@@ -103,6 +159,7 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
 
             if (_lastWrittenSessionRecord) {
                 _activeTxnNumber = _lastWrittenSessionRecord->getTxnNum();
+                _activeTxnCommittedStatements = std::move(activeTxnCommittedStatements);
             }
 
             break;
@@ -120,21 +177,28 @@ void Session::beginTxn(OperationContext* opCtx, TxnNumber txnNumber) {
 void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
                                           TxnNumber txnNumber,
                                           std::vector<StmtId> stmtIdsWritten,
-                                          Timestamp newLastWriteTs) {
+                                          Timestamp lastStmtIdWriteTs) {
     invariant(opCtx->lockState()->inAWriteUnitOfWork());
 
     stdx::unique_lock<stdx::mutex> ul(_mutex);
-    _checkValid(ul);
-    _checkIsActiveTransaction(ul, txnNumber);
 
-    const auto updateRequest = _makeUpdateRequest(ul, txnNumber, newLastWriteTs);
+    // Sanity check that we don't double-execute statements
+    for (const auto stmtId : stmtIdsWritten) {
+        const auto stmtTimestamp = _checkStatementExecuted(ul, txnNumber, stmtId);
+        if (stmtTimestamp) {
+            fassertOnRepeatedExecution(
+                opCtx, _sessionId, txnNumber, stmtId, *stmtTimestamp, lastStmtIdWriteTs);
+        }
+    }
+
+    const auto updateRequest = _makeUpdateRequest(ul, txnNumber, lastStmtIdWriteTs);
 
     ul.unlock();
 
     repl::UnreplicatedWritesBlock doNotReplicateWrites(opCtx);
 
     updateSessionEntry(opCtx, updateRequest);
-    _registerUpdateCacheOnCommit(opCtx, txnNumber, std::move(stmtIdsWritten), newLastWriteTs);
+    _registerUpdateCacheOnCommit(opCtx, txnNumber, std::move(stmtIdsWritten), lastStmtIdWriteTs);
 }
 
 void Session::updateSessionRecordOnSecondary(OperationContext* opCtx,
@@ -166,6 +230,7 @@ void Session::invalidate() {
     _lastWrittenSessionRecord.reset();
 
     _activeTxnNumber = kUninitializedTxnNumber;
+    _activeTxnCommittedStatements.clear();
 }
 
 Timestamp Session::getLastWriteOpTimeTs(TxnNumber txnNumber) const {
@@ -182,26 +247,23 @@ Timestamp Session::getLastWriteOpTimeTs(TxnNumber txnNumber) const {
 boost::optional<repl::OplogEntry> Session::checkStatementExecuted(OperationContext* opCtx,
                                                                   TxnNumber txnNumber,
                                                                   StmtId stmtId) const {
-    stdx::unique_lock<stdx::mutex> ul(_mutex);
-    _checkValid(ul);
-    _checkIsActiveTransaction(ul, txnNumber);
+    const auto stmtTimestamp = [&] {
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        return _checkStatementExecuted(lg, txnNumber, stmtId);
+    }();
 
-    if (!_lastWrittenSessionRecord || _lastWrittenSessionRecord->getTxnNum() != txnNumber)
+    if (!stmtTimestamp)
         return boost::none;
 
-    auto it = TransactionHistoryIterator(_lastWrittenSessionRecord->getLastWriteOpTimeTs());
-
-    ul.unlock();
-
-    while (it.hasNext()) {
-        const auto entry = it.next(opCtx);
+    TransactionHistoryIterator txnIter(*stmtTimestamp);
+    while (txnIter.hasNext()) {
+        const auto entry = txnIter.next(opCtx);
         invariant(entry.getStatementId());
-        if (*entry.getStatementId() == stmtId) {
+        if (*entry.getStatementId() == stmtId)
             return entry;
-        }
     }
 
-    return boost::none;
+    MONGO_UNREACHABLE;
 }
 
 void Session::_beginTxn(WithLock wl, TxnNumber txnNumber) {
@@ -220,6 +282,7 @@ void Session::_beginTxn(WithLock wl, TxnNumber txnNumber) {
         return;
 
     _activeTxnNumber = txnNumber;
+    _activeTxnCommittedStatements.clear();
 }
 
 void Session::_checkValid(WithLock) const {
@@ -238,6 +301,22 @@ void Session::_checkIsActiveTransaction(WithLock, TxnNumber txnNumber) const {
                           << _activeTxnNumber
                           << " is now active.",
             txnNumber == _activeTxnNumber);
+}
+
+boost::optional<Timestamp> Session::_checkStatementExecuted(WithLock wl,
+                                                            TxnNumber txnNumber,
+                                                            StmtId stmtId) const {
+    _checkValid(wl);
+    _checkIsActiveTransaction(wl, txnNumber);
+
+    const auto it = _activeTxnCommittedStatements.find(stmtId);
+    if (it == _activeTxnCommittedStatements.end())
+        return boost::none;
+
+    invariant(_lastWrittenSessionRecord);
+    invariant(_lastWrittenSessionRecord->getTxnNum() == txnNumber);
+
+    return it->second;
 }
 
 UpdateRequest Session::_makeUpdateRequest(WithLock,
@@ -272,38 +351,74 @@ UpdateRequest Session::_makeUpdateRequest(WithLock,
 void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
                                            TxnNumber newTxnNumber,
                                            std::vector<StmtId> stmtIdsWritten,
-                                           Timestamp newLastWriteTs) {
-    opCtx->recoveryUnit()->onCommit(
-        [ this, newTxnNumber, stmtIdsWritten = std::move(stmtIdsWritten), newLastWriteTs ] {
-            stdx::lock_guard<stdx::mutex> lg(_mutex);
+                                           Timestamp lastStmtIdWriteTs) {
+    opCtx->recoveryUnit()->onCommit([
+        this,
+        opCtx,
+        newTxnNumber,
+        stmtIdsWritten = std::move(stmtIdsWritten),
+        lastStmtIdWriteTs
+    ] {
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
 
-            if (!_isValid)
-                return;
+        if (!_isValid)
+            return;
 
-            if (newTxnNumber < _activeTxnNumber)
-                return;
+        if (newTxnNumber < _activeTxnNumber)
+            return;
 
-            // This call is necessary in order to advance the txn number and reset the cached state
-            // in the case where just before the storage transaction commits, the cache entry gets
-            // invalidated and immediately refreshed while there were no writes for newTxnNumber
-            // yet. In this case _activeTxnNumber will be less than newTxnNumber and we will fail to
-            // update the cache even though the write was successful.
-            _beginTxn(lg, newTxnNumber);
+        // This call is necessary in order to advance the txn number and reset the cached state in
+        // the case where just before the storage transaction commits, the cache entry gets
+        // invalidated and immediately refreshed while there were no writes for newTxnNumber yet. In
+        // this case _activeTxnNumber will be less than newTxnNumber and we will fail to update the
+        // cache even though the write was successful.
+        _beginTxn(lg, newTxnNumber);
 
-            if (!_lastWrittenSessionRecord) {
-                _lastWrittenSessionRecord.emplace();
+        if (!_lastWrittenSessionRecord) {
+            _lastWrittenSessionRecord.emplace();
 
-                _lastWrittenSessionRecord->setSessionId(_sessionId);
+            _lastWrittenSessionRecord->setSessionId(_sessionId);
+            _lastWrittenSessionRecord->setTxnNum(newTxnNumber);
+            _lastWrittenSessionRecord->setLastWriteOpTimeTs(lastStmtIdWriteTs);
+        } else {
+            if (newTxnNumber > _lastWrittenSessionRecord->getTxnNum())
                 _lastWrittenSessionRecord->setTxnNum(newTxnNumber);
-                _lastWrittenSessionRecord->setLastWriteOpTimeTs(newLastWriteTs);
-            } else {
-                if (newTxnNumber > _lastWrittenSessionRecord->getTxnNum())
-                    _lastWrittenSessionRecord->setTxnNum(newTxnNumber);
 
-                if (newLastWriteTs > _lastWrittenSessionRecord->getLastWriteOpTimeTs())
-                    _lastWrittenSessionRecord->setLastWriteOpTimeTs(newLastWriteTs);
+            if (lastStmtIdWriteTs > _lastWrittenSessionRecord->getLastWriteOpTimeTs())
+                _lastWrittenSessionRecord->setLastWriteOpTimeTs(lastStmtIdWriteTs);
+        }
+
+        if (_activeTxnNumber == newTxnNumber) {
+            for (const auto stmtId : stmtIdsWritten) {
+                const auto insertRes =
+                    _activeTxnCommittedStatements.emplace(stmtId, lastStmtIdWriteTs);
+                if (!insertRes.second) {
+                    const auto& existingTs = insertRes.first->second;
+                    fassertOnRepeatedExecution(
+                        opCtx, _sessionId, newTxnNumber, stmtId, existingTs, lastStmtIdWriteTs);
+                }
             }
-        });
+        }
+    });
+
+    MONGO_FAIL_POINT_BLOCK(onPrimaryTransactionalWrite, customArgs) {
+        const auto& data = customArgs.getData();
+
+        const auto closeConnectionElem = data["closeConnection"];
+        if (closeConnectionElem.eoo() || closeConnectionElem.Bool()) {
+            auto transportSession = opCtx->getClient()->session();
+            transportSession->getTransportLayer()->end(transportSession);
+        }
+
+        const auto failBeforeCommitExceptionElem = data["failBeforeCommitExceptionCode"];
+        if (!failBeforeCommitExceptionElem.eoo()) {
+            const auto failureCode =
+                ErrorCodes::fromInt(int(failBeforeCommitExceptionElem.Number()));
+            uasserted(failureCode,
+                      str::stream() << "Failing write for " << _sessionId << ":" << newTxnNumber
+                                    << " due to failpoint. The write must not be reflected.");
+        }
+    }
 }
 
 }  // namespace mongo

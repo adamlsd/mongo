@@ -32,6 +32,7 @@
 
 #include "mongo/db/service_entry_point_mongod.h"
 
+#include "mongo/base/checked_cast.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/impersonation_session.h"
@@ -91,6 +92,21 @@ MONGO_FP_DECLARE(rsStopGetMore);
 namespace {
 using logger::LogComponent;
 
+// The command names for which to check out a session.
+//
+// Note: Eval should check out a session because it defaults to running under a global write lock,
+// so if it didn't, and the function it was given contains any of these whitelisted commands, they
+// would try to check out a session under a lock, which is not allowed.  Similarly,
+// refreshLogicalSessionCacheNow triggers a bulk update under a lock on the sessions collection.
+const StringMap<int> cmdWhitelist = {{"delete", 1},
+                                     {"eval", 1},
+                                     {"$eval", 1},
+                                     {"findandmodify", 1},
+                                     {"findAndModify", 1},
+                                     {"insert", 1},
+                                     {"refreshLogicalSessionCacheNow", 1},
+                                     {"update", 1}};
+
 inline void opread(const Message& m) {
     if (_diaglog.getLevel() & 2) {
         _diaglog.readop(m.singleData().view2ptr(), m.header().getLen());
@@ -118,8 +134,8 @@ void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                   << " ntoreturn:" << queryMessage.ntoreturn;
     }
 
-    const SendStaleConfigException* scex = (exception->code() == ErrorCodes::SendStaleConfig)
-        ? static_cast<const SendStaleConfigException*>(exception)
+    const StaleConfigException* scex = (exception->code() == ErrorCodes::StaleConfig)
+        ? checked_cast<const StaleConfigException*>(exception)
         : NULL;
 
     BSONObjBuilder err;
@@ -171,10 +187,9 @@ void _generateErrorResponse(OperationContext* opCtx,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
 
-    // We need to include some extra information for SendStaleConfig.
-    if (exception.code() == ErrorCodes::SendStaleConfig) {
-        const SendStaleConfigException& scex =
-            static_cast<const SendStaleConfigException&>(exception);
+    // We need to include some extra information for StaleConfig.
+    if (exception.code() == ErrorCodes::StaleConfig) {
+        const StaleConfigException& scex = checked_cast<const StaleConfigException&>(exception);
         replyBuilder->setCommandReply(scex.toStatus(),
                                       BSON("ns" << scex.getns() << "vReceived"
                                                 << BSONArray(scex.getVersionReceived().toBSON())
@@ -198,10 +213,9 @@ void _generateErrorResponse(OperationContext* opCtx,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
 
-    // We need to include some extra information for SendStaleConfig.
-    if (exception.code() == ErrorCodes::SendStaleConfig) {
-        const SendStaleConfigException& scex =
-            static_cast<const SendStaleConfigException&>(exception);
+    // We need to include some extra information for StaleConfig.
+    if (exception.code() == ErrorCodes::StaleConfig) {
+        const StaleConfigException& scex = checked_cast<const StaleConfigException&>(exception);
         replyBuilder->setCommandReply(scex.toStatus(),
                                       BSON("ns" << scex.getns() << "vReceived"
                                                 << BSONArray(scex.getVersionReceived().toBSON())
@@ -538,7 +552,13 @@ void execCommandDatabase(OperationContext* opCtx,
         rpc::readRequestMetadata(opCtx, request.body);
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
 
-        initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth());
+        repl::ReplicationCoordinator* replCoord =
+            repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+        initializeOperationSessionInfo(opCtx,
+                                       request.body,
+                                       command->requiresAuth(),
+                                       replCoord->getReplicationMode() ==
+                                           repl::ReplicationCoordinator::modeReplSet);
 
         std::string dbname = request.getDatabase().toString();
         uassert(
@@ -582,13 +602,16 @@ void execCommandDatabase(OperationContext* opCtx,
             return;
         }
 
-        OperationContextSession sessionTxnState(opCtx);
+        // Session ids are forwarded in requests, so commands that require roundtrips between
+        // servers may result in a deadlock when a server tries to check out a session it is already
+        // using to service an earlier operation in the command's chain. To avoid this, only check
+        // out sessions for commands that require them (i.e. write commands).
+        OperationContextSession sessionTxnState(
+            opCtx, cmdWhitelist.find(command->getName()) != cmdWhitelist.cend());
 
         ImpersonationSessionGuard guard(opCtx);
         uassertStatusOK(Command::checkAuthorization(command, opCtx, request));
 
-        repl::ReplicationCoordinator* replCoord =
-            repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
         const bool iAmPrimary = replCoord->canAcceptWritesForDatabase_UNSAFE(opCtx, dbname);
 
         if (!opCtx->getClient()->isInDirectClient() &&
@@ -702,7 +725,7 @@ void execCommandDatabase(OperationContext* opCtx,
         }
     } catch (const DBException& e) {
         // If we got a stale config, wait in case the operation is stuck in a critical section
-        if (e.code() == ErrorCodes::SendStaleConfig) {
+        if (e.code() == ErrorCodes::StaleConfig) {
             auto sce = dynamic_cast<const StaleConfigException*>(&e);
             invariant(sce);  // do not upcasts from DBException created by uassert variants.
 
@@ -859,7 +882,7 @@ DbResponse receivedQuery(OperationContext* opCtx,
         dbResponse.exhaustNS = runQuery(opCtx, q, nss, dbResponse.response);
     } catch (const AssertionException& e) {
         // If we got a stale config, wait in case the operation is stuck in a critical section
-        if (!opCtx->getClient()->isInDirectClient() && e.code() == ErrorCodes::SendStaleConfig) {
+        if (!opCtx->getClient()->isInDirectClient() && e.code() == ErrorCodes::StaleConfig) {
             auto& sce = static_cast<const StaleConfigException&>(e);
             ShardingState::get(opCtx)
                 ->onStaleShardVersion(opCtx, NamespaceString(sce.getns()), sce.getVersionReceived())

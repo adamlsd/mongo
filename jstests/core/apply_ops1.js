@@ -392,6 +392,42 @@
     assert.eq(true, res.results[0], "Valid update failed");
     assert.eq(true, res.results[1], "Valid update failed");
 
+    // Ops with transaction numbers are valid.
+    var lsid = {id: UUID()};
+    res = db.runCommand({
+        applyOps: [
+            {
+              op: "i",
+              ns: t.getFullName(),
+              o: {_id: 7, x: 24},
+              lsid: lsid,
+              txnNumber: NumberLong(1),
+              stmdId: 0
+            },
+            {
+              op: "u",
+              ns: t.getFullName(),
+              o2: {_id: 8},
+              o: {$set: {x: 25}},
+              lsid: lsid,
+              txnNumber: NumberLong(1),
+              stmdId: 1
+            },
+            {
+              op: "d",
+              ns: t.getFullName(),
+              o: {_id: 7},
+              lsid: lsid,
+              txnNumber: NumberLong(2),
+              stmdId: 0
+            },
+        ]
+    });
+
+    assert.eq(true, res.results[0], "Valid insert with transaction number failed");
+    assert.eq(true, res.results[1], "Valid update with transaction number failed");
+    assert.eq(true, res.results[2], "Valid delete with transaction number failed");
+
     // Foreground index build.
     res = assert.commandWorked(db.adminCommand({
         applyOps: [{
@@ -450,4 +486,43 @@
     spec = GetIndexHelpers.findByName(allIndexes, "c_1");
     assert.neq(null, spec, "Foreground index 'c_1' not found: " + tojson(allIndexes));
     assert.eq(2, spec.v, "Expected v=2 index to be built");
+
+    // When applying a "u" (update) op, we default to 'ModifierInterface' update semantics, and
+    // $set operations get performed in user order.
+    res = assert.commandWorked(db.adminCommand({
+        applyOps: [
+            {"op": "i", "ns": t.getFullName(), "o": {_id: 6}},
+            {"op": "u", "ns": t.getFullName(), "o2": {_id: 6}, "o": {$set: {z: 1, a: 2}}}
+        ]
+    }));
+    assert.eq(t.findOne({_id: 6}), {_id: 6, z: 1, a: 2});
+
+    // When we explicitly specify {$v: 0}, we should also get 'ModifierInterface' update semantics.
+    res = assert.commandWorked(db.adminCommand({
+        applyOps: [
+            {"op": "i", "ns": t.getFullName(), "o": {_id: 7}},
+            {
+              "op": "u",
+              "ns": t.getFullName(),
+              "o2": {_id: 7},
+              "o": {$v: NumberLong(0), $set: {z: 1, a: 2}}
+            }
+        ]
+    }));
+    assert.eq(t.findOne({_id: 7}), {_id: 7, z: 1, a: 2});
+
+    // When we explicitly specify {$v: 1}, we should get 'UpdateNode' update semantics, and $set
+    // operations get performed in lexicographic order.
+    res = assert.commandWorked(db.adminCommand({
+        applyOps: [
+            {"op": "i", "ns": t.getFullName(), "o": {_id: 8}},
+            {
+              "op": "u",
+              "ns": t.getFullName(),
+              "o2": {_id: 8},
+              "o": {$v: NumberLong(1), $set: {z: 1, a: 2}}
+            }
+        ]
+    }));
+    assert.eq(t.findOne({_id: 8}), {_id: 8, a: 2, z: 1});  // Note: 'a' and 'z' have been sorted.
 })();

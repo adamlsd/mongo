@@ -26,112 +26,109 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/base/unique_raii.h"
 #include "mongo/base/scoped_raii.h"
+#include "mongo/base/unique_raii.h"
 
 #include "mongo/unittest/unittest.h"
 
 
-namespace mongo
-{
-	namespace
-	{
-		struct DtorCheck : private boost::noncopyable
-		{
-			bool *const notification;
+namespace mongo {
+namespace {
+struct DtorCheck : private boost::noncopyable {
+    bool* const notification;
 
-			explicit DtorCheck( bool *const n ) : notification( n ) {}
+    explicit DtorCheck(bool* const n) : notification(n) {}
 
-			~DtorCheck() { *notification= true; }
-		};
+    ~DtorCheck() {
+        *notification = true;
+    }
+};
 
-		TEST( ScopedRAIITest, TestBasicCtorAndDtor )
-		{
-			bool destroyed= false;
-			{
-				ScopedRAII< DtorCheck * > owned( [d= &destroyed]{ return new DtorCheck( d ); }, []( DtorCheck *p ) { delete p; } );
-				ASSERT_FALSE( destroyed );
-			}
-			ASSERT_TRUE( destroyed );
-		}
+TEST(ScopedRAIITest, TestBasicCtorAndDtor) {
+    bool destroyed = false;
+    {
+        ScopedRAII<DtorCheck*> owned([d = &destroyed] { return new DtorCheck(d); },
+                                     [](DtorCheck* p) { delete p; });
+        ASSERT_FALSE(destroyed);
+    }
+    ASSERT_TRUE(destroyed);
+}
 
-		TEST( ScopedRAIITest, NoParam )
-		{
-			int state= 0;
-			{
-				ASSERT_TRUE( state == 0 );
-				ScopedRAII<> scope( [s= &state] { *s= 1; }, [s= &state] { *s= 2; } );
-				ASSERT_TRUE( state == 1 );
-			}
-			ASSERT_TRUE( state == 2 );
-		}
+TEST(ScopedRAIITest, NoParam) {
+    int state = 0;
+    {
+        ASSERT_TRUE(state == 0);
+        ScopedRAII<> scope([s = &state] { *s = 1; }, [s = &state] { *s = 2; });
+        ASSERT_TRUE(state == 1);
+    }
+    ASSERT_TRUE(state == 2);
+}
 
-		TEST( DismissableRAIITest, BasicTest )
-		{
-			int state= 0;
-			for( int i= 0; i < 20; ++i )
-			{
-				DismissableRAII scope( [s= &state]{ ++*s; }, [s= &state] { ++*s; } );
+TEST(DismissableRAIITest, BasicTest) {
+    int state = 0;
+    for (int i = 0; i < 20; ++i) {
+        DismissableRAII scope([s = &state] { ++*s; }, [s = &state] { ++*s; });
 
-				if( i % 2 ) scope.dismiss();
-			}
-			ASSERT_TRUE( state == 30 );
-		}
+        if (i % 2)
+            scope.dismiss();
+    }
+    ASSERT_TRUE(state == 30);
+}
 
-		TEST( UniqueRAIITest, BasicTest )
-		{
-			bool destroyed= false;
-			{
-				auto release= []( DtorCheck *const p ) { delete p; };
-				UniqueRAII< DtorCheck *, decltype( release ) > raii( [d= &destroyed]{ return new DtorCheck( d ); }, release );
-				ASSERT_FALSE( destroyed );
-			}
-			ASSERT_TRUE( destroyed );
-		}
+TEST(UniqueRAIITest, BasicTest) {
+    bool destroyed = false;
+    {
+        auto release = [](DtorCheck* const p) { delete p; };
+        UniqueRAII<DtorCheck*, decltype(release)> raii(
+            [d = &destroyed] { return new DtorCheck(d); }, release);
+        ASSERT_FALSE(destroyed);
+    }
+    ASSERT_TRUE(destroyed);
+}
 
-		TEST( UniqueRAIITest, TransferTestInner )
-		{
-			bool destroyed= false;
-			{
-				auto release= []( DtorCheck *const p ) { delete p; };
-				UniqueRAII< DtorCheck *, decltype( release ) > raii( [d= &destroyed]{ return new DtorCheck( d ); }, release );
-				ASSERT_FALSE( destroyed );
-				{
-					UniqueRAII< DtorCheck *, decltype( release ) > raii2= std::move( raii );
-					ASSERT_FALSE( destroyed );
-				}
-				ASSERT_TRUE( destroyed );
-				destroyed= false;
-			}
-			ASSERT_FALSE( destroyed );
-		}
+TEST(UniqueRAIITest, TransferTestInner) {
+    bool destroyed = false;
+    {
+        auto release = [](DtorCheck* const p) { delete p; };
+        UniqueRAII<DtorCheck*, decltype(release)> raii(
+            [d = &destroyed] { return new DtorCheck(d); }, release);
+        ASSERT_FALSE(destroyed);
+        {
+            UniqueRAII<DtorCheck*, decltype(release)> raii2 = std::move(raii);
+            ASSERT_FALSE(destroyed);
+        }
+        ASSERT_TRUE(destroyed);
+        destroyed = false;
+    }
+    ASSERT_FALSE(destroyed);
+}
 
-		TEST( UniqueRAIITest, TransferTestOuter )
-		{
-			bool destroyed= false;
-			{
-				auto release= []( DtorCheck *const p ) { delete p; };
-				UniqueRAII< DtorCheck *, decltype( release ) > raii( [d= &destroyed]{ return new DtorCheck( d ); }, release );
-				ASSERT_FALSE( destroyed );
-				{
-					UniqueRAII< DtorCheck *, decltype( release ) > raii2= std::move( raii );
-					ASSERT_FALSE( destroyed );
-					//raii= std::move( raii2 );
-					ASSERT_FALSE( destroyed );
-				}
-				ASSERT_TRUE( destroyed );
-			}
-			ASSERT_TRUE( destroyed );
-		}
+TEST(UniqueRAIITest, TransferTestOuter) {
+    bool destroyed = false;
+    {
+        auto release = [](DtorCheck* const p) { delete p; };
+        UniqueRAII<DtorCheck*, decltype(release)> raii(
+            [d = &destroyed] { return new DtorCheck(d); }, release);
+        ASSERT_FALSE(destroyed);
+        {
+            UniqueRAII<DtorCheck*, decltype(release)> raii2 = std::move(raii);
+            ASSERT_FALSE(destroyed);
+            raii = std::move(raii2);
+            ASSERT_FALSE(destroyed);
+        }
+        ASSERT_FALSE(destroyed);
+    }
+    ASSERT_TRUE(destroyed);
+}
 
-		TEST( UniqueRAIITest, makeRAII )
-		{
-			bool destroyed= false;
-			{
-				auto raii= make_unique_raii( [d= &destroyed]{ return new DtorCheck( d ); }, []( DtorCheck *const p ) { delete p; } );
-				ASSERT_FALSE( destroyed );
-			}
-			ASSERT_TRUE( destroyed );
-		}
-	}//namespace
-}//namespace mongo
+TEST(UniqueRAIITest, makeRAII) {
+    bool destroyed = false;
+    {
+        auto raii = make_unique_raii([d = &destroyed] { return new DtorCheck(d); },
+                                     [](DtorCheck* const p) { delete p; });
+        ASSERT_FALSE(destroyed);
+    }
+    ASSERT_TRUE(destroyed);
+}
+}  // namespace
+}  // namespace mongo

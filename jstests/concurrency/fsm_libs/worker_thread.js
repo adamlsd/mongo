@@ -38,10 +38,9 @@ var workerThread = (function() {
                 }
 
                 if (typeof args.sessionOptions !== 'undefined') {
-                    // TODO SERVER-30912: the shardCollection command hangs when run under a
-                    // session, so for now we don't start a session to enable testing of causal
-                    // consistency.
-                    myDB = new Mongo(args.host).getDB(args.dbName);
+                    myDB = new Mongo(args.host)
+                               .startSession(args.sessionOptions)
+                               .getDatabase(args.dbName);
 
                     if (args.sessionOptions.causallyConsistentReads) {
                         // TODO SERVER-30679: We manually enable causal consistency on the

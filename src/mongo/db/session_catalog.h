@@ -207,10 +207,9 @@ private:
 class ScopedCheckedOutSession {
     MONGO_DISALLOW_COPYING(ScopedCheckedOutSession);
 
-public:
-    ScopedCheckedOutSession(OperationContext* opCtx, ScopedSession scopedSession)
-        : _opCtx(opCtx), _scopedSession(std::move(scopedSession)) {}
+    friend ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext*);
 
+public:
     ScopedCheckedOutSession(ScopedCheckedOutSession&&) = default;
 
     ~ScopedCheckedOutSession() {
@@ -236,6 +235,9 @@ public:
     }
 
 private:
+    ScopedCheckedOutSession(OperationContext* opCtx, ScopedSession scopedSession)
+        : _opCtx(opCtx), _scopedSession(std::move(scopedSession)) {}
+
     OperationContext* const _opCtx;
 
     ScopedSession _scopedSession;
@@ -250,7 +252,7 @@ class OperationContextSession {
     MONGO_DISALLOW_COPYING(OperationContextSession);
 
 public:
-    OperationContextSession(OperationContext* opCtx);
+    OperationContextSession(OperationContext* opCtx, bool checkOutSession);
     ~OperationContextSession();
 
     static Session* get(OperationContext* opCtx);

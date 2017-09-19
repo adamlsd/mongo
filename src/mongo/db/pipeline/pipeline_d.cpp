@@ -204,7 +204,17 @@ public:
 
         pipeline.getValue()->optimizePipeline();
 
-        AutoGetCollectionForReadCommand autoColl(expCtx->opCtx, expCtx->ns);
+        boost::optional<AutoGetCollectionForReadCommand> autoColl;
+        if (expCtx->uuid) {
+            autoColl.emplace(expCtx->opCtx, expCtx->ns.db(), *expCtx->uuid);
+            if (autoColl->getCollection() == nullptr) {
+                // The UUID doesn't exist anymore.
+                return {ErrorCodes::NamespaceNotFound,
+                        "No namespace with UUID " + expCtx->uuid->toString()};
+            }
+        } else {
+            autoColl.emplace(expCtx->opCtx, expCtx->ns);
+        }
 
         // makePipeline() is only called to perform secondary aggregation requests and expects the
         // collection representing the document source to be not-sharded. We confirm sharding state
@@ -217,7 +227,7 @@ public:
         uassert(4567, "from collection cannot be sharded", !bool(css->getMetadata()));
 
         PipelineD::prepareCursorSource(
-            autoColl.getCollection(), expCtx->ns, nullptr, pipeline.getValue().get());
+            autoColl->getCollection(), expCtx->ns, nullptr, pipeline.getValue().get());
 
         return pipeline;
     }
@@ -617,6 +627,10 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
         plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
     }
 
+    if (expCtx->needsMerge && expCtx->tailableMode == TailableMode::kTailableAndAwaitData) {
+        plannerOpts |= QueryPlannerParams::TRACK_LATEST_OPLOG_TS;
+    }
+
     const BSONObj emptyProjection;
     const BSONObj metaSortProjection = BSON("$meta"
                                             << "sortKey");
@@ -769,6 +783,14 @@ void PipelineD::addCursorSource(Collection* collection,
     // case the new stage can be absorbed with the first stages of the pipeline.
     pipeline->addInitialSource(pSource);
     pipeline->optimizePipeline();
+}
+
+Timestamp PipelineD::getLatestOplogTimestamp(const Pipeline* pipeline) {
+    if (auto docSourceCursor =
+            dynamic_cast<DocumentSourceCursor*>(pipeline->_sources.front().get())) {
+        return docSourceCursor->getLatestOplogTimestamp();
+    }
+    return Timestamp();
 }
 
 std::string PipelineD::getPlanSummaryStr(const Pipeline* pPipeline) {

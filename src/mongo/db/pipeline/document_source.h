@@ -156,6 +156,11 @@ public:
         // must also override getModifiedPaths() to provide information about which particular
         // $match predicates be swapped before itself.
         bool canSwapWithMatch = false;
+
+        // Extends HostTypeRequirement::kAnyShardOrMongos to indicate that a document source
+        // must run on whatever node initially received the pipeline.
+        // This can be a mongod directly, but mongos must not forward to a mongod.
+        bool allowedToForwardFromMongos = true;
     };
 
     using HostTypeRequirement = StageConstraints::HostTypeRequirement;
@@ -632,6 +637,8 @@ public:
          * for execution. The returned pipeline is optimized and has a cursor source prepared.
          *
          * This function returns a non-OK status if parsing the pipeline failed.
+         * NamespaceNotFound will be returned if ExpressionContext has a UUID and that UUID doesn't
+         * exist anymore. That should be the only case where NamespaceNotFound gets returned.
          */
         virtual StatusWith<std::unique_ptr<Pipeline, Pipeline::Deleter>> makePipeline(
             const std::vector<BSONObj>& rawPipeline,

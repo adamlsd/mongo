@@ -38,7 +38,6 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/executor/async_stream_interface.h"
-#include "mongo/executor/async_stream_interface.h"
 #include "mongo/executor/connection_pool_asio.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/metadata/metadata_hook.h"
@@ -299,7 +298,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "Failed to connect in setup", op);
         // If we fail during connection, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed to connect to " << op->request().target << " - " << resp.status;
+        log() << "Failed to connect to remote target for a request - " << redact(resp.status);
         op->finish(std::move(resp));
         return;
     }
@@ -309,8 +308,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "In refresh, but did not fail to heartbeat", op);
         // If we fail during heartbeating, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed asio heartbeat to " << op->request().target << " - "
-              << redact(resp.status);
+        log() << "Failed asio heartbeat for a request  - " << redact(resp.status);
         _numFailedOps.fetchAndAdd(1);
         op->finish(std::move(resp));
         return;
@@ -320,8 +318,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         // In the case that resp is not OK, but _inSetup is false, we are using a connection
         // that
         // we got from the pool to execute a command, but it failed for some reason.
-        LOG(2) << "Failed to execute command: " << redact(op->request().toString())
-               << " reason: " << redact(resp.status);
+        LOG(2) << "Failed to execute a command reason: " << redact(resp.status);
 
         if (resp.status.code() != ErrorCodes::CallbackCanceled) {
             _numFailedOps.fetchAndAdd(1);
@@ -392,7 +389,7 @@ void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handle
     auto cmd = op->command();
 
     // Step 4
-    auto recvMessageCallback = [this, cmd, handler, op](std::error_code ec, size_t bytes) {
+    auto recvMessageCallback = [this, cmd, handler](std::error_code ec, size_t bytes) {
         // We don't call _validateAndRun here as we assume the caller will.
         handler(ec, bytes);
     };
@@ -402,7 +399,7 @@ void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handle
                                                                             size_t bytes) {
         // The operation could have been canceled after starting the command, but before
         // receiving the header
-        _validateAndRun(op, ec, [this, op, recvMessageCallback, ec, bytes, cmd, handler] {
+        _validateAndRun(op, ec, [this, recvMessageCallback, ec, bytes, cmd, handler] {
             // validate response id
             uint32_t expectedId = cmd->toSend().header().getId();
             uint32_t actualId = cmd->header().constView().getResponseToMsgId();
@@ -423,7 +420,7 @@ void NetworkInterfaceASIO::_asyncRunCommand(AsyncOp* op, NetworkOpHandler handle
     // Step 2
     auto sendMessageCallback = [this, cmd, handler, recvHeaderCallback, op](std::error_code ec,
                                                                             size_t bytes) {
-        _validateAndRun(op, ec, [this, cmd, op, recvHeaderCallback] {
+        _validateAndRun(op, ec, [this, cmd, recvHeaderCallback] {
             asyncRecvMessageHeader(
                 cmd->conn().stream(), &cmd->header(), std::move(recvHeaderCallback));
         });

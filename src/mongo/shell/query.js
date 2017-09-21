@@ -78,6 +78,7 @@ DBQuery.prototype.clone = function() {
                         this._batchSize,
                         this._options);
     q._special = this._special;
+    q._session = this._session;
     return q;
 };
 
@@ -115,7 +116,7 @@ DBQuery.prototype._exec = function() {
             var findCmd = this._convertToCommand(canAttachReadPref);
             var cmdRes = this._db.runReadCommand(findCmd, null, this._options);
             var newSession = new _DelegatingDriverSession(cmdRes._mongo, this._session);
-            this._cursor = new DBCommandCursor(newSession.getDatbase(this._db._name), cmdRes, this._batchSize);
+            this._cursor = new DBCommandCursor(newSession.getDatabase(this._db._name), cmdRes, this._batchSize);
         } else {
             if (this._special && this._query.readConcern) {
                 throw new Error("readConcern requires use of read commands");
@@ -705,7 +706,7 @@ function DBCommandCursor(db, cmdResult, batchSize) {
 
     this._batch = cmdResult.cursor.firstBatch.reverse();  // modifies input to allow popping
 
-    if (mongo.useReadCommands()) {
+    if (db.getMongo().useReadCommands()) {
         this._useReadCommands = true;
         this._cursorid = cmdResult.cursor.id;
         this._batchSize = batchSize;

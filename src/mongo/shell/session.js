@@ -375,6 +375,10 @@ var {
 		this.endSession = function endSession() {
             return originalSession.endSession();
 		};
+
+		this.getSession = function getSession() {
+            return originalSession;
+		};
     }
 
     const DummyDriverSession = makeDriverSessionConstructor({

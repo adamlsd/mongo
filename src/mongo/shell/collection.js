@@ -278,6 +278,8 @@ DBCollection.prototype.find = function(query, fields, limit, skip, batchSize, op
         if (readConcern !== null) {
             cursor.readConcern(readConcern.level);
         }
+
+        cursor._session = session;
     }
 
     return cursor;

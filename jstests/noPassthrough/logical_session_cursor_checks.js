@@ -7,7 +7,6 @@
 
     admin.createUser({user: 'admin', pwd: 'admin', roles: jsTest.adminUserRoles});
     admin.auth("admin", "admin");
-    data.createUser({user: 'admin', pwd: 'admin', roles: jsTest.basicUserRoles});
     data.createUser({user: 'user0', pwd: 'password', roles: jsTest.basicUserRoles});
     admin.logout();
 
@@ -46,12 +45,18 @@
     // Test that getMore correctly gives an error, when using a cursor on a different session.
     {
         var session1 = conn.startSession();
-        var session2 = conn.startSession();
+        var mongouri = conn.host;
+        var adminconn = new Mongo(mongouri);
+        var admin = adminconn.getDB("data_storage")
+        admin.getSiblingDB("admin").auth("admin", "admin");
+        var res = admin.aggregate([{'$listLocalSessions': {users: [{user: "user1", db: "test"}]}}])
+        assert.eq(res.toArray().length, 0)
         var cursor = session1.getDatabase("data_storage").test.find().batchSize(0);
+        var res2 = admin.aggregate([{'$listLocalSessions': {users: [{user: "user1", db: "test"}]}}])
+        assert.eq(res2.toArray().length, 1)
         cursor.next();
         cursor.close();
 
-        session2.endSession();
         session1.endSession();
     }
 

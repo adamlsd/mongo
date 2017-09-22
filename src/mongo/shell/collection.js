@@ -1077,7 +1077,8 @@ DBCollection.prototype._getIndexesCommand = function(filter) {
         throw _getErrorWithCode(res, "listIndexes failed: " + tojson(res));
     }
 
-    var newSession = new _DelegatingDriverSession(res._mongo, this._session);
+    print(JSON.stringify(["The failing object is", this]))
+    var newSession = new _DelegatingDriverSession(res._mongo, this._db._session);
     return new DBCommandCursor(newSession.getDatabase(this._db._name), res).toArray();
 };
 

@@ -1253,8 +1253,8 @@ DBCollection.prototype.convertToCapped = function(bytes) {
 DBCollection.prototype.exists = function() {
     var res = this._db.runCommand("listCollections", {filter: {name: this._shortName}});
     if (res.ok) {
-        var newSession = new _DelegatingDriverSession(res._mongo, this._session);
-        var cursor = new DBCommandCursor(newSession.getDatabase(this._db._name), res);
+        const newSession = new _DelegatingDriverSession(res._mongo, this._session);
+        const cursor = new DBCommandCursor(newSession.getDatabase(this._db._name), res);
         if (!cursor.hasNext())
             return null;
         return cursor.next();

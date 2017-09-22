@@ -157,7 +157,7 @@ var {
         let _nextTxnNum = 0;
 
         this.client = new SessionAwareClient(client);
-		this.handle = client._startSession();
+        this.handle = client._startSession();
 
         this.getLastUsed = function getLastUsed() {
             return _lastUsed;
@@ -372,13 +372,13 @@ var {
 			return originalSession.hasEnded();
 		};
 
-		this.endSession = function endSession() {
+        this.endSession = function endSession() {
             return originalSession.endSession();
-		};
+        };
 
-		this.getSession = function getSession() {
+        this.getSession = function getSession() {
             return originalSession;
-		};
+        };
     }
 
     const DummyDriverSession = makeDriverSessionConstructor({

@@ -700,6 +700,7 @@ DBQuery.Option = {
 };
 
 function DBCommandCursor(db, cmdResult, batchSize) {
+    print(JSON.stringify(["The db object looks like: ", db]))
     if (cmdResult.ok != 1) {
         throw _getErrorWithCode(cmdResult, "error: " + tojson(cmdResult));
     }
@@ -721,7 +722,7 @@ function DBCommandCursor(db, cmdResult, batchSize) {
             this._cursorHandle = this._db.getMongo().cursorHandleFromId(cmdResult.cursor.ns, cmdResult.cursor.id);
         }
     } else {
-        this._cursor = this._db.getMongo().cursorFromId(cmdResult.cursor.ns, cmdResult.cursor.id, batchSize);
+        this._cursor = db.getMongo().cursorFromId(cmdResult.cursor.ns, cmdResult.cursor.id, batchSize);
     }
 }
 

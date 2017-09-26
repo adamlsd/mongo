@@ -1254,6 +1254,7 @@ DBCollection.prototype.convertToCapped = function(bytes) {
 DBCollection.prototype.exists = function() {
     var res = this._db.runCommand("listCollections", {filter: {name: this._shortName}});
     if (res.ok) {
+        print(JSON.stringify(["DBCollection exists impl: ", this]))
         const newSession = new _DelegatingDriverSession(res._mongo, this._session);
         const cursor = new DBCommandCursor(newSession.getDatabase(this._db._name), res);
         if (!cursor.hasNext())
@@ -1287,6 +1288,7 @@ DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
 
     const cmdObj = this._makeCommand("aggregate", {pipeline: pipeline});
 
+    print(JSON.stringify(["DBCollection.prototype.aggregate's this: ", this]))
     return this._db._runAggregate(cmdObj, aggregateOptions);
 };
 

@@ -240,10 +240,10 @@ void* systemAllocate(std::size_t bytes) {
         fassertFailed(28831);
     }
 
-    if (mlock(ptr, bytes) != 0) {
+    if (false && mlock(ptr, bytes) != 0) {
         auto str = errnoWithPrefix("Failed to mlock");
         severe() << str;
-        fassertFailed(28832);
+        //fassertFailed(28832);
     }
 
 #if defined(MADV_DONTDUMP)

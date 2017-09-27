@@ -263,7 +263,7 @@ var DB;
                 batchSizeValue = cmdObj["cursor"]["batchSize"];
             }
 
-            var newSession = new _DelegatingDriverSession(res, this._session);
+            var newSession = new _DelegatingDriverSession(res._mongo, this._session);
             return new DBCommandCursor(newSession.getDatabase(this._name), res, batchSizeValue);
         }
 

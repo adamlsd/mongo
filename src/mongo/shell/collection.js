@@ -1077,7 +1077,7 @@ DBCollection.prototype._getIndexesCommand = function(filter) {
         throw _getErrorWithCode(res, "listIndexes failed: " + tojson(res));
     }
 
-    print(JSON.stringify(["The failing object is", this]))
+    //print(JSON.stringify(["The failing object is", this]))
     var newSession = new _DelegatingDriverSession(res._mongo, this._db._session);
     return new DBCommandCursor(newSession.getDatabase(this._db._name), res).toArray();
 };
@@ -1254,8 +1254,10 @@ DBCollection.prototype.convertToCapped = function(bytes) {
 DBCollection.prototype.exists = function() {
     var res = this._db.runCommand("listCollections", {filter: {name: this._shortName}});
     if (res.ok) {
-        print(JSON.stringify(["DBCollection exists impl: ", this]))
-        const newSession = new _DelegatingDriverSession(res._mongo, this._session);
+        //print(JSON.stringify(["DBCollection exists impl: ", this]))
+        var session= this._session;
+        if (!session) session= this._db._session;
+        const newSession = new _DelegatingDriverSession(res._mongo, session);
         const cursor = new DBCommandCursor(newSession.getDatabase(this._db._name), res);
         if (!cursor.hasNext())
             return null;
@@ -1288,7 +1290,7 @@ DBCollection.prototype.aggregate = function(pipeline, aggregateOptions) {
 
     const cmdObj = this._makeCommand("aggregate", {pipeline: pipeline});
 
-    print(JSON.stringify(["DBCollection.prototype.aggregate's this: ", this]))
+    //print(JSON.stringify(["DBCollection.prototype.aggregate's this: ", this]))
     return this._db._runAggregate(cmdObj, aggregateOptions);
 };
 

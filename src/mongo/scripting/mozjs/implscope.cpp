@@ -331,7 +331,7 @@ MozJSImplScope::MozRuntime::MozRuntime(const MozJSScriptEngine* engine) {
         uassert(ErrorCodes::JSInterpreterFailure, "Failed to initialize JSRuntime", _runtime);
 
         // We turn on a variety of optimizations if the jit is enabled
-        if (engine->isJITEnabled()) {
+        if (false && engine->isJITEnabled()) {
             JS::RuntimeOptionsRef(_runtime.get())
                 .setAsmJS(true)
                 .setThrowOnAsmJSValidationFailure(true)

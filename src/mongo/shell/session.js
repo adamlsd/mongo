@@ -363,6 +363,7 @@ var {
 		};
 
 		this.getDatabase = function getDatabase(dbName) {
+            //print(JSON.stringify(["My client: ", client]))
 			const db = client.getDB(dbName);
 			db._session = this;
 			return db;

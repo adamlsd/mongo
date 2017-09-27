@@ -354,6 +354,7 @@ js::ReportOverRecursed(JSContext* maybecx)
         JS_ReportErrorNumber(maybecx, GetErrorMessage, nullptr, JSMSG_OVER_RECURSED);
         maybecx->overRecursed_ = true;
     }
+    abort();
 }
 
 void

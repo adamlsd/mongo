@@ -39,6 +39,7 @@
 #include "mongo/transport/mock_session.h"
 #include "mongo/transport/mock_ticket.h"
 #include "mongo/transport/service_entry_point.h"
+#include "mongo/transport/service_executor_noop.h"
 #include "mongo/transport/service_state_machine.h"
 #include "mongo/transport/transport_layer_mock.h"
 #include "mongo/unittest/unittest.h"
@@ -75,6 +76,10 @@ public:
     }
 
     void endAllSessions(transport::Session::TagMask tags) override {}
+
+    bool shutdown(Milliseconds timeout) override {
+        return true;
+    }
 
     Stats sessionStats() const override {
         return {};
@@ -218,12 +223,15 @@ protected:
         _sep = sep.get();
         sc->setServiceEntryPoint(std::move(sep));
 
+        sc->setServiceExecutor(stdx::make_unique<ServiceExecutorNoop>(sc));
+
         auto tl = stdx::make_unique<MockTL>();
         _tl = tl.get();
         sc->setTransportLayer(std::move(tl));
         _tl->start().transitional_ignore();
 
-        _ssm = ServiceStateMachine::create(getGlobalServiceContext(), _tl->createSession(), true);
+        _ssm = ServiceStateMachine::create(
+            getGlobalServiceContext(), _tl->createSession(), transport::Mode::kSynchronous);
         _tl->setSSM(_ssm.get());
     }
 

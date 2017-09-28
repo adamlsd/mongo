@@ -44,7 +44,6 @@
 #include "mongo/db/curop_metrics.h"
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/diag_log.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/jsobj.h"
@@ -106,18 +105,6 @@ const StringMap<int> cmdWhitelist = {{"delete", 1},
                                      {"insert", 1},
                                      {"refreshLogicalSessionCacheNow", 1},
                                      {"update", 1}};
-
-inline void opread(const Message& m) {
-    if (_diaglog.getLevel() & 2) {
-        _diaglog.readop(m.singleData().view2ptr(), m.header().getLen());
-    }
-}
-
-inline void opwrite(const Message& m) {
-    if (_diaglog.getLevel() & 1) {
-        _diaglog.writeop(m.singleData().view2ptr(), m.header().getLen());
-    }
-}
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -278,21 +265,20 @@ void appendReplyMetadata(OperationContext* opCtx,
             rpc::ShardingMetadata(lastOpTimeFromClient, replCoord->getElectionId())
                 .writeToMetadata(metadataBob)
                 .transitional_ignore();
-            if (serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k36) {
-                if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
-                    // No need to sign cluster times for internal clients.
-                    SignedLogicalTime currentTime(LogicalClock::get(opCtx)->getClusterTime(),
-                                                  TimeProofService::TimeProof(),
-                                                  0);
-                    rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                    logicalTimeMetadata.writeToMetadata(metadataBob);
-                } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
-                    auto currentTime =
-                        validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-                    rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                    logicalTimeMetadata.writeToMetadata(metadataBob);
-                }
+        }
+        if (serverGlobalParams.featureCompatibility.version.load() ==
+            ServerGlobalParams::FeatureCompatibility::Version::k36) {
+            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+                // No need to sign cluster times for internal clients.
+                SignedLogicalTime currentTime(
+                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+                auto currentTime =
+                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
             }
         }
     }
@@ -569,6 +555,7 @@ void execCommandDatabase(OperationContext* opCtx,
         std::unique_ptr<MaintenanceModeSetter> mmSetter;
 
         BSONElement cmdOptionMaxTimeMSField;
+        BSONElement disallowCollectionCreationField;
         BSONElement helpField;
         BSONElement shardVersionFieldIdx;
         BSONElement queryOptionMaxTimeMSField;
@@ -578,6 +565,8 @@ void execCommandDatabase(OperationContext* opCtx,
             StringData fieldName = element.fieldNameStringData();
             if (fieldName == QueryRequest::cmdOptionMaxTimeMS) {
                 cmdOptionMaxTimeMSField = element;
+            } else if (fieldName == "disallowCollectionCreation") {
+                disallowCollectionCreationField = element;
             } else if (fieldName == Command::kHelpFieldName) {
                 helpField = element;
             } else if (fieldName == ChunkVersion::kShardVersionField) {
@@ -682,16 +671,23 @@ void execCommandDatabase(OperationContext* opCtx,
             request.body,
             command->supportsNonLocalReadConcern(request.getDatabase().toString(), request.body)));
 
-        // We do not redo shard version handling if this command was issued via the direct client.
-        if ((serverGlobalParams.featureCompatibility.version.load() ==
-                 ServerGlobalParams::FeatureCompatibility::Version::k36 ||
-             iAmPrimary) &&
+        auto& oss = OperationShardingState::get(opCtx);
+
+        // Don't handle the shard version that may have been sent along with the command iff
+        //   fcv==3.4: This is a secondary.
+        //   fcv==3.6: The 'available' rc-level is specified, or this is a secondary and neither the
+        //             clusterTime nor rc-level was specified -- secondaries default to 'available'
+        //             when neither clusterTime nor rc-level is set.
+        //   or this command was issued via the direct client.
+        if ((iAmPrimary || (serverGlobalParams.featureCompatibility.version.load() ==
+                                ServerGlobalParams::FeatureCompatibility::Version::k36 &&
+                            (repl::ReadConcernArgs::get(opCtx).hasLevel() ||
+                             repl::ReadConcernArgs::get(opCtx).getArgsClusterTime()))) &&
             !opCtx->getClient()->isInDirectClient() &&
-            repl::ReadConcernArgs::get(opCtx).getLevel() !=
-                repl::ReadConcernLevel::kAvailableReadConcern) {
-            // Handle a shard version that may have been sent along with the command.
+            (serverGlobalParams.featureCompatibility.version.load() ==
+                 ServerGlobalParams::FeatureCompatibility::Version::k34 ||
+             !repl::ReadConcernArgs::get(opCtx).isLevelAvailable())) {
             auto commandNS = NamespaceString(command->parseNs(dbname, request.body));
-            auto& oss = OperationShardingState::get(opCtx);
             oss.initializeShardVersion(commandNS, shardVersionFieldIdx);
             auto shardingState = ShardingState::get(opCtx);
             if (oss.hasShardVersion()) {
@@ -701,6 +697,8 @@ void execCommandDatabase(OperationContext* opCtx,
             // Handle config optime information that may have been sent along with the command.
             uassertStatusOK(shardingState->updateConfigServerOpTimeFromMetadata(opCtx));
         }
+
+        oss.setDisallowCollectionCreationIfNeeded(disallowCollectionCreationField);
 
         // Can throw
         opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
@@ -1075,17 +1073,9 @@ DbResponse ServiceEntryPointMongod::handleRequest(OperationContext* opCtx, const
     if (op == dbQuery) {
         if (nsString.isCommand()) {
             isCommand = true;
-            opwrite(m);
-        } else {
-            opread(m);
         }
-    } else if (op == dbGetMore) {
-        opread(m);
     } else if (op == dbCommand || op == dbMsg) {
         isCommand = true;
-        opwrite(m);
-    } else {
-        opwrite(m);
     }
 
     CurOp& currentOp = *CurOp::get(opCtx);

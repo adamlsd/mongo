@@ -49,9 +49,9 @@ class SessionsCollection {
 public:
     virtual ~SessionsCollection();
 
-    static constexpr StringData kSessionsDb = "admin"_sd;
+    static constexpr StringData kSessionsDb = "config"_sd;
     static constexpr StringData kSessionsCollection = "system.sessions"_sd;
-    static constexpr StringData kSessionsFullNS = "admin.system.sessions"_sd;
+    static constexpr StringData kSessionsFullNS = "config.system.sessions"_sd;
 
     static const NamespaceString kSessionsNamespaceString;
 
@@ -60,8 +60,7 @@ public:
      * or equal to the given time. Returns an error if a networking issue occurred.
      */
     virtual Status refreshSessions(OperationContext* opCtx,
-                                   const LogicalSessionRecordSet& sessions,
-                                   Date_t refreshTime) = 0;
+                                   const LogicalSessionRecordSet& sessions) = 0;
 
     /**
      * Removes the authoritative records for the specified sessions.
@@ -99,11 +98,9 @@ protected:
      */
     Status doRefresh(const NamespaceString& ns,
                      const LogicalSessionRecordSet& sessions,
-                     Date_t refreshTime,
                      SendBatchFn send);
     Status doRefreshExternal(const NamespaceString& ns,
                              const LogicalSessionRecordSet& sessions,
-                             Date_t refreshTime,
                              SendBatchFn send);
 
     /**

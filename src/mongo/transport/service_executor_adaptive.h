@@ -90,8 +90,12 @@ public:
     virtual ~ServiceExecutorAdaptive();
 
     Status start() final;
-    Status shutdown() final;
+    Status shutdown(Milliseconds timeout) final;
     Status schedule(Task task, ScheduleFlags flags) final;
+
+    Mode transportMode() const final {
+        return Mode::kAsynchronous;
+    }
 
     void appendStats(BSONObjBuilder* bob) const final;
 
@@ -168,7 +172,6 @@ private:
         TickSource::Tick executingCurRun;
         CumulativeTickTimer executing;
         int recursionDepth = 0;
-        stdx::thread thread;
     };
 
     using ThreadList = stdx::list<ThreadState>;

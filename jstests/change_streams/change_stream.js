@@ -33,7 +33,7 @@
         // these synchronization points from this test.
         assert.commandWorked(db.runCommand({
             find: "foo",
-            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+            readConcern: {level: "local", afterClusterTime: db.getSession().getOperationTime()}
         }));
 
         // Waiting for replication assures no previous operations will be included.
@@ -49,25 +49,23 @@
         // TODO: SERVER-29126
         assert.commandWorked(db.runCommand({
             find: "foo",
-            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+            readConcern: {level: "local", afterClusterTime: db.getSession().getOperationTime()}
         }));
         FixtureHelpers.awaitReplication();
-        if (expectedBatch.length == 0)
-            FixtureHelpers.runCommandOnEachPrimary({
-                dbName: "admin",
-                cmdObj: {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}
-            });
+        if (expectedBatch.length == 0) {
+            assert.commandWorked(db.adminCommand(
+                {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}));
+        }
         let res = assert.commandWorked(db.runCommand({
             getMore: cursor.id,
             collection: getCollectionNameFromFullNamespace(cursor.ns),
             maxTimeMS: 5 * 60 * 1000,
             batchSize: (expectedBatch.length + 1)
         }));
-        if (expectedBatch.length == 0)
-            FixtureHelpers.runCommandOnEachPrimary({
-                dbName: "admin",
-                cmdObj: {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "off"}
-            });
+        if (expectedBatch.length == 0) {
+            assert.commandWorked(db.adminCommand(
+                {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "off"}));
+        }
         assert.docEq(res.cursor.nextBatch, expectedBatch);
     }
 
@@ -293,23 +291,19 @@
         // TODO: SERVER-29126
         assert.commandWorked(db.runCommand({
             find: "foo",
-            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+            readConcern: {level: "local", afterClusterTime: db.getSession().getOperationTime()}
         }));
         FixtureHelpers.awaitReplication();
-        FixtureHelpers.runCommandOnEachPrimary({
-            dbName: "admin",
-            cmdObj: {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}
-        });
+        assert.commandWorked(db.adminCommand(
+            {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "alwaysOn"}));
         let res = assert.commandWorked(db.runCommand({
             getMore: cursor.id,
             collection: getCollectionNameFromFullNamespace(cursor.ns),
             batchSize: 1
         }));
         assert.eq(res.cursor.nextBatch.length, 1);
-        FixtureHelpers.runCommandOnEachPrimary({
-            dbName: "admin",
-            cmdObj: {configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "off"}
-        });
+        assert.commandWorked(
+            db.adminCommand({configureFailPoint: "disableAwaitDataForGetMoreCmd", mode: "off"}));
         return res.cursor.nextBatch[0];
     }
 
@@ -322,7 +316,7 @@
         // TODO: SERVER-29126
         assert.commandWorked(db.runCommand({
             find: "foo",
-            readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
+            readConcern: {level: "local", afterClusterTime: db.getSession().getOperationTime()}
         }));
         FixtureHelpers.awaitReplication();
         assert.commandWorked(db.adminCommand(

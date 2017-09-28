@@ -33,6 +33,7 @@
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/db/bson/bson_helper.h"
 #include "mongo/db/catalog/uuid_catalog.h"
+#include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/pipeline/document_source_check_resume_token.h"
 #include "mongo/db/pipeline/document_source_limit.h"
@@ -96,10 +97,11 @@ const char* DocumentSourceOplogMatch::getSourceName() const {
 }
 
 DocumentSource::StageConstraints DocumentSourceOplogMatch::constraints() const {
-    StageConstraints constraints;
-    constraints.requiredPosition = PositionRequirement::kFirst;
-    constraints.isAllowedInsideFacetStage = false;
-    return constraints;
+    return {StreamType::kStreaming,
+            PositionRequirement::kFirst,
+            HostTypeRequirement::kAnyShard,
+            DiskUseRequirement::kNoDiskUse,
+            FacetRequirement::kNotAllowed};
 }
 
 /**
@@ -139,6 +141,14 @@ public:
     const char* getSourceName() const final {
         // This is used in error reporting.
         return "$changeStream";
+    }
+
+    StageConstraints constraints() const final {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kNone,
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kNotAllowed};
     }
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final {
@@ -231,6 +241,14 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(const NamespaceString& nss,
 
 list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
+    uassert(
+        ErrorCodes::InvalidOptions,
+        str::stream()
+            << "The featureCompatibilityVersion must be 3.6 to use the $changeStream stage. See "
+            << feature_compatibility_version::kDochubLink
+            << ".",
+        serverGlobalParams.featureCompatibility.version.load() !=
+            ServerGlobalParams::FeatureCompatibility::Version::k34);
     // TODO: Add sharding support here (SERVER-29141).
     uassert(
         40470, "The $changeStream stage is not supported on sharded systems.", !expCtx->inMongos);

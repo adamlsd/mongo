@@ -76,7 +76,7 @@ struct ServerGlobalParams {
     std::string socket = "/tmp";  // UNIX domain socket directory
     std::string transportLayer;   // --transportLayer (must be either "asio" or "legacy")
 
-    // --serviceExecutor ("adaptive", "synchronous", or "fixedForTesting")
+    // --serviceExecutor ("adaptive", "synchronous")
     std::string serviceExecutor;
 
     size_t maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
@@ -158,14 +158,22 @@ struct ServerGlobalParams {
              * 3.4 node can participate in a cluster whose feature compatibility version is 3.6.
              */
             k36,
+            /**
+             * This is only used for targetVersion to indicate that no upgrade is in progress.
+             */
+            kUnset
         };
 
         // Read-only parameter featureCompatibilityVersion.
         AtomicWord<Version> version{Version::k34};
 
-        // Read-only global isSchemaVersion36. This determines whether to give Collections UUIDs
-        // upon creation.
-        AtomicWord<bool> isSchemaVersion36{false};
+        // If set, an upgrade or downgrade is in progress to the set version.
+        AtomicWord<Version> targetVersion{Version::kUnset};
+
+        // This determines whether to give Collections UUIDs upon creation.
+        bool isSchemaVersion36() {
+            return (version.load() == Version::k36 || targetVersion.load() == Version::k36);
+        }
 
         // Feature validation differs depending on the role of a mongod in a replica set or
         // master/slave configuration. Masters/primaries can accept user-initiated writes and

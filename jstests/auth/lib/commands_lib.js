@@ -664,7 +664,7 @@ var authCommandsLib = {
           testname: "aggregate_listLocalSessions_allUsers_true",
           command: {aggregate: 1, pipeline: [{$listLocalSessions: {allUsers: true}}], cursor: {}},
           testcases: [{
-              runOnDb: adminDbName,
+              runOnDb: "config",
               roles:
                   {clusterAdmin: 1, clusterMonitor: 1, clusterManager: 1, root: 1, __system: 1}
           }],
@@ -684,7 +684,7 @@ var authCommandsLib = {
               cursor: {}
           },
           testcases: [{
-              runOnDb: adminDbName,
+              runOnDb: "config",
               roles:
                   {clusterAdmin: 1, clusterMonitor: 1, clusterManager: 1, root: 1, __system: 1}
           }]
@@ -696,7 +696,7 @@ var authCommandsLib = {
               pipeline: [{$listSessions: {allUsers: false}}],
               cursor: {}
           },
-          testcases: [{runOnDb: adminDbName, roles: roles_all}]
+          testcases: [{runOnDb: "config", roles: roles_all}]
         },
         {
           testname: "aggregate_lookup",
@@ -2243,20 +2243,6 @@ var authCommandsLib = {
                 privileges:
                     [{resource: {db: secondDbName, collection: ""}, actions: ["dbStats"]}]
               }
-          ]
-        },
-        {
-          testname: "diagLogging",
-          command: {diagLogging: 1},
-          skipSharded: true,
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: roles_hostManager,
-                privileges: [{resource: {cluster: true}, actions: ["diagLogging"]}]
-              },
-              {runOnDb: firstDbName, roles: {}},
-              {runOnDb: secondDbName, roles: {}}
           ]
         },
         {

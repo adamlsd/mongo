@@ -298,7 +298,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "Failed to connect in setup", op);
         // If we fail during connection, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed to connect to remote target for a request - " << redact(resp.status);
+        log() << "Failed to connect to " << op->request()._target << " - " << redact(resp.status);
         op->finish(std::move(resp));
         return;
     }
@@ -308,7 +308,8 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "In refresh, but did not fail to heartbeat", op);
         // If we fail during heartbeating, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed asio heartbeat for a request  - " << redact(resp.status);
+        log() << "Failed asio heartbeat to " << op->command()._target << " - "
+              << redact(resp.status);
         _numFailedOps.fetchAndAdd(1);
         op->finish(std::move(resp));
         return;
@@ -318,7 +319,7 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         // In the case that resp is not OK, but _inSetup is false, we are using a connection
         // that
         // we got from the pool to execute a command, but it failed for some reason.
-        LOG(2) << "Failed to execute a command reason: " << redact(resp.status);
+        LOG(2) << "Failed to execute a command.  Reason: " << redact(resp.status);
 
         if (resp.status.code() != ErrorCodes::CallbackCanceled) {
             _numFailedOps.fetchAndAdd(1);

@@ -163,6 +163,8 @@ var roles_all = {
     __system: 1
 };
 
+load("jstests/libs/uuid_util.js");
+
 var authCommandsLib = {
 
     /************* TEST CASES ****************/
@@ -1075,6 +1077,44 @@ var authCommandsLib = {
           ]
         },
         {
+          testname: "aggregate_changeStream",
+          command: {aggregate: "foo", pipeline: [{$changeStream: {}}], cursor: {}},
+          setup: function(db) {
+              db.createCollection("foo");
+          },
+          teardown: function(db) {
+              db.foo.drop();
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: {
+                    read: 1,
+                    readAnyDatabase: 1,
+                    readWrite: 1,
+                    readWriteAnyDatabase: 1,
+                    dbOwner: 1,
+                    root: 1,
+                    __system: 1
+                },
+                privileges: [{
+                    resource: {db: firstDbName, collection: "foo"},
+                    actions: ["changeStream", "find"]
+                }],
+                expectFail: true,  // because no replication enabled
+              },
+              {
+                runOnDb: secondDbName,
+                roles: {readAnyDatabase: 1, readWriteAnyDatabase: 1, root: 1, __system: 1},
+                privileges: [{
+                    resource: {db: secondDbName, collection: "foo"},
+                    actions: ["changeStream", "find"]
+                }],
+                expectFail: true,  // because no replication enabled
+              }
+          ]
+        },
+        {
           testname: "appendOplogNote",
           command: {appendOplogNote: 1, data: {a: 1}},
           skipSharded: true,
@@ -1728,6 +1768,31 @@ var authCommandsLib = {
                 roles: roles_readAny,
                 privileges: [{resource: {db: secondDbName, collection: "x"}, actions: ["find"]}]
               }
+          ]
+        },
+        {
+          testname: "countWithUUID",
+          command: function(state) {
+              return {count: state.uuid};
+          },
+          skipSharded: true,
+          setup: function(db) {
+              db.runCommand({create: "foo"});
+
+              return {uuid: getUUIDFromListCollections(db, db.foo.getName())};
+          },
+          teardown: function(db) {
+              db.foo.drop();
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: {__system: 1, root: 1, backup: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {resource: {cluster: true}, actions: ["useUUID"]}
+                ],
+              },
           ]
         },
         {
@@ -2647,6 +2712,31 @@ var authCommandsLib = {
           ]
         },
         {
+          testname: "findWithUUID",
+          command: function(state) {
+              return {find: state.uuid};
+          },
+          skipSharded: true,
+          setup: function(db) {
+              db.runCommand({create: "foo"});
+
+              return {uuid: getUUIDFromListCollections(db, db.foo.getName())};
+          },
+          teardown: function(db) {
+              db.foo.drop();
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: {__system: 1, root: 1, backup: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: "foo"}, actions: ["find"]},
+                    {resource: {cluster: true}, actions: ["useUUID"]}
+                ],
+              },
+          ],
+        },
+        {
           testname: "findAndModify",
           command: {findAndModify: "x", query: {_id: "abc"}, update: {$inc: {n: 1}}},
           setup: function(db) {
@@ -3340,6 +3430,42 @@ var authCommandsLib = {
               }
           ]
         },
+        {
+          testname: "listIndexesWithUUID",
+          command: function(state) {
+              return {listIndexes: state.uuid};
+          },
+          skipSharded: true,
+          setup: function(db) {
+              db.x.insert({_id: 5});
+              db.x.insert({_id: 6});
+
+              return {uuid: getUUIDFromListCollections(db, db.x.getName())};
+          },
+          teardown: function(db) {
+              db.x.drop();
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: {backup: 1, root: 1, __system: 1},
+                privileges: [
+                    {resource: {db: firstDbName, collection: ""}, actions: ["listIndexes"]},
+                    {resource: {cluster: true}, actions: ["useUUID"]}
+                ]
+              },
+              // Test legacy (pre 3.0) way of authorizing listIndexes.
+              {
+                runOnDb: firstDbName,
+                privileges: [
+                    {resource: {db: firstDbName, collection: "system.indexes"}, actions: ["find"]},
+                    {resource: {cluster: true}, actions: ["useUUID"]}
+
+                ]
+              }
+          ]
+        },
+
         {
           testname: "listShards",
           command: {listShards: 1},
@@ -4454,6 +4580,19 @@ var authCommandsLib = {
           command: {refreshSessionsInternal: []},
           testcases: [{runOnDb: adminDbName, roles: {__system: 1}}],
         },
+        {
+          testname: "_getNextSessionMods",
+          command: {_getNextSessionMods: "a-b"},
+          skipSharded: true,
+          testcases: [
+              {
+                runOnDb: adminDbName,
+                roles: {__system: 1},
+                privileges: [{resource: {cluster: true}, actions: ["internal"]}],
+                expectFail: true
+              },
+          ]
+        },
     ],
 
     /************* SHARED TEST LOGIC ****************/
@@ -4498,10 +4637,13 @@ var authCommandsLib = {
         var adminDb = conn.getDB(adminDbName);
         if (t.setup) {
             adminDb.auth("admin", "password");
-            t.setup(runOnDb);
+            var state = t.setup(runOnDb);
             runOnDb.getLastError();
             adminDb.logout();
+            return state;
         }
+
+        return {};
     },
 
     authenticatedSetup: function(t, runOnDb) {

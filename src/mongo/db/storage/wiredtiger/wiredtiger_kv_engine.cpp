@@ -321,6 +321,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
                                        bool repair,
                                        bool readOnly)
     : _eventHandler(WiredTigerUtil::defaultEventHandlers()),
+      _clockSource(cs),
       _canonicalName(canonicalName),
       _path(path),
       _sizeStorerSyncTracker(cs, 100000, Seconds(60)),
@@ -340,7 +341,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         }
     }
 
-    _previousCheckedDropsQueued = Date_t::now();
+    _previousCheckedDropsQueued = _clockSource->now();
 
     std::stringstream ss;
     ss << "create,";
@@ -834,7 +835,7 @@ std::list<WiredTigerCachedCursor> WiredTigerKVEngine::filterCursorsWithQueuedDro
 }
 
 bool WiredTigerKVEngine::haveDropsQueued() const {
-    Date_t now = Date_t::now();
+    Date_t now = _clockSource->now();
     Milliseconds delta = now - _previousCheckedDropsQueued;
 
     if (!_readOnly && _sizeStorerSyncTracker.intervalHasElapsed()) {
@@ -1001,7 +1002,7 @@ void WiredTigerKVEngine::setStableTimestamp(SnapshotName stableTimestamp) {
     // taking "stable checkpoints". In the transitioning case, it's imperative for the "stable
     // timestamp" to have first been communicated to WiredTiger.
     if (!keepOldBehavior) {
-        std::string conf = str::stream() << "stable_timestamp=" << stableTimestamp.toString();
+        std::string conf = "stable_timestamp=" + stableTimestamp.toString();
         _conn->set_timestamp(_conn, conf.c_str());
     }
     if (_checkpointThread) {

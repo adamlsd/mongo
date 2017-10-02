@@ -115,6 +115,7 @@ void operator+=(ActionSet& target, const ActionSet& source) {
 MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
     // Read role
     readRoleActions
+        << ActionType::changeStream
         << ActionType::collStats
         << ActionType::dbHash
         << ActionType::dbStats
@@ -194,6 +195,7 @@ MONGO_INITIALIZER(AuthorizationBuiltinRoles)(InitializerContext* context) {
         << ActionType::replSetGetStatus  // clusterManager gets this also
         << ActionType::serverStatus 
         << ActionType::top
+        << ActionType::useUUID
         << ActionType::inprog
         << ActionType::shardingState;
 
@@ -499,7 +501,7 @@ void addQueryableBackupPrivileges(PrivilegeVector* privileges) {
 
     ActionSet clusterActions;
     clusterActions << ActionType::getParameter  // To check authSchemaVersion
-                   << ActionType::listDatabases;
+                   << ActionType::listDatabases << ActionType::useUUID;
     Privilege::addPrivilegeToPrivilegeVector(
         privileges, Privilege(ResourcePattern::forClusterResource(), clusterActions));
 

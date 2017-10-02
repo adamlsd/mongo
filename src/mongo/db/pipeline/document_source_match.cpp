@@ -68,8 +68,7 @@ intrusive_ptr<DocumentSource> DocumentSourceMatch::optimize() {
         return nullptr;
     }
 
-    // TODO SERVER-30991: thread optimization down to the MatchExpression.
-    //_expression->optimize();
+    _expression = MatchExpression::optimize(std::move(_expression));
 
     return this;
 }
@@ -371,7 +370,6 @@ void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other
 
     StatusWithMatchExpression status = uassertStatusOK(
         MatchExpressionParser::parse(_predicate,
-                                     pExpCtx->getCollator(),
                                      pExpCtx,
                                      ExtensionsCallbackNoop(),
                                      MatchExpressionParser::AllowedFeatures::kText |
@@ -499,12 +497,8 @@ DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
       _isTextQuery(isTextQuery(query)),
       _dependencies(_isTextQuery ? DepsTracker::MetadataAvailable::kTextScore
                                  : DepsTracker::MetadataAvailable::kNoMetadata) {
-    StatusWithMatchExpression status =
-        uassertStatusOK(MatchExpressionParser::parse(_predicate,
-                                                     pExpCtx->getCollator(),
-                                                     pExpCtx,
-                                                     ExtensionsCallbackNoop(),
-                                                     Pipeline::kAllowedMatcherFeatures));
+    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
 
     _expression = std::move(status.getValue());
     getDependencies(&_dependencies);

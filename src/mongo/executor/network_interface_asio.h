@@ -200,7 +200,9 @@ private:
                                 Date_t now,
                                 rpc::EgressMetadataHook* metadataHook = nullptr);
 
-		HostAndPort target() const { return this->_target; }
+        HostAndPort target() const {
+            return this->_target;
+        }
 
     private:
         NetworkInterfaceASIO::AsyncConnection* const _conn;
@@ -213,7 +215,7 @@ private:
 
         const Date_t _start;
 
-        HostAndPort _target;
+        const HostAndPort _target;
     };
 
     /**

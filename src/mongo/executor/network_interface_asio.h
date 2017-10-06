@@ -429,8 +429,9 @@ private:
                 ErrorCodes::CallbackCanceled, "Callback canceled", now() - op->start());
             return _completeOperation(op, rs);
         } else if (op->timedOut()) {
-            auto rs = ResponseStatus(
-                ErrorCodes::NetworkInterfaceExceededTimeLimit, "Operation timed out", now() - op->start());
+            auto rs = ResponseStatus(ErrorCodes::NetworkInterfaceExceededTimeLimit,
+                                     "Operation timed out",
+                                     now() - op->start());
             return _completeOperation(op, rs);
         } else if (ec)
             return _networkErrorCallback(op, ec);

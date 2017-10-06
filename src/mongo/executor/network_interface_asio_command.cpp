@@ -59,6 +59,8 @@ namespace executor {
 
 namespace {
 
+using namespace std::literals::string_literals;
+
 MONGO_FP_DECLARE(NetworkInterfaceASIOasyncRunCommandFail);
 
 using asio::ip::tcp;
@@ -308,7 +310,8 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
         MONGO_ASIO_INVARIANT(!resp.isOK(), "In refresh, but did not fail to heartbeat", op);
         // If we fail during heartbeating, we won't be able to access any of op's members after
         // calling finish(), so we return here.
-        log() << "Failed asio heartbeat to " << op->command()->target() << " - "
+        log() << "Failed asio heartbeat to "
+              << (op->command() ? op->command()->target().toString() : "unknown"s) << " - "
               << redact(resp.status);
         _numFailedOps.fetchAndAdd(1);
         op->finish(std::move(resp));
@@ -317,9 +320,16 @@ void NetworkInterfaceASIO::_completeOperation(AsyncOp* op, ResponseStatus resp) 
 
     if (!resp.isOK()) {
         // In the case that resp is not OK, but _inSetup is false, we are using a connection
-        // that
-        // we got from the pool to execute a command, but it failed for some reason.
-        LOG(2) << "Failed to execute a command.  Reason: " << redact(resp.status);
+        // that we got from the pool to execute a command, but it failed for some reason.
+        if (op->command()) {
+            LOG(2) << "Failed to execute command: "
+                   << redact(std::string(op->command()->toSend().buf(),
+                                         op->command()->toSend().buf() +
+                                             op->command()->toSend().size()))
+                   << ".  Reason: " << redact(resp.status);
+        } else {
+            LOG(2) << "Failed to execute a command.  Reason: " << redact(resp.status);
+        }
 
         if (resp.status.code() != ErrorCodes::CallbackCanceled) {
             _numFailedOps.fetchAndAdd(1);

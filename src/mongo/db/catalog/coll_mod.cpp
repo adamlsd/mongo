@@ -43,6 +43,7 @@
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
@@ -172,16 +173,26 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
             MatchExpressionParser::AllowedFeatureSet allowedFeatures =
                 MatchExpressionParser::kBanAllSpecialFeatures;
             if (!serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.load() ||
-                serverGlobalParams.featureCompatibility.version.load() !=
-                    ServerGlobalParams::FeatureCompatibility::Version::k34) {
-                // Allow $jsonSchema only if the feature compatibility version is newer than 3.4.
+                serverGlobalParams.featureCompatibility.isFullyUpgradedTo36()) {
                 // Note that we don't enforce this restriction on the secondary or on backup
                 // instances, as indicated by !validateFeaturesAsMaster.
                 allowedFeatures |= MatchExpressionParser::kJSONSchema;
+                allowedFeatures |= MatchExpressionParser::kExpr;
             }
-            auto statusW = coll->parseValidator(e.Obj(), allowedFeatures);
-            if (!statusW.isOK())
-                return statusW.getStatus();
+            auto statusW = coll->parseValidator(opCtx, e.Obj(), allowedFeatures);
+            if (!statusW.isOK()) {
+                if (statusW.getStatus().code() == ErrorCodes::QueryFeatureNotAllowed) {
+                    // The default error message for disallowed $jsonSchema and $expr is not
+                    // descriptive enough, so we rewrite it here.
+                    return {ErrorCodes::QueryFeatureNotAllowed,
+                            str::stream() << "The featureCompatibilityVersion must be 3.6 to add a "
+                                             "collection validator using 3.6 query features. See "
+                                          << feature_compatibility_version::kDochubLink
+                                          << "."};
+                } else {
+                    return statusW.getStatus();
+                }
+            }
 
             cmr.collValidator = e;
         } else if (fieldName == "validationLevel" && !isView) {

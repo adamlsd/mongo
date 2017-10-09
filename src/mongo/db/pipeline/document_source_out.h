@@ -32,7 +32,8 @@
 
 namespace mongo {
 
-class DocumentSourceOut final : public DocumentSourceNeedsMongod, public SplittableDocumentSource {
+class DocumentSourceOut final : public DocumentSourceNeedsMongoProcessInterface,
+                                public SplittableDocumentSource {
 public:
     static std::unique_ptr<LiteParsedDocumentSourceForeignCollections> liteParse(
         const AggregationRequest& request, const BSONElement& spec);
@@ -44,12 +45,12 @@ public:
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
     GetDepsReturn getDependencies(DepsTracker* deps) const final;
 
-    StageConstraints constraints() const final {
-        StageConstraints constraints;
-        constraints.hostRequirement = HostTypeRequirement::kPrimaryShard;
-        constraints.isAllowedInsideFacetStage = false;
-        constraints.requiredPosition = PositionRequirement::kLast;
-        return constraints;
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        return {StreamType::kStreaming,
+                PositionRequirement::kLast,
+                HostTypeRequirement::kPrimaryShard,
+                DiskUseRequirement::kWritesPersistentData,
+                FacetRequirement::kNotAllowed};
     }
 
     // Virtuals for SplittableDocumentSource

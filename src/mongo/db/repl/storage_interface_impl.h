@@ -66,7 +66,8 @@ public:
 
     Status insertDocument(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const TimestampedBSONObj& doc) override;
+                          const TimestampedBSONObj& doc,
+                          long long term) override;
 
     Status insertDocuments(OperationContext* opCtx,
                            const NamespaceString& nss,
@@ -83,6 +84,8 @@ public:
                             const CollectionOptions& options) override;
 
     Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) override;
+
+    Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) override;
 
     Status renameCollection(OperationContext* opCtx,
                             const NamespaceString& fromNS,

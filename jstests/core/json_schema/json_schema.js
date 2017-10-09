@@ -1,5 +1,13 @@
+// listCollections tests expect that a collection is not implicitly created after a drop.
+// @tags: [assumes_no_implicit_collection_creation_after_drop]
+
+/**
+ * Tests for JSON Schema document validation.
+ */
 (function() {
     "use strict";
+
+    load("jstests/libs/assert_schema_match.js");
 
     let coll = db.jstests_json_schema;
     coll.drop();
@@ -29,6 +37,12 @@
     });
     assert.throws(function() {
         coll.find({$jsonSchema: {type: {}}}).itcount();
+    });
+
+    // Test that $jsonSchema fails to parse if the value for the "type" keyword is an unsupported
+    // alias.
+    assert.throws(function() {
+        coll.find({$jsonSchema: {type: 'integer'}}).itcount();
     });
 
     // Test that $jsonSchema fails to parse if the value for the properties keyword is not an
@@ -235,4 +249,96 @@
               coll.find({$jsonSchema: {properties: {arr: {type: "number"}}}}, {_id: 1})
                   .sort({_id: 1})
                   .toArray());
+
+    // Test that the following keywords fail to parse although present in the spec:
+    // - default
+    // - definitions
+    // - format
+    // - id
+    // - $ref
+    // - $schema
+    let res = coll.runCommand({find: coll.getName(), query: {$jsonSchema: {default: {_id: 0}}}});
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({
+        find: coll.getName(),
+        query: {$jsonSchema: {definitions: {numberField: {type: "number"}}}}
+    });
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({find: coll.getName(), query: {$jsonSchema: {format: "email"}}});
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({find: coll.getName(), query: {$jsonSchema: {id: "someschema.json"}}});
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({
+        find: coll.getName(),
+        query: {$jsonSchema: {properties: {a: {$ref: "#/definitions/positiveInt"}}}}
+    });
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({find: coll.getName(), query: {$jsonSchema: {$schema: "hyper-schema"}}});
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    res = coll.runCommand({
+        find: coll.getName(),
+        query: {$jsonSchema: {$schema: "http://json-schema.org/draft-04/schema#"}}
+    });
+    assert.commandFailedWithCode(res, ErrorCodes.FailedToParse);
+
+    // Test that the following whitelisted keywords are verified as strings but otherwise ignored
+    // in a top-level schema:
+    // - description
+    // - title
+    assertSchemaMatch(coll, {description: "test"}, {}, true);
+    assertSchemaMatch(coll, {title: "insert title"}, {}, true);
+
+    // Repeat the test above with nested schema.
+    assertSchemaMatch(coll, {properties: {a: {description: "test"}}}, {a: {}}, true);
+    assertSchemaMatch(coll, {properties: {a: {title: "this is a's title"}}}, {a: {}}, true);
+
+    // Test that the $jsonSchema validator is correctly stored in the collection catalog.
+    coll.drop();
+    let schema = {properties: {a: {type: 'number'}, b: {minLength: 1}}};
+    assert.commandWorked(db.createCollection(coll.getName(), {validator: {$jsonSchema: schema}}));
+
+    let listCollectionsOutput = db.runCommand({listCollections: 1, filter: {name: coll.getName()}});
+    assert.commandWorked(listCollectionsOutput);
+    assert.eq(listCollectionsOutput.cursor.firstBatch[0].options.validator, {$jsonSchema: schema});
+
+    // Repeat the test above using the whitelisted metadata keywords.
+    coll.drop();
+    schema = {title: "Test schema", description: "Metadata keyword test"};
+    assert.commandWorked(db.createCollection(coll.getName(), {validator: {$jsonSchema: schema}}));
+
+    listCollectionsOutput = db.runCommand({listCollections: 1, filter: {name: coll.getName()}});
+    assert.commandWorked(listCollectionsOutput);
+    assert.eq(listCollectionsOutput.cursor.firstBatch[0].options.validator, {$jsonSchema: schema});
+
+    // Repeat again with a nested schema.
+    coll.drop();
+    schema = {properties: {a: {title: "Nested title", description: "Nested description"}}};
+    assert.commandWorked(db.createCollection(coll.getName(), {validator: {$jsonSchema: schema}}));
+
+    listCollectionsOutput = db.runCommand({listCollections: 1, filter: {name: coll.getName()}});
+    assert.commandWorked(listCollectionsOutput);
+    assert.eq(listCollectionsOutput.cursor.firstBatch[0].options.validator, {$jsonSchema: schema});
+
+    // Test that $jsonSchema and various internal match expressions work correctly with sibling
+    // predicates.
+    coll.drop();
+    assert.writeOK(coll.insert({_id: 1, a: 1, b: 1}));
+    assert.writeOK(coll.insert({_id: 2, a: 2, b: 2}));
+
+    assert.eq(1,
+              coll.find({$jsonSchema: {properties: {a: {type: "number"}}, required: ["a"]}, b: 1})
+                  .itcount());
+    assert.eq(1, coll.find({$or: [{$jsonSchema: {}, a: 1}, {b: 1}]}).itcount());
+    assert.eq(1, coll.find({$and: [{$jsonSchema: {}, a: 1}, {b: 1}]}).itcount());
+
+    assert.eq(1, coll.find({$_internalSchemaMinProperties: 3, b: 2}).itcount());
+    assert.eq(1, coll.find({$_internalSchemaMaxProperties: 3, b: 2}).itcount());
+    assert.eq(1, coll.find({$alwaysTrue: 1, b: 2}).itcount());
+    assert.eq(0, coll.find({$alwaysFalse: 1, b: 2}).itcount());
 }());

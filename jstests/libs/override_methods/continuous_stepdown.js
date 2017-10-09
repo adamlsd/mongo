@@ -132,8 +132,8 @@ let ContinuousStepdown;
         };
 
         /**
-         * Sets the stepdown thread's counter to 0, and waits for it to finish. Returns the stepdown
-         * thread's return value.
+         * Sets the stepdown thread's counter to 0, and waits for it to finish. Throws if the
+         * stepdown thread did not exit successfully.
          */
         this.stop = function() {
             if (!_thread) {
@@ -148,7 +148,7 @@ let ContinuousStepdown;
             const retVal = _thread.returnData();
             _thread = null;
 
-            return assert.commandWorked(retVal);
+            assert.commandWorked(retVal);
         };
     };
 
@@ -161,7 +161,8 @@ let ContinuousStepdown;
      * stopping a stepdown thread for the test's config server replica set and each of the shard
      * replica sets, as specified by the given stepdownOptions object.
      */
-    ContinuousStepdown.configure = function(stepdownOptions) {
+    ContinuousStepdown.configure = function(stepdownOptions,
+                                            {verbositySetting: verbositySetting = {}} = {}) {
         const defaultOptions = {
             configStepdown: true,
             electionTimeoutMS: 5 * 1000,
@@ -171,17 +172,12 @@ let ContinuousStepdown;
         };
         stepdownOptions = Object.merge(defaultOptions, stepdownOptions);
 
+        verbositySetting = tojson(verbositySetting);
+
         // Preserve the original ReplSetTest and ShardingTest constructors, because they are being
         // overriden.
         const originalReplSetTest = ReplSetTest;
         const originalShardingTest = ShardingTest;
-
-        const verbositySetting = tojson({
-            verbosity: 0,
-            command: {verbosity: 1},
-            network: {verbosity: 1, asio: {verbosity: 2}},
-            tracking: {verbosity: 0}
-        });
 
         /**
          * Overrides the ReplSetTest constructor to start the continuous primary stepdown thread.
@@ -209,7 +205,7 @@ let ContinuousStepdown;
              * Overrides stopSet to terminate the failover thread.
              */
             this.stopSet = function() {
-                this.stopContinuousFailover();
+                this.stopContinuousFailover({waitForPrimary: false});
                 _originalStopSetFn.apply(this, arguments);
             };
 
@@ -251,13 +247,19 @@ let ContinuousStepdown;
             /**
              * Blocking method, which tells the thread running continuousPrimaryStepdownFn to stop
              * and waits for it to terminate.
+             *
+             * If waitForPrimary is true, blocks until a new primary has been elected.
              */
-            this.stopContinuousFailover = function() {
+            this.stopContinuousFailover = function({waitForPrimary: waitForPrimary = false} = {}) {
                 if (!_stepdownThread.hasStarted()) {
                     return;
                 }
 
-                return _stepdownThread.stop();
+                _stepdownThread.stop();
+
+                if (waitForPrimary) {
+                    this.getPrimary();
+                }
             };
         };
 
@@ -316,15 +318,17 @@ let ContinuousStepdown;
             /**
              * Calls stopContinuousFailover on the config server and each shard replica set as
              * specified by the stepdownOptions object.
+             *
+             * If waitForPrimary is true, blocks until each replica set has elected a primary.
              */
-            this.stopContinuousFailover = function() {
+            this.stopContinuousFailover = function({waitForPrimary: waitForPrimary = false} = {}) {
                 if (stepdownOptions.configStepdown) {
-                    this.configRS.stopContinuousFailover();
+                    this.configRS.stopContinuousFailover({waitForPrimary: waitForPrimary});
                 }
 
                 if (stepdownOptions.shardStepdown) {
                     this._rs.forEach(function(rst) {
-                        rst.test.stopContinuousFailover();
+                        rst.test.stopContinuousFailover({waitForPrimary: waitForPrimary});
                     });
                 }
             };
@@ -337,5 +341,11 @@ let ContinuousStepdown;
         };
 
         Object.extend(ShardingTest, originalShardingTest);
+
+        // The checkUUIDsConsistentAcrossCluster() function is defined on ShardingTest's prototype,
+        // but ShardingTest's prototype gets reset when ShardingTest is reassigned. We reload the
+        // override to redefine checkUUIDsConsistentAcrossCluster() on the new ShardingTest's
+        // prototype.
+        load('jstests/libs/override_methods/check_uuids_consistent_across_cluster.js');
     };
 })();

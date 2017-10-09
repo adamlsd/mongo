@@ -45,6 +45,12 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
     if "shardsvr" in kwargs and "orphanCleanupDelaySecs" not in suite_set_parameters:
         suite_set_parameters["orphanCleanupDelaySecs"] = 0
 
+    # The LogicalSessionCache does automatic background refreshes in the server. This is
+    # race-y for tests, since tests trigger their own immediate refreshes instead. Turn off
+    # background refreshing for tests. Set in the .yml file to override this.
+    if "disableLogicalSessionCacheRefresh" not in suite_set_parameters:
+        suite_set_parameters["disableLogicalSessionCacheRefresh"] = True
+
     _apply_set_parameters(args, suite_set_parameters)
 
     shortcut_opts = {
@@ -52,6 +58,7 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
         "nopreallocj": config.NO_PREALLOC_JOURNAL,
         "serviceExecutor": config.SERVICE_EXECUTOR,
         "storageEngine": config.STORAGE_ENGINE,
+        "transportLayer": config.TRANSPORT_LAYER,
         "wiredTigerCollectionConfigString": config.WT_COLL_CONFIG,
         "wiredTigerEngineConfigString": config.WT_ENGINE_CONFIG,
         "wiredTigerIndexConfigString": config.WT_INDEX_CONFIG,
@@ -150,6 +157,7 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
         "storageEngine": (config.STORAGE_ENGINE, ""),
         "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
         "testName": (os.path.splitext(os.path.basename(filename))[0], ""),
+        "transportLayer": (config.TRANSPORT_LAYER, ""),
         "wiredTigerCollectionConfigString": (config.WT_COLL_CONFIG, ""),
         "wiredTigerEngineConfigString": (config.WT_ENGINE_CONFIG, ""),
         "wiredTigerIndexConfigString": (config.WT_INDEX_CONFIG, ""),
@@ -194,6 +202,10 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
 
     # Load this file to allow a callback to validate collections before shutting down mongod.
     eval_sb.append("load('jstests/libs/override_methods/validate_collections_on_shutdown.js');")
+
+    # Load a callback to check UUID consistency before shutting down a ShardingTest.
+    eval_sb.append(
+        "load('jstests/libs/override_methods/check_uuids_consistent_across_cluster.js');")
 
     eval_str = "; ".join(eval_sb)
     args.append("--eval")

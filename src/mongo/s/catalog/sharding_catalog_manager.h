@@ -254,7 +254,16 @@ public:
                          const BSONObj& defaultCollation,
                          bool unique,
                          const std::vector<BSONObj>& initPoints,
-                         const bool distributeInitialChunks);
+                         const bool distributeInitialChunks,
+                         const ShardId& dbPrimaryShardId);
+
+    /**
+     * Iterates through each entry in config.collections that does not have a UUID, generates a UUID
+     * for the collection, and updates the entry with the generated UUID.
+     *
+     * Remove after 3.4 -> 3.6 upgrade.
+     */
+    void generateUUIDsForExistingShardedCollections(OperationContext* opCtx);
 
     //
     // Shard Operations

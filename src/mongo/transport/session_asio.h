@@ -55,16 +55,23 @@ class TransportLayerASIO::ASIOSession : public Session {
 
 public:
     ASIOSession(TransportLayerASIO* tl, GenericSocket socket)
-        : _socket(std::move(socket)), _tl(tl) {}
+        : _socket(std::move(socket)), _tl(tl) {
+        std::error_code ec;
 
-    virtual ~ASIOSession() {
-        if (_didPostAcceptSetup) {
-            // This is incremented in TransportLayerASIO::_acceptConnection if there are less than
-            // maxConns connections already established. A call to postAcceptSetup means that the
-            // session is valid and will be handed off to the ServiceEntryPoint.
-            //
-            // We decrement this here to keep the counters in the TL accurate.
-            _tl->_currentConnections.subtractAndFetch(1);
+        _socket.non_blocking(_tl->_listenerOptions.transportMode == Mode::kAsynchronous, ec);
+        fassert(40490, ec.value() == 0);
+
+        auto family = endpointToSockAddr(_socket.local_endpoint()).getType();
+        if (family == AF_INET || family == AF_INET6) {
+            _socket.set_option(asio::ip::tcp::no_delay(true));
+            _socket.set_option(asio::socket_base::keep_alive(true));
+            setSocketKeepAliveParams(_socket.native_handle());
+        }
+
+        _local = endpointToHostAndPort(_socket.local_endpoint());
+        _remote = endpointToHostAndPort(_socket.remote_endpoint(ec));
+        if (ec) {
+            LOG(3) << "Unable to get remote endpoint address: " << ec.message();
         }
     }
 
@@ -104,27 +111,6 @@ public:
 #else
         return _socket.is_open();
 #endif
-    }
-
-    void postAcceptSetup(bool async) {
-        std::error_code ec;
-        _socket.non_blocking(async, ec);
-        fassert(40490, ec.value() == 0);
-
-        auto family = endpointToSockAddr(_socket.local_endpoint()).getType();
-        if (family == AF_INET || family == AF_INET6) {
-            _socket.set_option(asio::ip::tcp::no_delay(true));
-            _socket.set_option(asio::socket_base::keep_alive(true));
-            setSocketKeepAliveParams(_socket.native_handle());
-        }
-
-        _local = endpointToHostAndPort(_socket.local_endpoint());
-        _remote = endpointToHostAndPort(_socket.remote_endpoint(ec));
-        if (ec) {
-            LOG(3) << "Unable to get remote endpoint address: " << ec.message();
-        }
-
-        _didPostAcceptSetup = true;
     }
 
     template <typename MutableBufferSequence, typename CompleteHandler>
@@ -315,7 +301,6 @@ private:
 #endif
 
     TransportLayerASIO* const _tl;
-    bool _didPostAcceptSetup = false;
 };
 
 }  // namespace transport

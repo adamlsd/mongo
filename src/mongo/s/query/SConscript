@@ -40,6 +40,7 @@ env.Library(
         "router_stage_skip.cpp",
     ],
     LIBDEPS=[
+        "$BUILD_DIR/mongo/db/query/query_common",
         "async_results_merger",
     ],
 )
@@ -134,6 +135,7 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/generic_cursor',
         '$BUILD_DIR/mongo/db/kill_sessions',
         '$BUILD_DIR/mongo/db/logical_session_cache',
         '$BUILD_DIR/mongo/db/logical_session_id',

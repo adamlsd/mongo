@@ -19,8 +19,8 @@
             filter = {};
         }
 
-        var cursor = new DBCommandCursor(mydb.getMongo(),
-                                         mydb.runCommand("listCollections", {filter: filter}));
+        var cursor =
+            new DBCommandCursor(mydb, mydb.runCommand("listCollections", {filter: filter}));
         function stripToName(result) {
             return result.name;
         }
@@ -84,6 +84,14 @@
     },
                         []);
 
+    // Filter with $expr.
+    testListCollections({$expr: {$eq: ["$name", "lists"]}}, ["lists"]);
+
+    // Filter with $expr with an unbound variable.
+    assert.throws(function() {
+        mydb.getCollectionInfos({$expr: {$eq: ["$name", "$$unbound"]}});
+    });
+
     // No extensions are allowed in filters.
     assert.throws(function() {
         mydb.getCollectionInfos({$text: {$search: "str"}});
@@ -99,11 +107,4 @@
         mydb.getCollectionInfos(
             {a: {$nearSphere: {$geometry: {type: "Point", coordinates: [0, 0]}}}});
     });
-
-    // TODO SERVER-30951: Convert this test to use top-level $expr and enable it.
-    /*
-    assert.throws(function() {
-        mydb.getCollectionInfos({a: {$expr: 5}});
-    });
-    */
 }());

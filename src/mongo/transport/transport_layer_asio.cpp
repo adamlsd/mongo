@@ -73,15 +73,10 @@ TransportLayerASIO::Options::Options(const ServerGlobalParams* params)
       maxConns(params->maxConns) {
 }
 
-std::shared_ptr<TransportLayerASIO::ASIOSession> TransportLayerASIO::createSession() {
-    GenericSocket socket(*_ioContext);
-    std::shared_ptr<ASIOSession> ret(new ASIOSession(this, std::move(socket)));
-    return ret;
-}
-
 TransportLayerASIO::TransportLayerASIO(const TransportLayerASIO::Options& opts,
                                        ServiceEntryPoint* sep)
-    : _ioContext(std::make_shared<asio::io_context>()),
+    : _workerIOContext(std::make_shared<asio::io_context>()),
+      _acceptorIOContext(stdx::make_unique<asio::io_context>()),
 #ifdef MONGO_CONFIG_SSL
       _sslContext(nullptr),
 #endif
@@ -125,15 +120,6 @@ void TransportLayerASIO::asyncWait(Ticket&& ticket, TicketCallback callback) {
         false,
         [ callback = std::move(callback),
           ownedASIOTicket = std::move(ownedASIOTicket) ](Status status) { callback(status); });
-}
-
-TransportLayer::Stats TransportLayerASIO::sessionStats() {
-    TransportLayer::Stats ret;
-    auto sessionCount = _currentConnections.load();
-    ret.numOpenSessions = sessionCount;
-    ret.numCreatedSessions = _createdConnections.load();
-    ret.numAvailableSessions = static_cast<size_t>(_listenerOptions.maxConns) - sessionCount;
-    return ret;
 }
 
 // Must not be called while holding the TransportLayerASIO mutex.
@@ -190,7 +176,7 @@ Status TransportLayerASIO::setup() {
                 fassertFailedNoTrace(40488);
             }
 
-            GenericAcceptor acceptor(*_ioContext);
+            GenericAcceptor acceptor(*_acceptorIOContext);
             acceptor.open(endpoint.protocol());
             acceptor.set_option(GenericAcceptor::reuse_address(true));
 
@@ -244,22 +230,18 @@ Status TransportLayerASIO::start() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _running.store(true);
 
-    // If we're in async mode then the ServiceExecutor will handle calling run_one() in a pool
-    // of threads. Otherwise we need a thread to just handle the async_accept calls.
-    if (!_listenerOptions.async) {
-        _listenerThread = stdx::thread([this] {
-            setThreadName("listener");
-            while (_running.load()) {
-                try {
-                    _ioContext->run();
-                    _ioContext->reset();
-                } catch (...) {
-                    severe() << "Uncaught exception in the listener: " << exceptionToStatus();
-                    fassertFailed(40491);
-                }
+    _listenerThread = stdx::thread([this] {
+        setThreadName("listener");
+        while (_running.load()) {
+            asio::io_context::work work(*_acceptorIOContext);
+            try {
+                _acceptorIOContext->run();
+            } catch (...) {
+                severe() << "Uncaught exception in the listener: " << exceptionToStatus();
+                fassertFailed(40491);
             }
-        });
-    }
+        }
+    });
 
     for (auto& acceptor : _acceptors) {
         acceptor.listen(serverGlobalParams.listenBacklog);
@@ -294,26 +276,17 @@ void TransportLayerASIO::shutdown() {
     // Otherwise the ServiceExecutor may need to continue running the io_context to drain running
     // connections, so we just cancel the acceptors and return.
     if (_listenerThread.joinable()) {
-        // We should only have started a listener if the TransportLayer is in sync mode.
-        dassert(!_listenerOptions.async);
-        _ioContext->stop();
+        _acceptorIOContext->stop();
         _listenerThread.join();
     }
 }
 
 const std::shared_ptr<asio::io_context>& TransportLayerASIO::getIOContext() {
-    return _ioContext;
+    return _workerIOContext;
 }
 
 void TransportLayerASIO::_acceptConnection(GenericAcceptor& acceptor) {
-    auto session = createSession();
-    if (!session) {
-        _acceptConnection(acceptor);
-        return;
-    }
-
-    auto& socket = session->getSocket();
-    auto acceptCb = [ this, session = std::move(session), &acceptor ](std::error_code ec) mutable {
+    auto acceptCb = [this, &acceptor](const std::error_code& ec, GenericSocket peerSocket) mutable {
         if (!_running.load())
             return;
 
@@ -324,28 +297,13 @@ void TransportLayerASIO::_acceptConnection(GenericAcceptor& acceptor) {
             return;
         }
 
-        size_t connCount = _currentConnections.addAndFetch(1);
-        if (connCount > _listenerOptions.maxConns) {
-            log() << "connection refused because too many open connections: " << connCount;
-            _currentConnections.subtractAndFetch(1);
-            _acceptConnection(acceptor);
-            return;
-        }
-
-        session->postAcceptSetup(_listenerOptions.async);
-
-        _createdConnections.addAndFetch(1);
-        if (!serverGlobalParams.quiet.load()) {
-            const auto word = (connCount == 1 ? " connection"_sd : " connections"_sd);
-            log() << "connection accepted from " << session->remote() << " #" << session->id()
-                  << " (" << connCount << word << " now open)";
-        }
+        std::shared_ptr<ASIOSession> session(new ASIOSession(this, std::move(peerSocket)));
 
         _sep->startSession(std::move(session));
         _acceptConnection(acceptor);
     };
 
-    acceptor.async_accept(socket, std::move(acceptCb));
+    acceptor.async_accept(*_workerIOContext, std::move(acceptCb));
 }
 
 }  // namespace transport

@@ -50,10 +50,12 @@ public:
 
     const char* getSourceName() const override;
 
-    StageConstraints constraints() const override {
-        StageConstraints constraints;
-        constraints.hostRequirement = HostTypeRequirement::kAnyShardOrMongoS;
-        return constraints;
+    StageConstraints constraints(Pipeline::SplitState pipeState) const override {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kNone,
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kAllowed};
     }
 
     Value serialize(
@@ -156,8 +158,6 @@ protected:
                         const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
 
 private:
-    void addDependencies(DepsTracker* deps) const;
-
     std::unique_ptr<MatchExpression> _expression;
 
     BSONObj _predicate;

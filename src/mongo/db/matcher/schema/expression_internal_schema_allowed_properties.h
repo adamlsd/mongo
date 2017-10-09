@@ -111,10 +111,10 @@ public:
     explicit InternalSchemaAllowedPropertiesMatchExpression()
         : MatchExpression(MatchExpression::INTERNAL_SCHEMA_ALLOWED_PROPERTIES) {}
 
-    void init(boost::container::flat_set<StringData> properties,
-              StringData namePlaceholder,
-              std::vector<PatternSchema> patternProperties,
-              std::unique_ptr<ExpressionWithPlaceholder> otherwise);
+    Status init(boost::container::flat_set<StringData> properties,
+                StringData namePlaceholder,
+                std::vector<PatternSchema> patternProperties,
+                std::unique_ptr<ExpressionWithPlaceholder> otherwise);
 
     void debugString(StringBuilder& debug, int level) const final;
 
@@ -140,11 +140,37 @@ public:
 
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
+    std::vector<MatchExpression*>* getChildVector() final {
+        return nullptr;
+    }
+
+    size_t numChildren() const final {
+        return _patternProperties.size() + 1;
+    }
+
+    MatchExpression* getChild(size_t i) const final {
+        invariant(i < numChildren());
+
+        if (i == 0) {
+            return _otherwise->getFilter();
+        }
+
+        return _patternProperties[i - 1].second->getFilter();
+    }
+
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     /**
      * Helper function for matches() and matchesSingleElement().
      */
     bool _matchesBSONObj(const BSONObj& obj) const;
+
+    void _doAddDependencies(DepsTracker* deps) const final {
+        deps->needWholeDocument = true;
+    }
 
     // The names of the properties are owned by the BSONObj used to create this match expression.
     // Since that BSONObj must outlive this object, we can safely store StringData.

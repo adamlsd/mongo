@@ -321,14 +321,23 @@ private:
             return true;
         }
 
-        auto collection = agd.getDb()->getCollection(opCtx, info.nss);
+        auto db = agd.getDb();
+        if (!db) {
+            return false;
+        }
 
+        auto collection = db->getCollection(opCtx, info.nss);
         if (!collection) {
             return false;
         }
 
-        auto prev = UUIDCatalog::get(opCtx).prev(_dbName, *collection->uuid());
-        auto next = UUIDCatalog::get(opCtx).next(_dbName, *collection->uuid());
+        auto uuid = collection->uuid();
+        // Check if UUID exists.
+        if (!uuid) {
+            return false;
+        }
+        auto prev = UUIDCatalog::get(opCtx).prev(_dbName, *uuid);
+        auto next = UUIDCatalog::get(opCtx).next(_dbName, *uuid);
 
         // Find and report collection metadata.
         auto indices = collectionIndexInfo(opCtx, collection);
@@ -453,15 +462,8 @@ private:
         return writeConflictRetry(
             opCtx, "dbCheck oplog entry", NamespaceString::kRsOplogNamespace.ns(), [&] {
                 WriteUnitOfWork uow(opCtx);
-                repl::OpTime result = repl::logOp(opCtx,
-                                                  "c",
-                                                  nss,
-                                                  uuid,
-                                                  obj,
-                                                  nullptr,
-                                                  false,
-                                                  kUninitializedStmtId,
-                                                  repl::PreAndPostImageTimestamps());
+                repl::OpTime result = repl::logOp(
+                    opCtx, "c", nss, uuid, obj, nullptr, false, {}, kUninitializedStmtId, {});
                 uow.commit();
                 return result;
             });
@@ -536,13 +538,14 @@ public:
 
 private:
     bool _hasCorrectFCV(void) {
-        const auto fcv = serverGlobalParams.featureCompatibility.version.load();
-        return fcv >= ServerGlobalParams::FeatureCompatibility::Version::k36;
+        return serverGlobalParams.featureCompatibility.isFullyUpgradedTo36();
     }
 };
 
 MONGO_INITIALIZER(RegisterDbCheckCmd)(InitializerContext* context) {
-    new DbCheckCmd();
+    if (Command::testCommandsEnabled) {
+        new DbCheckCmd();
+    }
     return Status::OK();
 }
 }  // namespace

@@ -64,7 +64,13 @@ Value DocumentSourceMatch::serialize(boost::optional<ExplainOptions::Verbosity> 
 }
 
 intrusive_ptr<DocumentSource> DocumentSourceMatch::optimize() {
-    return getQuery().isEmpty() ? nullptr : this;
+    if (getQuery().isEmpty()) {
+        return nullptr;
+    }
+
+    _expression = MatchExpression::optimize(std::move(_expression));
+
+    return this;
 }
 
 DocumentSource::GetNextResult DocumentSourceMatch::getNext() {
@@ -258,6 +264,7 @@ Document redactSafePortionDollarOps(BSONObj expr) {
             case PathAcceptingKeyword::GEO_INTERSECTS:
             case PathAcceptingKeyword::GEO_NEAR:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_ALL_ELEM_MATCH_FROM_INDEX:
+            case PathAcceptingKeyword::INTERNAL_SCHEMA_EQ:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_FMOD:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_MATCH_ARRAY_INDEX:
             case PathAcceptingKeyword::INTERNAL_SCHEMA_MAX_ITEMS:
@@ -361,13 +368,8 @@ bool DocumentSourceMatch::isTextQuery(const BSONObj& query) {
 void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other) {
     _predicate = BSON("$and" << BSON_ARRAY(_predicate << other->getQuery()));
 
-    StatusWithMatchExpression status = uassertStatusOK(
-        MatchExpressionParser::parse(_predicate,
-                                     pExpCtx->getCollator(),
-                                     pExpCtx,
-                                     ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::AllowedFeatures::kText |
-                                         MatchExpressionParser::AllowedFeatures::kExpr));
+    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
     _expression = std::move(status.getValue());
     _dependencies = DepsTracker(_dependencies.getMetadataAvailable());
     getDependencies(&_dependencies);
@@ -470,6 +472,9 @@ BSONObj DocumentSourceMatch::getQuery() const {
 }
 
 DocumentSource::GetDepsReturn DocumentSourceMatch::getDependencies(DepsTracker* deps) const {
+    // Get all field or variable dependencies.
+    _expression->addDependencies(deps);
+
     if (isTextQuery()) {
         // A $text aggregation field should return EXHAUSTIVE_FIELDS, since we don't necessarily
         // know what field it will be searching without examining indices.
@@ -478,18 +483,7 @@ DocumentSource::GetDepsReturn DocumentSourceMatch::getDependencies(DepsTracker* 
         return EXHAUSTIVE_FIELDS;
     }
 
-    addDependencies(deps);
     return SEE_NEXT;
-}
-
-void DocumentSourceMatch::addDependencies(DepsTracker* deps) const {
-    expression::mapOver(_expression.get(), [deps](MatchExpression* node, std::string path) -> void {
-        if (!path.empty() &&
-            (node->numChildren() == 0 || node->matchType() == MatchExpression::ELEM_MATCH_VALUE ||
-             node->matchType() == MatchExpression::ELEM_MATCH_OBJECT)) {
-            deps->fields.insert(path);
-        }
-    });
 }
 
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
@@ -499,13 +493,8 @@ DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
       _isTextQuery(isTextQuery(query)),
       _dependencies(_isTextQuery ? DepsTracker::MetadataAvailable::kTextScore
                                  : DepsTracker::MetadataAvailable::kNoMetadata) {
-    StatusWithMatchExpression status = uassertStatusOK(
-        MatchExpressionParser::parse(_predicate,
-                                     pExpCtx->getCollator(),
-                                     pExpCtx,
-                                     ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::AllowedFeatures::kText |
-                                         MatchExpressionParser::AllowedFeatures::kExpr));
+    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
 
     _expression = std::move(status.getValue());
     getDependencies(&_dependencies);

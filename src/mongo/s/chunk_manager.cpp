@@ -119,8 +119,7 @@ void ChunkManager::getShardIdsForQuery(OperationContext* opCtx,
                                      std::move(qr),
                                      expCtx,
                                      ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kExpr));
+                                     MatchExpressionParser::kAllowAllSpecialFeatures));
 
     // Query validation
     if (QueryPlannerCommon::hasNode(cq->root(), MatchExpression::GEO_NEAR)) {

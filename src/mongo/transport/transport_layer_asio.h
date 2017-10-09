@@ -39,6 +39,7 @@
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/ticket_impl.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/transport/transport_mode.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/net/ssl_options.h"
 #include "mongo/util/net/ssl_types.h"
@@ -80,10 +81,10 @@ public:
 #ifndef _WIN32
         bool useUnixSockets = true;  // whether to allow UNIX sockets in ipList
 #endif
-        bool enableIPv6 = false;             // whether to allow IPv6 sockets in ipList
-        bool async = false;                  // whether accepted sockets should be put into
-                                             // non-blocking mode after they're accepted
-        size_t maxConns = DEFAULT_MAX_CONN;  // maximum number of active connections
+        bool enableIPv6 = false;                  // whether to allow IPv6 sockets in ipList
+        Mode transportMode = Mode::kSynchronous;  // whether accepted sockets should be put into
+                                                  // non-blocking mode after they're accepted
+        size_t maxConns = DEFAULT_MAX_CONN;       // maximum number of active connections
     };
 
     TransportLayerASIO(const Options& opts, ServiceEntryPoint* sep);
@@ -101,8 +102,6 @@ public:
     Status wait(Ticket&& ticket) final;
 
     void asyncWait(Ticket&& ticket, TicketCallback callback) final;
-
-    Stats sessionStats() final;
 
     void end(const SessionHandle& session) final;
 
@@ -123,17 +122,35 @@ private:
     using ConstASIOSessionHandle = std::shared_ptr<const ASIOSession>;
     using GenericAcceptor = asio::basic_socket_acceptor<asio::generic::stream_protocol>;
 
-    ASIOSessionHandle createSession();
     void _acceptConnection(GenericAcceptor& acceptor);
 
     stdx::mutex _mutex;
 
+    // There are two IO contexts that are used by TransportLayerASIO. The _workerIOContext
+    // contains all the accepted sockets and all normal networking activity. The
+    // _acceptorIOContext contains all the sockets in _acceptors.
+    //
+    // TransportLayerASIO should never call run() on the _workerIOContext.
+    // In synchronous mode, this will cause a massive performance degradation due to
+    // unnecessary wakeups on the asio thread for sockets we don't intend to interact
+    // with asynchronously. The additional IO context avoids registering those sockets
+    // with the acceptors epoll set, thus avoiding those wakeups.  Calling run will
+    // undo that benefit.
+    //
+    // TransportLayerASIO should run its own thread that calls run() on the _acceptorIOContext
+    // to process calls to async_accept - this is the equivalent of the "listener" thread in
+    // other TransportLayers.
+    //
+    // The underlying problem that caused this is here:
+    // https://github.com/chriskohlhoff/asio/issues/240
+    //
     // It is important that the io_context be declared before the
     // vector of acceptors (or any other state that is associated with
     // the io_context), so that we destroy any existing acceptors or
     // other io_service associated state before we drop the refcount
     // on the io_context, which may destroy it.
-    std::shared_ptr<asio::io_context> _ioContext;
+    std::shared_ptr<asio::io_context> _workerIOContext;
+    std::unique_ptr<asio::io_context> _acceptorIOContext;
 
 #ifdef MONGO_CONFIG_SSL
     std::unique_ptr<asio::ssl::context> _sslContext;
@@ -148,9 +165,6 @@ private:
     ServiceEntryPoint* const _sep = nullptr;
     AtomicWord<bool> _running{false};
     Options _listenerOptions;
-
-    AtomicWord<size_t> _createdConnections{0};
-    AtomicWord<size_t> _currentConnections{0};
 };
 
 }  // namespace transport

@@ -33,6 +33,7 @@
 #include "mongo/bson/simple_bsonelement_comparator.h"
 #include "mongo/db/bson/bson_helper.h"
 #include "mongo/db/catalog/uuid_catalog.h"
+#include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/pipeline/document_source_check_resume_token.h"
 #include "mongo/db/pipeline/document_source_limit.h"
@@ -76,6 +77,7 @@ constexpr StringData DocumentSourceChangeStream::kDeleteOpType;
 constexpr StringData DocumentSourceChangeStream::kReplaceOpType;
 constexpr StringData DocumentSourceChangeStream::kInsertOpType;
 constexpr StringData DocumentSourceChangeStream::kInvalidateOpType;
+constexpr StringData DocumentSourceChangeStream::kRetryNeededOpType;
 
 namespace {
 
@@ -94,11 +96,13 @@ const char* DocumentSourceOplogMatch::getSourceName() const {
     return DocumentSourceChangeStream::kStageName.rawData();
 }
 
-DocumentSource::StageConstraints DocumentSourceOplogMatch::constraints() const {
-    StageConstraints constraints;
-    constraints.requiredPosition = PositionRequirement::kFirst;
-    constraints.isAllowedInsideFacetStage = false;
-    return constraints;
+DocumentSource::StageConstraints DocumentSourceOplogMatch::constraints(
+    Pipeline::SplitState pipeState) const {
+    return {StreamType::kStreaming,
+            PositionRequirement::kFirst,
+            HostTypeRequirement::kAnyShard,
+            DiskUseRequirement::kNoDiskUse,
+            FacetRequirement::kNotAllowed};
 }
 
 /**
@@ -140,6 +144,17 @@ public:
         return "$changeStream";
     }
 
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        // This stage should never be in the shards part of a split pipeline.
+        invariant(pipeState != Pipeline::SplitState::kSplitForShards);
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                (pipeState == Pipeline::SplitState::kUnsplit ? HostTypeRequirement::kNone
+                                                             : HostTypeRequirement::kMongoS),
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kNotAllowed};
+    }
+
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final {
         // This stage is created by the DocumentSourceChangeStream stage, so serializing it
         // here would result in it being created twice.
@@ -176,7 +191,9 @@ DocumentSource::GetNextResult DocumentSourceCloseCursor::getNext() {
     auto doc = nextInput.getDocument();
     const auto& kOperationTypeField = DocumentSourceChangeStream::kOperationTypeField;
     checkValueType(doc[kOperationTypeField], kOperationTypeField, BSONType::String);
-    if (doc[kOperationTypeField].getString() == DocumentSourceChangeStream::kInvalidateOpType) {
+    auto operationType = doc[kOperationTypeField].getString();
+    if (operationType == DocumentSourceChangeStream::kInvalidateOpType ||
+        operationType == DocumentSourceChangeStream::kRetryNeededOpType) {
         // Pass the invalidation forward, so that it can be included in the results, or
         // filtered/transformed by further stages in the pipeline, then throw an exception
         // to close the cursor on the next call to getNext().
@@ -207,10 +224,18 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(const NamespaceString& nss,
                                 << "c"
                                 << OR(commandsOnTargetDb, renameDropTarget));
 
-    // 2) Normal CRUD ops on the target collection.
-    auto opMatch = BSON("ns" << target);
+    // 2.1) Normal CRUD ops on the target collection.
+    auto normalOpTypeMatch = BSON("op" << NE << "n");
 
-    // Match oplog entries after "start" and are either (1) supported commands or (2) CRUD ops,
+    // 2.2) A chunk gets migrated to a new shard that doesn't have any chunks.
+    auto chunkMigratedMatch = BSON("op"
+                                   << "n"
+                                   << "o2.type"
+                                   << "migrateChunkToNewShard");
+    // 2) Supported operations on the target namespace.
+    auto opMatch = BSON("ns" << target << OR(normalOpTypeMatch, chunkMigratedMatch));
+
+    // Match oplog entries after "start" and are either supported (1) commands or (2) operations,
     // excepting those tagged "fromMigrate".
     // Include the resume token, if resuming, so we can verify it was still present in the oplog.
     return BSON("$and" << BSON_ARRAY(BSON("ts" << (isResume ? GTE : GT) << startFrom)
@@ -220,6 +245,13 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(const NamespaceString& nss,
 
 list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
     BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
+    uassert(
+        ErrorCodes::InvalidOptions,
+        str::stream()
+            << "The featureCompatibilityVersion must be 3.6 to use the $changeStream stage. See "
+            << feature_compatibility_version::kDochubLink
+            << ".",
+        serverGlobalParams.featureCompatibility.isFullyUpgradedTo36());
     // TODO: Add sharding support here (SERVER-29141).
     uassert(
         40470, "The $changeStream stage is not supported on sharded systems.", !expCtx->inMongos);
@@ -239,19 +271,20 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
                                                       elem.embeddedObject());
     if (auto resumeAfter = spec.getResumeAfter()) {
         ResumeToken token = resumeAfter.get();
-        auto resumeNamespace = UUIDCatalog::get(expCtx->opCtx).lookupNSSByUUID(token.getUuid());
+        ResumeTokenData tokenData = token.getData();
+        uassert(40645,
+                "The resume token is invalid (no UUID), possibly from an invalidate.",
+                tokenData.uuid);
+        auto resumeNamespace =
+            UUIDCatalog::get(expCtx->opCtx).lookupNSSByUUID(tokenData.uuid.get());
         uassert(40615,
                 "The resume token UUID does not exist. Has the collection been dropped?",
                 !resumeNamespace.isEmpty());
-        startFrom = token.getTimestamp();
+        startFrom = tokenData.clusterTime;
         if (expCtx->needsMerge) {
-            DocumentSourceShardCheckResumabilitySpec spec;
-            spec.setResumeToken(std::move(token));
-            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, std::move(spec));
+            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, std::move(token));
         } else {
-            DocumentSourceEnsureResumeTokenPresentSpec spec;
-            spec.setResumeToken(std::move(token));
-            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(spec));
+            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(token));
         }
     }
     const bool changeStreamIsResuming = resumeStage != nullptr;
@@ -299,15 +332,16 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
     Value ns = input[repl::OplogEntry::kNamespaceFieldName];
     checkValueType(ns, repl::OplogEntry::kNamespaceFieldName, BSONType::String);
     Value uuid = input[repl::OplogEntry::kUuidFieldName];
-    if (!uuid.missing())
+    if (!uuid.missing()) {
         checkValueType(uuid, repl::OplogEntry::kUuidFieldName, BSONType::BinData);
+    }
     NamespaceString nss(ns.getString());
     Value id = input.getNestedField("o._id");
     // Non-replace updates have the _id in field "o2".
-    Value documentId = id.missing() ? input.getNestedField("o2._id") : id;
     StringData operationType;
     Value fullDocument;
     Value updateDescription;
+    Value documentKey;
 
     // Deal with CRUD operations and commands.
     auto opType = repl::OpType_parse(IDLParserErrorContext("ChangeStreamEntry.op"), op);
@@ -315,10 +349,12 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
         case repl::OpTypeEnum::kInsert: {
             operationType = kInsertOpType;
             fullDocument = input[repl::OplogEntry::kObjectFieldName];
+            documentKey = Value(Document{{kIdField, id}});
             break;
         }
         case repl::OpTypeEnum::kDelete: {
             operationType = kDeleteOpType;
+            documentKey = input[repl::OplogEntry::kObjectFieldName];
             break;
         }
         case repl::OpTypeEnum::kUpdate: {
@@ -346,38 +382,52 @@ Document DocumentSourceChangeStream::Transformation::applyTransformation(const D
                 operationType = kReplaceOpType;
                 fullDocument = input[repl::OplogEntry::kObjectFieldName];
             }
+            documentKey = input[repl::OplogEntry::kObject2FieldName];
             break;
         }
         case repl::OpTypeEnum::kCommand: {
             operationType = kInvalidateOpType;
-            // Make sure the result doesn't have a document id.
-            documentId = Value();
+            // Make sure the result doesn't have a document key.
+            documentKey = Value();
+            break;
+        }
+        case repl::OpTypeEnum::kNoop: {
+            operationType = kRetryNeededOpType;
+            // Generate a fake document Id for RetryNeeded operation so that we can resume after
+            // this operation.
+            documentKey = Value(Document{{kIdField, input[repl::OplogEntry::kObject2FieldName]}});
             break;
         }
         default: { MONGO_UNREACHABLE; }
     }
 
-    // UUID should always be present except for invalidate entries.
-    invariant(operationType == kInvalidateOpType || !uuid.missing());
-
-    // Construct the result document.
-    Value documentKey;
-    if (!documentId.missing()) {
-        documentKey = Value(Document{{kIdField, documentId}});
+    // UUID should always be present except for invalidate entries.  It will not be under
+    // FCV 3.4, so we should close the stream as invalid.
+    if (operationType != kInvalidateOpType && uuid.missing()) {
+        warning() << "Saw a CRUD op without a UUID.  Did Feature Compatibility Version get "
+                     "downgraded after opening the stream?";
+        operationType = kInvalidateOpType;
+        fullDocument = Value();
+        updateDescription = Value();
+        documentKey = Value();
     }
-    // Note that 'documentKey' might be missing, in which case it will not appear in the output.
-    Document resumeToken{{kClusterTimeField, Document{{kTimestampField, ts}}},
-                         {kUuidField, uuid},
-                         {kDocumentKeyField, documentKey}};
-    doc.addField(kIdField, Value(resumeToken));
-    doc.addField(kOperationTypeField, Value(operationType));
-    doc.addField(kFullDocumentField, fullDocument);
 
-    // "invalidate" entry has fewer fields.
-    if (opType == repl::OpTypeEnum::kCommand) {
+    // Note that 'documentKey' and/or 'uuid' might be missing, in which case the missing fields will
+    // not appear in the output.
+    ResumeTokenData resumeTokenData;
+    resumeTokenData.clusterTime = ts.getTimestamp();
+    resumeTokenData.documentKey = documentKey;
+    if (!uuid.missing())
+        resumeTokenData.uuid = uuid.getUuid();
+    doc.addField(kIdField, Value(ResumeToken(resumeTokenData).toDocument()));
+    doc.addField(kOperationTypeField, Value(operationType));
+
+    // "invalidate" and "retryNeeded" entries have fewer fields.
+    if (operationType == kInvalidateOpType || operationType == kRetryNeededOpType) {
         return doc.freeze();
     }
 
+    doc.addField(kFullDocumentField, fullDocument);
     doc.addField(kNamespaceField, Value(Document{{"db", nss.db()}, {"coll", nss.coll()}}));
     doc.addField(kDocumentKeyField, documentKey);
 

@@ -1,7 +1,7 @@
 /**
- * Tests that commands that can be sent to secondaries for sharded collections are "safe":
- * - the secondary participates in the shard versioning protocol
- * - the secondary filters returned documents using its routing table cache.
+ * Tests that commands that can be sent to secondaries for sharded collections can be "safe":
+ * - When non-'available' read concern is specified (local in this case), the secondary participates
+ *   in the shard versioning protocol and filters returned documents using its routing table cache.
  *
  * Since some commands are unversioned even against primaries or cannot be run on sharded
  * collections, this file declaratively defines the expected behavior for each command.
@@ -132,7 +132,6 @@
         dbHash: {skip: "does not return user data"},
         dbStats: {skip: "does not return user data"},
         delete: {skip: "primary only"},
-        diagLogging: {skip: "does not return user data"},
         distinct: {
             setUp: function(mongosConn) {
                 assert.writeOK(mongosConn.getCollection(nss).insert({x: 1}));
@@ -155,6 +154,7 @@
         dropUser: {skip: "primary only"},
         emptycapped: {skip: "primary only"},
         enableSharding: {skip: "primary only"},
+        endSessions: {skip: "does not return user data"},
         eval: {skip: "primary only"},
         explain: {skip: "TODO SERVER-30068"},
         features: {skip: "does not return user data"},
@@ -256,6 +256,7 @@
         planCacheSetFilter: {skip: "does not return user data"},
         profile: {skip: "primary only"},
         reIndex: {skip: "does not return user data"},
+        reapLogicalSessionCacheNow: {skip: "does not return user data"},
         refreshLogicalSessionCacheNow: {skip: "does not return user data"},
         refreshSessions: {skip: "does not return user data"},
         refreshSessionsInternal: {skip: "does not return user data"},
@@ -326,8 +327,16 @@
             assert.commandWorked(freshMongos.getDB(db).runCommand({drop: coll}));
             assert.commandWorked(freshMongos.getDB(db).runCommand({create: coll}));
 
-            let res = staleMongos.getDB(db).runCommand(
-                Object.assign({}, test.command, {$readPreference: {mode: 'secondary'}}));
+            // Ensure the latest version changes have been persisted and propagate to the secondary
+            // before we target it with versioned commands.
+            assert.commandWorked(
+                st.rs0.getPrimary().getDB('admin').runCommand({forceRoutingTableRefresh: nss}));
+            st.rs0.awaitReplication();
+
+            let res = staleMongos.getDB(db).runCommand(Object.assign(
+                {},
+                test.command,
+                {$readPreference: {mode: 'secondary'}, readConcern: {'level': 'local'}}));
 
             test.checkResults(res);
 
@@ -342,6 +351,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": false},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)
@@ -353,7 +363,8 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
-                        "exceptionCode": ErrorCodes.SendStaleConfig
+                        "command.readConcern": {"level": "local"},
+                        "exceptionCode": ErrorCodes.StaleConfig
                     },
                                           commandProfile)
                 });
@@ -365,6 +376,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)
@@ -379,8 +391,16 @@
             assert.commandWorked(freshMongos.getDB(db).runCommand({create: coll}));
             assert.commandWorked(freshMongos.adminCommand({shardCollection: nss, key: {x: 1}}));
 
-            let res = staleMongos.getDB(db).runCommand(
-                Object.assign({}, test.command, {$readPreference: {mode: 'secondary'}}));
+            // Ensure the latest version changes have been persisted and propagate to the secondary
+            // before we target it with versioned commands.
+            assert.commandWorked(
+                st.rs0.getPrimary().getDB('admin').runCommand({forceRoutingTableRefresh: nss}));
+            st.rs0.awaitReplication();
+
+            let res = staleMongos.getDB(db).runCommand(Object.assign(
+                {},
+                test.command,
+                {$readPreference: {mode: 'secondary'}, readConcern: {'level': 'local'}}));
 
             test.checkResults(res);
 
@@ -395,6 +415,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": false},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)
@@ -406,7 +427,8 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
-                        "exceptionCode": ErrorCodes.SendStaleConfig
+                        "command.readConcern": {"level": "local"},
+                        "exceptionCode": ErrorCodes.StaleConfig
                     },
                                           commandProfile)
                 });
@@ -418,6 +440,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)
@@ -439,14 +462,20 @@
             assert.commandWorked(freshMongos.getDB(db).runCommand({drop: coll}));
             assert.commandWorked(freshMongos.getDB(db).runCommand({create: coll}));
             assert.commandWorked(freshMongos.adminCommand({shardCollection: nss, key: {x: 1}}));
+            // Use {w:2} (all) write concern in the moveChunk operation so the metadata change gets
+            // persisted to the secondary before versioned commands are sent against the secondary.
             assert.commandWorked(freshMongos.adminCommand({
                 moveChunk: nss,
                 find: {x: 0},
                 to: st.shard1.shardName,
+                _secondaryThrottle: true,
+                writeConcern: {w: 2},
             }));
 
-            let res = staleMongos.getDB(db).runCommand(
-                Object.assign({}, test.command, {$readPreference: {mode: 'secondary'}}));
+            let res = staleMongos.getDB(db).runCommand(Object.assign(
+                {},
+                test.command,
+                {$readPreference: {mode: 'secondary'}, readConcern: {'level': 'local'}}));
 
             test.checkResults(res);
 
@@ -463,6 +492,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": false},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)
@@ -474,7 +504,8 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
-                        "exceptionCode": ErrorCodes.SendStaleConfig
+                        "command.readConcern": {"level": "local"},
+                        "exceptionCode": ErrorCodes.StaleConfig
                     },
                                           commandProfile)
                 });
@@ -486,6 +517,7 @@
                     filter: Object.extend({
                         "command.shardVersion": {"$exists": true},
                         "command.$readPreference": {"mode": "secondary"},
+                        "command.readConcern": {"level": "local"},
                         "exceptionCode": {"$exists": false}
                     },
                                           commandProfile)

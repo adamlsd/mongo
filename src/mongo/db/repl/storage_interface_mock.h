@@ -89,8 +89,10 @@ public:
             const CollectionOptions& options,
             const BSONObj idIndexSpec,
             const std::vector<BSONObj>& secondaryIndexSpecs)>;
-    using InsertDocumentFn = stdx::function<Status(
-        OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc)>;
+    using InsertDocumentFn = stdx::function<Status(OperationContext* opCtx,
+                                                   const NamespaceString& nss,
+                                                   const TimestampedBSONObj& doc,
+                                                   long long term)>;
     using InsertDocumentsFn = stdx::function<Status(OperationContext* opCtx,
                                                     const NamespaceString& nss,
                                                     const std::vector<InsertStatement>& docs)>;
@@ -99,6 +101,8 @@ public:
         stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using CreateCollectionFn = stdx::function<Status(
         OperationContext* opCtx, const NamespaceString& nss, const CollectionOptions& options)>;
+    using TruncateCollectionFn =
+        stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using DropCollectionFn =
         stdx::function<Status(OperationContext* opCtx, const NamespaceString& nss)>;
     using FindDocumentsFn =
@@ -135,8 +139,9 @@ public:
 
     Status insertDocument(OperationContext* opCtx,
                           const NamespaceString& nss,
-                          const TimestampedBSONObj& doc) override {
-        return insertDocumentFn(opCtx, nss, doc);
+                          const TimestampedBSONObj& doc,
+                          long long term) override {
+        return insertDocumentFn(opCtx, nss, doc, term);
     };
 
     Status insertDocuments(OperationContext* opCtx,
@@ -167,6 +172,10 @@ public:
     Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) override {
         return dropCollFn(opCtx, nss);
     };
+
+    Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) override {
+        return truncateCollFn(opCtx, nss);
+    }
 
     Status renameCollection(OperationContext* opCtx,
                             const NamespaceString& fromNS,
@@ -273,10 +282,12 @@ public:
                secondaryIndexSpecs) -> StatusWith<std::unique_ptr<CollectionBulkLoader>> {
         return Status{ErrorCodes::IllegalOperation, "CreateCollectionForBulkFn not implemented."};
     };
-    InsertDocumentFn insertDocumentFn =
-        [](OperationContext* opCtx, const NamespaceString& nss, const TimestampedBSONObj& doc) {
-            return Status{ErrorCodes::IllegalOperation, "InsertDocumentFn not implemented."};
-        };
+    InsertDocumentFn insertDocumentFn = [](OperationContext* opCtx,
+                                           const NamespaceString& nss,
+                                           const TimestampedBSONObj& doc,
+                                           long long term) {
+        return Status{ErrorCodes::IllegalOperation, "InsertDocumentFn not implemented."};
+    };
     InsertDocumentsFn insertDocumentsFn = [](OperationContext* opCtx,
                                              const NamespaceString& nss,
                                              const std::vector<InsertStatement>& docs) {
@@ -292,6 +303,9 @@ public:
         [](OperationContext* opCtx, const NamespaceString& nss, const CollectionOptions& options) {
             return Status{ErrorCodes::IllegalOperation, "CreateCollectionFn not implemented."};
         };
+    TruncateCollectionFn truncateCollFn = [](OperationContext* opCtx, const NamespaceString& nss) {
+        return Status{ErrorCodes::IllegalOperation, "TruncateCollectionFn not implemented."};
+    };
     DropCollectionFn dropCollFn = [](OperationContext* opCtx, const NamespaceString& nss) {
         return Status{ErrorCodes::IllegalOperation, "DropCollectionFn not implemented."};
     };

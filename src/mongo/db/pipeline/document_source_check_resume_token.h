@@ -33,9 +33,6 @@
 #include "mongo/db/pipeline/resume_token.h"
 
 namespace mongo {
-// Currently the two resume sources take the same specification.
-typedef DocumentSourceEnsureResumeTokenPresentSpec DocumentSourceShardCheckResumabilitySpec;
-
 /**
  * This checks for resumability on a single shard in the sharded case. The rules are
  *
@@ -55,23 +52,30 @@ typedef DocumentSourceEnsureResumeTokenPresentSpec DocumentSourceShardCheckResum
  * This source need only run on a sharded collection.  For unsharded collections,
  * DocumentSourceEnsureResumeTokenPresent is sufficient.
  */
-class DocumentSourceShardCheckResumability final : public DocumentSourceNeedsMongod {
+class DocumentSourceShardCheckResumability final : public DocumentSourceNeedsMongoProcessInterface {
 public:
     GetNextResult getNext() final;
     const char* getSourceName() const final;
 
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kAnyShard,
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kNotAllowed};
+    }
+
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
     static boost::intrusive_ptr<DocumentSourceShardCheckResumability> create(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        DocumentSourceShardCheckResumabilitySpec spec);
+        const boost::intrusive_ptr<ExpressionContext>& expCtx, ResumeToken token);
 
 private:
     /**
      * Use the create static method to create a DocumentSourceShardCheckResumability.
      */
     DocumentSourceShardCheckResumability(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                         DocumentSourceShardCheckResumabilitySpec spec);
+                                         ResumeToken token);
 
     ResumeToken _token;
     bool _verifiedResumability;
@@ -87,14 +91,23 @@ public:
     GetNextResult getNext() final;
     const char* getSourceName() const final;
 
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        // This stage should never be in the shards part of a split pipeline.
+        invariant(pipeState != Pipeline::SplitState::kSplitForShards);
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                (pipeState == Pipeline::SplitState::kUnsplit ? HostTypeRequirement::kNone
+                                                             : HostTypeRequirement::kMongoS),
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kNotAllowed};
+    }
+
     /**
      * SplittableDocumentSource methods; this has to run on the merger, since the resume point could
      * be at any shard.
      */
     boost::intrusive_ptr<DocumentSource> getShardSource() final {
-        DocumentSourceShardCheckResumabilitySpec shardSpec;
-        shardSpec.setResumeToken(_token);
-        return DocumentSourceShardCheckResumability::create(pExpCtx, shardSpec);
+        return DocumentSourceShardCheckResumability::create(pExpCtx, _token);
     };
 
     boost::intrusive_ptr<DocumentSource> getMergeSource() final {
@@ -104,8 +117,7 @@ public:
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
 
     static boost::intrusive_ptr<DocumentSourceEnsureResumeTokenPresent> create(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        DocumentSourceEnsureResumeTokenPresentSpec spec);
+        const boost::intrusive_ptr<ExpressionContext>& expCtx, ResumeToken token);
 
     const ResumeToken& getTokenForTest() {
         return _token;
@@ -116,7 +128,7 @@ private:
      * Use the create static method to create a DocumentSourceEnsureResumeTokenPresent.
      */
     DocumentSourceEnsureResumeTokenPresent(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                           DocumentSourceEnsureResumeTokenPresentSpec spec);
+                                           ResumeToken token);
 
     ResumeToken _token;
     bool _seenDoc;

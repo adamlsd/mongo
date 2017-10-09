@@ -101,8 +101,7 @@ void readRequestMetadata(OperationContext* opCtx, const BSONObj& metadataObj) {
         if (signedTime.getTime() != LogicalTime::kUninitialized) {
             // Cluster times are only sent by sharding aware mongod servers, so this point is only
             // reached in sharded clusters.
-            if (serverGlobalParams.featureCompatibility.version.load() !=
-                ServerGlobalParams::FeatureCompatibility::Version::k34) {
+            if (serverGlobalParams.featureCompatibility.isFullyUpgradedTo36()) {
                 auto logicalTimeValidator = LogicalTimeValidator::get(opCtx);
                 if (!LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
                     if (!logicalTimeValidator) {
@@ -175,6 +174,8 @@ OpMsgRequest upconvertRequest(StringData db, BSONObj cmdObj, int queryFlags) {
         ReadPreferenceSetting(ReadPreference::SecondaryPreferred).toContainingBSON(&bodyBuilder);
         cmdObj = bodyBuilder.obj();
     }
+
+    uassert(40621, "$db is not allowed in OP_QUERY requests", !cmdObj.hasField("$db"));
 
     // Try to move supported array fields into document sequences.
     auto docSequenceIt = docSequenceFieldsForCommands.find(cmdObj.firstElementFieldName());

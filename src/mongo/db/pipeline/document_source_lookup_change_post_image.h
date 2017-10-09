@@ -40,7 +40,7 @@ namespace mongo {
  * Uses the ExpressionContext to determine what collection to look up into.
  * TODO SERVER-29134 When we allow change streams on multiple collections, this will need to change.
  */
-class DocumentSourceLookupChangePostImage final : public DocumentSourceNeedsMongod {
+class DocumentSourceLookupChangePostImage final : public DocumentSourceNeedsMongoProcessInterface {
 public:
     static constexpr StringData kStageName = "$_internalLookupChangePostImage"_sd;
     static constexpr StringData kFullDocumentFieldName =
@@ -61,10 +61,14 @@ public:
         return {GetModPathsReturn::Type::kFiniteSet, {kFullDocumentFieldName.toString()}, {}};
     }
 
-    StageConstraints constraints() const final {
-        StageConstraints constraints;
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        StageConstraints constraints(StreamType::kStreaming,
+                                     PositionRequirement::kNone,
+                                     HostTypeRequirement::kAnyShard,
+                                     DiskUseRequirement::kNoDiskUse,
+                                     FacetRequirement::kNotAllowed);
+
         constraints.canSwapWithMatch = true;
-        constraints.isAllowedInsideFacetStage = false;
         return constraints;
     }
 
@@ -74,6 +78,7 @@ public:
         deps->fields.insert(DocumentSourceChangeStream::kNamespaceField.toString());
         deps->fields.insert(DocumentSourceChangeStream::kDocumentKeyField.toString());
         deps->fields.insert(DocumentSourceChangeStream::kOperationTypeField.toString());
+        deps->fields.insert(DocumentSourceChangeStream::kIdField.toString());
         // This stage does not restrict the output fields to a finite set, and has no impact on
         // whether metadata is available or needed.
         return SEE_NEXT;
@@ -97,7 +102,7 @@ public:
 
 private:
     DocumentSourceLookupChangePostImage(const boost::intrusive_ptr<ExpressionContext>& expCtx)
-        : DocumentSourceNeedsMongod(expCtx) {}
+        : DocumentSourceNeedsMongoProcessInterface(expCtx) {}
 
     /**
      * Uses the "documentKey" field from 'updateOp' to look up the current version of the document.

@@ -7,7 +7,6 @@ Collect system resource information on processes running in Evergreen on a given
 from __future__ import absolute_import
 from __future__ import print_function
 
-import contextlib
 from datetime import datetime
 import optparse
 import os
@@ -17,25 +16,15 @@ import time
 from bson.json_util import dumps
 import requests
 
-@contextlib.contextmanager
-def open_or_use_stdout(filename):
-    """
-    Opens the specified file for writing, or returns sys.stdout if filename is "-".
-    """
 
-    if filename == "-":
-        yield sys.stdout
-        return
+# Get relative imports to work when the package is not installed on the PYTHONPATH.
+if __name__ == "__main__" and __package__ is None:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    line_buffered = 1
-    fp = open(filename, "w", line_buffered)
-    try:
-        yield fp
-    finally:
-        fp.close()
+from buildscripts.resmokelib import utils
+    
 
 def main():
-
     usage = "usage: %prog [options]"
     parser = optparse.OptionParser(description=__doc__, usage=usage)
     parser.add_option("-i", "--interval",
@@ -53,7 +42,7 @@ def main():
 
     (options, _) = parser.parse_args()
 
-    with open_or_use_stdout(options.outfile) as fp:
+    with utils.open_or_use_stdout(options.outfile) as fp:
         while True:
             # Requires the Evergreen agent to be running on port 2285.
             response = requests.get("http://localhost:2285/status")
@@ -103,6 +92,7 @@ def main():
                     fp.flush()
                     os.fsync(fp.fileno())
             time.sleep(options.interval)
+
 
 if __name__ == "__main__":
     main()

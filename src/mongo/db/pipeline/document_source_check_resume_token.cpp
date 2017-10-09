@@ -45,13 +45,13 @@ Value DocumentSourceEnsureResumeTokenPresent::serialize(
 
 intrusive_ptr<DocumentSourceEnsureResumeTokenPresent>
 DocumentSourceEnsureResumeTokenPresent::create(const intrusive_ptr<ExpressionContext>& expCtx,
-                                               DocumentSourceEnsureResumeTokenPresentSpec spec) {
-    return new DocumentSourceEnsureResumeTokenPresent(expCtx, std::move(spec));
+                                               ResumeToken token) {
+    return new DocumentSourceEnsureResumeTokenPresent(expCtx, std::move(token));
 }
 
 DocumentSourceEnsureResumeTokenPresent::DocumentSourceEnsureResumeTokenPresent(
-    const intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceEnsureResumeTokenPresentSpec spec)
-    : DocumentSource(expCtx), _token(spec.getResumeToken()), _seenDoc(false) {}
+    const intrusive_ptr<ExpressionContext>& expCtx, ResumeToken token)
+    : DocumentSource(expCtx), _token(std::move(token)), _seenDoc(false) {}
 
 DocumentSource::GetNextResult DocumentSourceEnsureResumeTokenPresent::getNext() {
     pExpCtx->checkForInterrupt();
@@ -67,7 +67,7 @@ DocumentSource::GetNextResult DocumentSourceEnsureResumeTokenPresent::getNext() 
     _seenDoc = true;
     auto doc = nextInput.getDocument();
 
-    ResumeToken receivedToken(doc["_id"]);
+    auto receivedToken = ResumeToken::parse(doc["_id"].getDocument());
     uassert(40585,
             str::stream()
                 << "resume of change stream was not possible, as the resume token was not found. "
@@ -89,14 +89,14 @@ Value DocumentSourceShardCheckResumability::serialize(
 }
 
 intrusive_ptr<DocumentSourceShardCheckResumability> DocumentSourceShardCheckResumability::create(
-    const intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceShardCheckResumabilitySpec spec) {
-    return new DocumentSourceShardCheckResumability(expCtx, std::move(spec));
+    const intrusive_ptr<ExpressionContext>& expCtx, ResumeToken token) {
+    return new DocumentSourceShardCheckResumability(expCtx, std::move(token));
 }
 
 DocumentSourceShardCheckResumability::DocumentSourceShardCheckResumability(
-    const intrusive_ptr<ExpressionContext>& expCtx, DocumentSourceShardCheckResumabilitySpec spec)
-    : DocumentSourceNeedsMongod(expCtx),
-      _token(spec.getResumeToken()),
+    const intrusive_ptr<ExpressionContext>& expCtx, ResumeToken token)
+    : DocumentSourceNeedsMongoProcessInterface(expCtx),
+      _token(std::move(token)),
       _verifiedResumability(false) {}
 
 DocumentSource::GetNextResult DocumentSourceShardCheckResumability::getNext() {
@@ -110,7 +110,7 @@ DocumentSource::GetNextResult DocumentSourceShardCheckResumability::getNext() {
     if (nextInput.isAdvanced()) {
         auto doc = nextInput.getDocument();
 
-        ResumeToken receivedToken(doc["_id"]);
+        auto receivedToken = ResumeToken::parse(doc["_id"].getDocument());
         if (receivedToken == _token) {
             // Pass along the document, as the DocumentSourceEnsureResumeTokenPresent stage on the
             // merger will
@@ -122,13 +122,14 @@ DocumentSource::GetNextResult DocumentSourceShardCheckResumability::getNext() {
     // with the resume token.
     auto firstEntryExpCtx = pExpCtx->copyWith(pExpCtx->ns);
     auto matchSpec = BSON("$match" << BSONObj());
-    auto pipeline = uassertStatusOK(_mongod->makePipeline({matchSpec}, firstEntryExpCtx));
+    auto pipeline =
+        uassertStatusOK(_mongoProcessInterface->makePipeline({matchSpec}, firstEntryExpCtx));
     if (auto first = pipeline->getNext()) {
         auto firstOplogEntry = Value(*first);
         uassert(40576,
                 "resume of change notification was not possible, as the resume point may no longer "
                 "be in the oplog. ",
-                firstOplogEntry["ts"].getTimestamp() < _token.getTimestamp());
+                firstOplogEntry["ts"].getTimestamp() < _token.getData().clusterTime);
         return nextInput;
     }
     // Very unusual case: the oplog is empty.  We can always resume.  It should never be possible

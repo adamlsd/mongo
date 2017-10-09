@@ -111,7 +111,8 @@ public:
      */
     virtual Status insertDocument(OperationContext* opCtx,
                                   const NamespaceString& nss,
-                                  const TimestampedBSONObj& doc) = 0;
+                                  const TimestampedBSONObj& doc,
+                                  long long term) = 0;
 
     /**
      * Inserts the given documents, with associated timestamps and statement id's, into the
@@ -144,9 +145,14 @@ public:
                                     const CollectionOptions& options) = 0;
 
     /**
-     * Drops a collection, like the oplog.
+     * Drops a collection.
      */
     virtual Status dropCollection(OperationContext* opCtx, const NamespaceString& nss) = 0;
+
+    /**
+     * Truncates a collection.
+     */
+    virtual Status truncateCollection(OperationContext* opCtx, const NamespaceString& nss) = 0;
 
     /**
      * Renames a collection from the "fromNS" to the "toNS". Fails if the new collection already

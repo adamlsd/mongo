@@ -1,12 +1,25 @@
 #include "mongo/util/dns_query.h"
 
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/nameser.h>
+#include <resolv.h>
+
+#include <stdio.h>
+
+#include <iostream>
+#include <sstream>
 #include <string>
 #include <cstdint>
 #include <vector>
 #include <array>
 #include <stdexcept>
 #include <exception>
+
 #include <boost/noncopyable.hpp>
+
+using std::begin;
+using std::end;
 
 namespace mongo
 {
@@ -20,6 +33,7 @@ namespace mongo
 			class ResourceRecord
 			{
 				private:
+					std::string service;
 					ns_rr resource_record;
 					const std::uint8_t *answerStart;
 					const std::uint8_t *answerEnd;
@@ -29,24 +43,24 @@ namespace mongo
 					badRecord() const
 					{
 						std::ostringstream oss;
-						oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \"" << strerror (h_errno) << "\"";
+						oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \"" << strerror (errno) << "\"";
 						throw std::runtime_error( oss.str() );
-						std::cerr << std::endl;
-						std::string;
 					};
 
 				public:
+					explicit ResourceRecord()= default;
+
 					explicit
-					ResourceRecord( ns_msg *const ns_answer, int p )
-							: answerStart( ns_msg_base( ns_answer ) ), answerEnd( ns_msg_end( ns_answer ) ), pos( p )
+					ResourceRecord( std::string s, ns_msg &ns_answer, const int p )
+							: service( std::move( s ) ), answerStart( ns_msg_base( ns_answer ) ), answerEnd( ns_msg_end( ns_answer ) ), pos( p )
 					{
-						if( ns_parserr( &ns_answer, ns_s_an, i, &resource_record ) ) badRecord();
+						if( ns_parserr( &ns_answer, ns_s_an, p, &resource_record ) ) badRecord();
 					}
 
 					std::vector< std::uint8_t >
 					rawData() const
 					{
-						const char *const data = ns_rr_rdata( resource_record );
+						const std::uint8_t *const data = ns_rr_rdata( resource_record );
 						const std::size_t length = ns_rr_rdlen( resource_record );
 
 						return { data, data + length };
@@ -55,7 +69,7 @@ namespace mongo
 					SRVHostEntry
 					srvHostEntry() const
 					{
-						const char *const data = ns_rr_rdata( resource_record );
+						const std::uint8_t *const data = ns_rr_rdata( resource_record );
 						const uint16_t port= ntohs( *reinterpret_cast< const short * >( data + 4 ) );
 
 						std::string name;
@@ -91,7 +105,7 @@ namespace mongo
 							throw std::runtime_error( oss.str() );
 						}
 
-						nRecords= ns_msg_count( &ns_answer, ns_s_an );
+						nRecords= ns_msg_count( ns_answer, ns_s_an );
 						if( !nRecords )
 						{
 							std::ostringstream oss;
@@ -109,23 +123,25 @@ namespace mongo
 
 							friend DNSResponse;
 
-							explicit iterator( DNSResponse *const r ) : response( r ) : record( this->response->ns_answer, 0 ) {}
+							explicit
+							iterator( DNSResponse *const r )
+									: response( r ), record( this->response->service, this->response->ns_answer, 0 ) {}
 
 							explicit iterator( DNSResponse *const r, int p ) : response( r ), pos( p ) {}
 
-							void advance() { record= ResourceRecord( this->response->ns_answer, ++this->pos ); }
+							void advance() { record= ResourceRecord( this->response->service, this->response->ns_answer, ++this->pos ); }
 
 							auto make_equality_lens() const { return std::tie( this->response, this->pos ); }
 
 							auto make_strict_weak_order_lens() const { return std::tie( this->response, this->pos ); }
 
 						public:
-							ResourceRecord &operator *() const { return this->record; }
+							const ResourceRecord &operator *() const { return this->record; }
 
-							ResourceRecord *operator ->() const { return &this->record; }
+							const ResourceRecord *operator ->() const { return &this->record; }
 
 							iterator &operator ++() { this->advance(); return *this; }
-							iterator operator++ ( int ) { iterator tmp; this->advance(); return tmp; }
+							iterator operator++ ( int ) { iterator tmp= *this; this->advance(); return tmp; }
 
 							friend bool operator == ( const iterator &lhs, const iterator &rhs ) { return lhs.make_equality_lens() == rhs.make_equality_lens(); }
 							friend bool operator != ( const iterator &lhs, const iterator &rhs ) { return !( lhs == rhs ); }
@@ -133,8 +149,8 @@ namespace mongo
 							friend bool operator < ( const iterator &lhs, const iterator &rhs ) { return lhs.make_strict_weak_order_lens() < rhs.make_strict_weak_order_lens(); }
 					};
 
-					auto begin() const { return iterator( this ); }
-					auto end() const { return iterator( this, this->nRecords ); }
+					auto begin() { return iterator( this ); }
+					auto end() { return iterator( this, this->nRecords ); }
 
 					std::size_t size() const { return this->nRecords; }
 			};
@@ -172,15 +188,15 @@ namespace mongo
 					{
 						std::vector< std::uint8_t > result( 8192 );
 						#ifdef MONGO_HAVE_RES_NQUERY
-						const int size= res_nsearch( &state, service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() )
+						const int size= res_nsearch( &state, service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
 						#else
-						const int size= res_search( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() )
+						const int size= res_search( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
 						#endif
 
 						if( size < 0 )
 						{
 							std::ostringstream oss;
-							oss << "Failed to look up service \"" << service << "\": " << strerror( h_errno );
+							oss << "Failed to look up service \"" << service << "\": " << strerror( errno );
 							throw std::runtime_error( oss.str() );
 						}
 						result.resize( size );
@@ -189,7 +205,7 @@ namespace mongo
 					}
 
 					DNSResponse
-					lookup( const std::string &service, const DNSQuery class_, const DNSQueryType type )
+					lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
 					{
 						return DNSResponse( service, raw_lookup( service, class_, type ) );
 					}
@@ -201,7 +217,7 @@ namespace mongo
 		 * Returns a vector containing SRVHost entries for the specified `service`.
 		 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
 		 */
-		std::vector< SRVHostEntry >
+		std::vector< dns::SRVHostEntry >
 		dns::getSRVRecord( const std::string &service )
 		{
 			DNSQueryState dnsQuery;
@@ -224,11 +240,9 @@ namespace mongo
 		{
 			DNSQueryState dnsQuery;
 
-			DNSQueryState dnsQuery;
-
 			auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
 
-			std::vector< std::uint8_t > rv;
+			std::vector< std::string > rv;
 			rv.reserve( response.size() );
 
 			std::transform( begin( response ), end( response ), back_inserter( rv ),

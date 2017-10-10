@@ -2325,6 +2325,8 @@ def doConfigure(myenv):
 
         conf.Finish()
 
+	env.Append(LIBS=['resolv'])
+
     if has_option('sanitize'):
 
         if not myenv.ToolchainIs('clang', 'gcc'):

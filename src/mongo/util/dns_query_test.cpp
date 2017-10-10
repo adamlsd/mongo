@@ -12,29 +12,7 @@ namespace
 		ASSERT_EQ( entry, "8.8.8.8" );
 	}
 
-	TEST( MongoDnsQuery, SRVHostEntryLens )
-	{
-		using mongo::dns::SRVHostEntry;
-		SRVHostEntry a{ "Host", 1234 };
-		SRVHostEntry b{ "Host", 1234 };
-		SRVHostEntry c{ "Host2", 1234 };
-		SRVHostEntry d{ "Host", 1233 };
-		SRVHostEntry e{ "Host2", 1233 };
-
-		ASSERT_EQ( a, b );
-		ASSERT_EQ( b, a );
-
-		ASSERT_NE( a, c );
-		ASSERT_NE( c, a );
-
-		ASSERT_NE( a, d );
-		ASSERT_NE( d, a );
-
-		ASSERT_NE( a, e );
-		ASSERT_NE( e, a );
-	}
-
-	TEST( MongoDnsQuery, srv )
+	TEST( MongoDnsQuery, srv_test1 )
 	{
 		auto entries= mongo::dns::getSRVRecord( "_mongodb._tcp.test1.test.build.10gen.cc." );
 		std::sort( begin( entries ), end( entries ) );
@@ -54,17 +32,16 @@ namespace
 		{
 			std::cout << "Witness: " << witness.at( i ) << std::endl;
 			std::cout << "Result:  " << entries.at( i ) << std::endl;
-			//ASSERT_EQ( witness.at( i ), entries.at( i ) );
+			ASSERT_EQ( witness.at( i ), entries.at( i ) );
 		}
 
 		ASSERT_TRUE( std::equal( begin( witness ), end( witness ), begin( entries ), end( entries ) ) );
 		ASSERT_TRUE( witness.size() == entries.size() );
 	}
 
-#if 0
-	TEST( MongoDnsQuery, txt )
+	TEST( MongoDnsQuery, txt_test5 )
 	{
-		auto entries= mongo::dns::getTXTRecord( "test5.test.build.10gen.cc" );
+		auto entries= mongo::dns::getTXTRecord( "test5.test.build.10gen.cc." );
 		std::sort( begin( entries ), end( entries ) );
 
 		for( const auto &entry: entries )
@@ -77,5 +54,21 @@ namespace
 		ASSERT_TRUE( std::equal( begin( witness ), end( witness ), begin( entries ), end( entries ) ) );
 		ASSERT_TRUE( witness.size() == entries.size() );
 	}
-#endif
+
+
+	TEST( MongoDnsQuery, txt_test6 )
+	{
+		auto entries= mongo::dns::getTXTRecord( "test6.test.build.10gen.cc." );
+		std::sort( begin( entries ), end( entries ), std::greater<>() );
+
+		for( const auto &entry: entries )
+		{
+			std::cout << "Entry: " << entry << std::endl;
+		}
+
+		const std::vector< std::string > witness= { "socketTimeoutMS=200000", "connectTimeoutMS=200000" };
+
+		ASSERT_TRUE( std::equal( begin( witness ), end( witness ), begin( entries ), end( entries ) ) );
+		ASSERT_TRUE( witness.size() == entries.size() );
+	}
 }//namespace

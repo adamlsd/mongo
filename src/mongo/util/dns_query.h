@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <exception>
 #include <iostream>
+#include <iomanip>
 
 #include <boost/noncopyable.hpp>
 
@@ -41,11 +42,7 @@ namespace mongo
 			inline friend std::ostream &
 			operator << ( std::ostream &os, const SRVHostEntry &entry )
 			{
-				os << "(" << entry.host.size() << ")";
-				std::copy( begin( entry.host ), end( entry.host ),
-						std::ostream_iterator< unsigned >( os, "/" ) );
-				os << entry.host << ':' << entry.port;
-				return os;
+				return os << entry.host << ':' << entry.port;
 			}
 		};
 

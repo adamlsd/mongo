@@ -74,17 +74,14 @@ namespace mongo
 						const uint16_t port= ntohs( *reinterpret_cast< const short * >( data + 4 ) );
 
 						std::string name;
-						name.resize( 25 );
+						name.resize( 8192, '@' );
+						
 						const auto size = dn_expand( answerStart, answerEnd, data + 6, &name[ 0 ], name.size() );
-						if( size > name.size() )
-						{
-							std::cerr << "BUFFER SIZE ALERT: ASKED FOR " << name.size() << " BUT GOT "
-									<< size << " BYTES!" << std::endl;
-						}
 
 						if( size < 1 ) { std::cerr << "buffer issue maybe?" << std::endl; badRecord(); }
 
-						name.resize( size );
+						// Trim the expanded name
+						name.resize( name.find( '\0' ) );
 						name+= '.';
 
 						// return by copy is equivalent to a `shrink_to_fit` and `move`.
@@ -283,7 +280,7 @@ namespace mongo
 	{
 		DNSQueryState dnsQuery;
 
-		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
+		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kTXT );
 
 		std::vector< std::string > rv;
 		rv.reserve( response.size() );
@@ -292,7 +289,9 @@ namespace mongo
 				[]( const auto &entry )
 				{
 					const auto data= entry.rawData();
-					return std::string( begin( data ), end( data ) );
+					const std::size_t amt= data.front();
+					const auto first= begin( data ) + 1;
+					return std::string( first, first + amt );
 				} );
 		return rv;
 	}

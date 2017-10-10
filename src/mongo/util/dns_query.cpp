@@ -8,6 +8,7 @@
 #include <stdio.h>
 
 #include <iostream>
+#include <cassert>
 #include <sstream>
 #include <string>
 #include <cstdint>
@@ -28,7 +29,7 @@ namespace mongo
 		namespace
 		{
 			enum class DNSQueryClass { kInternet= ns_c_in, };
-			enum class DNSQueryType { kSRV= ns_t_srv, kTXT= ns_t_txt, };
+			enum class DNSQueryType { kSRV= ns_t_srv, kTXT= ns_t_txt, kAddress= ns_t_a, };
 
 			class ResourceRecord
 			{
@@ -73,12 +74,18 @@ namespace mongo
 						const uint16_t port= ntohs( *reinterpret_cast< const short * >( data + 4 ) );
 
 						std::string name;
-						name.resize( 8192 );
-						const std::size_t size = dn_expand( answerStart, answerEnd, data + 6, &name[ 0 ], name.size() );
+						name.resize( 25 );
+						const auto size = dn_expand( answerStart, answerEnd, data + 6, &name[ 0 ], name.size() );
+						if( size > name.size() )
+						{
+							std::cerr << "BUFFER SIZE ALERT: ASKED FOR " << name.size() << " BUT GOT "
+									<< size << " BYTES!" << std::endl;
+						}
 
-						if( size < 1 ) { badRecord(); }
+						if( size < 1 ) { std::cerr << "buffer issue maybe?" << std::endl; badRecord(); }
 
 						name.resize( size );
+						name+= '.';
 
 						// return by copy is equivalent to a `shrink_to_fit` and `move`.
 						return { name, port };
@@ -129,16 +136,25 @@ namespace mongo
 
 							explicit iterator( DNSResponse *const r, int p ) : response( r ), pos( p ) {}
 
-							void advance() { record= ResourceRecord( this->response->service, this->response->ns_answer, ++this->pos ); }
+							void
+							hydrate()
+							{
+								record= ResourceRecord( this->response->service, this->response->ns_answer, this->pos );
+							}
+
+							void advance()
+							{
+								++this->pos;
+							}
 
 							auto make_equality_lens() const { return std::tie( this->response, this->pos ); }
 
 							auto make_strict_weak_order_lens() const { return std::tie( this->response, this->pos ); }
 
 						public:
-							const ResourceRecord &operator *() const { return this->record; }
+							const ResourceRecord &operator *() { this->hydrate(); return this->record; }
 
-							const ResourceRecord *operator ->() const { return &this->record; }
+							const ResourceRecord *operator ->() { this->hydrate(); return &this->record; }
 
 							iterator &operator ++() { this->advance(); return *this; }
 							iterator operator++ ( int ) { iterator tmp= *this; this->advance(); return tmp; }
@@ -186,11 +202,11 @@ namespace mongo
 					std::vector< std::uint8_t >
 					raw_lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
 					{
-						std::vector< std::uint8_t > result( 8192 );
+						std::vector< std::uint8_t > result( 65536 );
 						#ifdef MONGO_HAVE_RES_NQUERY
 						const int size= res_nsearch( &state, service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
 						#else
-						const int size= res_search( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
+						const int size= res_query( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
 						#endif
 
 						if( size < 0 )
@@ -213,44 +229,71 @@ namespace mongo
 		}//namespace
 	}//namespace dns
 
-		/**
-		 * Returns a vector containing SRVHost entries for the specified `service`.
-		 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
-		 */
-		std::vector< dns::SRVHostEntry >
-		dns::getSRVRecord( const std::string &service )
+	/**
+	 * Returns a string with the IP address or domain name listed...
+	 */
+	std::string
+	dns::getARecord( const std::string &service )
+	{
+		DNSQueryState dnsQuery;
+		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kAddress );
+
+		std::string rv;
+		assert( response.size() == 1 );
+
+
+		for( const auto &entry: response )
 		{
-			DNSQueryState dnsQuery;
-
-			auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
-
-			std::vector< SRVHostEntry > rv;
-			rv.reserve( response.size() );
-
-			std::transform( begin( response ), end( response ), back_inserter( rv ), []( const auto &entry ) { return entry.srvHostEntry(); } );
-			return rv;
+			for( const std::uint8_t &ch: entry.rawData() )
+			{
+				std::ostringstream oss;
+				oss << int( ch );
+				rv+= oss.str() + ".";
+			}
+			rv.pop_back();
 		}
+		
+		return rv;
+	}
 
-		/**
-		 * Returns a string containing TXT entries for a specified service.
-		 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
-		 */
-		std::vector< std::string >
-		dns::getTXTRecord( const std::string &service )
-		{
-			DNSQueryState dnsQuery;
+	/**
+	 * Returns a vector containing SRVHost entries for the specified `service`.
+	 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+	 */
+	std::vector< dns::SRVHostEntry >
+	dns::getSRVRecord( const std::string &service )
+	{
+		DNSQueryState dnsQuery;
 
-			auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
+		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
 
-			std::vector< std::string > rv;
-			rv.reserve( response.size() );
+		std::vector< SRVHostEntry > rv;
+		rv.reserve( response.size() );
 
-			std::transform( begin( response ), end( response ), back_inserter( rv ),
-					[]( const auto &entry )
-					{
-						const auto data= entry.rawData();
-						return std::string( begin( data ), end( data ) );
-					} );
-			return rv;
-		}
+		std::transform( begin( response ), end( response ), back_inserter( rv ), []( const auto &entry ) { return entry.srvHostEntry(); } );
+		return rv;
+	}
+
+	/**
+	 * Returns a string containing TXT entries for a specified service.
+	 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+	 */
+	std::vector< std::string >
+	dns::getTXTRecord( const std::string &service )
+	{
+		DNSQueryState dnsQuery;
+
+		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
+
+		std::vector< std::string > rv;
+		rv.reserve( response.size() );
+
+		std::transform( begin( response ), end( response ), back_inserter( rv ),
+				[]( const auto &entry )
+				{
+					const auto data= entry.rawData();
+					return std::string( begin( data ), end( data ) );
+				} );
+		return rv;
+	}
 }//namespace mongo

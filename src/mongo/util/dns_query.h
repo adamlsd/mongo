@@ -5,6 +5,7 @@
 #include <array>
 #include <stdexcept>
 #include <exception>
+#include <iostream>
 
 #include <boost/noncopyable.hpp>
 
@@ -36,6 +37,16 @@ namespace mongo
 			{
 				return std::tie( entry.host, entry.port );
 			}
+
+			inline friend std::ostream &
+			operator << ( std::ostream &os, const SRVHostEntry &entry )
+			{
+				os << "(" << entry.host.size() << ")";
+				std::copy( begin( entry.host ), end( entry.host ),
+						std::ostream_iterator< unsigned >( os, "/" ) );
+				os << entry.host << ':' << entry.port;
+				return os;
+			}
 		};
 
 		/**
@@ -49,5 +60,7 @@ namespace mongo
 		 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
 		 */
 		std::vector< std::string > getTXTRecord( const std::string &service );
+
+		std::string getARecord( const std::string &service );
 	}//namespace dns
 }//namespace mongo

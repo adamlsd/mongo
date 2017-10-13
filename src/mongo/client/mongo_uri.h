@@ -42,124 +42,150 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/net/hostandport.h"
 
-namespace mongo
-{
-	/**
-	 * Encode a string for embedding in a URI.
-	 * Replaces reserved bytes with %xx sequences.
-	 *
-	 * Optionally allows passthrough characters to remain unescaped.
-	 */
-	void uriEncode( std::ostream &ss, StringData str, StringData passthrough= ""_sd );
+namespace mongo {
+/**
+ * Encode a string for embedding in a URI.
+ * Replaces reserved bytes with %xx sequences.
+ *
+ * Optionally allows passthrough characters to remain unescaped.
+ */
+void uriEncode(std::ostream& ss, StringData str, StringData passthrough = ""_sd);
 
-	inline std::string
-	uriEncode( StringData str, StringData passthrough= ""_sd )
-	{
-		std::ostringstream ss;
-		uriEncode( ss, str, passthrough );
-		return ss.str();
-	}
+inline std::string uriEncode(StringData str, StringData passthrough = ""_sd) {
+    std::ostringstream ss;
+    uriEncode(ss, str, passthrough);
+    return ss.str();
+}
 
-	/**
-	 * Decode a URI encoded string.
-	 * Replaces + and %xx sequences with their original byte.
-	 */
-	StatusWith< std::string > uriDecode( StringData str );
+/**
+ * Decode a URI encoded string.
+ * Replaces + and %xx sequences with their original byte.
+ */
+StatusWith<std::string> uriDecode(StringData str);
 
-	/**
-	 * MongoURI handles parsing of URIs for mongodb, and falls back to old-style
-	 * ConnectionString parsing. It's used primarily by the shell.
-	 * It parses URIs with the following format:
-	 *
-	 *    mongodb://[usr:pwd@]host1[:port1]...[,hostN[:portN]]][/[db][?options]]
-	 *
-	 * While this format is generally RFC 3986 compliant, some exceptions do exist:
-	 *   1. The 'host' field, as defined by section 3.2.2 is expanded in the following ways:
-	 *     a. Multiple hosts may be specified as a comma separated list.
-	 *     b. Hosts may take the form of absolute paths for unix domain sockets.
-	 *       i. Sockets must end in the suffix '.sock'
-	 *   2. The 'fragment' field, as defined by section 3.5 is not permitted.
-	 *
-	 * For a complete list of URI string options, see
-	 * https://wiki.mongodb.com/display/DH/Connection+String+Format
-	 *
-	 * Examples:
-	 *
-	 *    A replica set with three members (one running on default port 27017):
-	 *      string uri = mongodb://localhost,localhost:27018,localhost:27019
-	 *
-	 *    Authenticated connection to db 'bedrock' with user 'barney' and pwd 'rubble':
-	 *      string url = mongodb://barney:rubble@localhost/bedrock
-	 *
-	 *    Use parse() to parse the url, then validate and connect:
-	 *      string errmsg;
-	 *      ConnectionString cs = ConnectionString::parse( url, errmsg );
-	 *      if ( ! cs.isValid() ) throw "bad connection string: " + errmsg;
-	 *      DBClientBase * conn = cs.connect( errmsg );
-	 */
-	class MongoURI
-	{
-		public:
-			using OptionsMap= std::map< std::string, std::string >;
-
-			static StatusWith< MongoURI > parse( const std::string &url );
-			static MongoURI parseImpl( const std::string &url );
-
-			DBClientBase *connect( StringData applicationName, std::string &errmsg, boost::optional< double > socketTimeoutSecs= boost::none ) const;
-
-			const std::string & getUser() const { return _user; }
-
-			const std::string & getPassword() const { return _password; }
-
-			const OptionsMap & getOptions() const { return _options; }
-
-			const std::string & getDatabase() const { return _database; }
-
-			bool isValid() const { return _connectString.isValid(); }
-
-			const std::string & toString() const { return _connectString.toString(); }
-
-			const std::string & getSetName() const { return _connectString.getSetName(); }
-
-			const std::vector< HostAndPort > & getServers() const { return _connectString.getServers(); }
-
-			// If you are trying to clone a URI (including its options/auth information) for a single
-			// server (say a member of a replica-set), you can pass in its HostAndPort information to
-			// get a new URI with the same info, except type() will be MASTER and getServers() will
-			// be the single host you pass in.
-			MongoURI
-			cloneURIForServer( HostAndPort hostAndPort ) const
-			{
-				return MongoURI( ConnectionString( std::move( hostAndPort ) ), _user, _password, _database, _options );
-			}
-
-			ConnectionString::ConnectionType type() const { return _connectString.type(); }
-//private:
-			explicit MongoURI( ConnectionString connectString ) : _connectString( std::move( connectString ) ){};
+/**
+ * MongoURI handles parsing of URIs for mongodb, and falls back to old-style
+ * ConnectionString parsing. It's used primarily by the shell.
+ * It parses URIs with the following format:
+ *
+ *    mongodb://[usr:pwd@]host1[:port1]...[,hostN[:portN]]][/[db][?options]]
+ *
+ * While this format is generally RFC 3986 compliant, some exceptions do exist:
+ *   1. The 'host' field, as defined by section 3.2.2 is expanded in the following ways:
+ *     a. Multiple hosts may be specified as a comma separated list.
+ *     b. Hosts may take the form of absolute paths for unix domain sockets.
+ *       i. Sockets must end in the suffix '.sock'
+ *   2. The 'fragment' field, as defined by section 3.5 is not permitted.
+ *
+ * For a complete list of URI string options, see
+ * https://wiki.mongodb.com/display/DH/Connection+String+Format
+ *
+ * Examples:
+ *
+ *    A replica set with three members (one running on default port 27017):
+ *      string uri = mongodb://localhost,localhost:27018,localhost:27019
+ *
+ *    Authenticated connection to db 'bedrock' with user 'barney' and pwd 'rubble':
+ *      string url = mongodb://barney:rubble@localhost/bedrock
+ *
+ *    Use parse() to parse the url, then validate and connect:
+ *      string errmsg;
+ *      ConnectionString cs = ConnectionString::parse( url, errmsg );
+ *      if ( ! cs.isValid() ) throw "bad connection string: " + errmsg;
+ *      DBClientBase * conn = cs.connect( errmsg );
+ */
+class MongoURI {
 public:
+    using OptionsMap = std::map<std::string, std::string>;
 
-			MongoURI()= default;
+    static StatusWith<MongoURI> parse(const std::string& url);
+    static MongoURI parseImpl(const std::string& url);
 
-			friend std::ostream &operator<<( std::ostream &, const MongoURI & );
+    DBClientBase* connect(StringData applicationName,
+                          std::string& errmsg,
+                          boost::optional<double> socketTimeoutSecs = boost::none) const;
 
-			friend StringBuilder &operator<<( StringBuilder &, const MongoURI & );
+    const std::string& getUser() const {
+        return _user;
+    }
 
-		private:
-			MongoURI( ConnectionString connectString, const std::string &user, const std::string &password, const std::string &database,
-			        OptionsMap options )
-					: _connectString( std::move( connectString ) ), _user( user ), _password( password ), _database( database ),
-					_options( std::move( options ) ) {}
+    const std::string& getPassword() const {
+        return _password;
+    }
 
-			BSONObj _makeAuthObjFromOptions( int maxWireVersion ) const;
+    const OptionsMap& getOptions() const {
+        return _options;
+    }
 
-			ConnectionString _connectString;
-			std::string _user;
-			std::string _password;
-			std::string _database;
-			OptionsMap _options;
-	};
+    const std::string& getDatabase() const {
+        return _database;
+    }
 
-	inline std::ostream & operator<<( std::ostream &ss, const MongoURI &uri ) { return ss << uri._connectString; }
+    bool isValid() const {
+        return _connectString.isValid();
+    }
 
-	inline StringBuilder & operator<<( StringBuilder &sb, const MongoURI &uri ) { return sb << uri._connectString; }
-}	// namespace mongo
+    const std::string& toString() const {
+        return _connectString.toString();
+    }
+
+    const std::string& getSetName() const {
+        return _connectString.getSetName();
+    }
+
+    const std::vector<HostAndPort>& getServers() const {
+        return _connectString.getServers();
+    }
+
+    // If you are trying to clone a URI (including its options/auth information) for a single
+    // server (say a member of a replica-set), you can pass in its HostAndPort information to
+    // get a new URI with the same info, except type() will be MASTER and getServers() will
+    // be the single host you pass in.
+    MongoURI cloneURIForServer(HostAndPort hostAndPort) const {
+        return MongoURI(
+            ConnectionString(std::move(hostAndPort)), _user, _password, _database, _options);
+    }
+
+    ConnectionString::ConnectionType type() const {
+        return _connectString.type();
+    }
+
+    // private:
+    explicit MongoURI(ConnectionString connectString) : _connectString(std::move(connectString)){};
+
+public:
+    MongoURI() = default;
+
+    friend std::ostream& operator<<(std::ostream&, const MongoURI&);
+
+    friend StringBuilder& operator<<(StringBuilder&, const MongoURI&);
+
+private:
+    MongoURI(ConnectionString connectString,
+             const std::string& user,
+             const std::string& password,
+             const std::string& database,
+             OptionsMap options)
+        : _connectString(std::move(connectString)),
+          _user(user),
+          _password(password),
+          _database(database),
+          _options(std::move(options)) {}
+
+    BSONObj _makeAuthObjFromOptions(int maxWireVersion) const;
+
+    ConnectionString _connectString;
+    std::string _user;
+    std::string _password;
+    std::string _database;
+    OptionsMap _options;
+};
+
+inline std::ostream& operator<<(std::ostream& ss, const MongoURI& uri) {
+    return ss << uri._connectString;
+}
+
+inline StringBuilder& operator<<(StringBuilder& sb, const MongoURI& uri) {
+    return sb << uri._connectString;
+}
+}  // namespace mongo

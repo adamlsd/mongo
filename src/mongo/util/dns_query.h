@@ -43,15 +43,21 @@ namespace mongo
 				: host( std::move( i_host ) ), port( i_port ) {}
 
 			inline friend auto
-			make_equality_lens( const SRVHostEntry &entry )
+			make_salient_lens( const SRVHostEntry &entry )
 			{
 				return std::tie( entry.host, entry.port );
 			}
 
 			inline friend auto
+			make_equality_lens( const SRVHostEntry &entry )
+			{
+				return make_salient_lens( entry );
+			}
+
+			inline friend auto
 			make_strict_weak_order_lens( const SRVHostEntry &entry )
 			{
-				return std::tie( entry.host, entry.port );
+				return make_salient_lens( entry );
 			}
 
 			inline friend std::ostream &

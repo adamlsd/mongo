@@ -24,275 +24,390 @@ using std::end;
 
 namespace mongo
 {
-	namespace dns
-	{
-		namespace
-		{
-			enum class DNSQueryClass { kInternet= ns_c_in, };
-			enum class DNSQueryType { kSRV= ns_t_srv, kTXT= ns_t_txt, kAddress= ns_t_a, };
+    namespace dns
+    {
+        namespace
+        {
+            #ifndef MONGOC_HAVE_DNS_API
 
-			class ResourceRecord
-			{
-				private:
-					std::string service;
-					ns_rr resource_record;
-					const std::uint8_t *answerStart;
-					const std::uint8_t *answerEnd;
-					int pos;
+            enum class DNSQueryClass { kInternet= ns_c_in, };
 
-					void
-					badRecord() const
-					{
-						std::ostringstream oss;
-						oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \"" << strerror (errno) << "\"";
-						throw std::runtime_error( oss.str() );
-					};
+            enum class DNSQueryType { kSRV= ns_t_srv, kTXT= ns_t_txt, kAddress= ns_t_a, };
+                
+            class ResourceRecord
+            {
+                private:
+                    std::string service;
+                    ns_rr resource_record;
+                    const std::uint8_t *answerStart;
+                    const std::uint8_t *answerEnd;
+                    int pos;
 
-				public:
-					explicit ResourceRecord()= default;
+                    void
+                    badRecord() const
+                    {
+                        std::ostringstream oss;
+                        oss << "Invalid record " << pos << " of SRV answer for \"" << service <<
+                            "\": \"" << strerror ( errno ) << "\"";
+                        throw DNSLookupException( oss.str() );
+                    };
 
-					explicit
-					ResourceRecord( std::string s, ns_msg &ns_answer, const int p )
-							: service( std::move( s ) ), answerStart( ns_msg_base( ns_answer ) ), answerEnd( ns_msg_end( ns_answer ) ), pos( p )
-					{
-						if( ns_parserr( &ns_answer, ns_s_an, p, &resource_record ) ) badRecord();
-					}
+                public:
+                    explicit
+                    ResourceRecord()= default;
 
-					std::vector< std::uint8_t >
-					rawData() const
-					{
-						const std::uint8_t *const data = ns_rr_rdata( resource_record );
-						const std::size_t length = ns_rr_rdlen( resource_record );
+                    explicit
+                    ResourceRecord( std::string s, ns_msg &ns_answer, const int p )
+                        : service( std::move( s ) ), answerStart( ns_msg_base( ns_answer ) ),
+                        answerEnd( ns_msg_end( ns_answer ) ), pos( p )
+                    {
+                        if( ns_parserr( &ns_answer, ns_s_an, p, &resource_record ) ) badRecord();
+                    }
 
-						return { data, data + length };
-					}
+                    std::vector< std::uint8_t >
+                    rawData() const
+                    {
+                        const std::uint8_t *const data= ns_rr_rdata( resource_record );
+                        const std::size_t length= ns_rr_rdlen( resource_record );
 
-					SRVHostEntry
-					srvHostEntry() const
-					{
-						const std::uint8_t *const data = ns_rr_rdata( resource_record );
-						const uint16_t port= ntohs( *reinterpret_cast< const short * >( data + 4 ) );
+                        return { data, data + length };
+                    }
 
-						std::string name;
-						name.resize( 8192, '@' );
-						
-						const auto size = dn_expand( answerStart, answerEnd, data + 6, &name[ 0 ], name.size() );
+                    std::string
+                    addressEntry() const
+                    {
+                        std::string rv;
+                        for( const std::uint8_t &ch: rawData() )
+                        {
+                            std::ostringstream oss;
+                            oss << int( ch );
+                            rv+= oss.str() + ".";
+                        }
+                        rv.pop_back();
+                        return rv;
+                    }
 
-						if( size < 1 ) { std::cerr << "buffer issue maybe?" << std::endl; badRecord(); }
+                    SRVHostEntry
+                    srvHostEntry() const
+                    {
+                        const std::uint8_t *const data= ns_rr_rdata( resource_record );
+                        const uint16_t port=
+                                ntohs( *reinterpret_cast< const short * >( data + 4 ) );
 
-						// Trim the expanded name
-						name.resize( name.find( '\0' ) );
-						name+= '.';
+                        std::string name;
+                        name.resize( 8192, '@' );
 
-						// return by copy is equivalent to a `shrink_to_fit` and `move`.
-						return { name, port };
-					}
-			};
+                        const auto size= dn_expand( answerStart, answerEnd, data + 6, &name[ 0 ],
+                                        name.size() );
 
-			class DNSResponse
-			{
-				private:
-					std::string service;
-					std::vector< std::uint8_t > data;
-					ns_msg ns_answer;
-					std::size_t nRecords;
+                        if( size < 1 ) badRecord();
 
-				public:
-					explicit
-					DNSResponse( std::string s, std::vector< std::uint8_t > d )
-							: service( std::move( s ) ), data( std::move( d ) )
-					{
-						if( ns_initparse( data.data(), data.size(), &ns_answer ) )
-						{
-							std::ostringstream oss;
-							oss << "Invalid SRV answer for \"" << service << "\"";
-							throw std::runtime_error( oss.str() );
-						}
+                        // Trim the expanded name
+                        name.resize( name.find( '\0' ) );
+                        name+= '.';
 
-						nRecords= ns_msg_count( ns_answer, ns_s_an );
-						if( !nRecords )
-						{
-							std::ostringstream oss;
-							oss << "No SRV records for \"" << service << "\"";
-							throw std::runtime_error( oss.str() );
-						}
-					}
+                        // return by copy is equivalent to a `shrink_to_fit` and `move`.
+                        return { name, port };
+                    }
+            };
 
-					class iterator
-					{
-						private:
-							DNSResponse *response;
-							int pos= 0;
-							ResourceRecord record;
+            class DNSResponse
+            {
+                private:
+                    std::string service;
+                    std::vector< std::uint8_t > data;
+                    ns_msg ns_answer;
+                    std::size_t nRecords;
 
-							friend DNSResponse;
+                public:
+                    explicit
+                    DNSResponse( std::string s, std::vector< std::uint8_t > d )
+                        : service( std::move( s ) ), data( std::move( d ) )
+                    {
+                        if( ns_initparse( data.data(), data.size(), &ns_answer ) )
+                        {
+                            std::ostringstream oss;
+                            oss << "Invalid SRV answer for \"" << service << "\"";
+                            throw DNSLookupException( oss.str() );
+                        }
 
-							explicit
-							iterator( DNSResponse *const r )
-									: response( r ), record( this->response->service, this->response->ns_answer, 0 ) {}
+                        nRecords= ns_msg_count( ns_answer, ns_s_an );
 
-							explicit iterator( DNSResponse *const r, int p ) : response( r ), pos( p ) {}
+                        if( !nRecords )
+                        {
+                            std::ostringstream oss;
+                            oss << "No SRV records for \"" << service << "\"";
+                            throw DNSLookupException( oss.str() );
+                        }
+                    }
 
-							void
-							hydrate()
-							{
-								record= ResourceRecord( this->response->service, this->response->ns_answer, this->pos );
-							}
+                    class iterator : mongo::relops::equality::hook, mongo::relops::order::hook
+                    {
+                        private:
+                            DNSResponse *response;
+                            int pos= 0;
+                            ResourceRecord record;
 
-							void advance()
-							{
-								++this->pos;
-							}
+                            friend DNSResponse;
 
-							auto make_equality_lens() const { return std::tie( this->response, this->pos ); }
+                            explicit
+                            iterator( DNSResponse *const r )
+                                : response( r ), record( this->response->service,
+                                        this->response->ns_answer, 0 ) {}
 
-							auto make_strict_weak_order_lens() const { return std::tie( this->response, this->pos ); }
+                            explicit iterator( DNSResponse *const r, int p ) : response( r ),
+                                pos( p ) {}
 
-						public:
-							const ResourceRecord &operator *() { this->hydrate(); return this->record; }
+                            void
+                            hydrate()
+                            {
+                                record= ResourceRecord( this->response->service,
+                                                this->response->ns_answer, this->pos );
+                            }
 
-							const ResourceRecord *operator ->() { this->hydrate(); return &this->record; }
+                            void
+                            advance()
+                            {
+                                ++this->pos;
+                            }
 
-							iterator &operator ++() { this->advance(); return *this; }
-							iterator operator++ ( int ) { iterator tmp= *this; this->advance(); return tmp; }
+                        public:
+                            auto
+                            make_equality_lens() const
+                            {
+                                return std::tie( this->response, this->pos );
+                            }
 
-							friend bool operator == ( const iterator &lhs, const iterator &rhs ) { return lhs.make_equality_lens() == rhs.make_equality_lens(); }
-							friend bool operator != ( const iterator &lhs, const iterator &rhs ) { return !( lhs == rhs ); }
+                            auto
+                            make_strict_weak_order_lens() const
+                            {
+                                return std::tie( this->response, this->pos );
+                            }
 
-							friend bool operator < ( const iterator &lhs, const iterator &rhs ) { return lhs.make_strict_weak_order_lens() < rhs.make_strict_weak_order_lens(); }
-					};
+                            const ResourceRecord &
+                            operator *() { this->hydrate(); return this->record; }
 
-					auto begin() { return iterator( this ); }
-					auto end() { return iterator( this, this->nRecords ); }
+                            const ResourceRecord *
+                            operator ->() { this->hydrate(); return &this->record; }
 
-					std::size_t size() const { return this->nRecords; }
-			};
+                            iterator &
+                            operator ++() { this->advance(); return *this; }
 
-			/**
-			 * The `DNSQueryState` object represents the state of a DNS query interface, on Unix-like systems.
-			 */
-			class DNSQueryState : boost::noncopyable
-			{
-				#ifdef MONGO_HAVE_RES_NQUERY
-				private:
-					struct __res_state state;
+                            iterator
+                            operator++ ( int ) { iterator tmp= *this; this->advance(); return tmp; }
 
-				public:
-					~DNSQueryState()
-					{
-						#ifdef MONGO_HAVE_RES_NDESTROY
-						res_ndestroy( &state );
-						#elif defined( MONGO_HAVE_RES_NCLOSE )
-						res_nclose( &state );
-						#endif
-					}
+                            #if 0
+                            friend bool
+                            operator == ( const iterator &lhs, const iterator &rhs )
+                                                                                     {
+                                                                                       return lhs.make_equality_lens() == rhs.make_equality_lens();
+                                                                                                                                                    }
 
-					DNSQueryState()
-							: state()
-					{
-						res_ninit( &state );
-					}
+                            friend bool
+                            operator != ( const iterator &lhs, const iterator &rhs ) { return !( lhs == rhs ); }
 
-				#endif
+                            friend bool
+                            operator < ( const iterator &lhs, const iterator &rhs ) { return lhs.make_strict_weak_order_lens() < rhs.make_strict_weak_order_lens(); }
+                            #endif
+                    };
 
-				public:
-					std::vector< std::uint8_t >
-					raw_lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
-					{
-						std::vector< std::uint8_t > result( 65536 );
-						#ifdef MONGO_HAVE_RES_NQUERY
-						const int size= res_nsearch( &state, service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
-						#else
-						const int size= res_query( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
-						#endif
+                    auto
+                    begin() { return iterator( this ); }
 
-						if( size < 0 )
-						{
-							std::ostringstream oss;
-							oss << "Failed to look up service \"" << service << "\": " << strerror( errno );
-							throw std::runtime_error( oss.str() );
-						}
-						result.resize( size );
+                    auto
+                    end() { return iterator( this, this->nRecords ); }
 
-						return result;
-					}
+                    std::size_t
+                    size() const { return this->nRecords; }
+            };
 
-					DNSResponse
-					lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
-					{
-						return DNSResponse( service, raw_lookup( service, class_, type ) );
-					}
-			};
-		}//namespace
-	}//namespace dns
+            /**
+             * The `DNSQueryState` object represents the state of a DNS query interface, on Unix-like systems.
+             */
+            class DNSQueryState
+                    : boost::noncopyable
+            {
+                #ifdef MONGO_HAVE_RES_NQUERY
 
-	/**
-	 * Returns a string with the IP address or domain name listed...
-	 */
-	std::string
-	dns::getARecord( const std::string &service )
-	{
-		DNSQueryState dnsQuery;
-		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kAddress );
+                private:
+                    struct __res_state state;
 
-		std::string rv;
-		assert( response.size() == 1 );
+                public:
+                    ~DNSQueryState()
+                    {
+                        #ifdef MONGO_HAVE_RES_NDESTROY
+                        res_ndestroy( &state );
+                        #elif defined( MONGO_HAVE_RES_NCLOSE )
+                        res_nclose( &state );
+                        #endif
+                    }
 
+                    DNSQueryState()
+                        : state()
+                    {
+                        res_ninit( &state );
+                    }
 
-		for( const auto &entry: response )
-		{
-			for( const std::uint8_t &ch: entry.rawData() )
-			{
-				std::ostringstream oss;
-				oss << int( ch );
-				rv+= oss.str() + ".";
-			}
-			rv.pop_back();
-		}
-		
-		return rv;
-	}
+                #endif
 
-	/**
-	 * Returns a vector containing SRVHost entries for the specified `service`.
-	 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
-	 */
-	std::vector< dns::SRVHostEntry >
-	dns::getSRVRecord( const std::string &service )
-	{
-		DNSQueryState dnsQuery;
+                public:
+                    std::vector< std::uint8_t >
+                    raw_lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
+                    {
+                        std::vector< std::uint8_t > result( 65536 );
+                        #ifdef MONGO_HAVE_RES_NQUERY
+                        const int size= res_nsearch( &state, service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
+                        #else
+                        const int size= res_query( service.c_str(), int( class_ ), int( type ), &result[ 0 ], result.size() );
+                        #endif
 
-		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
+                        if( size < 0 )
+                        {
+                            std::ostringstream oss;
+                            oss << "Failed to look up service \"" << service << "\": " << strerror( errno );
+                            throw DNSLookupException( oss.str() );
+                        }
+                        result.resize( size );
 
-		std::vector< SRVHostEntry > rv;
-		rv.reserve( response.size() );
+                        return result;
+                    }
 
-		std::transform( begin( response ), end( response ), back_inserter( rv ), []( const auto &entry ) { return entry.srvHostEntry(); } );
-		return rv;
-	}
+                    DNSResponse
+                    lookup( const std::string &service, const DNSQueryClass class_, const DNSQueryType type )
+                    {
+                        return DNSResponse( service, raw_lookup( service, class_, type ) );
+                    }
+            };
 
-	/**
-	 * Returns a string containing TXT entries for a specified service.
-	 * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
-	 */
-	std::vector< std::string >
-	dns::getTXTRecord( const std::string &service )
-	{
-		DNSQueryState dnsQuery;
+            #else
+            enum class DNSQueryClass { kInternet };
 
-		auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kTXT );
+            enum class DNSQueryType { kSRV= DNS_TYPE_SRV, kTXT= DNS_TYPE_TXT, kAddress= DNS_TYPE_A };
 
-		std::vector< std::string > rv;
-		rv.reserve( response.size() );
+            class ResourceRecord
+            {
+                
+            };
 
-		std::transform( begin( response ), end( response ), back_inserter( rv ),
-				[]( const auto &entry )
-				{
-					const auto data= entry.rawData();
-					const std::size_t amt= data.front();
-					const auto first= begin( data ) + 1;
-					return std::string( first, first + amt );
-				} );
-		return rv;
-	}
+            void freeDnsRecord( PDNS_RECORD r ) { DnsRecordListFree( r, DnsFreeRecordList ); }
+            class DNSResponse
+            {
+                private:
+                    std::shared_ptr< std::remove_pointer< PDNS_RECORD >::type > results;
+
+                public:
+                    explicit DNSResponse( const PDNS_RECORD r ) : results( r, freeDnsRecord ) {}
+
+                    class iterator
+                    {
+                        private:
+                            DNS_RECORD *record;
+
+                            void advance() { record= record->pNext; }
+
+                        public:
+                            
+                    };
+            };
+
+            class DNSQueryState
+            {
+                public:
+                    DNSResponse
+                    lookup( const std::string &service, const DNSQueryClass class_,
+                            const DNSQueryType type )
+                    {
+                        PDNS_RECORD queryResults;
+                        auto ec= DnsQuery_UTF8( service.c_str(), type, DNS_QUERY_BYPASS_CACHE, nullptr,
+                                &queryResults, nullptr );
+                        if( ec )
+                        {
+                            std::string buffer;
+                            buffer.resize( 64 * 1024 );
+                            LPVOID msgBuf= &buffer[ 0 ];
+                            auto count= FormatMessage(
+                                    FORMAT_MESSAGE_FROM_SYSTEM || FORMAT_MESSAGE_IGNORE_INSERTS,
+                                    nullptr, ec, MAKELANGID( LANG_NEUTRAL, SUBLANG_DEFAULT ),
+                                    reinterpret_cast< LPTSTR >( &msgBuf ), buffer.size(), nullptr );
+
+                            if( count ) buffer.resize( count );
+                            else buffer= "Unknown error";
+                            throw DNSLookupException( "Failed to look up service \""s + service
+                                    + "\": "s + buffer );
+                        }
+                        return DNSResponse{ queryResults };
+                    }
+            };
+            #endif
+        }//namespace
+    }//namespace dns
+
+    /**
+     * Returns a string with the IP address or domain name listed...
+     */
+    std::string
+    dns::getARecord( const std::string &service )
+    {
+        DNSQueryState dnsQuery;
+        auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kAddress );
+
+        if( response.size() == 0 )
+        {
+            throw DNSLookupException( "Looking up " + service + " A record no results." );
+        }
+
+        if( response.size() > 1 )
+        {
+            throw DNSLookupException( "Looking up " + service + " A record returned multiple results." );
+        }
+
+        return begin( response )->addressEntry();
+    }
+
+    /**
+     * Returns a vector containing SRVHost entries for the specified `service`.
+     * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+     */
+    std::vector< dns::SRVHostEntry >
+    dns::getSRVRecord( const std::string &service )
+    {
+        DNSQueryState dnsQuery;
+
+        auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kSRV );
+
+        std::vector< SRVHostEntry > rv;
+        rv.reserve( response.size() );
+
+        std::transform( begin( response ), end( response ), back_inserter( rv ),
+                [ ]( const auto &entry )
+                {
+                    return entry.srvHostEntry();
+                } );
+        return rv;
+    }
+
+    /**
+     * Returns a string containing TXT entries for a specified service.
+     * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+     */
+    std::vector< std::string >
+    dns::getTXTRecord( const std::string &service )
+    {
+        DNSQueryState dnsQuery;
+
+        auto response= dnsQuery.lookup( service, DNSQueryClass::kInternet, DNSQueryType::kTXT );
+
+        std::vector< std::string > rv;
+        rv.reserve( response.size() );
+
+        std::transform( begin( response ), end( response ), back_inserter( rv ),
+                [ ]( const auto &entry )
+                {
+                    const auto data= entry.rawData();
+                    const std::size_t amt= data.front();
+                    const auto first= begin( data ) + 1;
+                    return std::string( first, first + amt );
+                } );
+        return rv;
+    }
 }//namespace mongo

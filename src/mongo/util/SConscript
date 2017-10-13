@@ -498,7 +498,8 @@ env.Library(
 	source=[
 		'dns_query.cpp',
 	],
-	LIBDEPS=[
+	LIBDEPS_PRIVATE=[
+        "$BUILD_DIR/mongo/base",
 	],
 )
 

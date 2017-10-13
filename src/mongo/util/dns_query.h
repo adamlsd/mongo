@@ -11,11 +11,26 @@
 #include <boost/noncopyable.hpp>
 
 #include "mongo/base/relops.h"
+#include "mongo/util/assert_util.h"
 
 namespace mongo
 {
 	namespace dns
 	{
+		class DNSLookupException : public mongo::DBException
+		{
+			public:
+				explicit
+				DNSLookupException( const StringData m )
+						: DBException( ErrorCodes::ProtocolError, m ) {}
+		};
+
+		class DNSLookupNotFoundException : public DNSLookupException
+		{
+			public:
+				using DNSLookupException::DNSLookupException;
+		};
+
 		/**
 		 * An `SRVHostEntry` object represents the information received from a DNS lookup of an SRV record.
 		 */

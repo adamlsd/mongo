@@ -125,8 +125,8 @@ public:
         return nullptr;
     }
 
-    boost::intrusive_ptr<DocumentSource> getMergeSource() final {
-        return this;
+    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final {
+        return {this};
     }
 
     void addInvolvedCollections(std::vector<NamespaceString>* collections) const final {
@@ -259,11 +259,7 @@ private:
      * Builds a parsed pipeline for introspection (e.g. constraints, dependencies). Any sub-$lookup
      * pipelines will be built recursively.
      */
-    void initializeIntrospectionPipeline() {
-        copyVariablesToExpCtx(_variables, _variablesParseState, _fromExpCtx.get());
-        _parsedIntrospectionPipeline =
-            uassertStatusOK(Pipeline::parse(_resolvedPipeline, _fromExpCtx));
-    }
+    void initializeIntrospectionPipeline();
 
     /**
      * Builds the $lookup pipeline and resolves any variables using the passed 'inputDoc', adding a

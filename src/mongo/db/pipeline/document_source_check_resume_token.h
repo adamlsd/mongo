@@ -29,6 +29,8 @@
 #pragma once
 
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_change_stream.h"
+#include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/document_sources_gen.h"
 #include "mongo/db/pipeline/resume_token.h"
 
@@ -62,7 +64,8 @@ public:
                 PositionRequirement::kNone,
                 HostTypeRequirement::kAnyShard,
                 DiskUseRequirement::kNoDiskUse,
-                FacetRequirement::kNotAllowed};
+                FacetRequirement::kNotAllowed,
+                ChangeStreamRequirement::kChangeStreamStage};
     }
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
@@ -99,7 +102,8 @@ public:
                 (pipeState == Pipeline::SplitState::kUnsplit ? HostTypeRequirement::kNone
                                                              : HostTypeRequirement::kMongoS),
                 DiskUseRequirement::kNoDiskUse,
-                FacetRequirement::kNotAllowed};
+                FacetRequirement::kNotAllowed,
+                ChangeStreamRequirement::kChangeStreamStage};
     }
 
     /**
@@ -110,8 +114,19 @@ public:
         return DocumentSourceShardCheckResumability::create(pExpCtx, _token);
     };
 
-    boost::intrusive_ptr<DocumentSource> getMergeSource() final {
-        return this;
+    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final {
+        // This stage must run on mongos to ensure it sees the resume token, which could have come
+        // from any shard.  We also must include a mergingPresorted $sort stage to communicate to
+        // the AsyncResultsMerger that we need to merge the streams in a particular order.
+        const bool mergingPresorted = true;
+        const long long noLimit = -1;
+        auto sortMergingPresorted =
+            DocumentSourceSort::create(pExpCtx,
+                                       DocumentSourceChangeStream::kSortSpec,
+                                       noLimit,
+                                       DocumentSourceSort::kMaxMemoryUsageBytes,
+                                       mergingPresorted);
+        return {sortMergingPresorted, this};
     };
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;

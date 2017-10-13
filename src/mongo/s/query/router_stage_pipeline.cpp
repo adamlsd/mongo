@@ -35,6 +35,7 @@
 #include "mongo/db/pipeline/document_source_list_local_sessions.h"
 #include "mongo/db/pipeline/document_source_merge_cursors.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/s/query/document_source_router_adapter.h"
 
 namespace mongo {
 
@@ -62,8 +63,10 @@ StatusWith<ClusterQueryResult> RouterStagePipeline::next(RouterExecStage::ExecCo
     }
 
     // If we reach this point, we have hit EOF.
-    _mergePipeline.get_deleter().dismissDisposal();
-    _mergePipeline->dispose(getOpCtx());
+    if (!_mergePipeline->getContext()->isTailableAwaitData()) {
+        _mergePipeline.get_deleter().dismissDisposal();
+        _mergePipeline->dispose(getOpCtx());
+    }
 
     return {ClusterQueryResult()};
 }
@@ -86,50 +89,7 @@ bool RouterStagePipeline::remotesExhausted() {
 }
 
 Status RouterStagePipeline::doSetAwaitDataTimeout(Milliseconds awaitDataTimeout) {
-    return {ErrorCodes::InvalidOptions, "maxTimeMS is not valid for aggregation getMore"};
+    return _routerAdapter->setAwaitDataTimeout(awaitDataTimeout);
 }
-
-boost::intrusive_ptr<RouterStagePipeline::DocumentSourceRouterAdapter>
-RouterStagePipeline::DocumentSourceRouterAdapter::create(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    std::unique_ptr<RouterExecStage> childStage) {
-    return new DocumentSourceRouterAdapter(expCtx, std::move(childStage));
-}
-
-DocumentSource::GetNextResult RouterStagePipeline::DocumentSourceRouterAdapter::getNext() {
-    auto next = uassertStatusOK(_child->next(_execContext));
-    if (auto nextObj = next.getResult()) {
-        return Document::fromBsonWithMetaData(*nextObj);
-    }
-    return GetNextResult::makeEOF();
-}
-
-void RouterStagePipeline::DocumentSourceRouterAdapter::doDispose() {
-    _child->kill(pExpCtx->opCtx);
-}
-
-void RouterStagePipeline::DocumentSourceRouterAdapter::reattachToOperationContext(
-    OperationContext* opCtx) {
-    _child->reattachToOperationContext(opCtx);
-}
-
-void RouterStagePipeline::DocumentSourceRouterAdapter::detachFromOperationContext() {
-    _child->detachFromOperationContext();
-}
-
-Value RouterStagePipeline::DocumentSourceRouterAdapter::serialize(
-    boost::optional<ExplainOptions::Verbosity> explain) const {
-    invariant(explain);  // We shouldn't need to serialize this stage to send it anywhere.
-    return Value();      // Return the empty value to hide this stage from explain output.
-}
-
-bool RouterStagePipeline::DocumentSourceRouterAdapter::remotesExhausted() {
-    return _child->remotesExhausted();
-}
-
-RouterStagePipeline::DocumentSourceRouterAdapter::DocumentSourceRouterAdapter(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    std::unique_ptr<RouterExecStage> childStage)
-    : DocumentSource(expCtx), _child(std::move(childStage)) {}
 
 }  // namespace mongo

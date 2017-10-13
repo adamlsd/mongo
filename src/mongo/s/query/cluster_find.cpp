@@ -41,6 +41,7 @@
 #include "mongo/client/read_preference.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
@@ -57,6 +58,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -443,11 +445,30 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
 
     pinnedCursor.getValue().reattachToOperationContext(opCtx);
 
+    // A pinned cursor will not be destroyed immediately if an exception is thrown. Instead it will
+    // be marked as killed, then reaped by a background thread later. If this happens, we want to be
+    // sure the cursor does not have a pointer to this OperationContext, since it will be destroyed
+    // as soon as we return, but the cursor will live on a bit longer.
+    ScopeGuard cursorDetach =
+        MakeGuard([&pinnedCursor]() { pinnedCursor.getValue().detachFromOperationContext(); });
+
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
         auto context = batch.empty()
             ? RouterExecStage::ExecContext::kGetMoreNoResultsYet
             : RouterExecStage::ExecContext::kGetMoreWithAtLeastOneResultInBatch;
-        auto next = pinnedCursor.getValue().next(context);
+
+        StatusWith<ClusterQueryResult> next =
+            Status{ErrorCodes::InternalError, "uninitialized cluster query result"};
+        try {
+            next = pinnedCursor.getValue().next(context);
+        } catch (const CloseChangeStreamException& ex) {
+            // This exception is thrown when a $changeStream stage encounters an event
+            // that invalidates the cursor. We should close the cursor and return without
+            // error.
+            cursorState = ClusterCursorManager::CursorState::Exhausted;
+            break;
+        }
+
         if (!next.isOK()) {
             return next.getStatus();
         }
@@ -477,9 +498,10 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         batch.push_back(std::move(*next.getValue().getResult()));
     }
 
+    // Upon successful completion, we need to detach from the operation and transfer ownership of
+    // the cursor back to the cursor manager.
+    cursorDetach.Dismiss();
     pinnedCursor.getValue().detachFromOperationContext();
-
-    // Transfer ownership of the cursor back to the cursor manager.
     pinnedCursor.getValue().returnCursor(cursorState);
 
     CursorId idToReturn = (cursorState == ClusterCursorManager::CursorState::Exhausted)

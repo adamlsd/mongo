@@ -633,6 +633,15 @@ ExitCode _initAndListen(int listenPort) {
 
     auto startupOpCtx = serviceContext->makeOperationContext(&cc());
 
+    if (!storageGlobalParams.readOnly) {
+        if (!replSettings.usingReplSets() && !replSettings.isSlave() &&
+            storageGlobalParams.engine != "devnull") {
+            Lock::GlobalWrite lk(startupOpCtx.get());
+            FeatureCompatibilityVersion::setIfCleanStartup(
+                startupOpCtx.get(), repl::StorageInterface::get(serviceContext));
+        }
+    }
+
     repairDatabasesAndCheckVersion(startupOpCtx.get());
 
     if (storageGlobalParams.upgrade) {
@@ -771,13 +780,6 @@ ExitCode _initAndListen(int listenPort) {
             startTTLBackgroundJob();
         }
 
-        if (!replSettings.usingReplSets() && !replSettings.isSlave() &&
-            storageGlobalParams.engine != "devnull") {
-            Lock::GlobalWrite lk(startupOpCtx.get());
-            FeatureCompatibilityVersion::setIfCleanStartup(
-                startupOpCtx.get(), repl::StorageInterface::get(serviceContext));
-        }
-
         if (replSettings.usingReplSets() || (!replSettings.isMaster() && replSettings.isSlave()) ||
             !internalValidateFeaturesAsMaster) {
             serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
@@ -802,6 +804,8 @@ ExitCode _initAndListen(int listenPort) {
     LogicalSessionCacheServer kind = LogicalSessionCacheServer::kStandalone;
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
         kind = LogicalSessionCacheServer::kSharded;
+    } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        kind = LogicalSessionCacheServer::kConfigServer;
     } else if (replSettings.usingReplSets()) {
         kind = LogicalSessionCacheServer::kReplicaSet;
     }

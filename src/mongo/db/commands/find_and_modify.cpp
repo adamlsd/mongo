@@ -30,10 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/commands/find_and_modify.h"
-
 #include <boost/optional.hpp>
-#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
@@ -42,6 +39,7 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/find_and_modify_common.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/update.h"
@@ -166,12 +164,11 @@ void makeDeleteRequest(const FindAndModifyRequest& args, bool explain, DeleteReq
     requestOut->setExplain(explain);
 }
 
-void appendCommandResponse(PlanExecutor* exec,
+void appendCommandResponse(const PlanExecutor* exec,
                            bool isRemove,
                            const boost::optional<BSONObj>& value,
-                           BSONObjBuilder& result) {
-    BSONObjBuilder lastErrorObjBuilder(result.subobjStart("lastErrorObject"));
-
+                           BSONObjBuilder* result) {
+    BSONObjBuilder lastErrorObjBuilder(result->subobjStart("lastErrorObject"));
     if (isRemove) {
         lastErrorObjBuilder.appendNumber("n", getDeleteStats(exec)->docsDeleted);
     } else {
@@ -184,12 +181,12 @@ void appendCommandResponse(PlanExecutor* exec,
             lastErrorObjBuilder.appendAs(updateStats->objInserted["_id"], kUpsertedFieldName);
         }
     }
-    lastErrorObjBuilder.done();
+    lastErrorObjBuilder.doneFast();
 
     if (value) {
-        result.append("value", *value);
+        result->append("value", *value);
     } else {
-        result.appendNull("value");
+        result->appendNull("value");
     }
 }
 
@@ -215,7 +212,6 @@ void recordStatsForTopCommand(OperationContext* opCtx) {
                 curOp->getReadWriteType());
 }
 
-/* Find and Modify an object returning either the old (default) or new value*/
 class CmdFindAndModify : public BasicCommand {
 public:
     CmdFindAndModify() : BasicCommand("findAndModify", "findandmodify") {}
@@ -459,8 +455,8 @@ public:
                 }
                 recordStatsForTopCommand(opCtx);
 
-                boost::optional<BSONObj> value = advanceStatus.getValue();
-                appendCommandResponse(exec.get(), args.isRemove(), value, result);
+                appendCommandResponse(
+                    exec.get(), args.isRemove(), advanceStatus.getValue(), &result);
             } else {
                 UpdateRequest request(nsString);
                 UpdateLifecycleImpl updateLifecycle(nsString);
@@ -573,9 +569,10 @@ public:
                 }
                 recordStatsForTopCommand(opCtx);
 
-                boost::optional<BSONObj> value = advanceStatus.getValue();
-                appendCommandResponse(exec.get(), args.isRemove(), value, result);
+                appendCommandResponse(
+                    exec.get(), args.isRemove(), advanceStatus.getValue(), &result);
             }
+
             return true;
         });
     }

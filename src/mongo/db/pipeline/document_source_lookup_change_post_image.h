@@ -62,11 +62,15 @@ public:
     }
 
     StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        invariant(pipeState != Pipeline::SplitState::kSplitForShards);
         StageConstraints constraints(StreamType::kStreaming,
                                      PositionRequirement::kNone,
-                                     HostTypeRequirement::kAnyShard,
+                                     pipeState == Pipeline::SplitState::kUnsplit
+                                         ? HostTypeRequirement::kNone
+                                         : HostTypeRequirement::kMongoS,
                                      DiskUseRequirement::kNoDiskUse,
-                                     FacetRequirement::kNotAllowed);
+                                     FacetRequirement::kNotAllowed,
+                                     ChangeStreamRequirement::kChangeStreamStage);
 
         constraints.canSwapWithMatch = true;
         return constraints;

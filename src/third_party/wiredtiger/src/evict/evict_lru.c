@@ -71,7 +71,7 @@ __evict_entry_priority(WT_SESSION_IMPL *session, WT_REF *ref)
 	page = ref->page;
 
 	/* Any page set to the oldest generation should be discarded. */
-	if (page->read_gen == WT_READGEN_OLDEST)
+	if (WT_READGEN_EVICT_SOON(page->read_gen))
 		return (WT_READGEN_OLDEST);
 
 	/* Any page from a dead tree is a great choice. */
@@ -460,6 +460,7 @@ int
 __wt_evict_create(WT_SESSION_IMPL *session)
 {
 	WT_CONNECTION_IMPL *conn;
+	uint32_t session_flags;
 
 	conn = S2C(session);
 
@@ -471,10 +472,12 @@ __wt_evict_create(WT_SESSION_IMPL *session)
 	 * Create the eviction thread group.
 	 * Set the group size to the maximum allowed sessions.
 	 */
+	session_flags = WT_THREAD_CAN_WAIT |
+	    WT_THREAD_LOOKASIDE | WT_THREAD_PANIC_FAIL;
 	WT_RET(__wt_thread_group_create(session, &conn->evict_threads,
 	    "eviction-server", conn->evict_threads_min, conn->evict_threads_max,
-	     WT_THREAD_CAN_WAIT | WT_THREAD_PANIC_FAIL, __wt_evict_thread_chk,
-	     __wt_evict_thread_run, __wt_evict_thread_stop));
+	    session_flags, __wt_evict_thread_chk, __wt_evict_thread_run,
+	    __wt_evict_thread_stop));
 
 #if defined(HAVE_DIAGNOSTIC) || defined(HAVE_VERBOSE)
 	/*
@@ -1268,10 +1271,10 @@ __evict_lru_walk(WT_SESSION_IMPL *session)
 		 * system.  The queue is sorted, find the first "normal"
 		 * generation.
 		 */
-		read_gen_oldest = WT_READGEN_OLDEST;
+		read_gen_oldest = WT_READGEN_START_VALUE;
 		for (candidates = 0; candidates < entries; ++candidates) {
 			read_gen_oldest = queue->evict_queue[candidates].score;
-			if (read_gen_oldest != WT_READGEN_OLDEST)
+			if (!WT_READGEN_EVICT_SOON(read_gen_oldest))
 				break;
 		}
 
@@ -1283,7 +1286,7 @@ __evict_lru_walk(WT_SESSION_IMPL *session)
 		 * 50% of the entries were at the oldest read generation, take
 		 * all of them.
 		 */
-		if (read_gen_oldest == WT_READGEN_OLDEST)
+		if (WT_READGEN_EVICT_SOON(read_gen_oldest))
 			queue->evict_candidates = entries;
 		else if (candidates > entries / 2)
 			queue->evict_candidates = candidates;
@@ -1869,10 +1872,35 @@ __evict_walk_file(WT_SESSION_IMPL *session,
 			continue;
 		}
 
-		/* Pages that are empty or from dead trees are fast-tracked. */
+		/*
+		 * Pages that are empty or from dead trees are fast-tracked.
+		 *
+		 * Also evict lookaside table pages without further filtering:
+		 * the cache is under pressure by definition and we want to
+		 * free space.
+		 */
 		if (__wt_page_is_empty(page) ||
-		    F_ISSET(session->dhandle, WT_DHANDLE_DEAD))
+		    F_ISSET(session->dhandle, WT_DHANDLE_DEAD) ||
+		    F_ISSET(btree, WT_BTREE_LOOKASIDE))
 			goto fast;
+
+		/*
+		 * If application threads are blocked waiting for eviction (so
+		 * we are going to consider lookaside), and the only thing
+		 * preventing a clean page from being evicted is that it
+		 * contains historical data, mark it dirty so we can do
+		 * lookaside eviction.
+		 */
+		if (F_ISSET(cache, WT_CACHE_EVICT_CLEAN_HARD |
+		    WT_CACHE_EVICT_DIRTY_HARD) &&
+		    !F_ISSET(conn, WT_CONN_EVICTION_NO_LOOKASIDE) &&
+		    !modified && page->modify != NULL &&
+		    !__wt_txn_visible_all(session, page->modify->rec_max_txn,
+		    WT_TIMESTAMP_NULL(&page->modify->rec_max_timestamp))) {
+			__wt_page_only_modify_set(session, page);
+			modified = true;
+			goto fast;
+		}
 
 		/* Skip clean pages if appropriate. */
 		if (!modified && !F_ISSET(cache, WT_CACHE_EVICT_CLEAN))
@@ -1905,11 +1933,15 @@ __evict_walk_file(WT_SESSION_IMPL *session,
 			goto fast;
 
 		/*
-		 * If the oldest transaction hasn't changed since the last time
-		 * this page was written, it's unlikely we can make progress.
-		 * Similarly, if the most recent update on the page is not yet
-		 * globally visible, eviction will fail.  These heuristics
-		 * attempt to avoid repeated attempts to evict the same page.
+		 * If there are active transaction and oldest transaction
+		 * hasn't changed since the last time this page was written,
+		 * it's unlikely we can make progress.  Similarly, if the most
+		 * recent update on the page is not yet globally visible,
+		 * eviction will fail.  This heuristic avoids repeated attempts
+		 * to evict the same page.
+		 *
+		 * We skip this for the lookaside table because updates there
+		 * can be evicted as soon as they are committed.
 		 */
 		mod = page->modify;
 		if (modified && txn_global->current != txn_global->oldest_id &&
@@ -1969,7 +2001,7 @@ fast:		/* If the page can't be evicted, give up. */
 	 */
 	if (ref != NULL) {
 		if (__wt_ref_is_root(ref) || evict == start || give_up ||
-		    ref->page->read_gen == WT_READGEN_OLDEST ||
+		    WT_READGEN_EVICT_SOON(ref->page->read_gen) ||
 		    ref->page->memory_footprint >= btree->splitmempage) {
 			if (restarts == 0)
 				WT_STAT_CONN_INCR(
@@ -1977,7 +2009,7 @@ fast:		/* If the page can't be evicted, give up. */
 			WT_RET(__wt_page_release(cache->walk_session,
 			    ref, WT_READ_NO_EVICT));
 			ref = NULL;
-		} else if (ref->page->read_gen == WT_READGEN_OLDEST)
+		} else if (WT_READGEN_EVICT_SOON(ref->page->read_gen))
 			WT_RET_NOTFOUND_OK(__wt_tree_walk_count(
 			    session, &ref, &refs_walked, walk_flags));
 		btree->evict_ref = ref;
@@ -2424,6 +2456,7 @@ static int
 __verbose_dump_cache_single(WT_SESSION_IMPL *session,
     uint64_t *total_bytesp, uint64_t *total_dirty_bytesp)
 {
+	WT_BTREE *btree;
 	WT_DATA_HANDLE *dhandle;
 	WT_PAGE *page;
 	WT_REF *next_walk;
@@ -2469,11 +2502,12 @@ __verbose_dump_cache_single(WT_SESSION_IMPL *session,
 	}
 
 	dhandle = session->dhandle;
-	if (dhandle->checkpoint == NULL)
-		WT_RET(__wt_msg(session, "%s(<live>):", dhandle->name));
-	else
-		WT_RET(__wt_msg(session, "%s(checkpoint=%s):",
-		    dhandle->name, dhandle->checkpoint));
+	btree = dhandle->handle;
+	WT_RET(__wt_msg(session, "%s(%s%s)%s%s:",
+	    dhandle->name, dhandle->checkpoint != NULL ? "checkpoint=" : "",
+	    dhandle->checkpoint != NULL ? dhandle->checkpoint : "<live>",
+	    btree->evict_disabled != 0 ?  "eviction disabled" : "",
+	    btree->evict_disabled_open ? " at open" : ""));
 	if (intl_pages != 0)
 		WT_RET(__wt_msg(session,
 		    "internal: "

@@ -32,6 +32,7 @@
 
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/pipeline.h"
+#include "mongo/s/query/document_source_router_adapter.h"
 
 namespace mongo {
 
@@ -58,46 +59,8 @@ protected:
     void doDetachFromOperationContext() final;
 
 private:
-    /**
-     * A class that acts as an adapter between the RouterExecStage and DocumentSource interfaces,
-     * translating results from an input RouterExecStage into DocumentSource::GetNextResults.
-     */
-    class DocumentSourceRouterAdapter final : public DocumentSource {
-    public:
-        static boost::intrusive_ptr<DocumentSourceRouterAdapter> create(
-            const boost::intrusive_ptr<ExpressionContext>& expCtx,
-            std::unique_ptr<RouterExecStage> childStage);
-
-        StageConstraints constraints(Pipeline::SplitState pipeState) const final {
-            return {StreamType::kStreaming,
-                    PositionRequirement::kFirst,
-                    HostTypeRequirement::kNone,
-                    DiskUseRequirement::kNoDiskUse,
-                    FacetRequirement::kNotAllowed};
-        }
-
-        GetNextResult getNext() final;
-        void doDispose() final;
-        void reattachToOperationContext(OperationContext* opCtx) final;
-        void detachFromOperationContext() final;
-        Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const final;
-        bool remotesExhausted();
-
-        void setExecContext(RouterExecStage::ExecContext execContext) {
-            _execContext = execContext;
-        }
-
-    private:
-        DocumentSourceRouterAdapter(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                                    std::unique_ptr<RouterExecStage> childStage);
-
-        std::unique_ptr<RouterExecStage> _child;
-        ExecContext _execContext;
-    };
-
     boost::intrusive_ptr<DocumentSourceRouterAdapter> _routerAdapter;
     std::unique_ptr<Pipeline, Pipeline::Deleter> _mergePipeline;
     bool _mongosOnlyPipeline;
 };
-
 }  // namespace mongo

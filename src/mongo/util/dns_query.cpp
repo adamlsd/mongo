@@ -101,8 +101,16 @@ public:
         return {data, data + length};
     }
 
+    std::string txtEntry() const {
+        const auto data = rawData();
+        const std::size_t amt = data.front();
+        const auto first = begin(data) + 1;
+        return std::string(first, first + amt);
+    }
+
     std::string addressEntry() const {
         std::string rv;
+
         for (const std::uint8_t& ch : rawData()) {
             std::ostringstream oss;
             oss << int(ch);
@@ -257,7 +265,7 @@ public:
             res_nsearch(&state, service.c_str(), int(class_), int(type), &result[0], result.size());
 #else
         const int size =
-            res_query(service.c_str(), int(class_), int(type), &result[0], result.size());
+            res_search(service.c_str(), int(class_), int(type), &result[0], result.size());
 #endif
 
         if (size < 0) {
@@ -278,15 +286,46 @@ public:
 };
 
 #else
+
 enum class DNSQueryClass { kInternet };
 
 enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TXT, kAddress = DNS_TYPE_A };
 
-class ResourceRecord {};
+class ResourceRecord {
+private:
+    std::string service;
+    std::shared_ptr<DNS_RECORD> record;
+
+public:
+    std::string txtEntry() const {}
+
+    std::string addressEntry() const {
+        if (record->wType != DNS_A_DATA) {
+            std::ostringstream oss;
+            oss << "Incorrect record format for \"" << service
+                << "\": expected A record, found something else";
+            throw DNSLookupNotFoundException(oss.str());
+        }
+
+        std::string rv;
+        auto data = record->Data.A.IpAddress;
+        for (int i = 0; i < 4; ++i) {
+            std::ostringstream oss;
+            oss << int(data >> ((3 - i) * CHAR_BIT) & 0xFF);
+            rv += oss.str() + ".";
+        }
+        rv.pop_back();
+
+        return rv;
+    }
+
+    SRVHostEntry srvHostEntry() const {}
+};
 
 void freeDnsRecord(PDNS_RECORD r) {
     DnsRecordListFree(r, DnsFreeRecordList);
 }
+
 class DNSResponse {
 private:
     std::shared_ptr<std::remove_pointer<PDNS_RECORD>::type> results;
@@ -296,10 +335,10 @@ public:
 
     class iterator {
     private:
-        DNS_RECORD* record;
+        std::shared_ptr<DNS_RECORD> record;
 
         void advance() {
-            record = record->pNext;
+            record = {record, record->pNext};
         }
 
     public:
@@ -314,6 +353,7 @@ public:
         PDNS_RECORD queryResults;
         auto ec = DnsQuery_UTF8(
             service.c_str(), type, DNS_QUERY_BYPASS_CACHE, nullptr, &queryResults, nullptr);
+
         if (ec) {
             std::string buffer;
             buffer.resize(64 * 1024);
@@ -336,6 +376,7 @@ public:
         return DNSResponse{queryResults};
     }
 };
+
 #endif
 }  // namespace
 }  // namespace dns
@@ -389,10 +430,7 @@ std::vector<std::string> dns::getTXTRecord(const std::string& service) {
     rv.reserve(response.size());
 
     std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
-        const auto data = entry.rawData();
-        const std::size_t amt = data.front();
-        const auto first = begin(data) + 1;
-        return std::string(first, first + amt);
+        return entry.txtEntry();
     });
     return rv;
 }

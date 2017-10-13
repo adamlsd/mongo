@@ -34,7 +34,7 @@ namespace mongo
 		/**
 		 * An `SRVHostEntry` object represents the information received from a DNS lookup of an SRV record.
 		 */
-		struct SRVHostEntry : mongo::relops::equality::hook, mongo::relops::order::hook
+		struct SRVHostEntry : mongo::relops::hook
 		{
 			std::string host;
 			std::uint16_t port;

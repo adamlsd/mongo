@@ -90,5 +90,6 @@ namespace mongo
 				}
 			};
 		}//namespace order
+		class hook : order::hook, equality::hook {};
 	} // namespace relops
 }//namespace mongo

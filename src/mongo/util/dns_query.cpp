@@ -141,7 +141,7 @@ namespace mongo
                         }
                     }
 
-                    class iterator : mongo::relops::equality::hook, mongo::relops::order::hook
+                    class iterator : mongo::relops::hook
                     {
                         private:
                             DNSResponse *response;

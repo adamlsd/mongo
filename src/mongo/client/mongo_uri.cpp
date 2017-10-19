@@ -197,7 +197,7 @@ MongoURI::OptionsMap injectTXTOptions(MongoURI::OptionsMap options,
         return options;
 
     // Get all TXT records and parse them as options, adding them to the options set.
-    const auto txtRecords = dns::getTXTRecord(host);
+    const auto txtRecords = dns::getTXTRecords(host);
 
     for (const auto& record : txtRecords) {
         auto txtOptions = parseOptions(record, url);
@@ -320,7 +320,7 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
             throw FailedToParseException(
                 "Only a single server may be specified with a mongo+srv:// url.");
         }
-        auto srvEntries = dns::getSRVRecord("_mongodb._tcp." + canonicalHost);
+        auto srvEntries = dns::lookupSRVRecords("_mongodb._tcp." + canonicalHost);
         servers.clear();
         std::transform(begin(srvEntries), end(srvEntries), back_inserter(servers), [](auto& srv) {
             return HostAndPort(std::move(srv.host), srv.port);

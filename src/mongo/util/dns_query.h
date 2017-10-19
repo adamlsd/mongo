@@ -55,7 +55,7 @@ public:
 /**
  * An `SRVHostEntry` object represents the information received from a DNS lookup of an SRV record.
  */
-struct SRVHostEntry : mongo::relops::hook {
+struct SRVHostEntry {
     std::string host;
     std::uint16_t port;
 
@@ -68,6 +68,18 @@ struct SRVHostEntry : mongo::relops::hook {
 
     inline friend std::ostream& operator<<(std::ostream& os, const SRVHostEntry& entry) {
         return os << entry.host << ':' << entry.port;
+    }
+
+    inline friend bool operator==(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
+        return lhs.make_relops_lens() == rhs.make_relops_lens();
+    }
+
+    inline friend bool operator!=(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
+        return !(lhs == rhs);
+    }
+
+    inline friend bool operator<(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
+        return lhs.make_relops_lens() < rhs.make_relops_lens();
     }
 };
 

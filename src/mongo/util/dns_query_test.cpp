@@ -78,7 +78,7 @@ TEST(MongoDnsQuery, basic) {
             {"google-public-dns-a.google.com.", "8.8.8.8"},
             {"google-public-dns-b.google.com.", "8.8.4.4"},
         };
-    for (const auto& test : tests)
+    for (const auto& test : tests) {
         try {
             const auto witness = getFirstARecord(test.dns);
             std::cout << "Resolved " << test.dns << " to: " << witness << std::endl;
@@ -92,6 +92,7 @@ TEST(MongoDnsQuery, basic) {
         catch (const mongo::dns::DNSLookupException&) {
             std::cerr << "Warning: Did not resolve " << test.dns << " at all." << std::endl;
         }
+    }
 
     // As long as enough tests pass, we're okay -- this means that a single DNS name server drift
     // won't cause a BF -- when enough fail, then we can rebuild the list in one pass.
@@ -174,7 +175,7 @@ TEST(MongoDnsQuery, txtRecords) {
          }},
     };
 
-    for (const auto& test : tests)
+    for (const auto& test : tests) {
         try {
             auto witness = mongo::dns::getTXTRecords(test.query);
             std::sort(begin(witness), end(witness));
@@ -191,5 +192,6 @@ TEST(MongoDnsQuery, txtRecords) {
             std::cout << "Got no response for " << test.query << std::endl;
             ASSERT_TRUE(test.result.empty());
         }
+    }
 }
 }  // namespace

@@ -1587,6 +1587,7 @@ elif env.TargetOSIs('windows'):
             'version.lib',
             'winmm.lib',
             'ws2_32.lib',
+            'dnsapi.lib',
         ],
     )
 

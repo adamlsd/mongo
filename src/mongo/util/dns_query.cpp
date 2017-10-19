@@ -36,7 +36,10 @@
 #include <resolv.h>
 // clang-format on
 #else
-#include <Windns.h>
+#define NOMINMAX
+#include <windows.h>
+#include <windns.h>
+#undef NOMINMAX
 #endif
 
 #include <stdio.h>
@@ -49,12 +52,14 @@
 #include <vector>
 #include <array>
 #include <stdexcept>
+#include <memory>
 #include <exception>
 
 #include <boost/noncopyable.hpp>
 
 using std::begin;
 using std::end;
+using namespace std::literals::string_literals;
 
 namespace mongo {
 namespace dns {
@@ -171,11 +176,12 @@ public:
         }
     }
 
-    class iterator : mongo::relops::hook {
+    class iterator {
     private:
         DNSResponse* response;
         int pos = 0;
         ResourceRecord record;
+        bool ready = false;
 
         friend DNSResponse;
 
@@ -185,16 +191,31 @@ public:
         explicit iterator(DNSResponse* const r, int p) : response(r), pos(p) {}
 
         void hydrate() {
+            if (ready)
+                return;
             record = ResourceRecord(this->response->service, this->response->ns_answer, this->pos);
         }
 
         void advance() {
             ++this->pos;
+            ready = false;
+        }
+
+        auto make_relops_lens() const {
+            return std::tie(this->response, this->pos);
         }
 
     public:
-        auto make_relops_lens() const {
-            return std::tie(this->response, this->pos);
+        inline friend bool operator==(const ResourceRecord& lhs, const ResourceRecord& rhs) {
+            return lhs.make_relops_lens() == rhs.make_relops_lens();
+        }
+
+        inline friend bool operator<(const ResourceRecord& lhs, const ResourceRecord& rhs) {
+            return lhs.make_relops_lens() < rhs.make_relops_lens();
+        }
+
+        inline friend bool operator!=(const ResourceRecord& lhs, const ResourceRecord& rhs) {
+            reutrn !(lhs == rhs);
         }
 
         const ResourceRecord& operator*() {
@@ -290,7 +311,7 @@ public:
 
 enum class DNSQueryClass { kInternet };
 
-enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TXT, kAddress = DNS_TYPE_A };
+enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TEXT, kAddress = DNS_TYPE_A };
 
 class ResourceRecord {
 private:
@@ -298,8 +319,11 @@ private:
     std::shared_ptr<DNS_RECORDA> record;
 
 public:
+    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> r) : record(std::move(r)) {}
+    explicit ResourceRecord() {}
+
     std::vector<std::string> txtEntry() const {
-        if (record->wType != DNS_TYPE_TXT) {
+        if (record->wType != DNS_TYPE_TEXT) {
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << service
                 << "\": expected TXT record, found something else";
@@ -308,7 +332,7 @@ public:
 
         std::vector<std::string> rv;
 
-        const auto start = record->Data.TXT.dwStringArray;
+        const auto start = record->Data.TXT.pStringArray;
         const auto count = record->Data.TXT.dwStringCount;
         std::copy(start, start + count, back_inserter(rv));
         return rv;
@@ -327,7 +351,7 @@ public:
 
         for (int i = 0; i < 4; ++i) {
             std::ostringstream oss;
-            oss << int(data >> ((3 - i) * CHAR_BIT) & 0xFF);
+            oss << int(data >> (i * CHAR_BIT) & 0xFF);
             rv += oss.str() + ".";
         }
         rv.pop_back();
@@ -344,11 +368,11 @@ public:
         }
 
         const auto& data = record->Data.SRV;
-        return {data.host, data.wPort};
+        return {data.pNameTarget + "."s, data.wPort};
     }
 };
 
-void freeDnsRecord(PDNS_RECORD r) {
+void freeDnsRecord(PDNS_RECORDA r) {
     DnsRecordListFree(r, DnsFreeRecordList);
 }
 
@@ -357,18 +381,76 @@ private:
     std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> results;
 
 public:
-    explicit DNSResponse(const PDNS_RECORDA r) : results(r, freeDnsRecord) {}
+    explicit DNSResponse(PDNS_RECORDA r) : results(r, freeDnsRecord) {}
 
-    class iterator {
+    class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
     private:
         std::shared_ptr<DNS_RECORDA> record;
+        ResourceRecord storage;
+        bool ready = false;
 
         void advance() {
             record = {record, record->pNext};
+            ready = false;
+        }
+
+        void hydrate() {
+            ready = true;
+            storage = ResourceRecord{record};
         }
 
     public:
+        explicit iterator(std::shared_ptr<DNS_RECORDA> r) : record(std::move(r)) {}
+
+        const ResourceRecord& operator*() {
+            this->hydrate();
+            return this->storage;
+        }
+
+        const ResourceRecord* operator->() {
+            this->hydrate();
+            return &this->storage;
+        }
+
+        iterator& operator++() {
+            this->advance();
+            return *this;
+        }
+
+        iterator operator++(int) {
+            iterator tmp = *this;
+            this->advance();
+            return tmp;
+        }
+
+        auto make_relops_lens() const {
+            return this->record.get();
+        }
+
+        inline friend bool operator==(const iterator& lhs, const iterator& rhs) {
+            return lhs.make_relops_lens() == rhs.make_relops_lens();
+        }
+
+        inline friend bool operator<(const iterator& lhs, const iterator& rhs) {
+            return lhs.make_relops_lens() < rhs.make_relops_lens();
+        }
+
+        inline friend bool operator!=(const iterator& lhs, const iterator& rhs) {
+            return !(lhs == rhs);
+        }
     };
+
+    iterator begin() const {
+        return iterator(results);
+    }
+
+    iterator end() const {
+        return iterator{nullptr};
+    }
+
+    std::size_t size() const {
+        return std::distance(this->begin(), this->end());
+    }
 };
 
 class DNSQueryState {
@@ -377,8 +459,12 @@ public:
                        const DNSQueryClass class_,
                        const DNSQueryType type) {
         PDNS_RECORDA queryResults;
-        auto ec = DnsQuery_UTF8(
-            service.c_str(), type, DNS_QUERY_BYPASS_CACHE, nullptr, &queryResults, nullptr);
+        auto ec = DnsQuery_UTF8(service.c_str(),
+                                WORD(type),
+                                DNS_QUERY_BYPASS_CACHE,
+                                nullptr,
+                                reinterpret_cast<PDNS_RECORD*>(&queryResults),
+                                nullptr);
 
         if (ec) {
             std::string buffer;
@@ -431,7 +517,6 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kSRV);
 
     std::vector<SRVHostEntry> rv;
-    rv.reserve(response.size());
 
     std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
         return entry.srvHostEntry();

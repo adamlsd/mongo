@@ -634,11 +634,12 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
     const auto needsInitialSync =
         lastOpTime.isNull() || _externalState->isInitialSyncFlagSet(opCtx);
     if (!needsInitialSync) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        if (!_inShutdown) {
-            // Start steady replication, since we already have data.
-            _externalState->startSteadyStateReplication(opCtx, this);
-        }
+        // Start steady replication, since we already have data.
+        // ReplSetConfig has been installed, so it's either in STARTUP2 or REMOVED.
+        auto memberState = getMemberState();
+        invariant(memberState.startup2() || memberState.removed());
+        invariantOK(setFollowerMode(MemberState::RS_RECOVERING));
+        _externalState->startSteadyStateReplication(opCtx, this);
         return;
     }
 
@@ -680,6 +681,10 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
         // Repair local db (to compact it).
         auto opCtxHolder = cc().makeOperationContext();
         uassertStatusOK(_externalState->runRepairOnLocalDB(opCtxHolder.get()));
+        // Because initial sync completed, we can only be in STARTUP2, not REMOVED.
+        // Transition from STARTUP2 to RECOVERING and start the producer and the applier.
+        invariant(getMemberState().startup2());
+        invariantOK(setFollowerMode(MemberState::RS_RECOVERING));
         _externalState->startSteadyStateReplication(opCtxHolder.get(), this);
     };
 
@@ -859,7 +864,6 @@ void ReplicationCoordinatorImpl::clearSyncSourceBlacklist() {
 
 Status ReplicationCoordinatorImpl::setFollowerMode(const MemberState& newState) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-
     if (newState == _topCoord->getMemberState()) {
         return Status::OK();
     }
@@ -2598,8 +2602,14 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock(
         _cancelPriorityTakeover_inlock();
     }
 
+    log() << "transition to " << newState << " from " << _memberState << rsLog;
+    // Initializes the featureCompatibilityVersion to the default value, because arbiters do not
+    // receive the replicated version.
+    if (newState.arbiter()) {
+        serverGlobalParams.featureCompatibility.reset();
+    }
+
     _memberState = newState;
-    log() << "transition to " << newState.toString() << rsLog;
 
     _cancelAndRescheduleElectionTimeout_inlock();
 

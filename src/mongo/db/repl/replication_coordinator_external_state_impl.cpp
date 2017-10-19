@@ -88,7 +88,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/periodic_balancer_settings_refresher.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
@@ -223,6 +222,11 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     acquireOplogCollectionForLogging(opCtx);
 
     LockGuard lk(_threadMutex);
+
+    // We've shut down the external state, don't start again.
+    if (_inShutdown)
+        return;
+
     invariant(replCoord);
     invariant(!_bgSync);
     log() << "Starting replication fetcher thread";
@@ -313,6 +317,7 @@ void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* opCtx) 
         return;
     }
 
+    _inShutdown = true;
     _stopDataReplication_inlock(opCtx, &lk);
 
     if (_noopWriter) {
@@ -652,7 +657,6 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
         invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
         ShardingState::get(_service)->interruptChunkSplitter();
         CatalogCacheLoader::get(_service).onStepDown();
-        PeriodicBalancerSettingsRefresher::get(_service)->stop();
     }
 
     ShardingState::get(_service)->markCollectionsNotShardedAtStepdown();
@@ -739,7 +743,6 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
         }
 
         CatalogCacheLoader::get(_service).onStepUp();
-        PeriodicBalancerSettingsRefresher::get(_service)->start();
         ShardingState::get(_service)->initiateChunkSplitter();
     } else {  // unsharded
         if (auto validator = LogicalTimeValidator::get(_service)) {

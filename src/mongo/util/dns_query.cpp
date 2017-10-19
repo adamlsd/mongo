@@ -206,16 +206,16 @@ public:
         }
 
     public:
-        inline friend bool operator==(const ResourceRecord& lhs, const ResourceRecord& rhs) {
+        inline friend bool operator==(const iterator& lhs, const iterator& rhs) {
             return lhs.make_relops_lens() == rhs.make_relops_lens();
         }
 
-        inline friend bool operator<(const ResourceRecord& lhs, const ResourceRecord& rhs) {
+        inline friend bool operator<(const iterator& lhs, const iterator& rhs) {
             return lhs.make_relops_lens() < rhs.make_relops_lens();
         }
 
-        inline friend bool operator!=(const ResourceRecord& lhs, const ResourceRecord& rhs) {
-            reutrn !(lhs == rhs);
+        inline friend bool operator!=(const iterator& lhs, const iterator& rhs) {
+            return !(lhs == rhs);
         }
 
         const ResourceRecord& operator*() {

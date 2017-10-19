@@ -29,6 +29,8 @@
 
 #include <type_traits>
 
+#include "mongo/stdx/type_traits.h"
+
 namespace mongo {
 /**
  * The `mongo::relops` namespace provides a simple mechanism for imbuing a type with relational
@@ -154,11 +156,43 @@ template <typename T>
 bool lt(const T& lhs, const T& rhs) {
     return lhs < rhs;
 }
+
+template <typename T, typename = void>
+struct has_equality_lens_member : std::false_type {};
+
+template <typename T>
+struct has_equality_lens_member<T, stdx::void_t<decltype(std::declval<T>().make_equality_lens())>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_strict_weak_order_lens_member : std::false_type {};
+
+template <typename T>
+struct has_strict_weak_order_lens_member<
+    T,
+    stdx::void_t<decltype(std::declval<T>().make_strict_weak_order_lens())>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_relops_lens_member : std::false_type {};
+
+template <typename T>
+struct has_relops_lens_member<T, stdx::void_t<decltype(std::declval<T>().make_relops_lens())>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_relops_lens : std::false_type {};
+
+template <typename T>
+struct has_relops_lens<T, stdx::void_t<decltype(make_relops_lens(std::declval<T>()))>>
+    : std::true_type {};
 }  // namespace relops_detail
 
 namespace equality {
 template <typename T>
-auto make_equality_lens(const T& t) {
+auto make_equality_lens(
+    const T& t,
+    const typename std::enable_if<relops_detail::has_equality_lens_member<T>::value, int>::type =
+        0) {
     return t.make_equality_lens();
 }
 
@@ -179,11 +213,15 @@ struct hook {
 
 namespace order {
 template <typename T>
-auto make_strict_weak_order_lens(const T& t) {
+auto make_strict_weak_order_lens(
+    const T& t,
+    const typename std::enable_if<relops_detail::has_strict_weak_order_lens_member<T>::value,
+                                  int>::type = 0) {
     return t.make_strict_weak_order_lens();
 }
 
 struct hook {
+
     template <typename T>
     friend typename std::enable_if<std::is_base_of<hook, T>::value, bool>::type operator<(
         const T& lhs, const T& rhs) {
@@ -210,6 +248,33 @@ struct hook {
     }
 };
 }  // namespace order
-class hook : order::hook, equality::hook {};
+
+namespace both {
+class hook : order::hook, equality::hook {
+    template <typename T>
+    inline friend auto make_relops_lens(
+        const T& t,
+        const typename std::enable_if<relops_detail::has_relops_lens_member<T>::value, int>::type =
+            0) {
+        return t.make_relops_lens();
+    }
+};
+
+template <typename T>
+inline auto make_equality_lens(
+    const T& t,
+    const typename std::enable_if<relops_detail::has_relops_lens<T>::value, int>::type = 0) {
+    return make_relops_lens(t);
+}
+
+template <typename T>
+inline auto make_strict_weak_order_lens(
+    const T& t,
+    const typename std::enable_if<relops_detail::has_relops_lens<T>::value, int>::type = 0) {
+    return make_relops_lens(t);
+}
+}  // namespace both
+
+using hook = both::hook;
 }  // namespace relops
 }  // namespace mongo

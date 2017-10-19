@@ -32,6 +32,13 @@
 using namespace std::literals::string_literals;
 
 namespace {
+std::string getFirstARecord(const std::string& service) {
+    auto res = mongo::dns::lookupARecords(service);
+    if (res.empty())
+        return "";
+    return res.front();
+}
+
 TEST(MongoDnsQuery, basic) {
     // We only require 75% of the records to pass, because it is possible that some large scale
     // outages could cause some of these records to fail.
@@ -73,7 +80,7 @@ TEST(MongoDnsQuery, basic) {
         };
     for (const auto& test : tests)
         try {
-            const auto witness = mongo::dns::getARecord(test.dns);
+            const auto witness = getFirstARecord(test.dns);
             std::cout << "Resolved " << test.dns << " to: " << witness << std::endl;
 
             const bool resolution = (witness == test.ip);
@@ -126,12 +133,12 @@ TEST(MongoDnsQuery, srvRecords) {
     for (const auto& test : tests) {
         const auto& expected = test.result;
         if (expected.empty()) {
-            ASSERT_THROWS(mongo::dns::getSRVRecord(kMongodbSRVPrefix + test.query),
+            ASSERT_THROWS(mongo::dns::lookupSRVRecords(kMongodbSRVPrefix + test.query),
                           mongo::dns::DNSLookupNotFoundException);
             continue;
         }
 
-        auto witness = mongo::dns::getSRVRecord(kMongodbSRVPrefix + test.query);
+        auto witness = mongo::dns::lookupSRVRecords(kMongodbSRVPrefix + test.query);
         std::sort(begin(witness), end(witness));
 
         for (const auto& entry : witness) {
@@ -169,7 +176,7 @@ TEST(MongoDnsQuery, txtRecords) {
 
     for (const auto& test : tests)
         try {
-            auto witness = mongo::dns::getTXTRecord(test.query);
+            auto witness = mongo::dns::getTXTRecords(test.query);
             std::sort(begin(witness), end(witness));
 
             for (const auto& entry : witness) {

@@ -62,16 +62,8 @@ struct SRVHostEntry : mongo::relops::hook {
     SRVHostEntry(std::string i_host, const std::uint16_t i_port)
         : host(std::move(i_host)), port(i_port) {}
 
-    inline friend auto make_salient_lens(const SRVHostEntry& entry) {
-        return std::tie(entry.host, entry.port);
-    }
-
-    inline friend auto make_equality_lens(const SRVHostEntry& entry) {
-        return make_salient_lens(entry);
-    }
-
-    inline friend auto make_strict_weak_order_lens(const SRVHostEntry& entry) {
-        return make_salient_lens(entry);
+    inline auto make_relops_lens() const {
+        return std::tie(host, port);
     }
 
     inline friend std::ostream& operator<<(std::ostream& os, const SRVHostEntry& entry) {
@@ -81,16 +73,28 @@ struct SRVHostEntry : mongo::relops::hook {
 
 /**
  * Returns a vector containing SRVHost entries for the specified `service`.
- * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+ * THROWS: `DNSLookupException` if the DNS lookup fails, for any reason.
  */
-std::vector<SRVHostEntry> getSRVRecord(const std::string& service);
+std::vector<SRVHostEntry> lookupSRVRecords(const std::string& service);
 
 /**
- * Returns a string containing TXT entries for a specified service.
- * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
+ * Returns a group of strings containing text from DNS TXT entries for a specified service.
+ * THROWS: `DNSLookupException` if the DNS lookup fails, for any reason.
  */
-std::vector<std::string> getTXTRecord(const std::string& service);
+std::vector<std::string> lookupTXTRecords(const std::string& service);
 
-std::string getARecord(const std::string& service);
+/**
+ * Returns a group of strings containing text from DNS TXT entries for a specified service.
+ * If the lookup fails because the record doesn't exist, an empty vector is returned.
+ * THROWS: `DNSLookupException` if the DNS lookup fails, for any other reason.
+ */
+std::vector<std::string> getTXTRecords(const std::string& service);
+
+/**
+ * Returns a group of strings containing Address entries for a specified service.
+ * THROWS: `DNSLookupException` if the DNS lookup fails, for any reason.
+ * NOTE: This function mostly exists to provide an easy test of the OS DNS APIs in our test driver.
+ */
+std::vector<std::string> lookupARecords(const std::string& service);
 }  // namespace dns
 }  // namespace mongo

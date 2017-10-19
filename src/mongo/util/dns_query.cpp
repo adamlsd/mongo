@@ -101,11 +101,13 @@ public:
         return {data, data + length};
     }
 
-    std::string txtEntry() const {
+    std::vector<std::string> txtEntry() const {
         const auto data = rawData();
         const std::size_t amt = data.front();
         const auto first = begin(data) + 1;
-        return std::string(first, first + amt);
+        std::vector<std::string> rv;
+        rv.emplace_back(first, first + amt);
+        return rv;
     }
 
     std::string addressEntry() const {
@@ -188,11 +190,7 @@ public:
         }
 
     public:
-        auto make_equality_lens() const {
-            return std::tie(this->response, this->pos);
-        }
-
-        auto make_strict_weak_order_lens() const {
+        auto make_relops_lens() const {
             return std::tie(this->response, this->pos);
         }
 
@@ -294,21 +292,36 @@ enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TXT, kAddress = D
 class ResourceRecord {
 private:
     std::string service;
-    std::shared_ptr<DNS_RECORD> record;
+    std::shared_ptr<DNS_RECORDA> record;
 
 public:
-    std::string txtEntry() const {}
+    std::vector<std::string> txtEntry() const {
+        if (record->wType != DNS_TYPE_TXT) {
+            std::ostringstream oss;
+            oss << "Incorrect record format for \"" << service
+                << "\": expected TXT record, found something else";
+            throw DNSLookupException(oss.str());
+        }
+
+        std::vector<std::string> rv;
+
+        const auto start = record->Data.TXT.dwStringArray;
+        const auto count = record->Data.TXT.dwStringCount;
+        std::copy(start, start + count, back_inserter(rv));
+        return rv;
+    }
 
     std::string addressEntry() const {
-        if (record->wType != DNS_A_DATA) {
+        if (record->wType != DNS_TYPE_A) {
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << service
                 << "\": expected A record, found something else";
-            throw DNSLookupNotFoundException(oss.str());
+            throw DNSLookupException(oss.str());
         }
 
         std::string rv;
         auto data = record->Data.A.IpAddress;
+
         for (int i = 0; i < 4; ++i) {
             std::ostringstream oss;
             oss << int(data >> ((3 - i) * CHAR_BIT) & 0xFF);
@@ -319,7 +332,17 @@ public:
         return rv;
     }
 
-    SRVHostEntry srvHostEntry() const {}
+    SRVHostEntry srvHostEntry() const {
+        if (record->wType != DNS_TYPE_SRV) {
+            std::ostringstream oss;
+            oss << "Incorrect record format for \"" << service
+                << "\": expected SRV record, found something else";
+            throw DNSLookupException(oss.str());
+        }
+
+        const auto& data = record->Data.SRV;
+        return {data.host, data.wPort};
+    }
 };
 
 void freeDnsRecord(PDNS_RECORD r) {
@@ -328,14 +351,14 @@ void freeDnsRecord(PDNS_RECORD r) {
 
 class DNSResponse {
 private:
-    std::shared_ptr<std::remove_pointer<PDNS_RECORD>::type> results;
+    std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> results;
 
 public:
-    explicit DNSResponse(const PDNS_RECORD r) : results(r, freeDnsRecord) {}
+    explicit DNSResponse(const PDNS_RECORDA r) : results(r, freeDnsRecord) {}
 
     class iterator {
     private:
-        std::shared_ptr<DNS_RECORD> record;
+        std::shared_ptr<DNS_RECORDA> record;
 
         void advance() {
             record = {record, record->pNext};
@@ -350,7 +373,7 @@ public:
     DNSResponse lookup(const std::string& service,
                        const DNSQueryClass class_,
                        const DNSQueryType type) {
-        PDNS_RECORD queryResults;
+        PDNS_RECORDA queryResults;
         auto ec = DnsQuery_UTF8(
             service.c_str(), type, DNS_QUERY_BYPASS_CACHE, nullptr, &queryResults, nullptr);
 
@@ -384,7 +407,7 @@ public:
 /**
  * Returns a string with the IP address or domain name listed...
  */
-std::string dns::getARecord(const std::string& service) {
+std::vector<std::string> dns::lookupARecords(const std::string& service) {
     DNSQueryState dnsQuery;
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kAddress);
 
@@ -392,18 +415,15 @@ std::string dns::getARecord(const std::string& service) {
         throw DNSLookupException("Looking up " + service + " A record no results.");
     }
 
-    if (response.size() > 1) {
-        throw DNSLookupException("Looking up " + service + " A record returned multiple results.");
-    }
+    std::vector<std::string> rv;
+    std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
+        return entry.addressEntry();
+    });
 
-    return begin(response)->addressEntry();
+    return rv;
 }
 
-/**
- * Returns a vector containing SRVHost entries for the specified `service`.
- * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
- */
-std::vector<dns::SRVHostEntry> dns::getSRVRecord(const std::string& service) {
+std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service) {
     DNSQueryState dnsQuery;
 
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kSRV);
@@ -417,21 +437,23 @@ std::vector<dns::SRVHostEntry> dns::getSRVRecord(const std::string& service) {
     return rv;
 }
 
-/**
- * Returns a string containing TXT entries for a specified service.
- * Throws `std::runtime_error` if the DNS lookup fails, for any reason.
- */
-std::vector<std::string> dns::getTXTRecord(const std::string& service) {
+std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
     DNSQueryState dnsQuery;
 
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kTXT);
 
     std::vector<std::string> rv;
-    rv.reserve(response.size());
 
-    std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
-        return entry.txtEntry();
-    });
+    for (const auto& entry : response) {
+        auto txtEntry = entry.txtEntry();
+        std::copy(begin(txtEntry), end(txtEntry), back_inserter(rv));
+    }
     return rv;
+}
+
+std::vector<std::string> dns::getTXTRecords(const std::string& service) try {
+    return lookupTXTRecords(service);
+} catch (...) {
+    return {};
 }
 }  // namespace mongo

@@ -121,7 +121,7 @@ std::pair<StringData, StringData> partitionBackward(StringData str, const char c
 
 class FailedToParseException : public DBException {
 public:
-    using DBException::DBException
+    FailedToParseException(const StringData s) : DBException(ErrorCodes::FailedToParse, s) {}
 };
 
 /**

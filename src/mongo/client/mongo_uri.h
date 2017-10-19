@@ -156,6 +156,8 @@ public:
 
     explicit MongoURI(const ConnectionString& connectString) : _connectString(connectString){};
 
+    MongoURI() = default;
+
     friend std::ostream& operator<<(std::ostream&, const MongoURI&);
 
     friend StringBuilder& operator<<(StringBuilder&, const MongoURI&);

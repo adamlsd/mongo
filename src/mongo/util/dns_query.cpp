@@ -27,6 +27,7 @@
  */
 #include "mongo/util/dns_query.h"
 
+#ifndef _WIN32
 // DNS Headers for POSIX/libresolv have to be included in a specific order
 // clang-format off
 #include <sys/types.h>
@@ -34,6 +35,9 @@
 #include <arpa/nameser.h>
 #include <resolv.h>
 // clang-format on
+#else
+#include <Windns.h>
+#endif
 
 #include <stdio.h>
 
@@ -55,8 +59,7 @@ using std::end;
 namespace mongo {
 namespace dns {
 namespace {
-#ifndef MONGOC_HAVE_DNS_API
-
+#ifndef _WIN32
 enum class DNSQueryClass {
     kInternet = ns_c_in,
 };
@@ -399,7 +402,6 @@ public:
         return DNSResponse{queryResults};
     }
 };
-
 #endif
 }  // namespace
 }  // namespace dns

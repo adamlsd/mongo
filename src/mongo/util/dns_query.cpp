@@ -91,11 +91,11 @@ private:
 public:
     explicit ResourceRecord() = default;
 
-    explicit ResourceRecord(std::string s, ns_msg& ns_answer, const int p)
-        : service(std::move(s)),
+    explicit ResourceRecord(std::string initialService, ns_msg& ns_answer, const int initialPos)
+        : service(std::move(initialService)),
           answerStart(ns_msg_base(ns_answer)),
           answerEnd(ns_msg_end(ns_answer)),
-          pos(p) {
+          pos(initialPos) {
         if (ns_parserr(&ns_answer, ns_s_an, p, &resource_record))
             badRecord();
     }
@@ -157,8 +157,8 @@ private:
     std::size_t nRecords;
 
 public:
-    explicit DNSResponse(std::string s, std::vector<std::uint8_t> d)
-        : service(std::move(s)), data(std::move(d)) {
+    explicit DNSResponse(std::string initialService, std::vector<std::uint8_t> initialData)
+        : service(std::move(initialService)), data(std::move(initialData)) {
         if (ns_initparse(data.data(), data.size(), &ns_answer)) {
             std::ostringstream oss;
             oss << "Invalid SRV answer for \"" << service << "\"";
@@ -186,7 +186,7 @@ public:
         explicit iterator(DNSResponse* const r)
             : response(r), record(this->response->service, this->response->ns_answer, 0) {}
 
-        explicit iterator(DNSResponse* const r, int p) : response(r), pos(p) {}
+        explicit iterator(DNSResponse* const initialResponse, int initialPos) : response(initialResponse), pos(initialPos) {}
 
         void hydrate() {
             if (ready)
@@ -317,7 +317,8 @@ private:
     std::shared_ptr<DNS_RECORDA> record;
 
 public:
-    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> r) : record(std::move(r)) {}
+    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord) :
+record(std::move(initialRecord)) {}
     explicit ResourceRecord() {}
 
     std::vector<std::string> txtEntry() const {
@@ -370,8 +371,8 @@ public:
     }
 };
 
-void freeDnsRecord(PDNS_RECORDA r) {
-    DnsRecordListFree(r, DnsFreeRecordList);
+void freeDnsRecord(PDNS_RECORDA record) {
+    DnsRecordListFree(record, DnsFreeRecordList);
 }
 
 class DNSResponse {
@@ -379,7 +380,7 @@ private:
     std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> results;
 
 public:
-    explicit DNSResponse(PDNS_RECORDA r) : results(r, freeDnsRecord) {}
+    explicit DNSResponse(PDNS_RECORDA initialResults) : results(initialResults, freeDnsRecord) {}
 
     class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
     private:
@@ -398,7 +399,7 @@ public:
         }
 
     public:
-        explicit iterator(std::shared_ptr<DNS_RECORDA> r) : record(std::move(r)) {}
+        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord) : record(std::move(initialRecord)) {}
 
         const ResourceRecord& operator*() {
             this->hydrate();

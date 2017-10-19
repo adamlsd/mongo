@@ -58,8 +58,8 @@ struct SRVHostEntry {
     std::string host;
     std::uint16_t port;
 
-    SRVHostEntry(std::string i_host, const std::uint16_t i_port)
-        : host(std::move(i_host)), port(i_port) {}
+    SRVHostEntry(std::string initialHost, const std::uint16_t initialPort)
+        : host(std::move(initialHost)), port(initialPort) {}
 
     inline auto make_relops_lens() const {
         return std::tie(host, port);

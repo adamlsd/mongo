@@ -119,9 +119,9 @@ std::pair<StringData, StringData> partitionBackward(StringData str, const char c
     return {str.substr(0, delim), str.substr(delim + 1)};
 }
 
-class FailedToParseException : public std::runtime_error {
+class FailedToParseException : public DBException {
 public:
-    using std::runtime_error::runtime_error;
+    using DBException::DBException
 };
 
 /**
@@ -373,9 +373,7 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
 
 StatusWith<MongoURI> MongoURI::parse(const std::string& url) try {
     return parseImpl(url);
-}
-
-catch (const std::exception&) {
+} catch (const std::exception&) {
     return exceptionToStatus();
 }
 }  // namespace mongo

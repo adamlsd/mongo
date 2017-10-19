@@ -96,10 +96,14 @@ StatusWith<std::string> uriDecode(StringData str);
  */
 class MongoURI {
 public:
+    // Note that, because this map is used for DNS TXT record injection on options, there is a
+    // requirement on its behavior for `insert`: insert must not replace or update existing values
+    // -- this gives the desired behavior that user-specified values override TXT record specified
+    // values.  `std::map` and `std::unordered_map` satisfy this requirement.  Make sure that
+    // whichever map type is used provides that guarantee.
     using OptionsMap = std::map<std::string, std::string>;
 
     static StatusWith<MongoURI> parse(const std::string& url);
-    static MongoURI parseImpl(const std::string& url);
 
     DBClientBase* connect(StringData applicationName,
                           std::string& errmsg,
@@ -150,11 +154,7 @@ public:
         return _connectString.type();
     }
 
-    // private:
-    explicit MongoURI(ConnectionString connectString) : _connectString(std::move(connectString)){};
-
-public:
-    MongoURI() = default;
+    explicit MongoURI(const ConnectionString& connectString) : _connectString(connectString){};
 
     friend std::ostream& operator<<(std::ostream&, const MongoURI&);
 
@@ -173,6 +173,8 @@ private:
           _options(std::move(options)) {}
 
     BSONObj _makeAuthObjFromOptions(int maxWireVersion) const;
+
+    static MongoURI parseImpl(const std::string& url);
 
     ConnectionString _connectString;
     std::string _user;

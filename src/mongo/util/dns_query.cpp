@@ -74,20 +74,6 @@ enum class DNSQueryType {
 };
 
 class ResourceRecord {
-private:
-    std::string service;
-    ns_rr resource_record;
-    const std::uint8_t* answerStart;
-    const std::uint8_t* answerEnd;
-    int pos;
-
-    void badRecord() const {
-        std::ostringstream oss;
-        oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \""
-            << strerror(errno) << "\"";
-        throw DNSLookupException(oss.str());
-    };
-
 public:
     explicit ResourceRecord() = default;
 
@@ -98,13 +84,6 @@ public:
           pos(initialPos) {
         if (ns_parserr(&ns_answer, ns_s_an, p, &resource_record))
             badRecord();
-    }
-
-    std::vector<std::uint8_t> rawData() const {
-        const std::uint8_t* const data = ns_rr_rdata(resource_record);
-        const std::size_t length = ns_rr_rdlen(resource_record);
-
-        return {data, data + length};
     }
 
     std::vector<std::string> txtEntry() const {
@@ -119,6 +98,7 @@ public:
     std::string addressEntry() const {
         std::string rv;
 
+        uassert(rawData.size() == 4, DNSLookupException);
         for (const std::uint8_t& ch : rawData()) {
             std::ostringstream oss;
             oss << int(ch);
@@ -147,15 +127,30 @@ public:
         // return by copy is equivalent to a `shrink_to_fit` and `move`.
         return {name, port};
     }
+
+private:
+    void badRecord() const {
+        std::ostringstream oss;
+        oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \""
+            << strerror(errno) << "\"";
+        throw DNSLookupException(oss.str());
+    };
+
+    std::vector<std::uint8_t> rawData() const {
+        const std::uint8_t* const data = ns_rr_rdata(resource_record);
+        const std::size_t length = ns_rr_rdlen(resource_record);
+
+        return {data, data + length};
+    }
+
+    std::string service;
+    ns_rr resource_record;
+    const std::uint8_t* answerStart;
+    const std::uint8_t* answerEnd;
+    int pos;
 };
 
 class DNSResponse {
-private:
-    std::string service;
-    std::vector<std::uint8_t> data;
-    ns_msg ns_answer;
-    std::size_t nRecords;
-
 public:
     explicit DNSResponse(std::string initialService, std::vector<std::uint8_t> initialData)
         : service(std::move(initialService)), data(std::move(initialData)) {
@@ -249,32 +244,18 @@ public:
     std::size_t size() const {
         return this->nRecords;
     }
+
+private:
+    std::string service;
+    std::vector<std::uint8_t> data;
+    ns_msg ns_answer;
+    std::size_t nRecords;
 };
 
 /**
  * The `DNSQueryState` object represents the state of a DNS query interface, on Unix-like systems.
  */
 class DNSQueryState : boost::noncopyable {
-#ifdef MONGO_HAVE_RES_NQUERY
-
-private:
-    struct __res_state state;
-
-public:
-    ~DNSQueryState() {
-#ifdef MONGO_HAVE_RES_NDESTROY
-        res_ndestroy(&state);
-#elif defined(MONGO_HAVE_RES_NCLOSE)
-        res_nclose(&state);
-#endif
-    }
-
-    DNSQueryState() : state() {
-        res_ninit(&state);
-    }
-
-#endif
-
 public:
     std::vector<std::uint8_t> raw_lookup(const std::string& service,
                                          const DNSQueryClass class_,
@@ -303,6 +284,24 @@ public:
                        const DNSQueryType type) {
         return DNSResponse(service, raw_lookup(service, class_, type));
     }
+
+#ifdef MONGO_HAVE_RES_NQUERY
+public:
+    ~DNSQueryState() {
+#ifdef MONGO_HAVE_RES_NDESTROY
+        res_ndestroy(&state);
+#elif defined(MONGO_HAVE_RES_NCLOSE)
+        res_nclose(&state);
+#endif
+    }
+
+    DNSQueryState() : state() {
+        res_ninit(&state);
+    }
+
+private:
+    struct __res_state state;
+#endif
 };
 
 #else
@@ -312,14 +311,9 @@ enum class DNSQueryClass { kInternet };
 enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TEXT, kAddress = DNS_TYPE_A };
 
 class ResourceRecord {
-private:
-    std::string service;
-    std::shared_ptr<DNS_RECORDA> record;
-
 public:
-    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord) :
-record(std::move(initialRecord)) {}
-    explicit ResourceRecord() {}
+    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord) : record(std::move(initialRecord)) {}
+    explicit ResourceRecord() = default;
 
     std::vector<std::string> txtEntry() const {
         if (record->wType != DNS_TYPE_TEXT) {
@@ -369,6 +363,11 @@ record(std::move(initialRecord)) {}
         const auto& data = record->Data.SRV;
         return {data.pNameTarget + "."s, data.wPort};
     }
+
+private:
+    std::string service;
+    std::shared_ptr<DNS_RECORDA> record;
+
 };
 
 void freeDnsRecord(PDNS_RECORDA record) {
@@ -376,28 +375,10 @@ void freeDnsRecord(PDNS_RECORDA record) {
 }
 
 class DNSResponse {
-private:
-    std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> results;
-
 public:
     explicit DNSResponse(PDNS_RECORDA initialResults) : results(initialResults, freeDnsRecord) {}
 
     class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
-    private:
-        std::shared_ptr<DNS_RECORDA> record;
-        ResourceRecord storage;
-        bool ready = false;
-
-        void advance() {
-            record = {record, record->pNext};
-            ready = false;
-        }
-
-        void hydrate() {
-            ready = true;
-            storage = ResourceRecord{record};
-        }
-
     public:
         explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord) : record(std::move(initialRecord)) {}
 
@@ -437,6 +418,21 @@ public:
         inline friend bool operator!=(const iterator& lhs, const iterator& rhs) {
             return !(lhs == rhs);
         }
+
+    private:
+        std::shared_ptr<DNS_RECORDA> record;
+        ResourceRecord storage;
+        bool ready = false;
+
+        void advance() {
+            record = {record, record->pNext};
+            ready = false;
+        }
+
+        void hydrate() {
+            ready = true;
+            storage = ResourceRecord{record};
+        }
     };
 
     iterator begin() const {
@@ -450,6 +446,9 @@ public:
     std::size_t size() const {
         return std::distance(this->begin(), this->end());
     }
+
+private:
+    std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> results;
 };
 
 class DNSQueryState {
@@ -530,9 +529,9 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
 
     std::vector<std::string> rv;
 
-    for (const auto& entry : response) {
-        auto txtEntry = entry.txtEntry();
-        std::copy(begin(txtEntry), end(txtEntry), back_inserter(rv));
+    for (auto& entry : response) {
+        auto &txtEntry = entry.txtEntry();
+        rv.insert(end(rv),std::make_move_iterator(begin(txtEntry)),std::make_move_iterator(end(txtEntry)));
     }
     return rv;
 }

@@ -37,7 +37,6 @@
 
 #include <boost/noncopyable.hpp>
 
-#include "mongo/base/relops.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {

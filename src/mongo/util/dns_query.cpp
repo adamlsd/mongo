@@ -25,6 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#include "mongo/platform/basic.h"
 #include "mongo/util/dns_query.h"
 
 #ifndef _WIN32
@@ -36,10 +37,7 @@
 #include <resolv.h>
 // clang-format on
 #else
-#define NOMINMAX
-#include <windows.h>
 #include <windns.h>
-#undef NOMINMAX
 #endif
 
 #include <stdio.h>

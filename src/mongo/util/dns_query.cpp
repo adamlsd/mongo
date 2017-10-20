@@ -82,7 +82,7 @@ public:
           answerStart(ns_msg_base(ns_answer)),
           answerEnd(ns_msg_end(ns_answer)),
           pos(initialPos) {
-        if (ns_parserr(&ns_answer, ns_s_an, p, &resource_record))
+        if (ns_parserr(&ns_answer, ns_s_an, initialPos, &resource_record))
             badRecord();
     }
 
@@ -98,8 +98,11 @@ public:
     std::string addressEntry() const {
         std::string rv;
 
-        uassert(rawData.size() == 4, DNSLookupException);
-        for (const std::uint8_t& ch : rawData()) {
+        auto data = rawData();
+        if (data.size() != 4) {
+            throw DNSLookupException("DNS A Record is not correctly sized");
+        }
+        for (const std::uint8_t& ch : data) {
             std::ostringstream oss;
             oss << int(ch);
             rv += oss.str() + ".";
@@ -181,7 +184,8 @@ public:
         explicit iterator(DNSResponse* const r)
             : response(r), record(this->response->service, this->response->ns_answer, 0) {}
 
-        explicit iterator(DNSResponse* const initialResponse, int initialPos) : response(initialResponse), pos(initialPos) {}
+        explicit iterator(DNSResponse* const initialResponse, int initialPos)
+            : response(initialResponse), pos(initialPos) {}
 
         void hydrate() {
             if (ready)
@@ -312,7 +316,8 @@ enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TEXT, kAddress = 
 
 class ResourceRecord {
 public:
-    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord) : record(std::move(initialRecord)) {}
+    explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord)
+        : record(std::move(initialRecord)) {}
     explicit ResourceRecord() = default;
 
     std::vector<std::string> txtEntry() const {
@@ -367,7 +372,6 @@ public:
 private:
     std::string service;
     std::shared_ptr<DNS_RECORDA> record;
-
 };
 
 void freeDnsRecord(PDNS_RECORDA record) {
@@ -380,7 +384,8 @@ public:
 
     class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
     public:
-        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord) : record(std::move(initialRecord)) {}
+        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord)
+            : record(std::move(initialRecord)) {}
 
         const ResourceRecord& operator*() {
             this->hydrate();
@@ -530,8 +535,10 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
     std::vector<std::string> rv;
 
     for (auto& entry : response) {
-        auto &txtEntry = entry.txtEntry();
-        rv.insert(end(rv),std::make_move_iterator(begin(txtEntry)),std::make_move_iterator(end(txtEntry)));
+        auto txtEntry = entry.txtEntry();
+        rv.insert(end(rv),
+                  std::make_move_iterator(begin(txtEntry)),
+                  std::make_move_iterator(end(txtEntry)));
     }
     return rv;
 }

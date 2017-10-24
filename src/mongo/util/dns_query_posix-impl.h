@@ -120,7 +120,7 @@ public:
     SRVHostEntry srvHostEntry() const {
         const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
         const uint16_t port = [data] {
-            std::short tmp;
+            short tmp;
             memcpy(&tmp, data + 4, 2);
             return ntohs(tmp);
         }();
@@ -302,7 +302,7 @@ public:
 
 public:
     ~DNSQueryState() {
-        res_ndestroy(&_state);
+        res_nclose(&_state);
     }
 
     DNSQueryState() : _state() {

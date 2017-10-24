@@ -250,11 +250,11 @@ public:
     };
 
     auto begin() {
-        return iterator{this};
+        return iterator(this);
     }
 
     auto end() {
-        return iterator{this, this->_nRecords};
+        return iterator(this, this->_nRecords);
     }
 
     std::size_t size() const {

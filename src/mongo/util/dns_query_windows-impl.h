@@ -174,7 +174,7 @@ public:
             this->_ready = false;
         }
 
-        void _hydrate() {
+        void _populate() {
             this->_ready = true;
             this->_storage = ResourceRecord{this->_record};
         }

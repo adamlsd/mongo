@@ -100,7 +100,7 @@ public:
 
         auto data = rawData();
         if (data.size() != 4) {
-            throw DNSLookupException("DNS A Record is not correctly sized");
+            throw DBException(ErrorCodes::ProtocolError, "DNS A Record is not correctly sized");
         }
         for (const std::uint8_t& ch : data) {
             std::ostringstream oss;
@@ -136,7 +136,7 @@ private:
         std::ostringstream oss;
         oss << "Invalid record " << pos << " of SRV answer for \"" << service << "\": \""
             << strerror(errno) << "\"";
-        throw DNSLookupException(oss.str());
+        throw DBException(ErrorCodes::ProtocolError, oss.str());
     };
 
     std::vector<std::uint8_t> rawData() const {
@@ -160,7 +160,7 @@ public:
         if (ns_initparse(data.data(), data.size(), &ns_answer)) {
             std::ostringstream oss;
             oss << "Invalid SRV answer for \"" << service << "\"";
-            throw DNSLookupException(oss.str());
+            throw DBException(ErrorCodes::ProtocolError, oss.str());
         }
 
         nRecords = ns_msg_count(ns_answer, ns_s_an);
@@ -168,7 +168,7 @@ public:
         if (!nRecords) {
             std::ostringstream oss;
             oss << "No SRV records for \"" << service << "\"";
-            throw DNSLookupException(oss.str());
+            throw DBException(ErrorCodes::ProtocolError, oss.str());
         }
     }
 
@@ -276,7 +276,7 @@ public:
         if (size < 0) {
             std::ostringstream oss;
             oss << "Failed to look up service \"" << service << "\": " << strerror(errno);
-            throw DNSLookupNotFoundException(oss.str());
+            throw DBException(ErrorCodes::HostNotFound, oss.str());
         }
         result.resize(size);
 
@@ -503,7 +503,8 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kAddress);
 
     if (response.size() == 0) {
-        throw DNSLookupException("Looking up " + service + " A record no results.");
+        throw DBException(ErrorCodes::ProtocolError,
+                          "Looking up " + service + " A record no results.");
     }
 
     std::vector<std::string> rv;
@@ -545,7 +546,10 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
 
 std::vector<std::string> dns::getTXTRecords(const std::string& service) try {
     return lookupTXTRecords(service);
-} catch (...) {
-    return {};
+} catch (const DBException& ex) {
+    if (ex.code() == ErrorCodes::HostNotFound) {
+        return {};
+    }
+    throw;
 }
 }  // namespace mongo

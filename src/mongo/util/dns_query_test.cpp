@@ -89,7 +89,7 @@ TEST(MongoDnsQuery, basic) {
             resolution_count += resolution;
         }
         // Failure to resolve is okay, but not great -- print a warning
-        catch (const mongo::dns::DNSLookupException&) {
+        catch (const mongo::DBException& ex) {
             std::cerr << "Warning: Did not resolve " << test.dns << " at all." << std::endl;
         }
     }
@@ -134,8 +134,9 @@ TEST(MongoDnsQuery, srvRecords) {
     for (const auto& test : tests) {
         const auto& expected = test.result;
         if (expected.empty()) {
-            ASSERT_THROWS(mongo::dns::lookupSRVRecords(kMongodbSRVPrefix + test.query),
-                          mongo::dns::DNSLookupNotFoundException);
+            ASSERT_THROWS_CODE(mongo::dns::lookupSRVRecords(kMongodbSRVPrefix + test.query),
+                               mongo::DBException,
+                               mongo::ErrorCodes::HostNotFound);
             continue;
         }
 
@@ -188,7 +189,9 @@ TEST(MongoDnsQuery, txtRecords) {
 
             ASSERT_TRUE(std::equal(begin(witness), end(witness), begin(expected), end(expected)));
             ASSERT_EQ(witness.size(), expected.size());
-        } catch (const mongo::dns::DNSLookupNotFoundException&) {
+        } catch (const mongo::DBException& ex) {
+            if (ex.code() != mongo::ErrorCodes::HostNotFound)
+                throw;
             std::cout << "Got no response for " << test.query << std::endl;
             ASSERT_TRUE(test.result.empty());
         }

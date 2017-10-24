@@ -188,12 +188,12 @@ MongoURI::OptionsMap parseOptions(StringData options, StringData url) {
     return ret;
 }
 
-MongoURI::OptionsMap injectTXTOptions(MongoURI::OptionsMap options,
+MongoURI::OptionsMap addTXTOptions(MongoURI::OptionsMap options,
                                       const std::string& host,
                                       const StringData url,
-                                      const bool seedlist) {
-    // If there is no seedlist mode, then don't inject any TXT options.
-    if (!seedlist)
+                                      const bool isSeedlist) {
+    // If there is no seedlist mode, then don't add any TXT options.
+    if (!isSeedlist)
         return options;
 
     // Get all TXT records and parse them as options, adding them to the options set.
@@ -215,10 +215,9 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
     const StringData urlSD(url);
 
     // 1. Validate and remove the scheme prefix mongodb://
-    const bool seedlist = urlSD.startsWith(kURISRVPrefix);
-    if (!(urlSD.startsWith(kURIPrefix) || seedlist)) {
-        const auto cs_result = uassertStatusOK(ConnectionString::parse(url));
-        return MongoURI(std::move(cs_result));
+    const bool isSeedlist = urlSD.startsWith(kURISRVPrefix);
+    if (!(urlSD.startsWith(kURIPrefix) || isSeedlist)) {
+        return MongoURI(uassertStatusOK(ConnectionString::parse(url)));
     }
     const auto uriWithoutPrefix = urlSD.substr(urlSD.find("://") + 3);
 
@@ -315,7 +314,7 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
     const std::string canonicalHost = servers.front().host();
     // If we're in seedlist mode, lookup the SRV record for `_mongodb._tcp` on the specified
     // domain name.  Take that list of servers as the new list of servers.
-    if (seedlist) {
+    if (isSeedlist) {
         if (servers.size() > 1) {
             throw FailedToParseException(
                 "Only a single server may be specified with a mongo+srv:// url.");
@@ -356,7 +355,7 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
 
     // 8. Validate, split, and URL decode the connection options
     auto options =
-        injectTXTOptions(parseOptions(connectionOptions, url), canonicalHost, url, seedlist);
+        addTXTOptions(parseOptions(connectionOptions, url), canonicalHost, url, isSeedlist);
 
     // If a replica set option was specified, store it in the 'setName' field.
     const auto optIter = options.find("replicaSet");

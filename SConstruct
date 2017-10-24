@@ -1581,13 +1581,13 @@ elif env.TargetOSIs('windows'):
             'advapi32.lib',
             'bcrypt.lib',
             'crypt32.lib',
+            'dnsapi.lib',
             'kernel32.lib',
             'shell32.lib',
             'pdh.lib',
             'version.lib',
             'winmm.lib',
             'ws2_32.lib',
-            'dnsapi.lib',
         ],
     )
 

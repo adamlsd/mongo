@@ -25,7 +25,9 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+
 #pragma once
+
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -43,6 +45,9 @@ namespace mongo {
 namespace dns {
 /**
  * An `SRVHostEntry` object represents the information received from a DNS lookup of an SRV record.
+ * NOTE: An SRV DNS record has several fields, such as priority and weight.  This structure lacks
+ * those fields at this time.  They should be safe to add in the future.  The code using this
+ * structure does not need access to those fields at this time.
  */
 struct SRVHostEntry {
     std::string host;

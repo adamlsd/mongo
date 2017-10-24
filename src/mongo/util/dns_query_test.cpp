@@ -40,9 +40,9 @@ std::string getFirstARecord(const std::string& service) {
 }
 
 TEST(MongoDnsQuery, basic) {
-    // We only require 75% of the records to pass, because it is possible that some large scale
+    // We only require 50% of the records to pass, because it is possible that some large scale
     // outages could cause some of these records to fail.
-    const double kPassingPercentage = 0.75;
+    const double kPassingPercentage = 0.50;
     std::size_t resolution_count = 0;
     const struct {
         std::string dns;
@@ -181,10 +181,6 @@ TEST(MongoDnsQuery, txtRecords) {
             auto witness = mongo::dns::getTXTRecords(test.query);
             std::sort(begin(witness), end(witness));
 
-            for (const auto& entry : witness) {
-                std::cout << "Entry: " << entry << std::endl;
-            }
-
             const auto& expected = test.result;
 
             ASSERT_TRUE(std::equal(begin(witness), end(witness), begin(expected), end(expected)));
@@ -192,7 +188,6 @@ TEST(MongoDnsQuery, txtRecords) {
         } catch (const mongo::DBException& ex) {
             if (ex.code() != mongo::ErrorCodes::HostNotFound)
                 throw;
-            std::cout << "Got no response for " << test.query << std::endl;
             ASSERT_TRUE(test.result.empty());
         }
     }

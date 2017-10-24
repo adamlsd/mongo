@@ -119,7 +119,11 @@ public:
 
     SRVHostEntry srvHostEntry() const {
         const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
-        const uint16_t port = ntohs(*reinterpret_cast<const short*>(data + 4));
+        const uint16_t port = [data] {
+            std::short tmp;
+            memcpy(&tmp, data + 4, 2);
+            return ntohs(tmp);
+        }();
 
         std::string name;
         // The '@' is an impermissible character in a host name, so we populate the string we'll

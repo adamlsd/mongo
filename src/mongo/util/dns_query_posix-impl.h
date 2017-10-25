@@ -129,11 +129,10 @@ public:
             return ntohs(tmp);
         }();
 
-        std::string name;
         // The '@' is an impermissible character in a host name, so we populate the string we'll
         // return with it, such that a failure in string manipulation or corrupted dns packets will
         // cause an illegal hostname.
-        name.resize(kMaxSRVHostNameSize, '@');
+        std::string name(kMaxSRVHostNameSize, '@');
 
         const auto size = dn_expand(this->_answerStart,
                                     this->_answerEnd,

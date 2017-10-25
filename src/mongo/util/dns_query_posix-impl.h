@@ -63,6 +63,9 @@ using std::begin;
 using std::end;
 using namespace std::literals::string_literals;
 
+const std::size_t kMaxExpectedDNSResponseSize = 65536;
+const const std::size_t kMaxSRVHostNameSize = 8192;
+
 enum class DNSQueryClass {
     kInternet = ns_c_in,
 };
@@ -119,9 +122,10 @@ public:
 
     SRVHostEntry srvHostEntry() const {
         const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
-        const uint16_t port = [data] {
-            short tmp;
-            memcpy(&tmp, data + 4, 2);
+        const std::size_t kPortOffsetInPacket = 4;
+        const std::uint16_t port = [data] {
+            std::uint16_t tmp;
+            memcpy(&tmp, data + kPortOffsetInPacket, sizeof(tmp));
             return ntohs(tmp);
         }();
 
@@ -129,10 +133,13 @@ public:
         // The '@' is an impermissible character in a host name, so we populate the string we'll
         // return with it, such that a failure in string manipulation or corrupted dns packets will
         // cause an illegal hostname.
-        name.resize(8192, '@');
+        name.resize(kMaxSRVHostNameSize, '@');
 
-        const auto size =
-            dn_expand(this->_answerStart, this->_answerEnd, data + 6, &name[0], name.size());
+        const auto size = dn_expand(this->_answerStart,
+                                    this->_answerEnd,
+                                    data + kPortOffsetInPacket + sizeof(tmp),
+                                    &name[0],
+                                    name.size());
 
         if (size < 1)
             this->_badRecord();
@@ -280,7 +287,7 @@ public:
     std::vector<std::uint8_t> raw_lookup(const std::string& service,
                                          const DNSQueryClass class_,
                                          const DNSQueryType type) {
-        std::vector<std::uint8_t> result(65536);
+        std::vector<std::uint8_t> result(kMaxExpectedDNSResponseSize);
         const int size = res_nsearch(
             &_state, service.c_str(), int(class_), int(type), &result[0], result.size());
 

@@ -121,8 +121,15 @@ public:
     }
 
     SRVHostEntry srvHostEntry() const {
-        const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
         const std::size_t kPortOffsetInPacket = 4;
+
+        const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
+        if (data < this->_answerStart || data + kPortOffsetInPacket + sizeof(std::uint16_t) > this->_answerEnd) {
+            std::ostringstream oss;
+            oss << "Invalid record " << this->_pos << " of SRV answer for \"" << this->_service
+                << "\": Incorrect result size";
+            throw DBException(ErrorCodes::ProtocolError, oss.str());
+        }
         const std::uint16_t port = [data] {
             std::uint16_t tmp;
             memcpy(&tmp, data + kPortOffsetInPacket, sizeof(tmp));

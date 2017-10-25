@@ -64,7 +64,7 @@ using std::end;
 using namespace std::literals::string_literals;
 
 const std::size_t kMaxExpectedDNSResponseSize = 65536;
-const const std::size_t kMaxSRVHostNameSize = 8192;
+const std::size_t kMaxSRVHostNameSize = 8192;
 
 enum class DNSQueryClass {
     kInternet = ns_c_in,
@@ -124,7 +124,8 @@ public:
         const std::size_t kPortOffsetInPacket = 4;
 
         const std::uint8_t* const data = ns_rr_rdata(this->_resource_record);
-        if (data < this->_answerStart || data + kPortOffsetInPacket + sizeof(std::uint16_t) > this->_answerEnd) {
+        if (data < this->_answerStart ||
+            data + kPortOffsetInPacket + sizeof(std::uint16_t) > this->_answerEnd) {
             std::ostringstream oss;
             oss << "Invalid record " << this->_pos << " of SRV answer for \"" << this->_service
                 << "\": Incorrect result size";
@@ -143,7 +144,7 @@ public:
 
         const auto size = dn_expand(this->_answerStart,
                                     this->_answerEnd,
-                                    data + kPortOffsetInPacket + sizeof(tmp),
+                                    data + kPortOffsetInPacket + sizeof(port),
                                     &name[0],
                                     name.size());
 

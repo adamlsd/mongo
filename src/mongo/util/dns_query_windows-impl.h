@@ -132,9 +132,6 @@ public:
 
     class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
     public:
-        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord)
-            : _record(std::move(initialRecord)) {}
-
         const ResourceRecord& operator*() {
             this->_populate();
             return this->_storage;
@@ -173,6 +170,11 @@ public:
         }
 
     private:
+        friend DNSResponse;
+
+        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord)
+            : _record(std::move(initialRecord)) {}
+
         void _advance() {
             this->_record = {this->_record, this->_record->pNext};
             this->_ready = false;

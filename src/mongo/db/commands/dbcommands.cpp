@@ -514,7 +514,7 @@ public:
 
             // Perform index spec validation.
             idIndexSpec = uassertStatusOK(index_key_validate::validateIndexSpec(
-                idIndexSpec, ns, serverGlobalParams.featureCompatibility));
+                opCtx, idIndexSpec, ns, serverGlobalParams.featureCompatibility));
             uassertStatusOK(index_key_validate::validateIdIndexSpec(idIndexSpec));
 
             // Validate or fill in _id index collation.
@@ -687,7 +687,7 @@ public:
                 try {
                     // RELOCKED
                     ctx.reset(new AutoGetCollectionForReadCommand(opCtx, nss));
-                } catch (const StaleConfigException& ex) {
+                } catch (const StaleConfigException&) {
                     LOG(1) << "chunk metadata changed during filemd5, will retarget and continue";
                     break;
                 }

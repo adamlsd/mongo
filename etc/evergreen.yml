@@ -146,16 +146,19 @@ variables:
 # Templates used by powercycle
 - &powercycle_remote_credentials
   private_key_file: $(${posix_workdir})/powercycle.pem
-  private_key_remote: ${kitchen_private_key}
-  aws_key_remote: ${kitchen_aws_key}
-  aws_secret_remote: ${kitchen_aws_secret}
+  private_key_remote: ${powercycle_private_key}
+  aws_key_remote: ${powercycle_aws_key}
+  aws_secret_remote: ${powercycle_aws_secret}
 
 # TODO: Remove psutil from virtualenv_requirements when BUILD-3083 is done
 - &powercycle_ec2_instance
   aws_ec2_yml: aws_ec2.yml
   remote_dir: powercycle
+  secret_port: "20001"
+  security_groups: mci powercycle_testing
   ssh_identity: -i ${private_key_file}
-  ssh_key_id: ${kitchen_ssh_key_id}
+  ssh_key_id: ${powercycle_ssh_key_id}
+  standard_port: "20000"
   virtualenv_dir: venv_powercycle
   virtualenv_requirements: psutil
 
@@ -173,12 +176,13 @@ variables:
 
 - &powercycle_test
   ec2_artifacts: ${log_path} ${backup_path_after} ${backup_path_before}
-  program_options: --logLevel debug --backupPathBefore  ${backup_path_before} --backupPathAfter ${backup_path_after}
+  program_options: --logLevel info --backupPathBefore  ${backup_path_before} --backupPathAfter ${backup_path_after}
   connection_options: --sshUserHost ${ip_address} --sshConnection \"${ssh_identity} ${ssh_connection_options}\"
-  test_options: --testLoops 25 --seedDocNum 10000 --rsync --validate remote --canary remote
-  crash_options: --crashMethod internal --crashWaitTime 30 --jitterForCrashWaitTime 5
+  test_options: --testLoops 25 --seedDocNum 10000 --rsync --validate local --canary local
+  crash_options: "--crashMethod aws_ec2 --crashOptions ${instance_id}:private_ip_address --crashWaitTime 30 --jitterForCrashWaitTime 5"
+  client_options: --numCrudClients 10 --numFsmClients 10
   mongodb_options: --rootDir ${remote_dir}-${task_id} --mongodbBinDir ${remote_dir}
-  mongod_options: --dbPath ${db_path} --logPath ${log_path}
+  mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath ${db_path} --logPath ${log_path}
   mongod_extra_options: --mongodOptions \"--setParameter enableTestCommands=1\"
 
 #######################################
@@ -442,7 +446,7 @@ functions:
 
         . ./${set_tools_gopath|set_gopath.sh}
 
-        build_tools="bsondump mongostat mongofiles mongoexport mongoimport mongorestore mongodump mongotop mongooplog"
+        build_tools="bsondump mongostat mongofiles mongoexport mongoimport mongorestore mongodump mongotop"
 
         if [ "${build_mongoreplay}" = "true" ]; then
             build_tools="$build_tools mongoreplay"
@@ -830,56 +834,67 @@ functions:
         fi
 
   "run powercycle test" :
-    command: shell.exec
-    params:
-      working_dir: src
-      script: |
-        set -o verbose
-        set -o errexit
+    - command: shell.exec
+      params:
+        working_dir: src
+        script: |
+          set -o verbose
+          set -o errexit
 
-        ${activate_virtualenv}
-        if [ ! -z "${virtualenv_requirements}" ]; then
-          easy_install ${virtualenv_requirements}
-        fi
+          ${activate_virtualenv}
+          if [ ! -z "${virtualenv_requirements}" ]; then
+            pip install ${virtualenv_requirements}
+          fi
 
-        ${set_sudo}
-        if [ ! -z $sudo ]; then
-          remote_sudo="--remoteSudo"
-        fi
+    - command: shell.exec
+      type: test
+      params:
+        working_dir: src
+        script: |
+          set -o verbose
+          set -o errexit
 
-        # The virtaulenv bin_dir is different for Linux and Windows
-        bin_dir=$(find $VIRTUAL_ENV -name activate | sed -e "s,$VIRTUAL_ENV,,;s,activate,,;s,/,,g")
-        cmds="source ${virtualenv_dir|venv}/$bin_dir/activate"
-        cmds="$cmds; python -u"
-        # The remote python operates in a virtualenv
-        remote_python="--remotePython \"$cmds\""
+          ${activate_virtualenv}
 
-        start_time=$(date +%s)
-        status="\"pass\""
-        failures=0
+          ${set_sudo}
+          if [ ! -z $sudo ]; then
+            remote_sudo="--remoteSudo"
+          fi
 
-        set +o errexit
-        eval python -u pytests/powertest.py \
-          "${connection_options} \
-          ${program_options}     \
-          $remote_sudo           \
-          $remote_python         \
-          ${test_options}        \
-          ${crash_options}       \
-          ${mongodb_options}     \
-          ${mongod_options}      \
-          ${mongod_extra_options}"
-        exit_code=$?
+          # The virtaulenv bin_dir is different for Linux and Windows
+          bin_dir=$(find $VIRTUAL_ENV -name activate | sed -e "s,$VIRTUAL_ENV,,;s,activate,,;s,/,,g")
+          cmds="source ${virtualenv_dir|venv}/$bin_dir/activate"
+          cmds="$cmds; python -u"
+          # The remote python operates in a virtualenv
+          remote_python="--remotePython \"$cmds\""
 
-        # Create report.json
-        end_time=$(date +%s)
-        elapsed_secs=$((end_time-start_time))
-        if [ $exit_code -ne 0 ]; then
-          status="\"fail\""
-          failures=1
-        fi
-        echo "{\"failures\": $failures, \"results\": [{\"status\": $status, \"exit_code\": $exit_code, \"test_file\": \"${task_name}\", \"start\": $start_time, \"end\": $end_time, \"elapsed\": $elapsed_secs}]}" > report.json
-        exit $exit_code
+          start_time=$(date +%s)
+          status="\"pass\""
+          failures=0
+
+          set +o errexit
+          eval python -u pytests/powertest.py \
+            "${connection_options} \
+            ${program_options}     \
+            $remote_sudo           \
+            $remote_python         \
+            ${test_options}        \
+            ${crash_options}       \
+            ${client_options}      \
+            ${mongodb_options}     \
+            ${mongod_options}      \
+            ${mongod_extra_options}"
+          exit_code=$?
+
+          # Create report.json
+          end_time=$(date +%s)
+          elapsed_secs=$((end_time-start_time))
+          if [ $exit_code -ne 0 ]; then
+            status="\"fail\""
+            failures=1
+          fi
+          echo "{\"failures\": $failures, \"results\": [{\"status\": $status, \"exit_code\": $exit_code, \"test_file\": \"${task_name}\", \"start\": $start_time, \"end\": $end_time, \"elapsed\": $elapsed_secs}]}" > report.json
+          exit $exit_code
 
   "do multiversion setup" :
     command: shell.exec
@@ -1087,11 +1102,17 @@ functions:
 
           set -o errexit
           ${activate_virtualenv}
-          easy_install --upgrade boto3
+          pip install boto3
+
+          for security_group in ${security_groups}
+          do
+            security_groups="$security_groups -s $security_group"
+          done
 
           # Clone another instance of this host in EC2.
           buildscripts/launch_evergreen_ec2_instance.sh \
             -k ${ssh_key_id}                            \
+            $security_groups                            \
             -t "AMI Evergreen ${task_id}"               \
             -y ${aws_ec2_yml}
 
@@ -1220,7 +1241,7 @@ functions:
             cmds="$cmds; virtualenv --python \$python_loc --system-site-packages ${virtualenv_dir|venv}"
             cmds="$cmds; activate=\$(find ${virtualenv_dir|venv} -name 'activate')"
             cmds="$cmds; source \$activate"
-            cmds="$cmds; easy_install ${virtualenv_requirements}"
+            cmds="$cmds; pip install ${virtualenv_requirements}"
             ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
             ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
               --verbose                                        \
@@ -1236,11 +1257,30 @@ functions:
         shell: bash
         working_dir: src
         script: |
+          if [ -z "${ec2_artifacts}" ]; then
+            exit 0
+          fi
+          # Ensure we use the latest ip_address, as it could change if the EC2 instance
+          # has been stopped and started.
+          ${activate_virtualenv}
+          aws_ec2=$(python buildscripts/aws_ec2.py --imageId ${instance_id} --mode status)
+          ip_address=$(echo $aws_ec2 | sed -e "s/.*private_ip_address: //; s/ .*//")
+          sed -i -e "s/${ip_address}/$ip_address/" ${aws_ec2_yml}
+
+    - command: expansions.update
+      params:
+        file: src/${aws_ec2_yml}
+
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
           # Tar/zip artifacts on remote host.
           if [ -z "${ec2_artifacts}" ]; then
             exit 0
           fi
-          cmd="${tar|tar} czvf ec2_artifacts.tgz ${ec2_artifacts}"
+          cmd="${tar|tar} czf ec2_artifacts.tgz ${ec2_artifacts}"
           ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
           ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
             --verbose                                        \
@@ -1427,6 +1467,27 @@ post:
       permissions: public-read
       content_type: ${content_type|application/x-gzip}
       display_name: Remote EC2 Artifacts - Execution ${execution}
+      optional: true
+
+  # Gather and archive the local client logs.
+  - command: shell.exec
+    params:
+      working_dir: src
+      script: |
+        client_logs=$(ls crud*.log fsm*.log 2> /dev/null)
+        if [ ! -z "$client_logs" ]; then
+          ${tar|tar} czf client-logs.tgz $client_logs
+        fi
+  - command: s3.put
+    params:
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      local_file: src/client-logs.tgz
+      remote_file: mongodb-mongo-master/${build_variant}/${revision}/client_logs/mongo-client-logs-${task_id}-${execution}.tgz
+      bucket: mciuploads
+      permissions: public-read
+      content_type: ${content_type|application/x-gzip}
+      display_name: Client logs - Execution ${execution}
       optional: true
 
   # Process and save coverage data.
@@ -1711,7 +1772,7 @@ timeout:
           ${set_sudo}
         fi
 
-        hang_analyzer_option="-o file -o stdout -p ${hang_analyzer_processes|dbtest,java,mongo,mongod,mongos,python,_test} -g bsondump,mongodump,mongoexport,mongofiles,mongoimport,mongooplog,mongoreplay,mongorestore,mongostat,mongotop"
+        hang_analyzer_option="-o file -o stdout -p ${hang_analyzer_processes|dbtest,java,mongo,mongod,mongos,python,_test} -g bsondump,mongodump,mongoexport,mongofiles,mongoimport,mongoreplay,mongorestore,mongostat,mongotop"
 
         if [ ${hang_analyzer_dump_core|true} = true ]; then
           hang_analyzer_option="-c $hang_analyzer_option"
@@ -4026,8 +4087,11 @@ tasks:
   - command: expansions.update
     <<: *powercycle_expansions
   - func: "run powercycle test"
+    # Disable the FSM clients for mmapv1.
+    # mongod will not start if it crashed mongod while creating a namespace (SERVER-26499).
     vars:
       <<: *powercycle_test
+      client_options: --numCrudClients 10 --numFsmClients 0
       mongod_extra_options: --mongodOptions \"--setParameter enableTestCommands=1 --storageEngine mmapv1\"
 
 - name: powercycle_WT
@@ -9742,66 +9806,13 @@ buildvariants:
     test_flags: --storageEngine=rocksdb
     use_scons_cache: true
     build_mongoreplay: true
+  stepback: false
   tasks:
   - name: compile
     distros:
     - ubuntu1404-build
-  - name: compile_all
-    distros:
-    - ubuntu1404-build
-  - name: aggregation
-  - name: aggregation_WT
-  - name: aggregation_auth
-  - name: auth
   - name: dbtest
-  # - name: disk
-  # - name: durability
-  # - name: dur_jscore_passthrough
-  - name: failpoints
-  - name: failpoints_auth
-  - name: gle_auth
-  - name: gle_auth_write_cmd
-  - name: gle_auth_basics_passthrough
-  - name: gle_auth_basics_passthrough_write_cmd
-  - name: sharding_gle_auth_basics_passthrough
-  - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: jsCore
-  - name: jsCore_auth
-  - name: jsCore_compatibility
-  - name: generational_jstestfuzz
-  - name: generational_jstestfuzz_WT
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent_WT
-  - name: jstestfuzz_concurrent_replication_WT
-  - name: jstestfuzz_concurrent_sharded_WT
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
-  - name: bulk_gle_passthrough
-  - name: parallel
-  - name: parallel_compatibility
-  - name: concurrency
-  - name: concurrency_replication
-  - name: concurrency_sharded
-    # We use machines with more RAM to avoid OOM issues when validating collections.
-    distros:
-    - ubuntu1404-build
-  - name: concurrency_simultaneous
-  - name: read_concern_linearizable_passthrough
-  - name: replica_sets
-  - name: replica_sets_auth
-  - name: replica_sets_jscore_passthrough
-  - name: rollback_fuzzer_WT
-  - name: master_slave
-  - name: master_slave_WT
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
-  - name: sharding
-  - name: sharding_auth
-  - name: slow1
-  - name: serial_run
-  - name: sharding_jscore_passthrough
 
 ###########################################
 #     Experimental buildvariants          #

@@ -96,6 +96,7 @@ public:
         kJavascript = 1 << 2,
         kExpr = 1 << 3,
         kJSONSchema = 1 << 4,
+        kIsolated = 1 << 5,
     };
     using AllowedFeatureSet = unsigned long long;
     static constexpr AllowedFeatureSet kBanAllSpecialFeatures = 0;
@@ -147,5 +148,14 @@ public:
      * - Too large in the positive or negative direction to fit within a 64-bit signed integer.
      */
     static StatusWith<long long> parseIntegerElementToLong(BSONElement elem);
+
+    /**
+     * Parses a BSONElement of any numeric type into an integer, failing if the value is:
+     *
+     * - NaN
+     * - a non-integral number
+     * - too large in the positive or negative direction to fit in an int
+     */
+    static StatusWith<int> parseIntegerElementToInt(BSONElement elem);
 };
 }  // namespace mongo

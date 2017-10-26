@@ -34,7 +34,7 @@
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/oplog_entry.h"
-#include "mongo/db/session_txn_record.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/concurrency/with_lock.h"
 
@@ -55,6 +55,8 @@ class Session {
     MONGO_DISALLOW_COPYING(Session);
 
 public:
+    static const BSONObj kDeadEndSentinel;
+
     explicit Session(LogicalSessionId sessionId);
 
     const LogicalSessionId& getSessionId() const {
@@ -135,6 +137,8 @@ public:
                                                              TxnNumber txnNumber,
                                                              StmtId stmtId) const;
 
+    bool checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber, StmtId stmtId) const;
+
 private:
     void _beginTxn(WithLock, TxnNumber txnNumber);
 
@@ -166,6 +170,10 @@ private:
     // Counter, incremented with each call to invalidate in order to discern invalidations, which
     // happen during refresh
     int _numInvalidations{0};
+
+    // Set to true if incomplete history is detected. For example, when the oplog to a write was
+    // truncated because it was too old.
+    bool _hasIncompleteHistory{false};
 
     // Caches what is known to be the last written transaction record for the session
     boost::optional<SessionTxnRecord> _lastWrittenSessionRecord;

@@ -7,24 +7,8 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     "use strict";
 
     load("jstests/replsets/rslib.js");
+    load("jstests/libs/feature_compatibility_version.js");
     load("jstests/libs/get_index_helpers.js");
-
-    let checkFCV = function(adminDB, version, targetVersion) {
-        let res = adminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});
-        assert.commandWorked(res);
-        assert.eq(res.featureCompatibilityVersion, version);
-
-        let doc = adminDB.system.version.findOne({_id: "featureCompatibilityVersion"});
-        assert.eq(doc.version, version);
-
-        // The 'targetVersion' field only exists on v3.6+ binaries, and is only present while an
-        // upgrade or downgrade is in progress.
-        if (targetVersion) {
-            assert.eq(doc.targetVersion, targetVersion);
-        } else {
-            assert.eq(null, doc.targetVersion);
-        }
-    };
 
     let res;
     const latest = "latest";
@@ -204,7 +188,7 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
         null, conn, "mongod was unable to start up with version=" + latest + " and no data files");
     assert.writeOK(conn.getDB("test").coll.insert({a: 5}));
     adminDB = conn.getDB("admin");
-    checkFCV(adminDB, "3.4");
+    checkFCV34(adminDB, "3.4");
     MongoRunner.stopMongod(conn);
 
     conn = MongoRunner.runMongod({dbpath: dbpath, binVersion: latest, noCleanData: true});
@@ -212,6 +196,15 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
                conn,
                "mongod was unable to start up with version=" + latest +
                    " and featureCompatibilityVersion=3.4");
+    adminDB = conn.getDB("admin");
+    checkFCV(adminDB, "3.4");
+    MongoRunner.stopMongod(conn);
+
+    // A 3.6 mongod started with --shardsvr and clean data files gets featureCompatibilityVersion
+    // 3.4.
+    conn = MongoRunner.runMongod({dbpath: dbpath, binVersion: latest, shardsvr: ""});
+    assert.neq(
+        null, conn, "mongod was unable to start up with version=" + latest + " and no data files");
     adminDB = conn.getDB("admin");
     checkFCV(adminDB, "3.4");
     MongoRunner.stopMongod(conn);
@@ -243,7 +236,7 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     assert.eq(adminDB.system.version.findOne({_id: "featureCompatibilityVersion"}).targetVersion,
               "3.6");
     let adminInfos = adminDB.getCollectionInfos();
-    assert(!adminInfos[0].uuid,
+    assert(!adminInfos[0].info.uuid,
            "Expected collection with infos " + tojson(adminInfos) + " to not have a UUID.");
     MongoRunner.stopMongod(conn);
 
@@ -390,7 +383,8 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     assert.eq(res.featureCompatibilityVersion, "3.2");
     res = secondaryAdminDB.runCommand({getParameter: 1, featureCompatibilityVersion: 1});
     assert.commandWorked(res);
-    assert.eq(res.featureCompatibilityVersion, "3.4");
+    assert.eq(res.featureCompatibilityVersion.version, "3.4", tojson(res));
+    assert.eq(res.featureCompatibilityVersion.targetVersion, null, tojson(res));
     rst.stopSet();
 
     //
@@ -466,8 +460,10 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     });
     latestShard.startSet();
     latestShard.initiate();
-    assert.commandWorked(mongosAdminDB.runCommand({addShard: latestShard.getURL()}));
     let latestShardPrimaryAdminDB = latestShard.getPrimary().getDB("admin");
+    // The featureCompatibilityVersion is 3.4 before the shard is added.
+    checkFCV(latestShardPrimaryAdminDB, "3.4");
+    assert.commandWorked(mongosAdminDB.runCommand({addShard: latestShard.getURL()}));
     checkFCV(latestShardPrimaryAdminDB, "3.4");
 
     // Shard some collections before upgrade, to ensure UUIDs are generated for them on upgrade.
@@ -549,7 +545,7 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     downgradeShard.startSet();
     downgradeShard.initiate();
     assert.commandWorked(mongosAdminDB.runCommand({addShard: downgradeShard.getURL()}));
-    checkFCV(downgradeShard.getPrimary().getDB("admin"), "3.4");
+    checkFCV34(downgradeShard.getPrimary().getDB("admin"), "3.4");
 
     // call ShardingTest.stop before shutting down downgradeShard, so that the UUID check in
     // ShardingTest.stop can talk to downgradeShard.

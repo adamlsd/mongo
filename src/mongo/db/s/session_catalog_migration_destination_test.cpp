@@ -84,7 +84,7 @@ class SessionCatalogMigrationDestinationTest : public ShardingMongodTestFixture 
 public:
     void setUp() override {
         serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::k36);
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
         serverGlobalParams.clusterRole = ClusterRole::ShardServer;
         ShardingMongodTestFixture::setUp();
 
@@ -172,6 +172,24 @@ public:
         }
     }
 
+    void checkStatementExecuted(OperationContext* opCtx,
+                                Session* session,
+                                TxnNumber txnNumber,
+                                StmtId stmtId) {
+        auto oplog = session->checkStatementExecuted(opCtx, txnNumber, stmtId);
+        ASSERT_TRUE(oplog);
+    }
+
+    void checkStatementExecuted(OperationContext* opCtx,
+                                Session* session,
+                                TxnNumber txnNumber,
+                                StmtId stmtId,
+                                repl::OplogEntry& expectedOplog) {
+        auto oplog = session->checkStatementExecuted(opCtx, txnNumber, stmtId);
+        ASSERT_TRUE(oplog);
+        checkOplogWithNestedOplog(expectedOplog, *oplog);
+    }
+
     void insertDocWithSessionInfo(const OperationSessionInfo& sessionInfo,
                                   const NamespaceString& ns,
                                   const BSONObj& doc,
@@ -201,6 +219,18 @@ public:
         });
 
         insertThread.join();
+    }
+
+    void finishSessionExpectSuccess(SessionCatalogMigrationDestination* sessionMigration) {
+        sessionMigration->finish();
+        // migration always fetches at least twice to transition from committing to done.
+        returnOplog({});
+        returnOplog({});
+
+        sessionMigration->join();
+
+        ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done ==
+                    sessionMigration->getState());
     }
 
 private:
@@ -250,14 +280,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldJoinProperlyWhenNothingToTr
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
 
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
-
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
-
-    sessionMigration.join();
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxn) {
@@ -266,7 +289,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxn) {
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -276,23 +298,21 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxn) {
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     OplogEntry oplog3(OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 60));
     oplog3.setOperationSessionInfo(sessionInfo);
     oplog3.setStatementId(5);
+    oplog3.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2, oplog3});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
@@ -308,6 +328,10 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxn) {
     checkOplogWithNestedOplog(oplog1, historyIter.next(opCtx));
 
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 23, oplog1);
+    checkStatementExecuted(opCtx, session.get(), 2, 45, oplog2);
+    checkStatementExecuted(opCtx, session.get(), 2, 5, oplog3);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldOnlyStoreHistoryOfLatestTxn) {
@@ -316,7 +340,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldOnlyStoreHistoryOfLatestTxn
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -327,25 +350,23 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldOnlyStoreHistoryOfLatestTxn
     sessionInfo.setTxnNumber(txnNum++);
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     sessionInfo.setTxnNumber(txnNum++);
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     OplogEntry oplog3(OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 60));
     sessionInfo.setTxnNumber(txnNum);
     oplog3.setOperationSessionInfo(sessionInfo);
     oplog3.setStatementId(5);
+    oplog3.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2, oplog3});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, txnNum);
@@ -354,6 +375,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldOnlyStoreHistoryOfLatestTxn
     ASSERT_TRUE(historyIter.hasNext());
     checkOplogWithNestedOplog(oplog3, historyIter.next(opCtx));
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), txnNum, 5, oplog3);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxnInSeparateBatches) {
@@ -362,7 +385,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxnInSeparate
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -372,26 +394,23 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxnInSeparate
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     OplogEntry oplog3(OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 60));
     oplog3.setOperationSessionInfo(sessionInfo);
     oplog3.setStatementId(5);
+    oplog3.setWallClockTime(Date_t::now());
 
     // Return in 2 batches
-
     returnOplog({oplog1, oplog2});
     returnOplog({oplog3});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
@@ -407,6 +426,10 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithSameTxnInSeparate
     checkOplogWithNestedOplog(oplog1, historyIter.next(opCtx));
 
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 23, oplog1);
+    checkStatementExecuted(opCtx, session.get(), 2, 45, oplog2);
+    checkStatementExecuted(opCtx, session.get(), 2, 5, oplog3);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithDifferentSession) {
@@ -416,7 +439,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithDifferentSession)
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo1;
     sessionInfo1.setSessionId(sessionId1);
@@ -430,21 +452,21 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithDifferentSession)
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo1);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(sessionInfo2);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     OplogEntry oplog3(OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 60));
     oplog3.setOperationSessionInfo(sessionInfo2);
     oplog3.setStatementId(5);
+    oplog3.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2, oplog3});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
+    finishSessionExpectSuccess(&sessionMigration);
 
     ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
 
@@ -456,6 +478,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithDifferentSession)
         ASSERT_TRUE(historyIter.hasNext());
         checkOplogWithNestedOplog(oplog1, historyIter.next(opCtx));
         ASSERT_FALSE(historyIter.hasNext());
+
+        checkStatementExecuted(opCtx, session.get(), 2, 23, oplog1);
     }
 
     {
@@ -469,6 +493,9 @@ TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithDifferentSession)
         checkOplogWithNestedOplog(oplog2, historyIter.next(opCtx));
 
         ASSERT_FALSE(historyIter.hasNext());
+
+        checkStatementExecuted(opCtx, session.get(), 42, 45, oplog2);
+        checkStatementExecuted(opCtx, session.get(), 42, 5, oplog3);
     }
 }
 
@@ -478,7 +505,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldNotNestAlreadyNestedOplog) 
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -503,6 +529,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldNotNestAlreadyNestedOplog) 
                       origInnerOplog1.toBSON());
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(1080, 2), 1),
                       0,
@@ -513,15 +540,11 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldNotNestAlreadyNestedOplog) 
                       origInnerOplog2.toBSON());
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
@@ -534,6 +557,9 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldNotNestAlreadyNestedOplog) 
     checkOplog(oplog1, historyIter.next(opCtx));
 
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 23);
+    checkStatementExecuted(opCtx, session.get(), 2, 45);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePreImageFindAndModify) {
@@ -544,8 +570,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePreImageFindA
 
     sessionMigration.start(getServiceContext());
 
-    sessionMigration.finish();
-
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
     sessionInfo.setTxnNumber(2);
@@ -554,6 +578,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePreImageFindA
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog.setOperationSessionInfo(sessionInfo);
     preImageOplog.setStatementId(45);
+    preImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -564,16 +589,12 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePreImageFindA
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPreImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({preImageOplog, updateOplog});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
@@ -627,6 +648,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePreImageFindA
     ASSERT_BSONOBJ_EQ(preImageOplog.getObject(), newPreImageOplog.getObject());
     ASSERT_TRUE(newPreImageOplog.getObject2());
     ASSERT_TRUE(newPreImageOplog.getObject2().value().isEmpty());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 45, updateOplog);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePostImageFindAndModify) {
@@ -635,7 +658,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePostImageFind
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -645,6 +667,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePostImageFind
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     postImageOplog.setOperationSessionInfo(sessionInfo);
     postImageOplog.setStatementId(45);
+    postImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -655,16 +678,12 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePostImageFind
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPostImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({postImageOplog, updateOplog});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto opCtx = operationContext();
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
@@ -718,6 +737,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandlePostImageFind
     ASSERT_BSONOBJ_EQ(postImageOplog.getObject(), newPostImageOplog.getObject());
     ASSERT_TRUE(newPostImageOplog.getObject2());
     ASSERT_TRUE(newPostImageOplog.getObject2().value().isEmpty());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 45, updateOplog);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandleFindAndModifySplitIn2Batches) {
@@ -726,7 +747,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandleFindAndModify
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -736,6 +756,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandleFindAndModify
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog.setOperationSessionInfo(sessionInfo);
     preImageOplog.setStatementId(45);
+    preImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -746,15 +767,13 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandleFindAndModify
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPreImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({preImageOplog});
     returnOplog({updateOplog});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
+    finishSessionExpectSuccess(&sessionMigration);
 
     ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
 
@@ -810,6 +829,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldBeAbleToHandleFindAndModify
     ASSERT_BSONOBJ_EQ(preImageOplog.getObject(), newPreImageOplog.getObject());
     ASSERT_TRUE(newPreImageOplog.getObject2());
     ASSERT_TRUE(newPreImageOplog.getObject2().value().isEmpty());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 45, updateOplog);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, OlderTxnShouldBeIgnored) {
@@ -830,7 +851,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, OlderTxnShouldBeIgnored) {
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo oldSessionInfo;
     oldSessionInfo.setSessionId(sessionId);
@@ -840,17 +860,16 @@ TEST_F(SessionCatalogMigrationDestinationTest, OlderTxnShouldBeIgnored) {
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(oldSessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(oldSessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
+    finishSessionExpectSuccess(&sessionMigration);
 
     ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
 
@@ -864,6 +883,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, OlderTxnShouldBeIgnored) {
                       oplog.getObject());
 
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 20, 0);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, NewerTxnWriteShouldNotBeOverwrittenByOldMigrateTxn) {
@@ -874,7 +895,6 @@ TEST_F(SessionCatalogMigrationDestinationTest, NewerTxnWriteShouldNotBeOverwritt
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo oldSessionInfo;
     oldSessionInfo.setSessionId(sessionId);
@@ -884,12 +904,16 @@ TEST_F(SessionCatalogMigrationDestinationTest, NewerTxnWriteShouldNotBeOverwritt
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(oldSessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1});
 
     OperationSessionInfo newSessionInfo;
     newSessionInfo.setSessionId(sessionId);
     newSessionInfo.setTxnNumber(20);
+
+    // Ensure that the previous oplog has been processed before proceeding.
+    returnOplog({});
 
     insertDocWithSessionInfo(newSessionInfo,
                              kNs,
@@ -900,15 +924,11 @@ TEST_F(SessionCatalogMigrationDestinationTest, NewerTxnWriteShouldNotBeOverwritt
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(oldSessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     returnOplog({oplog2});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto session = getSessionWithTxn(opCtx, sessionId, 20);
     TransactionHistoryIterator historyIter(session->getLastWriteOpTime(20));
@@ -918,6 +938,8 @@ TEST_F(SessionCatalogMigrationDestinationTest, NewerTxnWriteShouldNotBeOverwritt
     ASSERT_BSONOBJ_EQ(BSON("_id"
                            << "newerSess"),
                       oplog.getObject());
+
+    checkStatementExecuted(opCtx, session.get(), 20, 0);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldJoinProperlyAfterNetworkError) {
@@ -983,6 +1005,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldJoinProperlyForResponseWith
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog.setOperationSessionInfo(sessionInfo);
     oplog.setStatementId(23);
+    oplog.setWallClockTime(Date_t::now());
 
     returnOplog({oplog});
 
@@ -1005,6 +1028,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldJoinProperlyForResponseWith
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog.setOperationSessionInfo(sessionInfo);
     oplog.setStatementId(23);
+    oplog.setWallClockTime(Date_t::now());
 
     returnOplog({oplog});
 
@@ -1028,6 +1052,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldJoinProperlyForResponseWith
     OplogEntry oplog(
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog.setOperationSessionInfo(sessionInfo);
+    oplog.setWallClockTime(Date_t::now());
 
     returnOplog({oplog});
 
@@ -1045,7 +1070,6 @@ TEST_F(SessionCatalogMigrationDestinationTest,
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -1055,8 +1079,12 @@ TEST_F(SessionCatalogMigrationDestinationTest,
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1});
+
+    // Ensure that the previous oplog has been processed before proceeding.
+    returnOplog({});
 
     insertDocWithSessionInfo(sessionInfo,
                              kNs,
@@ -1067,15 +1095,11 @@ TEST_F(SessionCatalogMigrationDestinationTest,
     OplogEntry oplog2(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(45);
+    oplog2.setWallClockTime(Date_t::now());
 
     returnOplog({oplog2});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto session = getSessionWithTxn(opCtx, sessionId, 2);
     TransactionHistoryIterator historyIter(session->getLastWriteOpTime(2));
@@ -1092,6 +1116,10 @@ TEST_F(SessionCatalogMigrationDestinationTest,
     checkOplogWithNestedOplog(oplog1, historyIter.next(opCtx));
 
     ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 0);
+    checkStatementExecuted(opCtx, session.get(), 2, 23, oplog1);
+    checkStatementExecuted(opCtx, session.get(), 2, 45, oplog2);
 }
 
 TEST_F(SessionCatalogMigrationDestinationTest, ShouldErrorForConsecutivePreImageOplog) {
@@ -1108,17 +1136,19 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldErrorForConsecutivePreImage
     sessionInfo.setSessionId(sessionId);
     sessionInfo.setTxnNumber(2);
 
-    OplogEntry preImageOplog(
+    OplogEntry preImageOplog1(
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
-    preImageOplog.setOperationSessionInfo(sessionInfo);
-    preImageOplog.setStatementId(45);
+    preImageOplog1.setOperationSessionInfo(sessionInfo);
+    preImageOplog1.setStatementId(45);
+    preImageOplog1.setWallClockTime(Date_t::now());
 
     OplogEntry preImageOplog2(
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog2.setOperationSessionInfo(sessionInfo);
     preImageOplog2.setStatementId(45);
+    preImageOplog2.setWallClockTime(Date_t::now());
 
-    returnOplog({preImageOplog, preImageOplog2});
+    returnOplog({preImageOplog1, preImageOplog2});
 
     sessionMigration.join();
 
@@ -1145,6 +1175,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog.setOperationSessionInfo(sessionInfo);
     preImageOplog.setStatementId(45);
+    preImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -1156,6 +1187,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
     sessionInfo.setSessionId(makeLogicalSessionIdForTest());
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPreImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({preImageOplog, updateOplog});
@@ -1185,6 +1217,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldErrorForPreImageOplogWithNo
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog.setOperationSessionInfo(sessionInfo);
     preImageOplog.setStatementId(45);
+    preImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -1196,6 +1229,7 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldErrorForPreImageOplogWithNo
     sessionInfo.setTxnNumber(56);
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPreImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({preImageOplog, updateOplog});
@@ -1226,6 +1260,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, BSON("x" << 100));
     preImageOplog.setOperationSessionInfo(sessionInfo);
     preImageOplog.setStatementId(45);
+    preImageOplog.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -1236,6 +1271,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
 
     returnOplog({preImageOplog, updateOplog});
 
@@ -1265,6 +1301,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -1275,6 +1312,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPreImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({oplog1, updateOplog});
@@ -1305,6 +1343,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
         OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry updateOplog(OpTime(Timestamp(80, 2), 1),
                            0,
@@ -1315,6 +1354,7 @@ TEST_F(SessionCatalogMigrationDestinationTest,
                            BSON("$set" << BSON("x" << 101)));
     updateOplog.setOperationSessionInfo(sessionInfo);
     updateOplog.setStatementId(45);
+    updateOplog.setWallClockTime(Date_t::now());
     updateOplog.setPostImageOpTime(repl::OpTime(Timestamp(100, 2), 1));
 
     returnOplog({oplog1, updateOplog});
@@ -1339,29 +1379,26 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldIgnoreAlreadyExecutedStatem
 
     SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
     sessionMigration.start(getServiceContext());
-    sessionMigration.finish();
 
     OplogEntry oplog1(
         OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
     oplog1.setOperationSessionInfo(sessionInfo);
     oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
 
     OplogEntry oplog2(OpTime(Timestamp(70, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog2.setOperationSessionInfo(sessionInfo);
     oplog2.setStatementId(30);
+    oplog2.setWallClockTime(Date_t::now());
 
     OplogEntry oplog3(OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 80));
     oplog3.setOperationSessionInfo(sessionInfo);
     oplog3.setStatementId(45);
+    oplog3.setWallClockTime(Date_t::now());
 
     returnOplog({oplog1, oplog2, oplog3});
-    // migration always fetches at least twice to transition from committing to done.
-    returnOplog({});
-    returnOplog({});
 
-    sessionMigration.join();
-
-    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+    finishSessionExpectSuccess(&sessionMigration);
 
     auto session = getSessionWithTxn(opCtx, sessionId, 19);
     TransactionHistoryIterator historyIter(session->getLastWriteOpTime(19));
@@ -1379,6 +1416,68 @@ TEST_F(SessionCatalogMigrationDestinationTest, ShouldIgnoreAlreadyExecutedStatem
     ASSERT_BSONOBJ_EQ(BSON("_id" << 46), firstInsertOplog.getObject());
     ASSERT_TRUE(firstInsertOplog.getStatementId());
     ASSERT_EQ(30, *firstInsertOplog.getStatementId());
+
+    checkStatementExecuted(opCtx, session.get(), 19, 23, oplog1);
+    checkStatementExecuted(opCtx, session.get(), 19, 30);
+    checkStatementExecuted(opCtx, session.get(), 19, 45, oplog3);
+}
+
+TEST_F(SessionCatalogMigrationDestinationTest, OplogEntriesWithIncompleteHistory) {
+    const NamespaceString kNs("a.b");
+    const auto sessionId = makeLogicalSessionIdForTest();
+
+    SessionCatalogMigrationDestination sessionMigration(kFromShard, migrationId());
+    sessionMigration.start(getServiceContext());
+    sessionMigration.finish();
+
+    OperationSessionInfo sessionInfo;
+    sessionInfo.setSessionId(sessionId);
+    sessionInfo.setTxnNumber(2);
+
+    OplogEntry oplog1(
+        OpTime(Timestamp(100, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 100));
+    oplog1.setOperationSessionInfo(sessionInfo);
+    oplog1.setStatementId(23);
+    oplog1.setWallClockTime(Date_t::now());
+
+    OplogEntry oplog2(
+        OpTime(Timestamp(80, 2), 1), 0, OpTypeEnum::kNoop, kNs, 0, {}, Session::kDeadEndSentinel);
+    oplog2.setOperationSessionInfo(sessionInfo);
+    oplog2.setStatementId(kIncompleteHistoryStmtId);
+    oplog2.setWallClockTime(Date_t::now());
+
+    OplogEntry oplog3(OpTime(Timestamp(60, 2), 1), 0, OpTypeEnum::kInsert, kNs, 0, BSON("x" << 60));
+    oplog3.setOperationSessionInfo(sessionInfo);
+    oplog3.setStatementId(5);
+    oplog3.setWallClockTime(Date_t::now());
+
+    returnOplog({oplog1, oplog2, oplog3});
+    // migration always fetches at least twice to transition from committing to done.
+    returnOplog({});
+    returnOplog({});
+
+    sessionMigration.join();
+
+    ASSERT_TRUE(SessionCatalogMigrationDestination::State::Done == sessionMigration.getState());
+
+    auto opCtx = operationContext();
+    auto session = getSessionWithTxn(opCtx, sessionId, 2);
+    TransactionHistoryIterator historyIter(session->getLastWriteOpTime(2));
+
+    ASSERT_TRUE(historyIter.hasNext());
+    checkOplogWithNestedOplog(oplog3, historyIter.next(opCtx));
+
+    ASSERT_TRUE(historyIter.hasNext());
+    checkOplog(oplog2, historyIter.next(opCtx));
+
+    ASSERT_TRUE(historyIter.hasNext());
+    checkOplogWithNestedOplog(oplog1, historyIter.next(opCtx));
+
+    ASSERT_FALSE(historyIter.hasNext());
+
+    checkStatementExecuted(opCtx, session.get(), 2, 23, oplog1);
+    checkStatementExecuted(opCtx, session.get(), 2, 5, oplog3);
+    ASSERT_THROWS(session->checkStatementExecuted(opCtx, 2, 38), AssertionException);
 }
 
 }  // namespace

@@ -215,6 +215,8 @@ bool ReplicationCoordinatorExternalStateImpl::isInitialSyncFlagSet(OperationCont
     return _replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx);
 }
 
+// This function acquires the LockManager locks on oplog, so it cannot be called while holding
+// ReplicationCoordinatorImpl's mutex.
 void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     OperationContext* opCtx, ReplicationCoordinator* replCoord) {
 
@@ -240,8 +242,11 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     _applierThread->startup();
     log() << "Starting replication reporter thread";
     invariant(!_syncSourceFeedbackThread);
-    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(
-        &SyncSourceFeedback::run, &_syncSourceFeedback, _taskExecutor.get(), _bgSync.get())));
+    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(&SyncSourceFeedback::run,
+                                                                &_syncSourceFeedback,
+                                                                _taskExecutor.get(),
+                                                                _bgSync.get(),
+                                                                replCoord)));
 }
 
 void ReplicationCoordinatorExternalStateImpl::stopDataReplication(OperationContext* opCtx) {
@@ -460,7 +465,7 @@ OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationC
     _shardingOnTransitionToPrimaryHook(opCtx);
     _dropAllTempCollections(opCtx);
 
-    serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(true);
+    serverGlobalParams.validateFeaturesAsMaster.store(true);
 
     return opTimeToReturn;
 }

@@ -528,33 +528,33 @@ bool repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                                      versionColl,
                                      BSON("_id" << FeatureCompatibilityVersion::kParameterName),
                                      featureCompatibilityVersion)) {
-                    auto swVersionInfo =
+                    auto swVersion =
                         FeatureCompatibilityVersion::parse(featureCompatibilityVersion);
-                    if (!swVersionInfo.isOK()) {
-                        severe() << swVersionInfo.getStatus();
+                    if (!swVersion.isOK()) {
+                        severe() << swVersion.getStatus();
                         fassertFailedNoTrace(40283);
                     }
                     fcvDocumentExists = true;
-                    auto versionInfo = swVersionInfo.getValue();
-                    serverGlobalParams.featureCompatibility.setVersion(versionInfo.version);
+                    auto version = swVersion.getValue();
+                    serverGlobalParams.featureCompatibility.setVersion(version);
 
                     // On startup, if the version is in an upgrading or downrading state, print a
                     // warning.
-                    if (versionInfo.version ==
+                    if (version ==
                         ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36) {
                         log() << "** WARNING: A featureCompatibilityVersion upgrade did not "
                               << "complete." << startupWarningsLog;
                         log() << "**          The current featureCompatibilityVersion is "
-                              << FeatureCompatibilityVersion::toString(versionInfo.version) << "."
+                              << FeatureCompatibilityVersion::toString(version) << "."
                               << startupWarningsLog;
                         log() << "**          To fix this, use the setFeatureCompatibilityVersion "
                               << "command to resume upgrade to 3.6." << startupWarningsLog;
-                    } else if (versionInfo.version == ServerGlobalParams::FeatureCompatibility::
-                                                          Version::kDowngradingTo34) {
+                    } else if (version == ServerGlobalParams::FeatureCompatibility::Version::
+                                              kDowngradingTo34) {
                         log() << "** WARNING: A featureCompatibilityVersion downgrade did not "
                               << "complete. " << startupWarningsLog;
                         log() << "**          The current featureCompatibilityVersion is "
-                              << FeatureCompatibilityVersion::toString(versionInfo.version) << "."
+                              << FeatureCompatibilityVersion::toString(version) << "."
                               << startupWarningsLog;
                         log() << "**          To fix this, use the setFeatureCompatibilityVersion "
                               << "command to resume downgrade to 3.4." << startupWarningsLog;
@@ -742,21 +742,6 @@ ExitCode _initAndListen(int listenPort) {
         }
     }
 
-    if (!serviceContext->getGlobalStorageEngine()->getSnapshotManager()) {
-        if (moe::startupOptionsParsed.count("replication.enableMajorityReadConcern") &&
-            moe::startupOptionsParsed["replication.enableMajorityReadConcern"].as<bool>()) {
-            // Note: we are intentionally only erroring if the user explicitly requested that we
-            // enable majority read concern. We do not error if the they are implicitly enabled for
-            // CSRS because a required step in the upgrade procedure can involve an mmapv1 node in
-            // the CSRS in the REMOVED state. This is handled by the TopologyCoordinator.
-            invariant(replSettings.isMajorityReadConcernEnabled());
-            severe() << "Majority read concern requires a storage engine that supports"
-                     << " snapshots, such as wiredTiger. " << storageGlobalParams.engine
-                     << " does not support snapshots.";
-            exitCleanly(EXIT_BADOPTIONS);
-        }
-    }
-
     logMongodStartupWarnings(storageGlobalParams, serverGlobalParams, serviceContext);
 
     {
@@ -802,15 +787,10 @@ ExitCode _initAndListen(int listenPort) {
     bool nonLocalDatabases = repairDatabasesAndCheckVersion(startupOpCtx.get());
 
     // Assert that the in-memory featureCompatibilityVersion parameter has been explicitly set. If
-    // we are part of a sharded cluster and are started up with no data files, we do not set the
-    // featureCompatibilityVersion until addShard is called. If we are part of a non-shard replica
-    // set and are also started up with no data files, we do not set the featureCompatibilityVersion
-    // until a primary is chosen. For these cases, we expect the in-memory
+    // we are part of a replica set and are started up with no data files, we do not set the
+    // featureCompatibilityVersion until a primary is chosen. For this case, we expect the in-memory
     // featureCompatibilityVersion parameter to still be uninitialized until after startup.
-    if (canCallFCVSetIfCleanStartup &&
-        ((!replSettings.usingReplSets() &&
-          serverGlobalParams.clusterRole != ClusterRole::ShardServer) ||
-         nonLocalDatabases)) {
+    if (canCallFCVSetIfCleanStartup && (!replSettings.usingReplSets() || nonLocalDatabases)) {
         invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
     }
 
@@ -952,7 +932,7 @@ ExitCode _initAndListen(int listenPort) {
 
         if (replSettings.usingReplSets() || (!replSettings.isMaster() && replSettings.isSlave()) ||
             !internalValidateFeaturesAsMaster) {
-            serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
+            serverGlobalParams.validateFeaturesAsMaster.store(false);
         }
     }
 

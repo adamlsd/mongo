@@ -44,7 +44,7 @@
 #include <boost/noncopyable.hpp>
 
 // It is safe to include the implementation "headers" in an anonymous namespace, as the code is
-// meant to live in a single TU -- this one.
+// meant to live in a single TU -- this one.  Include one of these headers last.
 #define MONGO_UTIL_DNS_QUERY_PLATFORM_INCLUDE_WHITELIST
 #ifdef WIN32
 #include "mongo/util/dns_query_windows-impl.h"

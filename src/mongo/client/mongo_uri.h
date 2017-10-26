@@ -66,9 +66,13 @@ StatusWith<std::string> uriDecode(StringData str);
 /**
  * MongoURI handles parsing of URIs for mongodb, and falls back to old-style
  * ConnectionString parsing. It's used primarily by the shell.
- * It parses URIs with the following format:
+ * It parses URIs with the following formats:
  *
  *    mongodb://[usr:pwd@]host1[:port1]...[,hostN[:portN]]][/[db][?options]]
+ *    mongodb+srv://[usr:pwd@]host[/[db][?options]]
+ *
+ * `mongodb+srv://` URIs will perform DNS SRV and TXT lookups and expand per the DNS Seedlist
+ * specification.
  *
  * While this format is generally RFC 3986 compliant, some exceptions do exist:
  *   1. The 'host' field, as defined by section 3.2.2 is expanded in the following ways:

@@ -53,6 +53,8 @@ using namespace std::literals::string_literals;
 
 namespace mongo {
 namespace dns {
+// The anonymous namespace is safe, in this header, as it is not really a header.  It is only used
+// in the `dns_query.cpp` TU.
 namespace {
 enum class DNSQueryClass { kInternet };
 

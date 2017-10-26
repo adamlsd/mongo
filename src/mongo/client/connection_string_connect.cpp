@@ -57,15 +57,19 @@ DBClientBase* ConnectionString::connect(StringData applicationName,
 
     switch (_type) {
         case MASTER: {
-            auto c = stdx::make_unique<DBClientConnection>(true, 0, std::move(newURI));
+            for( const auto &server: _servers )
+            {
+                auto c = stdx::make_unique<DBClientConnection>(true, 0, newURI);
 
-            c->setSoTimeout(socketTimeout);
-            LOG(1) << "creating new connection to:" << _servers[0];
-            if (!c->connect(_servers[0], applicationName, errmsg)) {
-                return 0;
+                c->setSoTimeout(socketTimeout);
+                LOG(1) << "creating new connection to:" << server;
+                if (!c->connect(server, applicationName, errmsg)) {
+                    continue;
+                }
+                LOG(1) << "connected connection!";
+                return c.release();
             }
-            LOG(1) << "connected connection!";
-            return c.release();
+            return nullptr;
         }
 
         case SET: {
@@ -74,7 +78,7 @@ DBClientBase* ConnectionString::connect(StringData applicationName,
             if (!set->connect()) {
                 errmsg = "connect failed to replica set ";
                 errmsg += toString();
-                return 0;
+                return nullptr;
             }
             return set.release();
         }

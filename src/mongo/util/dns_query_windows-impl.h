@@ -221,8 +221,7 @@ public:
 
         if (ec) {
             throw DBException(ErrorCodes::HostNotFound,
-                              "Failed to look up service \""s + errnoWithDescription(ec) + "\": "s +
-                                  buffer);
+                              "Failed to look up service \""s + "\":"s + errnoWithDescription(ec));
         }
         return DNSResponse{queryResults};
     }

@@ -56,7 +56,7 @@ struct SRVHostEntry {
     SRVHostEntry(std::string initialHost, const std::uint16_t initialPort)
         : host(std::move(initialHost)), port(initialPort) {}
 
-    inline auto make_relops_lens() const {
+    inline auto makeRelopsLens() const {
         return std::tie(host, port);
     }
 
@@ -65,7 +65,7 @@ struct SRVHostEntry {
     }
 
     inline friend bool operator==(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
-        return lhs.make_relops_lens() == rhs.make_relops_lens();
+        return lhs.makeRelopsLens() == rhs.makeRelopsLens();
     }
 
     inline friend bool operator!=(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
@@ -73,7 +73,7 @@ struct SRVHostEntry {
     }
 
     inline friend bool operator<(const SRVHostEntry& lhs, const SRVHostEntry& rhs) {
-        return lhs.make_relops_lens() < rhs.make_relops_lens();
+        return lhs.makeRelopsLens() < rhs.makeRelopsLens();
     }
 };
 

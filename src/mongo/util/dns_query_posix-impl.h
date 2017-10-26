@@ -202,16 +202,16 @@ public:
 
     class iterator {
     public:
-        auto make_relops_lens() const {
+        auto makeRelopsLens() const {
             return std::tie(this->_response, this->_pos);
         }
 
         inline friend bool operator==(const iterator& lhs, const iterator& rhs) {
-            return lhs.make_relops_lens() == rhs.make_relops_lens();
+            return lhs.makeRelopsLens() == rhs.makeRelopsLens();
         }
 
         inline friend bool operator<(const iterator& lhs, const iterator& rhs) {
-            return lhs.make_relops_lens() < rhs.make_relops_lens();
+            return lhs.makeRelopsLens() < rhs.makeRelopsLens();
         }
 
         inline friend bool operator!=(const iterator& lhs, const iterator& rhs) {

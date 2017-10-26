@@ -156,16 +156,16 @@ public:
             return tmp;
         }
 
-        auto make_relops_lens() const {
+        auto makeRelopsLens() const {
             return this->_record.get();
         }
 
         inline friend bool operator==(const iterator& lhs, const iterator& rhs) {
-            return lhs.make_relops_lens() == rhs.make_relops_lens();
+            return lhs.makeRelopsLens() == rhs.makeRelopsLens();
         }
 
         inline friend bool operator<(const iterator& lhs, const iterator& rhs) {
-            return lhs.make_relops_lens() < rhs.make_relops_lens();
+            return lhs.makeRelopsLens() < rhs.makeRelopsLens();
         }
 
         inline friend bool operator!=(const iterator& lhs, const iterator& rhs) {

@@ -47,6 +47,8 @@
 
 #include <boost/noncopyable.hpp>
 
+#include "mongo/util/errno_util.h"
+
 using std::begin;
 using std::end;
 using namespace std::literals::string_literals;
@@ -216,23 +218,9 @@ public:
                                 nullptr);
 
         if (ec) {
-            std::string buffer;
-            buffer.resize(64 * 1024);
-            LPVOID msgBuf = &buffer[0];
-            auto count = FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM || FORMAT_MESSAGE_IGNORE_INSERTS,
-                                       nullptr,
-                                       ec,
-                                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                                       reinterpret_cast<LPTSTR>(&msgBuf),
-                                       buffer.size(),
-                                       nullptr);
-
-            if (count)
-                buffer.resize(count);
-            else
-                buffer = "Unknown error";
             throw DBException(ErrorCodes::HostNotFound,
-                              "Failed to look up service \""s + service + "\": "s + buffer);
+                              "Failed to look up service \""s + errnoWithDescription(ec) + "\": "s +
+                                  buffer);
         }
         return DNSResponse{queryResults};
     }

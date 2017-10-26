@@ -31,6 +31,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"

@@ -51,7 +51,7 @@
 #else
 #include "mongo/util/dns_query_posix-impl.h"
 #endif
-#undef MONGO_UTIL_DNS_QUERY_PLATFORM_INCLUDE
+#undef MONGO_UTIL_DNS_QUERY_PLATFORM_INCLUDE_WHITELIST
 
 using std::begin;
 using std::end;

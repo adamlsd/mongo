@@ -76,6 +76,11 @@ enum class DNSQueryType {
     kAddress = ns_t_a,
 };
 
+/**
+ * A `ResourceRecord` represents a single DNS entry as parsed by the resolver API.
+ * It can be viewed as one of various record types, using the member functions.
+ * It roughly corresponds to the DNS RR data structure
+ */
 class ResourceRecord {
 public:
     explicit ResourceRecord() = default;
@@ -89,21 +94,27 @@ public:
             this->_badRecord();
     }
 
+    /**
+     * View this record as a DNS TXT record.
+     */
     std::vector<std::string> txtEntry() const {
         const auto data = this->_rawData();
         if (data.empty()) {
             throw DBException(ErrorCodes::ProtocolError, "DNS TXT Record is not correctly sized");
         }
-        const std::size_t amt = data.front();
+        const std::size_t amount = data.front();
         const auto first = begin(data) + 1;
         std::vector<std::string> rv;
-        if (data.size() - 1 < amt) {
+        if (data.size() - 1 < amount) {
             throw DBException(ErrorCodes::ProtocolError, "DNS TXT Record is not correctly sized");
         }
-        rv.emplace_back(first, first + amt);
+        rv.emplace_back(first, first + amount);
         return rv;
     }
 
+    /**
+     * View this record as a DNS A record.
+     */
     std::string addressEntry() const {
         std::string rv;
 
@@ -120,6 +131,9 @@ public:
         return rv;
     }
 
+    /**
+     * View this record as a DNS SRV record.
+     */
     SRVHostEntry srvHostEntry() const {
         const std::size_t kPortOffsetInPacket = 4;
 
@@ -181,6 +195,10 @@ private:
     int _pos;
 };
 
+/**
+ * The `DNSResponse` class represents a response to a DNS query.
+ * It has STL-compatible iterators to view individual DNS Resource Records within a response.
+ */
 class DNSResponse {
 public:
     explicit DNSResponse(std::string initialService, std::vector<std::uint8_t> initialData)
@@ -249,16 +267,17 @@ public:
             : _response(initialResponse), _pos(initialPos) {}
 
         void _populate() {
-            if (_ready)
+            if (this->_ready) {
                 return;
-            _record =
+            }
+            this->_record =
                 ResourceRecord(this->_response->_service, this->_response->_ns_answer, this->_pos);
-            _ready = true;
+            this->_ready = true;
         }
 
         void _advance() {
             ++this->_pos;
-            _ready = false;
+            this->_ready = false;
         }
 
         DNSResponse* _response;

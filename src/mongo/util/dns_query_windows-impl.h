@@ -62,12 +62,20 @@ enum class DNSQueryClass { kInternet };
 
 enum class DNSQueryType { kSRV = DNS_TYPE_SRV, kTXT = DNS_TYPE_TEXT, kAddress = DNS_TYPE_A };
 
+/**
+ * A `ResourceRecord` represents a single DNS entry as parsed by the resolver API.
+ * It can be viewed as one of various record types, using the member functions.
+ * It roughly corresponds to the DNS RR data structure
+ */
 class ResourceRecord {
 public:
     explicit ResourceRecord(std::shared_ptr<DNS_RECORDA> initialRecord)
         : _record(std::move(initialRecord)) {}
     explicit ResourceRecord() = default;
 
+    /**
+     * View this record as a DNS TXT record.
+     */
     std::vector<std::string> txtEntry() const {
         if (this->_record->wType != DNS_TYPE_TEXT) {
             std::ostringstream oss;
@@ -84,6 +92,9 @@ public:
         return rv;
     }
 
+    /**
+     * View this record as a DNS A record.
+     */
     std::string addressEntry() const {
         if (this->_record->wType != DNS_TYPE_A) {
             std::ostringstream oss;
@@ -105,6 +116,9 @@ public:
         return rv;
     }
 
+    /**
+     * View this record as a DNS SRV record.
+     */
     SRVHostEntry srvHostEntry() const {
         if (this->_record->wType != DNS_TYPE_SRV) {
             std::ostringstream oss;
@@ -126,6 +140,10 @@ void freeDnsRecord(PDNS_RECORDA record) {
     DnsRecordListFree(record, DnsFreeRecordList);
 }
 
+/**
+ * The `DNSResponse` class represents a response to a DNS query.
+ * It has STL-compatible iterators to view individual DNS Resource Records within a response.
+ */
 class DNSResponse {
 public:
     explicit DNSResponse(PDNS_RECORDA initialResults) : _results(initialResults, freeDnsRecord) {}
@@ -181,8 +199,11 @@ public:
         }
 
         void _populate() {
-            this->_ready = true;
+            if (this->_ready) {
+                return;
+            }
             this->_storage = ResourceRecord{this->_record};
+            this->_ready = true;
         }
 
         std::shared_ptr<DNS_RECORDA> _record;
@@ -206,6 +227,9 @@ private:
     std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> _results;
 };
 
+/**
+ * The `DNSQueryState` object represents the state of a DNS query interface, on Windows systems.
+ */
 class DNSQueryState {
 public:
     DNSResponse lookup(const std::string& service,

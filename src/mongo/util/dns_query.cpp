@@ -30,16 +30,16 @@
 
 #include "mongo/util/dns_query.h"
 
-#include <iostream>
-#include <cassert>
-#include <sstream>
-#include <string>
-#include <cstdint>
-#include <vector>
 #include <array>
-#include <stdexcept>
-#include <memory>
+#include <cassert>
+#include <cstdint>
 #include <exception>
+#include <iostream>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <boost/noncopyable.hpp>
 

@@ -729,9 +729,10 @@ TEST(MongoURI, srvRecordTest) {
 
         for (std::size_t i = 0; i < std::min(options.size(), expectedOptions.size()); ++i) {
             if (options[i] != expectedOptions[i]) {
-                mongo::unittest::log() << "Option: \"" << options[i].first << "=" << options[i].second
-                          << "\" doesn't equal: \"" << expectedOptions[i].first << "="
-                          << expectedOptions[i].second << "\"" << std::endl;
+                mongo::unittest::log() << "Option: \"" << options[i].first << "="
+                                       << options[i].second << "\" doesn't equal: \""
+                                       << expectedOptions[i].first << "="
+                                       << expectedOptions[i].second << "\"" << std::endl;
                 std::cerr << "Failing URI: \"" << test.uri << "\"" << std::endl;
                 ASSERT(false);
             }

@@ -42,6 +42,12 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
             null,
             conn,
             "expected mongod to fail when data files are present and no admin database is found.");
+        if (!withUUIDs) {
+            conn =
+                MongoRunner.runMongod({dbpath: dbpath, binVersion: downgrade, noCleanData: true});
+            assert.neq(null, conn, "expected 3.4 to startup when the admin database is missing");
+            MongoRunner.stopMongod(conn);
+        }
 
         // Fail to start up if no featureCompatibilityVersion document is present and non-local
         // databases are present.
@@ -55,6 +61,12 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
             null,
             conn,
             "expected mongod to fail when data files are present and no featureCompatibilityVersion document is found.");
+        if (!withUUIDs) {
+            conn =
+                MongoRunner.runMongod({dbpath: dbpath, binVersion: downgrade, noCleanData: true});
+            assert.neq(null, conn, "expected 3.4 to startup when the FCV document is missing");
+            MongoRunner.stopMongod(conn);
+        }
     };
 
     let setupMissingFCVDoc = function(version, dbpath) {
@@ -263,7 +275,11 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     conn = setupMissingFCVDoc(downgrade, dbpath);
     recoverMMapJournal(isMMAPv1, conn, dbpath);
     returnCode = runMongoProgram("mongod", "--port", conn.port, "--repair", "--dbpath", dbpath);
-    assert.neq(returnCode, 0, "expected mongod --repair to fail if no collections have UUIDs.");
+    let exitNeedsDowngradeCode = 62;
+    assert.eq(
+        returnCode,
+        exitNeedsDowngradeCode,
+        "Expected running --repair with the latest mongod to fail because no collections have UUIDs. MongoDB 3.4 is required.");
 
     // If the featureCompatibilityVersion document is present but there are no collection UUIDs,
     // --repair should not attempt to restore the document and thus not fassert.
@@ -351,18 +367,13 @@ TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
     assert.writeOK(
         primaryAdminDB.getSiblingDB("test").coll.insert({awaitRepl: true}, {writeConcern: {w: 3}}));
 
-    // Test that a 3.4 secondary crashes when syncing from a 3.6 primary and the
+    // Test that a 3.4 secondary can no longer replicate from the primary after the
     // featureCompatibilityVersion is set to 3.6.
     assert.commandWorked(primary.adminCommand({setFeatureCompatibilityVersion: "3.6"}));
-    assert.soon(function() {
-        try {
-            secondaryAdminDB.runCommand({ping: 1});
-        } catch (e) {
-            return true;
-        }
-        return false;
-    }, "Expected 3.4 secondary to terminate due to replicating featureCompatibilityVersion=3.6");
-    rst.stop(secondary, undefined, {allowedExitCode: MongoRunner.EXIT_ABRUPT});
+    checkFCV34(secondaryAdminDB, "3.4");
+    assert.writeOK(primaryAdminDB.getSiblingDB("test").coll.insert({shouldReplicate: false}));
+    assert.eq(secondaryAdminDB.getSiblingDB("test").coll.find({shouldReplicate: false}).itcount(),
+              0);
     rst.stopSet();
 
     // A mixed 3.4/3.6 replica set without a featureCompatibilityVersion document unfortunately

@@ -90,7 +90,8 @@ TEST(MongoDnsQuery, basic) {
         }
         // Failure to resolve is okay, but not great -- print a warning
         catch (const mongo::DBException& ex) {
-            std::cerr << "Warning: Did not resolve " << test.dns << " at all." << std::endl;
+            std::cerr << "Warning: Did not resolve " << test.dns << " at all: " << ex.what()
+                      << std::endl;
         }
     }
 

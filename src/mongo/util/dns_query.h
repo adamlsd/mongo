@@ -79,33 +79,33 @@ struct SRVHostEntry {
 
 /**
  * Returns a vector containing SRVHost entries for the specified `service`.
- * THROWS: `DBException` with `ErrorCodes::HostNotFound` as the status value if the entry is not
- * found and `ErrorCodes::ProtocolError` as the status value if the DNS lookup fails, for any other
- * reason
+ * THROWS: `DBException` with `ErrorCodes::DNSHostNotFound` as the status value if the entry is not
+ * found and `ErrorCodes::DNSProtocolError` as the status value if the DNS lookup fails, for any
+ * other reason
  */
 std::vector<SRVHostEntry> lookupSRVRecords(const std::string& service);
 
 /**
  * Returns a group of strings containing text from DNS TXT entries for a specified service.
- * THROWS: `DBException` with `ErrorCodes::HostNotFound` as the status value if the entry is not
- * found and `ErrorCodes::ProtocolError` as the status value if the DNS lookup fails, for any other
- * reason
+ * THROWS: `DBException` with `ErrorCodes::DNSHostNotFound` as the status value if the entry is not
+ * found and `ErrorCodes::DNSProtocolError` as the status value if the DNS lookup fails, for any
+ * other reason
  */
 std::vector<std::string> lookupTXTRecords(const std::string& service);
 
 /**
  * Returns a group of strings containing text from DNS TXT entries for a specified service.
  * If the lookup fails because the record doesn't exist, an empty vector is returned.
- * THROWS: `DBException` with `ErrorCodes::ProtocolError` as th status value if the DNS lookup fails
- * for any other reason.
+ * THROWS: `DBException` with `ErrorCodes::DNSProtocolError` as th status value if the DNS lookup
+ * fails for any other reason.
  */
 std::vector<std::string> getTXTRecords(const std::string& service);
 
 /**
  * Returns a group of strings containing Address entries for a specified service.
- * THROWS: `DBException` with `ErrorCodes::HostNotFound` as the status value if the entry is not
- * found and `ErrorCodes::ProtocolError` as the status value if the DNS lookup fails, for any other
- * reason
+ * THROWS: `DBException` with `ErrorCodes::DNSHostNotFound` as the status value if the entry is not
+ * found and `ErrorCodes::DNSProtocolError` as the status value if the DNS lookup fails, for any
+ * other reason
  * NOTE: This function mostly exists to provide an easy test of the OS DNS APIs in our test driver.
  */
 std::vector<std::string> lookupARecords(const std::string& service);

@@ -137,7 +137,7 @@ TEST(MongoDnsQuery, srvRecords) {
         if (expected.empty()) {
             ASSERT_THROWS_CODE(mongo::dns::lookupSRVRecords(kMongodbSRVPrefix + test.query),
                                mongo::DBException,
-                               mongo::ErrorCodes::HostNotFound);
+                               mongo::ErrorCodes::DNSHostNotFound);
             continue;
         }
 
@@ -187,7 +187,7 @@ TEST(MongoDnsQuery, txtRecords) {
             ASSERT_TRUE(std::equal(begin(witness), end(witness), begin(expected), end(expected)));
             ASSERT_EQ(witness.size(), expected.size());
         } catch (const mongo::DBException& ex) {
-            if (ex.code() != mongo::ErrorCodes::HostNotFound)
+            if (ex.code() != mongo::ErrorCodes::DNSHostNotFound)
                 throw;
             ASSERT_TRUE(test.result.empty());
         }

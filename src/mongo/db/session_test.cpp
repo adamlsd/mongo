@@ -241,12 +241,16 @@ TEST_F(SessionTest, CheckStatementExecuted) {
     };
 
     ASSERT(!session.checkStatementExecuted(opCtx(), txnNum, 1000));
+    ASSERT(!session.checkStatementExecutedNoOplogEntryFetch(txnNum, 1000));
     const auto firstOpTime = writeTxnRecordFn(1000, {});
     ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 1000));
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 1000));
 
     ASSERT(!session.checkStatementExecuted(opCtx(), txnNum, 2000));
+    ASSERT(!session.checkStatementExecutedNoOplogEntryFetch(txnNum, 2000));
     writeTxnRecordFn(2000, firstOpTime);
     ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 2000));
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 2000));
 
     // Invalidate the session and ensure the statements still check out
     session.invalidate();
@@ -254,6 +258,9 @@ TEST_F(SessionTest, CheckStatementExecuted) {
 
     ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 1000));
     ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 2000));
+
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 1000));
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 2000));
 }
 
 TEST_F(SessionTest, CheckStatementExecutedForOldTransactionThrows) {
@@ -347,6 +354,67 @@ TEST_F(SessionTest, WriteOpCompletedOnPrimaryCommitIgnoresInvalidation) {
 
     session.refreshFromStorageIfNeeded(opCtx());
     ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 0));
+}
+
+TEST_F(SessionTest, IncompleteHistoryDueToOpLogTruncation) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    const TxnNumber txnNum = 2;
+
+    {
+        OperationSessionInfo osi;
+        osi.setSessionId(sessionId);
+        osi.setTxnNumber(txnNum);
+
+        repl::OplogEntry entry0(
+            repl::OpTime(Timestamp(100, 0), 0), 0, repl::OpTypeEnum::kInsert, kNss, BSON("x" << 0));
+        entry0.setOperationSessionInfo(osi);
+        entry0.setStatementId(0);
+        entry0.setWallClockTime(Date_t::now());
+
+        // Intentionally skip writing the oplog entry for statement 0, so that it appears as if the
+        // chain of log entries is broken because of oplog truncation
+
+        repl::OplogEntry entry1(
+            repl::OpTime(Timestamp(100, 1), 0), 0, repl::OpTypeEnum::kInsert, kNss, BSON("x" << 1));
+        entry1.setOperationSessionInfo(osi);
+        entry1.setPrevWriteOpTimeInTransaction(entry0.getOpTime());
+        entry1.setStatementId(1);
+        entry1.setWallClockTime(Date_t::now());
+        insertOplogEntry(entry1);
+
+        repl::OplogEntry entry2(
+            repl::OpTime(Timestamp(100, 2), 0), 0, repl::OpTypeEnum::kInsert, kNss, BSON("x" << 2));
+        entry1.setOperationSessionInfo(osi);
+        entry2.setPrevWriteOpTimeInTransaction(entry1.getOpTime());
+        entry2.setStatementId(2);
+        entry2.setWallClockTime(Date_t::now());
+        insertOplogEntry(entry2);
+
+        DBDirectClient client(opCtx());
+        client.insert(NamespaceString::kSessionTransactionsTableNamespace.ns(), [&] {
+            SessionTxnRecord sessionRecord;
+            sessionRecord.setSessionId(sessionId);
+            sessionRecord.setTxnNum(txnNum);
+            sessionRecord.setLastWriteOpTime(entry2.getOpTime());
+            sessionRecord.setLastWriteDate(*entry2.getWallClockTime());
+            return sessionRecord.toBSON();
+        }());
+    }
+
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    ASSERT_THROWS_CODE(session.checkStatementExecuted(opCtx(), txnNum, 0),
+                       AssertionException,
+                       ErrorCodes::IncompleteTransactionHistory);
+    ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 1));
+    ASSERT(session.checkStatementExecuted(opCtx(), txnNum, 2));
+
+    ASSERT_THROWS_CODE(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 0),
+                       AssertionException,
+                       ErrorCodes::IncompleteTransactionHistory);
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 1));
+    ASSERT(session.checkStatementExecutedNoOplogEntryFetch(txnNum, 2));
 }
 
 TEST_F(SessionTest, ErrorOnlyWhenStmtIdBeingCheckedIsNotInCache) {

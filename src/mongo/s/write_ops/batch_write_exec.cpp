@@ -225,7 +225,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                 // Get the TargetedWriteBatch to find where to put the response
                 dassert(pendingBatches.find(response.shardId) != pendingBatches.end());
-                TargetedWriteBatch* batch = pendingBatches.find(response.shardId)->second;
+                const auto &batch = pendingBatches.find(response.shardId)->second;
 
                 // First check if we were able to target a shard host.
                 if (!response.shardHostAndPort) {
@@ -243,7 +243,6 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                     // We're done with this batch. Clean up when we can't resolve a host.
                     auto it = childBatches.find(batch->getEndpoint().shardName);
                     invariant(it != childBatches.end());
-                    delete it->second;
                     it->second = nullptr;
                     continue;
                 }

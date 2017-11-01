@@ -784,25 +784,21 @@ void BatchWriteOp::_incBatchStats(const BatchedCommandResponse& response) {
 
 void BatchWriteOp::_cancelBatches(const WriteErrorDetail& why,
                                   TargetedBatchMap&& batchMapToCancel) {
-    TargetedBatchMap batchMap(batchMapToCancel);
+    TargetedBatchMap batchMap = std::move(batchMapToCancel);
 
     // Collect all the writeOps that are currently targeted
     for (auto& batch : batchMap) {
-        const vector<TargetedWrite*>& writes = batch->getWrites();
+        const auto& writes = batch.second->getWrites();
 
-        for (vector<TargetedWrite*>::const_iterator writeIt = writes.begin();
-             writeIt != writes.end();
-             ++writeIt) {
-            TargetedWrite* write = *writeIt;
+        for (TargetedWrite* write : writes) {
 
             // NOTE: We may repeatedly cancel a write op here, but that's fast and we want to cancel
             // before erasing the TargetedWrite* (which owns the cancelled targeting info) for
             // reporting reasons.
             _writeOps[write->writeOpRef.first].cancelWrites(&why);
         }
-
-        batchMap.erase(it++);
     }
+    batchMap.clear();
 }
 
 bool EndpointComp::operator()(const ShardEndpoint* endpointA,

@@ -40,6 +40,7 @@
 #include "mongo/db/auth/user_document_parser.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/server_options.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -590,7 +591,7 @@ void AuthzManagerExternalStateLocal::logOp(OperationContext* opCtx,
     if (nss == AuthorizationManager::rolesCollectionNamespace ||
         nss == AuthorizationManager::adminCommandNamespace) {
         opCtx->recoveryUnit()->registerChange(
-            new AuthzManagerLogOpHandler(opCtx, this, op, nss, o, o2));
+            stdx::make_unique<AuthzManagerLogOpHandler>(opCtx, this, op, nss, o, o2));
     }
 }
 

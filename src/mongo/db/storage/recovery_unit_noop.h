@@ -61,22 +61,22 @@ public:
         _changes.clear();
     }
 
-    virtual void abandonSnapshot() {}
+    void abandonSnapshot() override {}
 
-    virtual bool waitUntilDurable() {
+    bool waitUntilDurable() override {
         return true;
     }
 
-    virtual void registerChange(Change* change) {
-        _changes.push_back(std::unique_ptr<Change>(change));
+    void registerChange(std::unique_ptr<Change> change) override {
+        _changes.push_back(std::move(change));
     }
 
-    virtual void* writingPtr(void* data, size_t len) {
+    void* writingPtr(void* data, size_t len) override {
         return data;
     }
-    virtual void setRollbackWritesDisabled() {}
+    void setRollbackWritesDisabled() override {}
 
-    virtual SnapshotId getSnapshotId() const {
+    SnapshotId getSnapshotId() const override {
         return SnapshotId();
     }
 

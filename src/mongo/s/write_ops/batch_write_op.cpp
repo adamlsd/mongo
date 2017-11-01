@@ -227,9 +227,9 @@ BatchWriteOp::~BatchWriteOp() {
     invariant(_targeted.empty());
 }
 
-Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
-                                 bool recordTargetErrors,
-                                 std::map<ShardId, TargetedWriteBatch*>* targetedBatches) {
+StatusWith<std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>> BatchWriteOp::targetBatch(
+    const NSTargeter& targeter, bool recordTargetErrors) {
+    std::map<ShardId, std::unique_ptr<TargetedWriteBatch>> targetedBatches;
     //
     // Targeting of unordered batches is fairly simple - each remaining write op is targeted,
     // and each of those targeted writes are grouped into a batch for a particular shard
@@ -304,7 +304,7 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
                 ++numTargetErrors;
 
                 if (ordered)
-                    return Status::OK();
+                    return std::move(targetedBatches);
 
                 continue;
             } else {
@@ -352,13 +352,13 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
             TargetedBatchSizeMap::iterator batchSizeIt = batchSizes.find(&write->endpoint);
 
             if (batchIt == batchMap.end()) {
-                TargetedWriteBatch* newBatch = new TargetedWriteBatch(write->endpoint);
-                batchIt = batchMap.insert(make_pair(&newBatch->getEndpoint(), newBatch)).first;
-                batchSizeIt =
-                    batchSizes.insert(make_pair(&newBatch->getEndpoint(), BatchSize())).first;
+                auto newBatch = std::make_unique<TargetedWriteBatch>(write->endpoint);
+                auto newEndpoint = &newBatch->getEndpoint();
+                batchIt = batchMap.insert(make_pair(newEndpoint, std::move(newBatch))).first;
+                batchSizeIt = batchSizes.insert(make_pair(newEndpoint, BatchSize())).first;
             }
 
-            TargetedWriteBatch* batch = batchIt->second;
+            TargetedWriteBatch* batch = batchIt->second.get();
             BatchSize& batchSize = batchSizeIt->second;
 
             ++batchSize.numOps;
@@ -383,20 +383,20 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
     //
 
     for (TargetedBatchMap::iterator it = batchMap.begin(); it != batchMap.end(); ++it) {
-        TargetedWriteBatch* batch = it->second;
+        std::unique_ptr<TargetedWriteBatch> batch = std::move(it->second);
 
         if (batch->getWrites().empty())
             continue;
 
         // Remember targeted batch for reporting
-        _targeted.insert(batch);
+        _targeted.insert(batch.get());
 
         // Send the handle back to caller
-        invariant(targetedBatches->find(batch->getEndpoint().shardName) == targetedBatches->end());
-        targetedBatches->insert(std::make_pair(batch->getEndpoint().shardName, batch));
+        invariant(targetedBatches.find(batch->getEndpoint().shardName) == targetedBatches.end());
+        targetedBatches.insert(std::make_pair(batch->getEndpoint().shardName, std::move(batch)));
     }
 
-    return Status::OK();
+    return std::move(targetedBatches);
 }
 
 BatchedCommandRequest BatchWriteOp::buildBatchRequest(
@@ -787,8 +787,7 @@ void BatchWriteOp::_cancelBatches(const WriteErrorDetail& why,
     TargetedBatchMap batchMap(batchMapToCancel);
 
     // Collect all the writeOps that are currently targeted
-    for (TargetedBatchMap::iterator it = batchMap.begin(); it != batchMap.end();) {
-        TargetedWriteBatch* batch = it->second;
+    for (auto& batch : batchMap) {
         const vector<TargetedWrite*>& writes = batch->getWrites();
 
         for (vector<TargetedWrite*>::const_iterator writeIt = writes.begin();
@@ -802,10 +801,7 @@ void BatchWriteOp::_cancelBatches(const WriteErrorDetail& why,
             _writeOps[write->writeOpRef.first].cancelWrites(&why);
         }
 
-        // Note that we need to *erase* first, *then* delete, since the map keys are ptrs from
-        // the values
         batchMap.erase(it++);
-        delete batch;
     }
 }
 

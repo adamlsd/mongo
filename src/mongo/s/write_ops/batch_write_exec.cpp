@@ -55,7 +55,7 @@ namespace {
 //
 
 // TODO: Unordered map?
-typedef OwnedPointerMap<ShardId, TargetedWriteBatch> OwnedShardBatchMap;
+using OwnedShardBatchMap = std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>;
 
 WriteErrorDetail errorFromStatus(const Status& status) {
     WriteErrorDetail error;
@@ -122,19 +122,21 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
         //    exactly when the metadata changed.
         //
 
-        OwnedPointerMap<ShardId, TargetedWriteBatch> childBatchesOwned;
-        std::map<ShardId, TargetedWriteBatch*>& childBatches = childBatchesOwned.mutableMap();
+        std::map<ShardId, std::unique_ptr<TargetedWriteBatch>> childBatches;
 
         // If we've already had a targeting error, we've refreshed the metadata once and can
         // record target errors definitively.
         bool recordTargetErrors = refreshedTargeter;
-        Status targetStatus = batchOp.targetBatch(targeter, recordTargetErrors, &childBatches);
+        auto targetStatus = batchOp.targetBatch(targeter, recordTargetErrors);
         if (!targetStatus.isOK()) {
             // Don't do anything until a targeter refresh
             targeter.noteCouldNotTarget();
             refreshedTargeter = true;
             ++stats->numTargetErrors;
             dassert(childBatches.size() == 0u);
+        }
+        else {
+            childBatches = std::move(targetStatus.getValue());
         }
 
         //
@@ -145,8 +147,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
         size_t numToSend = childBatches.size();
         while (numSent != numToSend) {
             // Collect batches out on the network, mapped by endpoint
-            OwnedShardBatchMap ownedPendingBatches;
-            OwnedShardBatchMap::MapType& pendingBatches = ownedPendingBatches.mutableMap();
+            OwnedShardBatchMap pendingBatches;
 
             //
             // Construct the requests.
@@ -156,7 +157,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
             // Get as many batches as we can at once
             for (auto& childBatch : childBatches) {
-                TargetedWriteBatch* const nextBatch = childBatch.second;
+                auto &nextBatch = childBatch.second;
 
                 // If the batch is nullptr, we sent it previously, so skip
                 if (!nextBatch)
@@ -165,9 +166,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 // If we already have a batch for this shard, wait until the next time
                 ShardId targetShardId = nextBatch->getEndpoint().shardName;
 
-                OwnedShardBatchMap::MapType::iterator pendingIt =
-                    pendingBatches.find(targetShardId);
-                if (pendingIt != pendingBatches.end())
+                if (pendingBatches.find(targetShardId) != pendingBatches.end())
                     continue;
 
                 const auto request = [&] {
@@ -200,7 +199,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 childBatch.second = nullptr;
 
                 // Recv-side is responsible for cleaning up the nextBatch when used
-                pendingBatches.insert(std::make_pair(targetShardId, nextBatch));
+                pendingBatches.insert(std::make_pair(targetShardId, std::move(nextBatch)));
             }
 
             //

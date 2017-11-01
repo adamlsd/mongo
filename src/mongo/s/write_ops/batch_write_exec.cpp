@@ -33,7 +33,6 @@
 #include "mongo/s/write_ops/batch_write_exec.h"
 
 #include "mongo/base/error_codes.h"
-#include "mongo/base/owned_pointer_map.h"
 #include "mongo/base/status.h"
 #include "mongo/bson/util/builder.h"
 #include "mongo/client/connection_string.h"

@@ -280,7 +280,8 @@ void CollectionShardingState::onInsertOp(OperationContext* opCtx,
                         uassertStatusOK(ShardIdentityType::fromBSON(insertedDoc));
                     uassertStatusOK(shardIdentityDoc.validate());
                     opCtx->recoveryUnit()->registerChange(
-                        new ShardIdentityLogOpHandler(opCtx, std::move(shardIdentityDoc)));
+                        stdx::make_unique<ShardIdentityLogOpHandler>(opCtx,
+                                                                     std::move(shardIdentityDoc)));
                 }
             }
         }
@@ -430,8 +431,8 @@ void CollectionShardingState::_onConfigRefreshCompleteInvalidateCachedMetadataAn
     // If 'lastRefreshedCollectionVersion' is present, then a refresh completed and the catalog
     // cache must be invalidated and the catalog cache loader notified of the new version.
     if (setField.hasField(ShardCollectionType::lastRefreshedCollectionVersion.name())) {
-        opCtx->recoveryUnit()->registerChange(
-            new CollectionVersionLogOpHandler(opCtx, NamespaceString(refreshCollection)));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<CollectionVersionLogOpHandler>(
+            opCtx, NamespaceString(refreshCollection)));
     }
 }
 
@@ -445,8 +446,8 @@ void CollectionShardingState::_onConfigDeleteInvalidateCachedMetadataAndNotify(
     fassertStatusOK(
         40479, bsonExtractStringField(query, ShardCollectionType::ns.name(), &deletedCollection));
 
-    opCtx->recoveryUnit()->registerChange(
-        new CollectionVersionLogOpHandler(opCtx, NamespaceString(deletedCollection)));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<CollectionVersionLogOpHandler>(
+        opCtx, NamespaceString(deletedCollection)));
 }
 
 bool CollectionShardingState::_checkShardVersionOk(OperationContext* opCtx,

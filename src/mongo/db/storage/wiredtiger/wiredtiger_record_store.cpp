@@ -235,11 +235,11 @@ void WiredTigerRecordStore::OplogStones::updateCurrentStoneAfterInsertOnCommit(
     RecordId highestInserted,
     int64_t countInserted) {
     opCtx->recoveryUnit()->registerChange(
-        new InsertChange(this, bytesInserted, highestInserted, countInserted));
+        stdx::make_unique<InsertChange>(this, bytesInserted, highestInserted, countInserted));
 }
 
 void WiredTigerRecordStore::OplogStones::clearStonesOnCommit(OperationContext* opCtx) {
-    opCtx->recoveryUnit()->registerChange(new TruncateChange(this));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<TruncateChange>(this));
 }
 
 void WiredTigerRecordStore::OplogStones::updateStonesAfterCappedTruncateAfter(

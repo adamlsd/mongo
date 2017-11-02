@@ -346,7 +346,7 @@ void EphemeralForTestRecordStore::deleteRecord(OperationContext* opCtx, const Re
 void EphemeralForTestRecordStore::deleteRecord_inlock(OperationContext* opCtx,
                                                       const RecordId& loc) {
     EphemeralForTestRecord* rec = recordFor(loc);
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *rec));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<RemoveChange>(opCtx, _data, loc, *rec));
     _data->dataSize -= rec->size;
     invariant(_data->records.erase(loc) == 1);
 }
@@ -419,7 +419,7 @@ StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(
         loc = allocateLoc();
     }
 
-    opCtx->recoveryUnit()->registerChange(new InsertChange(opCtx, _data, loc));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<InsertChange>(opCtx, _data, loc));
     _data->dataSize += len;
     _data->records[loc] = rec;
 
@@ -456,7 +456,7 @@ Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext*
             loc = allocateLoc();
         }
 
-        opCtx->recoveryUnit()->registerChange(new InsertChange(opCtx, _data, loc));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<InsertChange>(opCtx, _data, loc));
         _data->dataSize += len;
         _data->records[loc] = rec;
 
@@ -496,7 +496,8 @@ Status EphemeralForTestRecordStore::updateRecord(OperationContext* opCtx,
     EphemeralForTestRecord newRecord(len);
     memcpy(newRecord.data.get(), data, len);
 
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *oldRecord));
+    opCtx->recoveryUnit()->registerChange(
+        stdx::make_unique<RemoveChange>(opCtx, _data, loc, *oldRecord));
     _data->dataSize += len - oldLen;
     *oldRecord = newRecord;
 
@@ -523,7 +524,8 @@ StatusWith<RecordData> EphemeralForTestRecordStore::updateWithDamages(
     EphemeralForTestRecord newRecord(len);
     memcpy(newRecord.data.get(), oldRecord->data.get(), len);
 
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *oldRecord));
+    opCtx->recoveryUnit()->registerChange(
+        stdx::make_unique<RemoveChange>(opCtx, _data, loc, *oldRecord));
     *oldRecord = newRecord;
 
     cappedDeleteAsNeeded_inlock(opCtx);
@@ -552,7 +554,7 @@ std::unique_ptr<SeekableRecordCursor> EphemeralForTestRecordStore::getCursor(
 Status EphemeralForTestRecordStore::truncate(OperationContext* opCtx) {
     // Unlike other changes, TruncateChange mutates _data on construction to perform the
     // truncate
-    opCtx->recoveryUnit()->registerChange(new TruncateChange(opCtx, _data));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<TruncateChange>(opCtx, _data));
     return Status::OK();
 }
 
@@ -564,7 +566,7 @@ void EphemeralForTestRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         inclusive ? _data->records.lower_bound(end) : _data->records.upper_bound(end);
     while (it != _data->records.end()) {
         opCtx->recoveryUnit()->registerChange(
-            new RemoveChange(opCtx, _data, it->first, it->second));
+            stdx::make_unique<RemoveChange>(opCtx, _data, it->first, it->second));
         _data->dataSize -= it->second.size;
         _data->records.erase(it++);
     }

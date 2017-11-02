@@ -1,5 +1,3 @@
-// ephemeral_for_test_recovery_unit.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -60,8 +58,8 @@ public:
 
     Status setReadFromMajorityCommittedSnapshot() final;
 
-    virtual void registerChange(Change* change) {
-        _changes.push_back(ChangePtr(change));
+    void registerChange(std::unique_ptr<Change> change) override {
+        _changes.push_back(std::move(change));
     }
 
     virtual void* writingPtr(void* data, size_t len) {

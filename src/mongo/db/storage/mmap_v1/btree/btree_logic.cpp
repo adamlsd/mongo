@@ -146,7 +146,8 @@ Status BtreeLogic<BtreeLayout>::Builder::addKey(const BSONObj& keyObj, const Dis
     BucketType* rightLeaf = _getModifiableBucket(_rightLeafLoc);
     if (!_logic->pushBack(rightLeaf, loc, *key, DiskLoc())) {
         // bucket was full, so split and try with the new node.
-        _opCtx->recoveryUnit()->registerChange(new SetRightLeafLocChange(this, _rightLeafLoc));
+        _opCtx->recoveryUnit()->registerChange(
+            std::make_unique<SetRightLeafLocChange>(this, _rightLeafLoc));
         _rightLeafLoc = newBucket(rightLeaf, _rightLeafLoc);
         rightLeaf = _getModifiableBucket(_rightLeafLoc);
         invariant(_logic->pushBack(rightLeaf, loc, *key, DiskLoc()));

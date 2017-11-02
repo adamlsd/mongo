@@ -222,7 +222,7 @@ void MMAPV1DatabaseCatalogEntry::_removeFromCache(RecoveryUnit* ru, StringData n
 
     //  If there is an operation context, register a rollback to restore the cache entry
     if (ru) {
-        ru->registerChange(new EntryRemoval(ns, this, i->second));
+        ru->registerChange(stdx::make_unique<EntryRemoval>(ns, this, i->second));
     } else {
         delete i->second;
     }
@@ -394,7 +394,7 @@ Status MMAPV1DatabaseCatalogEntry::_renameSingleNamespace(OperationContext* opCt
 
     Entry*& entry = _collections[toNS.toString()];
     invariant(entry == NULL);
-    opCtx->recoveryUnit()->registerChange(new EntryInsertion(toNS, this));
+    opCtx->recoveryUnit()->registerChange(stdx::make_unique<EntryInsertion>(toNS, this));
     entry = new Entry();
     _removeFromCache(opCtx->recoveryUnit(), fromNS);
     _insertInCache(opCtx, toNS, rid, entry);

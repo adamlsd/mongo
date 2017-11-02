@@ -52,6 +52,7 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/util/elapsed_tracker.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -394,11 +395,11 @@ void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'i', opTime, {}));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'i', opTime, repl::OpTime{}));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'i', {}, {}));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'i', repl::OpTime{}, repl::OpTime{}));
     }
 }
 
@@ -420,11 +421,11 @@ void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'u', opTime, prePostImageOpTime));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'u', opTime, prePostImageOpTime));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'u', {}, {}));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'u', repl::OpTime{}, repl::OpTime{}));
     }
 }
 
@@ -442,11 +443,11 @@ void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'd', opTime, preImageOpTime));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'd', opTime, preImageOpTime));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'd', {}, {}));
+        opCtx->recoveryUnit()->registerChange(stdx::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'd', repl::OpTime{}, repl::OpTime{}));
     }
 }
 

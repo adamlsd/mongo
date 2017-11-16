@@ -57,7 +57,7 @@ const ReadPreferenceSetting kPrimaryOnlyReadPreference(ReadPreference::PrimaryOn
 //
 
 // TODO: Unordered map?
-typedef OwnedPointerMap<ShardId, TargetedWriteBatch> OwnedShardBatchMap;
+typedef std::map<ShardId, std::unique_ptr<TargetedWriteBatch>> OwnedShardBatchMap;
 
 WriteErrorDetail errorFromStatus(const Status& status) {
     WriteErrorDetail error;
@@ -146,8 +146,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
         size_t numToSend = childBatches.size();
         while (numSent != numToSend) {
             // Collect batches out on the network, mapped by endpoint
-            OwnedShardBatchMap ownedPendingBatches;
-            OwnedShardBatchMap::MapType& pendingBatches = ownedPendingBatches.mutableMap();
+            OwnedShardBatchMap pendingBatches;
 
             //
             // Construct the requests.
@@ -166,7 +165,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 // If we already have a batch for this shard, wait until the next time
                 ShardId targetShardId = nextBatch->getEndpoint().shardName;
 
-                OwnedShardBatchMap::MapType::iterator pendingIt =
+                OwnedShardBatchMap::iterator pendingIt =
                     pendingBatches.find(targetShardId);
                 if (pendingIt != pendingBatches.end())
                     continue;
@@ -200,7 +199,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 // so this should be pretty efficient without moving stuff around.  The nullptr set
                 // is performed by the moving of the unique pointer.  Recv-side is responsible for
                 // cleaning up the nextBatch when used
-                pendingBatches.insert(std::make_pair(targetShardId, nextBatch.release()));
+                pendingBatches.insert(std::make_pair(targetShardId, std::move(nextBatch)));
             }
 
             AsyncRequestsSender ars(opCtx,
@@ -222,7 +221,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                 // Get the TargetedWriteBatch to find where to put the response
                 dassert(pendingBatches.find(response.shardId) != pendingBatches.end());
-                TargetedWriteBatch* batch = pendingBatches.find(response.shardId)->second;
+                TargetedWriteBatch* batch = pendingBatches.find(response.shardId)->second.get();
 
                 // First check if we were able to target a shard host.
                 if (!response.shardHostAndPort) {

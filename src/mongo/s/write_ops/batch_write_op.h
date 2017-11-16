@@ -137,7 +137,7 @@ public:
      */
     Status targetBatch(const NSTargeter& targeter,
                        bool recordTargetErrors,
-                       std::map<ShardId, TargetedWriteBatch*>* targetedBatches);
+                       std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>* targetedBatches);
 
     /**
      * Fills a BatchCommandRequest from a TargetedWriteBatch for this BatchWriteOp.

@@ -229,7 +229,7 @@ BatchWriteOp::~BatchWriteOp() {
 
 Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
                                  bool recordTargetErrors,
-                                 std::map<ShardId, TargetedWriteBatch*>* targetedBatches) {
+                                 std::map<ShardId, std::unique_ptr<TargetedWriteBatch>>* targetedBatches) {
     //
     // Targeting of unordered batches is fairly simple - each remaining write op is targeted,
     // and each of those targeted writes are grouped into a batch for a particular shard
@@ -393,7 +393,8 @@ Status BatchWriteOp::targetBatch(const NSTargeter& targeter,
 
         // Send the handle back to caller
         invariant(targetedBatches->find(batch->getEndpoint().shardName) == targetedBatches->end());
-        targetedBatches->insert(std::make_pair(batch->getEndpoint().shardName, batch));
+        targetedBatches->insert(std::make_pair(batch->getEndpoint().shardName,
+std::unique_ptr<TargetedWriteBatch>(batch)));
     }
 
     return Status::OK();

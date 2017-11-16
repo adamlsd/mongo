@@ -634,7 +634,7 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
     // At the end of this step, we will have a map of UpdateTickets, one per index, which
     // represent the index updates needed to be done, based on the changes between oldDoc and
     // newDoc.
-    OwnedPointerMap<IndexDescriptor*, UpdateTicket> updateTickets;
+    std::map<IndexDescriptor*, std::unique_ptr<UpdateTicket>> updateTickets;
     if (indexesAffected) {
         IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, true);
         while (ii.more()) {
@@ -644,8 +644,8 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
 
             InsertDeleteOptions options;
             IndexCatalog::prepareInsertDeleteOptions(opCtx, descriptor, &options);
-            UpdateTicket* updateTicket = new UpdateTicket();
-            updateTickets.mutableMap()[descriptor] = updateTicket;
+            updateTickets[descriptor] = stdx::make_unique<UpdateTicket>();
+            UpdateTicket* updateTicket = updateTickets[descriptor].get();
             uassertStatusOK(iam->validateUpdate(opCtx,
                                                 oldDoc.value(),
                                                 newDoc,
@@ -677,7 +677,7 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
             int64_t keysInserted;
             int64_t keysDeleted;
             uassertStatusOK(iam->update(
-                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted));
+                opCtx, *updateTickets[descriptor], &keysInserted, &keysDeleted));
             if (opDebug) {
                 opDebug->keysInserted += keysInserted;
                 opDebug->keysDeleted += keysDeleted;

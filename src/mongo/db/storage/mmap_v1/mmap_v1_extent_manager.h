@@ -161,7 +161,7 @@ public:
 
     virtual int maxSize() const;
 
-    virtual CacheHint* cacheHint(const DiskLoc& extentLoc, const HintType& hint);
+    std::unique_ptr<CacheHint> cacheHint(const DiskLoc& extentLoc, const HintType& hint) override;
 
 private:
     /**

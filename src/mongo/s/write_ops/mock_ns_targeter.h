@@ -72,11 +72,12 @@ struct MockRange {
  */
 class MockNSTargeter : public NSTargeter {
 public:
-    void init(const std::vector<MockRange*> mockRanges) {
+    void init(std::vector<std::unique_ptr<MockRange>> mockRanges) {
         ASSERT(!mockRanges.empty());
-        _mockRanges.mutableVector().insert(
-            _mockRanges.mutableVector().end(), mockRanges.begin(), mockRanges.end());
-        _nss = NamespaceString(_mockRanges.vector().front()->range.ns);
+        _mockRanges.insert(_mockRanges.end(),
+                           std::make_move_iterator(mockRanges.begin()),
+                           std::make_move_iterator(mockRanges.end()));
+        _nss = NamespaceString(_mockRanges.front()->range.ns);
     }
 
     const NamespaceString& getNS() const {
@@ -150,8 +151,8 @@ public:
         return Status::OK();
     }
 
-    const std::vector<MockRange*>& getRanges() const {
-        return _mockRanges.vector();
+    const std::vector<std::unique_ptr<MockRange>>& getRanges() const {
+        return _mockRanges;
     }
 
 private:
@@ -210,7 +211,7 @@ private:
     NamespaceString _nss;
 
     // Manually-stored ranges
-    OwnedPointerVector<MockRange> _mockRanges;
+    std::vector<std::unique_ptr<MockRange>> _mockRanges;
 };
 
 inline void assertEndpointsEqual(const ShardEndpoint& endpointA, const ShardEndpoint& endpointB) {

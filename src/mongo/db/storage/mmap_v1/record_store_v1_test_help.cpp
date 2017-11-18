@@ -1,5 +1,3 @@
-// record_store_v1_test_help.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -292,9 +290,9 @@ int DummyExtentManager::maxSize() const {
     return 1024 * 1024 * 64;
 }
 
-DummyExtentManager::CacheHint* DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
-                                                             const HintType& hint) {
-    return new CacheHint();
+std::unique_ptr<ExtentManager::CacheHint> DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
+                                                                        const HintType& hint) {
+    return stdx::make_unique<CacheHint>();
 }
 
 DataFileVersion DummyExtentManager::getFileFormat(OperationContext* opCtx) const {
@@ -666,4 +664,4 @@ void assertStateV1RS(OperationContext* opCtx,
         throw;
     }
 }
-}
+}  // namespace mongo

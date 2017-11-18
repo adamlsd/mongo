@@ -70,3 +70,60 @@ std::string Status::toString() const {
 }
 
 }  // namespace mongo
+
+#ifdef __FreeBSD__
+
+#include <pthread.h>
+
+#include <list>
+#include <map>
+#include <vector>
+#include <mutex>
+#include <thread>
+#include <functional>
+#include <utility>
+
+namespace
+{
+    std::mutex access;
+    template< typename T > using Container= std::list< T >;
+    std::map< pthread_t, Container< std::function< void () > > > callbacks;
+
+    void
+    joiner( pthread_t thread )
+    {
+        pthread_join( thread, nullptr );
+        
+        auto list= [thread]
+        {
+            std::lock_guard< std::mutex > lock( access );
+            auto rv= std::move( callbacks[ thread ] );
+            callbacks.erase( thread );
+            return rv;
+        }();
+
+        for( auto &&f: list )
+        {
+            f();
+        }
+    }
+
+    void
+    registerHandler( void (*func)( void * ), void *obj )
+    {
+        auto self= pthread_self();
+        std::function< void () > cleanup= [obj, func]{ func( obj ); };
+
+        std::lock_guard< std::mutex > lock( access );
+        if( callbacks[ self ].empty() ) std::thread{ [ self ]{ joiner( self ); } }.detach();
+        callbacks[ self ].push_back( std::move( cleanup ) );
+    }
+}
+
+extern "C" void
+__cxa_thread_atexit( void (*func)( void * ), void *obj, void * )
+{
+    //registerHandler( func, obj );
+}
+
+#endif

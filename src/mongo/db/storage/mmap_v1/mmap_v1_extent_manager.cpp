@@ -1,5 +1,3 @@
-// mmap_v1_extent_manager.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -632,11 +630,12 @@ private:
 };
 }
 
-ExtentManager::CacheHint* MmapV1ExtentManager::cacheHint(const DiskLoc& extentLoc,
-                                                         const ExtentManager::HintType& hint) {
+std::unique_ptr<ExtentManager::CacheHint> MmapV1ExtentManager::cacheHint(
+    const DiskLoc& extentLoc, const ExtentManager::HintType& hint) {
     invariant(hint == Sequential);
     Extent* e = getExtent(extentLoc);
-    return new CacheHintMadvise(reinterpret_cast<void*>(e), e->length, MAdvise::Sequential);
+    return stdx::make_unique<CacheHintMadvise>(
+        reinterpret_cast<void*>(e), e->length, MAdvise::Sequential);
 }
 
 MmapV1ExtentManager::FilesArray::~FilesArray() {
@@ -676,4 +675,4 @@ void MmapV1ExtentManager::setFileFormat(OperationContext* opCtx, DataFileVersion
 
     *opCtx->recoveryUnit()->writing(&df->getHeader()->version) = newVersion;
 }
-}
+}  // namespace mongo

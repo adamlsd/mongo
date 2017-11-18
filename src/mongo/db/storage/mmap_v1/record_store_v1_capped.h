@@ -30,6 +30,9 @@
 
 #pragma once
 
+#include <vector>
+#include <memory>
+
 #include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/mmap_v1/diskloc.h"
@@ -122,8 +125,8 @@ private:
 
     CappedCallback* _cappedCallback;
 
-    OwnedPointerVector<ExtentManager::CacheHint> _extentAdvice;
+    std::vector< std::unique_ptr<ExtentManager::CacheHint >> _extentAdvice;
 
     friend class CappedRecordStoreV1Iterator;
 };
-}
+}//namespace mongo

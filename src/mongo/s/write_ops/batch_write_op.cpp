@@ -98,10 +98,10 @@ void buildTargetError(const Status& errStatus, WriteErrorDetail* details) {
 /**
  * Helper to determine whether a number of targeted writes require a new targeted batch.
  */
-bool isNewBatchRequired(const std::vector<TargetedWrite*>& writes,
+bool isNewBatchRequired(const std::vector<std::unique_ptr<TargetedWrite>>& writes,
                         const TargetedBatchMap& batchMap) {
-    for (vector<TargetedWrite*>::const_iterator it = writes.begin(); it != writes.end(); ++it) {
-        TargetedWrite* write = *it;
+    for (auto it = writes.begin(); it != writes.end(); ++it) {
+        auto& write = *it;
         if (batchMap.find(&write->endpoint) == batchMap.end()) {
             return true;
         }
@@ -113,11 +113,11 @@ bool isNewBatchRequired(const std::vector<TargetedWrite*>& writes,
 /**
  * Helper to determine whether a number of targeted writes require a new targeted batch.
  */
-bool wouldMakeBatchesTooBig(const std::vector<TargetedWrite*>& writes,
+bool wouldMakeBatchesTooBig(const std::vector<std::unique_ptr<TargetedWrite>>& writes,
                             int writeSizeBytes,
                             const TargetedBatchSizeMap& batchSizes) {
-    for (vector<TargetedWrite*>::const_iterator it = writes.begin(); it != writes.end(); ++it) {
-        const TargetedWrite* write = *it;
+    for (auto it = writes.begin(); it != writes.end(); ++it) {
+        auto& write = *it;
         TargetedBatchSizeMap::const_iterator seenIt = batchSizes.find(&write->endpoint);
 
         if (seenIt == batchSizes.end()) {
@@ -285,8 +285,7 @@ Status BatchWriteOp::targetBatch(
         //
 
         // TargetedWrites need to be owned once returned
-        OwnedPointerVector<TargetedWrite> writesOwned;
-        vector<TargetedWrite*>& writes = writesOwned.mutableVector();
+        std::vector<std::unique_ptr<TargetedWrite>> writes;
 
         Status targetStatus = writeOp.targetWrites(_opCtx, targeter, &writes);
 
@@ -346,8 +345,8 @@ Status BatchWriteOp::targetBatch(
         // Targeting went ok, add to appropriate TargetedBatch
         //
 
-        for (vector<TargetedWrite*>::iterator it = writes.begin(); it != writes.end(); ++it) {
-            TargetedWrite* write = *it;
+        for (auto it = writes.begin(); it != writes.end(); ++it) {
+            std::unique_ptr<TargetedWrite>& write = *it;
 
             TargetedBatchMap::iterator batchIt = batchMap.find(&write->endpoint);
             TargetedBatchSizeMap::iterator batchSizeIt = batchSizes.find(&write->endpoint);
@@ -364,11 +363,11 @@ Status BatchWriteOp::targetBatch(
 
             ++batchSize.numOps;
             batchSize.sizeBytes += writeSizeBytes;
-            batch->addWrite(write);
+            batch->addWrite(write.release());
         }
 
         // Relinquish ownership of TargetedWrites, now the TargetedBatches own them
-        writesOwned.mutableVector().clear();
+        writes.clear();
 
         //
         // Break if we're ordered and we have more than one endpoint - later writes cannot be

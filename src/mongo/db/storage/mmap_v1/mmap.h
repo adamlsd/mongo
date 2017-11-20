@@ -30,6 +30,7 @@
 #include <set>
 #include <sstream>
 #include <vector>
+#include <memory>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/client.h"
@@ -170,7 +171,7 @@ protected:
      * returns a thread safe object that you can call flush on
      * Flushable has to fail nicely if the underlying object gets killed
      */
-    virtual Flushable* prepareFlush() = 0;
+    virtual std::unique_ptr<Flushable> prepareFlush() = 0;
 
     /**
      * Returns true iff the file is closed.
@@ -254,7 +255,7 @@ public:
 
     virtual bool isClosed();
 
-    virtual Flushable* prepareFlush();
+    std::unique_ptr<Flushable> prepareFlush() override;
 
     long shortLength() const {
         return (long)len;

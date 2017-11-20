@@ -57,8 +57,8 @@ write_ops::DeleteOpEntry buildDelete(const BSONObj& query, bool multi) {
 }
 
 struct EndpointComp {
-    bool operator()(const std::unique_ptr<TargetedWrite> &writeA,
-                    const std::unique_ptr<TargetedWrite> &writeB) const {
+    bool operator()(const std::unique_ptr<TargetedWrite>& writeA,
+                    const std::unique_ptr<TargetedWrite>& writeB) const {
         return writeA->endpoint.shardName.compare(writeB->endpoint.shardName) < 0;
     }
 };
@@ -94,8 +94,9 @@ TEST(WriteOpTests, TargetSingle) {
 
     ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Insert insertOp(nss);
@@ -109,7 +110,7 @@ TEST(WriteOpTests, TargetSingle) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
@@ -132,10 +133,13 @@ TEST(WriteOpTests, TargetMultiOneShard) {
     ShardEndpoint endpointB(ShardId("shardB"), ChunkVersion(20, 0, OID()));
     ShardEndpoint endpointC(ShardId("shardB"), ChunkVersion(20, 0, OID()));
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
-    mockRanges.push_back(new MockRange(endpointB, nss, BSON("x" << 0), BSON("x" << 10)));
-    mockRanges.push_back(new MockRange(endpointC, nss, BSON("x" << 10), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointB, nss, BSON("x" << 0), BSON("x" << 10)));
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointC, nss, BSON("x" << 10), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Delete deleteOp(nss);
@@ -148,7 +152,7 @@ TEST(WriteOpTests, TargetMultiOneShard) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
@@ -172,10 +176,13 @@ TEST(WriteOpTests, TargetMultiAllShards) {
     ShardEndpoint endpointB(ShardId("shardB"), ChunkVersion(20, 0, OID()));
     ShardEndpoint endpointC(ShardId("shardB"), ChunkVersion(20, 0, OID()));
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
-    mockRanges.push_back(new MockRange(endpointB, nss, BSON("x" << 0), BSON("x" << 10)));
-    mockRanges.push_back(new MockRange(endpointC, nss, BSON("x" << 10), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointA, nss, BSON("x" << MINKEY), BSON("x" << 0)));
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointB, nss, BSON("x" << 0), BSON("x" << 10)));
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpointC, nss, BSON("x" << 10), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Delete deleteOp(nss);
@@ -188,7 +195,7 @@ TEST(WriteOpTests, TargetMultiAllShards) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
@@ -218,8 +225,9 @@ TEST(WriteOpTests, ErrorSingle) {
 
     ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Insert insertOp(nss);
@@ -233,7 +241,7 @@ TEST(WriteOpTests, ErrorSingle) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
@@ -261,8 +269,9 @@ TEST(WriteOpTests, CancelSingle) {
 
     ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Insert insertOp(nss);
@@ -276,7 +285,7 @@ TEST(WriteOpTests, CancelSingle) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);
@@ -302,8 +311,9 @@ TEST(WriteOpTests, RetrySingleOp) {
 
     ShardEndpoint endpoint(ShardId("shard"), ChunkVersion::IGNORED());
 
-    std::vector<MockRange*> mockRanges;
-    mockRanges.push_back(new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+    std::vector<std::unique_ptr<MockRange>> mockRanges;
+    mockRanges.push_back(
+        stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
 
     BatchedCommandRequest request([&] {
         write_ops::Insert insertOp(nss);
@@ -317,7 +327,7 @@ TEST(WriteOpTests, RetrySingleOp) {
     ASSERT_EQUALS(writeOp.getWriteState(), WriteOpState_Ready);
 
     MockNSTargeter targeter;
-    targeter.init(mockRanges);
+    targeter.init(std::move(mockRanges));
 
     std::vector<std::unique_ptr<TargetedWrite>> targeted;
     Status status = writeOp.targetWrites(&opCtx, targeter, &targeted);

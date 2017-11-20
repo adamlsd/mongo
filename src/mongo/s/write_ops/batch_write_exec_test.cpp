@@ -88,10 +88,10 @@ public:
 
         // Set up the namespace targeter to target the fake shard.
         ShardEndpoint endpoint(shardName, ChunkVersion::IGNORED());
-        vector<MockRange*> mockRanges;
+        std::vector<std::unique_ptr<MockRange>> mockRanges;
         mockRanges.push_back(
-            new MockRange(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
-        nsTargeter.init(mockRanges);
+            stdx::make_unique<MockRange>(endpoint, nss, BSON("x" << MINKEY), BSON("x" << MAXKEY)));
+        nsTargeter.init(std::move(mockRanges));
     }
 
     void expectInsertsReturnSuccess(const std::vector<BSONObj>& expected) {

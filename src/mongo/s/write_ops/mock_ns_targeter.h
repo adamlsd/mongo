@@ -126,10 +126,7 @@ public:
     }
 
     Status targetAllShards(std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const override {
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
+        for (const auto& range : getRanges()) {
             endpoints->push_back(stdx::make_unique<ShardEndpoint>(range->endpoint));
         }
 
@@ -190,11 +187,7 @@ private:
                        std::vector<std::unique_ptr<ShardEndpoint>>* endpoints) const {
         KeyRange queryRange = parseRange(query);
 
-        const std::vector<MockRange*>& ranges = getRanges();
-        for (std::vector<MockRange*>::const_iterator it = ranges.begin(); it != ranges.end();
-             ++it) {
-            const MockRange* range = *it;
-
+        for (const auto& range : getRanges()){
             if (rangeOverlaps(queryRange.minKey,
                               queryRange.maxKey,
                               range->range.minKey,

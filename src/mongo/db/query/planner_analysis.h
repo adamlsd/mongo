@@ -76,7 +76,7 @@ public:
      *
      * Caller owns the returned QuerySolution.
      */
-    static QuerySolution* analyzeDataAccess(const CanonicalQuery& query,
+    static std::unique_ptr<QuerySolution> analyzeDataAccess(const CanonicalQuery& query,
                                             const QueryPlannerParams& params,
                                             std::unique_ptr<QuerySolutionNode> solnRoot);
 

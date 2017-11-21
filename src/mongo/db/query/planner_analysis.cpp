@@ -616,11 +616,11 @@ QuerySolutionNode* QueryPlannerAnalysis::analyzeSort(const CanonicalQuery& query
 }
 
 // static
-QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(
+std::unique_ptr<QuerySolution> QueryPlannerAnalysis::analyzeDataAccess(
     const CanonicalQuery& query,
     const QueryPlannerParams& params,
     std::unique_ptr<QuerySolutionNode> solnRoot) {
-    unique_ptr<QuerySolution> soln(new QuerySolution());
+    auto soln=stdx::make_unique< QuerySolution>();
     soln->filterData = query.getQueryObj();
     soln->indexFilterApplied = params.indexFiltersApplied;
 
@@ -859,7 +859,7 @@ QuerySolution* QueryPlannerAnalysis::analyzeDataAccess(
     }
 
     soln->root = std::move(solnRoot);
-    return soln.release();
+    return soln;
 }
 
 }  // namespace mongo

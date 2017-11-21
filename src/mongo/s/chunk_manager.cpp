@@ -41,6 +41,7 @@
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/query/query_planner_common.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -235,15 +236,14 @@ IndexBounds ChunkManager::getIndexBoundsForQuery(const BSONObj& key,
                           NULL /* collator */);
     plannerParams.indices.push_back(indexEntry);
 
-    OwnedPointerVector<QuerySolution> solutions;
-    Status status = QueryPlanner::plan(canonicalQuery, plannerParams, &solutions.mutableVector());
+    std::vector<QuerySolution*> solutionsUnowned;
+    Status status = QueryPlanner::plan(canonicalQuery, plannerParams, &solutionsUnowned);
     uassert(status.code(), status.reason(), status.isOK());
+    auto solutions = transitional_tools_do_not_use::spool_vector(solutionsUnowned);
 
     IndexBounds bounds;
 
-    for (std::vector<QuerySolution*>::const_iterator it = solutions.begin();
-         bounds.size() == 0 && it != solutions.end();
-         it++) {
+    for (auto it = solutions.begin(); bounds.size() == 0 && it != solutions.end(); it++) {
         // Try next solution if we failed to generate index bounds, i.e. bounds.size() == 0
         bounds = collapseQuerySolution((*it)->root.get());
     }

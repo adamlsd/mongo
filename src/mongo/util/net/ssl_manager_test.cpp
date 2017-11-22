@@ -65,11 +65,10 @@ TEST(SSLManager, matchHostname) {
     for (const auto& test : tests) {
         if (test.expected != hostNameMatchForX509Certificates(test.hostname, test.certName)) {
             failure = true;
-            std::cerr << "Mismatch for Hostname: " << test.hostname
+            LOG(0) << "Failure for Hostname: " << test.hostname
                       << " Certificate: " << test.certName << std::endl;
         } else {
-
-            std::cerr << "Correct for Hostname: " << test.hostname
+            LOG(1) << "Passed for Hostname: " << test.hostname
                       << " Certificate: " << test.certName << std::endl;
         }
     }

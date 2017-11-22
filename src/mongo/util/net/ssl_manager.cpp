@@ -1378,7 +1378,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManager::parseAndValidatePeerCertifi
             const GENERAL_NAME* currentName = sk_GENERAL_NAME_value(sanNames, i);
             if (currentName && currentName->type == GEN_DNS) {
                 char* dnsName = reinterpret_cast<char*>(ASN1_STRING_data(currentName->d.dNSName));
-                if (hostNameMatchForX509Certificates(remoteHost.c_str(), dnsName)) {
+                if (hostNameMatchForX509Certificates(remoteHost, dnsName)) {
                     sanMatch = true;
                     break;
                 }
@@ -1393,7 +1393,7 @@ StatusWith<boost::optional<SSLPeerInfo>> SSLManager::parseAndValidatePeerCertifi
         int cnEnd = peerSubjectName.find(",", cnBegin);
         std::string commonName = peerSubjectName.substr(cnBegin, cnEnd - cnBegin);
 
-        if (hostNameMatchForX509Certificates(remoteHost.c_str(), commonName.c_str())) {
+        if (hostNameMatchForX509Certificates(remoteHost, commonName)) {
             cnMatch = true;
         }
         certificateNames << "CN: " << commonName;
@@ -1609,17 +1609,15 @@ MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
 #endif  // #ifdef MONGO_CONFIG_SSL
 }  // namespace mongo
 
-namespace {
-std::string removeFQDNRoot(std::string name) {
-    if (name.back() == '.') {
-        name.pop_back();
-    }
-    return name;
-}
-}  // namespace
-
 // TODO SERVER-11601 Use NFC Unicode canonicalization
 bool mongo::hostNameMatchForX509Certificates(std::string nameToMatch, std::string certHostName) {
+    auto removeFQDNRoot(std::string name)->std::string {
+        if (name.back() == '.') {
+            name.pop_back();
+        }
+        return name;
+    };
+
     nameToMatch = removeFQDNRoot(std::move(nameToMatch));
     certHostName = removeFQDNRoot(std::move(certHostName));
 

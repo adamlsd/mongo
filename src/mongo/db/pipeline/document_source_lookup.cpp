@@ -65,6 +65,8 @@ std::string pipelineToString(const vector<BSONObj>& pipeline) {
 }
 }  // namespace
 
+constexpr size_t DocumentSourceLookUp::kMaxSubPipelineDepth;
+
 DocumentSourceLookUp::DocumentSourceLookUp(NamespaceString fromNs,
                                            std::string as,
                                            const boost::intrusive_ptr<ExpressionContext>& pExpCtx)
@@ -77,6 +79,12 @@ DocumentSourceLookUp::DocumentSourceLookUp(NamespaceString fromNs,
     _resolvedNs = resolvedNamespace.ns;
     _resolvedPipeline = resolvedNamespace.pipeline;
     _fromExpCtx = pExpCtx->copyWith(_resolvedNs);
+
+    _fromExpCtx->subPipelineDepth += 1;
+    uassert(ErrorCodes::MaxSubPipelineDepthExceeded,
+            str::stream() << "Maximum number of nested $lookup sub-pipelines exceeded. Limit is "
+                          << kMaxSubPipelineDepth,
+            _fromExpCtx->subPipelineDepth <= kMaxSubPipelineDepth);
 }
 
 DocumentSourceLookUp::DocumentSourceLookUp(NamespaceString fromNs,
@@ -592,7 +600,7 @@ void DocumentSourceLookUp::resolveLetVariables(const Document& localDoc, Variabl
 
     for (auto& letVar : _letVariables) {
         auto value = letVar.expression->evaluate(localDoc);
-        variables->setValue(letVar.id, value);
+        variables->setConstantValue(letVar.id, value);
     }
 }
 

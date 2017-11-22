@@ -257,6 +257,9 @@ public:
                 !bool(css->getMetadata()));
 
         PipelineD::prepareCursorSource(autoColl->getCollection(), expCtx->ns, nullptr, pipeline);
+        // Optimize again, since there may be additional optimizations that can be done after adding
+        // the initial cursor stage.
+        pipeline->optimizePipeline();
 
         return Status::OK();
     }
@@ -363,7 +366,7 @@ public:
             return {"_id"};  // Collection is not sharded.
         }
 
-        uassert(ErrorCodes::StaleConfig,
+        uassert(ErrorCodes::InvalidUUID,
                 str::stream() << "Collection " << _ctx->ns.ns()
                               << " UUID differs from UUID on change stream operations",
                 scm->uuidMatches(uuid));
@@ -381,9 +384,17 @@ public:
         return result;
     }
 
-    boost::optional<Document> lookupSingleDocument(const intrusive_ptr<ExpressionContext>& expCtx,
-                                                   const Document& filter) final {
-        auto swPipeline = makePipeline({BSON("$match" << filter)}, expCtx);
+    boost::optional<Document> lookupSingleDocument(const NamespaceString& nss,
+                                                   UUID collectionUUID,
+                                                   const Document& documentKey,
+                                                   boost::optional<BSONObj> readConcern) final {
+        invariant(!readConcern);  // We don't currently support a read concern on mongod - it's only
+                                  // expected to be necessary on mongos.
+                                  //
+        // Be sure to do the lookup using the collection default collation.
+        auto foreignExpCtx =
+            _ctx->copyWith(nss, collectionUUID, _getCollectionDefaultCollator(nss, collectionUUID));
+        auto swPipeline = makePipeline({BSON("$match" << documentKey)}, foreignExpCtx);
         if (swPipeline == ErrorCodes::NamespaceNotFound) {
             return boost::none;
         }
@@ -392,7 +403,8 @@ public:
         auto lookedUpDocument = pipeline->getNext();
         if (auto next = pipeline->getNext()) {
             uasserted(ErrorCodes::TooManyMatchingDocuments,
-                      str::stream() << "found more than one document matching " << filter.toString()
+                      str::stream() << "found more than one document with document key "
+                                    << documentKey.toString()
                                     << " ["
                                     << lookedUpDocument->toString()
                                     << ", "
@@ -402,9 +414,39 @@ public:
         return lookedUpDocument;
     }
 
+    std::vector<GenericCursor> getCursors(const intrusive_ptr<ExpressionContext>& expCtx) const {
+        return CursorManager::getAllCursors(expCtx->opCtx);
+    }
+
 private:
+    /**
+     * Looks up the collection default collator for the collection given by 'collectionUUID'. A
+     * collection's default collation is not allowed to change, so we cache the result to allow for
+     * quick lookups in the future. Looks up the collection by UUID, and returns 'nullptr' if the
+     * collection does not exist or if the collection's default collation is the simple collation.
+     */
+    std::unique_ptr<CollatorInterface> _getCollectionDefaultCollator(const NamespaceString& nss,
+                                                                     UUID collectionUUID) {
+        if (_collatorCache.find(collectionUUID) == _collatorCache.end()) {
+            AutoGetCollection autoColl(_ctx->opCtx, nss, collectionUUID, MODE_IS);
+            if (!autoColl.getCollection()) {
+                // This collection doesn't exist - since we looked up by UUID, it will never exist
+                // in the future, so we cache a null pointer as the default collation.
+                _collatorCache[collectionUUID] = nullptr;
+            } else {
+                auto defaultCollator = autoColl.getCollection()->getDefaultCollator();
+                // Clone the collator so that we can safely use the pointer if the collection
+                // disappears right after we release the lock.
+                _collatorCache[collectionUUID] =
+                    defaultCollator ? defaultCollator->clone() : nullptr;
+            }
+        }
+        return _collatorCache[collectionUUID] ? _collatorCache[collectionUUID]->clone() : nullptr;
+    }
+
     intrusive_ptr<ExpressionContext> _ctx;
     DBDirectClient _client;
+    std::map<UUID, std::unique_ptr<const CollatorInterface>> _collatorCache;
 };
 
 /**
@@ -860,11 +902,7 @@ void PipelineD::addCursorSource(Collection* collection,
 
         pSource->setProjection(deps.toProjection(), deps.toParsedDeps());
     }
-
-    // Add the initial DocumentSourceCursor to the front of the pipeline. Then optimize again in
-    // case the new stage can be absorbed with the first stages of the pipeline.
     pipeline->addInitialSource(pSource);
-    pipeline->optimizePipeline();
 }
 
 Timestamp PipelineD::getLatestOplogTimestamp(const Pipeline* pipeline) {

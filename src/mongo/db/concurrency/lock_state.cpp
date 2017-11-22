@@ -840,6 +840,11 @@ LockMode LockerImpl<IsForMMAPV1>::_getModeForMMAPV1FlushLock() const {
     }
 }
 
+template <bool IsForMMAPV1>
+bool LockerImpl<IsForMMAPV1>::isGlobalLockedRecursively() {
+    auto globalLockRequest = _requests.find(resourceIdGlobal);
+    return !globalLockRequest.finished() && globalLockRequest->recursiveCount > 1;
+}
 
 //
 // Auto classes
@@ -964,7 +969,5 @@ const ResourceId resourceIdOplog = ResourceId(RESOURCE_COLLECTION, StringData("l
 const ResourceId resourceIdAdminDB = ResourceId(RESOURCE_DATABASE, StringData("admin"));
 const ResourceId resourceIdParallelBatchWriterMode =
     ResourceId(RESOURCE_GLOBAL, ResourceId::SINGLETON_PARALLEL_BATCH_WRITER_MODE);
-const ResourceId resourceInFlightForOplog =
-    ResourceId(RESOURCE_METADATA, ResourceId::SINGLETON_IN_FLIGHT_OPLOG);
 
 }  // namespace mongo

@@ -1509,8 +1509,16 @@ public:
                     invariant(coll);
 
                     exec = uassertStatusOK(
-                        getExecutor(opCtx, coll, std::move(cq), PlanExecutor::YIELD_AUTO));
+                        getExecutor(opCtx, coll, std::move(cq), PlanExecutor::YIELD_AUTO, 0));
                 }
+
+                // Make sure the PlanExecutor is destroyed while holding the necessary locks.
+                ON_BLOCK_EXIT([&exec, &scopedAutoDb, opCtx, &config] {
+                    if (!scopedAutoDb) {
+                        scopedAutoDb = stdx::make_unique<AutoGetDb>(opCtx, config.nss.db(), MODE_S);
+                        exec.reset();
+                    }
+                });
 
                 {
                     stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -1663,10 +1671,10 @@ public:
         // *requires* rethrow AssertionExceptions - should probably fix.
         catch (AssertionException& e) {
             log() << "mr failed, removing collection" << redact(e);
-            throw e;
+            throw;
         } catch (std::exception& e) {
             log() << "mr failed, removing collection" << causedBy(e);
-            throw e;
+            throw;
         } catch (...) {
             log() << "mr failed for unknown reason, removing collection";
             throw;

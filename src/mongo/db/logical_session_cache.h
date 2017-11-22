@@ -32,6 +32,7 @@
 
 #include "mongo/base/status.h"
 #include "mongo/db/commands/end_sessions_gen.h"
+#include "mongo/db/logical_session_cache_stats_gen.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/refresh_sessions_gen.h"
 
@@ -91,12 +92,6 @@ public:
     virtual void endSessions(const LogicalSessionIdSet& lsids) = 0;
 
     /**
-     * Removes all local records in this cache. Does not remove the corresponding
-     * authoritative session records from the sessions collection.
-     */
-    virtual void clear() = 0;
-
-    /**
      * Refreshes the cache synchronously. This flushes all pending refreshes and
      * inserts to the sessions collection.
      */
@@ -132,6 +127,11 @@ public:
      * Retrieve a LogicalSessionRecord by LogicalSessionId, if it exists in the cache.
      */
     virtual boost::optional<LogicalSessionRecord> peekCached(const LogicalSessionId& id) const = 0;
+
+    /**
+     * Returns stats about the logical session cache and its recent operations.
+     */
+    virtual LogicalSessionCacheStats getStats() = 0;
 };
 
 }  // namespace mongo

@@ -42,6 +42,7 @@
 #include "mongo/client/dbclientinterface.h"
 #include "mongo/db/collection_index_usage_tracker.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/generic_cursor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/dependencies.h"
@@ -840,13 +841,23 @@ public:
         virtual std::vector<FieldPath> collectDocumentKeyFields(UUID) const = 0;
 
         /**
-         * Returns zero or one documents matching the input filter, or throws if more than one match
-         * was found. The passed ExpressionContext may use a different namespace than the
-         * ExpressionContext used to construct the MongoProcessInterface. Returns boost::none if no
-         * matching documents were found, including cases where the given namespace does not exist.
+         * Returns zero or one documents with the document key 'documentKey'. 'documentKey' is
+         * treated as a unique identifier of a document, and may include an _id or all fields from
+         * the shard key and an _id. Throws if more than one match was found. Returns boost::none if
+         * no matching documents were found, including cases where the given namespace does not
+         * exist.
          */
         virtual boost::optional<Document> lookupSingleDocument(
-            const boost::intrusive_ptr<ExpressionContext>& expCtx, const Document& filter) = 0;
+            const NamespaceString& nss,
+            UUID collectionUUID,
+            const Document& documentKey,
+            boost::optional<BSONObj> readConcern) = 0;
+
+        /**
+         * Returns a vector of all local cursors.
+         */
+        virtual std::vector<GenericCursor> getCursors(
+            const boost::intrusive_ptr<ExpressionContext>& expCtx) const = 0;
 
         // Add new methods as needed.
     };

@@ -593,8 +593,7 @@ void migrateAndFurtherSplitInitialChunks(OperationContext* opCtx,
     }
 
     // Reload the config info, after all the migrations
-    catalogCache->invalidateShardedCollection(nss);
-    routingInfo = uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, nss));
+    routingInfo = uassertStatusOK(catalogCache->getCollectionRoutingInfoWithRefresh(opCtx, nss));
     uassert(ErrorCodes::ConflictingOperationInProgress,
             "Collection was successfully written as sharded but got dropped before it "
             "could be evenly distributed",
@@ -792,6 +791,10 @@ public:
         Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
         const int numShards = shardIds.size();
 
+        uassert(ErrorCodes::IllegalOperation,
+                "cannot shard collections before there are shards",
+                numShards > 0);
+
         // Handle collections in the config db separately.
         if (nss.db() == NamespaceString::kConfigDb) {
             // Only whitelisted collections in config may be sharded
@@ -817,9 +820,6 @@ public:
         // make a connection to the real primary shard for this database.
         auto primaryShardId = [&]() {
             if (nss.db() == NamespaceString::kConfigDb) {
-                uassert(ErrorCodes::IllegalOperation,
-                        "cannot shard collections in config before there are shards",
-                        numShards > 0);
                 return shardIds[0];
             } else {
                 return dbType.getPrimary();

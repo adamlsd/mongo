@@ -74,6 +74,7 @@
 #include "mongo/platform/random.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -87,6 +88,7 @@ MONGO_INITIALIZER(InitializeDatabaseFactory)(InitializerContext* const) {
     });
     return Status::OK();
 }
+MONGO_FP_DECLARE(hangBeforeLoggingCreateCollection);
 }  // namespace
 
 using std::unique_ptr;
@@ -453,7 +455,8 @@ Status DatabaseImpl::dropCollection(OperationContext* opCtx,
                     return Status(ErrorCodes::IllegalOperation,
                                   "turn off profiling before dropping system.profile collection");
             } else if (!(nss.isSystemDotViews() || nss.isHealthlog() ||
-                         nss == SessionsCollection::kSessionsNamespaceString)) {
+                         nss == SessionsCollection::kSessionsNamespaceString ||
+                         nss == NamespaceString::kSystemKeysCollectionName)) {
                 return Status(ErrorCodes::IllegalOperation,
                               str::stream() << "can't drop system collection " << fullns);
             }
@@ -483,6 +486,9 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
         return Status::OK();  // Post condition already met.
     }
 
+    auto uuid = collection->uuid();
+    auto uuidString = uuid ? uuid.get().toString() : "no UUID";
+
     uassertNamespaceNotIndex(fullns.toString(), "dropCollection");
 
     BackgroundOperation::assertNoBgOpInProgForNs(fullns);
@@ -491,7 +497,8 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
     // Use massert() to be consistent with IndexCatalog::dropAllIndexes().
     auto numIndexesInProgress = collection->getIndexCatalog()->numIndexesInProgress(opCtx);
     massert(40461,
-            str::stream() << "cannot drop collection " << fullns.ns() << " when "
+            str::stream() << "cannot drop collection " << fullns.ns() << " (" << uuidString
+                          << ") when "
                           << numIndexesInProgress
                           << " index builds in progress.",
             numIndexesInProgress == 0);
@@ -499,8 +506,6 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
     audit::logDropCollection(&cc(), fullns.toString());
 
     Top::get(opCtx->getServiceContext()).collectionDropped(fullns.toString());
-
-    auto uuid = collection->uuid();
 
     // Drop unreplicated collections immediately.
     // If 'dropOpTime' is provided, we should proceed to rename the collection.
@@ -549,7 +554,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
 
         // Drop the offending indexes.
         for (auto&& index : indexesToDrop) {
-            log() << "dropCollection: " << fullns << " - index namespace '"
+            log() << "dropCollection: " << fullns << " (" << uuidString << ") - index namespace '"
                   << index->indexNamespace()
                   << "' would be too long after drop-pending rename. Dropping index immediately.";
             fassertStatusOK(40463, collection->getIndexCatalog()->dropIndex(opCtx, index));
@@ -565,8 +570,8 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
         // After writing the oplog entry, all errors are fatal. See getNextOpTime() comments in
         // oplog.cpp.
         if (dropOpTime.isNull()) {
-            log() << "dropCollection: " << fullns
-                  << " - no drop optime available for pending-drop. "
+            log() << "dropCollection: " << fullns << " (" << uuidString
+                  << ") - no drop optime available for pending-drop. "
                   << "Dropping collection immediately.";
             fassertStatusOK(40462, _finishDropCollection(opCtx, fullns, collection));
             return Status::OK();
@@ -578,8 +583,8 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
         // writing to the oplog.
         auto opTime = opObserver->onDropCollection(opCtx, fullns, uuid);
         if (!opTime.isNull()) {
-            severe() << "dropCollection: " << fullns
-                     << " - unexpected oplog entry written to the oplog with optime " << opTime;
+            severe() << "dropCollection: " << fullns << " (" << uuidString
+                     << ") - unexpected oplog entry written to the oplog with optime " << opTime;
             fassertFailed(40468);
         }
     }
@@ -588,8 +593,9 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
 
     // Rename collection using drop-pending namespace generated from drop optime.
     const bool stayTemp = true;
-    log() << "dropCollection: " << fullns << " - renaming to drop-pending collection: " << dpns
-          << " with drop optime " << dropOpTime;
+    log() << "dropCollection: " << fullns << " (" << uuidString
+          << ") - renaming to drop-pending collection: " << dpns << " with drop optime "
+          << dropOpTime;
     fassertStatusOK(40464, renameCollection(opCtx, fullns.ns(), dpns.ns(), stayTemp));
 
     // Register this drop-pending namespace with DropPendingCollectionReaper to remove when the
@@ -612,6 +618,10 @@ Status DatabaseImpl::_finishDropCollection(OperationContext* opCtx,
     // RecordStore.
     _clearCollectionCache(
         opCtx, fullns.toString(), "collection dropped", /*collectionGoingAway*/ true);
+
+    auto uuid = collection->uuid();
+    auto uuidString = uuid ? uuid.get().toString() : "no UUID";
+    log() << "Finishing collection drop for " << fullns << " (" << uuidString << ").";
 
     return _dbEntry->dropCollection(opCtx, fullns.toString());
 }
@@ -689,8 +699,8 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
         Top::get(opCtx->getServiceContext()).collectionDropped(fromNS.toString());
     }
 
-    opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, toNS));
     Status s = _dbEntry->renameCollection(opCtx, fromNS, toNS, stayTemp);
+    opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, toNS));
     _collections[toNS] = _getOrCreateCollectionInstance(opCtx, toNSS);
 
     return s;
@@ -767,30 +777,39 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
             OperationShardingState::get(opCtx).allowImplicitCollectionCreation());
 
     CollectionOptions optionsWithUUID = options;
+    bool generatedUUID = false;
     if (enableCollectionUUIDs && !optionsWithUUID.uuid &&
         serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
         auto coordinator = repl::ReplicationCoordinator::get(opCtx);
-        bool okayCreation =
-            (coordinator->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet ||
-             (serverGlobalParams.featureCompatibility.getVersion() !=
-              ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) ||
-             coordinator->canAcceptWritesForDatabase(opCtx, nss.db()) ||
-             nss.isSystemDotProfile());  // system.profile is special as it's not replicated
-        if (!okayCreation) {
-            std::string msg = str::stream() << "Attempt to assign UUID to replicated collection: "
-                                            << nss.ns();
+        bool fullyUpgraded = serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
+        bool canGenerateUUID =
+            (coordinator->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) ||
+            coordinator->canAcceptWritesForDatabase(opCtx, nss.db()) || nss.isSystemDotProfile();
+
+        if (fullyUpgraded && !canGenerateUUID) {
+            std::string msg = str::stream() << "Attempted to create a new collection " << nss.ns()
+                                            << " without a UUID";
             severe() << msg;
             uasserted(ErrorCodes::InvalidOptions, msg);
         }
-        optionsWithUUID.uuid.emplace(CollectionUUID::gen());
+        if (canGenerateUUID) {
+            optionsWithUUID.uuid.emplace(CollectionUUID::gen());
+            generatedUUID = true;
+        }
     }
 
     _checkCanCreateCollection(opCtx, nss, optionsWithUUID);
     audit::logCreateCollection(&cc(), ns);
 
-    std::string uuidString =
-        (optionsWithUUID.uuid) ? optionsWithUUID.uuid.get().toString() : "none";
-    log() << "createCollection: " << ns << " with UUID: " << uuidString;
+    if (optionsWithUUID.uuid) {
+        log() << "createCollection: " << ns << " with "
+              << (generatedUUID ? "generated" : "provided")
+              << " UUID: " << optionsWithUUID.uuid.get();
+    } else {
+        log() << "createCollection: " << ns << " with no UUID.";
+    }
+
     massertStatusOK(
         _dbEntry->createCollection(opCtx, ns, optionsWithUUID, true /*allocateDefaultSpace*/));
 
@@ -819,6 +838,8 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
             createSystemIndexes(opCtx, collection);
         }
     }
+
+    MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangBeforeLoggingCreateCollection);
 
     opCtx->getServiceContext()->getOpObserver()->onCreateCollection(
         opCtx, collection, nss, optionsWithUUID, fullIdIndexSpec);

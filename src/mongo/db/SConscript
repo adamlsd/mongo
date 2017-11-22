@@ -414,6 +414,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/storage/mmap_v1/mmap_v1_options',
+        'commands/test_commands_enabled',
         'repl/repl_settings',
         'server_options',
         'storage/storage_options',
@@ -1067,6 +1068,7 @@ env.Library(
     target='logical_session_cache',
     source=[
         'logical_session_cache.cpp',
+        env.Idlc('logical_session_cache_stats.idl')[0],
     ],
     LIBDEPS=[
         'logical_session_id',
@@ -1500,9 +1502,12 @@ env.Library(
         'log_process_details.cpp',
     ],
     LIBDEPS=[
+        'repl/repl_coordinator_global',
+        'repl/repl_coordinator_interface',
+        'repl/replica_set_messages',
+        'server_options',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
-        'server_options',
     ],
 )
 
@@ -1532,39 +1537,11 @@ env.Library(
 env.Library(
     target='generic_cursor',
     source=[
-        'generic_cursor_manager.cpp',
         env.Idlc('generic_cursor.idl')[0],
     ],
     LIBDEPS=[
         'service_context',
         '$BUILD_DIR/mongo/idl/idl_parser',
-    ],
-)
-
-env.Library(
-    target='generic_cursor_mongod',
-    source=[
-        'generic_cursor_manager_mongod.cpp',
-    ],
-    LIBDEPS=[
-        'generic_cursor',
-    ],
-    LIBDEPS_PRIVATE=[
-        'clientcursor',
-    ],
-)
-
-env.Library(
-    target='generic_cursor_mongos',
-    source=[
-        'generic_cursor_manager_mongos.cpp',
-    ],
-    LIBDEPS=[
-        'generic_cursor',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/s/coreshard',
-        '$BUILD_DIR/mongo/s/query/cluster_cursor_manager',
     ],
 )
 

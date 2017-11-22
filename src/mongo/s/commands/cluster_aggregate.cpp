@@ -34,11 +34,12 @@
 
 #include <boost/intrusive_ptr.hpp>
 
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/pipeline/close_change_stream_exception.h"
+#include "mongo/db/pipeline/document_source_change_stream.h"
 #include "mongo/db/pipeline/document_source_out.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/lite_parsed_pipeline.h"
@@ -61,11 +62,15 @@
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/cluster_query_knobs.h"
 #include "mongo/s/query/establish_cursors.h"
+#include "mongo/s/query/router_stage_update_on_add_shard.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
+#include "mongo/util/fail_point.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
+
+MONGO_FP_DECLARE(clusterAggregateHangBeforeEstablishingShardCursors);
 
 namespace {
 // Given a document representing an aggregation command such as
@@ -283,6 +288,14 @@ StatusWith<std::vector<ClusterClientCursorParams::RemoteCursor>> establishShardC
                                   : cmdObj);
     }
 
+    if (MONGO_FAIL_POINT(clusterAggregateHangBeforeEstablishingShardCursors)) {
+        log() << "clusterAggregateHangBeforeEstablishingShardCursors fail point enabled.  Blocking "
+                 "until fail point is disabled.";
+        while (MONGO_FAIL_POINT(clusterAggregateHangBeforeEstablishingShardCursors)) {
+            sleepsecs(1);
+        }
+    }
+
     // If we reach this point, we're either trying to establish cursors on a sharded execution
     // namespace, or handling the case where a sharded collection was dropped and recreated as
     // unsharded. Since views cannot be sharded, and because we will return an error rather than
@@ -324,6 +337,9 @@ struct DispatchShardPipelineResults {
 
     // The merging half of the pipeline if more than one shard was targeted, otherwise nullptr.
     std::unique_ptr<Pipeline, Pipeline::Deleter> pipelineForMerging;
+
+    // The command object to send to the targeted shards.
+    BSONObj commandForTargetedShards;
 };
 
 /**
@@ -355,10 +371,13 @@ StatusWith<DispatchShardPipelineResults> dispatchShardPipeline(
     const bool needsPrimaryShardMerge =
         (pipeline->needsPrimaryShardMerger() || internalQueryAlwaysMergeOnPrimaryShard.load());
 
+    const bool needsMongosMerge = pipeline->needsMongosMerger();
+
     const auto shardQuery = pipeline->getInitialQuery();
 
     auto pipelineForTargetedShards = std::move(pipeline);
     std::unique_ptr<Pipeline, Pipeline::Deleter> pipelineForMerging;
+    BSONObj targetedCommand;
 
     int numAttempts = 0;
 
@@ -381,11 +400,12 @@ StatusWith<DispatchShardPipelineResults> dispatchShardPipeline(
                 "cluster mid-operation",
                 shardIds.size() > 0);
 
-        // Don't need to split pipeline if we are only targeting a single shard, unless there is a
-        // stage that needs to be run on the primary shard and the single target shard is not the
-        // primary.
+        // Don't need to split the pipeline if we are only targeting a single shard, unless:
+        // - There is a stage that needs to be run on the primary shard and the single target shard
+        //   is not the primary.
+        // - The pipeline contains one or more stages which must always merge on mongoS.
         const bool needsSplit =
-            (shardIds.size() > 1u ||
+            (shardIds.size() > 1u || needsMongosMerge ||
              (needsPrimaryShardMerge && *(shardIds.begin()) != executionNsRoutingInfo.primaryId()));
 
         const bool isSplit = pipelineForTargetedShards->isSplitForShards();
@@ -400,8 +420,18 @@ StatusWith<DispatchShardPipelineResults> dispatchShardPipeline(
         }
 
         // Generate the command object for the targeted shards.
-        BSONObj targetedCommand =
+        targetedCommand =
             createCommandForTargetedShards(aggRequest, originalCmdObj, pipelineForTargetedShards);
+
+        // Refresh the shard registry if we're targeting all shards.  We need the shard registry
+        // to be at least as current as the logical time used when creating the command for
+        // $changeStream to work reliably, so we do a "hard" reload.
+        if (mustRunOnAllShards(executionNss, liteParsedPipeline)) {
+            auto* shardRegistry = Grid::get(opCtx)->shardRegistry();
+            if (!shardRegistry->reload(opCtx)) {
+                shardRegistry->reload(opCtx);
+            }
+        }
 
         // Explain does not produce a cursor, so instead we scatter-gather commands to the shards.
         if (expCtx->explain) {
@@ -458,7 +488,8 @@ StatusWith<DispatchShardPipelineResults> dispatchShardPipeline(
                                         std::move(swCursors.getValue()),
                                         std::move(swShardResults.getValue()),
                                         std::move(pipelineForTargetedShards),
-                                        std::move(pipelineForMerging)};
+                                        std::move(pipelineForMerging),
+                                        targetedCommand};
 }
 
 StatusWith<std::pair<ShardId, Shard::CommandResponse>> establishMergingShardCursor(
@@ -488,6 +519,8 @@ BSONObj establishMergingMongosCursor(
     OperationContext* opCtx,
     const AggregationRequest& request,
     const NamespaceString& requestedNss,
+    BSONObj cmdToRunOnNewShards,
+    const LiteParsedPipeline& liteParsedPipeline,
     std::unique_ptr<Pipeline, Pipeline::Deleter> pipelineForMerging,
     std::vector<ClusterClientCursorParams::RemoteCursor> cursors) {
 
@@ -510,6 +543,16 @@ BSONObj establishMergingMongosCursor(
         ? boost::none
         : boost::optional<long long>(request.getBatchSize());
 
+    if (liteParsedPipeline.hasChangeStream()) {
+        // For change streams, we need to set up a custom stage to establish cursors on new shards
+        // when they are added.
+        params.createCustomCursorSource = [cmdToRunOnNewShards](OperationContext* opCtx,
+                                                                executor::TaskExecutor* executor,
+                                                                ClusterClientCursorParams* params) {
+            return stdx::make_unique<RouterStageUpdateOnAddShard>(
+                opCtx, executor, params, cmdToRunOnNewShards);
+        };
+    }
     auto ccc = ClusterClientCursorImpl::make(
         opCtx, Grid::get(opCtx)->getExecutorPool()->getArbitraryExecutor(), std::move(params));
 
@@ -522,7 +565,7 @@ BSONObj establishMergingMongosCursor(
         ClusterQueryResult next;
         try {
             next = uassertStatusOK(ccc->next(RouterExecStage::ExecContext::kInitialFind));
-        } catch (const CloseChangeStreamException&) {
+        } catch (const ExceptionFor<ErrorCodes::CloseChangeStream>&) {
             // This exception is thrown when a $changeStream stage encounters an event
             // that invalidates the cursor. We should close the cursor and return without
             // error.
@@ -574,6 +617,33 @@ BSONObj establishMergingMongosCursor(
     return cursorResponse.obj();
 }
 
+BSONObj getDefaultCollationForUnshardedCollection(const Shard* primaryShard,
+                                                  const NamespaceString& nss) {
+    ScopedDbConnection conn(primaryShard->getConnString());
+    BSONObj defaultCollation;
+    std::list<BSONObj> all =
+        conn->getCollectionInfos(nss.db().toString(), BSON("name" << nss.coll()));
+    if (all.empty()) {
+        return defaultCollation;
+    }
+    BSONObj collectionInfo = all.front();
+    if (collectionInfo["options"].type() == BSONType::Object) {
+        BSONObj collectionOptions = collectionInfo["options"].Obj();
+        BSONElement collationElement;
+        auto status = bsonExtractTypedField(
+            collectionOptions, "collation", BSONType::Object, &collationElement);
+        if (status.isOK()) {
+            defaultCollation = collationElement.Obj().getOwned();
+            uassert(ErrorCodes::BadValue,
+                    "Default collation in collection metadata cannot be empty.",
+                    !defaultCollation.isEmpty());
+        } else if (status != ErrorCodes::NoSuchKey) {
+            uassertStatusOK(status);
+        }
+    }
+    return defaultCollation;
+}
+
 }  // namespace
 
 Status ClusterAggregate::runAggregate(OperationContext* opCtx,
@@ -613,11 +683,12 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         resolvedNamespaces.try_emplace(nss.coll(), nss, std::vector<BSONObj>{});
     }
 
-    // If this pipeline is on an unsharded collection, is allowed to be forwarded to shards, is not
-    // a collectionless aggregation that needs to run on all shards, and doesn't need transformation
-    // via DocumentSoruce::serialize(), then go ahead and pass it through to the owning shard
+    // If this pipeline is on an unsharded collection, is allowed to be forwarded to shards, does
+    // not need to run on all shards, and doesn't need transformation via
+    // DocumentSource::serialize(), then go ahead and pass it through to the owning shard
     // unmodified.
-    if (!executionNsRoutingInfo.cm() && !namespaces.executionNss.isCollectionlessAggregateNS() &&
+    if (!executionNsRoutingInfo.cm() &&
+        !mustRunOnAllShards(namespaces.executionNss, liteParsedPipeline) &&
         liteParsedPipeline.allowedToForwardFromMongos() &&
         liteParsedPipeline.allowedToPassthroughFromMongos()) {
         return aggPassthrough(opCtx,
@@ -637,6 +708,14 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
         if (chunkMgr->getDefaultCollator()) {
             collation = chunkMgr->getDefaultCollator()->clone();
         }
+    } else {
+        // Unsharded collection.  Get collection metadata from primary chunk.
+        auto collationObj = getDefaultCollationForUnshardedCollection(
+            executionNsRoutingInfo.primary().get(), namespaces.executionNss);
+        if (!collationObj.isEmpty()) {
+            collation = uassertStatusOK(CollatorFactoryInterface::get(opCtx->getServiceContext())
+                                            ->makeFromBSON(collationObj));
+        }
     }
 
     boost::intrusive_ptr<ExpressionContext> mergeCtx =
@@ -655,8 +734,13 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
                               << " is not capable of producing input",
                 !pipeline->getSources().front()->constraints().requiresInputDocSource);
 
-        auto cursorResponse = establishMergingMongosCursor(
-            opCtx, request, namespaces.requestedNss, std::move(pipeline), {});
+        auto cursorResponse = establishMergingMongosCursor(opCtx,
+                                                           request,
+                                                           namespaces.requestedNss,
+                                                           cmdObj,
+                                                           liteParsedPipeline,
+                                                           std::move(pipeline),
+                                                           {});
         Command::filterCommandReplyForPassthrough(cursorResponse, result);
         return getStatusFromCommandResult(result->asTempObj());
     }
@@ -714,6 +798,8 @@ Status ClusterAggregate::runAggregate(OperationContext* opCtx,
             establishMergingMongosCursor(opCtx,
                                          request,
                                          namespaces.requestedNss,
+                                         dispatchResults.commandForTargetedShards,
+                                         liteParsedPipeline,
                                          std::move(mergingPipeline),
                                          std::move(dispatchResults.remoteCursors));
 

@@ -29,6 +29,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/db/query/collation/collation_spec.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
 
 namespace mongo {
@@ -45,6 +46,7 @@ ExpressionContext::ExpressionContext(OperationContext* opCtx,
                                      StringMap<ResolvedNamespace> resolvedNamespaces)
     : ExpressionContext(opCtx, collator.get()) {
     explain = request.getExplain();
+    comment = request.getComment();
     fromMongos = request.isFromMongos();
     needsMerge = request.needsMerge();
     allowDiskUse = request.shouldAllowDiskUse();
@@ -80,6 +82,39 @@ void ExpressionContext::checkForInterrupt() {
     }
 }
 
+ExpressionContext::CollatorStash::CollatorStash(
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    std::unique_ptr<CollatorInterface> newCollator)
+    : _expCtx(expCtx),
+      _originalCollation(_expCtx->collation),
+      _originalCollatorOwned(std::move(_expCtx->_ownedCollator)),
+      _originalCollatorUnowned(_expCtx->_collator) {
+    _expCtx->setCollator(std::move(newCollator));
+    _expCtx->collation =
+        _expCtx->getCollator() ? _expCtx->getCollator()->getSpec().toBSON().getOwned() : BSONObj();
+}
+
+ExpressionContext::CollatorStash::~CollatorStash() {
+    if (_originalCollatorOwned) {
+        _expCtx->setCollator(std::move(_originalCollatorOwned));
+    } else {
+        _expCtx->setCollator(_originalCollatorUnowned);
+        if (!_originalCollatorUnowned && _expCtx->_ownedCollator) {
+            // If the original collation was 'nullptr', we cannot distinguish whether it was owned
+            // or not. We always set '_ownedCollator' with the stash, so should reset it to null
+            // here.
+            _expCtx->_ownedCollator = nullptr;
+        }
+    }
+    _expCtx->collation = _originalCollation;
+}
+
+std::unique_ptr<ExpressionContext::CollatorStash> ExpressionContext::temporarilyChangeCollator(
+    std::unique_ptr<CollatorInterface> newCollator) {
+    // This constructor of CollatorStash is private, so we can't use make_unique().
+    return std::unique_ptr<CollatorStash>(new CollatorStash(this, std::move(newCollator)));
+}
+
 void ExpressionContext::setCollator(const CollatorInterface* collator) {
     _collator = collator;
 
@@ -88,29 +123,39 @@ void ExpressionContext::setCollator(const CollatorInterface* collator) {
     _valueComparator = ValueComparator(_collator);
 }
 
-intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(NamespaceString ns,
-                                                             boost::optional<UUID> uuid) const {
+intrusive_ptr<ExpressionContext> ExpressionContext::copyWith(
+    NamespaceString ns,
+    boost::optional<UUID> uuid,
+    boost::optional<std::unique_ptr<CollatorInterface>> collator) const {
     intrusive_ptr<ExpressionContext> expCtx =
         new ExpressionContext(std::move(ns), timeZoneDatabase);
 
     expCtx->uuid = std::move(uuid);
     expCtx->explain = explain;
+    expCtx->comment = comment;
     expCtx->needsMerge = needsMerge;
     expCtx->fromMongos = fromMongos;
     expCtx->from34Mongos = from34Mongos;
     expCtx->inMongos = inMongos;
     expCtx->allowDiskUse = allowDiskUse;
     expCtx->bypassDocumentValidation = bypassDocumentValidation;
+    expCtx->subPipelineDepth = subPipelineDepth;
 
     expCtx->tempDir = tempDir;
 
     expCtx->opCtx = opCtx;
 
-    expCtx->collation = collation;
-    if (_ownedCollator) {
-        expCtx->setCollator(_ownedCollator->clone());
-    } else if (_collator) {
-        expCtx->setCollator(_collator);
+    if (collator) {
+        expCtx->collation =
+            *collator ? (*collator)->getSpec().toBSON() : CollationSpec::kSimpleSpec;
+        expCtx->setCollator(std::move(*collator));
+    } else {
+        expCtx->collation = collation;
+        if (_ownedCollator) {
+            expCtx->setCollator(_ownedCollator->clone());
+        } else if (_collator) {
+            expCtx->setCollator(_collator);
+        }
     }
 
     expCtx->_resolvedNamespaces = _resolvedNamespaces;

@@ -116,6 +116,12 @@ public:
                                   repl::StorageInterface* storageInterface);
 
     /**
+     * Returns true if the server is on a clean startup. A clean startup means there are no
+     * databases on disk besides the local database.
+     */
+    static bool isCleanStartUp();
+
+    /**
      * Examines a document inserted or updated in admin.system.version. If it is the
      * featureCompatibilityVersion document, validates the document and on commit, updates
      * the server parameter.
@@ -133,6 +139,12 @@ public:
      * Resets the server parameter to its default value on commit.
      */
     static void onDropCollection(OperationContext* opCtx);
+
+    /**
+     * Sets the server's outgoing and incomingInternalClient minWireVersions according to the
+     * current featureCompatibilityVersion value.
+     */
+    static void updateMinWireVersion();
 
 private:
     /**

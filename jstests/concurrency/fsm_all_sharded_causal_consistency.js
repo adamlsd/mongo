@@ -85,6 +85,8 @@ var blacklist = [
     'rename_collection_dbname_droptarget.js',
     'rename_collection_droptarget.js',
 
+    'toggle_feature_compatibility.js',  // Sets FCV to 3.4, which will cause session use to fail
+
     'update_simple_eval.js',           // eval doesn't work with sharded collections
     'update_simple_eval_nolock.js',    // eval doesn't work with sharded collections
     'update_upsert_multi.js',          // our update queries lack shard keys
@@ -93,18 +95,7 @@ var blacklist = [
     'yield_and_hashed.js',  // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js',  // stagedebug can only be run against a standalone mongod
 
-    'reindex_background.js',  // TODO SERVER-30983
-
-    'agg_base.js',  // TODO SERVER-30984
-
-    'indexed_insert_multikey.js',                         // TODO SERVER-31000
-    'indexed_insert_multikey_noindex.js',                 // TODO SERVER-31000
-    'indexed_insert_text_multikey.js',                    // TODO SERVER-31000
-    'update_multifield_multiupdate.js',                   // TODO SERVER-31000
-    'update_multifield_multiupdate_noindex.js',           // TODO SERVER-31000
-    'update_multifield_isolated_multiupdate.js',          // TODO SERVER-31000
-    'update_multifield_isolated_multiupdate_noindex.js',  // TODO SERVER-31000
-    'yield_id_hack.js',                                   // TODO SERVER-31000
+    'reindex_background.js'  // TODO SERVER-30983
 ].map(function(file) {
     return dir + '/' + file;
 });

@@ -70,10 +70,92 @@ boost::optional<repl::OplogEntry> fetchPrePostImageOplog(OperationContext* opCtx
     return uassertStatusOK(repl::OplogEntry::parse(oplogBSON));
 }
 
-}  // unnamed namespace
+/**
+ * Creates an OplogEntry using the given field values
+ */
+repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
+                                long long hash,
+                                repl::OpTypeEnum opType,
+                                const BSONObj& oField,
+                                const boost::optional<BSONObj>& o2Field,
+                                const OperationSessionInfo& sessionInfo,
+                                const boost::optional<StmtId>& statementId) {
+    return repl::OplogEntry(opTime,                           // optime
+                            hash,                             // hash
+                            opType,                           // op type
+                            {},                               // namespace
+                            boost::none,                      // uuid
+                            boost::none,                      // fromMigrate
+                            repl::OplogEntry::kOplogVersion,  // version
+                            oField,                           // o
+                            o2Field,                          // o2
+                            sessionInfo,                      // session info
+                            boost::none,                      // wall clock time
+                            statementId,                      // statement id
+                            boost::none,   // optime of previous write within same transaction
+                            boost::none,   // pre-image optime
+                            boost::none);  // post-image optime
+}
 
-SessionCatalogMigrationSource::SessionCatalogMigrationSource(NamespaceString ns)
-    : _ns(std::move(ns)) {}
+/**
+ * Creates a special "write history lost" sentinel oplog entry.
+ */
+repl::OplogEntry makeSentinelOplogEntry(OperationSessionInfo sessionInfo) {
+    return makeOplogEntry({},                         // optime
+                          hashGenerator.nextInt64(),  // hash
+                          repl::OpTypeEnum::kNoop,    // op type
+                          {},                         // o
+                          Session::kDeadEndSentinel,  // o2
+                          sessionInfo,                // session info
+                          kIncompleteHistoryStmtId);  // statement id
+}
+
+}  // namespace
+
+SessionCatalogMigrationSource::SessionCatalogMigrationSource(OperationContext* opCtx,
+                                                             NamespaceString ns)
+    : _ns(std::move(ns)),
+      _rollbackIdAtInit(
+          uassertStatusOK(repl::ReplicationProcess::get(opCtx)->getRollbackID(opCtx))) {
+    // Sort is not needed for correctness. This is just for making it easier to write deterministic
+    // tests.
+    Query query;
+    query.sort(BSON("_id" << 1));
+
+    DBDirectClient client(opCtx);
+    auto cursor = client.query(NamespaceString::kSessionTransactionsTableNamespace.ns(), query);
+
+    while (cursor->more()) {
+        auto nextSession = SessionTxnRecord::parse(
+            IDLParserErrorContext("Session migration cloning"), cursor->next());
+        if (!nextSession.getLastWriteOpTime().isNull()) {
+            _sessionOplogIterators.push_back(
+                stdx::make_unique<SessionOplogIterator>(std::move(nextSession), _rollbackIdAtInit));
+        }
+    }
+
+    {
+        AutoGetCollection autoColl(opCtx, NamespaceString::kRsOplogNamespace, MODE_IX);
+        writeConflictRetry(
+            opCtx,
+            "session migration initialization majority commit barrier",
+            NamespaceString::kRsOplogNamespace.ns(),
+            [&] {
+                const auto message = BSON("sessionMigrateCloneStart" << _ns.ns());
+
+                WriteUnitOfWork wuow(opCtx);
+                opCtx->getClient()->getServiceContext()->getOpObserver()->onInternalOpMessage(
+                    opCtx, _ns, {}, {}, message);
+                wuow.commit();
+            });
+    }
+
+    auto opTimeToWait = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
+    WriteConcernResult result;
+    WriteConcernOptions majority(
+        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, 0);
+    uassertStatusOK(waitForWriteConcern(opCtx, opTimeToWait, majority, &result));
+}
 
 bool SessionCatalogMigrationSource::hasMoreOplog() {
     return _hasMoreOplogFromSessionCatalog() || _hasNewWrites();
@@ -148,7 +230,6 @@ repl::OplogEntry SessionCatalogMigrationSource::_getLastFetchedOplogFromSessionC
 bool SessionCatalogMigrationSource::_fetchNextOplogFromSessionCatalog(OperationContext* opCtx) {
     stdx::unique_lock<stdx::mutex> lk(_sessionCloneMutex);
 
-    invariant(_alreadyInitialized);
     if (!_lastFetchedOplogBuffer.empty()) {
         _lastFetchedOplog = _lastFetchedOplogBuffer.back();
         _lastFetchedOplogBuffer.pop_back();
@@ -190,7 +271,6 @@ bool SessionCatalogMigrationSource::_fetchNextNewWriteOplog(OperationContext* op
     {
         stdx::lock_guard<stdx::mutex> lk(_newOplogMutex);
 
-        invariant(_alreadyInitialized);
         if (_newWriteOpTimeList.empty()) {
             _lastFetchedNewWriteOplog.reset();
             return false;
@@ -220,54 +300,6 @@ bool SessionCatalogMigrationSource::_fetchNextNewWriteOplog(OperationContext* op
 void SessionCatalogMigrationSource::notifyNewWriteOpTime(repl::OpTime opTime) {
     stdx::lock_guard<stdx::mutex> lk(_newOplogMutex);
     _newWriteOpTimeList.push_back(opTime);
-}
-
-void SessionCatalogMigrationSource::init(OperationContext* opCtx) {
-    invariant(!_alreadyInitialized);
-
-    _rollbackIdAtInit = uassertStatusOK(repl::ReplicationProcess::get(opCtx)->getRollbackID(opCtx));
-
-    DBDirectClient client(opCtx);
-    Query query;
-    // Sort is not needed for correctness. This is just for making it easier to write deterministic
-    // tests.
-    query.sort(BSON("_id" << 1));
-    auto cursor = client.query(NamespaceString::kSessionTransactionsTableNamespace.ns(), query);
-
-    std::vector<std::unique_ptr<SessionOplogIterator>> sessionOplogIterators;
-    while (cursor->more()) {
-        auto nextSession = SessionTxnRecord::parse(
-            IDLParserErrorContext("Session migration cloning"), cursor->next());
-        if (!nextSession.getLastWriteOpTime().isNull()) {
-            sessionOplogIterators.push_back(
-                stdx::make_unique<SessionOplogIterator>(std::move(nextSession), _rollbackIdAtInit));
-        }
-    }
-
-    {
-        auto message = BSON("sessionMigrateCloneStart" << _ns.ns());
-        AutoGetCollection autoColl(opCtx, NamespaceString::kRsOplogNamespace, MODE_IX);
-        writeConflictRetry(
-            opCtx,
-            "session migration initialization majority commit barrier",
-            NamespaceString::kRsOplogNamespace.ns(),
-            [&] {
-                WriteUnitOfWork wuow(opCtx);
-                opCtx->getClient()->getServiceContext()->getOpObserver()->onInternalOpMessage(
-                    opCtx, _ns, {}, {}, message);
-                wuow.commit();
-            });
-    }
-
-    auto opTimeToWait = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
-    WriteConcernResult result;
-    WriteConcernOptions majority(
-        WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, 0);
-    uassertStatusOK(waitForWriteConcern(opCtx, opTimeToWait, majority, &result));
-
-    stdx::lock_guard<stdx::mutex> lk(_sessionCloneMutex);
-    _alreadyInitialized = true;
-    _sessionOplogIterators.swap(sessionOplogIterators);
 }
 
 SessionCatalogMigrationSource::SessionOplogIterator::SessionOplogIterator(
@@ -305,18 +337,10 @@ repl::OplogEntry SessionCatalogMigrationSource::SessionOplogIterator::getNext(
 
             // If the rollbackId hasn't changed, this means that the oplog has been truncated.
             // So, we return the special "write  history lost" sentinel.
-            repl::OplogEntry oplog({},
-                                   hashGenerator.nextInt64(),
-                                   repl::OpTypeEnum::kNoop,
-                                   {},
-                                   repl::OplogEntry::kOplogVersion,
-                                   {},
-                                   Session::kDeadEndSentinel);
             OperationSessionInfo sessionInfo;
             sessionInfo.setSessionId(_record.getSessionId());
             sessionInfo.setTxnNumber(_record.getTxnNum());
-            oplog.setOperationSessionInfo(sessionInfo);
-            oplog.setStatementId(kIncompleteHistoryStmtId);
+            auto oplog = makeSentinelOplogEntry(sessionInfo);
 
             _writeHistoryIterator.reset();
 

@@ -39,10 +39,14 @@ env.Library(
         "router_stage_pipeline.cpp",
         "router_stage_remove_metadata_fields.cpp",
         "router_stage_skip.cpp",
+        "router_stage_update_on_add_shard.cpp",
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/db/query/query_common",
         "async_results_merger",
+    ],
+    LIBDEPS_PRIVATE=[
+        "$BUILD_DIR/mongo/db/pipeline/document_source_lookup",
     ],
 )
 
@@ -105,6 +109,19 @@ env.CppUnitTest(
     ],
 )
 
+env.CppUnitTest(
+    target="establish_cursors_test",
+    source=[
+        "establish_cursors_test.cpp",
+    ],
+    LIBDEPS=[
+        'async_results_merger',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/query/query_request',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/sharding_test_fixture',
+    ],
+)
 env.Library(
     target="store_possible_cursor",
     source=[

@@ -996,6 +996,37 @@ Status CollectionImpl::setValidationAction(OperationContext* opCtx, StringData n
     return Status::OK();
 }
 
+Status CollectionImpl::updateValidator(OperationContext* opCtx,
+                                       BSONObj newValidator,
+                                       StringData newLevel,
+                                       StringData newAction) {
+    invariant(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
+
+    _details->updateValidator(opCtx, newValidator, newLevel, newAction);
+    _validatorDoc = std::move(newValidator);
+
+    auto validatorSW =
+        parseValidator(opCtx, _validatorDoc, MatchExpressionParser::kAllowAllSpecialFeatures);
+    if (!validatorSW.isOK()) {
+        return validatorSW.getStatus();
+    }
+    _validator = std::move(validatorSW.getValue());
+
+    auto levelSW = parseValidationLevel(newLevel);
+    if (!levelSW.isOK()) {
+        return levelSW.getStatus();
+    }
+    _validationLevel = levelSW.getValue();
+
+    auto actionSW = parseValidationAction(newAction);
+    if (!actionSW.isOK()) {
+        return actionSW.getStatus();
+    }
+    _validationAction = actionSW.getValue();
+
+    return Status::OK();
+}
+
 const CollatorInterface* CollectionImpl::getDefaultCollator() const {
     return _collator.get();
 }
@@ -1004,6 +1035,15 @@ void CollectionImpl::informIndexObserver(OperationContext* opCtx,
                                          const IndexDescriptor* descriptor,
                                          const IndexKeyEntry& indexEntry,
                                          const ValidationOperation operation) const {
+    // The index observer was used for a project that would allow concurrent validation of
+    // collection/index consistency while updates were happening to the collection. That project did
+    // not make it in for 3.6. This mutex is in a hot code path, so we're going to avoid locking it
+    // for the time being. See SERVER-31948.
+    const bool unusedReturnEarlyForPerf = true;
+    if (unusedReturnEarlyForPerf) {
+        return;
+    }
+
     stdx::lock_guard<stdx::mutex> lock(_indexObserverMutex);
     if (_indexObserver) {
         _indexObserver->inform(opCtx, descriptor, std::move(indexEntry), operation);

@@ -40,6 +40,7 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/db/wire_version.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/transport/service_entry_point.h"
@@ -201,16 +202,8 @@ void FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(OperationContext
 
 void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
                                                     repl::StorageInterface* storageInterface) {
-    // A clean startup means there are no databases on disk besides the local database.
-    std::vector<std::string> dbNames;
-    StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
-    storageEngine->listDatabases(&dbNames);
-
-    for (auto&& dbName : dbNames) {
-        if (dbName != "local") {
-            return;
-        }
-    }
+    if (!isCleanStartUp())
+        return;
 
     // If the server was not started with --shardsvr, the default featureCompatibilityVersion on
     // clean startup is the upgrade version. If it was started with --shardsvr, the default
@@ -222,14 +215,19 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
     UnreplicatedWritesBlock unreplicatedWritesBlock(opCtx);
     NamespaceString nss(FeatureCompatibilityVersion::kCollection);
 
-    if (storeUpgradeVersion) {
-        // We update the value of the version server parameter so that the admin.system.version
-        // collection gets a UUID.
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36);
-    }
+    {
+        CollectionOptions options;
+        options.uuid = CollectionUUID::gen();
 
-    uassertStatusOK(storageInterface->createCollection(opCtx, nss, {}));
+        // Only for 3.4 shard servers, we create admin.system.version without UUID on clean startup.
+        // The mention of kFullyDowngradedTo34 below is to ensure this will not compile in 3.8.
+        if (!storeUpgradeVersion &&
+            serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34)
+            options.uuid.reset();
+
+        uassertStatusOK(storageInterface->createCollection(opCtx, nss, options));
+    }
 
     // We then insert the featureCompatibilityVersion document into the "admin.system.version"
     // collection. The server parameter will be updated on commit by the op observer.
@@ -242,9 +240,22 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
                        << (storeUpgradeVersion
                                ? FeatureCompatibilityVersionCommandParser::kVersion36
                                : FeatureCompatibilityVersionCommandParser::kVersion34)),
-            SnapshotName()},
+            Timestamp()},
         repl::OpTime::kUninitializedTerm));  // No timestamp or term because this write is not
                                              // replicated.
+}
+
+bool FeatureCompatibilityVersion::isCleanStartUp() {
+    std::vector<std::string> dbNames;
+    StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
+    storageEngine->listDatabases(&dbNames);
+
+    for (auto&& dbName : dbNames) {
+        if (dbName != "local") {
+            return false;
+        }
+    }
+    return true;
 }
 
 namespace {
@@ -335,8 +346,11 @@ void FeatureCompatibilityVersion::onInsertOrUpdate(OperationContext* opCtx, cons
     // version that is below the minimum.
     opCtx->recoveryUnit()->onCommit([opCtx, newVersion]() {
         serverGlobalParams.featureCompatibility.setVersion(newVersion);
+        updateMinWireVersion();
 
-        // Close all connections from internal clients with binary versions lower than 3.6.
+        // Close all incoming connections from internal clients with binary versions lower than
+        // ours. It would be desirable to close all outgoing connections to servers with lower
+        // binary version, but it is not currently possible.
         if (newVersion != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
             opCtx->getServiceContext()->getServiceEntryPoint()->endAllSessions(
                 transport::Session::kLatestVersionInternalClientKeepOpen |
@@ -362,6 +376,7 @@ void FeatureCompatibilityVersion::onDelete(OperationContext* opCtx, const BSONOb
     opCtx->recoveryUnit()->onCommit([]() {
         serverGlobalParams.featureCompatibility.setVersion(
             ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
+        updateMinWireVersion();
     });
 }
 
@@ -379,7 +394,33 @@ void FeatureCompatibilityVersion::onDropCollection(OperationContext* opCtx) {
     opCtx->recoveryUnit()->onCommit([]() {
         serverGlobalParams.featureCompatibility.setVersion(
             ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
+        updateMinWireVersion();
     });
+}
+
+void FeatureCompatibilityVersion::updateMinWireVersion() {
+    WireSpec& spec = WireSpec::instance();
+
+    switch (serverGlobalParams.featureCompatibility.getVersion()) {
+        case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
+        case ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36:
+        case ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34:
+            spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION;
+            spec.outgoing.minWireVersion = LATEST_WIRE_VERSION;
+            return;
+        case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34:
+            // It would be preferable to set 'incomingInternalClient.minWireVersion' and
+            // 'outgoing.minWireVersion' to LATEST_WIRE_VERSION - 1, but this is not possible due to
+            // a bug in 3.4, where if the receiving node says it supports wire version range
+            // [COMMANDS_ACCEPT_WRITE_CONCERN, SUPPORTS_OP_MSG], the initiating node will think it
+            // only supports OP_QUERY.
+            spec.incomingInternalClient.minWireVersion = RELEASE_2_4_AND_BEFORE;
+            spec.outgoing.minWireVersion = RELEASE_2_4_AND_BEFORE;
+            return;
+        case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault34Behavior:
+            // getVersion() does not return this value.
+            MONGO_UNREACHABLE;
+    }
 }
 
 void FeatureCompatibilityVersion::_validateVersion(StringData version) {
@@ -466,7 +507,8 @@ public:
                     FeatureCompatibilityVersion::kTargetVersionField,
                     FeatureCompatibilityVersionCommandParser::kVersion34);
                 return;
-            default:
+            case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault34Behavior:
+                // getVersion() does not return this value.
                 MONGO_UNREACHABLE;
         }
     }

@@ -238,10 +238,7 @@ Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInf
     auto oplogEntry = OplogEntry(fixedObj);
 
     if (isNestedApplyOpsCommand) {
-        LOG(2) << "Updating rollback FixUpInfo for nested applyOps entry: "
-               << redact(oplogEntry.toBSON());
-    } else {
-        LOG(2) << "Updating rollback FixUpInfo for local oplog entry: "
+        LOG(2) << "Updating rollback FixUpInfo for nested applyOps oplog entry: "
                << redact(oplogEntry.toBSON());
     }
 
@@ -938,9 +935,20 @@ Status _syncRollback(OperationContext* opCtx,
                           << e.what());
     }
 
-    log() << "Rollback common point is " << how.commonPoint;
+    OpTime commonPoint = how.commonPoint;
+    OpTime lastCommittedOpTime = replCoord->getLastCommittedOpTime();
+    OpTime committedSnapshot = replCoord->getCurrentCommittedSnapshotOpTime();
+
+    log() << "Rollback common point is " << commonPoint;
+
+    // Rollback common point should be >= the replication commit point.
     invariant(!replCoord->isV1ElectionProtocol() ||
-              how.commonPoint >= replCoord->getLastCommittedOpTime());
+              commonPoint.getTimestamp() >= lastCommittedOpTime.getTimestamp());
+    invariant(!replCoord->isV1ElectionProtocol() || commonPoint >= lastCommittedOpTime);
+
+    // Rollback common point should be >= the committed snapshot optime.
+    invariant(commonPoint.getTimestamp() >= committedSnapshot.getTimestamp());
+    invariant(commonPoint >= committedSnapshot);
 
     try {
         ON_BLOCK_EXIT([&] {
@@ -1172,11 +1180,8 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
 
             WriteUnitOfWork wuow(opCtx);
 
-            // If the collection is temporary, we set the temp field to true. Otherwise, we do not
-            // add the the temp field.
-            if (options.temp) {
-                cce->setIsTemp(opCtx, options.temp);
-            }
+            // Set collection to whatever temp status is on the sync source.
+            cce->setIsTemp(opCtx, options.temp);
 
             // Resets collection user flags such as noPadding and usePowerOf2Sizes.
             if (options.flagsSet || cce->getCollectionOptions(opCtx).flagsSet) {
@@ -1186,13 +1191,22 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
             // Set any document validation options. We update the validator fields without
             // parsing/validation, since we fetched the options object directly from the sync
             // source, and we should set our validation options to match it exactly.
-            cce->updateValidator(
+            auto validatorStatus = collection->updateValidator(
                 opCtx, options.validator, options.validationLevel, options.validationAction);
+            if (!validatorStatus.isOK()) {
+                throw RSFatalException(
+                    str::stream() << "Failed to update validator for " << nss.toString() << " ("
+                                  << uuid
+                                  << ") with "
+                                  << redact(info)
+                                  << ". Got: "
+                                  << validatorStatus.toString());
+            }
 
             wuow.commit();
 
             LOG(1) << "Resynced collection metadata for collection: " << nss << ", UUID: " << uuid
-                   << ", with: " << redact(options.toBSON())
+                   << ", with: " << redact(info)
                    << ", to: " << redact(cce->getCollectionOptions(opCtx).toBSON());
         }
 
@@ -1331,7 +1345,7 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
                                                     wunit.commit();
                                                 });
                                         } else {
-                                            throw e;
+                                            throw;
                                         }
                                     }
                                 }
@@ -1415,8 +1429,13 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
     }
 
     // Reload the lastAppliedOpTime and lastDurableOpTime value in the replcoord and the
-    // lastAppliedHash value in bgsync to reflect our new last op.
-    replCoord->resetLastOpTimesFromOplog(opCtx);
+    // lastAppliedHash value in bgsync to reflect our new last op. The rollback common point does
+    // not necessarily represent a consistent database state. For example, on a secondary, we may
+    // have rolled back to an optime that fell in the middle of an oplog application batch. We make
+    // the database consistent again after rollback by applying ops forward until we reach
+    // 'minValid'.
+    replCoord->resetLastOpTimesFromOplog(opCtx,
+                                         ReplicationCoordinator::DataConsistency::Inconsistent);
 }
 
 Status syncRollback(OperationContext* opCtx,

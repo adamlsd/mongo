@@ -15,6 +15,13 @@ load('./jstests/libs/chunk_manipulation_util.js');
 (function() {
     "use strict";
 
+    load("jstests/libs/retryable_writes_util.js");
+
+    if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+        jsTestLog("Retryable writes are not supported, skipping test");
+        return;
+    }
+
     var staticMongod = MongoRunner.runMongod({});  // For startParallelOps.
 
     var st = new ShardingTest({shards: {rs0: {nodes: 1}, rs1: {nodes: 1}}});
@@ -25,6 +32,8 @@ load('./jstests/libs/chunk_manipulation_util.js');
     pauseMoveChunkAtStep(st.shard0, moveChunkStepNames.reachedSteadyState);
     var joinMoveChunk =
         moveChunkParallel(staticMongod, st.s.host, {x: 0}, null, 'test.user', st.shard1.shardName);
+
+    waitForMoveChunkStep(st.shard0, moveChunkStepNames.reachedSteadyState);
 
     var insertCmd = {
         insert: 'user',

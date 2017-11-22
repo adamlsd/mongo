@@ -141,14 +141,16 @@ public:
     static constexpr StringData kReplaceOpType = "replace"_sd;
     static constexpr StringData kInsertOpType = "insert"_sd;
     static constexpr StringData kInvalidateOpType = "invalidate"_sd;
-    // Internal op type to close the cursor.
-    static constexpr StringData kRetryNeededOpType = "retryNeeded"_sd;
+    // Internal op type to signal mongos to open cursors on new shards.
+    static constexpr StringData kNewShardDetectedOpType = "kNewShardDetected"_sd;
 
     /**
      * Produce the BSON object representing the filter for the $match stage to filter oplog entries
      * to only those relevant for this $changeStream stage.
      */
-    static BSONObj buildMatchFilter(const NamespaceString& nss, Timestamp startFrom, bool isResume);
+    static BSONObj buildMatchFilter(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                    Timestamp startFrom,
+                                    bool isResume);
 
     /**
      * Parses a $changeStream stage from 'elem' and produces the $match and transformation
@@ -159,6 +161,15 @@ public:
 
     static boost::intrusive_ptr<DocumentSource> createTransformationStage(
         BSONObj changeStreamSpec, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
+
+    /**
+     * Given a BSON object containing an aggregation command with a $changeStream stage, and a
+     * resume token, returns a new BSON object with the same command except with the addition of a
+     * resumeAfter: option containing the resume token.  If there was a previous resumeAfter:
+     * option, it is removed.
+     */
+    static BSONObj replaceResumeTokenInCommand(const BSONObj originalCmdObj,
+                                               const BSONObj resumeToken);
 
 private:
     // It is illegal to construct a DocumentSourceChangeStream directly, use createFromBson()
@@ -176,6 +187,14 @@ public:
         BSONObj filter, const boost::intrusive_ptr<ExpressionContext>& expCtx);
 
     const char* getSourceName() const final;
+
+    GetNextResult getNext() final {
+        // We should never execute this stage directly. We expect this stage to be absorbed into the
+        // cursor feeding the pipeline, and executing this stage may result in the use of the wrong
+        // collation. The comparisons against the oplog must use the simple collation, regardless of
+        // the collation on the ExpressionContext.
+        MONGO_UNREACHABLE;
+    }
 
     StageConstraints constraints(Pipeline::SplitState pipeState) const final;
 

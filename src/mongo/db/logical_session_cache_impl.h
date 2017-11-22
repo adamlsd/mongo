@@ -108,8 +108,6 @@ public:
 
     void vivify(OperationContext* opCtx, const LogicalSessionId& lsid) override;
 
-    void clear() override;
-
     Status refreshNow(Client* client) override;
 
     Status reapNow(Client* client) override;
@@ -126,6 +124,8 @@ public:
     boost::optional<LogicalSessionRecord> peekCached(const LogicalSessionId& id) const override;
 
     void endSessions(const LogicalSessionIdSet& sessions) override;
+
+    LogicalSessionCacheStats getStats() override;
 
 private:
     /**
@@ -150,6 +150,10 @@ private:
 
     const Minutes _refreshInterval;
     const Minutes _sessionTimeout;
+
+    // This value is only modified under the lock, and is modified
+    // automatically by the background jobs.
+    LogicalSessionCacheStats _stats;
 
     std::unique_ptr<ServiceLiason> _service;
     std::shared_ptr<SessionsCollection> _sessionsColl;

@@ -121,7 +121,10 @@ public:
      * clear/reset state
      */
     void reset() {
-        _setMyLastOptime = [this](const OpTime& opTime) { _myLastOpTime = opTime; };
+        _setMyLastOptime = [this](const OpTime& opTime,
+                                  ReplicationCoordinator::DataConsistency consistency) {
+            _myLastOpTime = opTime;
+        };
         _myLastOpTime = OpTime();
         _syncSourceSelector = stdx::make_unique<SyncSourceSelectorMock>();
     }
@@ -357,8 +360,11 @@ protected:
         InitialSyncerOptions options;
         options.initialSyncRetryWait = Milliseconds(1);
         options.getMyLastOptime = [this]() { return _myLastOpTime; };
-        options.setMyLastOptime = [this](const OpTime& opTime) { _setMyLastOptime(opTime); };
-        options.resetOptimes = [this]() { _setMyLastOptime(OpTime()); };
+        options.setMyLastOptime = [this](const OpTime& opTime,
+                                         ReplicationCoordinator::DataConsistency consistency) {
+            _setMyLastOptime(opTime, consistency);
+        };
+        options.resetOptimes = [this]() { _myLastOpTime = OpTime(); };
         options.getSlaveDelay = [this]() { return Seconds(0); };
         options.syncSourceSelector = this;
 
@@ -564,12 +570,21 @@ OplogEntry makeOplogEntry(int t,
         oField = BSON("dropIndexes"
                       << "a_1");
     }
-    return OplogEntry(OpTime(Timestamp(t, 1), 1),
-                      static_cast<long long>(t),
-                      opType,
-                      NamespaceString("a.a"),
-                      version,
-                      oField);
+    return OplogEntry(OpTime(Timestamp(t, 1), 1),  // optime
+                      static_cast<long long>(t),   // hash
+                      opType,                      // op type
+                      NamespaceString("a.a"),      // namespace
+                      boost::none,                 // uuid
+                      boost::none,                 // fromMigrate
+                      version,                     // version
+                      oField,                      // o
+                      boost::none,                 // o2
+                      {},                          // sessionInfo
+                      boost::none,                 // wall clock time
+                      boost::none,                 // statement id
+                      boost::none,   // optime of previous write within same transaction
+                      boost::none,   // pre-image optime
+                      boost::none);  // post-image optime
 }
 
 BSONObj makeOplogEntryObj(int t,
@@ -618,7 +633,8 @@ void InitialSyncerTest::processSuccessfulFCVFetcherResponse(std::vector<BSONObj>
 TEST_F(InitialSyncerTest, InvalidConstruction) {
     InitialSyncerOptions options;
     options.getMyLastOptime = []() { return OpTime(); };
-    options.setMyLastOptime = [](const OpTime&) {};
+    options.setMyLastOptime = [](const OpTime&,
+                                 ReplicationCoordinator::DataConsistency consistency) {};
     options.resetOptimes = []() {};
     options.getSlaveDelay = []() { return Seconds(0); };
     options.syncSourceSelector = this;
@@ -718,15 +734,15 @@ TEST_F(InitialSyncerTest, StartupSetsInitialDataTimestampAndStableTimestampOnSuc
 
     // Set initial data timestamp forward first.
     auto serviceCtx = opCtx.get()->getServiceContext();
-    _storageInterface->setInitialDataTimestamp(serviceCtx, SnapshotName(Timestamp(5, 5)));
-    _storageInterface->setStableTimestamp(serviceCtx, SnapshotName(Timestamp(6, 6)));
+    _storageInterface->setInitialDataTimestamp(serviceCtx, Timestamp(5, 5));
+    _storageInterface->setStableTimestamp(serviceCtx, Timestamp(6, 6));
 
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
     ASSERT_TRUE(initialSyncer->isActive());
 
-    ASSERT_EQUALS(SnapshotName(Timestamp::kAllowUnstableCheckpointsSentinel),
+    ASSERT_EQUALS(Timestamp::kAllowUnstableCheckpointsSentinel,
                   _storageInterface->getInitialDataTimestamp());
-    ASSERT_EQUALS(SnapshotName::min(), _storageInterface->getStableTimestamp());
+    ASSERT_EQUALS(Timestamp::min(), _storageInterface->getStableTimestamp());
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerReturnsCallbackCanceledIfShutdownImmediatelyAfterStartup) {
@@ -849,9 +865,10 @@ TEST_F(InitialSyncerTest, InitialSyncerResetsOptimesOnNewAttempt) {
 
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort());
 
-    // Set the last optime to an arbitrary nonzero value.
+    // Set the last optime to an arbitrary nonzero value. The value of the 'consistency' argument
+    // doesn't matter.
     auto origOptime = OpTime(Timestamp(1000, 1), 1);
-    _setMyLastOptime(origOptime);
+    _setMyLastOptime(origOptime, ReplicationCoordinator::DataConsistency::Inconsistent);
 
     // Start initial sync.
     const std::uint32_t initialSyncMaxAttempts = 1U;
@@ -3471,8 +3488,7 @@ void InitialSyncerTest::doSuccessfulInitialSyncWithOneBatch() {
     ASSERT_EQUALS(lastOp.getOpTime(), unittest::assertGet(_lastApplied).opTime);
     ASSERT_EQUALS(lastOp.getHash(), unittest::assertGet(_lastApplied).value);
 
-    ASSERT_EQUALS(SnapshotName(lastOp.getOpTime().getTimestamp()),
-                  _storageInterface->getInitialDataTimestamp());
+    ASSERT_EQUALS(lastOp.getOpTime().getTimestamp(), _storageInterface->getInitialDataTimestamp());
 }
 
 TEST_F(InitialSyncerTest,
@@ -3850,10 +3866,9 @@ TEST_F(InitialSyncerTest, GetInitialSyncProgressReturnsCorrectProgress) {
     ASSERT_EQUALS(attempts.nFields(), 1) << attempts;
     BSONObj attempt0 = attempts["0"].Obj();
     ASSERT_EQUALS(attempt0.nFields(), 3) << attempt0;
-    ASSERT_EQUALS(
-        attempt0.getStringField("status"),
-        std::string(
-            "FailedToParse: error cloning databases: fail on clone -- listDBs injected failure"))
+    ASSERT_EQUALS(attempt0.getStringField("status"),
+                  std::string("FailedToParse: error cloning databases :: caused by :: fail on "
+                              "clone -- listDBs injected failure"))
         << attempt0;
     ASSERT_EQUALS(attempt0["durationMillis"].type(), NumberInt) << attempt0;
     ASSERT_EQUALS(attempt0.getStringField("syncSource"), std::string("localhost:27017"))
@@ -3958,10 +3973,9 @@ TEST_F(InitialSyncerTest, GetInitialSyncProgressReturnsCorrectProgress) {
     ASSERT_EQUALS(attempts.nFields(), 1) << progress;
     attempt0 = attempts["0"].Obj();
     ASSERT_EQUALS(attempt0.nFields(), 3) << attempt0;
-    ASSERT_EQUALS(
-        attempt0.getStringField("status"),
-        std::string(
-            "FailedToParse: error cloning databases: fail on clone -- listDBs injected failure"))
+    ASSERT_EQUALS(attempt0.getStringField("status"),
+                  std::string("FailedToParse: error cloning databases :: caused by :: fail on "
+                              "clone -- listDBs injected failure"))
         << attempt0;
     ASSERT_EQUALS(attempt0["durationMillis"].type(), NumberInt) << attempt0;
     ASSERT_EQUALS(attempt0.getStringField("syncSource"), std::string("localhost:27017"))
@@ -4007,10 +4021,9 @@ TEST_F(InitialSyncerTest, GetInitialSyncProgressReturnsCorrectProgress) {
 
     attempt0 = attempts["0"].Obj();
     ASSERT_EQUALS(attempt0.nFields(), 3) << attempt0;
-    ASSERT_EQUALS(
-        attempt0.getStringField("status"),
-        std::string(
-            "FailedToParse: error cloning databases: fail on clone -- listDBs injected failure"))
+    ASSERT_EQUALS(attempt0.getStringField("status"),
+                  std::string("FailedToParse: error cloning databases :: caused by :: fail on "
+                              "clone -- listDBs injected failure"))
         << attempt0;
     ASSERT_EQUALS(attempt0["durationMillis"].type(), NumberInt) << attempt0;
     ASSERT_EQUALS(attempt0.getStringField("syncSource"), std::string("localhost:27017"))

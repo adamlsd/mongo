@@ -69,8 +69,6 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
-#include "mongo/db/generic_cursor_manager.h"
-#include "mongo/db/generic_cursor_manager_mongod.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/initialize_server_global_state.h"
@@ -180,6 +178,10 @@ using std::endl;
 
 namespace {
 
+constexpr StringData upgradeLink = "http://dochub.mongodb.org/core/3.6-upgrade-fcv"_sd;
+constexpr StringData mustDowngradeErrorMsg =
+    "UPGRADE PROBLEM: The data files need to be fully upgraded to version 3.4 before attempting an upgrade to 3.6; see http://dochub.mongodb.org/core/3.6-upgrade-fcv for more details."_sd;
+
 Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx,
                                                          const std::vector<std::string>& dbNames) {
     bool isMmapV1 = opCtx->getServiceContext()->getGlobalStorageEngine()->isMmapV1();
@@ -204,8 +206,7 @@ Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx
     }
 
     if (!collsHaveUuids) {
-        return {ErrorCodes::MustDowngrade,
-                "Cannot restore featureCompatibilityVersion document. A 3.4 binary must be used."};
+        return {ErrorCodes::MustDowngrade, mustDowngradeErrorMsg};
     }
 
     // Restore the featureCompatibilityVersion document if it is missing.
@@ -540,12 +541,18 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                         // but with any value other than "3.4" or "3.6". This includes unexpected
                         // cases with no path forward such as the FCV value not being a string.
                         return {ErrorCodes::MustDowngrade,
-                                "Cannot parse the feature compatibility document. If you are "
-                                "trying to upgrade from 3.2, please use a 3.4 binary."};
+                                str::stream()
+                                    << "UPGRADE PROBLEM: Unable to parse the "
+                                       "featureCompatibilityVersion document. The data files need "
+                                       "to be fully upgraded to version 3.4 before attempting an "
+                                       "upgrade to 3.6. If you are upgrading to 3.6, see "
+                                    << upgradeLink
+                                    << "."};
                     }
                     fcvDocumentExists = true;
                     auto version = swVersion.getValue();
                     serverGlobalParams.featureCompatibility.setVersion(version);
+                    FeatureCompatibilityVersion::updateMinWireVersion();
 
                     // On startup, if the version is in an upgrading or downrading state, print a
                     // warning.
@@ -650,8 +657,7 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
             }
             fassertFailedNoTrace(40652);
         } else {
-            return {ErrorCodes::MustDowngrade,
-                    "There is no feature compatibility document. A 3.4 binary must be used."};
+            return {ErrorCodes::MustDowngrade, mustDowngradeErrorMsg};
         }
     }
 
@@ -661,6 +667,15 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
 
 void initWireSpec() {
     WireSpec& spec = WireSpec::instance();
+
+    // The featureCompatibilityVersion behavior defaults to the downgrade behavior while the
+    // in-memory version is unset.
+
+    spec.incomingInternalClient.minWireVersion = RELEASE_2_4_AND_BEFORE;
+    spec.incomingInternalClient.maxWireVersion = LATEST_WIRE_VERSION;
+
+    spec.outgoing.minWireVersion = RELEASE_2_4_AND_BEFORE;
+    spec.outgoing.maxWireVersion = LATEST_WIRE_VERSION;
 
     spec.isInternalClient = true;
 }
@@ -977,8 +992,6 @@ ExitCode _initAndListen(int listenPort) {
     SessionKiller::set(serviceContext,
                        std::make_shared<SessionKiller>(serviceContext, killSessionsLocal));
 
-    GenericCursorManager::set(serviceContext, stdx::make_unique<GenericCursorManagerMongod>());
-
     // Set up the logical session cache
     LogicalSessionCacheServer kind = LogicalSessionCacheServer::kStandalone;
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
@@ -1223,8 +1236,11 @@ void shutdownTask() {
     auto const client = Client::getCurrent();
     auto const serviceContext = client->getServiceContext();
 
-    log(LogComponent::kNetwork) << "shutdown: going to close listening sockets...";
-    ListeningSockets::get()->closeAll();
+    // Shutdown the TransportLayer so that new connections aren't accepted
+    if (auto tl = serviceContext->getTransportLayer()) {
+        log(LogComponent::kNetwork) << "shutdown: going to close listening sockets...";
+        tl->shutdown();
+    }
 
     if (serviceContext->getGlobalStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
@@ -1286,14 +1302,6 @@ void shutdownTask() {
     // When running under address sanitizer, we get false positive leaks due to disorder around
     // the lifecycle of a connection and request. When we are running under ASAN, we try a lot
     // harder to dry up the server from active connections before going on to really shut down.
-
-    // Shutdown the TransportLayer so that new connections aren't accepted
-    if (auto tl = serviceContext->getTransportLayer()) {
-        log(LogComponent::kNetwork)
-            << "shutdown: going to close all sockets because ASAN is active...";
-
-        tl->shutdown();
-    }
 
     // Shutdown the Service Entry Point and its sessions and give it a grace period to complete.
     if (auto sep = serviceContext->getServiceEntryPoint()) {

@@ -62,6 +62,38 @@ public:
     };
 
     /**
+     * An RAII type that will temporarily change the ExpressionContext's collator. Resets the
+     * collator to the previous value upon destruction.
+     */
+    class CollatorStash {
+    public:
+        /**
+         * Resets the collator on '_expCtx' to the original collator present at the time this
+         * CollatorStash was constructed.
+         */
+        ~CollatorStash();
+
+    private:
+        /**
+         * Temporarily changes the collator on 'expCtx' to be 'newCollator'. The collator will be
+         * set back to the original value when this CollatorStash is deleted.
+         *
+         * This constructor is private, all CollatorStashes should be created by calling
+         * ExpressionContext::temporarilyChangeCollator().
+         */
+        CollatorStash(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                      std::unique_ptr<CollatorInterface> newCollator);
+
+        friend class ExpressionContext;
+
+        boost::intrusive_ptr<ExpressionContext> _expCtx;
+
+        BSONObj _originalCollation;
+        std::unique_ptr<CollatorInterface> _originalCollatorOwned;
+        const CollatorInterface* _originalCollatorUnowned{nullptr};
+    };
+
+    /**
      * Constructs an ExpressionContext to be used for Pipeline parsing and evaluation.
      * 'resolvedNamespaces' maps collection names (not full namespaces) to ResolvedNamespaces.
      */
@@ -97,11 +129,20 @@ public:
     }
 
     /**
+     * Temporarily resets the collator to be 'newCollator'. Returns a CollatorStash which will reset
+     * the collator back to the old value upon destruction.
+     */
+    std::unique_ptr<CollatorStash> temporarilyChangeCollator(
+        std::unique_ptr<CollatorInterface> newCollator);
+
+    /**
      * Returns an ExpressionContext that is identical to 'this' that can be used to execute a
      * separate aggregation pipeline on 'ns' with the optional 'uuid'.
      */
     boost::intrusive_ptr<ExpressionContext> copyWith(
-        NamespaceString ns, boost::optional<UUID> uuid = boost::none) const;
+        NamespaceString ns,
+        boost::optional<UUID> uuid = boost::none,
+        boost::optional<std::unique_ptr<CollatorInterface>> collator = boost::none) const;
 
     /**
      * Returns the ResolvedNamespace corresponding to 'nss'. It is an error to call this method on a
@@ -123,6 +164,9 @@ public:
 
     // The explain verbosity requested by the user, or boost::none if no explain was requested.
     boost::optional<ExplainOptions::Verbosity> explain;
+
+    // The comment provided by the user, or the empty string if no comment was provided.
+    std::string comment;
 
     bool fromMongos = false;
     bool needsMerge = false;
@@ -153,6 +197,9 @@ public:
 
     TailableMode tailableMode = TailableMode::kNormal;
 
+    // Tracks the depth of nested aggregation sub-pipelines. Used to enforce depth limits.
+    size_t subPipelineDepth = 0;
+
 protected:
     static const int kInterruptCheckPeriod = 128;
 
@@ -171,6 +218,8 @@ protected:
         _ownedCollator = std::move(collator);
         setCollator(_ownedCollator.get());
     }
+
+    friend class CollatorStash;
 
     // Collator used for comparisons. This is owned in the context of a Pipeline.
     // TODO SERVER-31294: Move ownership of an aggregation's collator elsewhere.

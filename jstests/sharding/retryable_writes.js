@@ -5,6 +5,13 @@
 (function() {
     "use strict";
 
+    load("jstests/libs/retryable_writes_util.js");
+
+    if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+        jsTestLog("Retryable writes are not supported, skipping test");
+        return;
+    }
+
     function checkFindAndModifyResult(expected, toCheck) {
         assert.eq(expected.ok, toCheck.ok);
         assert.eq(expected.value, toCheck.value);
@@ -230,9 +237,8 @@
             {configureFailPoint: 'onPrimaryTransactionalWrite', mode: 'alwaysOn'}));
 
         try {
-            // If ran against mongos, the command will actually succeed, but only one of the writes
-            // would be executed. Set skipRetryOnNetworkError so the shell doesn't automatically
-            // retry, since the command has a txnNumber.
+            // Set skipRetryOnNetworkError so the shell doesn't automatically retry, since the
+            // command has a txnNumber.
             TestData.skipRetryOnNetworkError = true;
             var res = assert.commandWorked(testDb.runCommand({
                 insert: 'user',
@@ -241,8 +247,11 @@
                 lsid: {id: lsid},
                 txnNumber: NumberLong(1)
             }));
-            assert.eq(0, res.n);
-            assert.eq(1, res.writeErrors.length);
+            // Mongos will automatically retry on retryable errors if the request has a txnNumber,
+            // and the retry path for already completed writes does not trigger the failpoint, so
+            // the command will succeed when run through mongos.
+            assert.eq(2, res.n);
+            assert.eq(false, res.hasOwnProperty("writeErrors"));
         } catch (e) {
             var exceptionMsg = e.toString();
             assert(isNetworkError(e), 'Incorrect exception thrown: ' + exceptionMsg);

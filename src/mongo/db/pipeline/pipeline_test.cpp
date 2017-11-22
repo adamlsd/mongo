@@ -624,10 +624,10 @@ TEST(PipelineOptimizationTest, LookupDoesNotAbsorbUnwindOnSubfieldOfAsButStillMo
 TEST(PipelineOptimizationTest, MatchShouldDuplicateItselfBeforeRedact) {
     string inputPipe = "[{$redact: '$$PRUNE'}, {$match: {a: 1, b:12}}]";
     string outputPipe =
-        "[{$match: {$and: [{a: {$eq: 1}}, {b: {$eq: 12}}]}}, {$redact: {$const: 'prune'}}, "
+        "[{$match: {$and: [{a: {$eq: 1}}, {b: {$eq: 12}}]}}, {$redact: '$$PRUNE'}, "
         "{$match: {$and: [{a: {$eq: 1}}, {b: {$eq: 12}}]}}]";
     string serializedPipe =
-        "[{$match: {a: 1, b: 12}}, {$redact: {$const: 'prune'}}, {$match: {a: 1, b: 12}}]";
+        "[{$match: {a: 1, b: 12}}, {$redact: '$$PRUNE'}, {$match: {a: 1, b: 12}}]";
     assertPipelineOptimizesAndSerializesTo(inputPipe, outputPipe, serializedPipe);
 }
 
@@ -2206,7 +2206,7 @@ TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStage) {
     setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
     ctx->ns = NamespaceString("a.collection");
     auto parseStatus = Pipeline::parse(rawPipeline, ctx).getStatus();
-    ASSERT_EQ(parseStatus, ErrorCodes::fromInt(40602));
+    ASSERT_EQ(parseStatus, ErrorCodes::duplicateCodeForTest(40602));
 }
 
 TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStageInFacet) {
@@ -2217,7 +2217,7 @@ TEST_F(PipelineInitialSourceNSTest, ChangeStreamIsNotValidIfNotFirstStageInFacet
     setMockReplicationCoordinatorOnOpCtx(ctx->opCtx);
     ctx->ns = NamespaceString("a.collection");
     auto parseStatus = Pipeline::parseFacetPipeline(rawPipeline, ctx).getStatus();
-    ASSERT_EQ(parseStatus, ErrorCodes::fromInt(40600));
+    ASSERT_EQ(parseStatus, ErrorCodes::duplicateCodeForTest(40600));
     ASSERT(std::string::npos != parseStatus.reason().find("$changeStream"));
 }
 

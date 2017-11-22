@@ -29,7 +29,6 @@ executor:
     mongod_options:
       bind_ip_all: ''
       nopreallocj: ''
-      enableMajorityReadConcern: ''
       set_parameters:
         enableTestCommands: 1
         numInitialSyncAttempts: 1

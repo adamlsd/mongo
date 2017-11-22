@@ -1146,8 +1146,8 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* opCtx,
             ts = timestamps[i];
         }
         if (!ts.isNull()) {
-            LOG(4) << "inserting record with timestamp " << ts.asULL();
-            fassertStatusOK(39001, opCtx->recoveryUnit()->setTimestamp(SnapshotName(ts)));
+            LOG(4) << "inserting record with timestamp " << ts;
+            fassertStatusOK(39001, opCtx->recoveryUnit()->setTimestamp(ts));
         }
         setKey(c, record.id);
         WiredTigerItem value(record.data.data(), record.data.size());
@@ -1482,6 +1482,10 @@ Status WiredTigerRecordStore::touch(OperationContext* opCtx, BSONObjBuilder* out
 }
 
 void WiredTigerRecordStore::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) const {
+    // Make sure that callers do not hold an active snapshot so it will be able to see the oplog
+    // entries it waited for afterwards.
+    invariant(!_getRecoveryUnit(opCtx)->inActiveTxn());
+
     auto oplogManager = _kvEngine->getOplogManager();
     if (oplogManager->isRunning()) {
         oplogManager->waitForAllEarlierOplogWritesToBeVisible(this, opCtx);
@@ -1649,6 +1653,11 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                   sizeof(commitTSConfigString),
                                   "commit_timestamp=%llx",
                                   truncTs.asULL());
+        if (size < 0) {
+            int e = errno;
+            error() << "error snprintf " << errnoWithDescription(e);
+            fassertFailedNoTrace(40662);
+        }
 
         invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
         auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
@@ -1666,10 +1675,10 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
 
 Status WiredTigerRecordStore::oplogDiskLocRegister(OperationContext* opCtx,
                                                    const Timestamp& opTime) {
-    // This starts a new transaction and gives it a timestamp.
+    // This labels the current transaction with a timestamp.
     // This is required for oplog visibility to work correctly, as WiredTiger uses the transaction
     // list to determine where there are holes in the oplog.
-    return opCtx->recoveryUnit()->setTimestamp(SnapshotName(opTime));
+    return opCtx->recoveryUnit()->setTimestamp(opTime);
 }
 
 // Cursor Base:

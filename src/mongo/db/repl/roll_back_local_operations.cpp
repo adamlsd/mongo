@@ -97,8 +97,8 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
         long long diff = static_cast<long long>(getTimestamp(_localOplogValue).getSecs()) -
             getTimestamp(operation).getSecs();
         // diff could be positive, negative, or zero
-        log() << "our last optime:   " << getTimestamp(_localOplogValue).toStringPretty();
-        log() << "their last optime: " << getTimestamp(operation).toStringPretty();
+        log() << "our last optime:   " << getTimestamp(_localOplogValue);
+        log() << "their last optime: " << getTimestamp(operation);
         log() << "diff in end of log times: " << diff << " seconds";
         if (diff > 1800) {
             severe() << "rollback too long a time period for a rollback.";
@@ -110,6 +110,7 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
 
     while (getTimestamp(_localOplogValue) > getTimestamp(operation)) {
         _scanned++;
+        LOG(2) << "Local oplog entry to roll back: " << redact(_localOplogValue.first);
         auto status = _rollbackOperation(_localOplogValue.first);
         if (!status.isOK()) {
             invariant(ErrorCodes::NoSuchKey != status.code());
@@ -119,8 +120,8 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
         if (!result.isOK()) {
             severe() << "rollback error RS101 reached beginning of local oplog";
             log() << "    scanned: " << _scanned;
-            log() << "  theirTime: " << getTimestamp(operation).toStringLong();
-            log() << "  ourTime:   " << getTimestamp(_localOplogValue).toStringLong();
+            log() << "  theirTime: " << getTimestamp(operation);
+            log() << "  ourTime:   " << getTimestamp(_localOplogValue);
             return StatusWith<RollbackCommonPoint>(ErrorCodes::NoMatchingDocument,
                                                    "RS101 reached beginning of local oplog [2]");
         }
@@ -133,6 +134,8 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
             return StatusWith<RollbackCommonPoint>(
                 std::make_pair(getOpTime(_localOplogValue), _localOplogValue.second));
         }
+
+        LOG(2) << "Local oplog entry to roll back: " << redact(_localOplogValue.first);
         auto status = _rollbackOperation(_localOplogValue.first);
         if (!status.isOK()) {
             invariant(ErrorCodes::NoSuchKey != status.code());
@@ -142,8 +145,8 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> RollBackLocalOperations
         if (!result.isOK()) {
             severe() << "rollback error RS101 reached beginning of local oplog";
             log() << "    scanned: " << _scanned;
-            log() << "  theirTime: " << getTimestamp(operation).toStringLong();
-            log() << "  ourTime:   " << getTimestamp(_localOplogValue).toStringLong();
+            log() << "  theirTime: " << getTimestamp(operation);
+            log() << "  ourTime:   " << getTimestamp(_localOplogValue);
             return StatusWith<RollbackCommonPoint>(ErrorCodes::NoMatchingDocument,
                                                    "RS101 reached beginning of local oplog [1]");
         }
@@ -188,7 +191,7 @@ StatusWith<RollBackLocalOperations::RollbackCommonPoint> syncRollBackLocalOperat
 
     severe() << "rollback error RS100 reached beginning of remote oplog";
     log() << "  them:      " << remoteOplog.toString();
-    log() << "  theirTime: " << theirTime.toStringLong();
+    log() << "  theirTime: " << theirTime;
     return StatusWith<RollBackLocalOperations::RollbackCommonPoint>(
         ErrorCodes::NoMatchingDocument, "RS100 reached beginning of remote oplog [1]");
 }

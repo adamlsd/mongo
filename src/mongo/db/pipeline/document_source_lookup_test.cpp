@@ -237,6 +237,26 @@ TEST_F(DocumentSourceLookUpTest, LiteParsedDocumentSourceLookupContainsExpectedN
     ASSERT_EQ(2ul, namespaceSet.size());
 }
 
+TEST_F(DocumentSourceLookUpTest, RejectLookupWhenDepthLimitIsExceeded) {
+    auto expCtx = getExpCtx();
+    NamespaceString fromNs("test", "coll");
+    expCtx->setResolvedNamespace(fromNs, {fromNs, std::vector<BSONObj>{}});
+
+    expCtx->subPipelineDepth = DocumentSourceLookUp::kMaxSubPipelineDepth;
+
+    ASSERT_THROWS_CODE(DocumentSourceLookUp::createFromBson(
+                           BSON("$lookup" << BSON("from"
+                                                  << "coll"
+                                                  << "pipeline"
+                                                  << BSON_ARRAY(BSON("$match" << BSON("x" << 1)))
+                                                  << "as"
+                                                  << "as"))
+                               .firstElement(),
+                           expCtx),
+                       AssertionException,
+                       ErrorCodes::MaxSubPipelineDepthExceeded);
+}
+
 TEST_F(ReplDocumentSourceLookUpTest, RejectsPipelineWithChangeStreamStage) {
     // Temporarily set FCV to 3.6 for $changeStream.
     EnsureFCV ensureFCV(EnsureFCV::Version::kFullyUpgradedTo36);
@@ -755,8 +775,8 @@ TEST_F(DocumentSourceLookUpTest,
     auto expectedPipe = fromjson(
         str::stream() << "[{mock: {}}, {$match: {x:{$eq: 1}}}, {$sort: {sortKey: {x: 1}}}, "
                       << sequentialCacheStageObj()
-                      << ", {$facet: {facetPipe: [{$group: {_id: '$_id'}}, {$match: "
-                         "{$and: [{_id: {$eq: 5}}, {$expr: {$eq: ['$_id', {$const: 5}]}}]}}]}}]");
+                      << ", {$facet: {facetPipe: [{$group: {_id: '$_id'}}, {$match: {$expr: {$eq: "
+                         "['$_id', {$const: 5}]}}}]}}]");
 
     ASSERT_VALUE_EQ(Value(subPipeline->writeExplainOps(kExplain)), Value(BSONArray(expectedPipe)));
 }
@@ -793,8 +813,7 @@ TEST_F(DocumentSourceLookUpTest, ExprEmbeddedInMatchExpressionShouldBeOptimized)
     BSONObjBuilder builder;
     matchSource.getMatchExpression()->serialize(&builder);
     auto serializedMatch = builder.obj();
-    auto expectedMatch =
-        fromjson("{$and: [{_id: {$eq: 5}}, {$expr: {$eq: ['$_id', {$const: 5}]}}]}");
+    auto expectedMatch = fromjson("{$expr: {$eq: ['$_id', {$const: 5}]}}");
 
     ASSERT_VALUE_EQ(Value(serializedMatch), Value(expectedMatch));
 }

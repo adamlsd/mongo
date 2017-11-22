@@ -129,7 +129,15 @@ Status AsyncResultsMerger::setAwaitDataTimeout(Milliseconds awaitDataTimeout) {
                       "maxTimeMS can only be used with getMore for tailable, awaitData cursors");
     }
 
-    _awaitDataTimeout = awaitDataTimeout;
+    // For sorted tailable awaitData cursors on multiple shards, cap the getMore timeout at 1000ms.
+    // This is to ensure that we get a continuous stream of updates from each shard with their most
+    // recent optimes, which allows us to return sorted $changeStream results even if some shards
+    // are yet to provide a batch of data. If the timeout specified by the client is greater than
+    // 1000ms, then it will be enforced elsewhere.
+    _awaitDataTimeout = (!_params->sort.isEmpty() && _remotes.size() > 1u
+                             ? std::min(awaitDataTimeout, Milliseconds{1000})
+                             : awaitDataTimeout);
+
     return Status::OK();
 }
 
@@ -152,6 +160,16 @@ void AsyncResultsMerger::reattachToOperationContext(OperationContext* opCtx) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     invariant(!_opCtx);
     _opCtx = opCtx;
+}
+
+void AsyncResultsMerger::addNewShardCursors(
+    const std::vector<ClusterClientCursorParams::RemoteCursor>& newCursors) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    for (auto&& remote : newCursors) {
+        _remotes.emplace_back(remote.hostAndPort,
+                              remote.cursorResponse.getNSS(),
+                              remote.cursorResponse.getCursorId());
+    }
 }
 
 bool AsyncResultsMerger::_ready(WithLock lk) {
@@ -651,18 +669,12 @@ executor::TaskExecutor::EventHandle AsyncResultsMerger::kill(OperationContext* o
     _killCursorsScheduledEvent = statusWithEvent.getValue();
 
     // If we're not waiting for responses from remotes, we can schedule killCursors commands on the
-    // remotes now. Otherwise, we have to wait until all responses are back, and then we can kill
-    // the remote cursors.
+    // remotes now. Otherwise, we have to wait until all responses are back because a cursor that
+    // is active (pinned) on a remote cannot be killed through killCursors.
     if (!_haveOutstandingBatchRequests(lk)) {
         _scheduleKillCursors(lk, opCtx);
         _lifecycleState = kKillComplete;
         _executor->signalEvent(_killCursorsScheduledEvent);
-    } else {
-        for (const auto& remote : _remotes) {
-            if (remote.cbHandle.isValid()) {
-                _executor->cancel(remote.cbHandle);
-            }
-        }
     }
 
     return _killCursorsScheduledEvent;

@@ -29,6 +29,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "mongo/db/cursor_id.h"
@@ -205,6 +206,11 @@ public:
         CursorId getCursorId() const;
 
         /**
+         * Returns the read preference setting for this cursor.
+         */
+        boost::optional<ReadPreferenceSetting> getReadPreference() const;
+
+        /**
          * Returns the number of result documents returned so far by this cursor via the next()
          * method.
          */
@@ -369,8 +375,8 @@ public:
      */
     std::vector<GenericCursor> getAllCursors() const;
 
-    Status killCursorsWithMatchingSessions(OperationContext* opCtx,
-                                           const SessionKiller::Matcher& matcher);
+    std::pair<Status, int> killCursorsWithMatchingSessions(OperationContext* opCtx,
+                                                           const SessionKiller::Matcher& matcher);
 
     /**
      * Returns a list of all open cursors for the given session.

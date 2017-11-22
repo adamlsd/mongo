@@ -50,11 +50,11 @@ Status WiredTigerSnapshotManager::prepareForCreateSnapshot(OperationContext* opC
     return Status::OK();
 }
 
-void WiredTigerSnapshotManager::setCommittedSnapshot(const SnapshotName& name, Timestamp ts) {
+void WiredTigerSnapshotManager::setCommittedSnapshot(const Timestamp& timestamp) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
-    invariant(!_committedSnapshot || *_committedSnapshot <= name);
-    _committedSnapshot = name;
+    invariant(!_committedSnapshot || *_committedSnapshot <= timestamp);
+    _committedSnapshot = timestamp;
 }
 
 void WiredTigerSnapshotManager::cleanupUnneededSnapshots() {}
@@ -72,32 +72,35 @@ void WiredTigerSnapshotManager::shutdown() {
     _session = nullptr;
 }
 
-boost::optional<SnapshotName> WiredTigerSnapshotManager::getMinSnapshotForNextCommittedRead()
-    const {
+boost::optional<Timestamp> WiredTigerSnapshotManager::getMinSnapshotForNextCommittedRead() const {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     return _committedSnapshot;
 }
 
-Status WiredTigerSnapshotManager::beginTransactionAtTimestamp(SnapshotName pointInTime,
+Status WiredTigerSnapshotManager::beginTransactionAtTimestamp(Timestamp pointInTime,
                                                               WT_SESSION* session) const {
     char readTSConfigString[15 /* read_timestamp= */ + (8 * 2) /* 8 hexadecimal characters */ +
                             1 /* trailing null */];
-    auto size = std::snprintf(readTSConfigString,
-                              sizeof(readTSConfigString),
-                              "read_timestamp=%llx",
-                              static_cast<unsigned long long>(pointInTime.asU64()));
+    auto size = std::snprintf(
+        readTSConfigString, sizeof(readTSConfigString), "read_timestamp=%llx", pointInTime.asULL());
+    if (size < 0) {
+        int e = errno;
+        error() << "error snprintf " << errnoWithDescription(e);
+        fassertFailedNoTrace(40664);
+    }
     invariant(static_cast<std::size_t>(size) < sizeof(readTSConfigString));
 
     return wtRCToStatus(session->begin_transaction(session, readTSConfigString));
 }
 
-SnapshotName WiredTigerSnapshotManager::beginTransactionOnCommittedSnapshot(
+Timestamp WiredTigerSnapshotManager::beginTransactionOnCommittedSnapshot(
     WT_SESSION* session) const {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
     uassert(ErrorCodes::ReadConcernMajorityNotAvailableYet,
             "Committed view disappeared while running operation",
             _committedSnapshot);
+
     auto status = beginTransactionAtTimestamp(_committedSnapshot.get(), session);
     fassertStatusOK(30635, status);
     return *_committedSnapshot;
@@ -113,6 +116,11 @@ void WiredTigerSnapshotManager::beginTransactionOnOplog(WiredTigerOplogManager* 
                               sizeof(readTSConfigString),
                               "read_timestamp=%llx",
                               static_cast<unsigned long long>(allCommittedTimestamp));
+    if (size < 0) {
+        int e = errno;
+        error() << "error snprintf " << errnoWithDescription(e);
+        fassertFailedNoTrace(40663);
+    }
     invariant(static_cast<std::size_t>(size) < sizeof(readTSConfigString));
 
     int status = session->begin_transaction(session, readTSConfigString);

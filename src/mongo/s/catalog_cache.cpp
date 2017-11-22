@@ -145,7 +145,7 @@ StatusWith<CachedCollectionRoutingInfo> CatalogCache::getCollectionRoutingInfo(
             auto shardStatus =
                 Grid::get(opCtx)->shardRegistry()->getShard(opCtx, dbEntry->primaryShardId);
             if (!shardStatus.isOK()) {
-                return {ErrorCodes::fromInt(40371),
+                return {ErrorCodes::Error(40371),
                         str::stream() << "The primary shard for collection " << nss.ns()
                                       << " could not be loaded due to error "
                                       << shardStatus.getStatus().toString()};
@@ -191,6 +191,12 @@ StatusWith<CachedCollectionRoutingInfo> CatalogCache::getCollectionRoutingInfo(
 StatusWith<CachedCollectionRoutingInfo> CatalogCache::getCollectionRoutingInfo(
     OperationContext* opCtx, StringData ns) {
     return getCollectionRoutingInfo(opCtx, NamespaceString(ns));
+}
+
+StatusWith<CachedCollectionRoutingInfo> CatalogCache::getCollectionRoutingInfoWithRefresh(
+    OperationContext* opCtx, const NamespaceString& nss) {
+    invalidateShardedCollection(nss);
+    return getCollectionRoutingInfo(opCtx, nss);
 }
 
 StatusWith<CachedCollectionRoutingInfo> CatalogCache::getShardedCollectionRoutingInfoWithRefresh(

@@ -473,7 +473,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             opts.networkMessageCompressors = jsTestOptions().networkMessageCompressors;
         }
 
-        if (!opts.bind_ip) {
+        if (!opts.hasOwnProperty('bind_ip')) {
             opts.bind_ip = "0.0.0.0";
         }
 
@@ -1105,7 +1105,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                         }
                     }
                     if (!hasParam) {
-                        argArray.push(...['--setParameter', 'orphanCleanupDelaySecs=0']);
+                        argArray.push(...['--setParameter', 'orphanCleanupDelaySecs=1']);
                     }
                 }
 

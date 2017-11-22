@@ -102,6 +102,8 @@ private:
 };
 
 
+MONGO_EXPORT_SERVER_PARAMETER(waitForSecondaryBeforeNoopWriteMS, int, 10);
+
 /**
  *  Schedule a write via appendOplogNote command to the primary of this replica set.
  */
@@ -112,6 +114,20 @@ Status makeNoopWriteIfNeeded(OperationContext* opCtx, LogicalTime clusterTime) {
     auto& writeRequests = getWriteRequestsSynchronizer(opCtx->getClient()->getServiceContext());
 
     auto lastAppliedOpTime = LogicalTime(replCoord->getMyLastAppliedOpTime().getTimestamp());
+
+    // secondaries may lag primary so wait first to avoid unnecessary noop writes.
+    if (clusterTime > lastAppliedOpTime && replCoord->getMemberState().secondary()) {
+        auto deadline = Date_t::now() + Milliseconds(waitForSecondaryBeforeNoopWriteMS.load());
+        auto readConcernArgs =
+            repl::ReadConcernArgs(clusterTime, repl::ReadConcernLevel::kLocalReadConcern);
+        auto waitStatus = replCoord->waitUntilOpTimeForReadUntil(opCtx, readConcernArgs, deadline);
+        lastAppliedOpTime = LogicalTime(replCoord->getMyLastAppliedOpTime().getTimestamp());
+        if (!waitStatus.isOK()) {
+            LOG(1) << "Wait for clusterTime: " << clusterTime.toString()
+                   << " until deadline: " << deadline << " failed with " << waitStatus.toString();
+        }
+    }
+
     auto status = Status::OK();
     int remainingAttempts = 3;
     // this loop addresses the case when two or more threads need to advance the opLog time but the
@@ -240,8 +256,7 @@ Status waitForReadConcern(OperationContext* opCtx,
 
     auto pointInTime = readConcernArgs.getArgsPointInTime();
     if (pointInTime) {
-        fassertStatusOK(
-            39345, opCtx->recoveryUnit()->selectSnapshot(SnapshotName(pointInTime->asTimestamp())));
+        fassertStatusOK(39345, opCtx->recoveryUnit()->selectSnapshot(pointInTime->asTimestamp()));
     }
 
     if (!readConcernArgs.isEmpty()) {
@@ -280,7 +295,7 @@ Status waitForReadConcern(OperationContext* opCtx,
         // Wait until a snapshot is available.
         while (status == ErrorCodes::ReadConcernMajorityNotAvailableYet) {
             LOG(debugLevel) << "Snapshot not available yet.";
-            replCoord->waitUntilSnapshotCommitted(opCtx, SnapshotName::min());
+            replCoord->waitUntilSnapshotCommitted(opCtx, Timestamp());
             status = opCtx->recoveryUnit()->setReadFromMajorityCommittedSnapshot();
         }
 

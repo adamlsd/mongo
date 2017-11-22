@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2014 MongoDB Inc.
+ *    Copyright (C) 2017 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,22 +26,36 @@
  *    it in the license file.
  */
 
-#include "mongo/platform/basic.h"
-
-#include "mongo/db/repl/replication_coordinator_external_state.h"
+#pragma once
 
 namespace mongo {
-namespace repl {
+namespace transport {
+enum class ServiceExecutorTaskName {
+    kSSMProcessMessage,
+    kSSMSourceMessage,
+    kSSMExhaustMessage,
+    kSSMStartSession,
+    kMaxTaskName
+};
 
-std::string SnapshotInfo::toString() const {
-    BSONObjBuilder bob;
-    bob.append("optime", opTime.toBSON());
-    bob.append("name-id", name.toString());
-    return bob.obj().toString();
+constexpr auto kSSMProcessMessageName = "processMessage"_sd;
+constexpr auto kSSMSourceMessageName = "sourceMessage"_sd;
+constexpr auto kSSMExhaustMessageName = "exhaustMessage"_sd;
+constexpr auto kSSMStartSessionName = "startSession"_sd;
+
+inline StringData taskNameToString(ServiceExecutorTaskName taskName) {
+    switch (taskName) {
+        case ServiceExecutorTaskName::kSSMProcessMessage:
+            return kSSMProcessMessageName;
+        case ServiceExecutorTaskName::kSSMSourceMessage:
+            return kSSMSourceMessageName;
+        case ServiceExecutorTaskName::kSSMExhaustMessage:
+            return kSSMExhaustMessageName;
+        case ServiceExecutorTaskName::kSSMStartSession:
+            return kSSMStartSessionName;
+        default:
+            MONGO_UNREACHABLE;
+    }
 }
-
-ReplicationCoordinatorExternalState::ReplicationCoordinatorExternalState() {}
-ReplicationCoordinatorExternalState::~ReplicationCoordinatorExternalState() {}
-
-}  // namespace repl
+}  // namespace transport
 }  // namespace mongo

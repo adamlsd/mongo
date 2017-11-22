@@ -378,12 +378,11 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                                                          const BSONObj& config) {
     try {
         createOplog(opCtx);
-        const auto& kRsOplogNamespace = NamespaceString::kRsOplogNamespace;
 
         writeConflictRetry(opCtx,
                            "initiate oplog entry",
-                           kRsOplogNamespace.toString(),
-                           [this, &opCtx, &config, &kRsOplogNamespace] {
+                           NamespaceString::kRsOplogNamespace.toString(),
+                           [this, &opCtx, &config] {
                                Lock::GlobalWrite globalWrite(opCtx);
 
                                WriteUnitOfWork wuow(opCtx);
@@ -397,20 +396,22 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                // retries and they will succeed.  Unfortunately, initial sync will
                                // fail if it finds its sync source has an empty oplog.  Thus, we
                                // need to wait here until the seed document is visible in our oplog.
-                               AutoGetCollection oplog(opCtx, kRsOplogNamespace, MODE_IS);
+                               AutoGetCollection oplog(
+                                   opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
                                waitForAllEarlierOplogWritesToBeVisible(opCtx);
                            });
 
         // Set UUIDs for all non-replicated collections. This is necessary for independent replica
-        // sets started with no data files because collections in local are created prior to the
-        // featureCompatibilityVersion being set to 3.6, so the collections are not created with
-        // UUIDs. This is not an issue for sharded clusters because the config server sends a
-        // setFeatureCompatibilityVersion command with the featureCompatibilityVersion equal to the
-        // cluster's featureCompatibilityVersion during addShard, which will add UUIDs to all
-        // collections that do not already have them. Here, we add UUIDs to the non-replicated
-        // collections on the primary. We add them on the secondaries during InitialSync.
+        // sets and config server replica sets started with no data files because collections in
+        // local are created prior to the featureCompatibilityVersion being set to 3.6, so the
+        // collections are not created with UUIDs. This is not an issue for shard servers because
+        // the config server sends a setFeatureCompatibilityVersion command with the
+        // featureCompatibilityVersion equal to the cluster's featureCompatibilityVersion during
+        // addShard, which will add UUIDs to all collections that do not already have them. Here,
+        // we add UUIDs to the non-replicated collections on the primary. We add them on the
+        // secondaries during InitialSync.
         if (serverGlobalParams.clusterRole != ClusterRole::ShardServer &&
-            serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
+            FeatureCompatibilityVersion::isCleanStartUp()) {
             auto schemaStatus = updateUUIDSchemaVersionNonReplicated(opCtx, true);
             if (!schemaStatus.isOK()) {
                 return schemaStatus;
@@ -808,13 +809,13 @@ void ReplicationCoordinatorExternalStateImpl::dropAllSnapshots() {
         manager->dropAllSnapshots();
 }
 
-void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(SnapshotInfo newCommitPoint) {
+void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(
+    const OpTime& newCommitPoint) {
     auto manager = _service->getGlobalStorageEngine()->getSnapshotManager();
     if (manager) {
-        manager->setCommittedSnapshot(SnapshotName(newCommitPoint.opTime.getTimestamp()),
-                                      newCommitPoint.opTime.getTimestamp());
+        manager->setCommittedSnapshot(newCommitPoint.getTimestamp());
     }
-    notifyOplogMetadataWaiters(newCommitPoint.opTime);
+    notifyOplogMetadataWaiters(newCommitPoint);
 }
 
 bool ReplicationCoordinatorExternalStateImpl::snapshotsEnabled() const {

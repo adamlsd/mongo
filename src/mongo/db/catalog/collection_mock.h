@@ -245,6 +245,13 @@ public:
         std::abort();
     }
 
+    Status updateValidator(OperationContext* opCtx,
+                           BSONObj newValidator,
+                           StringData newLevel,
+                           StringData newAction) {
+        std::abort();
+    }
+
     bool isCapped() const {
         std::abort();
     }
@@ -265,11 +272,11 @@ public:
         std::abort();
     }
 
-    boost::optional<SnapshotName> getMinimumVisibleSnapshot() {
+    boost::optional<Timestamp> getMinimumVisibleSnapshot() {
         std::abort();
     }
 
-    void setMinimumVisibleSnapshot(SnapshotName name) {
+    void setMinimumVisibleSnapshot(Timestamp name) {
         std::abort();
     }
 

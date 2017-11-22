@@ -1611,7 +1611,7 @@ MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
 
 // TODO SERVER-11601 Use NFC Unicode canonicalization
 bool mongo::hostNameMatchForX509Certificates(std::string nameToMatch, std::string certHostName) {
-    auto removeFQDNRoot(std::string name)->std::string {
+    auto removeFQDNRoot = [](std::string name) -> std::string {
         if (name.back() == '.') {
             name.pop_back();
         }

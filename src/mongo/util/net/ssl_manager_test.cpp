@@ -26,9 +26,12 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kNetwork
+
 #include "mongo/util/net/ssl_manager.h"
 
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/log.h"
 
 #ifdef MONGO_CONFIG_SSL
 
@@ -65,11 +68,11 @@ TEST(SSLManager, matchHostname) {
     for (const auto& test : tests) {
         if (test.expected != hostNameMatchForX509Certificates(test.hostname, test.certName)) {
             failure = true;
-            LOG(0) << "Failure for Hostname: " << test.hostname
-                      << " Certificate: " << test.certName << std::endl;
+            LOG(1) << "Failure for Hostname: " << test.hostname << " Certificate: " << test.certName
+                   << std::endl;
         } else {
-            LOG(1) << "Passed for Hostname: " << test.hostname
-                      << " Certificate: " << test.certName << std::endl;
+            LOG(1) << "Passed for Hostname: " << test.hostname << " Certificate: " << test.certName
+                   << std::endl;
         }
     }
     ASSERT_FALSE(failure);

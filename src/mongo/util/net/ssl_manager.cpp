@@ -1600,14 +1600,6 @@ void SSLManager::_handleSSLError(int code, int ret) {
     }
     throw SocketException(SocketException::CONNECT_ERROR, "");
 }
-#else
-
-MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
-    // we need a no-op initializer so that we can depend on SSLManager as a prerequisite in
-    // non-SSL builds.
-    return Status::OK();
-}
-
 }  // namespace mongo
 
 // TODO SERVER-11601 Use NFC Unicode canonicalization
@@ -1635,4 +1627,13 @@ bool mongo::hostNameMatchForX509Certificates(std::string nameToMatch, std::strin
         return !strcasecmp(nameToMatch.c_str(), certHostName.c_str());
     }
 }
+
+#else
+
+MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
+    // we need a no-op initializer so that we can depend on SSLManager as a prerequisite in
+    // non-SSL builds.
+    return Status::OK();
+}
+
 #endif  // #ifdef MONGO_CONFIG_SSL

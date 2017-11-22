@@ -142,8 +142,10 @@ public:
         return Status::OK();
     }
 } openSSLCipherConfig;
+}  // namespace mongo
 
 #ifdef MONGO_CONFIG_SSL
+namespace mongo {
 namespace {
 
 // If the underlying SSL supports auto-configuration of ECDH parameters, this function will select
@@ -1606,7 +1608,6 @@ MONGO_INITIALIZER(SSLManager)(InitializerContext*) {
     return Status::OK();
 }
 
-#endif  // #ifdef MONGO_CONFIG_SSL
 }  // namespace mongo
 
 // TODO SERVER-11601 Use NFC Unicode canonicalization
@@ -1634,3 +1635,4 @@ bool mongo::hostNameMatchForX509Certificates(std::string nameToMatch, std::strin
         return !strcasecmp(nameToMatch.c_str(), certHostName.c_str());
     }
 }
+#endif  // #ifdef MONGO_CONFIG_SSL

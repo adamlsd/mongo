@@ -51,7 +51,7 @@ TEST(SSLManager, matchHostname) {
 
         {match, "foo.bar.bas", "*.bar.bas"},
         {mismatch, "foo.subdomain.bar.bas", "*.bar.bas"},
-        {match, "foo.bar.bas.", "*.bar.bas."},
+        {match, "foo.bar.bas.", "*.bar.bas"},
         {mismatch, "foo.subdomain.bar.bas.", "*.bar.bas"},
 
         {mismatch, "foo.evil.bas", "*.bar.bas."},
@@ -61,7 +61,7 @@ TEST(SSLManager, matchHostname) {
 
         {mismatch, "foo.evil.bas", "*.bar.bas"},
         {mismatch, "foo.subdomain.evil.bas", "*.bar.bas"},
-        {mismatch, "foo.evil.bas.", "*.bar.bas."},
+        {mismatch, "foo.evil.bas.", "*.bar.bas"},
         {mismatch, "foo.subdomain.evil.bas.", "*.bar.bas"},
     };
     bool failure = false;

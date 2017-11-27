@@ -44,35 +44,37 @@ TEST(SSLManager, matchHostname) {
         std::string hostname;
         std::string certName;
     } tests[] = {
-        {match, "foo.bar.bas", "*.bar.bas."},
-        {mismatch, "foo.subdomain.bar.bas", "*.bar.bas."},
-        {match, "foo.bar.bas.", "*.bar.bas."},
-        {mismatch, "foo.subdomain.bar.bas.", "*.bar.bas."},
+        // clang-format off
+        // Matches?  |    Hostname and possibly FQDN   |  Certificate name
+        {match,                    "foo.bar.bas" ,           "*.bar.bas."},
+        {mismatch,       "foo.subdomain.bar.bas" ,           "*.bar.bas."},
+        {match,                    "foo.bar.bas.",           "*.bar.bas."},
+        {mismatch,       "foo.subdomain.bar.bas.",           "*.bar.bas."},
 
-        {match, "foo.bar.bas", "*.bar.bas"},
-        {mismatch, "foo.subdomain.bar.bas", "*.bar.bas"},
-        {match, "foo.bar.bas.", "*.bar.bas"},
-        {mismatch, "foo.subdomain.bar.bas.", "*.bar.bas"},
+        {match,                    "foo.bar.bas" ,           "*.bar.bas"},
+        {mismatch,       "foo.subdomain.bar.bas" ,           "*.bar.bas"},
+        {match,                    "foo.bar.bas.",           "*.bar.bas"},
+        {mismatch,       "foo.subdomain.bar.bas.",           "*.bar.bas"},
 
-        {mismatch, "foo.evil.bas", "*.bar.bas."},
-        {mismatch, "foo.subdomain.evil.bas", "*.bar.bas."},
-        {mismatch, "foo.evil.bas.", "*.bar.bas."},
-        {mismatch, "foo.subdomain.evil.bas.", "*.bar.bas."},
+        {mismatch,                "foo.evil.bas" ,           "*.bar.bas."},
+        {mismatch,      "foo.subdomain.evil.bas" ,           "*.bar.bas."},
+        {mismatch,                "foo.evil.bas.",           "*.bar.bas."},
+        {mismatch,      "foo.subdomain.evil.bas.",           "*.bar.bas."},
 
-        {mismatch, "foo.evil.bas", "*.bar.bas"},
-        {mismatch, "foo.subdomain.evil.bas", "*.bar.bas"},
-        {mismatch, "foo.evil.bas.", "*.bar.bas"},
-        {mismatch, "foo.subdomain.evil.bas.", "*.bar.bas"},
+        {mismatch,                "foo.evil.bas" ,           "*.bar.bas"},
+        {mismatch,      "foo.subdomain.evil.bas" ,           "*.bar.bas"},
+        {mismatch,                "foo.evil.bas.",           "*.bar.bas"},
+        {mismatch,      "foo.subdomain.evil.bas.",           "*.bar.bas"},
+        // clang-format on
     };
     bool failure = false;
     for (const auto& test : tests) {
         if (test.expected != hostNameMatchForX509Certificates(test.hostname, test.certName)) {
             failure = true;
-            LOG(1) << "Failure for Hostname: " << test.hostname << " Certificate: " << test.certName
-                   << std::endl;
+            LOG(1) << "Failure for Hostname: " << test.hostname
+                   << " Certificate: " << test.certName;
         } else {
-            LOG(1) << "Passed for Hostname: " << test.hostname << " Certificate: " << test.certName
-                   << std::endl;
+            LOG(1) << "Passed for Hostname: " << test.hostname << " Certificate: " << test.certName;
         }
     }
     ASSERT_FALSE(failure);

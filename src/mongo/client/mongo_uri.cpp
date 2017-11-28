@@ -246,10 +246,9 @@ bool isWithinDomain(std::string hostname, std::string domain) {
         }
         return name;
     };
-    hostname = removeFQDNRoot(std::move(hostname));
+    hostname = stripHost(removeFQDNRoot(std::move(hostname)));
     domain = removeFQDNRoot(std::move(domain));
-    return hostname.size() > domain.size() && *(hostname.rbegin() + domain.size()) == '.' &&
-        std::equal(domain.rbegin(), domain.rend(), hostname.rbegin());
+    return hostname == domain;
 }
 }  // namespace
 

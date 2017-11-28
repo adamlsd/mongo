@@ -629,7 +629,7 @@ TEST(MongoURI, srvRecordTest) {
          "",
          "",
          {{"localhost.test.build.10gen.cc.", 27017}, {"localhost.test.build.10gen.cc.", 27018}},
-         {}},
+         {{"ssl", "true"}}},
 
         {"mongodb+srv://user:password@test2.test.build.10gen.cc/"
          "database?someOption=someValue&someOtherOption=someOtherValue",
@@ -738,7 +738,7 @@ TEST(MongoURI, srvRecordTest) {
                 ASSERT(false);
             }
         }
-        ASSERT_EQ(options.size(), expectedOptions.size());
+        ASSERT_EQ(options.size(), expectedOptions.size()) << "Failing URI: " << test.uri;
 
         std::vector<HostAndPort> hosts(begin(rv.getServers()), end(rv.getServers()));
         std::sort(begin(hosts), end(hosts));

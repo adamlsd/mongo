@@ -239,7 +239,15 @@ std::string stripHost(const std::string& hostname) {
     return hostname.substr(hostname.find('.') + 1);
 }
 
-bool isWithinDomain(const std::string& hostname, const std::string& domain) {
+bool isWithinDomain(std::string hostname, std::string domain) {
+    auto removeFQDNRoot = [](std::string name) -> std::string {
+        if (name.back() == '.') {
+            name.pop_back();
+        }
+        return name;
+    };
+    hostname = removeFQDNRoot(std::move(hostname));
+    domain = removeFQDNRoot(std::move(domain));
     return hostname.size() > domain.size() && *(hostname.rbegin() + domain.size()) == '.' &&
         std::equal(domain.rbegin(), domain.rend(), hostname.rbegin());
 }

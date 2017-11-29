@@ -45,7 +45,10 @@ namespace mongo {
  */
 class ArrayMatchingMatchExpression : public PathMatchExpression {
 public:
-    ArrayMatchingMatchExpression(MatchType matchType) : PathMatchExpression(matchType) {}
+    ArrayMatchingMatchExpression(MatchType matchType, StringData path)
+        : PathMatchExpression(matchType, path) {
+        setTraverseLeafArray();
+    }
 
     virtual ~ArrayMatchingMatchExpression() {}
 
@@ -71,15 +74,14 @@ public:
 
 class ElemMatchObjectMatchExpression : public ArrayMatchingMatchExpression {
 public:
-    ElemMatchObjectMatchExpression() : ArrayMatchingMatchExpression(ELEM_MATCH_OBJECT) {}
-    Status init(StringData path, MatchExpression* sub);
+    ElemMatchObjectMatchExpression(StringData path, MatchExpression* sub);
 
     bool matchesArray(const BSONObj& anArray, MatchDetails* details) const;
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<ElemMatchObjectMatchExpression> e =
-            stdx::make_unique<ElemMatchObjectMatchExpression>();
-        e->init(path(), _sub->shallowClone().release()).transitional_ignore();
+            stdx::make_unique<ElemMatchObjectMatchExpression>(path(),
+                                                              _sub->shallowClone().release());
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
@@ -111,24 +113,27 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final;
+
     std::unique_ptr<MatchExpression> _sub;
 };
 
 class ElemMatchValueMatchExpression : public ArrayMatchingMatchExpression {
 public:
-    ElemMatchValueMatchExpression() : ArrayMatchingMatchExpression(ELEM_MATCH_VALUE) {}
+    /**
+    * This constructor takes ownership of 'sub.'
+    */
+    ElemMatchValueMatchExpression(StringData path, MatchExpression* sub);
+    explicit ElemMatchValueMatchExpression(StringData path);
     virtual ~ElemMatchValueMatchExpression();
 
-    Status init(StringData path);
-    Status init(StringData path, MatchExpression* sub);
     void add(MatchExpression* sub);
 
     bool matchesArray(const BSONObj& anArray, MatchDetails* details) const;
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
         std::unique_ptr<ElemMatchValueMatchExpression> e =
-            stdx::make_unique<ElemMatchValueMatchExpression>();
-        e->init(path()).transitional_ignore();
+            stdx::make_unique<ElemMatchValueMatchExpression>(path());
         for (size_t i = 0; i < _subs.size(); ++i) {
             e->add(_subs[i]->shallowClone().release());
         }
@@ -155,6 +160,8 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final;
+
     bool _arrayElementMatchesAll(const BSONElement& e) const;
 
     std::vector<MatchExpression*> _subs;
@@ -162,12 +169,11 @@ private:
 
 class SizeMatchExpression : public ArrayMatchingMatchExpression {
 public:
-    SizeMatchExpression() : ArrayMatchingMatchExpression(SIZE) {}
-    Status init(StringData path, int size);
+    SizeMatchExpression(StringData path, int size);
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
-        std::unique_ptr<SizeMatchExpression> e = stdx::make_unique<SizeMatchExpression>();
-        e->init(path(), _size).transitional_ignore();
+        std::unique_ptr<SizeMatchExpression> e =
+            stdx::make_unique<SizeMatchExpression>(path(), _size);
         if (getTag()) {
             e->setTag(getTag()->clone());
         }
@@ -199,6 +205,10 @@ public:
     }
 
 private:
+    virtual ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     int _size;  // >= 0 real, < 0, nothing will match
 };
 }

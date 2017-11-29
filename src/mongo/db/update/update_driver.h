@@ -98,12 +98,6 @@ public:
                                            mutablebson::Document& doc) const;
 
     /**
-     * return a BSONObj with the _id field of the doc passed in, or the doc itself.
-     * If no _id and multi, error.
-     */
-    BSONObj makeOplogEntryQuery(const BSONObj& doc, bool multi) const;
-
-    /**
      * Executes the update over 'doc'. If any modifier is positional, use 'matchedField' (index of
      * the array item matched). If 'doc' allows the modifiers to be applied in place and no index
      * updating is involved, then the modifiers may be applied "in place" over 'doc'.
@@ -132,6 +126,7 @@ public:
     size_t numMods() const;
 
     bool isDocReplacement() const;
+    static bool isDocReplacement(const BSONObj& updateExpr);
 
     bool modsAffectIndices() const;
     void refreshIndexKeys(const UpdateIndexData* indexedFields);
@@ -224,7 +219,8 @@ struct UpdateDriver::Options {
     bool logOp;
     ModifierInterface::Options modOptions;
 
-    Options() : logOp(false), modOptions() {}
+    explicit Options(const boost::intrusive_ptr<ExpressionContext>& expCtx)
+        : logOp(false), modOptions(ModifierInterface::Options::normal(expCtx)) {}
 };
 
 }  // namespace mongo

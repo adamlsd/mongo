@@ -45,6 +45,7 @@
 #include "mongo/db/repl/repl_set_heartbeat_args_v1.h"
 #include "mongo/db/repl/repl_set_heartbeat_response.h"
 #include "mongo/db/repl/replication_coordinator_impl.h"
+#include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/topology_coordinator.h"
 #include "mongo/db/repl/vote_requester.h"
 #include "mongo/db/service_context.h"
@@ -224,7 +225,7 @@ void ReplicationCoordinatorImpl::_handleHeartbeatResponse(
     }
 
     // Wake the stepdown waiter when our updated OpTime allows it to finish stepping down.
-    _signalStepDownWaiter_inlock();
+    _signalStepDownWaiterIfReady_inlock();
 
     // Abort catchup if we have caught up to the latest known optime after heartbeat refreshing.
     if (_catchupState) {
@@ -247,7 +248,7 @@ stdx::unique_lock<stdx::mutex> ReplicationCoordinatorImpl::_handleHeartbeatRespo
             // Update the cached member state if different than the current topology member state
             if (_memberState != _topCoord->getMemberState()) {
                 const PostMemberStateUpdateAction postUpdateAction =
-                    _updateMemberStateFromTopologyCoordinator_inlock();
+                    _updateMemberStateFromTopologyCoordinator_inlock(nullptr);
                 lock.unlock();
                 _performPostMemberStateUpdateAction(postUpdateAction);
                 lock.lock();
@@ -371,15 +372,32 @@ void ReplicationCoordinatorImpl::_stepDownFinish(
         return;
     }
 
-    MONGO_FAIL_POINT_PAUSE_WHILE_SET(blockHeartbeatStepdown);
+    if (MONGO_FAIL_POINT(blockHeartbeatStepdown)) {
+        // This log output is used in js tests so please leave it.
+        log() << "stepDown - blockHeartbeatStepdown fail point enabled. "
+                 "Blocking until fail point is disabled.";
+
+        auto inShutdown = [&] {
+            stdx::lock_guard<stdx::mutex> lk(_mutex);
+            return _inShutdown;
+        };
+
+        while (MONGO_FAIL_POINT(blockHeartbeatStepdown) && !inShutdown()) {
+            mongo::sleepsecs(1);
+        }
+    }
 
     auto opCtx = cc().makeOperationContext();
-    Lock::GlobalWrite globalExclusiveLock(opCtx.get());
-    // TODO Add invariant that we've got global shared or global exclusive lock, when supported
-    // by lock manager.
+    Lock::GlobalLock globalExclusiveLock{
+        opCtx.get(), MODE_X, UINT_MAX, Lock::GlobalLock::EnqueueOnly()};
+    _externalState->killAllUserOperations(opCtx.get());
+    globalExclusiveLock.waitForLock(UINT_MAX);
+    invariant(globalExclusiveLock.isLocked());
+
     stdx::unique_lock<stdx::mutex> lk(_mutex);
+
     _topCoord->finishUnconditionalStepDown();
-    const auto action = _updateMemberStateFromTopologyCoordinator_inlock();
+    const auto action = _updateMemberStateFromTopologyCoordinator_inlock(opCtx.get());
     lk.unlock();
     _performPostMemberStateUpdateAction(action);
     _replExecutor->signalEvent(finishedEvent);
@@ -461,6 +479,7 @@ void ReplicationCoordinatorImpl::_heartbeatReconfigStore(
         }
     }
 
+    bool shouldStartDataReplication = false;
     if (!myIndex.getStatus().isOK() && myIndex.getStatus() != ErrorCodes::NodeNotFound) {
         warning() << "Not persisting new configuration in heartbeat response to disk because "
                      "it is invalid: "
@@ -492,14 +511,22 @@ void ReplicationCoordinatorImpl::_heartbeatReconfigStore(
         bool isArbiter = myIndex.isOK() && myIndex.getValue() != -1 &&
             newConfig.getMemberAt(myIndex.getValue()).isArbiter();
         if (!isArbiter && isFirstConfig) {
-            _externalState->startThreads(_settings);
-            _startDataReplication(opCtx.get());
+            shouldStartDataReplication = true;
         }
+
+        LOG_FOR_HEARTBEATS(2) << "New configuration with version " << newConfig.getConfigVersion()
+                              << " persisted to local storage; installing new config in memory";
     }
 
-    LOG_FOR_HEARTBEATS(2) << "New configuration with version " << newConfig.getConfigVersion()
-                          << " persisted to local storage; installing new config in memory";
     _heartbeatReconfigFinish(cbd, newConfig, myIndex);
+
+    // Start data replication after the config has been installed.
+    if (shouldStartDataReplication) {
+        auto opCtx = cc().makeOperationContext();
+        _replicationProcess->getConsistencyMarkers()->initializeMinValidDocument(opCtx.get());
+        _externalState->startThreads(_settings);
+        _startDataReplication(opCtx.get());
+    }
 }
 
 void ReplicationCoordinatorImpl::_heartbeatReconfigFinish(
@@ -581,7 +608,8 @@ void ReplicationCoordinatorImpl::_heartbeatReconfigFinish(
     // If we do not have an index, we should pass -1 as our index to avoid falsely adding ourself to
     // the data structures inside of the TopologyCoordinator.
     const int myIndexValue = myIndex.getStatus().isOK() ? myIndex.getValue() : -1;
-    const PostMemberStateUpdateAction action = _setCurrentRSConfig_inlock(newConfig, myIndexValue);
+    const PostMemberStateUpdateAction action =
+        _setCurrentRSConfig_inlock(opCtx.get(), newConfig, myIndexValue);
     lk.unlock();
     _resetElectionInfoOnProtocolVersionUpgrade(opCtx.get(), oldConfig, newConfig);
     _performPostMemberStateUpdateAction(action);

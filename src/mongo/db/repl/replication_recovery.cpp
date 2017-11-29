@@ -127,8 +127,7 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx) try {
 
         // If we have a checkpoint timestamp, we set the initial data timestamp now so that
         // the operations we apply below can be given the proper timestamps.
-        _storageInterface->setInitialDataTimestamp(opCtx->getServiceContext(),
-                                                   SnapshotName(checkpointTimestamp));
+        _storageInterface->setInitialDataTimestamp(opCtx->getServiceContext(), checkpointTimestamp);
     }
 
     // Oplog is empty. There are no oplog entries to apply, so we exit recovery. If there was a
@@ -151,7 +150,7 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx) try {
     // of the oplog.
     if (checkpointTimestamp.isNull()) {
         _storageInterface->setInitialDataTimestamp(opCtx->getServiceContext(),
-                                                   SnapshotName(topOfOplog->getTimestamp()));
+                                                   topOfOplog->getTimestamp());
     }
 
 } catch (...) {
@@ -212,7 +211,8 @@ void ReplicationRecoveryImpl::_applyToEndOfOplog(OperationContext* opCtx,
 
     while (cursor->more()) {
         auto entry = cursor->nextSafe();
-        fassertStatusOK(40294, SyncTail::syncApply(opCtx, entry, true));
+        fassertStatusOK(40294,
+                        SyncTail::syncApply(opCtx, entry, OplogApplication::Mode::kRecovering));
         _consistencyMarkers->setAppliedThrough(
             opCtx, fassertStatusOK(40295, OpTime::parseFromOplogEntry(entry)));
     }

@@ -2190,23 +2190,93 @@ public:
     }
 };
 
+TEST(FieldPath, NoOptimizationForRootFieldPathWithDottedPath) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    intrusive_ptr<ExpressionFieldPath> expression =
+        ExpressionFieldPath::parse(expCtx, "$$ROOT.x.y", expCtx->variablesParseState);
+
+    // An attempt to optimize returns the Expression itself.
+    ASSERT_EQUALS(expression, expression->optimize());
+}
+
+TEST(FieldPath, NoOptimizationForCurrentFieldPathWithDottedPath) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    intrusive_ptr<ExpressionFieldPath> expression =
+        ExpressionFieldPath::parse(expCtx, "$$CURRENT.x.y", expCtx->variablesParseState);
+
+    // An attempt to optimize returns the Expression itself.
+    ASSERT_EQUALS(expression, expression->optimize());
+}
+
+TEST(FieldPath, RemoveOptimizesToMissingValue) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    intrusive_ptr<ExpressionFieldPath> expression =
+        ExpressionFieldPath::parse(expCtx, "$$REMOVE", expCtx->variablesParseState);
+
+    auto optimizedExpr = expression->optimize();
+
+    ASSERT_VALUE_EQ(Value(), optimizedExpr->evaluate(Document(BSON("x" << BSON("y" << 123)))));
+}
+
 TEST(FieldPath, NoOptimizationOnNormalPath) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     intrusive_ptr<Expression> expression = ExpressionFieldPath::create(expCtx, "a");
     // An attempt to optimize returns the Expression itself.
     ASSERT_EQUALS(expression, expression->optimize());
-};
+}
 
-TEST(FieldPath, OptimizeOnVariableWithConstantValue) {
+TEST(FieldPath, OptimizeOnVariableWithConstantScalarValue) {
     intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     auto varId = expCtx->variablesParseState.defineVariable("userVar");
-    expCtx->variables.setValue(varId, Value(123));
+    expCtx->variables.setConstantValue(varId, Value(123));
 
     auto expr = ExpressionFieldPath::parse(expCtx, "$$userVar", expCtx->variablesParseState);
     ASSERT_TRUE(dynamic_cast<ExpressionFieldPath*>(expr.get()));
 
     auto optimizedExpr = expr->optimize();
     ASSERT_TRUE(dynamic_cast<ExpressionConstant*>(optimizedExpr.get()));
+}
+
+TEST(FieldPath, OptimizeOnVariableWithConstantArrayValue) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto varId = expCtx->variablesParseState.defineVariable("userVar");
+    expCtx->variables.setConstantValue(varId, Value(BSON_ARRAY(1 << 2 << 3)));
+
+    auto expr = ExpressionFieldPath::parse(expCtx, "$$userVar", expCtx->variablesParseState);
+    ASSERT_TRUE(dynamic_cast<ExpressionFieldPath*>(expr.get()));
+
+    auto optimizedExpr = expr->optimize();
+    auto constantExpr = dynamic_cast<ExpressionConstant*>(optimizedExpr.get());
+    ASSERT_TRUE(constantExpr);
+    ASSERT_VALUE_EQ(Value(BSON_ARRAY(1 << 2 << 3)), constantExpr->getValue());
+}
+
+TEST(FieldPath, OptimizeToEmptyArrayOnNumericalPathComponentAndConstantArrayValue) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto varId = expCtx->variablesParseState.defineVariable("userVar");
+    expCtx->variables.setConstantValue(varId, Value(BSON_ARRAY(1 << 2 << 3)));
+
+    auto expr = ExpressionFieldPath::parse(expCtx, "$$userVar.1", expCtx->variablesParseState);
+    ASSERT_TRUE(dynamic_cast<ExpressionFieldPath*>(expr.get()));
+
+    auto optimizedExpr = expr->optimize();
+    auto constantExpr = dynamic_cast<ExpressionConstant*>(optimizedExpr.get());
+    ASSERT_TRUE(constantExpr);
+    ASSERT_VALUE_EQ(Value(BSONArray()), constantExpr->getValue());
+}
+
+TEST(FieldPath, OptimizeOnVariableWithConstantValueAndDottedPath) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto varId = expCtx->variablesParseState.defineVariable("userVar");
+    expCtx->variables.setConstantValue(varId, Value(Document{{"x", Document{{"y", 123}}}}));
+
+    auto expr = ExpressionFieldPath::parse(expCtx, "$$userVar.x.y", expCtx->variablesParseState);
+    ASSERT_TRUE(dynamic_cast<ExpressionFieldPath*>(expr.get()));
+
+    auto optimizedExpr = expr->optimize();
+    auto constantExpr = dynamic_cast<ExpressionConstant*>(optimizedExpr.get());
+    ASSERT_TRUE(constantExpr);
+    ASSERT_VALUE_EQ(Value(123), constantExpr->getValue());
 }
 
 TEST(FieldPath, NoOptimizationOnVariableWithNoValue) {
@@ -2230,6 +2300,20 @@ TEST(FieldPath, NoOptimizationOnVariableWithMissingValue) {
 
     auto optimizedExpr = expr->optimize();
     ASSERT_FALSE(dynamic_cast<ExpressionConstant*>(optimizedExpr.get()));
+}
+
+TEST(FieldPath, ScalarVariableWithDottedFieldPathOptimizesToConstantMissingValue) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto varId = expCtx->variablesParseState.defineVariable("userVar");
+    expCtx->variables.setConstantValue(varId, Value(123));
+
+    auto expr = ExpressionFieldPath::parse(expCtx, "$$userVar.x.y", expCtx->variablesParseState);
+    ASSERT_TRUE(dynamic_cast<ExpressionFieldPath*>(expr.get()));
+
+    auto optimizedExpr = expr->optimize();
+    auto constantExpr = dynamic_cast<ExpressionConstant*>(optimizedExpr.get());
+    ASSERT_TRUE(constantExpr);
+    ASSERT_VALUE_EQ(Value(), constantExpr->getValue());
 }
 
 /** The field path itself is a dependency. */
@@ -2662,6 +2746,68 @@ TEST(ExpressionObjectDependencies, FieldPathsShouldBeAddedToDependencies) {
     ASSERT_EQ(deps.fields.size(), 1UL);
     ASSERT_EQ(deps.fields.count("c.d"), 1UL);
 };
+
+TEST(ExpressionObjectDependencies, VariablesShouldBeAddedToDependencies) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto varID = expCtx->variablesParseState.defineVariable("var1");
+    auto fieldPath = ExpressionFieldPath::parse(expCtx, "$$var1", expCtx->variablesParseState);
+    DepsTracker deps;
+    fieldPath->addDependencies(&deps);
+    ASSERT_EQ(deps.vars.size(), 1UL);
+    ASSERT_EQ(deps.vars.count(varID), 1UL);
+}
+
+TEST(ExpressionObjectDependencies, LocalLetVariablesShouldBeFilteredOutOfDependencies) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    expCtx->variablesParseState.defineVariable("var1");
+    auto letSpec = BSON("$let" << BSON("vars" << BSON("var2"
+                                                      << "abc")
+                                              << "in"
+                                              << BSON("$multiply" << BSON_ARRAY("$$var1"
+                                                                                << "$$var2"))));
+    auto expressionLet =
+        ExpressionLet::parse(expCtx, letSpec.firstElement(), expCtx->variablesParseState);
+    DepsTracker deps;
+    expressionLet->addDependencies(&deps);
+    ASSERT_EQ(deps.vars.size(), 1UL);
+    ASSERT_EQ(expCtx->variablesParseState.getVariable("var1"), *deps.vars.begin());
+}
+
+TEST(ExpressionObjectDependencies, LocalMapVariablesShouldBeFilteredOutOfDependencies) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    expCtx->variablesParseState.defineVariable("var1");
+    auto mapSpec = BSON("$map" << BSON("input"
+                                       << "$field1"
+                                       << "as"
+                                       << "var2"
+                                       << "in"
+                                       << BSON("$multiply" << BSON_ARRAY("$$var1"
+                                                                         << "$$var2"))));
+
+    auto expressionMap =
+        ExpressionMap::parse(expCtx, mapSpec.firstElement(), expCtx->variablesParseState);
+    DepsTracker deps;
+    expressionMap->addDependencies(&deps);
+    ASSERT_EQ(deps.vars.size(), 1UL);
+    ASSERT_EQ(expCtx->variablesParseState.getVariable("var1"), *deps.vars.begin());
+}
+
+TEST(ExpressionObjectDependencies, LocalFilterVariablesShouldBeFilteredOutOfDependencies) {
+    intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    expCtx->variablesParseState.defineVariable("var1");
+    auto filterSpec = BSON("$filter" << BSON("input" << BSON_ARRAY(1 << 2 << 3) << "as"
+                                                     << "var2"
+                                                     << "cond"
+                                                     << BSON("$gt" << BSON_ARRAY("$$var1"
+                                                                                 << "$$var2"))));
+
+    auto expressionFilter =
+        ExpressionFilter::parse(expCtx, filterSpec.firstElement(), expCtx->variablesParseState);
+    DepsTracker deps;
+    expressionFilter->addDependencies(&deps);
+    ASSERT_EQ(deps.vars.size(), 1UL);
+    ASSERT_EQ(expCtx->variablesParseState.getVariable("var1"), *deps.vars.begin());
+}
 
 //
 // Optimizations.
@@ -3805,6 +3951,15 @@ TEST(ExpressionSubstrCPTest, WithMixedUnicodeAndASCIIValue) {
                           {{{Value("a∫bøßabc"_sd), Value(1), Value(4)}, Value("∫b"_sd)}});
 }
 
+TEST(ExpressionSubstrCPTest, ShouldCoerceDateToString) {
+    assertExpectedResults("$substrCP",
+                          {{{Value(Date_t::fromMillisSinceEpoch(0)), Value(0), Value(1000)},
+                            Value("1970-01-01T00:00:00.000Z"_sd)}});
+    assertExpectedResults("$substrBytes",
+                          {{{Value(Date_t::fromMillisSinceEpoch(0)), Value(0), Value(1000)},
+                            Value("1970-01-01T00:00:00.000Z"_sd)}});
+}
+
 }  // namespace SubstrCP
 
 namespace Type {
@@ -4470,19 +4625,19 @@ TEST_F(ExpressionDateFromPartsTest, OptimizesToConstantIfAllInputsAreConstant) {
     dateExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
     ASSERT(dynamic_cast<ExpressionConstant*>(dateExp->optimize().get()));
 
-    // Test that it becomes a constant if both isoYear, and isoWeekYear are provided, and are both
+    // Test that it becomes a constant if both isoWeekYear, and isoWeek are provided, and are both
     // constants.
-    spec = BSON("$dateFromParts" << BSON("isoYear" << 2017 << "isoWeekYear" << 26));
+    spec = BSON("$dateFromParts" << BSON("isoWeekYear" << 2017 << "isoWeek" << 26));
     dateExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
     ASSERT(dynamic_cast<ExpressionConstant*>(dateExp->optimize().get()));
 
-    // Test that it becomes a constant if both isoYear, isoWeekYear and isoDayOfWeek are provided,
+    // Test that it becomes a constant if both isoWeekYear, isoWeek and isoDayOfWeek are provided,
     // and are both expressions which evaluate to constants.
-    spec = BSON("$dateFromParts" << BSON("isoYear" << BSON("$add" << BSON_ARRAY(1017 << 1000))
-                                                   << "isoWeekYear"
-                                                   << BSON("$add" << BSON_ARRAY(20 << 6))
-                                                   << "isoDayOfWeek"
-                                                   << BSON("$add" << BSON_ARRAY(3 << 2))));
+    spec = BSON("$dateFromParts" << BSON("isoWeekYear" << BSON("$add" << BSON_ARRAY(1017 << 1000))
+                                                       << "isoWeek"
+                                                       << BSON("$add" << BSON_ARRAY(20 << 6))
+                                                       << "isoDayOfWeek"
+                                                       << BSON("$add" << BSON_ARRAY(3 << 2))));
     dateExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
     ASSERT(dynamic_cast<ExpressionConstant*>(dateExp->optimize().get()));
 
@@ -4502,10 +4657,11 @@ TEST_F(ExpressionDateFromPartsTest, OptimizesToConstantIfAllInputsAreConstant) {
     dateExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
     ASSERT_FALSE(dynamic_cast<ExpressionConstant*>(dateExp->optimize().get()));
 
-    // Test that it does *not* become a constant if both isoYear and isoDayOfWeek are provided, but
+    // Test that it does *not* become a constant if both isoWeekYear and isoDayOfWeek are provided,
+    // but
     // isoDayOfWeek is not a constant.
-    spec = BSON("$dateFromParts" << BSON("isoYear" << 2017 << "isoDayOfWeek"
-                                                   << "$isoDayOfWeekday"));
+    spec = BSON("$dateFromParts" << BSON("isoWeekYear" << 2017 << "isoDayOfWeek"
+                                                       << "$isoDayOfWeekday"));
     dateExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
     ASSERT_FALSE(dynamic_cast<ExpressionConstant*>(dateExp->optimize().get()));
 }

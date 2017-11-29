@@ -75,8 +75,8 @@ Status LogicalTimeMetadataHook::readReplyMetadata(OperationContext* opCtx,
         return Status::OK();
     }
 
-    if (serverGlobalParams.featureCompatibility.version.load() ==
-        ServerGlobalParams::FeatureCompatibility::Version::k34) {
+    if (serverGlobalParams.featureCompatibility.getVersion() !=
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
         return Status::OK();
     }
 

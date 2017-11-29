@@ -44,11 +44,15 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/destructor_guard.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace repl {
+
+// Failpoint which causes the initial sync function to hang before running listCollections.
+MONGO_FP_DECLARE(initialSyncHangBeforeListCollections);
 
 namespace {
 
@@ -59,17 +63,20 @@ const char* kNameFieldName = "name";
 const char* kOptionsFieldName = "options";
 const char* kInfoFieldName = "info";
 const char* kUUIDFieldName = "uuid";
-// 16MB max batch size / 12 byte min doc size * 10 (for good measure) = defaultBatchSize to use.
-const auto defaultBatchSize = (16 * 1024 * 1024) / 12 * 10;
 
 // The batchSize to use for the find/getMore queries called by the CollectionCloner
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(collectionClonerBatchSize, int, defaultBatchSize);
+constexpr int kUseARMDefaultBatchSize = -1;
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(collectionClonerBatchSize, int, kUseARMDefaultBatchSize);
 
 // The number of attempts for the listCollections commands.
 MONGO_EXPORT_SERVER_PARAMETER(numInitialSyncListCollectionsAttempts, int, 3);
 
 // The number of cursors to use in the collection cloning process.
 MONGO_EXPORT_SERVER_PARAMETER(maxNumInitialSyncCollectionClonerCursors, int, 1);
+
+// Failpoint which causes initial sync to hang right after listCollections, but before cloning
+// any colelctions in the 'database' database.
+MONGO_FP_DECLARE(initialSyncHangAfterListCollections);
 
 /**
  * Default listCollections predicate.
@@ -159,8 +166,13 @@ bool DatabaseCloner::_isActive_inlock() const {
     return State::kRunning == _state || State::kShuttingDown == _state;
 }
 
-Status DatabaseCloner::startup() noexcept {
+bool DatabaseCloner::_isShuttingDown() const {
     LockGuard lk(_mutex);
+    return State::kShuttingDown == _state;
+}
+
+Status DatabaseCloner::startup() noexcept {
+    UniqueLock lk(_mutex);
 
     switch (_state) {
         case State::kPreStart:
@@ -172,6 +184,20 @@ Status DatabaseCloner::startup() noexcept {
             return Status(ErrorCodes::ShutdownInProgress, "database cloner shutting down");
         case State::kComplete:
             return Status(ErrorCodes::ShutdownInProgress, "database cloner completed");
+    }
+
+    MONGO_FAIL_POINT_BLOCK(initialSyncHangBeforeListCollections, customArgs) {
+        const auto& data = customArgs.getData();
+        const auto databaseElem = data["database"];
+        if (!databaseElem || databaseElem.checkAndGetStringData() == _dbname) {
+            lk.unlock();
+            log() << "initial sync - initialSyncHangBeforeListCollections fail point "
+                     "enabled. Blocking until fail point is disabled.";
+            while (MONGO_FAIL_POINT(initialSyncHangBeforeListCollections) && !_isShuttingDown()) {
+                mongo::sleepsecs(1);
+            }
+            lk.lock();
+        }
     }
 
     _stats.start = _executor->now();
@@ -278,6 +304,17 @@ void DatabaseCloner::_listCollectionsCallback(const StatusWith<Fetcher::QueryRes
     if (_collectionInfos.empty()) {
         _finishCallback_inlock(lk, Status::OK());
         return;
+    }
+
+    MONGO_FAIL_POINT_BLOCK(initialSyncHangAfterListCollections, options) {
+        const BSONObj& data = options.getData();
+        if (data["database"].String() == _dbname) {
+            log() << "initial sync - initialSyncHangAfterListCollections fail point "
+                     "enabled. Blocking until fail point is disabled.";
+            while (MONGO_FAIL_POINT(initialSyncHangAfterListCollections)) {
+                mongo::sleepsecs(1);
+            }
+        }
     }
 
     _collectionNamespaces.reserve(_collectionInfos.size());

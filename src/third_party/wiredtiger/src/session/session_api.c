@@ -259,9 +259,9 @@ __session_reconfigure(WT_SESSION *wt_session, const char *config)
 	ret = __wt_config_getones(session, config, "ignore_cache_size", &cval);
 	if (ret == 0) {
 		if (cval.val)
-			F_SET(session, WT_SESSION_NO_EVICTION);
+			F_SET(session, WT_SESSION_IGNORE_CACHE_SIZE);
 		else
-			F_CLR(session, WT_SESSION_NO_EVICTION);
+			F_CLR(session, WT_SESSION_IGNORE_CACHE_SIZE);
 	}
 	WT_ERR_NOTFOUND_OK(ret);
 
@@ -445,17 +445,15 @@ err:		if (cursor != NULL)
 
 	/*
 	 * Opening a cursor on a non-existent data source will set ret to
-	 * either of ENOENT or WT_NOTFOUND at this point.  However,
+	 * either of ENOENT or WT_NOTFOUND at this point. However,
 	 * applications may reasonably do this inside a transaction to check
 	 * for the existence of a table or index.
 	 *
-	 * Prefer WT_NOTFOUND here: that does not force running transactions to
-	 * roll back.  It will be mapped back to ENOENT.
+	 * Failure in opening a cursor should not set an error on the
+	 * transaction and WT_NOTFOUND will be mapped to ENOENT.
 	 */
-	if (ret == ENOENT)
-		ret = WT_NOTFOUND;
 
-	API_END_RET_NOTFOUND_MAP(session, ret);
+	API_END_RET_NO_TXN_ERROR(session, ret);
 }
 
 /*
@@ -675,8 +673,8 @@ static int
 __session_log_printf(WT_SESSION *wt_session, const char *fmt, ...)
     WT_GCC_FUNC_ATTRIBUTE((format (printf, 2, 3)))
 {
-	WT_SESSION_IMPL *session;
 	WT_DECL_RET;
+	WT_SESSION_IMPL *session;
 	va_list ap;
 
 	session = (WT_SESSION_IMPL *)wt_session;
@@ -937,10 +935,10 @@ __session_join(WT_SESSION *wt_session, WT_CURSOR *join_cursor,
 	WT_INDEX *idx;
 	WT_SESSION_IMPL *session;
 	WT_TABLE *table;
-	bool nested;
 	uint64_t count;
 	uint32_t bloom_bit_count, bloom_hash_count;
 	uint8_t flags, range;
+	bool nested;
 
 	session = (WT_SESSION_IMPL *)wt_session;
 	SESSION_API_CALL(session, join, config, cfg);
@@ -1491,7 +1489,12 @@ __session_timestamp_transaction(WT_SESSION *wt_session, const char *config)
 	WT_SESSION_IMPL *session;
 
 	session = (WT_SESSION_IMPL *)wt_session;
+#ifdef HAVE_DIAGNOSTIC
 	SESSION_API_CALL(session, timestamp_transaction, config, cfg);
+#else
+	SESSION_API_CALL(session, timestamp_transaction, NULL, cfg);
+	cfg[1] = config;
+#endif
 	WT_TRET(__wt_txn_set_timestamp(session, cfg));
 err:	API_END_RET(session, ret);
 }
@@ -1549,12 +1552,12 @@ __transaction_sync_run_chk(WT_SESSION_IMPL *session)
 static int
 __session_transaction_sync(WT_SESSION *wt_session, const char *config)
 {
+	struct timespec now, start;
 	WT_CONFIG_ITEM cval;
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_RET;
 	WT_LOG *log;
 	WT_SESSION_IMPL *session;
-	struct timespec now, start;
 	uint64_t remaining_usec, timeout_ms, waited_ms;
 
 	session = (WT_SESSION_IMPL *)wt_session;
@@ -1936,8 +1939,8 @@ __wt_open_session(WT_CONNECTION_IMPL *conn,
     bool open_metadata, WT_SESSION_IMPL **sessionp)
 {
 	WT_DECL_RET;
-	WT_SESSION_IMPL *session;
 	WT_SESSION *wt_session;
+	WT_SESSION_IMPL *session;
 
 	*sessionp = NULL;
 
@@ -1973,8 +1976,6 @@ int
 __wt_open_internal_session(WT_CONNECTION_IMPL *conn, const char *name,
     bool open_metadata, uint32_t session_flags, WT_SESSION_IMPL **sessionp)
 {
-	WT_DECL_RET;
-	WT_SESSION *wt_session;
 	WT_SESSION_IMPL *session;
 
 	*sessionp = NULL;
@@ -1990,19 +1991,6 @@ __wt_open_internal_session(WT_CONNECTION_IMPL *conn, const char *name,
 	 * flag to avoid this: internal sessions are not closed automatically.
 	 */
 	F_SET(session, session_flags | WT_SESSION_INTERNAL);
-
-	/*
-	 * Acquiring the lookaside table cursor requires various locks; we've
-	 * seen problems in the past where deadlocks happened because sessions
-	 * deadlocked getting the cursor late in the process.  Be defensive,
-	 * get it now.
-	 */
-	if (F_ISSET(session, WT_SESSION_LOOKASIDE_CURSOR) &&
-	    (ret = __wt_las_cursor_open(session, &session->las_cursor)) != 0) {
-		wt_session = &session->iface;
-		WT_TRET(wt_session->close(wt_session, NULL));
-		return (ret);
-	}
 
 	*sessionp = session;
 	return (0);

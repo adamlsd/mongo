@@ -42,33 +42,47 @@ namespace mongo {
 namespace {
 // This is the minimum valid timestamp; it can be used for reads that need to see all untimestamped
 // data but no timestamped data.  We cannot use 0 here because 0 means see all timestamped data.
-const char minimumTimestampStr[] = "1";
+const uint64_t kMinimumTimestamp = 1;
 }  // namespace
 
 MONGO_FP_DECLARE(WTPausePrimaryOplogDurabilityLoop);
 
-WiredTigerOplogManager::WiredTigerOplogManager(OperationContext* opCtx,
-                                               const std::string& uri,
-                                               WiredTigerRecordStore* oplogRecordStore) {
+void WiredTigerOplogManager::start(OperationContext* opCtx,
+                                   const std::string& uri,
+                                   WiredTigerRecordStore* oplogRecordStore) {
+    invariant(!_isRunning);
     // Prime the oplog read timestamp.
     auto sessionCache = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache();
-    char allCommittedTimestampBuf[TIMESTAMP_BUF_SIZE];
-    _fetchAllCommittedValue(sessionCache->conn(), allCommittedTimestampBuf);
-    _setOplogReadTimestamp(allCommittedTimestampBuf);
+    _setOplogReadTimestamp(_fetchAllCommittedValue(sessionCache->conn()));
 
     std::unique_ptr<SeekableRecordCursor> reverseOplogCursor =
         oplogRecordStore->getCursor(opCtx, false /* false = reverse cursor */);
     auto lastRecord = reverseOplogCursor->next();
     _oplogMaxAtStartup = lastRecord ? lastRecord->id : RecordId();
 
-    _oplogJournalThread = stdx::thread(
-        &WiredTigerOplogManager::_oplogJournalThreadLoop, this, sessionCache, oplogRecordStore);
+    auto replCoord = repl::ReplicationCoordinator::get(getGlobalServiceContext());
+    bool isMasterSlave = false;
+    if (replCoord) {
+        isMasterSlave =
+            replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeMasterSlave;
+    }
+    _oplogJournalThread = stdx::thread(&WiredTigerOplogManager::_oplogJournalThreadLoop,
+                                       this,
+                                       sessionCache,
+                                       oplogRecordStore,
+                                       isMasterSlave);
+
+    stdx::lock_guard<stdx::mutex> lk(_oplogVisibilityStateMutex);
+    _isRunning = true;
+    _shuttingDown = false;
 }
 
-WiredTigerOplogManager::~WiredTigerOplogManager() {
+void WiredTigerOplogManager::halt() {
     {
         stdx::lock_guard<stdx::mutex> lk(_oplogVisibilityStateMutex);
+        invariant(_isRunning);
         _shuttingDown = true;
+        _isRunning = false;
     }
 
     if (_oplogJournalThread.joinable()) {
@@ -132,8 +146,9 @@ void WiredTigerOplogManager::triggerJournalFlush() {
     }
 }
 
-void WiredTigerOplogManager::_oplogJournalThreadLoop(
-    WiredTigerSessionCache* sessionCache, WiredTigerRecordStore* oplogRecordStore) noexcept {
+void WiredTigerOplogManager::_oplogJournalThreadLoop(WiredTigerSessionCache* sessionCache,
+                                                     WiredTigerRecordStore* oplogRecordStore,
+                                                     bool isMasterSlave) noexcept {
     Client::initThread("WTOplogJournalThread");
 
     // This thread updates the oplog read timestamp, the timestamp used to read from the oplog with
@@ -160,12 +175,7 @@ void WiredTigerOplogManager::_oplogJournalThreadLoop(
         _opsWaitingForJournal = false;
         lk.unlock();
 
-        char allCommittedTimestampBuf[TIMESTAMP_BUF_SIZE];
-        _fetchAllCommittedValue(sessionCache->conn(), allCommittedTimestampBuf);
-
-        std::uint64_t newTimestamp;
-        auto status = parseNumberFromStringWithBase(allCommittedTimestampBuf, 16, &newTimestamp);
-        fassertStatusOK(38002, status);
+        const uint64_t newTimestamp = _fetchAllCommittedValue(sessionCache->conn());
 
         if (newTimestamp == _oplogReadTimestamp.load()) {
             LOG(2) << "no new oplog entries were made visible: " << newTimestamp;
@@ -179,12 +189,18 @@ void WiredTigerOplogManager::_oplogJournalThreadLoop(
         lk.lock();
 
         // Publish the new timestamp value.
-        _setOplogReadTimestamp(allCommittedTimestampBuf);
+        _setOplogReadTimestamp(newTimestamp);
         _opsBecameVisibleCV.notify_all();
         lk.unlock();
 
         // Wake up any await_data cursors and tell them more data might be visible now.
         oplogRecordStore->notifyCappedWaitersIfNeeded();
+
+        // For master/slave masters, set oldest timestamp here so that we clean up old timestamp
+        // data.  SERVER-31802
+        if (isMasterSlave) {
+            sessionCache->getKVEngine()->setStableTimestamp(Timestamp(newTimestamp));
+        }
     }
 }
 
@@ -196,26 +212,27 @@ void WiredTigerOplogManager::setOplogReadTimestamp(Timestamp ts) {
     _oplogReadTimestamp.store(ts.asULL());
 }
 
-void WiredTigerOplogManager::_setOplogReadTimestamp(char buf[TIMESTAMP_BUF_SIZE]) {
-    std::uint64_t newTimestamp;
-    auto status = parseNumberFromStringWithBase(buf, 16, &newTimestamp);
-    fassertStatusOK(38001, status);
+void WiredTigerOplogManager::_setOplogReadTimestamp(uint64_t newTimestamp) {
     _oplogReadTimestamp.store(newTimestamp);
     LOG(2) << "setting new oplogReadTimestamp: " << newTimestamp;
 }
 
-void WiredTigerOplogManager::_fetchAllCommittedValue(WT_CONNECTION* conn,
-                                                     char buf[TIMESTAMP_BUF_SIZE]) {
+uint64_t WiredTigerOplogManager::_fetchAllCommittedValue(WT_CONNECTION* conn) {
     // Fetch the latest all_committed value from the storage engine.  This value will be a
     // timestamp that has no holes (uncommitted transactions with lower timestamps) behind it.
+    char buf[(2 * 8 /*bytes in hex*/) + 1 /*nul terminator*/];
     auto wtstatus = conn->query_timestamp(conn, buf, "get=all_committed");
     if (wtstatus == WT_NOTFOUND) {
         // Treat this as lowest possible timestamp; we need to see all preexisting data but no new
         // (timestamped) data.
-        std::strncpy(buf, minimumTimestampStr, TIMESTAMP_BUF_SIZE);
+        return kMinimumTimestamp;
     } else {
         invariantWTOK(wtstatus);
     }
+
+    uint64_t tmp;
+    fassertStatusOK(38002, parseNumberFromStringWithBase(buf, 16, &tmp));
+    return tmp;
 }
 
 }  // namespace mongo

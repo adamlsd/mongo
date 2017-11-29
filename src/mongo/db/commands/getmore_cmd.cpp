@@ -43,7 +43,6 @@
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/working_set_common.h"
-#include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/find.h"
 #include "mongo/db/query/find_common.h"
@@ -68,10 +67,6 @@ namespace {
 
 MONGO_FP_DECLARE(rsStopGetMoreCmd);
 
-// Failpoint for making getMore not wait for an awaitdata cursor. Allows us to avoid waiting during
-// tests.
-MONGO_FP_DECLARE(disableAwaitDataForGetMoreCmd);
-
 /**
  * A command for running getMore() against an existing cursor registered with a CursorManager.
  * Used to generate the next batch of results for a ClientCursor.
@@ -87,6 +82,10 @@ public:
 
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+
+    virtual bool allowsAfterClusterTime(const BSONObj& cmdObj) const override {
         return false;
     }
 
@@ -300,7 +299,9 @@ public:
                 opCtx->setDeadlineAfterNowBy(cursor->getLeftoverMaxTimeMicros());
             }
         }
-        opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
+        if (!cursor->isAwaitData()) {
+            opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
+        }
 
         PlanExecutor* exec = cursor->getExecutor();
         exec->reattachToOperationContext(opCtx);
@@ -444,7 +445,7 @@ public:
                 nextBatch->append(obj);
                 (*numResults)++;
             }
-        } catch (const CloseChangeStreamException& ex) {
+        } catch (const ExceptionFor<ErrorCodes::CloseChangeStream>&) {
             // FAILURE state will make getMore command close the cursor even if it's tailable.
             *state = PlanExecutor::FAILURE;
             return Status::OK();

@@ -25,6 +25,7 @@
  *    exception statement from all source files in the program, then also delete
  *    it in the license file.
  */
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kDefault
 
 #include "mongo/platform/basic.h"
 
@@ -32,6 +33,7 @@
 
 #include "mongo/db/keys_collection_cache_reader.h"
 #include "mongo/db/keys_collection_cache_reader_and_updater.h"
+#include "mongo/db/keys_collection_client.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time.h"
 #include "mongo/db/operation_context.h"
@@ -40,6 +42,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/concurrency/idle_thread_block.h"
 #include "mongo/util/fail_point_service.h"
+#include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/time_support.h"
 
@@ -81,13 +84,13 @@ Milliseconds howMuchSleepNeedFor(const LogicalTime& currentTime,
 
 }  // unnamed namespace
 
-KeysCollectionManagerSharding::KeysCollectionManagerSharding(std::string purpose,
-                                                             ShardingCatalogClient* client,
-                                                             Seconds keyValidForInterval)
-    : _purpose(std::move(purpose)),
+KeysCollectionManagerSharding::KeysCollectionManagerSharding(
+    std::string purpose, std::unique_ptr<KeysCollectionClient> client, Seconds keyValidForInterval)
+    : _client(std::move(client)),
+      _purpose(std::move(purpose)),
       _keyValidForInterval(keyValidForInterval),
-      _catalogClient(client),
-      _keysCache(_purpose, client) {}
+      _keysCache(_purpose, _client.get()) {}
+
 
 StatusWith<KeysCollectionDocument> KeysCollectionManagerSharding::getKeyForValidation(
     OperationContext* opCtx, long long keyId, const LogicalTime& forThisTime) {
@@ -142,6 +145,7 @@ void KeysCollectionManagerSharding::refreshNow(OperationContext* opCtx) {
 }
 
 void KeysCollectionManagerSharding::startMonitoring(ServiceContext* service) {
+    _keysCache.resetCache();
     _refresher.setFunc([this](OperationContext* opCtx) { return _keysCache.refresh(opCtx); });
     _refresher.start(
         service, str::stream() << "monitoring keys for " << _purpose, _keyValidForInterval);
@@ -155,7 +159,7 @@ void KeysCollectionManagerSharding::enableKeyGenerator(OperationContext* opCtx, 
     if (doEnable) {
         _refresher.switchFunc(opCtx, [this](OperationContext* opCtx) {
             KeysCollectionCacheReaderAndUpdater keyGenerator(
-                _purpose, _catalogClient, _keyValidForInterval);
+                _purpose, _client.get(), _keyValidForInterval);
             auto keyGenerationStatus = keyGenerator.refresh(opCtx);
 
             if (ErrorCodes::isShutdownError(keyGenerationStatus.getStatus().code())) {
@@ -186,8 +190,8 @@ void KeysCollectionManagerSharding::PeriodicRunner::refreshNow(OperationContext*
         stdx::lock_guard<stdx::mutex> lk(_mutex);
 
         if (_inShutdown) {
-            throw DBException(ErrorCodes::ShutdownInProgress,
-                              "aborting keys cache refresh because node is shutting down");
+            uasserted(ErrorCodes::ShutdownInProgress,
+                      "aborting keys cache refresh because node is shutting down");
         }
 
         if (_refreshRequest) {
@@ -203,7 +207,7 @@ void KeysCollectionManagerSharding::PeriodicRunner::refreshNow(OperationContext*
     // waitFor also throws if timeout, so also throw when notification was not satisfied after
     // waiting.
     if (!refreshRequest->waitFor(opCtx, kDefaultRefreshWaitTime)) {
-        throw DBException(ErrorCodes::ExceededTimeLimit, "timed out waiting for refresh");
+        uasserted(ErrorCodes::ExceededTimeLimit, "timed out waiting for refresh");
     }
 }
 
@@ -212,8 +216,6 @@ void KeysCollectionManagerSharding::PeriodicRunner::_doPeriodicRefresh(
     Client::initThreadIfNotAlready(threadName);
 
     while (true) {
-        auto opCtx = cc().makeOperationContext();
-
         bool hasRefreshRequestInitially = false;
         unsigned errorCount = 0;
         std::shared_ptr<RefreshFunc> doRefresh;
@@ -232,8 +234,10 @@ void KeysCollectionManagerSharding::PeriodicRunner::_doPeriodicRefresh(
         Milliseconds nextWakeup = kRefreshIntervalIfErrored;
 
         // No need to refresh keys in FCV 3.4, since key generation will be disabled.
-        if (serverGlobalParams.featureCompatibility.version.load() !=
-            ServerGlobalParams::FeatureCompatibility::Version::k34) {
+        if (serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+            auto opCtx = cc().makeOperationContext();
+
             auto latestKeyStatusWith = (*doRefresh)(opCtx.get());
             if (latestKeyStatusWith.getStatus().isOK()) {
                 errorCount = 0;
@@ -282,6 +286,9 @@ void KeysCollectionManagerSharding::PeriodicRunner::_doPeriodicRefresh(
             break;
         }
 
+        // Use a new opCtx so we won't be holding any RecoveryUnit while this thread goes to sleep.
+        auto opCtx = cc().makeOperationContext();
+
         MONGO_IDLE_THREAD_BLOCK;
         auto sleepStatus = opCtx->waitForConditionOrInterruptNoAssertUntil(
             _refreshNeededCV, lock, Date_t::now() + nextWakeup);
@@ -301,6 +308,7 @@ void KeysCollectionManagerSharding::PeriodicRunner::_doPeriodicRefresh(
 void KeysCollectionManagerSharding::PeriodicRunner::setFunc(RefreshFunc newRefreshStrategy) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     _doRefresh = std::make_shared<RefreshFunc>(std::move(newRefreshStrategy));
+    _refreshNeededCV.notify_all();
 }
 
 void KeysCollectionManagerSharding::PeriodicRunner::switchFunc(OperationContext* opCtx,

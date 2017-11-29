@@ -17,6 +17,7 @@ selector:
   - jstests/core/compact_keeps_indexes.js  # compact.
   - jstests/core/currentop.js  # uses fsync.
   - jstests/core/auth_copydb.js # copyDatabase.
+  - jstests/core/copydatabase_no_id_index.js # copyDatabase.
   - jstests/core/copydb.js # copyDatabase.
   - jstests/core/dbadmin.js  # "local" database.
   - jstests/core/dbhash.js  # dbhash.
@@ -40,7 +41,6 @@ selector:
   - jstests/core/repair_server12955.js # repairDatabase
   - jstests/core/stages*.js  # stageDebug.
   - jstests/core/startup_log.js  # "local" database.
-  - jstests/core/storageDetailsCommand.js  # diskStorageStats.
   - jstests/core/tailable_cursor_invalidation.js # capped collections.
   - jstests/core/tailable_getmore_batch_size.js # capped collections.
   - jstests/core/tailable_skip_limit.js # capped collections.
@@ -175,6 +175,8 @@ selector:
   - jstests/core/count_plan_summary.js
   - jstests/core/shellstartparallel.js
   # TODO SERVER-30466
+  - jstests/core/explain_multi_plan.js
+  - jstests/core/explain_shell_helpers.js
   - jstests/core/index_partial_read_ops.js
   - jstests/core/update_arrayFilters.js
   # The in memory structures are not causally consistent. Details are in DOCS-10626 
@@ -182,13 +184,6 @@ selector:
   - jstests/core/getmore_invalidated_cursors.js
   - jstests/core/system_profile.js
   - jstests/core/orf.js #explain.executionStats is not CC
-  # TODO: SERVER-30582
-  - jstests/core/agg_hint.js
-  - jstests/core/explain_agg_write_concern.js
-  - jstests/core/explain_missing_collection.js
-  - jstests/core/explain_shell_helpers.js
-  - jstests/core/sort_array.js
-  - jstests/core/explain_multi_plan.js
   exclude_with_any_tags:
   # Tests tagged with the following will fail because they assume collections are not sharded.
   - assumes_no_implicit_collection_creation_after_drop

@@ -38,15 +38,12 @@ class InternalSchemaStrLengthMatchExpression : public LeafMatchExpression {
 public:
     using Validator = stdx::function<bool(int)>;
 
-    InternalSchemaStrLengthMatchExpression(MatchType type, StringData name)
-        : LeafMatchExpression(type), _name(name) {}
+    InternalSchemaStrLengthMatchExpression(MatchType type,
+                                           StringData path,
+                                           long long strLen,
+                                           StringData name);
 
     virtual ~InternalSchemaStrLengthMatchExpression() {}
-
-    Status init(StringData path, long long strLen) {
-        _strLen = strLen;
-        return setPath(path);
-    }
 
     virtual Validator getComparator() const = 0;
 
@@ -72,6 +69,10 @@ protected:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     StringData _name;
     long long _strLen = 0;
 };

@@ -30,24 +30,23 @@
 
 #include <utility>
 
-#include "mongo/bson/bsonelement_comparator.h"
+#include "mongo/bson/unordered_fields_bsonelement_comparator.h"
 #include "mongo/db/matcher/expression_array.h"
 
 namespace mongo {
 
 /**
- * Matches arrays whose elements are all unique.
+ * Matches arrays whose elements are all unique. When comparing elements,
+ *
+ *  - strings are always compared using the "simple" string comparator; and
+ *  - objects are compared in a field order-independent manner.
  */
 class InternalSchemaUniqueItemsMatchExpression final : public ArrayMatchingMatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaUniqueItems"_sd;
 
-    InternalSchemaUniqueItemsMatchExpression()
-        : ArrayMatchingMatchExpression(MatchExpression::INTERNAL_SCHEMA_UNIQUE_ITEMS) {}
-
-    Status init(StringData path) {
-        return setPath(path);
-    }
+    explicit InternalSchemaUniqueItemsMatchExpression(StringData path)
+        : ArrayMatchingMatchExpression(MatchExpression::INTERNAL_SCHEMA_UNIQUE_ITEMS, path) {}
 
     size_t numChildren() const final {
         return 0;
@@ -80,7 +79,11 @@ public:
     std::unique_ptr<MatchExpression> shallowClone() const final;
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     // The comparator to use when comparing BSONElements, which will never use a collation.
-    BSONElementComparator _comparator{BSONElementComparator::FieldNamesMode::kIgnore, nullptr};
+    UnorderedFieldsBSONElementComparator _comparator;
 };
 }  // namespace mongo

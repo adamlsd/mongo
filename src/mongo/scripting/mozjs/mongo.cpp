@@ -84,8 +84,9 @@ const JSFunctionSpec MongoBase::methods[] = {
         getMinWireVersion, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(
         getMaxWireVersion, MongoLocalInfo, MongoExternalInfo),
-    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(getClusterTime, MongoExternalInfo),
-    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(setClusterTime, MongoExternalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(
+        isReplicaSetMember, MongoLocalInfo, MongoExternalInfo),
+    MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(isMongos, MongoLocalInfo, MongoExternalInfo),
     MONGO_ATTACH_JS_CONSTRAINED_METHOD_NO_PROTO(_startSession, MongoLocalInfo, MongoExternalInfo),
     JS_FS_END,
 };
@@ -101,22 +102,16 @@ const JSFunctionSpec MongoExternalInfo::freeFunctions[4] = {
 
 namespace {
 
-/**
- * Mutex and storage for global cluster time via set/getClusterTime.
- *
- * We need this to be global so that we can gossip times seen on one connection across to other
- * connections within the same cluster.
- */
-stdx::mutex logicalTimeMutex;
-BSONObj latestlogicalTime;
+const std::shared_ptr<DBClientBase>& getConnectionRef(JS::CallArgs& args) {
+    auto ret =
+        static_cast<std::shared_ptr<DBClientBase>*>(JS_GetPrivate(args.thisv().toObjectOrNull()));
+    uassert(
+        ErrorCodes::BadValue, "Trying to get connection for closed Mongo object", *ret != nullptr);
+    return *ret;
+}
 
 DBClientBase* getConnection(JS::CallArgs& args) {
-    auto ret =
-        static_cast<std::shared_ptr<DBClientBase>*>(JS_GetPrivate(args.thisv().toObjectOrNull()))
-            ->get();
-    uassert(
-        ErrorCodes::BadValue, "Trying to get connection for closed Mongo object", ret != nullptr);
-    return ret;
+    return getConnectionRef(args).get();
 }
 
 void setCursor(MozJSImplScope* scope,
@@ -145,20 +140,15 @@ void setCursorHandle(MozJSImplScope* scope,
 }
 
 void setHiddenMongo(JSContext* cx,
-                    DBClientBase* resPtr,
+                    std::shared_ptr<DBClientBase> resPtr,
                     DBClientBase* origConn,
                     JS::CallArgs& args) {
     ObjectWrapper o(cx, args.rval());
     // If the connection that ran the command is the same as conn, then we set a hidden "_mongo"
     // property on the returned object that is just "this" Mongo object.
-    if (resPtr == origConn) {
+    if (resPtr.get() == origConn) {
         o.defineProperty(InternedString::_mongo, args.thisv(), JSPROP_READONLY | JSPROP_PERMANENT);
     } else {
-        // Otherwise, we construct a new Mongo object that is a copy of "this", but has a different
-        // private value which is the specific DBClientBase that should be used for getMore calls.
-        auto& connSharedPtr = *(static_cast<std::shared_ptr<DBClientBase>*>(
-            JS_GetPrivate(args.thisv().toObjectOrNull())));
-
         JS::RootedObject newMongo(cx);
 
         auto scope = getScope(cx);
@@ -169,8 +159,7 @@ void setHiddenMongo(JSContext* cx,
             scope->getProto<MongoExternalInfo>().newObject(&newMongo);
         }
         JS_SetPrivate(newMongo,
-                      scope->trackedNew<std::shared_ptr<DBClientBase>>(
-                          connSharedPtr, static_cast<DBClientBase*>(resPtr)));
+                      scope->trackedNew<std::shared_ptr<DBClientBase>>(std::move(resPtr)));
 
         ObjectWrapper from(cx, args.thisv());
         ObjectWrapper to(cx, newMongo);
@@ -188,20 +177,6 @@ void setHiddenMongo(JSContext* cx,
     }
 }
 }  // namespace
-
-BSONObj MongoBase::getClusterTime() {
-    stdx::lock_guard<stdx::mutex> lk(logicalTimeMutex);
-    return latestlogicalTime;
-}
-
-void MongoBase::setClusterTime(const BSONObj& newTime) {
-    stdx::lock_guard<stdx::mutex> lk(logicalTimeMutex);
-    if (latestlogicalTime.isEmpty() ||
-        SimpleBSONElementComparator::kInstance.evaluate(latestlogicalTime["clusterTime"] <
-                                                        newTime["clusterTime"])) {
-        latestlogicalTime = newTime.getOwned();
-    }
-}
 
 void MongoBase::finalize(JSFreeOp* fop, JSObject* obj) {
     auto conn = static_cast<std::shared_ptr<DBClientBase>*>(JS_GetPrivate(obj));
@@ -235,7 +210,7 @@ void MongoBase::Functions::runCommand::call(JSContext* cx, JS::CallArgs args) {
     if (!args.get(2).isNumber())
         uasserted(ErrorCodes::BadValue, "the options parameter to runCommand must be a number");
 
-    auto conn = getConnection(args);
+    const auto& conn = getConnectionRef(args);
 
     std::string database = ValueWriter(cx, args.get(0)).toString();
 
@@ -243,13 +218,13 @@ void MongoBase::Functions::runCommand::call(JSContext* cx, JS::CallArgs args) {
 
     int queryOptions = ValueWriter(cx, args.get(2)).toInt32();
     BSONObj cmdRes;
-    auto resTuple = conn->runCommandWithTarget(database, cmdObj, cmdRes, queryOptions);
+    auto resTuple = conn->runCommandWithTarget(database, cmdObj, cmdRes, conn, queryOptions);
 
     // the returned object is not read only as some of our tests depend on modifying it.
     //
     // Also, we make a copy here because we want a copy after we dump cmdRes
     ValueReader(cx, args.rval()).fromBSON(cmdRes.getOwned(), nullptr, false /* read only */);
-    setHiddenMongo(cx, std::get<1>(resTuple), conn, args);
+    setHiddenMongo(cx, std::get<1>(resTuple), conn.get(), args);
 }
 
 void MongoBase::Functions::runCommandWithMetadata::call(JSContext* cx, JS::CallArgs args) {
@@ -272,9 +247,9 @@ void MongoBase::Functions::runCommandWithMetadata::call(JSContext* cx, JS::CallA
     BSONObj metadata = ValueWriter(cx, args.get(1)).toBSON();
     BSONObj commandArgs = ValueWriter(cx, args.get(2)).toBSON();
 
-    auto conn = getConnection(args);
-    auto resTuple =
-        conn->runCommandWithTarget(OpMsgRequest::fromDBAndBody(database, commandArgs, metadata));
+    const auto& conn = getConnectionRef(args);
+    auto resTuple = conn->runCommandWithTarget(
+        OpMsgRequest::fromDBAndBody(database, commandArgs, metadata), conn);
     auto res = std::move(std::get<0>(resTuple));
 
     BSONObjBuilder mergedResultBob;
@@ -282,7 +257,7 @@ void MongoBase::Functions::runCommandWithMetadata::call(JSContext* cx, JS::CallA
     mergedResultBob.append("metadata", res->getMetadata());
 
     ValueReader(cx, args.rval()).fromBSON(mergedResultBob.obj(), nullptr, false);
-    setHiddenMongo(cx, std::get<1>(resTuple), conn, args);
+    setHiddenMongo(cx, std::get<1>(resTuple), conn.get(), args);
 }
 
 void MongoBase::Functions::find::call(JSContext* cx, JS::CallArgs args) {
@@ -620,8 +595,7 @@ void MongoBase::Functions::copyDatabaseWithSCRAM::call(JSContext* cx, JS::CallAr
 
         bool ok = conn->runCommand("admin", command, inputObj);
 
-        ErrorCodes::Error code =
-            ErrorCodes::fromInt(inputObj[saslCommandCodeFieldName].numberInt());
+        ErrorCodes::Error code = ErrorCodes::Error(inputObj[saslCommandCodeFieldName].numberInt());
 
         if (!ok || code != ErrorCodes::OK) {
             if (code == ErrorCodes::OK)
@@ -766,23 +740,16 @@ void MongoBase::Functions::getMaxWireVersion::call(JSContext* cx, JS::CallArgs a
     args.rval().setInt32(conn->getMaxWireVersion());
 }
 
-void MongoBase::Functions::getClusterTime::call(JSContext* cx, JS::CallArgs args) {
-    auto ct = MongoBase::getClusterTime();
+void MongoBase::Functions::isReplicaSetMember::call(JSContext* cx, JS::CallArgs args) {
+    auto conn = getConnection(args);
 
-    if (!ct.isEmpty()) {
-        ValueReader(cx, args.rval()).fromBSON(MongoBase::getClusterTime(), nullptr, true);
-        return;
-    }
-
-    args.rval().setUndefined();
+    args.rval().setBoolean(conn->isReplicaSetMember());
 }
 
-void MongoBase::Functions::setClusterTime::call(JSContext* cx, JS::CallArgs args) {
-    auto newTime = ObjectWrapper(cx, args.get(0)).toBSON();
+void MongoBase::Functions::isMongos::call(JSContext* cx, JS::CallArgs args) {
+    auto conn = getConnection(args);
 
-    MongoBase::setClusterTime(newTime);
-
-    args.rval().setUndefined();
+    args.rval().setBoolean(conn->isMongos());
 }
 
 void MongoBase::Functions::_startSession::call(JSContext* cx, JS::CallArgs args) {

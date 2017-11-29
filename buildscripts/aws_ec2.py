@@ -20,9 +20,17 @@ _MODES = ("status", "create", "start", "stop", "force-stop", "reboot", "terminat
 class AwsEc2(object):
     """Class to support controlling AWS EC2 istances."""
 
-    InstanceStatus = collections.namedtuple(
-        "InstanceStatus",
-        "instance_id image_id instance_type state private_ip_address public_ip_address tags")
+    InstanceStatus = collections.namedtuple("InstanceStatus", [
+        "instance_id",
+        "image_id",
+        "instance_type",
+        "state",
+        "private_ip_address",
+        "public_ip_address",
+        "private_dns_name",
+        "public_dns_name",
+        "tags"
+        ])
 
     def __init__(self):
         try:
@@ -33,27 +41,82 @@ class AwsEc2(object):
                   " for the variable names, file names and precedence order.")
             raise
 
-    def control_instance(self, mode, image_id):
+    @staticmethod
+    def wait_for_state(instance, state, wait_time_secs=0, show_progress=False):
+        """Wait up to 'wait_time_secs' for instance to be in 'state'.
+           Return 0 if 'state' reached, 1 otherwise."""
+        if show_progress:
+            print("Waiting for instance {} to reach '{}' state".format(instance, state),
+                  end="",
+                  file=sys.stdout)
+        reached_state = False
+        end_time = time.time() + wait_time_secs
+        while True:
+            if show_progress:
+                print(".", end="", file=sys.stdout)
+                sys.stdout.flush()
+            try:
+                client_error = ""
+                time_left = end_time - time.time()
+                instance.load()
+                if instance.state["Name"] == state:
+                    reached_state = True
+                    break
+                if time_left <= 0:
+                    break
+            except botocore.exceptions.ClientError as err:
+                # A ClientError exception can sometimes be generated, due to RequestLimitExceeded,
+                # so we ignore it and retry until we time out.
+                client_error = " {}".format(err.message)
+
+            wait_interval_secs = 15 if time_left > 15 else time_left
+            time.sleep(wait_interval_secs)
+        if show_progress:
+            if reached_state:
+                print(" Instance {}!".format(instance.state["Name"]), file=sys.stdout)
+            else:
+                print(" Instance in state '{}', failed to reach state '{}'{}!".format(
+                    instance.state["Name"], state, client_error), file=sys.stdout)
+            sys.stdout.flush()
+        return 0 if reached_state else 1
+
+    def control_instance(self, mode, image_id, wait_time_secs=0, show_progress=False):
         """Controls an AMI instance. Returns 0 & status information, if successful."""
         if mode not in _MODES:
             raise ValueError(
                 "Invalid mode '{}' specified, choose from {}.".format(mode, _MODES))
 
+        sys.stdout.flush()
         instance = self.connection.Instance(image_id)
         try:
             if mode == "start":
+                state = "running"
                 instance.start()
             elif mode == "stop":
+                state = "stopped"
                 instance.stop()
             elif mode == "force-stop":
+                state = "stopped"
                 instance.stop(Force=True)
             elif mode == "terminate":
+                state = "terminated"
                 instance.terminate()
             elif mode == "reboot":
+                state = "running"
                 instance.reboot()
-        except botocore.exceptions.ClientError as e:
-            return 1, e.message
+            else:
+                state = None
+                wait_time_secs = 0
+        except botocore.exceptions.ClientError as err:
+            return 1, err.message
 
+        ret = 0
+        if wait_time_secs > 0:
+            ret = self.wait_for_state(
+                instance=instance,
+                state=state,
+                wait_time_secs=wait_time_secs,
+                show_progress=show_progress)
         try:
             # Always provide status after executing command.
             status = self.InstanceStatus(
@@ -63,11 +126,13 @@ class AwsEc2(object):
                 getattr(instance, "state", None),
                 getattr(instance, "private_ip_address", None),
                 getattr(instance, "public_ip_address", None),
+                getattr(instance, "private_dns_name", None),
+                getattr(instance, "public_dns_name", None),
                 getattr(instance, "tags", None))
-        except botocore.exceptions.ClientError as e:
-            return 1, e.message
+        except botocore.exceptions.ClientError as err:
+            return 1, err.message
 
-        return 0, status
+        return ret, status
 
     def tag_instance(self, image_id, tags):
         """Tags an AMI instance. """
@@ -80,8 +145,8 @@ class AwsEc2(object):
                 try:
                     instance = self.connection.Instance(image_id)
                     break
-                except botocore.exceptions.ClientError as e:
-                    if e.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
+                except botocore.exceptions.ClientError as err:
+                    if err.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
                         raise
                 time.sleep(i + 1)
             instance.create_tags(Tags=tags)
@@ -122,27 +187,16 @@ class AwsEc2(object):
                 MaxCount=1,
                 MinCount=1,
                 **kwargs)
-        except (botocore.exceptions.ClientError, botocore.exceptions.ParamValidationError) as e:
-            return 1, e.message
+        except (botocore.exceptions.ClientError, botocore.exceptions.ParamValidationError) as err:
+            return 1, err.message
 
         instance = instances[0]
-
-        if wait_time_secs:
-            # Wait up to 'wait_time_secs' for instance to be 'running'.
-            end_time = time.time() + wait_time_secs
-            if show_progress:
-                print("Waiting for instance {} ".format(instance), end="", file=sys.stdout)
-            while time.time() < end_time:
-                if show_progress:
-                    print(".", end="", file=sys.stdout)
-                    sys.stdout.flush()
-                time.sleep(5)
-                instance.load()
-                if instance.state["Name"] == "running":
-                    if show_progress:
-                        print(" Instance running!", file=sys.stdout)
-                        sys.stdout.flush()
-                    break
+        if wait_time_secs > 0:
+            self.wait_for_state(
+                instance=instance,
+                state="running",
+                wait_time_secs=wait_time_secs,
+                show_progress=show_progress)
 
         self.tag_instance(instance.instance_id, tags)
 
@@ -150,6 +204,7 @@ class AwsEc2(object):
 
 
 def main():
+    """Main program."""
 
     required_create_options = ["ami", "key_name"]
 
@@ -168,6 +223,13 @@ def main():
                                dest="image_id",
                                default=None,
                                help="EC2 image_id to perform operation on [REQUIRED for control].")
+
+    control_options.add_option("--waitTimeSecs",
+                               dest="wait_time_secs",
+                               type=int,
+                               default=5 * 60,
+                               help="Time to wait for EC2 instance to reach it's new state,"
+                                    " defaults to '%default'.")
 
     create_options.add_option("--ami",
                               dest="ami",
@@ -229,7 +291,7 @@ def main():
     parser.add_option_group(control_options)
     parser.add_option_group(create_options)
 
-    (options, args) = parser.parse_args()
+    (options, _) = parser.parse_args()
 
     aws_ec2 = AwsEc2()
 
@@ -265,7 +327,7 @@ def main():
             key_name=options.key_name,
             security_groups=options.security_groups,
             tags=tags,
-            wait_time_secs=60,
+            wait_time_secs=options.wait_time_secs,
             show_progress=True,
             **my_kwargs)
     else:
@@ -273,7 +335,11 @@ def main():
             parser.print_help()
             parser.error("Missing required control option")
 
-        (ret_code, instance_status) = aws_ec2.control_instance(options.mode, options.image_id)
+        (ret_code, instance_status) = aws_ec2.control_instance(
+            mode=options.mode,
+            image_id=options.image_id,
+            wait_time_secs=options.wait_time_secs,
+            show_progress=True)
 
     print("Return code: {}, Instance status:".format(ret_code))
     if ret_code:

@@ -122,11 +122,12 @@ CollectionAndChangedChunks getChangedChunks(OperationContext* opCtx,
             "No chunks were found for the collection",
             !changedChunks.empty());
 
-    return {coll.getEpoch(),
-            coll.getKeyPattern().toBSON(),
-            coll.getDefaultCollation(),
-            coll.getUnique(),
-            std::move(changedChunks)};
+    return CollectionAndChangedChunks(coll.getUUID(),
+                                      coll.getEpoch(),
+                                      coll.getKeyPattern().toBSON(),
+                                      coll.getDefaultCollation(),
+                                      coll.getUnique(),
+                                      std::move(changedChunks));
 }
 
 }  // namespace
@@ -169,7 +170,7 @@ std::shared_ptr<Notification<void>> ConfigServerCatalogCacheLoader::getChunksSin
 
     auto notify = std::make_shared<Notification<void>>();
 
-    uassertStatusOK(_threadPool.schedule([ this, nss, version, notify, callbackFn ]() noexcept {
+    uassertStatusOK(_threadPool.schedule([ nss, version, notify, callbackFn ]() noexcept {
         auto opCtx = Client::getCurrent()->makeOperationContext();
 
         auto swCollAndChunks = [&]() -> StatusWith<CollectionAndChangedChunks> {

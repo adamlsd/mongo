@@ -38,6 +38,7 @@
 #include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
@@ -67,7 +68,6 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/rs_sync.h"
-#include "mongo/db/repl/snapshot_thread.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/sharding_state.h"
@@ -88,7 +88,6 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_identity_loader.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/periodic_balancer_settings_refresher.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
@@ -121,11 +120,6 @@ const char tsFieldName[] = "ts";
 
 const char kCollectionOplogBufferName[] = "collection";
 const char kBlockingQueueOplogBufferName[] = "inMemoryBlockingQueue";
-
-// Set this to true to force background creation of snapshots even if --enableMajorityReadConcern
-// isn't specified. This can be used for A-B benchmarking to find how much overhead
-// repl::SnapshotThread introduces.
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(enableReplSnapshotThread, bool, false);
 
 // Set this to specify whether to use a collection to buffer the oplog on the destination server
 // during initial sync to prevent rolling over the oplog.
@@ -221,6 +215,8 @@ bool ReplicationCoordinatorExternalStateImpl::isInitialSyncFlagSet(OperationCont
     return _replicationProcess->getConsistencyMarkers()->getInitialSyncFlag(opCtx);
 }
 
+// This function acquires the LockManager locks on oplog, so it cannot be called while holding
+// ReplicationCoordinatorImpl's mutex.
 void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     OperationContext* opCtx, ReplicationCoordinator* replCoord) {
 
@@ -228,6 +224,11 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     acquireOplogCollectionForLogging(opCtx);
 
     LockGuard lk(_threadMutex);
+
+    // We've shut down the external state, don't start again.
+    if (_inShutdown)
+        return;
+
     invariant(replCoord);
     invariant(!_bgSync);
     log() << "Starting replication fetcher thread";
@@ -241,8 +242,11 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     _applierThread->startup();
     log() << "Starting replication reporter thread";
     invariant(!_syncSourceFeedbackThread);
-    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(
-        &SyncSourceFeedback::run, &_syncSourceFeedback, _taskExecutor.get(), _bgSync.get())));
+    _syncSourceFeedbackThread.reset(new stdx::thread(stdx::bind(&SyncSourceFeedback::run,
+                                                                &_syncSourceFeedback,
+                                                                _taskExecutor.get(),
+                                                                _bgSync.get(),
+                                                                replCoord)));
 }
 
 void ReplicationCoordinatorExternalStateImpl::stopDataReplication(OperationContext* opCtx) {
@@ -293,11 +297,6 @@ void ReplicationCoordinatorExternalStateImpl::startThreads(const ReplSettings& s
         return;
     }
 
-    if (settings.isMajorityReadConcernEnabled() || enableReplSnapshotThread) {
-        log() << "Starting replication snapshot thread";
-        _snapshotThread = SnapshotThread::start(_service);
-    }
-
     log() << "Starting replication storage threads";
     _service->getGlobalStorageEngine()->setJournalListener(this);
 
@@ -323,12 +322,8 @@ void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* opCtx) 
         return;
     }
 
+    _inShutdown = true;
     _stopDataReplication_inlock(opCtx, &lk);
-
-    if (_snapshotThread) {
-        log() << "Stopping replication snapshot thread";
-        _snapshotThread->shutdown();
-    }
 
     if (_noopWriter) {
         LOG(1) << "Stopping noop writer";
@@ -383,12 +378,11 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                                                          const BSONObj& config) {
     try {
         createOplog(opCtx);
-        const auto& kRsOplogNamespace = NamespaceString::kRsOplogNamespace;
 
         writeConflictRetry(opCtx,
                            "initiate oplog entry",
-                           kRsOplogNamespace.toString(),
-                           [this, &opCtx, &config, &kRsOplogNamespace] {
+                           NamespaceString::kRsOplogNamespace.toString(),
+                           [this, &opCtx, &config] {
                                Lock::GlobalWrite globalWrite(opCtx);
 
                                WriteUnitOfWork wuow(opCtx);
@@ -402,10 +396,27 @@ Status ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage(Operati
                                // retries and they will succeed.  Unfortunately, initial sync will
                                // fail if it finds its sync source has an empty oplog.  Thus, we
                                // need to wait here until the seed document is visible in our oplog.
-                               AutoGetCollection oplog(opCtx, kRsOplogNamespace, MODE_IS);
+                               AutoGetCollection oplog(
+                                   opCtx, NamespaceString::kRsOplogNamespace, MODE_IS);
                                waitForAllEarlierOplogWritesToBeVisible(opCtx);
                            });
 
+        // Set UUIDs for all non-replicated collections. This is necessary for independent replica
+        // sets and config server replica sets started with no data files because collections in
+        // local are created prior to the featureCompatibilityVersion being set to 3.6, so the
+        // collections are not created with UUIDs. This is not an issue for shard servers because
+        // the config server sends a setFeatureCompatibilityVersion command with the
+        // featureCompatibilityVersion equal to the cluster's featureCompatibilityVersion during
+        // addShard, which will add UUIDs to all collections that do not already have them. Here,
+        // we add UUIDs to the non-replicated collections on the primary. We add them on the
+        // secondaries during InitialSync.
+        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer &&
+            FeatureCompatibilityVersion::isCleanStartUp()) {
+            auto schemaStatus = updateUUIDSchemaVersionNonReplicated(opCtx, true);
+            if (!schemaStatus.isOK()) {
+                return schemaStatus;
+            }
+        }
         FeatureCompatibilityVersion::setIfCleanStartup(opCtx, _storageInterface);
     } catch (const DBException& ex) {
         return ex.toStatus();
@@ -455,7 +466,7 @@ OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationC
     _shardingOnTransitionToPrimaryHook(opCtx);
     _dropAllTempCollections(opCtx);
 
-    serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(true);
+    serverGlobalParams.validateFeaturesAsMaster.store(true);
 
     return opTimeToReturn;
 }
@@ -652,21 +663,18 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
         invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
         ShardingState::get(_service)->interruptChunkSplitter();
         CatalogCacheLoader::get(_service).onStepDown();
-        PeriodicBalancerSettingsRefresher::get(_service)->stop();
     }
 
     ShardingState::get(_service)->markCollectionsNotShardedAtStepdown();
 
-    if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-        if (auto validator = LogicalTimeValidator::get(_service)) {
-            auto opCtx = cc().getOperationContext();
+    if (auto validator = LogicalTimeValidator::get(_service)) {
+        auto opCtx = cc().getOperationContext();
 
-            if (opCtx != nullptr) {
-                validator->enableKeyGenerator(opCtx, false);
-            } else {
-                auto opCtxPtr = cc().makeOperationContext();
-                validator->enableKeyGenerator(opCtxPtr.get(), false);
-            }
+        if (opCtx != nullptr) {
+            validator->enableKeyGenerator(opCtx, false);
+        } else {
+            auto opCtxPtr = cc().makeOperationContext();
+            validator->enableKeyGenerator(opCtxPtr.get(), false);
         }
     }
 }
@@ -741,8 +749,11 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
         }
 
         CatalogCacheLoader::get(_service).onStepUp();
-        PeriodicBalancerSettingsRefresher::get(_service)->start();
         ShardingState::get(_service)->initiateChunkSplitter();
+    } else {  // unsharded
+        if (auto validator = LogicalTimeValidator::get(_service)) {
+            validator->enableKeyGenerator(opCtx, true);
+        }
     }
 
     SessionCatalog::get(_service)->onStepUp(opCtx);
@@ -798,27 +809,17 @@ void ReplicationCoordinatorExternalStateImpl::dropAllSnapshots() {
         manager->dropAllSnapshots();
 }
 
-void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(SnapshotInfo newCommitPoint) {
+void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(
+    const OpTime& newCommitPoint) {
     auto manager = _service->getGlobalStorageEngine()->getSnapshotManager();
-    invariant(manager);  // This should never be called if there is no SnapshotManager.
-    manager->setCommittedSnapshot(newCommitPoint.name, newCommitPoint.opTime.getTimestamp());
-    notifyOplogMetadataWaiters(newCommitPoint.opTime);
-}
-
-void ReplicationCoordinatorExternalStateImpl::createSnapshot(OperationContext* opCtx,
-                                                             SnapshotName name) {
-    auto manager = _service->getGlobalStorageEngine()->getSnapshotManager();
-    invariant(manager);  // This should never be called if there is no SnapshotManager.
-    manager->createSnapshot(opCtx, name).transitional_ignore();
-}
-
-void ReplicationCoordinatorExternalStateImpl::forceSnapshotCreation() {
-    if (_snapshotThread)
-        _snapshotThread->forceSnapshot();
+    if (manager) {
+        manager->setCommittedSnapshot(newCommitPoint.getTimestamp());
+    }
+    notifyOplogMetadataWaiters(newCommitPoint);
 }
 
 bool ReplicationCoordinatorExternalStateImpl::snapshotsEnabled() const {
-    return _snapshotThread != nullptr;
+    return _service->getGlobalStorageEngine()->getSnapshotManager() != nullptr;
 }
 
 void ReplicationCoordinatorExternalStateImpl::notifyOplogMetadataWaiters(

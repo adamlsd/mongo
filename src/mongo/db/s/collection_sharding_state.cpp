@@ -63,12 +63,10 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-
-MONGO_EXPORT_SERVER_PARAMETER(orphanCleanupDelaySecs, int, 900);  // 900s = 15m
-
 namespace {
 
-using std::string;
+// How long to wait before starting cleanup of an emigrated chunk range
+MONGO_EXPORT_SERVER_PARAMETER(orphanCleanupDelaySecs, int, 900);  // 900s = 15m
 
 /**
  * Used to perform shard identity initialization once it is certain that the document is committed.
@@ -91,7 +89,8 @@ private:
 };
 
 /**
- * Used to notify the catalog cache loader of a new collection version.
+ * Used to notify the catalog cache loader of a new collection version and invalidate the in-memory
+ * routing table cache once the oplog updates are committed and become visible.
  */
 class CollectionVersionLogOpHandler final : public RecoveryUnit::Change {
 public:
@@ -99,8 +98,14 @@ public:
         : _opCtx(opCtx), _nss(nss) {}
 
     void commit() override {
-        Grid::get(_opCtx)->catalogCache()->invalidateShardedCollection(_nss);
+        invariant(_opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
+
         CatalogCacheLoader::get(_opCtx).notifyOfCollectionVersionUpdate(_nss);
+
+        // This is a hack to get around CollectionShardingState::refreshMetadata() requiring the X
+        // lock: markNotShardedAtStepdown() doesn't have a lock check. Temporary measure until
+        // SERVER-31595 removes the X lock requirement.
+        CollectionShardingState::get(_opCtx, _nss)->markNotShardedAtStepdown();
     }
 
     void rollback() override {}
@@ -109,6 +114,17 @@ private:
     OperationContext* _opCtx;
     const NamespaceString _nss;
 };
+
+/**
+ * Caller must hold the global lock in some mode other than MODE_NONE.
+ */
+bool isStandaloneOrPrimary(OperationContext* opCtx) {
+    dassert(opCtx->lockState()->isLocked());
+    auto replCoord = repl::ReplicationCoordinator::get(opCtx);
+    bool isReplSet = replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
+    return !isReplSet || (repl::ReplicationCoordinator::get(opCtx)->getMemberState() ==
+                          repl::MemberState::RS_PRIMARY);
+}
 
 }  // unnamed namespace
 
@@ -159,14 +175,14 @@ void CollectionShardingState::forgetReceive(const ChunkRange& range) {
 }
 
 auto CollectionShardingState::cleanUpRange(ChunkRange const& range, CleanWhen when)
-    -> MetadataManager::CleanupNotification {
+    -> CleanupNotification {
     Date_t time = (when == kNow) ? Date_t{} : Date_t::now() +
             stdx::chrono::seconds{orphanCleanupDelaySecs.load()};
     return _metadataManager->cleanUpRange(range, time);
 }
 
-auto CollectionShardingState::overlappingMetadata(ChunkRange const& range) const
-    -> std::vector<ScopedCollectionMetadata> {
+std::vector<ScopedCollectionMetadata> CollectionShardingState::overlappingMetadata(
+    ChunkRange const& range) const {
     return _metadataManager->overlappingMetadata(_metadataManager, range);
 }
 
@@ -192,7 +208,7 @@ void CollectionShardingState::clearMigrationSourceManager(OperationContext* opCt
 }
 
 void CollectionShardingState::checkShardVersionOrThrow(OperationContext* opCtx) {
-    string errmsg;
+    std::string errmsg;
     ChunkVersion received;
     ChunkVersion wanted;
     if (!_checkShardVersionOk(opCtx, &errmsg, &received, &wanted)) {
@@ -220,41 +236,45 @@ bool CollectionShardingState::collectionIsSharded() {
 // exist anymore at the time of the call, or indeed anytime outside the AutoGetCollection block, so
 // anything that might alias something in it must be copied first.
 
-/* static */
 Status CollectionShardingState::waitForClean(OperationContext* opCtx,
-                                             NamespaceString nss,
+                                             const NamespaceString& nss,
                                              OID const& epoch,
                                              ChunkRange orphanRange) {
-    do {
-        auto stillScheduled = boost::optional<CleanupNotification>();
+    while (true) {
+        boost::optional<CleanupNotification> stillScheduled;
+
         {
             AutoGetCollection autoColl(opCtx, nss, MODE_IX);
-            // First, see if collection was dropped.
             auto css = CollectionShardingState::get(opCtx, nss);
+
             {
+                // First, see if collection was dropped, but do it in a separate scope in order to
+                // not hold reference on it, which would make it appear in use
                 auto metadata = css->_metadataManager->getActiveMetadata(css->_metadataManager);
                 if (!metadata || metadata->getCollVersion().epoch() != epoch) {
                     return {ErrorCodes::StaleShardVersion, "Collection being migrated was dropped"};
                 }
-            }  // drop metadata
+            }
+
             stillScheduled = css->trackOrphanedDataCleanup(orphanRange);
             if (!stillScheduled) {
                 log() << "Finished deleting " << nss.ns() << " range "
                       << redact(orphanRange.toString());
                 return Status::OK();
             }
-        }  // drop collection lock
+        }
 
         log() << "Waiting for deletion of " << nss.ns() << " range " << orphanRange;
+
         Status result = stillScheduled->waitStatus(opCtx);
         if (!result.isOK()) {
-            return Status{result.code(),
-                          str::stream() << "Failed to delete orphaned " << nss.ns() << " range "
-                                        << orphanRange.toString()
-                                        << ": "
-                                        << result.reason()};
+            return {result.code(),
+                    str::stream() << "Failed to delete orphaned " << nss.ns() << " range "
+                                  << orphanRange.toString()
+                                  << " due to "
+                                  << result.reason()};
         }
-    } while (true);
+    }
     MONGO_UNREACHABLE;
 }
 
@@ -267,7 +287,9 @@ boost::optional<KeyRange> CollectionShardingState::getNextOrphanRange(BSONObj co
     return _metadataManager->getNextOrphanRange(from);
 }
 
-void CollectionShardingState::onInsertOp(OperationContext* opCtx, const BSONObj& insertedDoc) {
+void CollectionShardingState::onInsertOp(OperationContext* opCtx,
+                                         const BSONObj& insertedDoc,
+                                         const repl::OpTime& opTime) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
 
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
@@ -291,20 +313,21 @@ void CollectionShardingState::onInsertOp(OperationContext* opCtx, const BSONObj&
     checkShardVersionOrThrow(opCtx);
 
     if (_sourceMgr) {
-        _sourceMgr->getCloner()->onInsertOp(opCtx, insertedDoc);
+        _sourceMgr->getCloner()->onInsertOp(opCtx, insertedDoc, opTime);
     }
 }
 
 void CollectionShardingState::onUpdateOp(OperationContext* opCtx,
                                          const BSONObj& query,
                                          const BSONObj& update,
-                                         const BSONObj& updatedDoc) {
+                                         const BSONObj& updatedDoc,
+                                         const repl::OpTime& opTime,
+                                         const repl::OpTime& prePostImageOpTime) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
 
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
         if (_nss == NamespaceString::kShardConfigCollectionsCollectionName) {
-            _onConfigRefreshCompleteInvalidateCachedMetadataAndNotify(
-                opCtx, query, update, updatedDoc);
+            _onConfigCollectionsUpdateOp(opCtx, query, update, updatedDoc);
         }
 
         if (ShardingState::get(opCtx)->enabled()) {
@@ -315,19 +338,19 @@ void CollectionShardingState::onUpdateOp(OperationContext* opCtx,
     checkShardVersionOrThrow(opCtx);
 
     if (_sourceMgr) {
-        _sourceMgr->getCloner()->onUpdateOp(opCtx, updatedDoc);
+        _sourceMgr->getCloner()->onUpdateOp(opCtx, updatedDoc, opTime, prePostImageOpTime);
     }
 }
 
 auto CollectionShardingState::makeDeleteState(BSONObj const& doc) -> DeleteState {
-    BSONObj documentKey = getMetadata().extractDocumentKey(doc).getOwned();
-    invariant(documentKey.hasField("_id"_sd));
-    return {std::move(documentKey),
+    return {getMetadata().extractDocumentKey(doc).getOwned(),
             _sourceMgr && _sourceMgr->getCloner()->isDocumentInMigratingChunk(doc)};
 }
 
 void CollectionShardingState::onDeleteOp(OperationContext* opCtx,
-                                         const CollectionShardingState::DeleteState& deleteState) {
+                                         const DeleteState& deleteState,
+                                         const repl::OpTime& opTime,
+                                         const repl::OpTime& preImageOpTime) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
 
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
@@ -368,7 +391,7 @@ void CollectionShardingState::onDeleteOp(OperationContext* opCtx,
     checkShardVersionOrThrow(opCtx);
 
     if (_sourceMgr && deleteState.isMigrating) {
-        _sourceMgr->getCloner()->onDeleteOp(opCtx, deleteState.documentKey);
+        _sourceMgr->getCloner()->onDeleteOp(opCtx, deleteState.documentKey, opTime, preImageOpTime);
     }
 }
 
@@ -403,31 +426,44 @@ void CollectionShardingState::onDropCollection(OperationContext* opCtx,
     }
 }
 
-void CollectionShardingState::_onConfigRefreshCompleteInvalidateCachedMetadataAndNotify(
-    OperationContext* opCtx,
-    const BSONObj& query,
-    const BSONObj& update,
-    const BSONObj& updatedDoc) {
+void CollectionShardingState::_onConfigCollectionsUpdateOp(OperationContext* opCtx,
+                                                           const BSONObj& query,
+                                                           const BSONObj& update,
+                                                           const BSONObj& updatedDoc) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
     invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
-    // Extract which collection entry is being updated
-    std::string refreshCollection;
+    // Notification of routing table changes are only needed on secondaries.
+    if (isStandaloneOrPrimary(opCtx)) {
+        return;
+    }
+
+    // Extract which user collection was updated.
+    std::string updatedCollection;
     fassertStatusOK(
-        40477, bsonExtractStringField(query, ShardCollectionType::uuid.name(), &refreshCollection));
+        40477, bsonExtractStringField(query, ShardCollectionType::ns.name(), &updatedCollection));
 
-    // Parse the '$set' update, which will contain the 'lastRefreshedCollectionVersion' if it is
-    // present.
-    BSONElement updateElement;
-    fassertStatusOK(40478,
-                    bsonExtractTypedField(update, StringData("$set"), Object, &updateElement));
-    BSONObj setField = updateElement.Obj();
+    // Parse the '$set' update.
+    BSONElement setElement;
+    Status setStatus = bsonExtractTypedField(update, StringData("$set"), Object, &setElement);
+    if (setStatus.isOK()) {
+        BSONObj setField = setElement.Obj();
+        const NamespaceString updatedNss(updatedCollection);
 
-    // If 'lastRefreshedCollectionVersion' is present, then a refresh completed and the catalog
-    // cache must be invalidated and the catalog cache loader notified of the new version.
-    if (setField.hasField(ShardCollectionType::lastRefreshedCollectionVersion.name())) {
-        opCtx->recoveryUnit()->registerChange(
-            new CollectionVersionLogOpHandler(opCtx, NamespaceString(refreshCollection)));
+        // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit().
+        AutoGetCollection autoColl(opCtx, updatedNss, MODE_IX);
+
+        if (setField.hasField(ShardCollectionType::lastRefreshedCollectionVersion.name())) {
+            opCtx->recoveryUnit()->registerChange(
+                new CollectionVersionLogOpHandler(opCtx, updatedNss));
+        }
+
+        if (setField.hasField(ShardCollectionType::enterCriticalSectionCounter.name())) {
+            // This is a hack to get around CollectionShardingState::refreshMetadata() requiring the
+            // X lock: markNotShardedAtStepdown() doesn't have a lock check. Temporary measure until
+            // SERVER-31595 removes the X lock requirement.
+            CollectionShardingState::get(opCtx, updatedNss)->markNotShardedAtStepdown();
+        }
     }
 }
 
@@ -436,20 +472,28 @@ void CollectionShardingState::_onConfigDeleteInvalidateCachedMetadataAndNotify(
     dassert(opCtx->lockState()->isCollectionLockedForMode(_nss.ns(), MODE_IX));
     invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
 
+    // Notification of routing table changes are only needed on secondaries.
+    if (isStandaloneOrPrimary(opCtx)) {
+        return;
+    }
+
     // Extract which collection entry is being deleted from the _id field.
     std::string deletedCollection;
     fassertStatusOK(
-        40479, bsonExtractStringField(query, ShardCollectionType::uuid.name(), &deletedCollection));
+        40479, bsonExtractStringField(query, ShardCollectionType::ns.name(), &deletedCollection));
+    const NamespaceString deletedNss(deletedCollection);
 
-    opCtx->recoveryUnit()->registerChange(
-        new CollectionVersionLogOpHandler(opCtx, NamespaceString(deletedCollection)));
+    // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit().
+    AutoGetCollection autoColl(opCtx, deletedNss, MODE_IX);
+
+    opCtx->recoveryUnit()->registerChange(new CollectionVersionLogOpHandler(opCtx, deletedNss));
 }
 
 bool CollectionShardingState::_checkShardVersionOk(OperationContext* opCtx,
-                                                   string* errmsg,
+                                                   std::string* errmsg,
                                                    ChunkVersion* expectedShardVersion,
                                                    ChunkVersion* actualShardVersion) {
-    Client* client = opCtx->getClient();
+    auto* const client = opCtx->getClient();
 
     auto& oss = OperationShardingState::get(opCtx);
 

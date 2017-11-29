@@ -50,6 +50,7 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_catalog_entry.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -61,11 +62,11 @@
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/lock_state.h"
+#include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/dbmessage.h"
-#include "mongo/db/diag_log.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
 #include "mongo/db/index_names.h"
@@ -74,7 +75,10 @@
 #include "mongo/db/initialize_snmp.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/json.h"
+#include "mongo/db/keys_collection_client_direct.h"
+#include "mongo/db/keys_collection_client_sharded.h"
 #include "mongo/db/keys_collection_manager.h"
+#include "mongo/db/keys_collection_manager_sharding.h"
 #include "mongo/db/kill_sessions.h"
 #include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/log_process_details.h"
@@ -98,7 +102,7 @@
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/replication_recovery.h"
 #include "mongo/db/repl/storage_interface_impl.h"
-#include "mongo/db/repl/topology_coordinator_impl.h"
+#include "mongo/db/repl/topology_coordinator.h"
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
@@ -169,30 +173,115 @@
 
 namespace mongo {
 
-using std::unique_ptr;
-using std::cout;
-using std::cerr;
-using std::endl;
-using std::list;
-using std::string;
-using std::stringstream;
-using std::vector;
-
 using logger::LogComponent;
+using std::endl;
 
 namespace {
+
+constexpr StringData upgradeLink = "http://dochub.mongodb.org/core/3.6-upgrade-fcv"_sd;
+constexpr StringData mustDowngradeErrorMsg =
+    "UPGRADE PROBLEM: The data files need to be fully upgraded to version 3.4 before attempting an upgrade to 3.6; see http://dochub.mongodb.org/core/3.6-upgrade-fcv for more details."_sd;
+
+Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx,
+                                                         const std::vector<std::string>& dbNames) {
+    bool isMmapV1 = opCtx->getServiceContext()->getGlobalStorageEngine()->isMmapV1();
+    // Check whether there are any collections with UUIDs.
+    bool collsHaveUuids = false;
+    bool allCollsHaveUuids = true;
+    for (const auto& dbName : dbNames) {
+        Database* db = dbHolder().openDb(opCtx, dbName);
+        invariant(db);
+        for (auto collectionIt = db->begin(); collectionIt != db->end(); ++collectionIt) {
+            Collection* coll = *collectionIt;
+            if (coll->uuid()) {
+                collsHaveUuids = true;
+            } else if (!coll->uuid() && (!isMmapV1 ||
+                                         !(coll->ns().coll() == "system.indexes" ||
+                                           coll->ns().coll() == "system.namespaces"))) {
+                // Exclude system.indexes and system.namespaces from the UUID check until
+                // SERVER-29926 and SERVER-30095 are addressed, respectively.
+                allCollsHaveUuids = false;
+            }
+        }
+    }
+
+    if (!collsHaveUuids) {
+        return {ErrorCodes::MustDowngrade, mustDowngradeErrorMsg};
+    }
+
+    // Restore the featureCompatibilityVersion document if it is missing.
+    NamespaceString nss(FeatureCompatibilityVersion::kCollection);
+
+    Database* db = dbHolder().get(opCtx, nss.db());
+
+    // If the admin database does not exist, create it.
+    if (!db) {
+        log() << "Re-creating admin database that was dropped.";
+    }
+
+    db = dbHolder().openDb(opCtx, nss.db());
+    invariant(db);
+
+    // If admin.system.version does not exist, create it without a UUID.
+    if (!db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection)) {
+        log() << "Re-creating admin.system.version collection that was dropped.";
+        allCollsHaveUuids = false;
+        BSONObjBuilder bob;
+        bob.append("create", nss.coll());
+        BSONObj createObj = bob.done();
+        uassertStatusOK(createCollection(opCtx, nss.db().toString(), createObj));
+    }
+
+    Collection* versionColl = db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection);
+    invariant(versionColl);
+    BSONObj featureCompatibilityVersion;
+    if (!Helpers::findOne(opCtx,
+                          versionColl,
+                          BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                          featureCompatibilityVersion)) {
+        log() << "Re-creating featureCompatibilityVersion document that was deleted.";
+        BSONObjBuilder bob;
+        bob.append("_id", FeatureCompatibilityVersion::kParameterName);
+        if (allCollsHaveUuids) {
+            // If all collections have UUIDs, create a featureCompatibilityVersion document with
+            // version equal to 3.6.
+            bob.append(FeatureCompatibilityVersion::kVersionField,
+                       FeatureCompatibilityVersionCommandParser::kVersion36);
+        } else {
+            // If some collections do not have UUIDs, create a featureCompatibilityVersion document
+            // with version equal to 3.4 and targetVersion 3.6.
+            bob.append(FeatureCompatibilityVersion::kVersionField,
+                       FeatureCompatibilityVersionCommandParser::kVersion34);
+            bob.append(FeatureCompatibilityVersion::kTargetVersionField,
+                       FeatureCompatibilityVersionCommandParser::kVersion36);
+        }
+        auto fcvObj = bob.done();
+        writeConflictRetry(opCtx, "insertFCVDocument", nss.ns(), [&] {
+            WriteUnitOfWork wunit(opCtx);
+            OpDebug* const nullOpDebug = nullptr;
+            uassertStatusOK(
+                versionColl->insertDocument(opCtx, InsertStatement(fcvObj), nullOpDebug, false));
+            wunit.commit();
+        });
+    }
+    invariant(Helpers::findOne(opCtx,
+                               versionColl,
+                               BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                               featureCompatibilityVersion));
+    return Status::OK();
+}
 
 const NamespaceString startupLogCollectionName("local.startup_log");
 const NamespaceString kSystemReplSetCollection("local.system.replset");
 
 #ifdef _WIN32
-ntservice::NtServiceDefaultStrings defaultServiceStrings = {
+const ntservice::NtServiceDefaultStrings defaultServiceStrings = {
     L"MongoDB", L"MongoDB", L"MongoDB Server"};
 #endif
 
 void logStartup(OperationContext* opCtx) {
     BSONObjBuilder toLog;
-    stringstream id;
+    std::stringstream id;
     id << getHostNameCached() << "-" << jsTime().asInt64();
     toLog.append("_id", id.str());
     toLog.append("hostname", getHostNameCached());
@@ -242,12 +331,11 @@ void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx, Databas
         return;
     }
 
-    list<string> collections;
-    db->getDatabaseCatalogEntry()->getCollectionNamespaces(&collections);
+    std::list<std::string> collectionNames;
+    db->getDatabaseCatalogEntry()->getCollectionNamespaces(&collectionNames);
 
-    for (list<string>::iterator i = collections.begin(); i != collections.end(); ++i) {
-        const string& collectionName = *i;
-        NamespaceString ns(collectionName);
+    for (const auto& collectionName : collectionNames) {
+        const NamespaceString ns(collectionName);
 
         if (ns.isDropPendingNamespace()) {
             auto dropOpTime = fassertStatusOK(40459, ns.getDropPendingNamespaceOpTime());
@@ -265,7 +353,7 @@ void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx, Databas
         if (coll->getIndexCatalog()->findIdIndex(opCtx))
             continue;
 
-        log() << "WARNING: the collection '" << *i << "' lacks a unique index on _id."
+        log() << "WARNING: the collection '" << collectionName << "' lacks a unique index on _id."
               << " This index is needed for replication to function properly" << startupWarningsLog;
         log() << "\t To fix this, you need to create a unique index on _id."
               << " See http://dochub.mongodb.org/core/build-replica-set-indexes"
@@ -305,24 +393,43 @@ void checkForCappedOplog(OperationContext* opCtx, Database* db) {
     }
 }
 
-void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
+/**
+ * Return an error status if the wrong mongod version was used for these datafiles. The boolean
+ * represents whether there are non-local databases.
+ */
+StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     LOG(1) << "enter repairDatabases (to check pdfile version #)";
+
+    auto const storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
 
     Lock::GlobalWrite lk(opCtx);
 
-    vector<string> dbNames;
-
-    StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+    std::vector<std::string> dbNames;
     storageEngine->listDatabases(&dbNames);
 
     // Repair all databases first, so that we do not try to open them if they are in bad shape
     if (storageGlobalParams.repair) {
         invariant(!storageGlobalParams.readOnly);
-        for (vector<string>::const_iterator i = dbNames.begin(); i != dbNames.end(); ++i) {
-            const string dbName = *i;
+        for (const auto& dbName : dbNames) {
             LOG(1) << "    Repairing database: " << dbName;
-
             fassert(18506, repairDatabase(opCtx, storageEngine, dbName));
+        }
+
+        // Attempt to restore the featureCompatibilityVersion document if it is missing.
+        NamespaceString nss(FeatureCompatibilityVersion::kCollection);
+
+        Database* db = dbHolder().get(opCtx, nss.db());
+        Collection* versionColl;
+        BSONObj featureCompatibilityVersion;
+        if (!db || !(versionColl = db->getCollection(opCtx, nss)) ||
+            !Helpers::findOne(opCtx,
+                              versionColl,
+                              BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                              featureCompatibilityVersion)) {
+            auto status = restoreMissingFeatureCompatibilityVersionDocument(opCtx, dbNames);
+            if (!status.isOK()) {
+                return status;
+            }
         }
     }
 
@@ -374,8 +481,22 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         !(checkIfReplMissingFromCommandLine(opCtx) || replSettings.usingReplSets() ||
           replSettings.isSlave());
 
-    for (vector<string>::const_iterator i = dbNames.begin(); i != dbNames.end(); ++i) {
-        const string dbName = *i;
+    // To check whether we are upgrading to 3.6 or have already upgraded to 3.6.
+    bool collsHaveUuids = false;
+
+    // To check whether a featureCompatibilityVersion document exists.
+    bool fcvDocumentExists = false;
+
+    // To check whether we have databases other than local.
+    bool nonLocalDatabases = false;
+
+    // Refresh list of database names to include newly-created admin, if it exists.
+    dbNames.clear();
+    storageEngine->listDatabases(&dbNames);
+    for (const auto& dbName : dbNames) {
+        if (dbName != "local") {
+            nonLocalDatabases = true;
+        }
         LOG(1) << "    Recovering database: " << dbName;
 
         Database* db = dbHolder().openDb(opCtx, dbName);
@@ -399,7 +520,7 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
             severe() << "Please consult our documentation when trying to downgrade to a previous"
                         " major release";
             quickExit(EXIT_NEED_UPGRADE);
-            return;
+            MONGO_UNREACHABLE;
         }
 
         // Check if admin.system.version contains an invalid featureCompatibilityVersion.
@@ -412,18 +533,58 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                                      versionColl,
                                      BSON("_id" << FeatureCompatibilityVersion::kParameterName),
                                      featureCompatibilityVersion)) {
-                    auto version = FeatureCompatibilityVersion::parse(featureCompatibilityVersion);
-                    if (!version.isOK()) {
-                        severe() << version.getStatus();
-                        fassertFailedNoTrace(40283);
+                    auto swVersion =
+                        FeatureCompatibilityVersion::parse(featureCompatibilityVersion);
+                    if (!swVersion.isOK()) {
+                        severe() << swVersion.getStatus();
+                        // Note this error path captures all cases of an FCV document existing,
+                        // but with any value other than "3.4" or "3.6". This includes unexpected
+                        // cases with no path forward such as the FCV value not being a string.
+                        return {ErrorCodes::MustDowngrade,
+                                str::stream()
+                                    << "UPGRADE PROBLEM: Unable to parse the "
+                                       "featureCompatibilityVersion document. The data files need "
+                                       "to be fully upgraded to version 3.4 before attempting an "
+                                       "upgrade to 3.6. If you are upgrading to 3.6, see "
+                                    << upgradeLink
+                                    << "."};
                     }
-                    serverGlobalParams.featureCompatibility.version.store(version.getValue());
+                    fcvDocumentExists = true;
+                    auto version = swVersion.getValue();
+                    serverGlobalParams.featureCompatibility.setVersion(version);
+                    FeatureCompatibilityVersion::updateMinWireVersion();
 
-                    // Update schemaVersion parameter.
-                    serverGlobalParams.featureCompatibility.isSchemaVersion36.store(
-                        serverGlobalParams.featureCompatibility.version.load() ==
-                        ServerGlobalParams::FeatureCompatibility::Version::k36);
+                    // On startup, if the version is in an upgrading or downrading state, print a
+                    // warning.
+                    if (version ==
+                        ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36) {
+                        log() << "** WARNING: A featureCompatibilityVersion upgrade did not "
+                              << "complete." << startupWarningsLog;
+                        log() << "**          The current featureCompatibilityVersion is "
+                              << FeatureCompatibilityVersion::toString(version) << "."
+                              << startupWarningsLog;
+                        log() << "**          To fix this, use the setFeatureCompatibilityVersion "
+                              << "command to resume upgrade to 3.6." << startupWarningsLog;
+                    } else if (version == ServerGlobalParams::FeatureCompatibility::Version::
+                                              kDowngradingTo34) {
+                        log() << "** WARNING: A featureCompatibilityVersion downgrade did not "
+                              << "complete. " << startupWarningsLog;
+                        log() << "**          The current featureCompatibilityVersion is "
+                              << FeatureCompatibilityVersion::toString(version) << "."
+                              << startupWarningsLog;
+                        log() << "**          To fix this, use the setFeatureCompatibilityVersion "
+                              << "command to resume downgrade to 3.4." << startupWarningsLog;
+                    }
                 }
+            }
+        }
+
+        // Iterate through collections and check for UUIDs.
+        for (auto collectionIt = db->begin(); !collsHaveUuids && collectionIt != db->end();
+             ++collectionIt) {
+            Collection* coll = *collectionIt;
+            if (coll->uuid()) {
+                collsHaveUuids = true;
             }
         }
 
@@ -438,7 +599,7 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         PlanExecutor::ExecState state;
         while (PlanExecutor::ADVANCED == (state = exec->getNext(&index, NULL))) {
             const BSONObj key = index.getObjectField("key");
-            const string plugin = IndexNames::findPluginName(key);
+            const auto plugin = IndexNames::findPluginName(key);
 
             if (db->getDatabaseCatalogEntry()->isOlderThan24(opCtx)) {
                 if (IndexNames::existedBefore24(plugin)) {
@@ -480,11 +641,41 @@ void repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         }
     }
 
+    // Fail to start up if there is no featureCompatibilityVersion document and there are non-local
+    // databases present.
+    if (!fcvDocumentExists && nonLocalDatabases) {
+        if (collsHaveUuids) {
+            severe()
+                << "Unable to start up mongod due to missing featureCompatibilityVersion document.";
+            if (opCtx->getServiceContext()->getGlobalStorageEngine()->isMmapV1()) {
+                severe()
+                    << "Please run with --journalOptions "
+                    << static_cast<int>(MMAPV1Options::JournalRecoverOnly)
+                    << " to recover the journal. Then run with --repair to restore the document.";
+            } else {
+                severe() << "Please run with --repair to restore the document.";
+            }
+            fassertFailedNoTrace(40652);
+        } else {
+            return {ErrorCodes::MustDowngrade, mustDowngradeErrorMsg};
+        }
+    }
+
     LOG(1) << "done repairDatabases";
+    return nonLocalDatabases;
 }
 
 void initWireSpec() {
     WireSpec& spec = WireSpec::instance();
+
+    // The featureCompatibilityVersion behavior defaults to the downgrade behavior while the
+    // in-memory version is unset.
+
+    spec.incomingInternalClient.minWireVersion = RELEASE_2_4_AND_BEFORE;
+    spec.incomingInternalClient.maxWireVersion = LATEST_WIRE_VERSION;
+
+    spec.outgoing.minWireVersion = RELEASE_2_4_AND_BEFORE;
+    spec.outgoing.maxWireVersion = LATEST_WIRE_VERSION;
 
     spec.isInternalClient = true;
 }
@@ -495,18 +686,17 @@ ExitCode _initAndListen(int listenPort) {
     Client::initThread("initandlisten");
 
     initWireSpec();
-    auto globalServiceContext = checked_cast<ServiceContextMongoD*>(getGlobalServiceContext());
+    auto serviceContext = checked_cast<ServiceContextMongoD*>(getGlobalServiceContext());
 
-    globalServiceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
-    globalServiceContext->setOpObserver(stdx::make_unique<OpObserverImpl>());
+    serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
+    serviceContext->setOpObserver(stdx::make_unique<OpObserverImpl>());
 
-    DBDirectClientFactory::get(globalServiceContext)
-        .registerImplementation([](OperationContext* opCtx) {
-            return std::unique_ptr<DBClientBase>(new DBDirectClient(opCtx));
-        });
+    DBDirectClientFactory::get(serviceContext).registerImplementation([](OperationContext* opCtx) {
+        return std::unique_ptr<DBClientBase>(new DBDirectClient(opCtx));
+    });
 
     const repl::ReplSettings& replSettings =
-        repl::ReplicationCoordinator::get(globalServiceContext)->getSettings();
+        repl::ReplicationCoordinator::get(serviceContext)->getSettings();
 
     {
         ProcessId pid = ProcessId::getCurrent();
@@ -530,24 +720,26 @@ ExitCode _initAndListen(int listenPort) {
 
     logProcessDetails();
 
-    globalServiceContext->createLockFile();
+    serviceContext->createLockFile();
 
-    globalServiceContext->setServiceEntryPoint(
-        stdx::make_unique<ServiceEntryPointMongod>(globalServiceContext));
+    serviceContext->setServiceEntryPoint(
+        stdx::make_unique<ServiceEntryPointMongod>(serviceContext));
 
-    auto tl = transport::TransportLayerManager::createWithConfig(&serverGlobalParams,
-                                                                 globalServiceContext);
-    auto res = tl->setup();
-    if (!res.isOK()) {
-        error() << "Failed to set up listener: " << res;
-        return EXIT_NET_ERROR;
+    {
+        auto tl =
+            transport::TransportLayerManager::createWithConfig(&serverGlobalParams, serviceContext);
+        auto res = tl->setup();
+        if (!res.isOK()) {
+            error() << "Failed to set up listener: " << res;
+            return EXIT_NET_ERROR;
+        }
+        serviceContext->setTransportLayer(std::move(tl));
     }
-    globalServiceContext->setTransportLayer(std::move(tl));
 
-    globalServiceContext->initializeGlobalStorageEngine();
+    serviceContext->initializeGlobalStorageEngine();
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
-    if (EncryptionHooks::get(getGlobalServiceContext())->restartRequired()) {
+    if (EncryptionHooks::get(serviceContext)->restartRequired()) {
         exitCleanly(EXIT_CLEAN);
     }
 #endif
@@ -567,7 +759,7 @@ ExitCode _initAndListen(int listenPort) {
             }
 
             // Warn if field name matches non-active registered storage engine.
-            if (globalServiceContext->isRegisteredStorageEngine(e.fieldName())) {
+            if (serviceContext->isRegisteredStorageEngine(e.fieldName())) {
                 warning() << "Detected configuration for non-active storage engine "
                           << e.fieldName() << " when current storage engine is "
                           << storageGlobalParams.engine;
@@ -575,25 +767,10 @@ ExitCode _initAndListen(int listenPort) {
         }
     }
 
-    if (!globalServiceContext->getGlobalStorageEngine()->getSnapshotManager()) {
-        if (moe::startupOptionsParsed.count("replication.enableMajorityReadConcern") &&
-            moe::startupOptionsParsed["replication.enableMajorityReadConcern"].as<bool>()) {
-            // Note: we are intentionally only erroring if the user explicitly requested that we
-            // enable majority read concern. We do not error if the they are implicitly enabled for
-            // CSRS because a required step in the upgrade procedure can involve an mmapv1 node in
-            // the CSRS in the REMOVED state. This is handled by the TopologyCoordinator.
-            invariant(replSettings.isMajorityReadConcernEnabled());
-            severe() << "Majority read concern requires a storage engine that supports"
-                     << " snapshots, such as wiredTiger. " << storageGlobalParams.engine
-                     << " does not support snapshots.";
-            exitCleanly(EXIT_BADOPTIONS);
-        }
-    }
-
-    logMongodStartupWarnings(storageGlobalParams, serverGlobalParams);
+    logMongodStartupWarnings(storageGlobalParams, serverGlobalParams, serviceContext);
 
     {
-        stringstream ss;
+        std::stringstream ss;
         ss << endl;
         ss << "*********************************************************************" << endl;
         ss << " ERROR: dbpath (" << storageGlobalParams.dbpath << ") does not exist." << endl;
@@ -604,7 +781,7 @@ ExitCode _initAndListen(int listenPort) {
     }
 
     {
-        stringstream ss;
+        std::stringstream ss;
         ss << "repairpath (" << storageGlobalParams.repairpath << ") does not exist";
         uassert(12590, ss.str().c_str(), boost::filesystem::exists(storageGlobalParams.repairpath));
     }
@@ -622,9 +799,44 @@ ExitCode _initAndListen(int listenPort) {
         ScriptEngine::setup();
     }
 
-    auto startupOpCtx = globalServiceContext->makeOperationContext(&cc());
+    auto startupOpCtx = serviceContext->makeOperationContext(&cc());
 
-    repairDatabasesAndCheckVersion(startupOpCtx.get());
+    bool canCallFCVSetIfCleanStartup = !storageGlobalParams.readOnly &&
+        !(replSettings.isSlave() || storageGlobalParams.engine == "devnull");
+    if (canCallFCVSetIfCleanStartup && !replSettings.usingReplSets()) {
+        Lock::GlobalWrite lk(startupOpCtx.get());
+        FeatureCompatibilityVersion::setIfCleanStartup(startupOpCtx.get(),
+                                                       repl::StorageInterface::get(serviceContext));
+    }
+
+    auto swNonLocalDatabases = repairDatabasesAndCheckVersion(startupOpCtx.get());
+    if (!swNonLocalDatabases.isOK()) {
+        // SERVER-31611 introduced a return value to `repairDatabasesAndCheckVersion`. Previously,
+        // a failing condition would fassert. SERVER-31611 covers a case where the binary (3.6) is
+        // refusing to start up because it refuses acknowledgement of FCV 3.2 and requires the
+        // user to start up with an older binary. Thus shutting down the server must leave the
+        // datafiles in a state that the older binary can start up. This requires going through a
+        // clean shutdown.
+        //
+        // The invariant is *not* a statement that `repairDatabasesAndCheckVersion` must return
+        // `MustDowngrade`. Instead, it is meant as a guardrail to protect future developers from
+        // accidentally buying into this behavior. New errors that are returned from the method
+        // may or may not want to go through a clean shutdown, and they likely won't want the
+        // program to return an exit code of `EXIT_NEED_DOWNGRADE`.
+        severe(LogComponent::kControl) << "** IMPORTANT: "
+                                       << swNonLocalDatabases.getStatus().reason();
+        invariant(swNonLocalDatabases == ErrorCodes::MustDowngrade);
+        exitCleanly(EXIT_NEED_DOWNGRADE);
+    }
+
+    // Assert that the in-memory featureCompatibilityVersion parameter has been explicitly set. If
+    // we are part of a replica set and are started up with no data files, we do not set the
+    // featureCompatibilityVersion until a primary is chosen. For this case, we expect the in-memory
+    // featureCompatibilityVersion parameter to still be uninitialized until after startup.
+    if (canCallFCVSetIfCleanStartup &&
+        (!replSettings.usingReplSets() || swNonLocalDatabases.getValue())) {
+        invariant(serverGlobalParams.featureCompatibility.isVersionInitialized());
+    }
 
     if (storageGlobalParams.upgrade) {
         log() << "finished checking dbs";
@@ -634,7 +846,7 @@ ExitCode _initAndListen(int listenPort) {
     // Start up health log writer thread.
     HealthLog::get(startupOpCtx.get()).startup();
 
-    auto const globalAuthzManager = AuthorizationManager::get(globalServiceContext);
+    auto const globalAuthzManager = AuthorizationManager::get(serviceContext);
     uassertStatusOK(globalAuthzManager->initialize(startupOpCtx.get()));
 
     // This is for security on certain platforms (nonce generation)
@@ -672,6 +884,16 @@ ExitCode _initAndListen(int listenPort) {
                   << "2.6 and then run the authSchemaUpgrade command.";
             exitCleanly(EXIT_NEED_UPGRADE);
         }
+
+        if (foundSchemaVersion <= AuthorizationManager::schemaVersion26Final) {
+            log() << startupWarningsLog;
+            log() << "** WARNING: This server is using MONGODB-CR, a deprecated authentication "
+                  << "mechanism." << startupWarningsLog;
+            log() << "**          Support will be dropped in a future release."
+                  << startupWarningsLog;
+            log() << "**          See http://dochub.mongodb.org/core/3.0-upgrade-to-scram-sha-1"
+                  << startupWarningsLog;
+        }
     } else if (globalAuthzManager->isAuthEnabled()) {
         error() << "Auth must be disabled when starting without auth schema validation";
         exitCleanly(EXIT_BADOPTIONS);
@@ -687,7 +909,7 @@ ExitCode _initAndListen(int listenPort) {
               << startupWarningsLog;
     }
 
-    SessionCatalog::create(globalServiceContext);
+    SessionCatalog::create(serviceContext);
 
     // This function may take the global lock.
     auto shardingInitialized =
@@ -722,10 +944,19 @@ ExitCode _initAndListen(int listenPort) {
             ShardingCatalogManager::create(
                 startupOpCtx->getServiceContext(),
                 makeShardingTaskExecutor(executor::makeNetworkInterface("AddShard-TaskExecutor")));
+        } else if (replSettings.usingReplSets()) {  // standalone replica set
+            auto keysCollectionClient = stdx::make_unique<KeysCollectionClientDirect>();
+            auto keyManager = std::make_shared<KeysCollectionManagerSharding>(
+                KeysCollectionManager::kKeyManagerPurposeString,
+                std::move(keysCollectionClient),
+                Seconds(KeysRotationIntervalSec));
+            keyManager->startMonitoring(startupOpCtx->getServiceContext());
+
+            LogicalTimeValidator::set(startupOpCtx->getServiceContext(),
+                                      stdx::make_unique<LogicalTimeValidator>(keyManager));
         }
 
         repl::ReplicationCoordinator::get(startupOpCtx.get())->startup(startupOpCtx.get());
-
         const unsigned long long missingRepl =
             checkIfReplMissingFromCommandLine(startupOpCtx.get());
         if (missingRepl) {
@@ -743,16 +974,9 @@ ExitCode _initAndListen(int listenPort) {
             startTTLBackgroundJob();
         }
 
-        if (!replSettings.usingReplSets() && !replSettings.isSlave() &&
-            storageGlobalParams.engine != "devnull") {
-            Lock::GlobalWrite lk(startupOpCtx.get());
-            FeatureCompatibilityVersion::setIfCleanStartup(
-                startupOpCtx.get(), repl::StorageInterface::get(globalServiceContext));
-        }
-
         if (replSettings.usingReplSets() || (!replSettings.isMaster() && replSettings.isSlave()) ||
             !internalValidateFeaturesAsMaster) {
-            serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
+            serverGlobalParams.validateFeaturesAsMaster.store(false);
         }
     }
 
@@ -763,41 +987,41 @@ ExitCode _initAndListen(int listenPort) {
     // Set up the periodic runner for background job execution
     auto runner = makePeriodicRunner();
     runner->startup().transitional_ignore();
-    globalServiceContext->setPeriodicRunner(std::move(runner));
+    serviceContext->setPeriodicRunner(std::move(runner));
 
-    SessionKiller::set(globalServiceContext,
-                       std::make_shared<SessionKiller>(globalServiceContext, killSessionsLocal));
+    SessionKiller::set(serviceContext,
+                       std::make_shared<SessionKiller>(serviceContext, killSessionsLocal));
 
     // Set up the logical session cache
     LogicalSessionCacheServer kind = LogicalSessionCacheServer::kStandalone;
     if (serverGlobalParams.clusterRole == ClusterRole::ShardServer) {
         kind = LogicalSessionCacheServer::kSharded;
+    } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+        kind = LogicalSessionCacheServer::kConfigServer;
     } else if (replSettings.usingReplSets()) {
         kind = LogicalSessionCacheServer::kReplicaSet;
     }
 
-    auto sessionCache = makeLogicalSessionCacheD(kind);
-    LogicalSessionCache::set(globalServiceContext, std::move(sessionCache));
+    auto sessionCache = makeLogicalSessionCacheD(serviceContext, kind);
+    LogicalSessionCache::set(serviceContext, std::move(sessionCache));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore
     startupOpCtx.reset();
 
-    auto start = globalServiceContext->getTransportLayer()->start();
+    auto start = serviceContext->getServiceExecutor()->start();
+    if (!start.isOK()) {
+        error() << "Failed to start the service executor: " << start;
+        return EXIT_NET_ERROR;
+    }
+
+    start = serviceContext->getTransportLayer()->start();
     if (!start.isOK()) {
         error() << "Failed to start the listener: " << start.toString();
         return EXIT_NET_ERROR;
     }
 
-    if (globalServiceContext->getServiceExecutor()) {
-        start = globalServiceContext->getServiceExecutor()->start();
-        if (!start.isOK()) {
-            error() << "Failed to start the service executor: " << start;
-            return EXIT_NET_ERROR;
-        }
-    }
-
-    globalServiceContext->notifyStartupComplete();
+    serviceContext->notifyStartupComplete();
 
 #ifndef _WIN32
     mongo::signalForkSuccess();
@@ -848,29 +1072,30 @@ MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 }
 
 /*
- * This function should contain the startup "actions" that we take based on the startup config.  It
- * is intended to separate the actions from "storage" and "validation" of our startup configuration.
+ * This function should contain the startup "actions" that we take based on the startup config.
+ * It is intended to separate the actions from "storage" and "validation" of our startup
+ * configuration.
  */
 void startupConfigActions(const std::vector<std::string>& args) {
     // The "command" option is deprecated.  For backward compatibility, still support the "run"
     // and "dbppath" command.  The "run" command is the same as just running mongod, so just
     // falls through.
     if (moe::startupOptionsParsed.count("command")) {
-        vector<string> command = moe::startupOptionsParsed["command"].as<vector<string>>();
+        const auto command = moe::startupOptionsParsed["command"].as<std::vector<std::string>>();
 
         if (command[0].compare("dbpath") == 0) {
-            cout << storageGlobalParams.dbpath << endl;
+            std::cout << storageGlobalParams.dbpath << endl;
             quickExit(EXIT_SUCCESS);
         }
 
         if (command[0].compare("run") != 0) {
-            cout << "Invalid command: " << command[0] << endl;
+            std::cout << "Invalid command: " << command[0] << endl;
             printMongodHelp(moe::startupOptions);
             quickExit(EXIT_FAILURE);
         }
 
         if (command.size() > 1) {
-            cout << "Too many parameters to 'run' command" << endl;
+            std::cout << "Too many parameters to 'run' command" << endl;
             printMongodHelp(moe::startupOptions);
             quickExit(EXIT_FAILURE);
         }
@@ -889,13 +1114,13 @@ void startupConfigActions(const std::vector<std::string>& args) {
         moe::startupOptionsParsed["shutdown"].as<bool>() == true) {
         bool failed = false;
 
-        string name =
+        std::string name =
             (boost::filesystem::path(storageGlobalParams.dbpath) / "mongod.lock").string();
         if (!boost::filesystem::exists(name) || boost::filesystem::file_size(name) == 0)
             failed = true;
 
         pid_t pid;
-        string procPath;
+        std::string procPath;
         if (!failed) {
             try {
                 std::ifstream f(name.c_str());
@@ -904,7 +1129,8 @@ void startupConfigActions(const std::vector<std::string>& args) {
                 if (!boost::filesystem::exists(procPath))
                     failed = true;
             } catch (const std::exception& e) {
-                cerr << "Error reading pid from lock file [" << name << "]: " << e.what() << endl;
+                std::cerr << "Error reading pid from lock file [" << name << "]: " << e.what()
+                          << endl;
                 failed = true;
             }
         }
@@ -915,11 +1141,11 @@ void startupConfigActions(const std::vector<std::string>& args) {
             quickExit(EXIT_FAILURE);
         }
 
-        cout << "killing process with pid: " << pid << endl;
+        std::cout << "killing process with pid: " << pid << endl;
         int ret = kill(pid, SIGTERM);
         if (ret) {
             int e = errno;
-            cerr << "failed to kill process: " << errnoWithDescription(e) << endl;
+            std::cerr << "failed to kill process: " << errnoWithDescription(e) << endl;
             quickExit(EXIT_FAILURE);
         }
 
@@ -968,7 +1194,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
         serviceContext, stdx::make_unique<repl::DropPendingCollectionReaper>(storageInterface));
     auto dropPendingCollectionReaper = repl::DropPendingCollectionReaper::get(serviceContext);
 
-    repl::TopologyCoordinatorImpl::Options topoCoordOptions;
+    repl::TopologyCoordinator::Options topoCoordOptions;
     topoCoordOptions.maxSyncSourceLagSecs = Seconds(repl::maxSyncSourceLagSecs);
     topoCoordOptions.clusterRole = serverGlobalParams.clusterRole;
 
@@ -981,7 +1207,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
         stdx::make_unique<repl::ReplicationCoordinatorExternalStateImpl>(
             serviceContext, dropPendingCollectionReaper, storageInterface, replicationProcess),
         makeReplicationExecutor(serviceContext),
-        stdx::make_unique<repl::TopologyCoordinatorImpl>(topoCoordOptions),
+        stdx::make_unique<repl::TopologyCoordinator>(topoCoordOptions),
         replicationProcess,
         storageInterface,
         static_cast<int64_t>(curTimeMillis64()));
@@ -1002,19 +1228,19 @@ MONGO_INITIALIZER_GENERAL(setSSLManagerType, MONGO_NO_PREREQUISITES, ("SSLManage
 #define __has_feature(x) 0
 #endif
 
-// NOTE: This function may be called at any time after registerShutdownTask is called below. It must
-// not depend on the prior execution of mongo initializers or the existence of threads.
+// NOTE: This function may be called at any time after registerShutdownTask is called below. It
+// must not depend on the prior execution of mongo initializers or the existence of threads.
 void shutdownTask() {
     Client::initThreadIfNotAlready();
 
     auto const client = Client::getCurrent();
     auto const serviceContext = client->getServiceContext();
 
-    log(LogComponent::kNetwork) << "shutdown: going to close listening sockets...";
-    ListeningSockets::get()->closeAll();
-
-    log(LogComponent::kNetwork) << "shutdown: going to flush diaglog...";
-    _diaglog.flush();
+    // Shutdown the TransportLayer so that new connections aren't accepted
+    if (auto tl = serviceContext->getTransportLayer()) {
+        log(LogComponent::kNetwork) << "shutdown: going to close listening sockets...";
+        tl->shutdown();
+    }
 
     if (serviceContext->getGlobalStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
@@ -1024,8 +1250,8 @@ void shutdownTask() {
             opCtx = uniqueOpCtx.get();
         }
 
-        if (serverGlobalParams.featureCompatibility.version.load() ==
-            ServerGlobalParams::FeatureCompatibility::Version::k34) {
+        if (serverGlobalParams.featureCompatibility.getVersion() !=
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
             log(LogComponent::kReplication) << "shutdown: removing all drop-pending collections...";
             repl::DropPendingCollectionReaper::get(serviceContext)
                 ->dropCollectionsOlderThan(opCtx, repl::OpTime::max());
@@ -1046,8 +1272,8 @@ void shutdownTask() {
             }
         }
 
-        // This can wait a long time while we drain the secondary's apply queue, especially if it is
-        // building an index.
+        // This can wait a long time while we drain the secondary's apply queue, especially if it
+        // is building an index.
         repl::ReplicationCoordinator::get(serviceContext)->shutdown(opCtx);
 
         ShardingState::get(serviceContext)->shutDown(opCtx);
@@ -1073,54 +1299,24 @@ void shutdownTask() {
     }
 
 #if __has_feature(address_sanitizer)
-    auto sep = serviceContext->getServiceEntryPoint();
-    auto tl = serviceContext->getTransportLayer();
-    if (sep && tl) {
-        // When running under address sanitizer, we get false positive leaks due to disorder around
-        // the lifecycle of a connection and request. When we are running under ASAN, we try a lot
-        // harder to dry up the server from active connections before going on to really shut down.
+    // When running under address sanitizer, we get false positive leaks due to disorder around
+    // the lifecycle of a connection and request. When we are running under ASAN, we try a lot
+    // harder to dry up the server from active connections before going on to really shut down.
 
-        log(LogComponent::kNetwork)
-            << "shutdown: going to close all sockets because ASAN is active...";
-
-        // Shutdown the TransportLayer so that new connections aren't accepted
-        tl->shutdown();
-
-        // Request that all sessions end.
-        sep->endAllSessions(transport::Session::kEmptyTagMask);
-
-        // Close all sockets in a detached thread, and then wait for the number of active
-        // connections to reach zero. Give the detached background thread a 10 second deadline. If
-        // we haven't closed drained all active operations within that deadline, just keep going
-        // with shutdown: the OS will do it for us when the process terminates.
-        stdx::packaged_task<void()> dryOutTask([sep] {
-            // There isn't currently a way to wait on the TicketHolder to have all its tickets back,
-            // unfortunately. So, busy wait in this detached thread.
-            while (true) {
-                const auto runningWorkers = sep->numOpenSessions();
-
-                if (runningWorkers == 0) {
-                    log(LogComponent::kNetwork) << "shutdown: no running workers found...";
-                    break;
-                }
-                log(LogComponent::kNetwork) << "shutdown: still waiting on " << runningWorkers
-                                            << " active workers to drain... ";
-                mongo::sleepFor(Milliseconds(250));
-            }
-        });
-
-        auto dryNotification = dryOutTask.get_future();
-        stdx::thread(std::move(dryOutTask)).detach();
-        if (dryNotification.wait_for(Seconds(10).toSystemDuration()) !=
-            stdx::future_status::ready) {
-            log(LogComponent::kNetwork) << "shutdown: exhausted grace period for"
-                                        << " active workers to drain; continuing with shutdown... ";
+    // Shutdown the Service Entry Point and its sessions and give it a grace period to complete.
+    if (auto sep = serviceContext->getServiceEntryPoint()) {
+        if (!sep->shutdown(Seconds(10))) {
+            log(LogComponent::kNetwork)
+                << "Service entry point failed to shutdown within timelimit.";
         }
+    }
 
-        // Shutdown and wait for the service executor to exit
-        auto svcExec = serviceContext->getServiceExecutor();
-        if (svcExec) {
-            fassertStatusOK(40550, svcExec->shutdown());
+    // Shutdown and wait for the service executor to exit
+    if (auto svcExec = serviceContext->getServiceExecutor()) {
+        Status status = svcExec->shutdown(Seconds(5));
+        if (!status.isOK()) {
+            log(LogComponent::kNetwork) << "Service executor failed to shutdown within timelimit: "
+                                        << status.reason();
         }
     }
 #endif
@@ -1161,6 +1357,7 @@ void shutdownTask() {
 
     audit::logShutdown(client);
 }
+
 
 }  // namespace
 

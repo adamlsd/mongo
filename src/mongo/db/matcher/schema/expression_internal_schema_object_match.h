@@ -36,12 +36,7 @@ class InternalSchemaObjectMatchExpression final : public PathMatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaObjectMatch"_sd;
 
-    InternalSchemaObjectMatchExpression() : PathMatchExpression(INTERNAL_SCHEMA_OBJECT_MATCH) {}
-
-    Status init(std::unique_ptr<MatchExpression> expr, StringData path) {
-        _sub = std::move(expr);
-        return setPath(path);
-    }
+    InternalSchemaObjectMatchExpression(StringData path, std::unique_ptr<MatchExpression> expr);
 
     bool matchesSingleElement(const BSONElement& elem, MatchDetails* details = nullptr) const final;
 
@@ -77,6 +72,8 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final;
+
     std::unique_ptr<MatchExpression> _sub;
 };
 }  // namespace mongo

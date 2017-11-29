@@ -37,6 +37,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/notification.h"
+#include "mongo/util/concurrency/with_lock.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {
@@ -82,8 +83,14 @@ public:
                                                                      StringData ns);
 
     /**
-     * Same as getCollectionRoutingInfo above, but in addition causes the namespace to be refreshed
-     * and returns a NamespaceNotSharded error if the collection is not sharded.
+     * Same as getCollectionRoutingInfo above, but in addition causes the namespace to be refreshed.
+     */
+    StatusWith<CachedCollectionRoutingInfo> getCollectionRoutingInfoWithRefresh(
+        OperationContext* opCtx, const NamespaceString& nss);
+
+    /**
+     * Same as getCollectionRoutingInfoWithRefresh above, but in addition returns a
+     * NamespaceNotSharded error if the collection is not sharded.
      */
     StatusWith<CachedCollectionRoutingInfo> getShardedCollectionRoutingInfoWithRefresh(
         OperationContext* opCtx, const NamespaceString& nss);
@@ -161,10 +168,11 @@ private:
      * Non-blocking call which schedules an asynchronous refresh for the specified namespace. The
      * namespace must be in the 'needRefresh' state.
      */
-    void _scheduleCollectionRefresh_inlock(std::shared_ptr<DatabaseInfoEntry> dbEntry,
-                                           std::shared_ptr<ChunkManager> existingRoutingInfo,
-                                           const NamespaceString& nss,
-                                           int refreshAttempt);
+    void _scheduleCollectionRefresh(WithLock,
+                                    std::shared_ptr<DatabaseInfoEntry> dbEntry,
+                                    std::shared_ptr<ChunkManager> existingRoutingInfo,
+                                    NamespaceString const& nss,
+                                    int refreshAttempt);
 
     // Interface from which chunks will be retrieved
     CatalogCacheLoader& _cacheLoader;

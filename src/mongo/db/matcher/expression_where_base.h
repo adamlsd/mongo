@@ -42,7 +42,7 @@ public:
         BSONObj scope;  // Owned.
     };
 
-    WhereMatchExpressionBase(WhereParams params);
+    explicit WhereMatchExpressionBase(WhereParams params);
 
     size_t numChildren() const final {
         return 0;
@@ -80,6 +80,10 @@ protected:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     const std::string _code;
     const BSONObj _scope;  // Owned.
 };

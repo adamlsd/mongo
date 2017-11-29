@@ -96,12 +96,6 @@ protected:
     OplogEntry update(IdType _id, const BSONObj& obj);
     OplogEntry buildIndex(const BSONObj& indexSpec, const BSONObj& options = BSONObj());
     OplogEntry dropIndex(const std::string& indexName);
-    OpTime nextOpTime() {
-        static long long lastSecond = 1;
-        return OpTime(Timestamp(Seconds(lastSecond++), 0), 1LL);
-    }
-    Status runOp(const OplogEntry& entry);
-    Status runOps(std::vector<OplogEntry> ops);
     virtual Status resetState();
 
     /**
@@ -141,6 +135,11 @@ OplogEntry makeCreateCollectionOplogEntry(OpTime opTime,
 OplogEntry makeInsertDocumentOplogEntry(OpTime opTime,
                                         const NamespaceString& nss,
                                         const BSONObj& documentToInsert);
+
+OplogEntry makeDeleteDocumentOplogEntry(OpTime opTime,
+                                        const NamespaceString& nss,
+                                        const BSONObj& documentToDelete);
+
 OplogEntry makeUpdateDocumentOplogEntry(OpTime opTime,
                                         const NamespaceString& nss,
                                         const BSONObj& documentToUpdate,
@@ -153,10 +152,17 @@ OplogEntry makeCreateIndexOplogEntry(OpTime opTime,
 
 OplogEntry makeCommandOplogEntry(OpTime opTime, const NamespaceString& nss, const BSONObj& command);
 
-void appendSessionTransactionInfo(OplogEntry& entry,
-                                  LogicalSessionId lsid,
-                                  TxnNumber txnNum,
-                                  StmtId stmtId);
+OplogEntry makeInsertDocumentOplogEntryWithSessionInfo(OpTime opTime,
+                                                       const NamespaceString& nss,
+                                                       const BSONObj& documentToInsert,
+                                                       OperationSessionInfo info);
+
+OplogEntry makeInsertDocumentOplogEntryWithSessionInfoAndStmtId(OpTime opTime,
+                                                                const NamespaceString& nss,
+                                                                const BSONObj& documentToInsert,
+                                                                LogicalSessionId lsid,
+                                                                TxnNumber txnNum,
+                                                                StmtId stmtId);
 
 }  // namespace repl
 }  // namespace mongo

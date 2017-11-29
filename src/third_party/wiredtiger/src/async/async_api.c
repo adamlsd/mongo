@@ -111,10 +111,11 @@ __async_new_op_alloc(WT_SESSION_IMPL *session, const char *uri,
 	WT_CONNECTION_IMPL *conn;
 	uint32_t i, save_i, view;
 
+	*opp = NULL;
+
 	conn = S2C(session);
 	async = conn->async;
 	WT_STAT_CONN_INCR(session, async_op_alloc);
-	*opp = NULL;
 
 retry:
 	op = NULL;
@@ -302,8 +303,8 @@ __wt_async_reconfig(WT_SESSION_IMPL *session, const char *cfg[])
 	WT_CONNECTION_IMPL *conn, tmp_conn;
 	WT_DECL_RET;
 	WT_SESSION *wt_session;
-	bool run;
 	uint32_t i, session_flags;
+	bool run;
 
 	conn = S2C(session);
 	async = conn->async;

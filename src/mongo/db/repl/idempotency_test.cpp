@@ -132,7 +132,7 @@ std::string RandomizedIdempotencyTest::getStateString(const CollectionState& sta
 
     sb << "Start: " << getDoc() << "\n";
     for (auto op : ops) {
-        ASSERT_OK(runOp(op));
+        ASSERT_OK(runOpInitialSync(op));
         sb << "Apply: " << op.getObject() << "\n  ==> " << getDoc() << "\n";
     }
 
@@ -142,12 +142,12 @@ std::string RandomizedIdempotencyTest::getStateString(const CollectionState& sta
 }
 
 Status RandomizedIdempotencyTest::resetState() {
-    Status dropStatus = runOp(dropCollection());
+    Status dropStatus = runOpInitialSync(dropCollection());
     if (!dropStatus.isOK()) {
         return dropStatus;
     }
 
-    return runOps(initOps);
+    return runOpsInitialSync(initOps);
 }
 
 void RandomizedIdempotencyTest::runIdempotencyTestCase() {
@@ -193,14 +193,14 @@ void RandomizedIdempotencyTest::runIdempotencyTestCase() {
 }
 
 TEST_F(RandomizedIdempotencyTest, CheckUpdateSequencesAreIdempotentWhenFCV34) {
-    serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k34);
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
     runIdempotencyTestCase();
 }
 
 TEST_F(RandomizedIdempotencyTest, CheckUpdateSequencesAreIdempotentWhenFCV36) {
-    serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k36);
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
     runIdempotencyTestCase();
 }
 

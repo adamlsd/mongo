@@ -120,7 +120,7 @@ RecordId Helpers::findOne(OperationContext* opCtx,
                                      expCtx,
                                      extensionsCallback,
                                      MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                         ~MatchExpressionParser::AllowedFeatures::kIsolated);
     massert(17244, "Could not canonicalize " + query.toString(), statusWithCQ.isOK());
     unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 

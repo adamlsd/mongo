@@ -461,9 +461,21 @@ private:
                         const BSONObj& obj) {
         return writeConflictRetry(
             opCtx, "dbCheck oplog entry", NamespaceString::kRsOplogNamespace.ns(), [&] {
+                auto const clockSource = opCtx->getServiceContext()->getFastClockSource();
+                const auto wallClockTime = clockSource->now();
+
                 WriteUnitOfWork uow(opCtx);
-                repl::OpTime result = repl::logOp(
-                    opCtx, "c", nss, uuid, obj, nullptr, false, {}, kUninitializedStmtId, {});
+                repl::OpTime result = repl::logOp(opCtx,
+                                                  "c",
+                                                  nss,
+                                                  uuid,
+                                                  obj,
+                                                  nullptr,
+                                                  false,
+                                                  wallClockTime,
+                                                  {},
+                                                  kUninitializedStmtId,
+                                                  {});
                 uow.commit();
                 return result;
             });
@@ -538,13 +550,15 @@ public:
 
 private:
     bool _hasCorrectFCV(void) {
-        const auto fcv = serverGlobalParams.featureCompatibility.version.load();
-        return fcv >= ServerGlobalParams::FeatureCompatibility::Version::k36;
+        return serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
     }
 };
 
 MONGO_INITIALIZER(RegisterDbCheckCmd)(InitializerContext* context) {
-    new DbCheckCmd();
+    if (Command::testCommandsEnabled) {
+        new DbCheckCmd();
+    }
     return Status::OK();
 }
 }  // namespace

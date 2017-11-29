@@ -31,7 +31,9 @@
 #include <boost/optional.hpp>
 #include <regex>
 
-#include "mongo/db/matcher/expression_parser.h"
+#include "mongo/base/status_with.h"
+#include "mongo/db/matcher/expression.h"
+#include "mongo/db/pipeline/expression_context.h"
 
 namespace mongo {
 
@@ -45,13 +47,11 @@ public:
     static const std::regex placeholderRegex;
 
     /**
-     * Parses 'rawFilter' to an ExpressionWithPlaceholder. This succeeds if 'rawFilter' is a
-     * filter over a single top-level field, which begins with a lowercase letter and contains
-     * no special characters. Otherwise, a non-OK status is returned. Callers must maintain
-     * ownership of 'rawFilter'.
+     * Constructs an ExpressionWithPlaceholder from an existing match expression. Returns a non-OK
+     * status if the paths inside the match expression do not name a consistent placeholder string.
      */
-    static StatusWith<std::unique_ptr<ExpressionWithPlaceholder>> parse(
-        BSONObj rawFilter, const CollatorInterface* collator);
+    static StatusWith<std::unique_ptr<ExpressionWithPlaceholder>> make(
+        std::unique_ptr<MatchExpression> filter);
 
     /**
      * Construct a new ExpressionWithPlaceholder. 'filter' must point to a valid MatchExpression.
@@ -94,10 +94,17 @@ public:
         return stdx::make_unique<ExpressionWithPlaceholder>(_placeholder, _filter->shallowClone());
     }
 
+    /*
+     * Uses MatchExpression::optimize() to replace the Expression part of this
+     * ExpressionWithPlaceholder with an optimized expression. If the rewritten expression operates
+     * on a different field, we also update the placeholder to match.
+     */
+    void optimizeFilter();
+
 private:
     // The top-level field that _filter is over.
-    const boost::optional<std::string> _placeholder;
-    const std::unique_ptr<MatchExpression> _filter;
+    boost::optional<std::string> _placeholder;
+    std::unique_ptr<MatchExpression> _filter;
 };
 
 }  // namespace mongo

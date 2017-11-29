@@ -40,7 +40,7 @@ namespace mongo {
  * Uses the ExpressionContext to determine what collection to look up into.
  * TODO SERVER-29134 When we allow change streams on multiple collections, this will need to change.
  */
-class DocumentSourceLookupChangePostImage final : public DocumentSourceNeedsMongod {
+class DocumentSourceLookupChangePostImage final : public DocumentSourceNeedsMongoProcessInterface {
 public:
     static constexpr StringData kStageName = "$_internalLookupChangePostImage"_sd;
     static constexpr StringData kFullDocumentFieldName =
@@ -61,10 +61,18 @@ public:
         return {GetModPathsReturn::Type::kFiniteSet, {kFullDocumentFieldName.toString()}, {}};
     }
 
-    StageConstraints constraints() const final {
-        StageConstraints constraints;
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
+        invariant(pipeState != Pipeline::SplitState::kSplitForShards);
+        StageConstraints constraints(StreamType::kStreaming,
+                                     PositionRequirement::kNone,
+                                     pipeState == Pipeline::SplitState::kUnsplit
+                                         ? HostTypeRequirement::kNone
+                                         : HostTypeRequirement::kMongoS,
+                                     DiskUseRequirement::kNoDiskUse,
+                                     FacetRequirement::kNotAllowed,
+                                     ChangeStreamRequirement::kChangeStreamStage);
+
         constraints.canSwapWithMatch = true;
-        constraints.isAllowedInsideFacetStage = false;
         return constraints;
     }
 
@@ -98,7 +106,7 @@ public:
 
 private:
     DocumentSourceLookupChangePostImage(const boost::intrusive_ptr<ExpressionContext>& expCtx)
-        : DocumentSourceNeedsMongod(expCtx) {}
+        : DocumentSourceNeedsMongoProcessInterface(expCtx) {}
 
     /**
      * Uses the "documentKey" field from 'updateOp' to look up the current version of the document.

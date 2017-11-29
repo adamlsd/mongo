@@ -6,6 +6,7 @@
 
 (function() {
     let conn = MongoRunner.runMongod({smallfiles: ""});
+    let config = conn.getDB("config");
     let db = conn.getDB("admin");
 
     // TEST: User and role collections start off with no indexes
@@ -47,6 +48,9 @@
     // TEST: Destroying the admin.system.users index and restarting will recreate it, even if
     // admin.system.roles does not exist
     db.dropDatabase();
+    // Restore the featureCompatibilityVersion document since as of SERVER-29452, mongod fails to
+    // startup without such a document.
+    assert.commandWorked(db.runCommand({setFeatureCompatibilityVersion: "3.6"}));
     db.createUser({user: "user", pwd: "pwd", roles: []});
     assert.commandWorked(db.system.users.dropIndexes());
     MongoRunner.stopMongod(conn);
@@ -57,23 +61,14 @@
     // TEST: Destroying the admin.system.roles index and restarting will recreate it, even if
     // admin.system.users does not exist
     db.dropDatabase();
+    // Restore the featureCompatibilityVersion document since as of SERVER-29452, mongod fails to
+    // startup without such a document.
+    assert.commandWorked(db.runCommand({setFeatureCompatibilityVersion: "3.6"}));
     db.createRole({role: "role", privileges: [], roles: []});
     assert.commandWorked(db.system.roles.dropIndexes());
     MongoRunner.stopMongod(conn);
     conn = MongoRunner.runMongod({restart: conn, cleanData: false});
     db = conn.getDB("admin");
     assert.eq(2, db.system.roles.getIndexes().length);
-
-    // TEST: Inserting to the sessions collection creates indexes
-    assert.eq(0, db.system.sessions.getIndexes().length);
-    db.system.sessions.insert({lastUse: new Date()});
-    assert.eq(2, db.system.sessions.getIndexes().length);
-
-    // TEST: Destroying admin.system.sessions index and restarting will recreate it
-    assert.commandWorked(db.system.sessions.dropIndexes());
-    MongoRunner.stopMongod(conn);
-    conn = MongoRunner.runMongod({restart: conn, cleanData: false});
-    db = conn.getDB("admin");
-    assert.eq(2, db.system.sessions.getIndexes().length);
 
 })();

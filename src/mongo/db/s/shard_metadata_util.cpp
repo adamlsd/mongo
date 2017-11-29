@@ -91,7 +91,7 @@ Status setPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& 
     // Set 'refreshing' to true.
     BSONObj update = BSON(ShardCollectionType::refreshing() << true);
     return updateShardCollectionsEntry(
-        opCtx, BSON(ShardCollectionType::uuid() << nss.ns()), update, false /*upsert*/);
+        opCtx, BSON(ShardCollectionType::ns() << nss.ns()), update, BSONObj(), false /*upsert*/);
 }
 
 Status unsetPersistedRefreshFlags(OperationContext* opCtx,
@@ -104,8 +104,9 @@ Status unsetPersistedRefreshFlags(OperationContext* opCtx,
                                   refreshedVersion.toLong());
 
     return updateShardCollectionsEntry(opCtx,
-                                       BSON(ShardCollectionType::uuid() << nss.ns()),
+                                       BSON(ShardCollectionType::ns() << nss.ns()),
                                        updateBuilder.obj(),
+                                       BSONObj(),
                                        false /*upsert*/);
 }
 
@@ -142,7 +143,7 @@ StatusWith<RefreshState> getPersistedRefreshFlags(OperationContext* opCtx,
 StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCtx,
                                                           const NamespaceString& nss) {
 
-    Query fullQuery(BSON(ShardCollectionType::uuid() << nss.ns()));
+    Query fullQuery(BSON(ShardCollectionType::ns() << nss.ns()));
 
     try {
         DBDirectClient client(opCtx);
@@ -179,25 +180,35 @@ StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCt
 Status updateShardCollectionsEntry(OperationContext* opCtx,
                                    const BSONObj& query,
                                    const BSONObj& update,
+                                   const BSONObj& inc,
                                    const bool upsert) {
     invariant(query.hasField("_id"));
     if (upsert) {
         // If upserting, this should be an update from the config server that does not have shard
-        // refresh information.
+        // refresh / migration inc signal information.
         invariant(!update.hasField(ShardCollectionType::refreshing()));
         invariant(!update.hasField(ShardCollectionType::lastRefreshedCollectionVersion()));
+        invariant(inc.isEmpty());
     }
 
     try {
         DBDirectClient client(opCtx);
+
+        BSONObjBuilder builder;
+        if (!update.isEmpty()) {
+            // Want to modify the document if it already exists, not replace it.
+            builder.append("$set", update);
+        }
+        if (!inc.isEmpty()) {
+            builder.append("$inc", inc);
+        }
 
         auto commandResponse = client.runCommand([&] {
             write_ops::Update updateOp(NamespaceString{ShardCollectionType::ConfigNS});
             updateOp.setUpdates({[&] {
                 write_ops::UpdateOpEntry entry;
                 entry.setQ(query);
-                // Want to modify the document, not replace it
-                entry.setU(BSON("$set" << update));
+                entry.setU(builder.obj());
                 entry.setUpsert(upsert);
                 return entry;
             }()});
@@ -335,7 +346,7 @@ Status dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const Namesp
                 NamespaceString{NamespaceString::kShardConfigCollectionsCollectionName});
             deleteOp.setDeletes({[&] {
                 write_ops::DeleteOpEntry entry;
-                entry.setQ(BSON(ShardCollectionType::uuid << nss.ns()));
+                entry.setQ(BSON(ShardCollectionType::ns << nss.ns()));
                 entry.setMulti(true);
                 return entry;
             }()});

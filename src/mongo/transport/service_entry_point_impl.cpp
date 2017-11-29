@@ -35,7 +35,6 @@
 #include <vector>
 
 #include "mongo/db/auth/restriction_environment.h"
-#include "mongo/transport/service_entry_point_utils.h"
 #include "mongo/transport/service_state_machine.h"
 #include "mongo/transport/session.h"
 #include "mongo/util/log.h"
@@ -85,11 +84,11 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
 
     SSMListIterator ssmIt;
 
-    const auto sync = (_svcCtx->getServiceExecutor() == nullptr);
     const bool quiet = serverGlobalParams.quiet.load();
     size_t connectionCount;
+    auto transportMode = _svcCtx->getServiceExecutor()->transportMode();
 
-    auto ssm = ServiceStateMachine::create(_svcCtx, session, sync);
+    auto ssm = ServiceStateMachine::create(_svcCtx, session, transportMode);
     {
         stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
         connectionCount = _sessions.size() + 1;
@@ -124,53 +123,17 @@ void ServiceEntryPointImpl::startSession(transport::SessionHandle session) {
             connectionCount = _sessions.size();
             _currentConnections.store(connectionCount);
         }
+        _shutdownCondition.notify_one();
         const auto word = (connectionCount == 1 ? " connection"_sd : " connections"_sd);
         log() << "end connection " << remote << " (" << connectionCount << word << " now open)";
 
     });
 
-    if (!sync) {
-        dassert(_svcCtx->getServiceExecutor());
-        ssm->scheduleNext();
-        return;
+    auto ownership = ServiceStateMachine::Ownership::kOwned;
+    if (transportMode == transport::Mode::kSynchronous) {
+        ownership = ServiceStateMachine::Ownership::kStatic;
     }
-
-    auto workerTask = [this, ssm]() mutable {
-        _nWorkers.addAndFetch(1);
-        const auto guard = MakeGuard([this, &ssm] { _nWorkers.subtractAndFetch(1); });
-
-        const auto numCores = [] {
-            ProcessInfo p;
-            if (auto availCores = p.getNumAvailableCores()) {
-                return static_cast<unsigned>(*availCores);
-            }
-            return static_cast<unsigned>(p.getNumCores());
-        }();
-
-        while (ssm->state() != ServiceStateMachine::State::Ended) {
-            ssm->runNext();
-
-            /*
-             * In perf testing we found that yielding after running a each request produced
-             * at 5% performance boost in microbenchmarks if the number of worker threads
-             * was greater than the number of available cores.
-             */
-            if (_nWorkers.load() > numCores)
-                stdx::this_thread::yield();
-        }
-    };
-
-    const auto launchResult = launchServiceWorkerThread(std::move(workerTask));
-    if (launchResult.isOK()) {
-        return;
-    }
-
-    // We never got off the ground. Manually remove the new SSM from
-    // the list of sessions and close the associated socket. The SSM
-    // will be destroyed.
-    stdx::lock_guard<decltype(_sessionsMutex)> lk(_sessionsMutex);
-    _sessions.erase(ssmIt);
-    ssm->terminateIfTagsDontMatch(0);
+    ssm->start(ownership);
 }
 
 void ServiceEntryPointImpl::endAllSessions(transport::Session::TagMask tags) {
@@ -182,6 +145,42 @@ void ServiceEntryPointImpl::endAllSessions(transport::Session::TagMask tags) {
             ssm->terminateIfTagsDontMatch(tags);
         }
     }
+}
+
+bool ServiceEntryPointImpl::shutdown(Milliseconds timeout) {
+    using logger::LogComponent;
+
+    stdx::unique_lock<decltype(_sessionsMutex)> lk(_sessionsMutex);
+
+    // Request that all sessions end, while holding the _sesionsMutex, loop over all the current
+    // connections and terminate them
+    for (auto& ssm : _sessions) {
+        ssm->terminate();
+    }
+
+    // Close all sockets and then wait for the number of active connections to reach zero with a
+    // condition_variable that notifies in the session cleanup hook. If we haven't closed drained
+    // all active operations within the deadline, just keep going with shutdown: the OS will do it
+    // for us when the process terminates.
+    auto timeSpent = Milliseconds(0);
+    const auto checkInterval = std::min(Milliseconds(250), timeout);
+
+    auto noWorkersLeft = [this] { return numOpenSessions() == 0; };
+    while (timeSpent < timeout &&
+           !_shutdownCondition.wait_for(lk, checkInterval.toSystemDuration(), noWorkersLeft)) {
+        log(LogComponent::kNetwork) << "shutdown: still waiting on " << numOpenSessions()
+                                    << " active workers to drain... ";
+        timeSpent += checkInterval;
+    }
+
+    bool result = noWorkersLeft();
+    if (result) {
+        log(LogComponent::kNetwork) << "shutdown: no running workers found...";
+    } else {
+        log(LogComponent::kNetwork) << "shutdown: exhausted grace period for" << numOpenSessions()
+                                    << " active workers to drain; continuing with shutdown... ";
+    }
+    return result;
 }
 
 ServiceEntryPoint::Stats ServiceEntryPointImpl::sessionStats() const {

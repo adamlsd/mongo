@@ -60,11 +60,22 @@ const char* DocumentSourceMatch::getSourceName() const {
 }
 
 Value DocumentSourceMatch::serialize(boost::optional<ExplainOptions::Verbosity> explain) const {
+    if (explain) {
+        BSONObjBuilder builder;
+        _expression->serialize(&builder);
+        return Value(DOC(getSourceName() << Document(builder.obj())));
+    }
     return Value(DOC(getSourceName() << Document(getQuery())));
 }
 
 intrusive_ptr<DocumentSource> DocumentSourceMatch::optimize() {
-    return getQuery().isEmpty() ? nullptr : this;
+    if (getQuery().isEmpty()) {
+        return nullptr;
+    }
+
+    _expression = MatchExpression::optimize(std::move(_expression));
+
+    return this;
 }
 
 DocumentSource::GetNextResult DocumentSourceMatch::getNext() {
@@ -362,13 +373,8 @@ bool DocumentSourceMatch::isTextQuery(const BSONObj& query) {
 void DocumentSourceMatch::joinMatchWith(intrusive_ptr<DocumentSourceMatch> other) {
     _predicate = BSON("$and" << BSON_ARRAY(_predicate << other->getQuery()));
 
-    StatusWithMatchExpression status = uassertStatusOK(
-        MatchExpressionParser::parse(_predicate,
-                                     pExpCtx->getCollator(),
-                                     pExpCtx,
-                                     ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::AllowedFeatures::kText |
-                                         MatchExpressionParser::AllowedFeatures::kExpr));
+    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, pExpCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
     _expression = std::move(status.getValue());
     _dependencies = DepsTracker(_dependencies.getMetadataAvailable());
     getDependencies(&_dependencies);
@@ -441,10 +447,10 @@ boost::intrusive_ptr<DocumentSourceMatch> DocumentSourceMatch::descendMatchOnPat
         if (node->getCategory() == MatchExpression::MatchCategory::kLeaf &&
             node->matchType() != MatchExpression::TYPE_OPERATOR) {
             auto leafNode = static_cast<LeafMatchExpression*>(node);
-            leafNode->setPath(newPath).transitional_ignore();
+            leafNode->setPath(newPath);
         } else if (node->getCategory() == MatchExpression::MatchCategory::kArrayMatching) {
             auto arrayNode = static_cast<ArrayMatchingMatchExpression*>(node);
-            arrayNode->setPath(newPath).transitional_ignore();
+            arrayNode->setPath(newPath);
         }
     });
 
@@ -471,6 +477,9 @@ BSONObj DocumentSourceMatch::getQuery() const {
 }
 
 DocumentSource::GetDepsReturn DocumentSourceMatch::getDependencies(DepsTracker* deps) const {
+    // Get all field or variable dependencies.
+    _expression->addDependencies(deps);
+
     if (isTextQuery()) {
         // A $text aggregation field should return EXHAUSTIVE_FIELDS, since we don't necessarily
         // know what field it will be searching without examining indices.
@@ -479,25 +488,18 @@ DocumentSource::GetDepsReturn DocumentSourceMatch::getDependencies(DepsTracker* 
         return EXHAUSTIVE_FIELDS;
     }
 
-    _expression->addDependencies(deps);
     return SEE_NEXT;
 }
 
 DocumentSourceMatch::DocumentSourceMatch(const BSONObj& query,
-                                         const intrusive_ptr<ExpressionContext>& pExpCtx)
-    : DocumentSource(pExpCtx),
+                                         const intrusive_ptr<ExpressionContext>& expCtx)
+    : DocumentSource(expCtx),
       _predicate(query.getOwned()),
       _isTextQuery(isTextQuery(query)),
       _dependencies(_isTextQuery ? DepsTracker::MetadataAvailable::kTextScore
                                  : DepsTracker::MetadataAvailable::kNoMetadata) {
-    StatusWithMatchExpression status = uassertStatusOK(
-        MatchExpressionParser::parse(_predicate,
-                                     pExpCtx->getCollator(),
-                                     pExpCtx,
-                                     ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::AllowedFeatures::kText |
-                                         MatchExpressionParser::AllowedFeatures::kExpr));
-
+    StatusWithMatchExpression status = uassertStatusOK(MatchExpressionParser::parse(
+        _predicate, expCtx, ExtensionsCallbackNoop(), Pipeline::kAllowedMatcherFeatures));
     _expression = std::move(status.getValue());
     getDependencies(&_dependencies);
 }

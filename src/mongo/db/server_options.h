@@ -76,7 +76,7 @@ struct ServerGlobalParams {
     std::string socket = "/tmp";  // UNIX domain socket directory
     std::string transportLayer;   // --transportLayer (must be either "asio" or "legacy")
 
-    // --serviceExecutor ("adaptive", "synchronous", or "fixedForTesting")
+    // --serviceExecutor ("adaptive", "synchronous")
     std::string serviceExecutor;
 
     size_t maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
@@ -146,34 +146,87 @@ struct ServerGlobalParams {
     BSONObj overrideShardIdentity;
 
     struct FeatureCompatibility {
+        /**
+         * The combination of the fields in the admin.system.version document in the format
+         * (version, targetVersion) are represented by this enum and determine this node's behavior.
+         *
+         * The legal enum (and featureCompatiblityVersion document) states are:
+         *
+         * kFullyDowngradedTo34
+         * (3.4, Unset): Only 3.4 features are available, and new and existing storage
+         *               engine entries use the 3.4 format
+         *
+         * kUpgradingTo36
+         * (3.4, 3.6): Only 3.4 features are available, but new storage engine entries
+         *             use the 3.6 format, and existing entries may have either the
+         *             3.4 or 3.6 format
+         *
+         * kFullyUpgradedTo36
+         * (3.6, Unset): 3.6 features are available, and new and existing storage
+         *               engine entries use the 3.6 format
+         *
+         * kDowngradingTo34
+         * (3.4, 3.4): Only 3.4 features are available and new storage engine
+         *             entries use the 3.4 format, but existing entries may have
+         *             either the 3.4 or 3.6 format
+         *
+         * kUnsetDefault34Behavior
+         * (Unset, Unset): This is the case on startup before the fCV document is
+         *                 loaded into memory. isVersionInitialized() will return
+         *                 false, and getVersion() will return the default
+         *                 (kFullyDowngradedTo34).
+         *
+         */
         enum class Version {
-            /**
-             * In this mode, the cluster will expose a 3.4-like API. Attempts by a client to use new
-             * features in 3.6 will be rejected.
-             */
-            k34,
-
-            /**
-             * In this mode, new features in 3.6 are allowed. The system should guarantee that no
-             * 3.4 node can participate in a cluster whose feature compatibility version is 3.6.
-             */
-            k36,
+            kFullyDowngradedTo34,
+            kUpgradingTo36,
+            kFullyUpgradedTo36,
+            kDowngradingTo34,
+            kUnsetDefault34Behavior
         };
 
-        // Read-only parameter featureCompatibilityVersion.
-        AtomicWord<Version> version{Version::k34};
+        /**
+         * On startup, the featureCompatibilityVersion may not have been explicitly set yet. This
+         * exposes the actual state of the featureCompatibilityVersion if it is uninitialized.
+         */
+        const bool isVersionInitialized() const {
+            return _version.load() != Version::kUnsetDefault34Behavior;
+        }
 
-        // Read-only global isSchemaVersion36. This determines whether to give Collections UUIDs
-        // upon creation.
-        AtomicWord<bool> isSchemaVersion36{false};
+        /**
+         * This safe getter for the featureCompatibilityVersion returns a default value when the
+         * version has not yet been set.
+         */
+        const Version getVersion() const {
+            Version v = _version.load();
+            return (v == Version::kUnsetDefault34Behavior) ? Version::kFullyDowngradedTo34 : v;
+        }
 
-        // Feature validation differs depending on the role of a mongod in a replica set or
-        // master/slave configuration. Masters/primaries can accept user-initiated writes and
-        // validate based on the feature compatibility version. A secondary/slave (which is not also
-        // a master) always validates in "3.4" mode so that it can sync 3.4 features, even when in
-        // "3.2" feature compatibility mode.
-        AtomicWord<bool> validateFeaturesAsMaster{true};
+        void reset() {
+            _version.store(Version::kFullyDowngradedTo34);
+        }
+
+        void setVersion(Version version) {
+            return _version.store(version);
+        }
+
+        // This determines whether to give Collections UUIDs upon creation.
+        const bool isSchemaVersion36() {
+            return (getVersion() == Version::kFullyUpgradedTo36 ||
+                    getVersion() == Version::kUpgradingTo36);
+        }
+
+    private:
+        AtomicWord<Version> _version{Version::kUnsetDefault34Behavior};
+
     } featureCompatibility;
+
+    // Feature validation differs depending on the role of a mongod in a replica set or
+    // master/slave configuration. Masters/primaries can accept user-initiated writes and
+    // validate based on the feature compatibility version. A secondary/slave (which is not also
+    // a master) always validates in the upgraded mode so that it can sync new features, even
+    // when in the downgraded feature compatibility mode.
+    AtomicWord<bool> validateFeaturesAsMaster{true};
 
     std::vector<std::string> disabledSecureAllocatorDomains;
 };

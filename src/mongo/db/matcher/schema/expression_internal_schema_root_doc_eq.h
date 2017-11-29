@@ -45,12 +45,11 @@ class InternalSchemaRootDocEqMatchExpression final : public MatchExpression {
 public:
     static constexpr StringData kName = "$_internalSchemaRootDocEq"_sd;
 
-    InternalSchemaRootDocEqMatchExpression()
-        : MatchExpression(MatchExpression::INTERNAL_SCHEMA_ROOT_DOC_EQ) {}
-
-    void init(BSONObj obj) {
-        _rhsObj = std::move(obj);
-    }
+    /**
+     * Constructs a new match expression, taking ownership of 'rhs'.
+     */
+    explicit InternalSchemaRootDocEqMatchExpression(BSONObj rhs)
+        : MatchExpression(MatchExpression::INTERNAL_SCHEMA_ROOT_DOC_EQ), _rhsObj(std::move(rhs)) {}
 
     bool matches(const MatchableDocument* doc, MatchDetails* details = nullptr) const final;
 
@@ -87,7 +86,16 @@ public:
         return MatchCategory::kOther;
     }
 
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final {
+        deps->needWholeDocument = true;
+    }
+
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     UnorderedFieldsBSONObjComparator _objCmp;
     BSONObj _rhsObj;
 };

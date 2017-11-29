@@ -31,13 +31,21 @@
 #include "mongo/db/matcher/expression_expr.h"
 
 namespace mongo {
+ExprMatchExpression::ExprMatchExpression(boost::intrusive_ptr<Expression> expr,
+                                         const boost::intrusive_ptr<ExpressionContext>& expCtx)
+    : MatchExpression(MatchType::EXPRESSION), _expCtx(expCtx), _expression(expr) {}
+
 ExprMatchExpression::ExprMatchExpression(BSONElement elem,
                                          const boost::intrusive_ptr<ExpressionContext>& expCtx)
-    : MatchExpression(MatchType::EXPRESSION),
-      _expCtx(expCtx),
-      _expression(Expression::parseOperand(expCtx, elem, expCtx->variablesParseState)) {}
+    : ExprMatchExpression(Expression::parseOperand(expCtx, elem, expCtx->variablesParseState),
+                          expCtx) {}
 
 bool ExprMatchExpression::matches(const MatchableDocument* doc, MatchDetails* details) const {
+    if (_rewriteResult && _rewriteResult->matchExpression() &&
+        !_rewriteResult->matchExpression()->matches(doc, details)) {
+        return false;
+    }
+
     Document document(doc->toBSON());
     auto value = _expression->evaluate(document);
     return value.coerceToBool();
@@ -64,6 +72,14 @@ bool ExprMatchExpression::equivalent(const MatchExpression* other) const {
                                       realOther->_expression->serialize(false));
 }
 
+void ExprMatchExpression::_doSetCollator(const CollatorInterface* collator) {
+    _expCtx->setCollator(collator);
+
+    if (_rewriteResult && _rewriteResult->matchExpression()) {
+        _rewriteResult->matchExpression()->setCollator(collator);
+    }
+}
+
 
 std::unique_ptr<MatchExpression> ExprMatchExpression::shallowClone() const {
     // TODO SERVER-31003: Replace Expression clone via serialization with Expression::clone().
@@ -73,5 +89,14 @@ std::unique_ptr<MatchExpression> ExprMatchExpression::shallowClone() const {
         Expression::parseOperand(_expCtx, bob.obj().firstElement(), _expCtx->variablesParseState);
 
     return stdx::make_unique<ExprMatchExpression>(std::move(clonedExpr), _expCtx);
+}
+
+MatchExpression::ExpressionOptimizerFunc ExprMatchExpression::getOptimizer() const {
+    return [](std::unique_ptr<MatchExpression> expression) {
+        auto& exprMatchExpr = static_cast<ExprMatchExpression&>(*expression);
+        exprMatchExpr._expression = exprMatchExpr._expression->optimize();
+
+        return expression;
+    };
 }
 }  // namespace mongo

@@ -30,10 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/db/commands/find_and_modify.h"
-
 #include <boost/optional.hpp>
-#include <memory>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj.h"
@@ -42,6 +39,7 @@
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/find_and_modify_common.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/update.h"
@@ -50,6 +48,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/delete_request.h"
+#include "mongo/db/ops/find_and_modify_result.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/ops/parsed_delete.h"
 #include "mongo/db/ops/parsed_update.h"
@@ -166,30 +165,22 @@ void makeDeleteRequest(const FindAndModifyRequest& args, bool explain, DeleteReq
     requestOut->setExplain(explain);
 }
 
-void appendCommandResponse(PlanExecutor* exec,
+void appendCommandResponse(const PlanExecutor* exec,
                            bool isRemove,
                            const boost::optional<BSONObj>& value,
-                           BSONObjBuilder& result) {
-    BSONObjBuilder lastErrorObjBuilder(result.subobjStart("lastErrorObject"));
-
+                           BSONObjBuilder* result) {
     if (isRemove) {
-        lastErrorObjBuilder.appendNumber("n", getDeleteStats(exec)->docsDeleted);
+        find_and_modify::serializeRemove(getDeleteStats(exec)->docsDeleted, value, result);
     } else {
-        const UpdateStats* updateStats = getUpdateStats(exec);
-        lastErrorObjBuilder.appendBool("updatedExisting", updateStats->nMatched > 0);
-        lastErrorObjBuilder.appendNumber("n", updateStats->inserted ? 1 : updateStats->nMatched);
-        // Note we have to use the objInserted from the stats here, rather than 'value'
-        // because the _id field could have been excluded by a projection.
-        if (!updateStats->objInserted.isEmpty()) {
-            lastErrorObjBuilder.appendAs(updateStats->objInserted["_id"], kUpsertedFieldName);
-        }
-    }
-    lastErrorObjBuilder.done();
+        const auto updateStats = getUpdateStats(exec);
 
-    if (value) {
-        result.append("value", *value);
-    } else {
-        result.appendNull("value");
+        // Note we have to use the objInserted from the stats here, rather than 'value' because the
+        // _id field could have been excluded by a projection.
+        find_and_modify::serializeUpsert(updateStats->inserted ? 1 : updateStats->nMatched,
+                                         value,
+                                         updateStats->nMatched > 0,
+                                         updateStats->objInserted,
+                                         result);
     }
 }
 
@@ -215,7 +206,6 @@ void recordStatsForTopCommand(OperationContext* opCtx) {
                 curOp->getReadWriteType());
 }
 
-/* Find and Modify an object returning either the old (default) or new value*/
 class CmdFindAndModify : public BasicCommand {
 public:
     CmdFindAndModify() : BasicCommand("findAndModify", "findandmodify") {}
@@ -321,7 +311,7 @@ public:
             auto css = CollectionShardingState::get(opCtx, nsString);
             css->checkShardVersionOrThrow(opCtx);
 
-            Collection* collection = autoColl.getCollection();
+            Collection* const collection = autoColl.getCollection();
             auto statusWithPlanExecutor =
                 getExecutorUpdate(opCtx, opDebug, collection, &parsedUpdate);
             if (!statusWithPlanExecutor.isOK()) {
@@ -364,8 +354,7 @@ public:
             auto session = OperationContextSession::get(opCtx);
             if (auto entry =
                     session->checkStatementExecuted(opCtx, *opCtx->getTxnNumber(), stmtId)) {
-                auto findAndModifyResult = parseOplogEntryForFindAndModify(opCtx, args, *entry);
-                findAndModifyResult.serialize(&result);
+                parseOplogEntryForFindAndModify(opCtx, args, *entry, &result);
                 return true;
             }
         }
@@ -459,8 +448,8 @@ public:
                 }
                 recordStatsForTopCommand(opCtx);
 
-                boost::optional<BSONObj> value = advanceStatus.getValue();
-                appendCommandResponse(exec.get(), args.isRemove(), value, result);
+                appendCommandResponse(
+                    exec.get(), args.isRemove(), advanceStatus.getValue(), &result);
             } else {
                 UpdateRequest request(nsString);
                 UpdateLifecycleImpl updateLifecycle(nsString);
@@ -573,9 +562,10 @@ public:
                 }
                 recordStatsForTopCommand(opCtx);
 
-                boost::optional<BSONObj> value = advanceStatus.getValue();
-                appendCommandResponse(exec.get(), args.isRemove(), value, result);
+                appendCommandResponse(
+                    exec.get(), args.isRemove(), advanceStatus.getValue(), &result);
             }
+
             return true;
         });
     }

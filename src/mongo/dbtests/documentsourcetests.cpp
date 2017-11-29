@@ -95,7 +95,7 @@ protected:
         auto cq = uassertStatusOK(CanonicalQuery::canonicalize(opCtx(), std::move(qr)));
 
         auto exec = uassertStatusOK(
-            getExecutor(opCtx(), ctx.getCollection(), std::move(cq), PlanExecutor::NO_YIELD));
+            getExecutor(opCtx(), ctx.getCollection(), std::move(cq), PlanExecutor::NO_YIELD, 0));
 
         exec->saveState();
         _source = DocumentSourceCursor::create(ctx.getCollection(), std::move(exec), _ctx);
@@ -314,7 +314,7 @@ TEST_F(DocumentSourceCursorTest, SerializationRespectsExplainModes) {
 TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorStillUsableAfterTimeout) {
     // Make sure the collection exists, otherwise we'll default to a NO_YIELD yield policy.
     const bool capped = true;
-    const bool cappedSize = 1024;
+    const long long cappedSize = 1024;
     ASSERT_TRUE(client.createCollection(nss.ns(), cappedSize, capped));
     client.insert(nss.ns(), BSON("a" << 1));
 
@@ -325,8 +325,7 @@ TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorStillUsableAfterTimeout)
     collScanParams.collection = readLock.getCollection();
     collScanParams.tailable = true;
     auto filter = BSON("a" << 1);
-    auto matchExpression =
-        uassertStatusOK(MatchExpressionParser::parse(filter, ctx()->getCollator()));
+    auto matchExpression = uassertStatusOK(MatchExpressionParser::parse(filter, ctx()));
     auto collectionScan = stdx::make_unique<CollectionScan>(
         opCtx(), collScanParams, workingSet.get(), matchExpression.get());
     auto queryRequest = stdx::make_unique<QueryRequest>(nss);
@@ -364,8 +363,7 @@ TEST_F(DocumentSourceCursorTest, NonAwaitDataCursorShouldErrorAfterTimeout) {
     CollectionScanParams collScanParams;
     collScanParams.collection = readLock.getCollection();
     auto filter = BSON("a" << 1);
-    auto matchExpression =
-        uassertStatusOK(MatchExpressionParser::parse(filter, ctx()->getCollator()));
+    auto matchExpression = uassertStatusOK(MatchExpressionParser::parse(filter, ctx()));
     auto collectionScan = stdx::make_unique<CollectionScan>(
         opCtx(), collScanParams, workingSet.get(), matchExpression.get());
     auto queryRequest = stdx::make_unique<QueryRequest>(nss);
@@ -394,7 +392,7 @@ TEST_F(DocumentSourceCursorTest, NonAwaitDataCursorShouldErrorAfterTimeout) {
 TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorShouldErrorAfterBeingKilled) {
     // Make sure the collection exists, otherwise we'll default to a NO_YIELD yield policy.
     const bool capped = true;
-    const bool cappedSize = 1024;
+    const long long cappedSize = 1024;
     ASSERT_TRUE(client.createCollection(nss.ns(), cappedSize, capped));
     client.insert(nss.ns(), BSON("a" << 1));
 
@@ -405,8 +403,7 @@ TEST_F(DocumentSourceCursorTest, TailableAwaitDataCursorShouldErrorAfterBeingKil
     collScanParams.collection = readLock.getCollection();
     collScanParams.tailable = true;
     auto filter = BSON("a" << 1);
-    auto matchExpression =
-        uassertStatusOK(MatchExpressionParser::parse(filter, ctx()->getCollator()));
+    auto matchExpression = uassertStatusOK(MatchExpressionParser::parse(filter, ctx()));
     auto collectionScan = stdx::make_unique<CollectionScan>(
         opCtx(), collScanParams, workingSet.get(), matchExpression.get());
     auto queryRequest = stdx::make_unique<QueryRequest>(nss);
@@ -444,8 +441,7 @@ TEST_F(DocumentSourceCursorTest, NormalCursorShouldErrorAfterBeingKilled) {
     CollectionScanParams collScanParams;
     collScanParams.collection = readLock.getCollection();
     auto filter = BSON("a" << 1);
-    auto matchExpression =
-        uassertStatusOK(MatchExpressionParser::parse(filter, ctx()->getCollator()));
+    auto matchExpression = uassertStatusOK(MatchExpressionParser::parse(filter, ctx()));
     auto collectionScan = stdx::make_unique<CollectionScan>(
         opCtx(), collScanParams, workingSet.get(), matchExpression.get());
     auto queryRequest = stdx::make_unique<QueryRequest>(nss);

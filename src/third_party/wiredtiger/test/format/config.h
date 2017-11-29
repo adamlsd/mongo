@@ -101,13 +101,25 @@ static CONFIG c[] = {
 	  "size of the cache in MB",
 	  0x0, 1, 100, 100 * 1024, &g.c_cache, NULL },
 
+	{ "cache_minimum",
+	  "minimum size of the cache in MB",
+	  C_IGNORE, 1, 0, 100 * 1024, &g.c_cache_minimum, NULL },
+
 	{ "checkpoints",
-	  "if periodic checkpoints are done",			/* 95% */
-	  C_BOOL, 95, 0, 0, &g.c_checkpoints, NULL },
+	  "type of checkpoints (on | off | wiredtiger)",
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_checkpoint},
+
+	{ "checkpoint_log_size",
+	  "MB of log to wait if wiredtiger checkpoints configured",
+	  0x0, 20, 200, 1024, &g.c_checkpoint_log_size, NULL},
+
+	{ "checkpoint_wait",
+	  "seconds to wait if wiredtiger checkpoints configured",
+	  0x0, 5, 100, 3600, &g.c_checkpoint_wait, NULL},
 
 	{ "checksum",
 	  "type of checksums (on | off | uncompressed)",
-	  C_IGNORE|C_STRING, 1, 3, 3, NULL, &g.c_checksum },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_checksum },
 
 	{ "chunk_size",
 	  "LSM chunk size in MB",
@@ -139,7 +151,7 @@ static CONFIG c[] = {
 
 	{ "direct_io",
 	  "if direct I/O is configured for data objects",	/* 0% */
-	  C_IGNORE, 0, 0, 1, &g.c_direct_io, NULL },
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_direct_io, NULL },
 
 	{ "encryption",
 	  "type of encryption (none | rotn-7)",
@@ -151,7 +163,7 @@ static CONFIG c[] = {
 
 	{ "file_type",
 	  "type of store to create (fix | var | row)",
-	  C_IGNORE|C_STRING, 1, 3, 3, NULL, &g.c_file_type },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_file_type },
 
 	{ "firstfit",
 	  "if allocation is firstfit",				/* 10% */
@@ -165,9 +177,13 @@ static CONFIG c[] = {
 	  "if values are huffman encoded",			/* 20% */
 	  C_BOOL, 20, 0, 0, &g.c_huffman_value, NULL },
 
+	{ "independent_thread_rng",
+	  "if thread RNG space is independent",			/* 75% */
+	  C_BOOL, 75, 0, 0, &g.c_independent_thread_rng, NULL },
+
 	{ "in_memory",
 	  "if in-memory configured",
-	  C_IGNORE, 0, 0, 1, &g.c_in_memory, NULL },
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_in_memory, NULL },
 
 	{ "insert_pct",
 	  "percent operations that are inserts",
@@ -184,7 +200,7 @@ static CONFIG c[] = {
 	{ "isolation",
 	  "isolation level "
 	  "(random | read-uncommitted | read-committed | snapshot)",
-	  C_IGNORE|C_STRING, 1, 4, 4, NULL, &g.c_isolation },
+	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_isolation },
 
 	{ "key_gap",
 	  "gap between instantiated keys on a Btree page",
@@ -217,6 +233,10 @@ static CONFIG c[] = {
 	{ "logging_compression",
 	  "type of logging compression " COMPRESSION_LIST,
 	  C_IGNORE|C_STRING, 0, 0, 0, NULL, &g.c_logging_compression },
+
+	{ "logging_file_max",
+	  "maximum log file size in KB",
+	  0x0, 100, 512000, 2097152, &g.c_logging_file_max, NULL },
 
 	{ "logging_prealloc",
 	  "if log file pre-allocation configured",		/* 50% */
@@ -256,7 +276,7 @@ static CONFIG c[] = {
 
 	{ "quiet",
 	  "quiet run (same as -q)",
-	  C_IGNORE|C_BOOL, 0, 0, 0, &g.c_quiet, NULL },
+	  C_IGNORE|C_BOOL, 0, 0, 1, &g.c_quiet, NULL },
 
 	{ "read_pct",
 	  "percent operations that are reads",
@@ -280,7 +300,7 @@ static CONFIG c[] = {
 
 	{ "runs",
 	  "the number of runs",
-	  C_IGNORE, 0, UINT_MAX, UINT_MAX, &g.c_runs, NULL },
+	  C_IGNORE, 0, 0, UINT_MAX, &g.c_runs, NULL },
 
 	{ "salvage",
 	  "salvage testing",					/* 100% */
@@ -303,8 +323,8 @@ static CONFIG c[] = {
 	  0x0, 1, 32, 128, &g.c_threads, NULL },
 
 	{ "timer",
-	  "maximum time to run in minutes (default 20 minutes)",
-	  C_IGNORE, 0, UINT_MAX, UINT_MAX, &g.c_timer, NULL },
+	  "maximum time to run in minutes",
+	  C_IGNORE, 0, 0, UINT_MAX, &g.c_timer, NULL },
 
 	{ "transaction_timestamps",				/* 10% */
 	  "enable transaction timestamp support",

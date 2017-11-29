@@ -29,9 +29,11 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "mongo/db/cursor_id.h"
+#include "mongo/db/generic_cursor.h"
 #include "mongo/db/kill_sessions.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/session_killer.h"
@@ -39,6 +41,7 @@
 #include "mongo/s/query/cluster_client_cursor.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
+#include "mongo/util/concurrency/with_lock.h"
 #include "mongo/util/time_support.h"
 
 namespace mongo {
@@ -156,7 +159,7 @@ public:
          *
          * Can block.
          */
-        StatusWith<ClusterQueryResult> next();
+        StatusWith<ClusterQueryResult> next(RouterExecStage::ExecContext);
 
         /**
          * Sets the operation context for the cursor. Must be called before the first call to
@@ -174,6 +177,13 @@ public:
          * called after returnCursor() is called.  A cursor must be owned.
          */
         bool isTailable() const;
+
+        /**
+         * Returns whether or not the underlying cursor is tailing a capped collection and was
+         * created with the 'awaitData' flag set.  Cannot be called after returnCursor() is called.
+         * A cursor must be owned.
+         */
+        bool isTailableAndAwaitData() const;
 
         /**
          * Returns the set of authenticated users when this cursor was created. Cannot be called
@@ -194,6 +204,11 @@ public:
          * Returns the cursor id for the underlying cursor, or zero if no cursor is owned.
          */
         CursorId getCursorId() const;
+
+        /**
+         * Returns the read preference setting for this cursor.
+         */
+        boost::optional<ReadPreferenceSetting> getReadPreference() const;
 
         /**
          * Returns the number of result documents returned so far by this cursor via the next()
@@ -355,8 +370,13 @@ public:
      */
     void appendActiveSessions(LogicalSessionIdSet* lsids) const;
 
-    Status killCursorsWithMatchingSessions(OperationContext* opCtx,
-                                           const SessionKiller::Matcher& matcher);
+    /**
+     * Returns a list of GenericCursors for all cursors in the cursor manager.
+     */
+    std::vector<GenericCursor> getAllCursors() const;
+
+    std::pair<Status, int> killCursorsWithMatchingSessions(OperationContext* opCtx,
+                                                           const SessionKiller::Matcher& matcher);
 
     /**
      * Returns a list of all open cursors for the given session.
@@ -413,7 +433,7 @@ private:
      *
      * Not thread-safe.
      */
-    CursorEntry* getEntry_inlock(const NamespaceString& nss, CursorId cursorId);
+    CursorEntry* _getEntry(WithLock, NamespaceString const& nss, CursorId cursorId);
 
     /**
      * De-registers the given cursor, and returns an owned pointer to the underlying
@@ -424,8 +444,9 @@ private:
      *
      * Not thread-safe.
      */
-    StatusWith<std::unique_ptr<ClusterClientCursor>> detachCursor_inlock(const NamespaceString& nss,
-                                                                         CursorId cursorId);
+    StatusWith<std::unique_ptr<ClusterClientCursor>> _detachCursor(WithLock,
+                                                                   NamespaceString const& nss,
+                                                                   CursorId cursorId);
 
     /**
      * CursorEntry is a moveable, non-copyable container for a single cursor.

@@ -60,6 +60,38 @@
 namespace mongo {
 namespace repl {
 
+namespace {
+
+/**
+ * Creates an OplogEntry with given parameters and preset defaults for this test suite.
+ */
+repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
+                                repl::OpTypeEnum opType,
+                                NamespaceString nss,
+                                BSONObj object,
+                                boost::optional<BSONObj> object2 = boost::none,
+                                OperationSessionInfo sessionInfo = {},
+                                boost::optional<Date_t> wallClockTime = boost::none,
+                                boost::optional<StmtId> stmtId = boost::none) {
+    return repl::OplogEntry(opTime,                           // optime
+                            1LL,                              // hash
+                            opType,                           // opType
+                            nss,                              // namespace
+                            boost::none,                      // uuid
+                            boost::none,                      // fromMigrate
+                            repl::OplogEntry::kOplogVersion,  // version
+                            object,                           // o
+                            object2,                          // o2
+                            sessionInfo,                      // sessionInfo
+                            wallClockTime,                    // wall clock time
+                            stmtId,                           // statement id
+                            boost::none,   // optime of previous write within same transaction
+                            boost::none,   // pre-image optime
+                            boost::none);  // post-image optime
+}
+
+}  // namespace
+
 /**
  * Compares BSON objects (BSONObj) in two sets of BSON objects (BSONObjSet) to see if the two
  * sets are equivalent.
@@ -170,7 +202,7 @@ const auto kCollectionDoesNotExist = CollectionState();
 OplogEntry makeCommandOplogEntry(OpTime opTime,
                                  const NamespaceString& nss,
                                  const BSONObj& command) {
-    return OplogEntry(opTime, 1LL, OpTypeEnum::kCommand, nss.getCommandNS(), 2, command);
+    return makeOplogEntry(opTime, OpTypeEnum::kCommand, nss.getCommandNS(), command);
 }
 
 /**
@@ -191,7 +223,28 @@ OplogEntry makeCreateCollectionOplogEntry(OpTime opTime,
 OplogEntry makeInsertDocumentOplogEntry(OpTime opTime,
                                         const NamespaceString& nss,
                                         const BSONObj& documentToInsert) {
-    return OplogEntry(opTime, 1LL, OpTypeEnum::kInsert, nss, documentToInsert);
+    return makeOplogEntry(opTime,               // optime
+                          OpTypeEnum::kInsert,  // op type
+                          nss,                  // namespace
+                          documentToInsert,     // o
+                          boost::none,          // o2
+                          {},                   // session info
+                          Date_t::now());       // wall clock time
+}
+
+/**
+ * Creates a delete oplog entry with given optime and namespace.
+ */
+OplogEntry makeDeleteDocumentOplogEntry(OpTime opTime,
+                                        const NamespaceString& nss,
+                                        const BSONObj& documentToDelete) {
+    return makeOplogEntry(opTime,               // optime
+                          OpTypeEnum::kDelete,  // op type
+                          nss,                  // namespace
+                          documentToDelete,     // o
+                          boost::none,          // o2
+                          {},                   // session info
+                          Date_t::now());       // wall clock time
 }
 
 /**
@@ -201,7 +254,13 @@ OplogEntry makeUpdateDocumentOplogEntry(OpTime opTime,
                                         const NamespaceString& nss,
                                         const BSONObj& documentToUpdate,
                                         const BSONObj& updatedDocument) {
-    return OplogEntry(opTime, 1LL, OpTypeEnum::kUpdate, nss, updatedDocument, documentToUpdate);
+    return makeOplogEntry(opTime,               // optime
+                          OpTypeEnum::kUpdate,  // op type
+                          nss,                  // namespace
+                          updatedDocument,      // o
+                          documentToUpdate,     // o2
+                          {},                   // session info
+                          Date_t::now());       // wall clock time
 }
 
 /**
@@ -220,30 +279,41 @@ OplogEntry makeCreateIndexOplogEntry(OpTime opTime,
         opTime, NamespaceString(nss.getSystemIndexesCollection()), indexInfoBob.obj());
 }
 
-void appendSessionTransactionInfo(OplogEntry& entry,
-                                  LogicalSessionId lsid,
-                                  TxnNumber txnNum,
-                                  StmtId stmtId) {
-    auto info = entry.getOperationSessionInfo();
+/**
+ * Creates an insert oplog entry with given optime, namespace and session info.
+ */
+OplogEntry makeInsertDocumentOplogEntryWithSessionInfo(OpTime opTime,
+                                                       const NamespaceString& nss,
+                                                       const BSONObj& documentToInsert,
+                                                       OperationSessionInfo info) {
+    return makeOplogEntry(opTime,               // optime
+                          OpTypeEnum::kInsert,  // op type
+                          nss,                  // namespace
+                          documentToInsert,     // o
+                          boost::none,          // o2
+                          info,                 // session info
+                          Date_t::now());       // wall clock time
+}
+
+OplogEntry makeInsertDocumentOplogEntryWithSessionInfoAndStmtId(OpTime opTime,
+                                                                const NamespaceString& nss,
+                                                                const BSONObj& documentToInsert,
+                                                                LogicalSessionId lsid,
+                                                                TxnNumber txnNum,
+                                                                StmtId stmtId) {
+    OperationSessionInfo info;
     info.setSessionId(lsid);
     info.setTxnNumber(txnNum);
-    entry.setOperationSessionInfo(std::move(info));
-    entry.setStatementId(stmtId);
+    return makeOplogEntry(opTime,               // optime
+                          OpTypeEnum::kInsert,  // op type
+                          nss,                  // namespace
+                          documentToInsert,     // o
+                          boost::none,          // o2
+                          info,                 // session info
+                          Date_t::now(),        // wall clock time
+                          stmtId);              // statement id
 }
 
-Status IdempotencyTest::runOp(const OplogEntry& op) {
-    return runOps({op});
-}
-
-Status IdempotencyTest::runOps(std::vector<OplogEntry> ops) {
-    SyncTail syncTail(nullptr, SyncTail::MultiSyncApplyFunc(), nullptr);
-    MultiApplier::OperationPtrs opsPtrs;
-    for (auto& op : ops) {
-        opsPtrs.push_back(&op);
-    }
-    AtomicUInt32 fetchCount(0);
-    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount);
-}
 
 Status IdempotencyTest::resetState() {
     return Status::OK();
@@ -251,7 +321,7 @@ Status IdempotencyTest::resetState() {
 
 void IdempotencyTest::testOpsAreIdempotent(std::vector<OplogEntry> ops, SequenceType sequenceType) {
     ASSERT_OK(resetState());
-    ASSERT_OK(runOps(ops));
+    ASSERT_OK(runOpsInitialSync(ops));
     auto state1 = validate();
     auto iterations = sequenceType == SequenceType::kEntireSequence ? 1 : ops.size();
 
@@ -260,22 +330,22 @@ void IdempotencyTest::testOpsAreIdempotent(std::vector<OplogEntry> ops, Sequence
         std::vector<OplogEntry> fullSequence;
 
         if (sequenceType == SequenceType::kEntireSequence) {
-            ASSERT_OK(runOps(ops));
+            ASSERT_OK(runOpsInitialSync(ops));
             fullSequence.insert(fullSequence.end(), ops.begin(), ops.end());
         } else if (sequenceType == SequenceType::kAnyPrefix ||
                    sequenceType == SequenceType::kAnyPrefixOrSuffix) {
             std::vector<OplogEntry> prefix(ops.begin(), ops.begin() + i + 1);
-            ASSERT_OK(runOps(prefix));
+            ASSERT_OK(runOpsInitialSync(prefix));
             fullSequence.insert(fullSequence.end(), prefix.begin(), prefix.end());
         }
 
-        ASSERT_OK(runOps(ops));
+        ASSERT_OK(runOpsInitialSync(ops));
         fullSequence.insert(fullSequence.end(), ops.begin(), ops.end());
 
         if (sequenceType == SequenceType::kAnySuffix ||
             sequenceType == SequenceType::kAnyPrefixOrSuffix) {
             std::vector<OplogEntry> suffix(ops.begin() + i, ops.end());
-            ASSERT_OK(runOps(suffix));
+            ASSERT_OK(runOpsInitialSync(suffix));
             fullSequence.insert(fullSequence.end(), suffix.begin(), suffix.end());
         }
 

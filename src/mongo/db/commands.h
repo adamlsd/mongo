@@ -208,6 +208,13 @@ public:
                                              const BSONObj& cmdObj) const = 0;
 
     /**
+     * Returns true if command allows afterClusterTime in its readConcern. The command may not allow
+     * it if it is specifically intended not to take any LockManager locks. Waiting for
+     * afterClusterTime takes the MODE_IS lock.
+     */
+    virtual bool allowsAfterClusterTime(const BSONObj& cmdObj) const = 0;
+
+    /**
      * Returns LogicalOp for this command.
      */
     virtual LogicalOp getLogicalOp() const = 0;
@@ -319,6 +326,10 @@ public:
     bool supportsNonLocalReadConcern(const std::string& dbName,
                                      const BSONObj& cmdObj) const override {
         return false;
+    }
+
+    bool allowsAfterClusterTime(const BSONObj& cmdObj) const override {
+        return true;
     }
 
     LogicalOp getLogicalOp() const override {
@@ -451,6 +462,11 @@ public:
                                            const BSONObj& request);
 
     /**
+     * Returns a copy of 'cmdObj' with a majority writeConcern appended.
+     */
+    static BSONObj appendMajorityWriteConcern(const BSONObj& cmdObj);
+
+    /**
      * Returns true if the provided argument is one that is handled by the command processing layer
      * and should generally be ignored by individual command implementations. In particular,
      * commands that fail on unrecognized arguments must not fail for any of these.
@@ -459,22 +475,23 @@ public:
         // Not including "help" since we don't pass help requests through to the command parser.
         // If that changes, it should be added. When you add to this list, consider whether you
         // should also change the filterCommandRequestForPassthrough() function.
-        return arg == "$audit" ||           //
-            arg == "$client" ||             //
-            arg == "$configServerState" ||  //
-            arg == "$db" ||                 //
-            arg == "$oplogQueryData" ||     //
-            arg == "$queryOptions" ||       //
-            arg == "$readPreference" ||     //
-            arg == "$replData" ||           //
-            arg == "$clusterTime" ||        //
-            arg == "maxTimeMS" ||           //
-            arg == "readConcern" ||         //
-            arg == "shardVersion" ||        //
-            arg == "tracking_info" ||       //
-            arg == "writeConcern" ||        //
-            arg == "lsid" ||                //
-            arg == "txnNumber" ||           //
+        return arg == "$audit" ||                        //
+            arg == "$client" ||                          //
+            arg == "$configServerState" ||               //
+            arg == "$db" ||                              //
+            arg == "allowImplicitCollectionCreation" ||  //
+            arg == "$oplogQueryData" ||                  //
+            arg == "$queryOptions" ||                    //
+            arg == "$readPreference" ||                  //
+            arg == "$replData" ||                        //
+            arg == "$clusterTime" ||                     //
+            arg == "maxTimeMS" ||                        //
+            arg == "readConcern" ||                      //
+            arg == "shardVersion" ||                     //
+            arg == "tracking_info" ||                    //
+            arg == "writeConcern" ||                     //
+            arg == "lsid" ||                             //
+            arg == "txnNumber" ||                        //
             false;  // These comments tell clang-format to keep this line-oriented.
     }
 

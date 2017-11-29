@@ -60,8 +60,8 @@ static int __dmsg_wrapup(WT_DBG *);
 int
 __wt_debug_set_verbose(WT_SESSION_IMPL *session, const char *v)
 {
-	const char *cfg[2] = { NULL, NULL };
 	char buf[256];
+	const char *cfg[2] = { NULL, NULL };
 
 	WT_RET(__wt_snprintf(buf, sizeof(buf), "verbose=[%s]", v));
 	cfg[0] = buf;
@@ -87,8 +87,8 @@ static int
 __debug_bytes(WT_DBG *ds, const void *data_arg, size_t size)
 {
 	size_t i;
-	u_char ch;
 	const uint8_t *data;
+	u_char ch;
 
 	for (data = data_arg, i = 0; i < size; ++i, ++data) {
 		ch = data[0];
@@ -125,8 +125,8 @@ __dmsg_event(WT_DBG *ds, const char *fmt, ...)
 	WT_ITEM *msg;
 	WT_SESSION_IMPL *session;
 	size_t len, space;
-	va_list ap;
 	char *p;
+	va_list ap;
 
 	session = ds->session;
 
@@ -223,8 +223,8 @@ __debug_config(WT_SESSION_IMPL *session, WT_DBG *ds, const char *ofile)
 static int
 __dmsg_wrapup(WT_DBG *ds)
 {
-	WT_SESSION_IMPL *session;
 	WT_ITEM *msg;
+	WT_SESSION_IMPL *session;
 
 	session = ds->session;
 	msg = ds->msg;
@@ -478,8 +478,8 @@ __debug_dsk_cell(WT_DBG *ds, const WT_PAGE_HEADER *dsk)
 static char *
 __debug_tree_shape_info(WT_PAGE *page)
 {
-	uint64_t v;
 	static char buf[128];
+	uint64_t v;
 	const char *unit;
 
 	v = page->memory_footprint;
@@ -733,6 +733,8 @@ __debug_page_metadata(WT_DBG *ds, WT_REF *ref)
 	WT_RET(ds->f(ds, ", entries %" PRIu32, entries));
 	WT_RET(ds->f(ds,
 	    ", %s", __wt_page_is_modified(page) ? "dirty" : "clean"));
+	WT_RET(ds->f(ds,
+	    ", memory_size %" WT_SIZET_FMT, page->memory_footprint));
 
 	if (F_ISSET_ATOMIC(page, WT_PAGE_BUILD_KEYS))
 		WT_RET(ds->f(ds, ", keys-built"));
@@ -1026,14 +1028,13 @@ __debug_row_skip(WT_DBG *ds, WT_INSERT_HEAD *head)
 static int
 __debug_modified(WT_DBG *ds, WT_UPDATE *upd)
 {
-	const size_t *p;
 	size_t nentries, data_size, offset, size;
+	const size_t *p;
 	const uint8_t *data;
 
 	p = (size_t *)upd->data;
 	memcpy(&nentries, p++, sizeof(size_t));
-	data = upd->data +
-	    sizeof(size_t) + ((size_t)nentries * 3 * sizeof(size_t));
+	data = upd->data + sizeof(size_t) + (nentries * 3 * sizeof(size_t));
 
 	WT_RET(ds->f(ds, "%" WT_SIZET_FMT ": ", nentries));
 	for (; nentries-- > 0; data += data_size) {
@@ -1123,6 +1124,9 @@ __debug_ref(WT_DBG *ds, WT_REF *ref)
 		break;
 	case WT_REF_LOCKED:
 		state = "locked";
+		break;
+	case WT_REF_LOOKASIDE:
+		state = "lookaside";
 		break;
 	case WT_REF_MEM:
 		state = "memory";

@@ -57,6 +57,7 @@
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -274,7 +275,7 @@ StatusWith<CursorId> runQueryWithoutRetrying(OperationContext* opCtx,
     int bytesBuffered = 0;
 
     while (!FindCommon::enoughForFirstBatch(query.getQueryRequest(), results->size())) {
-        auto next = ccc->next();
+        auto next = ccc->next(RouterExecStage::ExecContext::kInitialFind);
 
         if (!next.isOK()) {
             return next.getStatus();
@@ -421,11 +422,21 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
                               << " was not created by the authenticated user"};
     }
 
-    if (request.awaitDataTimeout) {
-        auto status = pinnedCursor.getValue().setAwaitDataTimeout(*request.awaitDataTimeout);
-        if (!status.isOK()) {
-            return status;
+    if (auto readPref = pinnedCursor.getValue().getReadPreference()) {
+        ReadPreferenceSetting::get(opCtx) = *readPref;
+    }
+    if (pinnedCursor.getValue().isTailableAndAwaitData()) {
+        // Default to 1-second timeout for tailable awaitData cursors. If an explicit maxTimeMS has
+        // been specified, do not apply it to the opCtx, since its deadline will already have been
+        // set during command processing.
+        auto timeout = request.awaitDataTimeout.value_or(Milliseconds{1000});
+        if (!request.awaitDataTimeout) {
+            opCtx->setDeadlineAfterNowBy(timeout);
         }
+        invariant(pinnedCursor.getValue().setAwaitDataTimeout(timeout).isOK());
+    } else if (request.awaitDataTimeout) {
+        return {ErrorCodes::BadValue,
+                "maxTimeMS can only be used with getMore for tailable, awaitData cursors"};
     }
 
     std::vector<BSONObj> batch;
@@ -436,8 +447,30 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
 
     pinnedCursor.getValue().reattachToOperationContext(opCtx);
 
+    // A pinned cursor will not be destroyed immediately if an exception is thrown. Instead it will
+    // be marked as killed, then reaped by a background thread later. If this happens, we want to be
+    // sure the cursor does not have a pointer to this OperationContext, since it will be destroyed
+    // as soon as we return, but the cursor will live on a bit longer.
+    ScopeGuard cursorDetach =
+        MakeGuard([&pinnedCursor]() { pinnedCursor.getValue().detachFromOperationContext(); });
+
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
-        auto next = pinnedCursor.getValue().next();
+        auto context = batch.empty()
+            ? RouterExecStage::ExecContext::kGetMoreNoResultsYet
+            : RouterExecStage::ExecContext::kGetMoreWithAtLeastOneResultInBatch;
+
+        StatusWith<ClusterQueryResult> next =
+            Status{ErrorCodes::InternalError, "uninitialized cluster query result"};
+        try {
+            next = pinnedCursor.getValue().next(context);
+        } catch (const ExceptionFor<ErrorCodes::CloseChangeStream>&) {
+            // This exception is thrown when a $changeStream stage encounters an event
+            // that invalidates the cursor. We should close the cursor and return without
+            // error.
+            cursorState = ClusterCursorManager::CursorState::Exhausted;
+            break;
+        }
+
         if (!next.isOK()) {
             return next.getStatus();
         }
@@ -467,9 +500,10 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         batch.push_back(std::move(*next.getValue().getResult()));
     }
 
+    // Upon successful completion, we need to detach from the operation and transfer ownership of
+    // the cursor back to the cursor manager.
+    cursorDetach.Dismiss();
     pinnedCursor.getValue().detachFromOperationContext();
-
-    // Transfer ownership of the cursor back to the cursor manager.
     pinnedCursor.getValue().returnCursor(cursorState);
 
     CursorId idToReturn = (cursorState == ClusterCursorManager::CursorState::Exhausted)

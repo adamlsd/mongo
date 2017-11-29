@@ -51,6 +51,13 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
     if "disableLogicalSessionCacheRefresh" not in suite_set_parameters:
         suite_set_parameters["disableLogicalSessionCacheRefresh"] = True
 
+    # The periodic no-op writer writes an oplog entry of type='n' once every 10 seconds. This has
+    # the potential to mask issues such as SERVER-31609 because it allows the operationTime of
+    # cluster to advance even if the client is blocked for other reasons. We should disable the
+    # periodic no-op writer. Set in the .yml file to override this.
+    if "replSet" in kwargs and "writePeriodicNoops" not in suite_set_parameters:
+        suite_set_parameters["writePeriodicNoops"] = False
+
     _apply_set_parameters(args, suite_set_parameters)
 
     shortcut_opts = {
@@ -58,6 +65,7 @@ def mongod_program(logger, executable=None, process_kwargs=None, **kwargs):
         "nopreallocj": config.NO_PREALLOC_JOURNAL,
         "serviceExecutor": config.SERVICE_EXECUTOR,
         "storageEngine": config.STORAGE_ENGINE,
+        "transportLayer": config.TRANSPORT_LAYER,
         "wiredTigerCollectionConfigString": config.WT_COLL_CONFIG,
         "wiredTigerEngineConfigString": config.WT_ENGINE_CONFIG,
         "wiredTigerIndexConfigString": config.WT_INDEX_CONFIG,
@@ -156,6 +164,7 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
         "storageEngine": (config.STORAGE_ENGINE, ""),
         "storageEngineCacheSizeGB": (config.STORAGE_ENGINE_CACHE_SIZE, ""),
         "testName": (os.path.splitext(os.path.basename(filename))[0], ""),
+        "transportLayer": (config.TRANSPORT_LAYER, ""),
         "wiredTigerCollectionConfigString": (config.WT_COLL_CONFIG, ""),
         "wiredTigerEngineConfigString": (config.WT_ENGINE_CONFIG, ""),
         "wiredTigerIndexConfigString": (config.WT_INDEX_CONFIG, ""),
@@ -200,6 +209,10 @@ def mongo_shell_program(logger, executable=None, connection_string=None, filenam
 
     # Load this file to allow a callback to validate collections before shutting down mongod.
     eval_sb.append("load('jstests/libs/override_methods/validate_collections_on_shutdown.js');")
+
+    # Load a callback to check UUID consistency before shutting down a ShardingTest.
+    eval_sb.append(
+        "load('jstests/libs/override_methods/check_uuids_consistent_across_cluster.js');")
 
     eval_str = "; ".join(eval_sb)
     args.append("--eval")

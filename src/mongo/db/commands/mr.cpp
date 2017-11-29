@@ -421,7 +421,7 @@ void State::prepTempCollection() {
             options.setNoIdIndex();
             options.temp = true;
             if (enableCollectionUUIDs &&
-                serverGlobalParams.featureCompatibility.isSchemaVersion36.load() == true) {
+                serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
                 options.uuid.emplace(UUID::gen());
             }
             incColl = incCtx.db()->createCollection(_opCtx, _config.incLong.ns(), options);
@@ -431,7 +431,7 @@ void State::prepTempCollection() {
                 BSON("key" << BSON("0" << 1) << "ns" << _config.incLong.ns() << "name"
                            << "_temp_0");
             auto indexSpec = uassertStatusOK(index_key_validate::validateIndexSpec(
-                rawIndexSpec, _config.incLong, serverGlobalParams.featureCompatibility));
+                _opCtx, rawIndexSpec, _config.incLong, serverGlobalParams.featureCompatibility));
 
             Status status = incColl->getIndexCatalog()
                                 ->createIndexOnEmptyCollection(_opCtx, indexSpec)
@@ -505,8 +505,7 @@ void State::prepTempCollection() {
 
         CollectionOptions options = finalOptions;
         options.temp = true;
-        if (enableCollectionUUIDs &&
-            serverGlobalParams.featureCompatibility.isSchemaVersion36.load() == true) {
+        if (enableCollectionUUIDs && serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
             // If a UUID for the final output collection was sent by mongos (i.e., the final output
             // collection is sharded), use the UUID mongos sent when creating the temp collection.
             // When the temp collection is renamed to the final output collection, the UUID will be
@@ -1124,7 +1123,7 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
                                      expCtx,
                                      extensionsCallback,
                                      MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                         ~MatchExpressionParser::AllowedFeatures::kIsolated);
     verify(statusWithCQ.isOK());
     std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -1496,7 +1495,7 @@ public:
                     expCtx,
                     extensionsCallback,
                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                        ~MatchExpressionParser::AllowedFeatures::kExpr);
+                        ~MatchExpressionParser::AllowedFeatures::kIsolated);
                 if (!statusWithCQ.isOK()) {
                     uasserted(17238, "Can't canonicalize query " + config.filter.toString());
                     return 0;
@@ -1510,8 +1509,16 @@ public:
                     invariant(coll);
 
                     exec = uassertStatusOK(
-                        getExecutor(opCtx, coll, std::move(cq), PlanExecutor::YIELD_AUTO));
+                        getExecutor(opCtx, coll, std::move(cq), PlanExecutor::YIELD_AUTO, 0));
                 }
+
+                // Make sure the PlanExecutor is destroyed while holding the necessary locks.
+                ON_BLOCK_EXIT([&exec, &scopedAutoDb, opCtx, &config] {
+                    if (!scopedAutoDb) {
+                        scopedAutoDb = stdx::make_unique<AutoGetDb>(opCtx, config.nss.db(), MODE_S);
+                        exec.reset();
+                    }
+                });
 
                 {
                     stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -1664,10 +1671,10 @@ public:
         // *requires* rethrow AssertionExceptions - should probably fix.
         catch (AssertionException& e) {
             log() << "mr failed, removing collection" << redact(e);
-            throw e;
+            throw;
         } catch (std::exception& e) {
             log() << "mr failed, removing collection" << causedBy(e);
-            throw e;
+            throw;
         } catch (...) {
             log() << "mr failed for unknown reason, removing collection";
             throw;
@@ -1741,8 +1748,7 @@ public:
         Config config(dbname, cmdObj.firstElement().embeddedObjectUserCheck());
 
         if (cmdObj["finalOutputCollIsSharded"].trueValue() &&
-            serverGlobalParams.featureCompatibility.version.load() >=
-                ServerGlobalParams::FeatureCompatibility::Version::k36) {
+            serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
             uassert(ErrorCodes::InvalidOptions,
                     "This shard has feature compatibility version 3.6, so it expects mongos to "
                     "send the UUID to use for the sharded output collection. Was the mapReduce "

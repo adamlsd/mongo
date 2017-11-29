@@ -64,7 +64,6 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
-#include "mongo/db/diag_log.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/index/index_access_method.h"
 #include "mongo/db/index/index_descriptor.h"
@@ -182,11 +181,12 @@ public:
 
         if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone) &&
-            (dbname == NamespaceString::kLocalDb)) {
-            return appendCommandStatus(result,
-                                       Status(ErrorCodes::IllegalOperation,
-                                              "Cannot drop 'local' database while replication "
-                                              "is active"));
+            ((dbname == NamespaceString::kLocalDb) || (dbname == NamespaceString::kAdminDb))) {
+            return appendCommandStatus(
+                result,
+                Status(ErrorCodes::IllegalOperation,
+                       str::stream() << "Cannot drop '" << dbname
+                                     << "' database while replication is active"));
         }
         BSONElement e = cmdObj.firstElement();
         int p = (int)e.number();
@@ -391,64 +391,6 @@ public:
 
 } cmdProfile;
 
-class CmdDiagLogging : public BasicCommand {
-public:
-    virtual bool slaveOk() const {
-        return true;
-    }
-    CmdDiagLogging() : BasicCommand("diagLogging") {}
-    bool adminOnly() const {
-        return true;
-    }
-
-    void help(stringstream& h) const {
-        h << "http://dochub.mongodb.org/core/"
-             "monitoring#MonitoringandDiagnostics-DatabaseRecord%2FReplay%28diagLoggingcommand%29";
-    }
-
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        ActionSet actions;
-        actions.addAction(ActionType::diagLogging);
-        out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
-    }
-
-    bool run(OperationContext* opCtx,
-             const string& dbname,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) {
-        const char* deprecationWarning =
-            "CMD diagLogging is deprecated and will be removed in a future release";
-        warning() << deprecationWarning << startupWarningsLog;
-
-        // This doesn't look like it requires exclusive DB lock, because it uses its own diag
-        // locking, but originally the lock was set to be WRITE, so preserving the behaviour.
-        Lock::DBLock dbXLock(opCtx, dbname, MODE_X);
-
-        // TODO (Kal): OldClientContext legacy, needs to be removed
-        {
-            CurOp::get(opCtx)->ensureStarted();
-            stdx::lock_guard<Client> lk(*opCtx->getClient());
-            CurOp::get(opCtx)->setNS_inlock(dbname);
-        }
-
-        int was = _diaglog.setLevel(cmdObj.firstElement().numberInt());
-        _diaglog.flush();
-        if (!serverGlobalParams.quiet.load()) {
-            LOG(0) << "CMD: diagLogging set to " << _diaglog.getLevel() << " from: " << was;
-        }
-        result.append("was", was);
-        result.append("note", deprecationWarning);
-        return true;
-    }
-} cmddiaglogging;
-
 /* drop collection */
 class CmdDrop : public ErrmsgCommandDeprecated {
 public:
@@ -572,7 +514,7 @@ public:
 
             // Perform index spec validation.
             idIndexSpec = uassertStatusOK(index_key_validate::validateIndexSpec(
-                idIndexSpec, ns, serverGlobalParams.featureCompatibility));
+                opCtx, idIndexSpec, ns, serverGlobalParams.featureCompatibility));
             uassertStatusOK(index_key_validate::validateIdIndexSpec(idIndexSpec));
 
             // Validate or fill in _id index collation.
@@ -745,7 +687,7 @@ public:
                 try {
                     // RELOCKED
                     ctx.reset(new AutoGetCollectionForReadCommand(opCtx, nss));
-                } catch (const StaleConfigException& ex) {
+                } catch (const StaleConfigException&) {
                     LOG(1) << "chunk metadata changed during filemd5, will retarget and continue";
                     break;
                 }

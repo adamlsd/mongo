@@ -31,6 +31,7 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_eq.h"
+#include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -39,26 +40,24 @@ namespace {
 TEST(InternalSchemaEqMatchExpression, CorrectlyMatchesScalarElements) {
     BSONObj numberOperand = BSON("a" << 5);
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", numberOperand["a"]));
-    ASSERT_TRUE(eq.matchesBSON(BSON("a" << 5.0)));
-    ASSERT_FALSE(eq.matchesBSON(BSON("a" << 6)));
+    InternalSchemaEqMatchExpression eqNumberOperand("a", numberOperand["a"]);
+    ASSERT_TRUE(eqNumberOperand.matchesBSON(BSON("a" << 5.0)));
+    ASSERT_FALSE(eqNumberOperand.matchesBSON(BSON("a" << 6)));
 
     BSONObj stringOperand = BSON("a"
                                  << "str");
 
-    ASSERT_OK(eq.init("a", stringOperand["a"]));
-    ASSERT_TRUE(eq.matchesBSON(BSON("a"
-                                    << "str")));
-    ASSERT_FALSE(eq.matchesBSON(BSON("a"
-                                     << "string")));
+    InternalSchemaEqMatchExpression eqStringOperand("a", stringOperand["a"]);
+    ASSERT_TRUE(eqStringOperand.matchesBSON(BSON("a"
+                                                 << "str")));
+    ASSERT_FALSE(eqStringOperand.matchesBSON(BSON("a"
+                                                  << "string")));
 }
 
 TEST(InternalSchemaEqMatchExpression, CorrectlyMatchesArrayElement) {
     BSONObj operand = BSON("a" << BSON_ARRAY("b" << 5));
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_TRUE(eq.matchesBSON(BSON("a" << BSON_ARRAY("b" << 5))));
     ASSERT_FALSE(eq.matchesBSON(BSON("a" << BSON_ARRAY(5 << "b"))));
     ASSERT_FALSE(eq.matchesBSON(BSON("a" << BSON_ARRAY("b" << 5 << 5))));
@@ -68,8 +67,7 @@ TEST(InternalSchemaEqMatchExpression, CorrectlyMatchesArrayElement) {
 TEST(InternalSchemaEqMatchExpression, CorrectlyMatchesNullElement) {
     BSONObj operand = BSON("a" << BSONNULL);
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_TRUE(eq.matchesBSON(BSON("a" << BSONNULL)));
     ASSERT_FALSE(eq.matchesBSON(BSON("a" << 4)));
 }
@@ -77,8 +75,7 @@ TEST(InternalSchemaEqMatchExpression, CorrectlyMatchesNullElement) {
 TEST(InternalSchemaEqMatchExpression, NullElementDoesNotMatchMissing) {
     BSONObj operand = BSON("a" << BSONNULL);
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_FALSE(eq.matchesBSON(BSONObj()));
     ASSERT_FALSE(eq.matchesBSON(BSON("b" << 4)));
 }
@@ -86,17 +83,14 @@ TEST(InternalSchemaEqMatchExpression, NullElementDoesNotMatchMissing) {
 TEST(InternalSchemaEqMatchExpression, NullElementDoesNotMatchUndefinedOrMissing) {
     BSONObj operand = BSON("a" << BSONNULL);
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_FALSE(eq.matchesBSON(BSONObj()));
     ASSERT_FALSE(eq.matchesBSON(fromjson("{a: undefined}")));
 }
 
 TEST(InternalSchemaEqMatchExpression, DoesNotTraverseLeafArrays) {
     BSONObj operand = BSON("a" << 5);
-
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_TRUE(eq.matchesBSON(BSON("a" << 5.0)));
     ASSERT_FALSE(eq.matchesBSON(BSON("a" << BSON_ARRAY(5))));
 }
@@ -104,8 +98,7 @@ TEST(InternalSchemaEqMatchExpression, DoesNotTraverseLeafArrays) {
 TEST(InternalSchemaEqMatchExpression, MatchesObjectsIndependentOfFieldOrder) {
     BSONObj operand = fromjson("{a: {b: 1, c: {d: 2, e: 3}}}");
 
-    InternalSchemaEqMatchExpression eq;
-    ASSERT_OK(eq.init("a", operand["a"]));
+    InternalSchemaEqMatchExpression eq("a", operand["a"]);
     ASSERT_TRUE(eq.matchesBSON(fromjson("{a: {b: 1, c: {d: 2, e: 3}}}")));
     ASSERT_TRUE(eq.matchesBSON(fromjson("{a: {c: {e: 3, d: 2}, b: 1}}")));
     ASSERT_FALSE(eq.matchesBSON(fromjson("{a: {b: 1, c: {d: 2}, e: 3}}")));
@@ -118,26 +111,28 @@ TEST(InternalSchemaEqMatchExpression, EquivalentReturnsCorrectResults) {
              {a: {$_internalSchemaEq: {
                  b: {c: 1, d: 1}
              }}})");
-    Matcher eqExpr(query, nullptr);
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    Matcher eqExpr(query, expCtx);
 
     query = fromjson(R"(
              {a: {$_internalSchemaEq: {
                  b: {d: 1, c: 1}
              }}})");
-    Matcher eqExprEq(query, nullptr);
+    Matcher eqExprEq(query, expCtx);
     ASSERT_TRUE(eqExpr.getMatchExpression()->equivalent(eqExprEq.getMatchExpression()));
 
     query = fromjson(R"(
              {a: {$_internalSchemaEq: {
                  b: {d: 1}
              }}})");
-    Matcher eqExprNotEq(query, nullptr);
+    Matcher eqExprNotEq(query, expCtx);
     ASSERT_FALSE(eqExpr.getMatchExpression()->equivalent(eqExprNotEq.getMatchExpression()));
 }
 
 TEST(InternalSchemaEqMatchExpression, EquivalentToClone) {
     auto query = fromjson("{a: {$_internalSchemaEq: {a:1, b: {c: 1, d: [1]}}}}");
-    Matcher rootDocEq(query, nullptr);
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    Matcher rootDocEq(query, expCtx);
     auto clone = rootDocEq.getMatchExpression()->shallowClone();
     ASSERT_TRUE(rootDocEq.getMatchExpression()->equivalent(clone.get()));
 }

@@ -9,13 +9,9 @@ var _kill_sessions_api_module = (function() {
     var KillSessionsTestHelper = {};
 
     function isdbgrid(client) {
-        var result = client.getDB("admin").runCommand({isdbgrid: 1});
+        var result = assert.commandWorked(client.getDB("admin").runCommand({ismaster: 1}));
 
-        if (!result.ok) {
-            return false;
-        }
-
-        return result.isdbgrid ? true : false;
+        return result.msg === "isdbgrid";
     }
 
     function Fixture(clientToExecuteVia, clientToKillVia, clientsToVerifyVia) {
@@ -122,15 +118,19 @@ var _kill_sessions_api_module = (function() {
         // We verify that our hanging op is up by looking for it in current op on the required
         // hosts.  We identify particular ops by secs sleeping.
         this.visit(function(client) {
+            let admin = client.getDB("admin");
+            admin.getMongo().setSlaveOk();
+
             assert.soon(function() {
-                var inprog = client.getDB("admin").currentOp().inprog;
-                for (var i = 0; i < inprog.length; ++i) {
-                    if (inprog[i].command && inprog[i].command.sleep &&
-                        inprog[i].command.secs == id && inprog[i].lsid) {
-                        lsid = inprog[i].lsid;
+                let inProgressOps = admin.aggregate([{$currentOp: {'allUsers': true}}]);
+                while (inProgressOps.hasNext()) {
+                    let op = inProgressOps.next();
+                    if (op.command && op.command.sleep && op.command.secs == id && op.lsid) {
+                        lsid = op.lsid;
                         return true;
                     }
                 }
+
                 return false;
             }, "never started sleep", 30000, 1);
         });
@@ -177,38 +177,54 @@ var _kill_sessions_api_module = (function() {
     };
 
     /**
-     * A cursor baseline (because some long running cursors exist in replica sets)
+     * Asserts that there are no sessions in any live cursors.
      */
-    function Baseline(fixture) {
-        this._fixture = fixture;
-        var baseline = this._baseline = [];
-        this._fixture.visit(function(client) {
-            var current = client.getDB("admin").serverStatus().metrics.cursor.open.total;
-            baseline.push(current);
+    Fixture.prototype.assertNoSessionsInCursors = function() {
+        this.visit(function(client) {
+            var db = client.getDB("admin");
+            db.setSlaveOk();
+            var cursors = db.aggregate([{"$listLocalCursors": {}}]).toArray();
+            cursors.forEach(function(cursor) {
+                assert(!cursor.lsid);
+            });
         });
-    }
+    };
 
     /**
-     * Ensures a number of open cursors on all nodes above baseline
+     * Asserts that one subset of sessions is alive in active cursors and that another set is not.
      */
-    Baseline.prototype.verify = function(count) {
-        var baseline = this._baseline;
-        this._fixture.visit(function(client, i) {
-            var current = client.getDB("admin").serverStatus().metrics.cursor.open.total;
-            if (current - baseline[i] != count) {
-                print([client.host, current, count]);
-                assert(!"failure!");
-            }
+    Fixture.prototype.assertSessionsInCursors = function(checkExist, checkNotExist) {
+        this.visit(function(client) {
+            var needToFind = checkExist.map(function(handle) {
+                return {
+                    lsid: handle.getLsid(),
+                };
+            });
+
+            var db = client.getDB("admin");
+            db.setSlaveOk();
+            var cursors = db.aggregate([{"$listLocalCursors": {}}]).toArray();
+            cursors.forEach(function(cursor) {
+                if (cursor.lsid) {
+                    checkNotExist.forEach(function(handle) {
+                        assert.neq(bsonWoCompare({x: handle.getLsid().id}, {x: cursor.lsid.id}), 0);
+                    });
+
+                    for (var i = 0; i < needToFind.length; ++i) {
+                        if (bsonWoCompare({x: needToFind[i].lsid.id}, {x: cursor.lsid.id}) == 0) {
+                            needToFind.splice(i, 1);
+                            break;
+                        }
+                    }
+                }
+            });
+
+            assert.eq(needToFind.length, 0);
         });
     };
 
-    Fixture.prototype.getVerifyCursorsBaseline = function() {
-        return new Baseline(this);
-    };
-
-    function CursorHandle(session, cursor) {
+    function CursorHandle(session) {
         this._session = session;
-        this._cursor = cursor;
     }
 
     CursorHandle.prototype.getLsid = function() {
@@ -228,8 +244,6 @@ var _kill_sessions_api_module = (function() {
     Fixture.prototype.startCursor = function() {
         var session = this._clientToExecuteVia.startSession();
         var db = session.getDatabase("admin");
-
-        var cursor;
 
         var cmd = {
             aggregate: 1,
@@ -256,7 +270,7 @@ var _kill_sessions_api_module = (function() {
         }
         assert(result.ok);
 
-        return new CursorHandle(session, cursor);
+        return new CursorHandle(session);
     };
 
     /**
@@ -291,22 +305,20 @@ var _kill_sessions_api_module = (function() {
 
             // Verify that we can start a session with a cursor and kill it with cmd
             function(fixture) {
-                var baseline = fixture.getVerifyCursorsBaseline();
                 var handle = fixture.startCursor();
-                baseline.verify(1);
+                fixture.assertSessionsInCursors([handle], []);
                 fixture.kill("admin", obj);
-                baseline.verify(0);
+                fixture.assertNoSessionsInCursors();
                 handle.join();
             },
 
             // Verify that we can kill two sessions with cursors
             function(fixture) {
-                var baseline = fixture.getVerifyCursorsBaseline();
                 var handle1 = fixture.startCursor();
                 var handle2 = fixture.startCursor();
-                baseline.verify(2);
+                fixture.assertSessionsInCursors([handle1, handle2], []);
                 fixture.kill("admin", obj);
-                baseline.verify(0);
+                fixture.assertNoSessionsInCursors();
                 handle1.join();
                 handle2.join();
             },
@@ -345,18 +357,17 @@ var _kill_sessions_api_module = (function() {
             // Verify that we can kill two of three sessions, and that the other stays (with
             // cursors)
             function(fixture) {
-                var baseline = fixture.getVerifyCursorsBaseline();
                 var handle1 = fixture.startCursor();
                 var handle2 = fixture.startCursor();
                 var handle3 = fixture.startCursor();
-                baseline.verify(3);
+                fixture.assertSessionsInCursors([handle1, handle2, handle3], []);
 
                 {
                     var obj = {};
                     obj[cmd] = [handle1.getLsid(), handle2.getLsid()].map(genArg);
                     fixture.kill("admin", obj);
                 }
-                baseline.verify(1);
+                fixture.assertSessionsInCursors([handle3], [handle1, handle2]);
                 handle1.join();
                 handle2.join();
 
@@ -365,7 +376,7 @@ var _kill_sessions_api_module = (function() {
                     obj[cmd] = [handle3.getLsid()].map(genArg);
                     fixture.kill("admin", obj);
                 }
-                baseline.verify(0);
+                fixture.assertNoSessionsInCursors();
                 handle3.join();
             },
         ];
@@ -494,7 +505,6 @@ var _kill_sessions_api_module = (function() {
 
             // Repeat for cursors
             function(fixture) {
-                var baseline = fixture.getVerifyCursorsBaseline();
                 fixture.loginForExecute(execUserCred1);
 
                 var handle1 = fixture.startCursor();
@@ -504,7 +514,7 @@ var _kill_sessions_api_module = (function() {
                 fixture.loginForExecute(execUserCred2);
 
                 var handle3 = fixture.startCursor();
-                baseline.verify(3);
+                fixture.assertSessionsInCursors([handle1, handle2, handle3], []);
 
                 fixture.loginForKill(killUserCred);
 
@@ -513,7 +523,7 @@ var _kill_sessions_api_module = (function() {
                     obj[cmd] = [handle1.getLsid(), handle2.getLsid()].map(genArg(execUserCred1));
                     fixture.kill("admin", obj);
                 }
-                baseline.verify(1);
+                fixture.assertSessionsInCursors([handle3], [handle1, handle2]);
                 handle1.join();
                 handle2.join();
 
@@ -522,7 +532,7 @@ var _kill_sessions_api_module = (function() {
                     obj[cmd] = [handle3.getLsid()].map(genArg(execUserCred2));
                     fixture.kill("admin", obj);
                 }
-                baseline.verify(0);
+                fixture.assertNoSessionsInCursors();
                 handle3.join();
             },
         ];

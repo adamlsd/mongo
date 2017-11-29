@@ -40,13 +40,19 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/migration_chunk_cloner_source_legacy.h"
 #include "mongo/db/s/migration_util.h"
+#include "mongo/db/s/shard_metadata_util.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
+#include "mongo/executor/task_executor.h"
+#include "mongo/executor/task_executor_pool.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
+#include "mongo/s/catalog/type_shard_collection.h"
+#include "mongo/s/catalog_cache_loader.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/commit_chunk_migration_request_type.h"
+#include "mongo/s/set_shard_version_request.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/stdx/memory.h"
@@ -57,6 +63,8 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+using namespace shardmetadatautil;
 
 namespace {
 
@@ -70,11 +78,47 @@ const WriteConcernOptions kMajorityWriteConcern(WriteConcernOptions::kMajority,
                                                 WriteConcernOptions::SyncMode::UNSET,
                                                 Seconds(15));
 
+/**
+ * Best-effort attempt to ensure the recipient shard has refreshed its routing table to
+ * 'newCollVersion'. Fires and forgets an asychronous remote setShardVersion command.
+ */
+void refreshRecipientRoutingTable(OperationContext* opCtx,
+                                  const NamespaceString& nss,
+                                  ShardId toShard,
+                                  const HostAndPort& toShardHost,
+                                  const ChunkVersion& newCollVersion) {
+    SetShardVersionRequest ssv = SetShardVersionRequest::makeForVersioningNoPersist(
+        Grid::get(opCtx)->shardRegistry()->getConfigServerConnectionString(),
+        toShard,
+        ConnectionString(toShardHost),
+        nss,
+        newCollVersion,
+        false);
+
+    const executor::RemoteCommandRequest request(
+        toShardHost,
+        NamespaceString::kAdminDb.toString(),
+        ssv.toBSON(),
+        ReadPreferenceSetting{ReadPreference::PrimaryOnly}.toContainingBSON(),
+        opCtx,
+        executor::RemoteCommandRequest::kNoTimeout);
+
+    executor::TaskExecutor* const executor =
+        Grid::get(opCtx)->getExecutorPool()->getFixedExecutor();
+    Status s =
+        executor
+            ->scheduleRemoteCommand(
+                request, [](const executor::TaskExecutor::RemoteCommandCallbackArgs& args) {})
+            .getStatus();
+    std::move(s).ignore();
+}
+
 }  // namespace
 
-MONGO_FP_DECLARE(migrationCommitNetworkError);
+MONGO_FP_DECLARE(doNotRefreshRecipientAfterCommit);
 MONGO_FP_DECLARE(failMigrationCommit);
 MONGO_FP_DECLARE(hangBeforeLeavingCriticalSection);
+MONGO_FP_DECLARE(migrationCommitNetworkError);
 
 MigrationSourceManager::MigrationSourceManager(OperationContext* opCtx,
                                                MoveChunkRequest request,
@@ -121,6 +165,11 @@ MigrationSourceManager::MigrationSourceManager(OperationContext* opCtx,
 
         _collectionMetadata = CollectionShardingState::get(opCtx, getNss())->getMetadata();
         _keyPattern = _collectionMetadata->getKeyPattern();
+
+        uassert(ErrorCodes::InvalidOptions,
+                "cannot move chunks for a collection that doesn't exist",
+                autoColl.getCollection());
+
         if (autoColl.getCollection()->uuid()) {
             _collectionUuid = autoColl.getCollection()->uuid().value();
         }
@@ -224,8 +273,8 @@ Status MigrationSourceManager::enterCriticalSection(OperationContext* opCtx) {
 
     const ShardId& recipientId = _args.getToShardId();
     if (!_collectionMetadata->getChunkManager()->getVersion(recipientId).isSet() &&
-        serverGlobalParams.featureCompatibility.version.load() >=
-            ServerGlobalParams::FeatureCompatibility::Version::k36) {
+        (serverGlobalParams.featureCompatibility.getVersion() ==
+         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)) {
         // The recipient didn't have any chunks of this collection. Write the no-op message so that
         // change stream will notice that and close cursor to notify mongos to target to the new
         // shard.
@@ -284,9 +333,29 @@ Status MigrationSourceManager::enterCriticalSection(OperationContext* opCtx) {
         _critSecSignal = std::make_shared<Notification<void>>();
     }
 
+    _state = kCriticalSection;
+
+    // Persist a signal to secondaries that we've entered the critical section. This is will cause
+    // secondaries to refresh their routing table when next accessed, which will block behind the
+    // critical section. This ensures causal consistency by preventing a stale mongos with a cluster
+    // time inclusive of the migration config commit update from accessing secondary data.
+    // Note: this write must occur after the critSec flag is set, to ensure the secondary refresh
+    // will stall behind the flag.
+    Status signalStatus =
+        updateShardCollectionsEntry(opCtx,
+                                    BSON(ShardCollectionType::ns() << getNss().ns()),
+                                    BSONObj(),
+                                    BSON(ShardCollectionType::enterCriticalSectionCounter() << 1),
+                                    false /*upsert*/);
+    if (!signalStatus.isOK()) {
+        return {
+            ErrorCodes::OperationFailed,
+            str::stream() << "Failed to persist critical section signal for secondaries due to: "
+                          << signalStatus.toString()};
+    }
+
     log() << "Migration successfully entered critical section";
 
-    _state = kCriticalSection;
     scopedGuard.Dismiss();
     return Status::OK();
 }
@@ -409,54 +478,63 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                            << redact(status)});
     }
 
-    // Do a best effort attempt to incrementally refresh the metadata. If this fails, just clear it
-    // up so that subsequent requests will try to do a full refresh.
+    // Do a best effort attempt to incrementally refresh the metadata before leaving the critical
+    // section. It is okay if the refresh fails because that will cause the metadata to be cleared
+    // and subsequent callers will try to do a full refresh.
     ChunkVersion unusedShardVersion;
     Status refreshStatus =
         ShardingState::get(opCtx)->refreshMetadataNow(opCtx, getNss(), &unusedShardVersion);
 
-    if (refreshStatus.isOK()) {
-        AutoGetCollection autoColl(opCtx, getNss(), MODE_IS);
-
-        auto css = CollectionShardingState::get(opCtx, getNss());
-        auto refreshedMetadata = css->getMetadata();
-
-        if (!refreshedMetadata) {
-            return {ErrorCodes::NamespaceNotSharded,
-                    str::stream() << "Chunk move failed because collection '" << getNss().ns()
-                                  << "' is no longer sharded. The migration commit error was: "
-                                  << migrationCommitStatus.toString()};
-        }
-
-        if (refreshedMetadata->keyBelongsToMe(_args.getMinKey())) {
-            // The chunk modification was not applied, so report the original error
-            return {migrationCommitStatus.code(),
-                    str::stream() << "Chunk move was not successful due to "
-                                  << migrationCommitStatus.reason()};
-        }
-
-        // Migration succeeded
-        log() << "Migration succeeded and updated collection version to "
-              << refreshedMetadata->getCollVersion();
-    } else {
+    if (!refreshStatus.isOK()) {
         AutoGetCollection autoColl(opCtx, getNss(), MODE_IX, MODE_X);
 
         CollectionShardingState::get(opCtx, getNss())->refreshMetadata(opCtx, nullptr);
 
-        log() << "Failed to refresh metadata after a failed commit attempt. Metadata was cleared "
-                 "so it will get a full refresh when accessed again"
+        log() << "Failed to refresh metadata after a "
+              << (migrationCommitStatus.isOK() ? "failed commit attempt" : "successful commit")
+              << ". Metadata was cleared so it will get a full refresh when accessed again."
               << causedBy(redact(refreshStatus));
 
-        // We don't know whether migration succeeded or failed
+        // migrationCommitStatus may be OK or an error. The migration is considered a success at
+        // this point if the commit succeeded. The metadata refresh either occurred or the metadata
+        // was safely cleared.
         return {migrationCommitStatus.code(),
                 str::stream() << "Orphaned range not cleaned up. Failed to refresh metadata after"
-                                 " migration commit due to "
-                              << refreshStatus.toString()};
+                                 " migration commit due to '"
+                              << refreshStatus.toString()
+                              << "', and commit failed due to '"
+                              << migrationCommitStatus.toString()
+                              << "'"};
     }
+
+    auto refreshedMetadata = [&] {
+        AutoGetCollection autoColl(opCtx, getNss(), MODE_IS);
+        return CollectionShardingState::get(opCtx, getNss())->getMetadata();
+    }();
+
+    if (!refreshedMetadata) {
+        return {ErrorCodes::NamespaceNotSharded,
+                str::stream() << "Chunk move failed because collection '" << getNss().ns()
+                              << "' is no longer sharded. The migration commit error was: "
+                              << migrationCommitStatus.toString()};
+    }
+
+    if (refreshedMetadata->keyBelongsToMe(_args.getMinKey())) {
+        // The chunk modification was not applied, so report the original error
+        return {migrationCommitStatus.code(),
+                str::stream() << "Chunk move was not successful due to "
+                              << migrationCommitStatus.reason()};
+    }
+
+    // Migration succeeded
+    log() << "Migration succeeded and updated collection version to "
+          << refreshedMetadata->getCollVersion();
 
     MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangBeforeLeavingCriticalSection);
 
     scopedGuard.Dismiss();
+
+    // Exit critical section, clear old scoped collection metadata.
     _cleanup(opCtx);
 
     Grid::get(opCtx)
@@ -470,6 +548,44 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                                << _args.getToShardId()),
                     ShardingCatalogClient::kMajorityWriteConcern)
         .transitional_ignore();
+
+    // Wait for the metadata update to be persisted before attempting to delete orphaned documents
+    // so that metadata changes propagate to secondaries first
+    CatalogCacheLoader::get(opCtx).waitForCollectionFlush(opCtx, getNss());
+
+    const ChunkRange range(_args.getMinKey(), _args.getMaxKey());
+
+    auto notification = [&] {
+        auto const whenToClean = _args.getWaitForDelete() ? CollectionShardingState::kNow
+                                                          : CollectionShardingState::kDelayed;
+        AutoGetCollection autoColl(opCtx, getNss(), MODE_IS);
+        return CollectionShardingState::get(opCtx, getNss())->cleanUpRange(range, whenToClean);
+    }();
+
+    if (!MONGO_FAIL_POINT(doNotRefreshRecipientAfterCommit)) {
+        // Best-effort make the recipient refresh its routing table to the new collection version.
+        refreshRecipientRoutingTable(opCtx,
+                                     getNss(),
+                                     _args.getToShardId(),
+                                     _recipientHost,
+                                     refreshedMetadata->getCollVersion());
+    }
+
+    if (_args.getWaitForDelete()) {
+        log() << "Waiting for cleanup of " << getNss().ns() << " range "
+              << redact(range.toString());
+        return notification.waitStatus(opCtx);
+    }
+
+    if (notification.ready() && !notification.waitStatus(opCtx).isOK()) {
+        warning() << "Failed to initiate cleanup of " << getNss().ns() << " range "
+                  << redact(range.toString())
+                  << " due to: " << redact(notification.waitStatus(opCtx));
+    } else {
+        log() << "Leaving cleanup of " << getNss().ns() << " range " << redact(range.toString())
+              << " to complete in background";
+        notification.abandon();
+    }
 
     return Status::OK();
 }
@@ -526,6 +642,9 @@ void MigrationSourceManager::_cleanup(OperationContext* opCtx) {
     }
 
     _state = kDone;
+
+    // Clear the old scoped metadata so range deletion of the migrated chunk may proceed.
+    _collectionMetadata = ScopedCollectionMetadata();
 }
 
 std::shared_ptr<Notification<void>> MigrationSourceManager::getMigrationCriticalSectionSignal(

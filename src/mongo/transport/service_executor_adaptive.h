@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <array>
 #include <vector>
 
 #include "mongo/db/service_context.h"
@@ -36,6 +37,7 @@
 #include "mongo/stdx/list.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/transport/service_executor.h"
+#include "mongo/transport/service_executor_task_names.h"
 #include "mongo/util/tick_source.h"
 
 #include <asio.hpp>
@@ -74,6 +76,10 @@ public:
         // Threads that spend less than this threshold doing work during their workerThreadRunTime
         // period will exit
         virtual int idlePctThreshold() const = 0;
+
+        // The maximum allowable depth of recursion for tasks scheduled with the MayRecurse flag
+        // before stack unwinding is forced.
+        virtual int recursionLimit() const = 0;
     };
 
     explicit ServiceExecutorAdaptive(ServiceContext* ctx, std::shared_ptr<asio::io_context> ioCtx);
@@ -86,8 +92,12 @@ public:
     virtual ~ServiceExecutorAdaptive();
 
     Status start() final;
-    Status shutdown() final;
-    Status schedule(Task task, ScheduleFlags flags) final;
+    Status shutdown(Milliseconds timeout) final;
+    Status schedule(Task task, ScheduleFlags flags, ServiceExecutorTaskName taskName) final;
+
+    Mode transportMode() const final {
+        return Mode::kAsynchronous;
+    }
 
     void appendStats(BSONObjBuilder* bob) const final;
 
@@ -129,8 +139,6 @@ private:
 
         TickSource::Tick markStopped() {
             stdx::lock_guard<stdx::mutex> lk(_mutex);
-            if (--_recurseDepth > 0)
-                return _timer.sinceStartTicks();
             invariant(_running);
             _running = false;
             auto curTime = _timer.sinceStartTicks();
@@ -140,8 +148,6 @@ private:
 
         void markRunning() {
             stdx::lock_guard<stdx::mutex> lk(_mutex);
-            if (_recurseDepth++ > 0)
-                return;
             invariant(!_running);
             _timer.reset();
             _running = true;
@@ -159,15 +165,26 @@ private:
         mutable stdx::mutex _mutex;
         TickSource::Tick _accumulator = 0;
         bool _running = false;
-        int _recurseDepth = 0;
     };
+
+    struct Metrics {
+        AtomicWord<int64_t> _totalQueued{0};
+        AtomicWord<int64_t> _totalExecuted{0};
+        AtomicWord<TickSource::Tick> _totalSpentQueued{0};
+        AtomicWord<TickSource::Tick> _totalSpentExecuting{0};
+    };
+
+    using MetricsArray =
+        std::array<Metrics, static_cast<size_t>(ServiceExecutorTaskName::kMaxTaskName)>;
 
     struct ThreadState {
         ThreadState(TickSource* ts) : running(ts), executing(ts) {}
+
         CumulativeTickTimer running;
         TickSource::Tick executingCurRun;
         CumulativeTickTimer executing;
-        stdx::thread thread;
+        MetricsArray threadMetrics;
+        int recursionDepth = 0;
     };
 
     using ThreadList = stdx::list<ThreadState>;
@@ -175,11 +192,16 @@ private:
     void _startWorkerThread();
     void _workerThreadRoutine(int threadId, ThreadList::iterator it);
     void _controllerThreadRoutine();
-    bool _isStarved(int pending = -1) const;
+    bool _isStarved() const;
     Milliseconds _getThreadJitter() const;
 
     enum class ThreadTimer { Running, Executing };
-    TickSource::Tick _getThreadTimerTotal(ThreadTimer which) const;
+
+    void _accumulateTaskMetrics(MetricsArray* outArray, const MetricsArray& inputArray) const;
+    void _accumulateAllTaskMetrics(MetricsArray* outputMetricsArray,
+                                   const stdx::unique_lock<stdx::mutex>& lk) const;
+    TickSource::Tick _getThreadTimerTotal(ThreadTimer which,
+                                          const stdx::unique_lock<stdx::mutex>& lk) const;
 
     std::shared_ptr<asio::io_context> _ioContext;
 
@@ -195,8 +217,9 @@ private:
     // These counters are used to detect stuck threads and high task queuing.
     AtomicWord<int> _threadsRunning{0};
     AtomicWord<int> _threadsPending{0};
-    AtomicWord<int> _tasksExecuting{0};
+    AtomicWord<int> _threadsInUse{0};
     AtomicWord<int> _tasksQueued{0};
+    AtomicWord<int> _deferredTasksQueued{0};
     TickTimer _lastScheduleTimer;
     AtomicWord<TickSource::Tick> _pastThreadsSpentExecuting{0};
     AtomicWord<TickSource::Tick> _pastThreadsSpentRunning{0};
@@ -205,7 +228,7 @@ private:
     // These counters are only used for reporting in serverStatus.
     AtomicWord<int64_t> _totalQueued{0};
     AtomicWord<int64_t> _totalExecuted{0};
-    AtomicWord<TickSource::Tick> _totalSpentScheduled{0};
+    AtomicWord<TickSource::Tick> _totalSpentQueued{0};
 
     // Threads signal this condition variable when they exit so we can gracefully shutdown
     // the executor.
@@ -214,6 +237,8 @@ private:
     // Tasks should signal this condition variable if they want the thread controller to
     // track their progress and do fast stuck detection
     stdx::condition_variable _scheduleCondition;
+
+    MetricsArray _accumulatedMetrics;
 };
 
 }  // namespace transport

@@ -46,6 +46,7 @@
 #include "mongo/db/update/storage_validation.h"
 #include "mongo/util/embedded_builder.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/stringutils.h"
 
 namespace mongo {
 
@@ -107,7 +108,7 @@ modifiertable::ModifierType validateMod(BSONElement mod) {
 bool parseUpdateExpression(
     BSONObj updateExpr,
     UpdateObjectNode* root,
-    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const std::map<StringData, std::unique_ptr<ExpressionWithPlaceholder>>& arrayFilters) {
     bool positional = false;
     std::set<std::string> foundIdentifiers;
@@ -127,7 +128,7 @@ bool parseUpdateExpression(
         auto modType = validateMod(mod);
         for (auto&& field : mod.Obj()) {
             auto statusWithPositional = UpdateObjectNode::parseAndMerge(
-                root, modType, field, collator, arrayFilters, foundIdentifiers);
+                root, modType, field, expCtx, arrayFilters, foundIdentifiers);
             uassertStatusOK(statusWithPositional);
             positional = positional || statusWithPositional.getValue();
         }
@@ -165,7 +166,7 @@ Status UpdateDriver::parse(
     clear();
 
     // Check if the update expression is a full object replacement.
-    if (*updateExpr.firstElementFieldName() != '$') {
+    if (isDocReplacement(updateExpr)) {
         if (multi) {
             return Status(ErrorCodes::FailedToParse, "multi update only works with $ operators");
         }
@@ -198,8 +199,8 @@ Status UpdateDriver::parse(
     } else if (_modOptions.fromOplogApplication) {
         updateSemantics = UpdateSemantics::kModifierInterface;
     } else {
-        updateSemantics = (serverGlobalParams.featureCompatibility.version.load() ==
-                           ServerGlobalParams::FeatureCompatibility::Version::k34)
+        updateSemantics = (serverGlobalParams.featureCompatibility.getVersion() !=
+                           ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)
             ? UpdateSemantics::kModifierInterface
             : UpdateSemantics::kUpdateNode;
     }
@@ -239,7 +240,7 @@ Status UpdateDriver::parse(
         case UpdateSemantics::kUpdateNode: {
             auto root = stdx::make_unique<UpdateObjectNode>();
             _positional =
-                parseUpdateExpression(updateExpr, root.get(), _modOptions.collator, arrayFilters);
+                parseUpdateExpression(updateExpr, root.get(), _modOptions.expCtx, arrayFilters);
             _root = std::move(root);
             break;
         }
@@ -288,6 +289,8 @@ Status UpdateDriver::populateDocumentWithQueryFields(OperationContext* opCtx,
     auto qr = stdx::make_unique<QueryRequest>(NamespaceString(""));
     qr->setFilter(query);
     const boost::intrusive_ptr<ExpressionContext> expCtx;
+    // $expr is not allowed in the query for an upsert, since it is not clear what the equality
+    // extraction behavior for $expr should be.
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx,
                                      std::move(qr),
@@ -446,7 +449,17 @@ Status UpdateDriver::update(StringData matchedField,
                 // Find the updated field in the updated document.
                 auto newElem = doc->root();
                 for (size_t i = 0; i < (*path)->numParts(); ++i) {
-                    newElem = newElem[(*path)->getPart(i)];
+                    if (newElem.getType() == BSONType::Array) {
+                        auto indexFromField = parseUnsignedBase10Integer((*path)->getPart(i));
+                        if (indexFromField) {
+                            newElem = newElem.findNthChild(*indexFromField);
+                        } else {
+                            newElem = newElem.getDocument().end();
+                        }
+                    } else {
+                        newElem = newElem[(*path)->getPart(i)];
+                    }
+
                     if (!newElem.ok()) {
                         break;
                     }
@@ -555,28 +568,9 @@ void UpdateDriver::setCollator(const CollatorInterface* collator) {
         mod->setCollator(collator);
     }
 
-    _modOptions.collator = collator;
+    _modOptions.expCtx->setCollator(collator);
 }
 
-BSONObj UpdateDriver::makeOplogEntryQuery(const BSONObj& doc, bool multi) const {
-    BSONObjBuilder idPattern;
-    BSONElement id;
-    // NOTE: If the matching object lacks an id, we'll log
-    // with the original pattern.  This isn't replay-safe.
-    // It might make sense to suppress the log instead
-    // if there's no id.
-    if (doc.getObjectID(id)) {
-        idPattern.append(id);
-        return idPattern.obj();
-    } else {
-        uassert(16980,
-                str::stream() << "Multi-update operations require all documents to "
-                                 "have an '_id' field. "
-                              << doc.toString(),
-                !multi);
-        return doc;
-    }
-}
 void UpdateDriver::clear() {
     for (vector<ModifierInterface*>::iterator it = _mods.begin(); it != _mods.end(); ++it) {
         delete *it;
@@ -585,6 +579,10 @@ void UpdateDriver::clear() {
     _indexedFields = NULL;
     _replacementMode = false;
     _positional = false;
+}
+
+bool UpdateDriver::isDocReplacement(const BSONObj& updateExpr) {
+    return *updateExpr.firstElementFieldName() != '$';
 }
 
 }  // namespace mongo

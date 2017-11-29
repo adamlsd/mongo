@@ -30,6 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include <iterator>
+
 #include "mongo/util/net/sockaddr.h"
 
 #if !defined(_WIN32)
@@ -213,6 +215,22 @@ bool SockAddr::isLocalHost() const {
     return false;
 }
 
+bool SockAddr::isDefaultRoute() const {
+    using std::begin;
+    using std::end;
+    switch (getType()) {
+        case AF_INET:
+            return as<sockaddr_in>().sin_addr.s_addr == 0;
+        case AF_INET6: {
+            const auto& addr6 = as<sockaddr_in6>().sin6_addr;
+            return std::all_of(
+                begin(addr6.s6_addr), end(addr6.s6_addr), [](const auto c) { return c == 0; });
+        }
+        default:
+            return false;
+    }
+}
+
 std::string SockAddr::toString(bool includePort) const {
     if (includePort && (getType() != AF_UNIX) && (getType() != AF_UNSPEC)) {
         StringBuilder ss;
@@ -299,34 +317,6 @@ bool SockAddr::operator==(const SockAddr& r) const {
 
 bool SockAddr::operator!=(const SockAddr& r) const {
     return !(*this == r);
-}
-
-bool SockAddr::operator<(const SockAddr& r) const {
-    if (getType() < r.getType())
-        return true;
-    else if (getType() > r.getType())
-        return false;
-
-    if (getPort() < r.getPort())
-        return true;
-    else if (getPort() > r.getPort())
-        return false;
-
-    switch (getType()) {
-        case AF_INET:
-            return as<sockaddr_in>().sin_addr.s_addr < r.as<sockaddr_in>().sin_addr.s_addr;
-        case AF_INET6:
-            return memcmp(as<sockaddr_in6>().sin6_addr.s6_addr,
-                          r.as<sockaddr_in6>().sin6_addr.s6_addr,
-                          sizeof(in6_addr)) < 0;
-        case AF_UNIX:
-            return strcmp(as<sockaddr_un>().sun_path, r.as<sockaddr_un>().sun_path) < 0;
-        case AF_UNSPEC:
-            return false;
-        default:
-            massert(SOCK_FAMILY_UNKNOWN_ERROR, "unsupported address family", false);
-    }
-    return false;
 }
 
 }  // namespace mongo

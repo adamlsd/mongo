@@ -123,7 +123,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         new MongoRunner.VersionSub(extractMajorVersionFromVersionString(shellVersion()),
                                    shellVersion()),
         // To-be-updated when we branch for the next release.
-        new MongoRunner.VersionSub("last-stable", "3.4")
+        new MongoRunner.VersionSub("last-stable", "3.6")
     ];
 
     MongoRunner.getBinVersionFor = function(version) {
@@ -473,7 +473,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
             opts.networkMessageCompressors = jsTestOptions().networkMessageCompressors;
         }
 
-        if (!opts.bind_ip) {
+        if (!opts.hasOwnProperty('bind_ip')) {
             opts.bind_ip = "0.0.0.0";
         }
 
@@ -1064,6 +1064,12 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                     }
                 }
 
+                if (jsTest.options().transportLayer) {
+                    if (!argArrayContains("--transportLayer")) {
+                        argArray.push(...["--transportLayer", jsTest.options().transportLayer]);
+                    }
+                }
+
                 // Disable background cache refreshing to avoid races in tests
                 argArray.push(...['--setParameter', "disableLogicalSessionCacheRefresh=true"]);
             }
@@ -1099,7 +1105,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
                         }
                     }
                     if (!hasParam) {
-                        argArray.push(...['--setParameter', 'orphanCleanupDelaySecs=0']);
+                        argArray.push(...['--setParameter', 'orphanCleanupDelaySecs=1']);
                     }
                 }
 
@@ -1249,7 +1255,7 @@ var MongoRunner, _startMongod, startMongoProgram, runMongoProgram, startMongoPro
         args = appendSetParameterArgs(args);
         var progName = args[0];
 
-        if (jsTestOptions().auth) {
+        if (jsTestOptions().auth && progName != 'mongod') {
             args = args.slice(1);
             args.unshift(progName,
                          '-u',

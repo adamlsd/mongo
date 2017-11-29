@@ -298,7 +298,7 @@ env.Library(
         'db/repair_database',
         'db/repl/repl_set_commands',
         'db/repl/storage_interface_impl',
-        'db/repl/topology_coordinator_impl',
+        'db/repl/topology_coordinator',
         'db/s/balancer',
         'db/serveronly',
         'db/service_context_d',
@@ -319,6 +319,22 @@ env.Library(
         'util/version_impl',
     ],
 )
+
+
+if env.TargetOSIs('windows'):
+    generatedDbManifest = env.Substfile(
+        'db/db.manifest.in',
+        SUBST_DICT=[
+            ('@mongo_version_major@', version_parts[0]),
+            ('@mongo_version_minor@', version_parts[1]),
+            ('@mongo_version_patch@', version_parts[2]),
+            ('@mongo_version_extra@', version_parts[3]),
+            ('@mongo_version_extra_str@', version_extra),
+        ])
+
+    env.Alias('generated-sources', generatedDbManifest)
+    env.Depends("db/db.res", generatedDbManifest)
+
 mongod = env.Program(
     target="mongod",
     source=[
@@ -331,7 +347,7 @@ mongod = env.Program(
 env.Default(env.Install('#/', mongod))
 
 # tools
-rewrittenTools = [ "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongostat", "mongotop", "bsondump", "mongofiles", "mongooplog" ]
+rewrittenTools = [ "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongostat", "mongotop", "bsondump", "mongofiles" ]
 
 # mongoperf
 env.Install(
@@ -345,6 +361,20 @@ env.Install(
                         "db/serveronly",
                     ]),
     ])
+
+if env.TargetOSIs('windows'):
+    generatedServerManifest = env.Substfile(
+        's/server.manifest.in',
+        SUBST_DICT=[
+            ('@mongo_version_major@', version_parts[0]),
+            ('@mongo_version_minor@', version_parts[1]),
+            ('@mongo_version_patch@', version_parts[2]),
+            ('@mongo_version_extra@', version_parts[3]),
+            ('@mongo_version_extra_str@', version_extra),
+        ])
+
+    env.Alias('generated-sources', generatedServerManifest)
+    env.Depends("s/server.res", generatedServerManifest)
 
 # mongos
 env.Install(
@@ -412,7 +442,6 @@ if not has_option('noshell') and usemozjs:
                 LIBDEPS=[
                     'db/logical_session_id_helpers',
                     'db/catalog/index_key_validate',
-                    'db/index/external_key_generator',
                     'db/query/command_request_response',
                     'db/query/query_request',
                     'db/server_options_core',
@@ -439,17 +468,34 @@ if not has_option('noshell') and usemozjs:
 
     shellEnv = env.Clone()
     if env.TargetOSIs('windows'):
-       shellEnv.Append(LIBS=["winmm.lib"])
+        shellEnv.Append(LIBS=["winmm.lib"])
+
+        generatedMongoManifest = shellEnv.Substfile(
+                'shell/shell.manifest.in',
+                SUBST_DICT=[
+                    ('@mongo_version_major@', version_parts[0]),
+                    ('@mongo_version_minor@', version_parts[1]),
+                    ('@mongo_version_patch@', version_parts[2]),
+                    ('@mongo_version_extra@', version_parts[3]),
+                    ('@mongo_version_extra_str@', version_extra),
+                ])
+        shellEnv.Alias('generated-sources', generatedMongoManifest)
+        shellEnv.Depends("shell/shell.res", generatedMongoManifest)
 
     mongo_shell = shellEnv.Program(
         "mongo",
         ["shell/dbshell.cpp"] + env.WindowsResourceFile("shell/shell.rc"),
-        LIBDEPS=["$BUILD_DIR/third_party/shim_pcrecpp",
-                 "shell_core",
-                 "db/server_options_core",
-                 "client/clientdriver",
-                 "$BUILD_DIR/mongo/util/password",
-                 ])
+        LIBDEPS=[
+            "$BUILD_DIR/third_party/shim_pcrecpp",
+            "shell_core",
+            "db/server_options_core",
+            "client/clientdriver",
+            "$BUILD_DIR/mongo/util/password",
+        ],
+        LIBDEPS_PRIVATE=[
+            "$BUILD_DIR/mongo/client/connection_string",
+        ]
+    )
 
     shellEnv.Install( '#/', mongo_shell )
 else:
@@ -581,6 +627,28 @@ for full_dir, archive_dir in env["ARCHIVE_ADDITION_DIR_MAP"].items():
 for target in env["DIST_BINARIES"]:
     installBinary(env, "db/modules/" + target)
 
+# Set the download url to the right place
+compass_type = 'compass-community'
+if 'enterprise' in env['MONGO_MODULES']:
+    compass_type = 'compass'
+
+compass_script = "install_compass"
+if env.TargetOSIs('windows'):
+    # On windows the .in needs to be explicitly added to the file.
+    compass_script = "Install-Compass.ps1.in"
+
+compass_installer = env.Substfile('#/src/mongo/installer/compass/' + compass_script,
+                                  SUBST_DICT=[
+                                      ('@compass_type@', compass_type)
+                                  ])
+distBinaries.append(compass_installer)
+
+compass_script_installer = env.Install("$INSTALL_DIR/bin", compass_installer)
+
+if env.TargetOSIs('posix'):
+    env.AddPostAction( compass_script_installer, 'chmod 755 $TARGET' )
+    env.AddPostAction( compass_installer, 'chmod 755 $TARGET' )
+
 # "dist" target is valid only when --use-new-tools is specified
 # Attempts to build release artifacts without tools must fail
 if has_option("use-new-tools"):
@@ -598,6 +666,7 @@ if has_option("use-new-tools"):
                 '--transform $BUILD_DIR/mongo=$SERVER_DIST_BASENAME/bin',
                 '--transform $BUILD_DIR/mongo/stripped/src/mongo-tools=$SERVER_DIST_BASENAME/bin',
                 '--transform src/mongo-tools=$SERVER_DIST_BASENAME/bin',
+                '--transform src/mongo/installer/compass=$SERVER_DIST_BASENAME/bin',
                 '${TEMPFILE(SOURCES[1:])}'
             ],
         ),
@@ -624,6 +693,7 @@ debug_symbols_dist = env.Command(
     ),
     BUILD_DIR=env.Dir('$BUILD_DIR').path
 )
+
 env.Alias('dist-debugsymbols', debug_symbols_dist)
 
 #final alias

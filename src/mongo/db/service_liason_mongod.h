@@ -50,13 +50,17 @@ namespace mongo {
  */
 class ServiceLiasonMongod : public ServiceLiason {
 public:
-    LogicalSessionIdSet getActiveSessions() const override;
+    LogicalSessionIdSet getActiveOpSessions() const override;
+    LogicalSessionIdSet getOpenCursorSessions() const override;
 
     void scheduleJob(PeriodicRunner::PeriodicJob job) override;
 
     void join() override;
 
     Date_t now() const override;
+
+    std::pair<Status, int> killCursorsWithMatchingSessions(
+        OperationContext* opCtx, const SessionKiller::Matcher& matcher) override;
 
 protected:
     /**

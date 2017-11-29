@@ -97,7 +97,7 @@ const int restartSyncAfterSleep = 1;
 }  // namespace
 
 void pretouchOperation(OperationContext* opCtx, const BSONObj& op);
-void pretouchN(vector<BSONObj>&, unsigned a, unsigned b);
+void pretouchN(const vector<BSONObj>&, unsigned a, unsigned b);
 
 /* if 1 sync() is running */
 AtomicInt32 syncing(0);
@@ -646,7 +646,7 @@ bool ReplSource::handleDuplicateDbName(OperationContext* opCtx,
 
 void ReplSource::applyCommand(OperationContext* opCtx, const BSONObj& op) {
     try {
-        Status status = applyCommand_inlock(opCtx, op, true);
+        Status status = applyCommand_inlock(opCtx, op, OplogApplication::Mode::kMasterSlave);
         uassert(28639, "Failure applying initial sync command", status.isOK());
     } catch (AssertionException& e) {
         log() << "sync: caught user assertion " << redact(e) << " while applying op: " << redact(op)
@@ -661,7 +661,8 @@ void ReplSource::applyCommand(OperationContext* opCtx, const BSONObj& op) {
 
 void ReplSource::applyOperation(OperationContext* opCtx, Database* db, const BSONObj& op) {
     try {
-        Status status = applyOperation_inlock(opCtx, db, op);
+        Status status =
+            applyOperation_inlock(opCtx, db, op, false, OplogApplication::Mode::kMasterSlave);
         if (!status.isOK()) {
             uassert(15914,
                     "Failure applying initial sync operation",
@@ -750,7 +751,7 @@ void ReplSource::_sync_pullOpLog_applyOperation(OperationContext* opCtx,
                     unsigned b = a + m - 1;  // v[a..b]
                     if (b >= v.size())
                         b = v.size() - 1;
-                    tp->schedule(pretouchN, v, a, b);
+                    tp->schedule([&v, a, b] { pretouchN(v, a, b); });
                     DEV cout << "pretouch task: " << a << ".." << b << endl;
                     a += m;
                 }
@@ -876,7 +877,7 @@ public:
 int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
     int okResultCode = restartSyncAfterSleep;
     std::string ns = std::string("local.oplog.$") + sourceName();
-    LOG(2) << "sync_pullOpLog " << ns << " syncedTo:" << syncedTo.toStringLong() << '\n';
+    LOG(2) << "sync_pullOpLog " << ns << " syncedTo:" << syncedTo << '\n';
 
     bool tailing = true;
     oplogReader.tailCheck();
@@ -1004,16 +1005,15 @@ int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
         if (tailing) {
             if (!(syncedTo < nextOpTime)) {
                 warning() << "ASSERTION failed : syncedTo < nextOpTime" << endl;
-                log() << "syncTo:     " << syncedTo.toStringLong() << endl;
-                log() << "nextOpTime: " << nextOpTime.toStringLong() << endl;
+                log() << "syncTo:     " << syncedTo << endl;
+                log() << "nextOpTime: " << nextOpTime << endl;
                 verify(false);
             }
             oplogReader.putBack(op);          // op will be processed in the loop below
             nextOpTime = Timestamp();         // will reread the op below
         } else if (nextOpTime != syncedTo) {  // didn't get what we queried for - error
-            log() << "nextOpTime " << nextOpTime.toStringLong() << ' '
-                  << ((nextOpTime < syncedTo) ? "<??" : ">") << " syncedTo "
-                  << syncedTo.toStringLong() << '\n'
+            log() << "nextOpTime " << nextOpTime << ' ' << ((nextOpTime < syncedTo) ? "<??" : ">")
+                  << " syncedTo " << syncedTo << '\n'
                   << "time diff: " << (nextOpTime.getSecs() - syncedTo.getSecs()) << "sec\n"
                   << "tailing: " << tailing << '\n'
                   << "data too stale, halting replication" << endl;
@@ -1055,7 +1055,7 @@ int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
                 // can't update local log ts since there are pending operations from our peer
                 save(opCtx);
                 log() << "checkpoint applied " << n << " operations" << endl;
-                log() << "syncedTo: " << syncedTo.toStringLong() << endl;
+                log() << "syncedTo: " << syncedTo << endl;
                 saveLast = time(0);
                 n = 0;
             }
@@ -1079,8 +1079,8 @@ int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
                 if (!(last < nextOpTime)) {
                     log() << "sync error: last applied optime at slave >= nextOpTime from master"
                           << endl;
-                    log() << " last:       " << last.toStringLong() << endl;
-                    log() << " nextOpTime: " << nextOpTime.toStringLong() << endl;
+                    log() << " last:       " << last << endl;
+                    log() << " nextOpTime: " << nextOpTime << endl;
                     log() << " halting replication" << endl;
                     replInfo = replAllDead = "sync error last >= nextOpTime";
                     uassert(
@@ -1102,7 +1102,7 @@ int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
                         save(opCtx);
                     }
                     log() << "applied " << n << " operations" << endl;
-                    log() << "syncedTo: " << syncedTo.toStringLong() << endl;
+                    log() << "syncedTo: " << syncedTo << endl;
                     log() << "waiting until: " << _sleepAdviceTime << " to continue" << endl;
                     return okResultCode;
                 }
@@ -1377,7 +1377,7 @@ void startMasterSlave(OperationContext* opCtx) {
 }
 int _dummy_z;
 
-void pretouchN(vector<BSONObj>& v, unsigned a, unsigned b) {
+void pretouchN(const std::vector<BSONObj>& v, unsigned a, unsigned b) {
     Client::initThreadIfNotAlready("pretouchN");
 
     const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();

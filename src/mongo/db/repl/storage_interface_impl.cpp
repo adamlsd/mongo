@@ -43,6 +43,7 @@
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/database.h"
@@ -114,38 +115,50 @@ StatusWith<int> StorageInterfaceImpl::getRollbackID(OperationContext* opCtx) {
     MONGO_UNREACHABLE;
 }
 
-Status StorageInterfaceImpl::initializeRollbackID(OperationContext* opCtx) {
+StatusWith<int> StorageInterfaceImpl::initializeRollbackID(OperationContext* opCtx) {
     auto status = createCollection(opCtx, _rollbackIdNss, CollectionOptions());
     if (!status.isOK()) {
         return status;
     }
 
     RollbackID rbid;
+    int initRBID = 1;
     rbid.set_id(kRollbackIdDocumentId);
-    rbid.setRollbackId(0);
+    rbid.setRollbackId(initRBID);
 
     BSONObjBuilder bob;
     rbid.serialize(&bob);
-    SnapshotName noTimestamp;  // This write is not replicated.
-    return insertDocument(opCtx, _rollbackIdNss, TimestampedBSONObj{bob.done(), noTimestamp});
+    Timestamp noTimestamp;  // This write is not replicated.
+    status = insertDocument(opCtx,
+                            _rollbackIdNss,
+                            TimestampedBSONObj{bob.done(), noTimestamp},
+                            OpTime::kUninitializedTerm);
+    if (status.isOK()) {
+        return initRBID;
+    } else {
+        return status;
+    }
 }
 
-Status StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
+StatusWith<int> StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
     // This is safe because this is only called during rollback, and you can not have two
     // rollbacks at once.
-    auto rbid = getRollbackID(opCtx);
-    if (!rbid.isOK()) {
-        return rbid.getStatus();
+    auto rbidSW = getRollbackID(opCtx);
+    if (!rbidSW.isOK()) {
+        return rbidSW;
     }
 
-    // If we would go over the integer limit, reset the Rollback ID to 0.
+    // If we would go over the integer limit, reset the Rollback ID to 1.
     BSONObjBuilder updateBob;
-    if (rbid.getValue() == std::numeric_limits<int>::max()) {
+    int newRBID = -1;
+    if (rbidSW.getValue() == std::numeric_limits<int>::max()) {
+        newRBID = 1;
         BSONObjBuilder setBob(updateBob.subobjStart("$set"));
-        setBob.append(kRollbackIdFieldName, 0);
+        setBob.append(kRollbackIdFieldName, newRBID);
     } else {
         BSONObjBuilder incBob(updateBob.subobjStart("$inc"));
         incBob.append(kRollbackIdFieldName, 1);
+        newRBID = rbidSW.getValue() + 1;
     }
 
     // Since the Rollback ID is in a singleton collection, we can fix the _id field.
@@ -157,6 +170,7 @@ Status StorageInterfaceImpl::incrementRollbackID(OperationContext* opCtx) {
     // We wait until durable so that we are sure the Rollback ID is updated before rollback ends.
     if (status.isOK()) {
         opCtx->recoveryUnit()->waitUntilDurable();
+        return newRBID;
     }
     return status;
 }
@@ -264,8 +278,9 @@ StorageInterfaceImpl::createCollectionForBulkLoading(
 
 Status StorageInterfaceImpl::insertDocument(OperationContext* opCtx,
                                             const NamespaceString& nss,
-                                            const TimestampedBSONObj& doc) {
-    return insertDocuments(opCtx, nss, {InsertStatement(doc.obj, doc.timestamp)});
+                                            const TimestampedBSONObj& doc,
+                                            long long term) {
+    return insertDocuments(opCtx, nss, {InsertStatement(doc.obj, doc.timestamp, term)});
 }
 
 namespace {
@@ -737,19 +752,13 @@ StatusWith<BSONObj> makeUpsertQuery(const BSONElement& idKey) {
     return query;
 }
 
-Status _upsertWithQuery(OperationContext* opCtx,
-                        const NamespaceString& nss,
-                        const BSONObj& query,
-                        const BSONObj& update) {
-    UpdateRequest request(nss);
-    request.setQuery(query);
-    request.setUpdates(update);
-    request.setUpsert(true);
+Status _updateWithQuery(OperationContext* opCtx, const UpdateRequest& request) {
     invariant(!request.isMulti());  // We only want to update one document for performance.
     invariant(!request.shouldReturnAnyDocs());
     invariant(PlanExecutor::NO_YIELD == request.getYieldPolicy());
 
-    return writeConflictRetry(opCtx, "_upsertWithQuery", nss.ns(), [&] {
+    auto& nss = request.getNamespaceString();
+    return writeConflictRetry(opCtx, "_updateWithQuery", nss.ns(), [&] {
         // ParsedUpdate needs to be inside the write conflict retry loop because it may create a
         // CanonicalQuery whose ownership will be transferred to the plan executor in
         // getExecutorUpdate().
@@ -764,7 +773,7 @@ Status _upsertWithQuery(OperationContext* opCtx,
             autoColl,
             nss,
             str::stream() << "Unable to update documents in " << nss.ns() << " using query "
-                          << query);
+                          << request.getQuery());
         if (!collectionResult.isOK()) {
             return collectionResult.getStatus();
         }
@@ -843,7 +852,22 @@ Status StorageInterfaceImpl::upsertById(OperationContext* opCtx,
 Status StorageInterfaceImpl::putSingleton(OperationContext* opCtx,
                                           const NamespaceString& nss,
                                           const BSONObj& update) {
-    return _upsertWithQuery(opCtx, nss, {}, update);
+    UpdateRequest request(nss);
+    request.setQuery({});
+    request.setUpdates(update);
+    request.setUpsert(true);
+    return _updateWithQuery(opCtx, request);
+}
+
+Status StorageInterfaceImpl::updateSingleton(OperationContext* opCtx,
+                                             const NamespaceString& nss,
+                                             const BSONObj& query,
+                                             const BSONObj& update) {
+    UpdateRequest request(nss);
+    request.setQuery(query);
+    request.setUpdates(update);
+    invariant(!request.isUpsert());
+    return _updateWithQuery(opCtx, request);
 }
 
 Status StorageInterfaceImpl::deleteByFilter(OperationContext* opCtx,
@@ -918,13 +942,29 @@ StatusWith<StorageInterface::CollectionCount> StorageInterfaceImpl::getCollectio
     return collection->numRecords(opCtx);
 }
 
-void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx,
-                                              SnapshotName snapshotName) {
+StatusWith<OptionalCollectionUUID> StorageInterfaceImpl::getCollectionUUID(
+    OperationContext* opCtx, const NamespaceString& nss) {
+    AutoGetCollectionForRead autoColl(opCtx, nss);
+
+    auto collectionResult = getCollection(
+        autoColl, nss, str::stream() << "Unable to get UUID of " << nss.ns() << " collection.");
+    if (!collectionResult.isOK()) {
+        return collectionResult.getStatus();
+    }
+    auto collection = collectionResult.getValue();
+    return collection->uuid();
+}
+
+Status StorageInterfaceImpl::upgradeUUIDSchemaVersionNonReplicated(OperationContext* opCtx) {
+    return updateUUIDSchemaVersionNonReplicated(opCtx, true);
+}
+
+void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx, Timestamp snapshotName) {
     serviceCtx->getGlobalStorageEngine()->setStableTimestamp(snapshotName);
 }
 
 void StorageInterfaceImpl::setInitialDataTimestamp(ServiceContext* serviceCtx,
-                                                   SnapshotName snapshotName) {
+                                                   Timestamp snapshotName) {
     serviceCtx->getGlobalStorageEngine()->setInitialDataTimestamp(snapshotName);
 }
 

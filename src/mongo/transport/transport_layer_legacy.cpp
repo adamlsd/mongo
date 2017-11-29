@@ -83,7 +83,6 @@ TransportLayerLegacy::LegacySession::LegacySession(std::unique_ptr<AbstractMessa
     : _remote(amp->remoteAddr()),
       _local(amp->localAddr()),
       _tl(tl),
-      _tags(kEmptyTagMask),
       _connection(stdx::make_unique<Connection>(std::move(amp))) {}
 
 TransportLayerLegacy::LegacySession::~LegacySession() {
@@ -128,9 +127,13 @@ Status TransportLayerLegacy::start() {
         return {ErrorCodes::InternalError, "TransportLayer is already running"};
     }
 
-    _listenerThread = stdx::thread([this]() { _listener->initAndListen(); });
-
-    return Status::OK();
+    try {
+        _listenerThread = stdx::thread([this]() { _listener->initAndListen(); });
+        _listener->waitUntilListening();
+        return Status::OK();
+    } catch (...) {
+        return {ErrorCodes::InternalError, "Failed to start listener thread."};
+    }
 }
 
 TransportLayerLegacy::~TransportLayerLegacy() = default;
@@ -202,8 +205,11 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
 
 void TransportLayerLegacy::shutdown() {
     _running.store(false);
+    ListeningSockets::get()->closeAll();
     _listener->shutdown();
-    _listenerThread.join();
+    if (_listenerThread.joinable()) {
+        _listenerThread.join();
+    }
 }
 
 void TransportLayerLegacy::_destroy(LegacySession& session) {

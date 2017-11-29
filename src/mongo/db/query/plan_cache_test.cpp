@@ -73,7 +73,7 @@ unique_ptr<CanonicalQuery> canonicalize(const BSONObj& queryObj) {
 
     auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->setFilter(queryObj);
-    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(qr),
@@ -101,7 +101,7 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
     qr->setSort(fromjson(sortStr));
     qr->setProj(fromjson(projStr));
     qr->setCollation(fromjson(collationStr));
-    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(qr),
@@ -136,7 +136,7 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
     qr->setHint(fromjson(hintStr));
     qr->setMin(fromjson(minStr));
     qr->setMax(fromjson(maxStr));
-    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(qr),
@@ -175,7 +175,7 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
     qr->setMax(fromjson(maxStr));
     qr->setSnapshot(snapshot);
     qr->setExplain(explain);
-    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    const boost::intrusive_ptr<ExpressionContext> expCtx;
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx.get(),
                                      std::move(qr),
@@ -190,12 +190,10 @@ unique_ptr<CanonicalQuery> canonicalize(const char* queryStr,
  * Utility function to create MatchExpression
  */
 unique_ptr<MatchExpression> parseMatchExpression(const BSONObj& obj) {
-    const CollatorInterface* collator = nullptr;
     boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
     StatusWithMatchExpression status =
         MatchExpressionParser::parse(obj,
-                                     collator,
-                                     expCtx,
+                                     std::move(expCtx),
                                      ExtensionsCallbackNoop(),
                                      MatchExpressionParser::kAllowAllSpecialFeatures);
     if (!status.isOK()) {
@@ -429,7 +427,8 @@ TEST(PlanCacheTest, AddEmptySolutions) {
     unique_ptr<CanonicalQuery> cq(canonicalize("{a: 1}"));
     std::vector<QuerySolution*> solns;
     unique_ptr<PlanRankingDecision> decision(createDecision(1U));
-    ASSERT_NOT_OK(planCache.add(*cq, solns, decision.get()));
+    QueryTestServiceContext serviceContext;
+    ASSERT_NOT_OK(planCache.add(*cq, solns, decision.get(), Date_t{}));
 }
 
 TEST(PlanCacheTest, AddValidSolution) {
@@ -443,7 +442,8 @@ TEST(PlanCacheTest, AddValidSolution) {
 
     // Check if key is in cache before and after add().
     ASSERT_FALSE(planCache.contains(*cq));
-    ASSERT_OK(planCache.add(*cq, solns, createDecision(1U)));
+    QueryTestServiceContext serviceContext;
+    ASSERT_OK(planCache.add(*cq, solns, createDecision(1U), Date_t{}));
 
     ASSERT_TRUE(planCache.contains(*cq));
     ASSERT_EQUALS(planCache.size(), 1U);
@@ -589,7 +589,7 @@ protected:
         qr->setMin(minObj);
         qr->setMax(maxObj);
         qr->setSnapshot(snapshot);
-        boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+        const boost::intrusive_ptr<ExpressionContext> expCtx;
         auto statusWithCQ =
             CanonicalQuery::canonicalize(opCtx.get(),
                                          std::move(qr),
@@ -616,7 +616,7 @@ protected:
         std::unique_ptr<QueryRequest> qr(
             assertGet(QueryRequest::makeFromFindCommand(nss, cmdObj, isExplain)));
 
-        boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+        const boost::intrusive_ptr<ExpressionContext> expCtx;
         auto statusWithCQ =
             CanonicalQuery::canonicalize(opCtx.get(),
                                          std::move(qr),
@@ -702,7 +702,7 @@ protected:
         qr->setSort(sort);
         qr->setProj(proj);
         qr->setCollation(collation);
-        boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+        const boost::intrusive_ptr<ExpressionContext> expCtx;
         auto statusWithCQ =
             CanonicalQuery::canonicalize(opCtx.get(),
                                          std::move(qr),

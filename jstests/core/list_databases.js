@@ -62,6 +62,19 @@
     assert.eq(1, cmdRes.databases.length, tojson(cmdRes));
     verifyNameOnly(cmdRes);
 
+    // $expr in filter.
+    cmdRes = assert.commandWorked(db.adminCommand(
+        {listDatabases: 1, filter: {$expr: {$eq: ["$name", "jstest_list_databases_zap"]}}}));
+    assert.eq(1, cmdRes.databases.length, tojson(cmdRes));
+    assert.eq("jstest_list_databases_zap", cmdRes.databases[0].name, tojson(cmdRes));
+
+    // $expr with an unbound variable in filter.
+    assert.commandFailed(
+        db.adminCommand({listDatabases: 1, filter: {$expr: {$eq: ["$name", "$$unbound"]}}}));
+
+    // $expr with a filter that throws at runtime.
+    assert.commandFailed(db.adminCommand({listDatabases: 1, filter: {$expr: {$abs: "$name"}}}));
+
     // No extensions are allowed in filters.
     assert.commandFailed(db.adminCommand({listDatabases: 1, filter: {$text: {$search: "str"}}}));
     assert.commandFailed(db.adminCommand({
@@ -77,5 +90,5 @@
         filter: {a: {$nearSphere: {$geometry: {type: "Point", coordinates: [0, 0]}}}}
     }));
 
-    assert.commandFailed(db.adminCommand({listDatabases: 1, filter: {$expr: {$eq: ["$a", 5]}}}));
+    assert.commandFailed(db.adminCommand({listDatabases: 1, filter: {$isolated: 1}}));
 }());

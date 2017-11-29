@@ -32,6 +32,7 @@
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_single_document_transformation.h"
 #include "mongo/db/pipeline/document_sources_gen.h"
+#include "mongo/db/pipeline/field_path.h"
 
 namespace mongo {
 
@@ -45,11 +46,21 @@ public:
     public:
         static std::unique_ptr<LiteParsed> parse(const AggregationRequest& request,
                                                  const BSONElement& spec) {
-            return stdx::make_unique<LiteParsed>();
+            return stdx::make_unique<LiteParsed>(request.getNamespaceString());
         }
+
+        explicit LiteParsed(NamespaceString nss) : _nss(std::move(nss)) {}
 
         bool isChangeStream() const final {
             return true;
+        }
+
+        bool allowedToForwardFromMongos() const final {
+            return false;
+        }
+
+        bool allowedToPassthroughFromMongos() const final {
+            return false;
         }
 
         stdx::unordered_set<NamespaceString> getInvolvedNamespaces() const final {
@@ -58,15 +69,20 @@ public:
             return stdx::unordered_set<NamespaceString>();
         }
 
-        // TODO SERVER-29138: Add required privileges.
+        ActionSet actions{ActionType::changeStream, ActionType::find};
         PrivilegeVector requiredPrivileges(bool isMongos) const final {
-            return {};
+            return {Privilege(ResourcePattern::forExactNamespace(_nss), actions)};
         }
+
+    private:
+        const NamespaceString _nss;
     };
 
     class Transformation : public DocumentSourceSingleDocumentTransformation::TransformerInterface {
     public:
-        Transformation(BSONObj changeStreamSpec) : _changeStreamSpec(changeStreamSpec.getOwned()) {}
+        Transformation(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                       BSONObj changeStreamSpec)
+            : _expCtx(expCtx), _changeStreamSpec(changeStreamSpec.getOwned()) {}
         ~Transformation() = default;
         Document applyTransformation(const Document& input) final;
         TransformerType getType() const final {
@@ -79,8 +95,17 @@ public:
         DocumentSource::GetModPathsReturn getModifiedPaths() const final;
 
     private:
+        boost::intrusive_ptr<ExpressionContext> _expCtx;
         BSONObj _changeStreamSpec;
+
+        // Fields of the document key, in order, including the shard key if the collection is
+        // sharded, and anyway "_id". Empty until the first oplog entry with a uuid is encountered.
+        // Needed for transforming 'insert' oplog entries.
+        std::vector<FieldPath> _documentKeyFields;
     };
+
+    // The sort pattern used to merge results from multiple change streams on a mongos.
+    static const BSONObj kSortSpec;
 
     // The name of the field where the document key (_id and shard key, if present) will be found
     // after the transformation.
@@ -124,14 +149,16 @@ public:
     static constexpr StringData kReplaceOpType = "replace"_sd;
     static constexpr StringData kInsertOpType = "insert"_sd;
     static constexpr StringData kInvalidateOpType = "invalidate"_sd;
-    // Internal op type to close the cursor.
-    static constexpr StringData kRetryNeededOpType = "retryNeeded"_sd;
+    // Internal op type to signal mongos to open cursors on new shards.
+    static constexpr StringData kNewShardDetectedOpType = "kNewShardDetected"_sd;
 
     /**
      * Produce the BSON object representing the filter for the $match stage to filter oplog entries
      * to only those relevant for this $changeStream stage.
      */
-    static BSONObj buildMatchFilter(const NamespaceString& nss, Timestamp startFrom, bool isResume);
+    static BSONObj buildMatchFilter(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                    Timestamp startFrom,
+                                    bool isResume);
 
     /**
      * Parses a $changeStream stage from 'elem' and produces the $match and transformation
@@ -142,6 +169,15 @@ public:
 
     static boost::intrusive_ptr<DocumentSource> createTransformationStage(
         BSONObj changeStreamSpec, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
+
+    /**
+     * Given a BSON object containing an aggregation command with a $changeStream stage, and a
+     * resume token, returns a new BSON object with the same command except with the addition of a
+     * resumeAfter: option containing the resume token.  If there was a previous resumeAfter:
+     * option, it is removed.
+     */
+    static BSONObj replaceResumeTokenInCommand(const BSONObj originalCmdObj,
+                                               const BSONObj resumeToken);
 
 private:
     // It is illegal to construct a DocumentSourceChangeStream directly, use createFromBson()
@@ -160,7 +196,15 @@ public:
 
     const char* getSourceName() const final;
 
-    StageConstraints constraints() const final;
+    GetNextResult getNext() final {
+        // We should never execute this stage directly. We expect this stage to be absorbed into the
+        // cursor feeding the pipeline, and executing this stage may result in the use of the wrong
+        // collation. The comparisons against the oplog must use the simple collation, regardless of
+        // the collation on the ExpressionContext.
+        MONGO_UNREACHABLE;
+    }
+
+    StageConstraints constraints(Pipeline::SplitState pipeState) const final;
 
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain) const final;
 

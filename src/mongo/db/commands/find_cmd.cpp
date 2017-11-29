@@ -30,12 +30,8 @@
 
 #include "mongo/platform/basic.h"
 
-#include <memory>
-
-#include "mongo/base/disallow_copying.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
-#include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
@@ -58,24 +54,18 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-
 namespace {
 
-const char kTermField[] = "term";
-
-}  // namespace
+const auto kTermField = "term"_sd;
 
 /**
  * A command for running .find() queries.
  */
 class FindCmd : public BasicCommand {
-    MONGO_DISALLOW_COPYING(FindCmd);
-
 public:
     FindCmd() : BasicCommand("find") {}
 
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
@@ -107,7 +97,7 @@ public:
         return LogicalOp::opQuery;
     }
 
-    ReadWriteType getReadWriteType() const {
+    ReadWriteType getReadWriteType() const override {
         return ReadWriteType::kRead;
     }
 
@@ -123,12 +113,17 @@ public:
         return false;
     }
 
-    Status checkAuthForCommand(Client* client,
-                               const std::string& dbname,
-                               const BSONObj& cmdObj) override {
-        const NamespaceString nss(parseNs(dbname, cmdObj));
+    Status checkAuthForOperation(OperationContext* opCtx,
+                                 const std::string& dbname,
+                                 const BSONObj& cmdObj) override {
+        AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
+
+        if (!authSession->isAuthorizedToParseNamespaceElement(cmdObj.firstElement())) {
+            return Status(ErrorCodes::Unauthorized, "Unauthorized");
+        }
+        const NamespaceString nss(parseNsOrUUID(opCtx, dbname, cmdObj));
         auto hasTerm = cmdObj.hasField(kTermField);
-        return AuthorizationSession::get(client)->checkAuthForFind(nss, hasTerm);
+        return authSession->checkAuthForFind(nss, hasTerm);
     }
 
     Status explain(OperationContext* opCtx,
@@ -159,7 +154,7 @@ public:
                                          expCtx,
                                          extensionsCallback,
                                          MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                             ~MatchExpressionParser::AllowedFeatures::kIsolated);
         if (!statusWithCQ.isOK()) {
             return statusWithCQ.getStatus();
         }
@@ -277,7 +272,7 @@ public:
                                          expCtx,
                                          extensionsCallback,
                                          MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                             ~MatchExpressionParser::AllowedFeatures::kIsolated);
         if (!statusWithCQ.isOK()) {
             return appendCommandStatus(result, statusWithCQ.getStatus());
         }
@@ -415,4 +410,5 @@ public:
 
 } findCmd;
 
+}  // namespace
 }  // namespace mongo

@@ -2,19 +2,23 @@
 
 """Powercycle test
 
-Tests robustness of mongod to survice multiple powercycle events.
+Tests robustness of mongod to survive multiple powercycle events.
 """
 
 from __future__ import print_function
 
+import atexit
 import collections
 import copy
 import datetime
 import distutils.spawn
+import json
 import importlib
 import logging
 import optparse
 import os
+import pipes
+import posixpath
 import random
 import re
 import shlex
@@ -88,6 +92,10 @@ __version__ = "0.1"
 
 LOGGER = logging.getLogger(__name__)
 
+_report_json_success = False
+_report_json = {}
+_report_json_file = ""
+
 """ Client & server side powercycle test script.
 
     This script can be run against any host which is reachable via ssh.
@@ -99,6 +107,103 @@ LOGGER = logging.getLogger(__name__)
         - sshd
         - rsync
     This script will either download a MongoDB tarball or use an existing setup. """
+
+
+def exit_handler():
+    """Exit handler actions:
+        - Generate report.json
+        - Kill spawned processes
+        - Delete all named temporary files
+    """
+    if _report_json:
+        LOGGER.debug("Exit handler: Updating report file %s", _report_json_file)
+        try:
+            test_start = _report_json["results"][0]["start"]
+            test_end = int(time.time())
+            test_time = test_end - test_start
+            if _report_json_success:
+                failures = 0
+                status = "pass"
+                exit_code = 0
+            else:
+                failures = 1
+                status = "fail"
+                exit_code = 1
+            _report_json["failures"] = failures
+            _report_json["results"][0]["status"] = status
+            _report_json["results"][0]["exit_code"] = exit_code
+            _report_json["results"][0]["end"] = test_end
+            _report_json["results"][0]["elapsed"] = test_time
+            with open(_report_json_file, "w") as jstream:
+                json.dump(_report_json, jstream)
+            LOGGER.debug("Exit handler: report file contents %s", _report_json)
+        except:
+            pass
+
+    LOGGER.debug("Exit handler: Killing processes")
+    try:
+        Processes.kill_all()
+    except:
+        pass
+
+    LOGGER.debug("Exit handler: Cleaning up temporary files")
+    try:
+        NamedTempFile.delete_all()
+    except:
+        pass
+
+
+def child_processes(parent_pid):
+    """Returns a list of all child processes for a pid."""
+    # The child processes cannot be obtained from the parent on Windows from psutil. See
+    # https://stackoverflow.com/questions/30220732/python-psutil-not-showing-all-child-processes
+    child_procs = []
+    while psutil.pid_exists(parent_pid):
+        try:
+            child_procs = [p for p in psutil.process_iter(attrs=["pid"]) if parent_pid == p.ppid()]
+            break
+        except psutil.NoSuchProcess:
+            pass
+    for proc in child_procs:
+        proc_children = child_processes(proc.pid)
+        if proc_children:
+            child_procs += proc_children
+    return list(set(child_procs))
+
+
+def kill_process(pid, kill_children=True):
+    """Kill a process, and optionally it's children, by it's pid. Returns 0 if successful."""
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        LOGGER.warn("Could not kill process %d, as it no longer exists", pid)
+        return 0
+
+    procs = [parent]
+    if kill_children:
+        procs += child_processes(pid)
+
+    for proc in procs:
+        try:
+            LOGGER.debug("Killing process '%s' pid %d", proc.name(), proc.pid)
+            proc.kill()
+        except psutil.NoSuchProcess:
+            LOGGER.warn("Could not kill process %d, as it no longer exists", pid)
+
+    _, alive = psutil.wait_procs(procs, timeout=30, callback=None)
+    if alive:
+        for proc in alive:
+            LOGGER.error("Process %d still alive!", proc.pid)
+    return 0
+
+
+def kill_processes(procs, kill_children=True):
+    """Kill a list of processes and optionally it's children."""
+    for proc in procs:
+        LOGGER.debug("Starting kill of parent process %d", proc.pid)
+        kill_process(proc.pid, kill_children=kill_children)
+        ret = proc.wait()
+        LOGGER.debug("Finished kill of parent process %d has return code of %d", proc.pid, ret)
 
 
 def get_extension(filename):
@@ -135,46 +240,89 @@ def get_bin_dir(root_dir):
     return None
 
 
-def executable_exists_in_path(executable):
-    """Returns True if 'executable' is in the PATH."""
-    return distutils.spawn.find_executable(executable) is not None
+def create_temp_executable_file(cmds):
+    """Creates an executable temporary file containing 'cmds'. Returns file name."""
+    temp_file_name = NamedTempFile.create(suffix=".sh", directory="tmp")
+    with NamedTempFile.get(temp_file_name) as temp_file:
+        temp_file.write(cmds)
+    os_st = os.stat(temp_file_name)
+    os.chmod(temp_file_name, os_st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return temp_file_name
 
 
-def execute_cmd(cmd, use_file=False):
-    """Executes command and returns return_code and output from command"""
+def start_cmd(cmd, use_file=False):
+    """Starts command and returns proc instance from Popen"""
 
     orig_cmd = ""
     # Multi-commands need to be written to a temporary file to execute on Windows.
     # This is due to complications with invoking Bash in Windows.
     if use_file:
         orig_cmd = cmd
-        with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as temp_file:
-            temp_file.write(cmd)
-        os_st = os.stat(temp_file.name)
-        os.chmod(temp_file.name, os_st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        temp_file = create_temp_executable_file(cmd)
         # The temporary file name will have '\' on Windows and needs to be converted to '/'.
-        cmd = "bash -c {}".format(temp_file.name.replace("\\", "/"))
+        cmd = "bash -c {}".format(temp_file.replace("\\", "/"))
 
     # If 'cmd' is specified as a string, convert it to a list of strings.
     if isinstance(cmd, str):
         cmd = shlex.split(cmd)
 
     if use_file:
-        LOGGER.info("Executing '%s', tempfile contains: %s", cmd, orig_cmd)
+        LOGGER.debug("Executing '%s', tempfile contains: %s", cmd, orig_cmd)
     else:
-        LOGGER.info("Executing '%s'", cmd)
+        LOGGER.debug("Executing '%s'", cmd)
+
+    proc = subprocess.Popen(cmd, close_fds=True)
+    LOGGER.debug("Spawned process %s pid %d", psutil.Process(proc.pid).name(), proc.pid)
+
+    return proc
+
+
+def execute_cmd(cmd, use_file=False):
+    """Executes command and returns return_code, output from command"""
+
+    orig_cmd = ""
+    # Multi-commands need to be written to a temporary file to execute on Windows.
+    # This is due to complications with invoking Bash in Windows.
+    if use_file:
+        orig_cmd = cmd
+        temp_file = create_temp_executable_file(cmd)
+        # The temporary file name will have '\' on Windows and needs to be converted to '/'.
+        cmd = "bash -c {}".format(temp_file.replace("\\", "/"))
+
+    # If 'cmd' is specified as a string, convert it to a list of strings.
+    if isinstance(cmd, str):
+        cmd = shlex.split(cmd)
+
+    if use_file:
+        LOGGER.debug("Executing '%s', tempfile contains: %s", cmd, orig_cmd)
+    else:
+        LOGGER.debug("Executing '%s'", cmd)
 
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output, _ = proc.communicate()
         error_code = proc.returncode
         if error_code:
             output = "Error executing cmd {}: {}".format(cmd, output)
     finally:
         if use_file:
-            os.remove(temp_file.name)
+            os.remove(temp_file)
+
     return error_code, output
+
+
+def get_aws_crash_options(option):
+    """ Returns a tuple (instance_id, address_type) of the AWS crash option. """
+    if ":" in option:
+        return tuple(option.split(":"))
+    return option, None
+
+
+def get_user_host(user_host):
+    """ Returns a tuple (user, host) from the user_host string. """
+    if "@" in user_host:
+        return tuple(user_host.split("@"))
+    return None, user_host
 
 
 def parse_options(options):
@@ -202,23 +350,44 @@ def parse_options(options):
     return options_map
 
 
-def download_file(url, file_name):
+def download_file(url, file_name, download_retries=5):
     """Returns True if download was successful. Raises error if download fails."""
 
     LOGGER.info("Downloading %s to %s", url, file_name)
-    with requests.Session() as session:
-        adapter = requests.adapters.HTTPAdapter(max_retries=5)
-        session.mount(url, adapter)
-        response = session.get(url, stream=True)
-        response.raise_for_status()
+    while download_retries > 0:
 
-        with open(file_name, "wb") as file_handle:
-            for block in response.iter_content(1024):
-                file_handle.write(block)
+        with requests.Session() as session:
+            adapter = requests.adapters.HTTPAdapter(max_retries=download_retries)
+            session.mount(url, adapter)
+            response = session.get(url, stream=True)
+            response.raise_for_status()
 
-        adapter.close()
+            with open(file_name, "wb") as file_handle:
+                try:
+                    for block in response.iter_content(1024 * 1000):
+                        file_handle.write(block)
+                except requests.exceptions.ChunkedEncodingError as err:
+                    download_retries -= 1
+                    if download_retries == 0:
+                        raise Exception("Incomplete download for URL {}: {}".format(url, err))
+                    continue
 
-    return True
+        # Check if file download was completed.
+        if "Content-length" in response.headers:
+            url_content_length = int(response.headers["Content-length"])
+            file_size = os.path.getsize(file_name)
+            # Retry download if file_size has an unexpected size.
+            if url_content_length != file_size:
+                download_retries -= 1
+                if download_retries == 0:
+                    raise Exception("Downloaded file size ({} bytes) doesn't match content length"
+                                    "({} bytes) for URL {}".format(
+                                        file_size, url_content_length, url))
+                continue
+
+        return True
+
+    raise Exception("Unknown download problem for {} to file {}".format(url, file_name))
 
 
 def install_tarball(tarball, root_dir):
@@ -361,7 +530,7 @@ def install_mongod(bin_dir=None, tarball_url="latest", root_dir=None):
     # Symlink the bin dir from the tarball to 'root_bin_dir'.
     # Since get_bin_dir returns an abolute path, we need to remove 'root_dir'
     tarball_bin_dir = get_bin_dir(root_dir).replace("{}/".format(root_dir), "")
-    LOGGER.info("Symlink %s to %s", tarball_bin_dir, root_bin_dir)
+    LOGGER.debug("Symlink %s to %s", tarball_bin_dir, root_bin_dir)
     symlink_dir(tarball_bin_dir, root_bin_dir)
 
 
@@ -378,6 +547,97 @@ def call_remote_operation(local_ops, remote_python, script_name, client_args, op
     client_call = "{} {} {} {}".format(remote_python, script_name, client_args, operation)
     ret, output = local_ops.shell(client_call)
     return ret, output
+
+
+class Processes(object):
+    """Class to create and kill spawned processes."""
+
+    _PROC_LIST = []
+
+    @classmethod
+    def create(cls, cmds):
+        """Creates a spawned process."""
+        proc = start_cmd(cmds, use_file=True)
+        cls._PROC_LIST.append(proc)
+
+    @classmethod
+    def kill(cls, proc):
+        """Kills a spawned process and all it's children."""
+        kill_processes([proc], kill_children=True)
+        cls._PROC_LIST.remove(proc)
+
+    @classmethod
+    def kill_all(cls):
+        """Kill all spawned processes."""
+        procs = copy.copy(cls._PROC_LIST)
+        for proc in procs:
+            cls.kill(proc)
+
+
+class NamedTempFile(object):
+    """Class to control temporary files."""
+
+    _FILE_MAP = {}
+    _DIR_LIST = []
+
+    @classmethod
+    def create(cls, directory=None, suffix=""):
+        """Creates a temporary file, and optional directory, and returns the file name."""
+        if directory and not os.path.isdir(directory):
+            LOGGER.debug("Creating temporary directory %s", directory)
+            os.makedirs(directory)
+            cls._DIR_LIST.append(directory)
+        temp_file = tempfile.NamedTemporaryFile(suffix=suffix, dir=directory, delete=False)
+        cls._FILE_MAP[temp_file.name] = temp_file
+        return temp_file.name
+
+    @classmethod
+    def get(cls, name):
+        """Gets temporary file object.  Raises an exception if the file is unknown."""
+        if name not in cls._FILE_MAP:
+            raise Exception("Unknown temporary file {}.".format(name))
+        return cls._FILE_MAP[name]
+
+    @classmethod
+    def delete(cls, name):
+        """Deletes temporary file. Raises an exception if the file is unknown."""
+        if name not in cls._FILE_MAP:
+            raise Exception("Unknown temporary file {}.".format(name))
+        if not os.path.exists(name):
+            LOGGER.debug("Temporary file %s no longer exists", name)
+            del cls._FILE_MAP[name]
+            return
+        try:
+            os.remove(name)
+        except (IOError, OSError) as err:
+            LOGGER.warn("Unable to delete temporary file %s with error %s", name, err)
+        if not os.path.exists(name):
+            del cls._FILE_MAP[name]
+
+    @classmethod
+    def delete_dir(cls, directory):
+        """Deletes temporary directory. Raises an exception if the directory is unknown."""
+        if directory not in cls._DIR_LIST:
+            raise Exception("Unknown temporary directory {}.".format(directory))
+        if not os.path.exists(directory):
+            LOGGER.debug("Temporary directory %s no longer exists", directory)
+            cls._DIR_LIST.remove(directory)
+            return
+        try:
+            shutil.rmtree(directory)
+        except (IOError, OSError) as err:
+            LOGGER.warn(
+                "Unable to delete temporary directory %s with error %s", directory, err)
+        if not os.path.exists(directory):
+            cls._DIR_LIST.remove(directory)
+
+    @classmethod
+    def delete_all(cls):
+        """Deletes all temporary files and directories."""
+        for name in list(cls._FILE_MAP):
+            cls.delete(name)
+        for directory in cls._DIR_LIST:
+            cls.delete_dir(directory)
 
 
 class ProcessControl(object):
@@ -430,14 +690,15 @@ class ProcessControl(object):
                 return True
         return False
 
-    def terminate(self):
-        """ Terminates all running processes that match the list of pids. """
+    def kill(self):
+        """ Kills all running processes that match the list of pids. """
         if self.is_running():
             for proc in self.get_procs():
                 try:
-                    proc.terminate()
+                    proc.kill()
                 except psutil.NoSuchProcess:
-                    LOGGER.info("Could not terminate pid %d, process no longer exists", proc.pid)
+                    LOGGER.info("Could not kill process with pid %d, as it no longer exists",
+                                proc.pid)
 
 
 class WindowsService(object):
@@ -564,8 +825,7 @@ class WindowsService(object):
                 win32serviceutil.QueryServiceStatus(serviceName=self.name))
             if svc_state in self._states:
                 return self._states[svc_state]
-            else:
-                return "unknown"
+            return "unknown"
         except pywintypes.error:
             return "not installed"
 
@@ -611,7 +871,7 @@ class PosixService(object):
     def stop(self):
         """ Stop process. Returns (code, output) tuple. """
         proc = ProcessControl(name=self.bin_name)
-        proc.terminate()
+        proc.kill()
         self.pids = []
         return 0, None
 
@@ -796,12 +1056,20 @@ def remote_handler(options, operations):
         port=options.port,
         options=options.mongod_options)
 
+    mongo_client_opts = get_mongo_client_args(options, host="localhost", port=options.port)
+
     # Perform the sequence of operations specified. If any operation fails
     # then return immediately.
     for operation in operations:
         # This is the internal "crash" mechanism, which is executed on the remote host.
         if operation == "crash_server":
             ret, output = internal_crash(options.remote_sudo)
+            # An internal crash on Windows is not immediate
+            try:
+                LOGGER.info("Waiting after issuing internal crash!")
+                time.sleep(30)
+            except IOError:
+                pass
 
         elif operation == "install_mongod":
             ret, output = mongod.install(root_dir, options.tarball_url)
@@ -837,7 +1105,7 @@ def remote_handler(options, operations):
                 return ret
             LOGGER.info("Started mongod running on port %d pid %s",
                         options.port, mongod.get_pids())
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             LOGGER.info("Server buildinfo: %s", mongo.admin.command("buildinfo"))
             LOGGER.info("Server serverStatus: %s", mongo.admin.command("serverStatus"))
             if options.use_replica_set and options.repl_set:
@@ -850,7 +1118,7 @@ def remote_handler(options, operations):
             ret = wait_for_mongod_shutdown(options.db_path)
 
         elif operation == "shutdown_mongod":
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             try:
                 mongo.admin.command("shutdown", force=True)
             except pymongo.errors.AutoReconnect:
@@ -862,23 +1130,32 @@ def remote_handler(options, operations):
             LOGGER.info(output)
 
         elif operation == "seed_docs":
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             ret = mongo_seed_docs(
                 mongo, options.db_name, options.collection_name, options.seed_doc_num)
 
         elif operation == "validate_collections":
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             ret = mongo_validate_collections(mongo)
 
         elif operation == "insert_canary":
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             ret = mongo_insert_canary(
                 mongo, options.db_name, options.collection_name, options.canary_doc)
 
         elif operation == "validate_canary":
-            mongo = pymongo.MongoClient(host="localhost", port=options.port)
+            mongo = pymongo.MongoClient(**mongo_client_opts)
             ret = mongo_validate_canary(
                 mongo, options.db_name, options.collection_name, options.canary_doc)
+
+        elif operation == "set_fcv":
+            mongo = pymongo.MongoClient(**mongo_client_opts)
+            try:
+                ret = mongo.admin.command("setFeatureCompatibilityVersion", options.fcv_version)
+                ret = 0 if ret["ok"] == 1 else 1
+            except pymongo.errors.OperationFailure as err:
+                LOGGER.error(err.message)
+                ret = err.code
 
         else:
             LOGGER.error("Unsupported remote option specified '%s'", operation)
@@ -894,7 +1171,7 @@ def rsync(src_dir, dest_dir):
     """ Rsync 'src_dir' to 'dest_dir'. """
     # Note rsync on Windows requires a Unix-style directory.
     LOGGER.info("Rsync'ing %s to %s", src_dir, dest_dir)
-    if not executable_exists_in_path("rsync"):
+    if not distutils.spawn.find_executable("rsync"):
         return 1, "No rsync exists on the host, not rsync'ing"
     cmds = "rsync -va --delete --quiet {} {}".format(src_dir, dest_dir)
     ret, output = execute_cmd(cmds)
@@ -907,11 +1184,7 @@ def internal_crash(use_sudo=False):
     # Windows does not have a way to immediately crash itself. It's
     # better to use an external mechanism instead.
     if _IS_WINDOWS:
-        # Sleep after issuing shutdown, to prevent the 'client' side script
-        # continuing, as shutdown is no immediate.
-        cmds = """
-            shutdown /r /f /t 0 ;
-            sleep 10"""
+        cmds = "shutdown /r /f /t 0"
         ret, output = execute_cmd(cmds, use_file=True)
         return ret, output
     else:
@@ -937,17 +1210,17 @@ def internal_crash(use_sudo=False):
     return 1, "Crash did not occur"
 
 
-def crash_server(options, crash_canary, local_ops, script_name, client_args):
-    """ Crashes server and optionally writes canary doc before crash. """
+def crash_server(options, crash_canary, canary_port, local_ops, script_name, client_args):
+    """ Crashes server and optionally writes canary doc before crash.
+        Returns tuple (ret, output). """
 
     crash_wait_time = options.crash_wait_time + random.randint(0, options.crash_wait_time_jitter)
     LOGGER.info("Crashing server in %d seconds", crash_wait_time)
     time.sleep(crash_wait_time)
 
-    crash_func = local_ops.shell
-
     if options.crash_method == "mpower":
         # Provide time for power to dissipate by sleeping 10 seconds before turning it back on.
+        crash_func = local_ops.shell
         crash_args = ["""
             echo 0 > /dev/{crash_options} ;
             sleep 10 ;
@@ -956,17 +1229,18 @@ def crash_server(options, crash_canary, local_ops, script_name, client_args):
             user_host=options.ssh_crash_user_host,
             ssh_connection_options=options.ssh_crash_options,
             shell_binary="/bin/sh")
-        crash_func = local_ops.shell
 
     elif options.crash_method == "internal":
         if options.canary == "remote":
             # The crash canary function executes remotely, only if the
             # crash_method is 'internal'.
-            canary = "--docForCanary \"{}\"".format(crash_canary["args"][3])
+            canary = "--mongodPort {} --docForCanary \"{}\"".format(
+                canary_port, crash_canary["args"][3])
             canary_cmd = "insert_canary"
         else:
             canary = ""
             canary_cmd = ""
+        crash_func = local_ops.shell
         crash_args = ["{} {} --remoteOperation {} {} {} crash_server".format(
             options.remote_python,
             script_name,
@@ -977,17 +1251,20 @@ def crash_server(options, crash_canary, local_ops, script_name, client_args):
     elif options.crash_method == "aws_ec2":
         ec2 = aws_ec2.AwsEc2()
         crash_func = ec2.control_instance
-        crash_args = ["force-stop", options.crash_options]
+        instance_id, _ = get_aws_crash_options(options.crash_options)
+        crash_args = ["force-stop", instance_id, 600, True]
 
     else:
-        LOGGER.error("Unsupported crash method '%s' provided", options.crash_method)
-        return False
+        message = "Unsupported crash method '{}' provided".format(options.crash_method)
+        LOGGER.error(message)
+        return 1, message
 
     # Invoke the crash canary function, right before crashing the server.
     if crash_canary and options.canary == "local":
         crash_canary["function"](*crash_canary["args"])
-    _, output = crash_func(*crash_args)
+    ret, output = crash_func(*crash_args)
     LOGGER.info(output)
+    return ret, output
 
 
 def wait_for_mongod_shutdown(data_dir, timeout=120):
@@ -1007,22 +1284,33 @@ def wait_for_mongod_shutdown(data_dir, timeout=120):
     return 0
 
 
-def get_mongo_client_args(options):
+def get_mongo_client_args(options, host=None, port=None):
     """ Returns keyword arg dict used in PyMongo client. """
-    mongo_args = {}
+    # Set the serverSelectionTimeoutMS to 600 seconds
+    mongo_args = {"serverSelectionTimeoutMS": 600000}
+    # Set the serverSelectionTimeoutMS to 120 seconds
+    mongo_args["socketTimeoutMS"] = 120000
     # Set the writeConcern
-    mongo_args = options.write_concern
+    mongo_args = yaml.safe_load(options.write_concern)
     # Set the readConcernLevel
     if options.read_concern_level:
         mongo_args["readConcernLevel"] = options.read_concern_level
+    if host:
+        mongo_args["host"] = host
+    if port:
+        mongo_args["port"] = port
     return mongo_args
 
 
 def mongo_shell(mongo_path, work_dir, host_port, mongo_cmds, retries=5, retry_sleep=5):
     """Starts mongo_path from work_dir, connecting to host_port and executes mongo_cmds."""
-    cmds = """
+    cmds = ("""
             cd {};
-            echo '{}' | {} {}""".format(work_dir, mongo_cmds, mongo_path, host_port)
+            echo {} | {} {}""".format(
+                pipes.quote(work_dir),
+                pipes.quote(mongo_cmds),
+                pipes.quote(mongo_path),
+                host_port))
     attempt_num = 0
     while True:
         ret, output = execute_cmd(cmds, use_file=True)
@@ -1067,9 +1355,17 @@ def mongo_reconfig_replication(mongo, host_port, repl_set):
         rs_config = {"_id": repl_set, "members": [{"_id": 0, "host": host_port}]}
         ret = mongo.admin.command("replSetInitiate", rs_config)
     else:
-        ret = mongo.admin.command("replSetGetConfig")
-        if ret["ok"] != 1:
-            return 1
+        # Wait until replication is initialized.
+        while True:
+            try:
+                ret = mongo.admin.command("replSetGetConfig")
+                if ret["ok"] != 1:
+                    return 1
+                break
+            except pymongo.errors.OperationFailure as err:
+                # src/mongo/base/error_codes.err: error_code("NotYetInitialized", 94)
+                if err.code != 94:
+                    return 1
         rs_config = ret["config"]
         # We only reconfig if there is a change to 'host'.
         if rs_config["members"][0]["host"] != host_port:
@@ -1139,15 +1435,76 @@ def mongo_validate_canary(mongo, db_name, coll_name, doc):
 
 def mongo_insert_canary(mongo, db_name, coll_name, doc):
     """ Inserts a canary document with 'j' True. Returns 0 if successful. """
-    LOGGER.info("Inserting canary document %s", doc)
+    LOGGER.info("Inserting canary document %s to DB %s Collection %s", doc, db_name, coll_name)
     coll = mongo[db_name][coll_name].with_options(
         write_concern=pymongo.write_concern.WriteConcern(j=True))
     res = coll.insert_one(doc)
     return 0 if res.inserted_id else 1
 
 
+def new_resmoke_config(config_file, new_config_file, test_data, eval_str=""):
+    """ Creates 'new_config_file', from 'config_file', with an update from 'test_data'. """
+    new_config = {
+        "executor": {
+            "config": {
+                "shell_options": {
+                    "eval": eval_str,
+                    "global_vars": {
+                        "TestData": test_data
+                    }
+                }
+            }
+        }
+    }
+    with open(config_file, "r") as yaml_stream:
+        config = yaml.load(yaml_stream)
+    config.update(new_config)
+    with open(new_config_file, "w") as yaml_stream:
+        yaml.safe_dump(config, yaml_stream)
+
+
+def resmoke_client(work_dir,
+                   mongo_path,
+                   host_port,
+                   js_test,
+                   resmoke_suite,
+                   repeat_num=1,
+                   no_wait=False,
+                   log_file=None):
+    """Starts resmoke client from work_dir, connecting to host_port and executes js_test."""
+    log_output = ">> {} 2>&1".format(log_file) if log_file else ""
+    cmds = ("cd {}; "
+            "python buildscripts/resmoke.py"
+            " --mongo {}"
+            " --suites {}"
+            " --shellConnString mongodb://{}"
+            " --continueOnFailure"
+            " --repeat {}"
+            " {}"
+            " {}".format(
+                pipes.quote(work_dir),
+                pipes.quote(mongo_path),
+                pipes.quote(resmoke_suite),
+                host_port,
+                repeat_num,
+                pipes.quote(js_test),
+                log_output))
+    ret, output = None, None
+    if no_wait:
+        Processes.create(cmds)
+    else:
+        ret, output = execute_cmd(cmds, use_file=True)
+    return ret, output
+
+
 def main():
     """ Main program. """
+
+    global _report_json_success
+    global _report_json
+    global _report_json_file
+
+    atexit.register(exit_handler)
 
     parser = optparse.OptionParser(usage="""
 %prog [options]
@@ -1179,6 +1536,7 @@ Examples:
     crash_options = optparse.OptionGroup(parser, "Crash Options")
     mongodb_options = optparse.OptionGroup(parser, "MongoDB Options")
     mongod_options = optparse.OptionGroup(parser, "mongod Options")
+    client_options = optparse.OptionGroup(parser, "Client Options")
     program_options = optparse.OptionGroup(parser, "Program Options")
 
     # Test options
@@ -1199,18 +1557,6 @@ Examples:
                                  " which are added to '{}'".format(default_ssh_connection_options),
                             default=None)
 
-    test_options.add_option("--mongoPath",
-                            dest="mongo_path",
-                            help="Path to mongo (shell) executable, if unspecifed, mongo client"
-                                 " is launched from $PATH",
-                            default="mongo")
-
-    test_options.add_option("--mongoRepoRootDir",
-                            dest="mongo_repo_root_dir",
-                            help="Root directory of mongoDB repository, defaults to current"
-                                 " directory.",
-                            default=None)
-
     test_options.add_option("--testLoops",
                             dest="num_loops",
                             help="Number of powercycle loops to run [default: %default]",
@@ -1228,6 +1574,18 @@ Examples:
                             help="Rsync data directory between mongod stop and start",
                             action="store_true",
                             default=False)
+
+    test_options.add_option("--backupPathBefore",
+                            dest="backup_path_before",
+                            help="Path where the db_path is backed up before crash recovery,"
+                                 " defaults to '<rootDir>/data-beforerecovery'",
+                            default=None)
+
+    test_options.add_option("--backupPathAfter",
+                            dest="backup_path_after",
+                            help="Path where the db_path is backed up after crash recovery,"
+                                 " defaults to '<rootDir>/data-afterrecovery'",
+                            default=None)
 
     validate_locations = ["local", "remote"]
     test_options.add_option("--validate",
@@ -1290,6 +1648,18 @@ Examples:
                              help="Crash methods: {} [default: '%default']".format(crash_methods),
                              default="internal")
 
+    aws_address_types = [
+        "private_ip_address", "public_ip_address", "private_dns_name", "public_dns_name"]
+    crash_options.add_option("--crashOptions",
+                             dest="crash_options",
+                             help="Secondary argument (REQUIRED) for the following --crashMethod:"
+                                  " 'aws_ec2': specify EC2 'instance_id[:address_type]'."
+                                  " The address_type is one of {} and defaults to"
+                                  " 'public_ip_address'."
+                                  " 'mpower': specify output<num> to turn off/on, i.e.,"
+                                  " 'output1'.".format(aws_address_types),
+                             default=None)
+
     crash_options.add_option("--crashWaitTime",
                              dest="crash_wait_time",
                              help="Time, in seconds, to wait before issuing crash [default:"
@@ -1313,14 +1683,6 @@ Examples:
     crash_options.add_option("--sshCrashOptions",
                              dest="ssh_crash_options",
                              help="The crash host's ssh connection options, i.e., '-i ident.pem'",
-                             default=None)
-
-    crash_options.add_option("--crashOptions",
-                             dest="crash_options",
-                             help="Secondary argument for the following --crashMethod:"
-                                  " 'aws_ec2': specify EC2 instance_id."
-                                  " 'mpower': specify output<num> to turn off/on, i.e.,"
-                                  " 'output1'.",
                              default=None)
 
     # MongoDB options
@@ -1389,7 +1751,95 @@ Examples:
                               help="Additional mongod options",
                               default="")
 
+    mongod_options.add_option("--fcv",
+                              dest="fcv_version",
+                              help="Set the FeatureCompatibilityVersion of mongod.",
+                              default=None)
+
+    # Client options
+    mongo_path = distutils.spawn.find_executable(
+        "mongo", os.getcwd() + os.pathsep + os.environ["PATH"])
+    client_options.add_option("--mongoPath",
+                              dest="mongo_path",
+                              help="Path to mongo (shell) executable, if unspecifed, mongo client"
+                                   " is launched from the current directory.",
+                              default=mongo_path)
+
+    client_options.add_option("--mongoRepoRootDir",
+                              dest="mongo_repo_root_dir",
+                              help="Root directory of mongoDB repository, defaults to current"
+                                   " directory.",
+                              default=None)
+
+    client_options.add_option("--crudClient",
+                              dest="crud_client",
+                              help="The path to the CRUD client script on the local host"
+                                   " [default: '%default'].",
+                              default="jstests/hooks/crud_client.js")
+
+    with_external_server = "buildscripts/resmokeconfig/suites/with_external_server.yml"
+    client_options.add_option("--configCrudClient",
+                              dest="config_crud_client",
+                              help="The path to the CRUD client configuration YML file on the"
+                                   " local host. This is the resmoke.py suite file. If unspecified,"
+                                   " a default configuration YML file (%default) will be used that"
+                                   " provides a mongo (shell) DB connection to a running mongod.",
+                              default=with_external_server)
+
+    client_options.add_option("--numCrudClients",
+                              dest="num_crud_clients",
+                              help="The number of concurrent CRUD clients to run"
+                                   " [default: '%default'].",
+                              type="int",
+                              default=1)
+
+    client_options.add_option("--numFsmClients",
+                              dest="num_fsm_clients",
+                              help="The number of concurrent FSM clients to run"
+                                   " [default: '%default'].",
+                              type="int",
+                              default=0)
+
+    client_options.add_option("--fsmWorkloadFiles",
+                              dest="fsm_workload_files",
+                              help="A list of the FSM workload files to execute. More than one"
+                                   " file can be specified either in a comma-delimited string,"
+                                   " or by specifying this option more than once. If unspecified,"
+                                   " then all FSM workload files are executed.",
+                              action="append",
+                              default=[])
+
+    client_options.add_option("--fsmWorkloadBlacklistFiles",
+                              dest="fsm_workload_blacklist_files",
+                              help="A list of the FSM workload files to blacklist. More than one"
+                                   " file can be specified either in a comma-delimited string,"
+                                   " or by specifying this option more than once. Note the"
+                                   " file name is the basename, i.e., 'distinct.js'.",
+                              action="append",
+                              default=[])
+
     # Program options
+    program_options.add_option("--configFile",
+                               dest="config_file",
+                               help="YAML configuration file of program options."
+                                    " Option values are mapped to command line option names."
+                                    " The command line option overrides any specified options"
+                                    " from this file.",
+                               default=None)
+
+    program_options.add_option("--saveConfigOptions",
+                               dest="save_config_options",
+                               help="Save the program options to a YAML configuration file."
+                                    " If this options is specified the program only saves"
+                                    " the configuration file and exits.",
+                               default=None)
+
+    program_options.add_option("--reportJsonFile",
+                               dest="report_json_file",
+                               help="Create or update the specified report file upon program"
+                                    " exit.",
+                               default=None)
+
     program_options.add_option("--remotePython",
                                dest="remote_python",
                                help="The python intepreter to use on the remote host"
@@ -1400,7 +1850,6 @@ Examples:
                                     " 'source venv/bin/activate;  python'",
                                default="python")
 
-    # Program options
     program_options.add_option("--remoteSudo",
                                dest="remote_sudo",
                                help="Use sudo on the remote host for priveleged operations."
@@ -1439,18 +1888,6 @@ Examples:
                                action="store_true",
                                default=False)
 
-    program_options.add_option("--backupPathBefore",
-                               dest="backup_path_before",
-                               help="Path where the db_path is backed up before crash recovery,"
-                                    " defaults to '<rootDir>/data-beforerecovery/db'",
-                               default=None)
-
-    program_options.add_option("--backupPathAfter",
-                               dest="backup_path_after",
-                               help="Path where the db_path is backed up after crash recovery,"
-                                    " defaults to '<rootDir>/data-afterrecovery/db'",
-                               default=None)
-
     program_options.add_option("--rsyncDest",
                                dest="rsync_dest",
                                help=optparse.SUPPRESS_HELP,
@@ -1458,6 +1895,7 @@ Examples:
 
     parser.add_option_group(test_options)
     parser.add_option_group(crash_options)
+    parser.add_option_group(client_options)
     parser.add_option_group(mongodb_options)
     parser.add_option_group(mongod_options)
     parser.add_option_group(program_options)
@@ -1465,10 +1903,39 @@ Examples:
     options, args = parser.parse_args()
 
     logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s",
-                        level=options.log_level.upper(), filename=options.log_file)
+                        level=logging.ERROR,
+                        filename=options.log_file)
+    logging.getLogger(__name__).setLevel(options.log_level.upper())
     logging.Formatter.converter = time.gmtime
 
     LOGGER.info("powertest.py invocation: %s", " ".join(sys.argv))
+
+    # Command line options override the config file options.
+    config_options = None
+    if options.config_file:
+        with open(options.config_file) as ystream:
+            config_options = yaml.safe_load(ystream)
+        LOGGER.info("Loading config file %s with options %s", options.config_file, config_options)
+        # Load the options specified in the config_file
+        parser.set_defaults(**config_options)
+        options, args = parser.parse_args()
+        # Disable this option such that the remote side does not load a config_file.
+        options.config_file = None
+        config_options["config_file"] = None
+
+    if options.save_config_options:
+        # Disable this option such that the remote side does not save the config options.
+        save_config_options = options.save_config_options
+        options.save_config_options = None
+        save_options = {}
+        for opt_group in parser.option_groups:
+            for opt in opt_group.option_list:
+                if getattr(options, opt.dest) != opt.default:
+                    save_options[opt.dest] = getattr(options, opt.dest)
+        LOGGER.info("Config options being saved %s", save_options)
+        with open(save_config_options, "w") as ystream:
+            yaml.safe_dump(save_options, ystream, default_flow_style=False)
+        sys.exit(0)
 
     script_name = os.path.basename(__file__)
     # Print script name and version.
@@ -1476,17 +1943,55 @@ Examples:
         print("{}:{}".format(script_name, __version__))
         sys.exit(0)
 
+    if options.report_json_file:
+        _report_json_file = options.report_json_file
+        if _report_json_file and os.path.exists(_report_json_file):
+            with open(_report_json_file) as jstream:
+                _report_json = json.load(jstream)
+        else:
+            _report_json = {
+                "failures": 0,
+                "results": [
+                    {"status": "fail",
+                     "test_file": __name__,
+                     "exit_code": 0,
+                     "elapsed": 0,
+                     "start": int(time.time()),
+                     "end": int(time.time())}
+                ]
+            }
+        LOGGER.debug("Updating/creating report JSON %s", _report_json)
+        # Disable this option such that the remote side does not generate report.json
+        options.report_json_file = None
+
+    # Setup the crash options
+    if ((options.crash_method == "aws_ec2" or options.crash_method == "mpower") and
+            options.crash_options is None):
+        parser.error("Missing required argument --crashOptions for crashMethod '{}'".format(
+            options.crash_method))
+
+    if options.crash_method == "aws_ec2":
+        instance_id, address_type = get_aws_crash_options(options.crash_options)
+        address_type = address_type if address_type is not None else "public_ip_address"
+        if address_type not in aws_address_types:
+            LOGGER.error("Invalid crashOptions address_type '%s' specified for crashMethod"
+                         " 'aws_ec2', specify one of %s", address_type, aws_address_types)
+            sys.exit(1)
+        options.crash_options = "{}:{}".format(instance_id, address_type)
+
     # Initialize the mongod options
+    # Note - We use posixpath for Windows client to Linux server scenarios.
     if not options.root_dir:
         options.root_dir = "mongodb-powertest-{}".format(int(time.time()))
     if not options.db_path:
-        options.db_path = os.path.join(options.root_dir, "data", "db")
+        options.db_path = posixpath.join(options.root_dir, "data", "db")
     if not options.log_path:
-        options.log_path = os.path.join(options.root_dir, "log", "mongod.log")
+        options.log_path = posixpath.join(options.root_dir, "log", "mongod.log")
     mongod_options_map = parse_options(options.mongod_options)
+    set_fcv_cmd = "set_fcv" if options.fcv_version is not None else ""
 
     # Error out earlier if these options are not properly specified
-    options.write_concern = yaml.safe_load(options.write_concern)
+    write_concern = yaml.safe_load(options.write_concern)
     options.canary_doc = yaml.safe_load(options.canary_doc)
 
     # Invoke remote_handler if remote_operation is specified.
@@ -1507,23 +2012,76 @@ Examples:
 
     if options.rsync_data:
         rsync_cmd = "rsync_data"
+        backup_path_before = options.backup_path_before
+        if not backup_path_before:
+            backup_path_before = "{}/data-beforerecovery".format(options.root_dir)
+        backup_path_after = options.backup_path_after
+        if not backup_path_after:
+            backup_path_after = "{}/data-afterrecovery".format(options.root_dir)
     else:
         rsync_cmd = ""
         rsync_opt = ""
 
-    # Setup the mongo_repo_root
-    mongo_repo_root_dir = "." if not options.mongo_repo_root_dir else options.mongo_repo_root_dir
+    # Setup the mongo client, mongo_path is required if there are local clients.
+    if (options.num_crud_clients > 0 or
+            options.num_fsm_clients > 0 or
+            options.validate_collections == "local"):
+        if not options.mongo_path:
+            LOGGER.error("mongoPath must be specified")
+            sys.exit(1)
+        if not os.path.isfile(options.mongo_path):
+            LOGGER.error("mongoPath %s does not exist", options.mongo_path)
+            sys.exit(1)
+        mongo_path = os.path.abspath(os.path.normpath(options.mongo_path))
+
+    # Setup the CRUD & FSM clients.
+    if not os.path.isfile(options.config_crud_client):
+        LOGGER.error("configCrudClient %s does not exist", options.config_crud_client)
+        sys.exit(1)
+    with_external_server = "buildscripts/resmokeconfig/suites/with_external_server.yml"
+    fsm_client = "jstests/libs/fsm_serial_client.js"
+    fsm_workload_files = []
+    for fsm_workload_file in options.fsm_workload_files:
+        fsm_workload_files += fsm_workload_file.replace(" ", "").split(",")
+    fsm_workload_blacklist_files = []
+    for fsm_workload_blacklist_file in options.fsm_workload_blacklist_files:
+        fsm_workload_blacklist_files += fsm_workload_blacklist_file.replace(" ", "").split(",")
+    read_concern_level = options.read_concern_level
+    if write_concern and not read_concern_level:
+        read_concern_level = "local"
+    crud_test_data = {}
+    if read_concern_level:
+        crud_test_data["defaultReadConcernLevel"] = read_concern_level
+    if write_concern:
+        crud_test_data["defaultWriteConcern"] = write_concern
+    if read_concern_level or write_concern:
+        eval_str = "load('jstests/libs/override_methods/set_read_and_write_concerns.js');"
+    else:
+        eval_str = ""
+    fsm_test_data = copy.deepcopy(crud_test_data)
+    fsm_test_data["fsmDbBlacklist"] = [options.db_name]
+    if fsm_workload_files:
+        fsm_test_data["workloadFiles"] = fsm_workload_files
+    if fsm_workload_blacklist_files:
+        fsm_test_data["workloadBlacklistFiles"] = fsm_workload_blacklist_files
+    crud_test_data["dbName"] = options.db_name
+
+    # Setup the mongo_repo_root.
+    if options.mongo_repo_root_dir:
+        mongo_repo_root_dir = options.mongo_repo_root_dir
+    else:
+        mongo_repo_root_dir = os.getcwd()
     if not os.path.isdir(mongo_repo_root_dir):
         LOGGER.error("mongoRepoRoot %s does not exist", mongo_repo_root_dir)
         sys.exit(1)
 
-    # Setup the validate_collections option
+    # Setup the validate_collections option.
     if options.validate_collections == "remote":
         validate_collections_cmd = "validate_collections"
     else:
         validate_collections_cmd = ""
 
-    # Setup the validate_canary option
+    # Setup the validate_canary option.
     if options.canary and "nojournal" in mongod_options_map:
         LOGGER.error("Cannot create and validate canary documents if the mongod option"
                      " '--nojournal' is used.")
@@ -1536,7 +2094,8 @@ Examples:
 
     # The remote mongod host comes from the ssh_user_host,
     # which may be specified as user@host.
-    mongod_host = options.ssh_user_host.rsplit()[-1].rsplit("@")[-1]
+    ssh_user, ssh_host = get_user_host(options.ssh_user_host)
+    mongod_host = ssh_host
 
     ssh_connection_options = "{} {}".format(
         default_ssh_connection_options,
@@ -1573,8 +2132,8 @@ Examples:
                 # remote host's invocation of this script.
                 elif isinstance(option_value, str) and re.search("\"|'| ", option_value):
                     option_value = "'{}'".format(option_value)
-                # The tuple options need to be changed to a string.
-                elif isinstance(option_value, tuple):
+                # The tuple, list or set options need to be changed to a string.
+                elif isinstance(option_value, (tuple, list, set)):
                     option_value = " ".join(map(str, option_value))
                 client_args = "{} {} {}".format(client_args, option.get_opt_string(), option_value)
 
@@ -1619,20 +2178,22 @@ Examples:
         loop_num += 1
         LOGGER.info("****Starting test loop %d test time %d seconds****", loop_num, test_time)
 
+        temp_client_files = []
+
+        validate_canary_local = False
         if options.canary and loop_num > 1:
-            canary_opt = "--docForCanary \"{}\"".format(canary_doc)
-            validate_canary_cmd = "validate_canary" if options.canary else ""
+            if options.canary == "remote":
+                canary_opt = "--docForCanary \"{}\"".format(canary_doc)
+                validate_canary_cmd = "validate_canary" if options.canary else ""
+            else:
+                validate_canary_local = True
         else:
             canary_opt = ""
 
         # Since rsync requires Posix style paths, we do not use os.path.join to
         # construct the rsync destination directory.
         if rsync_cmd:
-            if options.backup_path_before:
-                rsync_dest = options.backup_path_before
-            else:
-                rsync_dest = "{}/data-afterrecovery".format(options.root_dir)
-            rsync_opt = " --rsyncDest {}".format(rsync_dest)
+            rsync_opt = "--rsyncDest {}".format(backup_path_before)
 
         # Optionally, rsync the pre-recovery database.
         # Start monogd on the secret port.
@@ -1643,6 +2204,7 @@ Examples:
                             " --mongodPort {port}"
                             " {rsync_cmd}"
                             " start_mongod"
+                            " {set_fcv_cmd}"
                             " {validate_collections_cmd}"
                             " {validate_canary_cmd}"
                             " {seed_docs}").format(
@@ -1650,6 +2212,7 @@ Examples:
                                 canary_opt=canary_opt,
                                 port=secret_port,
                                 rsync_cmd=rsync_cmd,
+                                set_fcv_cmd=set_fcv_cmd if loop_num == 1 else "",
                                 validate_collections_cmd=validate_collections_cmd,
                                 validate_canary_cmd=validate_canary_cmd,
                                 seed_docs=seed_docs if loop_num == 1 else "")
@@ -1664,15 +2227,30 @@ Examples:
         if ret:
             sys.exit(ret)
 
+        # Optionally validate canary document locally.
+        if validate_canary_local:
+            mongo = pymongo.MongoClient(
+                **get_mongo_client_args(options, host=mongod_host, port=secret_port))
+            ret = mongo_validate_canary(
+                mongo, options.db_name, options.collection_name, canary_doc)
+            LOGGER.info("Local canary validation: %d", ret)
+            if ret:
+                sys.exit(ret)
+
         # Optionally, run local validation of collections.
         if options.validate_collections == "local":
-            cmds = """
-                TestData = {};
-                TestData.skipValidationOnNamespaceNotFound = true;
-                load("jstests/hooks/run_validate_collections.js");"""
             host_port = "{}:{}".format(mongod_host, secret_port)
-            ret, output = mongo_shell(options.mongo_path, mongo_repo_root_dir, host_port, cmds)
-            LOGGER.info("Collection validation: %d %s", ret, output)
+            new_config_file = NamedTempFile.create(suffix=".yml", directory="tmp")
+            temp_client_files.append(new_config_file)
+            validation_test_data = {"skipValidationOnNamespaceNotFound": True}
+            new_resmoke_config(with_external_server, new_config_file, validation_test_data)
+            ret, output = resmoke_client(
+                mongo_repo_root_dir,
+                mongo_path,
+                host_port,
+                "jstests/hooks/run_validate_collections.js",
+                new_config_file)
+            LOGGER.info("Local collection validation: %d %s", ret, output)
             if ret:
                 sys.exit(ret)
 
@@ -1693,11 +2271,7 @@ Examples:
         # Since rsync requires Posix style paths, we do not use os.path.join to
         # construct the rsync destination directory.
         if rsync_cmd:
-            if options.backup_path_after:
-                rsync_dest = options.backup_path_after
-            else:
-                rsync_dest = "{}/data-afterrecovery".format(options.root_dir)
-            rsync_opt = " --rsyncDest {}".format(rsync_dest)
+            rsync_opt = "--rsyncDest {}".format(backup_path_after)
 
         # Optionally, rsync the post-recovery database.
         # Start monogd on the standard port.
@@ -1709,7 +2283,7 @@ Examples:
                      " {}"
                      " {}"
                      " start_mongod").format(
-                         rsync_opt, standard_port, use_replica_set, rsync_cmd)
+                        rsync_opt, standard_port, use_replica_set, rsync_cmd)
         ret, output = call_remote_operation(
             local_ops,
             options.remote_python,
@@ -1721,29 +2295,107 @@ Examples:
         if ret:
             sys.exit(ret)
 
-        # TODO SERVER-30802: Add CRUD & FSM clients
+        # Start CRUD clients
+        host_port = "{}:{}".format(mongod_host, standard_port)
+        for i in xrange(options.num_crud_clients):
+            if options.config_crud_client == with_external_server:
+                crud_config_file = NamedTempFile.create(suffix=".yml", directory="tmp")
+                crud_test_data["collectionName"] = "{}-{}".format(options.collection_name, i)
+                new_resmoke_config(
+                    with_external_server, crud_config_file, crud_test_data, eval_str)
+            else:
+                crud_config_file = options.config_crud_client
+            _, _ = resmoke_client(
+                work_dir=mongo_repo_root_dir,
+                mongo_path=mongo_path,
+                host_port=host_port,
+                js_test=options.crud_client,
+                resmoke_suite=crud_config_file,
+                repeat_num=100,
+                no_wait=True,
+                log_file="crud_{}.log".format(i))
+
+        if options.num_crud_clients:
+            LOGGER.info("****Started %d CRUD client(s)****", options.num_crud_clients)
+
+        # Start FSM clients
+        for i in xrange(options.num_fsm_clients):
+            fsm_config_file = NamedTempFile.create(suffix=".yml", directory="tmp")
+            fsm_test_data["dbNamePrefix"] = "fsm-{}".format(i)
+            # Do collection validation only for the first FSM client.
+            fsm_test_data["validateCollections"] = True if i == 0 else False
+            new_resmoke_config(with_external_server, fsm_config_file, fsm_test_data, eval_str)
+            _, _ = resmoke_client(
+                work_dir=mongo_repo_root_dir,
+                mongo_path=mongo_path,
+                host_port=host_port,
+                js_test=fsm_client,
+                resmoke_suite=fsm_config_file,
+                repeat_num=100,
+                no_wait=True,
+                log_file="fsm_{}.log".format(i))
+
+        if options.num_fsm_clients:
+            LOGGER.info("****Started %d FSM client(s)****", options.num_fsm_clients)
 
         # Crash the server. A pre-crash canary document is optionally written to the DB.
         crash_canary = {}
         if options.canary:
             canary_doc = {"x": time.time()}
             orig_canary_doc = copy.deepcopy(canary_doc)
-            mongo_opts = get_mongo_client_args(options)
             mongo = pymongo.MongoClient(
-                host=mongod_host, port=standard_port, **mongo_opts)
+                **get_mongo_client_args(options, host=mongod_host, port=standard_port))
             crash_canary["function"] = mongo_insert_canary
             crash_canary["args"] = [
                 mongo,
                 options.db_name,
                 options.collection_name,
                 canary_doc]
-        crash_server(options, crash_canary, local_ops, script_name, client_args)
+        ret, output = crash_server(
+            options, crash_canary, standard_port, local_ops, script_name, client_args)
+        # For internal crashes 'ret' is non-zero, because the ssh session unexpectedly terminates.
+        if options.crash_method != "internal" and ret:
+            raise Exception("Crash of server failed: {}", format(output))
+        # Wait a bit after sending command to crash the server to avoid connecting to the
+        # server before the actual crash occurs.
+        time.sleep(10)
+
+        # Kill any running clients and cleanup temporary files.
+        Processes.kill_all()
+        for temp_file in temp_client_files:
+            NamedTempFile.delete(temp_file)
+
+        # The EC2 instance address changes if the crash_method is 'aws_ec2'.
+        if options.crash_method == "aws_ec2":
+            ec2 = aws_ec2.AwsEc2()
+            ret, aws_status = ec2.control_instance(
+                mode="start", image_id=instance_id, wait_time_secs=600, show_progress=True)
+            LOGGER.info("Start instance: %d %s****", ret, aws_status)
+            if ret:
+                raise Exception("Start instance failed: {}".format(aws_status))
+            if not hasattr(aws_status, address_type):
+                raise Exception("Cannot determine address_type {} from AWS EC2 status {}".format(
+                    address_type, aws_status))
+            ssh_host = getattr(aws_status, address_type)
+            if ssh_user is None:
+                ssh_user_host = ssh_host
+            else:
+                ssh_user_host = "{}@{}".format(ssh_user, ssh_host)
+            mongod_host = ssh_host
+            local_ops = LocalToRemoteOperations(
+                user_host=ssh_user_host,
+                ssh_connection_options=ssh_connection_options,
+                ssh_options=ssh_options,
+                use_shell=True)
+
         canary_doc = copy.deepcopy(orig_canary_doc)
 
         test_time = int(time.time()) - start_time
         LOGGER.info("****Completed test loop %d test time %d seconds****", loop_num, test_time)
         if loop_num == options.num_loops or test_time >= options.test_time:
             break
+
+    _report_json_success = True
     sys.exit(0)
 
 

@@ -44,7 +44,8 @@ ClusterClientCursorMock::~ClusterClientCursorMock() {
     invariant(_exhausted || _killed);
 }
 
-StatusWith<ClusterQueryResult> ClusterClientCursorMock::next() {
+StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(
+    RouterExecStage::ExecContext execContext) {
     invariant(!_killed);
 
     if (_resultsQueue.empty()) {
@@ -78,6 +79,10 @@ bool ClusterClientCursorMock::isTailable() const {
     return false;
 }
 
+bool ClusterClientCursorMock::isTailableAndAwaitData() const {
+    return false;
+}
+
 namespace {
 const std::vector<UserName> emptyAuthenticatedUsers{};
 }  // namespace
@@ -108,6 +113,10 @@ Status ClusterClientCursorMock::setAwaitDataTimeout(Milliseconds awaitDataTimeou
 
 boost::optional<LogicalSessionId> ClusterClientCursorMock::getLsid() const {
     return _lsid;
+}
+
+boost::optional<ReadPreferenceSetting> ClusterClientCursorMock::getReadPreference() const {
+    return boost::none;
 }
 
 }  // namespace mongo

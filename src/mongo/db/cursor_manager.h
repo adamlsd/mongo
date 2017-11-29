@@ -28,9 +28,12 @@
 
 #pragma once
 
+#include <utility>
+
 #include "mongo/db/catalog/util/partitioned.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/cursor_id.h"
+#include "mongo/db/generic_cursor.h"
 #include "mongo/db/invalidation_type.h"
 #include "mongo/db/kill_sessions.h"
 #include "mongo/db/namespace_string.h"
@@ -86,10 +89,17 @@ public:
     static void appendAllActiveSessions(OperationContext* opCtx, LogicalSessionIdSet* lsids);
 
     /**
-     * Kills cursors with matching logical sessions.
+     * Returns a list of GenericCursors for all cursors on the global cursor manager and across all
+     * collection-level cursor maangers.
      */
-    static Status killCursorsWithMatchingSessions(OperationContext* opCtx,
-                                                  const SessionKiller::Matcher& matcher);
+    static std::vector<GenericCursor> getAllCursors(OperationContext* opCtx);
+
+    /**
+     * Kills cursors with matching logical sessions. Returns a pair with the overall
+     * Status of the operation and the number of cursors successfully killed.
+     */
+    static std::pair<Status, int> killCursorsWithMatchingSessions(
+        OperationContext* opCtx, const SessionKiller::Matcher& matcher);
 
     CursorManager(NamespaceString nss);
 
@@ -175,6 +185,11 @@ public:
      * Appends sessions that have open cursors in this cursor manager to the given set of lsids.
      */
     void appendActiveSessions(LogicalSessionIdSet* lsids) const;
+
+    /**
+     * Appends all active cursors in this cursor manager to the output vector.
+     */
+    void appendActiveCursors(std::vector<GenericCursor>* cursors) const;
 
     /*
      * Returns a list of all open cursors for the given session.

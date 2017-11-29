@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
 #include "mongo/db/catalog/collection_options.h"
@@ -40,6 +41,7 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/client.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -63,6 +65,7 @@
 #include "mongo/db/service_context_d_test_fixture.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/md5.hpp"
@@ -72,6 +75,31 @@
 namespace mongo {
 namespace repl {
 namespace {
+
+/**
+ * Creates an OplogEntry with given parameters and preset defaults for this test suite.
+ */
+repl::OplogEntry makeOplogEntry(NamespaceString nss) {
+    return repl::OplogEntry(OpTime(Timestamp(1, 1), 1),       // optime
+                            1LL,                              // hash
+                            OpTypeEnum::kDelete,              // opType
+                            nss,                              // namespace
+                            boost::none,                      // uuid
+                            boost::none,                      // fromMigrate
+                            repl::OplogEntry::kOplogVersion,  // version
+                            BSONObj(),                        // o
+                            boost::none,                      // o2
+                            {},                               // sessionInfo
+                            boost::none,                      // wall clock time
+                            boost::none,                      // statement id
+                            boost::none,   // optime of previous write within same transaction
+                            boost::none,   // pre-image optime
+                            boost::none);  // post-image optime
+}
+
+repl::OplogEntry makeOplogEntry(StringData ns) {
+    return makeOplogEntry(NamespaceString(ns));
+}
 
 /**
  * Testing-only SyncTail that returns user-provided "document" for getMissingDoc().
@@ -142,11 +170,27 @@ void createCollection(OperationContext* opCtx,
     });
 }
 
+auto parseFromOplogEntryArray(const BSONObj& obj, int elem) {
+    BSONElement tsArray;
+    Status status =
+        bsonExtractTypedField(obj, OpTime::kTimestampFieldName, BSONType::Array, &tsArray);
+    ASSERT_OK(status);
+
+    BSONElement termArray;
+    status = bsonExtractTypedField(obj, OpTime::kTermFieldName, BSONType::Array, &termArray);
+    ASSERT_OK(status);
+
+    return OpTime(tsArray.Array()[elem].timestamp(), termArray.Array()[elem].Long());
+};
+
+
 TEST_F(SyncTailTest, SyncApplyNoNamespaceBadOp) {
     const BSONObj op = BSON("op"
                             << "x");
-    ASSERT_EQUALS(ErrorCodes::BadValue,
-                  SyncTail::syncApply(_opCtx.get(), op, false, _applyOp, _applyCmd, _incOps));
+    ASSERT_EQUALS(
+        ErrorCodes::BadValue,
+        SyncTail::syncApply(
+            _opCtx.get(), op, OplogApplication::Mode::kInitialSync, _applyOp, _applyCmd, _incOps));
     ASSERT_EQUALS(0U, _opsApplied);
 }
 
@@ -154,7 +198,7 @@ TEST_F(SyncTailTest, SyncApplyNoNamespaceNoOp) {
     ASSERT_OK(SyncTail::syncApply(_opCtx.get(),
                                   BSON("op"
                                        << "n"),
-                                  false));
+                                  OplogApplication::Mode::kInitialSync));
     ASSERT_EQUALS(0U, _opsApplied);
 }
 
@@ -165,11 +209,13 @@ TEST_F(SyncTailTest, SyncApplyBadOp) {
                             << "test.t");
     ASSERT_EQUALS(
         ErrorCodes::BadValue,
-        SyncTail::syncApply(_opCtx.get(), op, false, _applyOp, _applyCmd, _incOps).code());
+        SyncTail::syncApply(
+            _opCtx.get(), op, OplogApplication::Mode::kInitialSync, _applyOp, _applyCmd, _incOps)
+            .code());
     ASSERT_EQUALS(0U, _opsApplied);
 }
 
-TEST_F(SyncTailTest, SyncApplyNoOp) {
+TEST_F(SyncTailTest, SyncApplyNoOpInitialSync) {
     const BSONObj op = BSON("op"
                             << "n"
                             << "ns"
@@ -178,7 +224,8 @@ TEST_F(SyncTailTest, SyncApplyNoOp) {
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
         applyOpCalled = true;
         ASSERT_TRUE(opCtx);
@@ -187,34 +234,53 @@ TEST_F(SyncTailTest, SyncApplyNoOp) {
         ASSERT_TRUE(documentValidationDisabled(opCtx));
         ASSERT_TRUE(db);
         ASSERT_BSONOBJ_EQ(op, theOperation);
-        ASSERT_FALSE(inSteadyStateReplication);
+        ASSERT_FALSE(alwaysUpsert);
+        ASSERT_EQUALS(oplogApplicationMode, OplogApplication::Mode::kInitialSync);
         return Status::OK();
     };
     ASSERT_TRUE(_opCtx->writesAreReplicated());
     ASSERT_FALSE(documentValidationDisabled(_opCtx.get()));
-    ASSERT_OK(SyncTail::syncApply(_opCtx.get(), op, false, applyOp, failedApplyCommand, _incOps));
+    ASSERT_OK(SyncTail::syncApply(_opCtx.get(),
+                                  op,
+                                  OplogApplication::Mode::kInitialSync,
+                                  applyOp,
+                                  failedApplyCommand,
+                                  _incOps));
     ASSERT_TRUE(applyOpCalled);
 }
 
-TEST_F(SyncTailTest, SyncApplyNoOpApplyOpThrowsException) {
+TEST_F(SyncTailTest, SyncApplyNoOpNotInitialSync) {
     const BSONObj op = BSON("op"
                             << "n"
                             << "ns"
                             << "test.t");
-    int applyOpCalled = 0;
+    bool applyOpCalled = false;
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
-        applyOpCalled++;
-        if (applyOpCalled < 5) {
-            throw WriteConflictException();
-        }
+        applyOpCalled = true;
+        ASSERT_TRUE(opCtx);
+        ASSERT_TRUE(opCtx->lockState()->isDbLockedForMode("test", MODE_X));
+        ASSERT_FALSE(opCtx->writesAreReplicated());
+        ASSERT_TRUE(documentValidationDisabled(opCtx));
+        ASSERT_TRUE(db);
+        ASSERT_BSONOBJ_EQ(op, theOperation);
+        ASSERT(alwaysUpsert);
+        ASSERT_EQUALS(oplogApplicationMode, OplogApplication::Mode::kSecondary);
         return Status::OK();
     };
-    ASSERT_OK(SyncTail::syncApply(_opCtx.get(), op, false, applyOp, failedApplyCommand, _incOps));
-    ASSERT_EQUALS(5, applyOpCalled);
+    ASSERT_TRUE(_opCtx->writesAreReplicated());
+    ASSERT_FALSE(documentValidationDisabled(_opCtx.get()));
+    ASSERT_OK(SyncTail::syncApply(_opCtx.get(),
+                                  op,
+                                  OplogApplication::Mode::kSecondary,
+                                  applyOp,
+                                  failedApplyCommand,
+                                  _incOps));
+    ASSERT_TRUE(applyOpCalled);
 }
 
 TEST_F(SyncTailTest, SyncApplyInsertDocumentDatabaseMissing) {
@@ -282,7 +348,8 @@ TEST_F(SyncTailTest, SyncApplyIndexBuild) {
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
         applyOpCalled = true;
         ASSERT_TRUE(opCtx);
@@ -291,12 +358,18 @@ TEST_F(SyncTailTest, SyncApplyIndexBuild) {
         ASSERT_TRUE(documentValidationDisabled(opCtx));
         ASSERT_TRUE(db);
         ASSERT_BSONOBJ_EQ(op, theOperation);
-        ASSERT_FALSE(inSteadyStateReplication);
+        ASSERT_FALSE(alwaysUpsert);
+        ASSERT_EQUALS(oplogApplicationMode, OplogApplication::Mode::kInitialSync);
         return Status::OK();
     };
     ASSERT_TRUE(_opCtx->writesAreReplicated());
     ASSERT_FALSE(documentValidationDisabled(_opCtx.get()));
-    ASSERT_OK(SyncTail::syncApply(_opCtx.get(), op, false, applyOp, failedApplyCommand, _incOps));
+    ASSERT_OK(SyncTail::syncApply(_opCtx.get(),
+                                  op,
+                                  OplogApplication::Mode::kInitialSync,
+                                  applyOp,
+                                  failedApplyCommand,
+                                  _incOps));
     ASSERT_TRUE(applyOpCalled);
 }
 
@@ -309,24 +382,27 @@ TEST_F(SyncTailTest, SyncApplyCommand) {
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
         FAIL("applyOperation unexpectedly invoked.");
         return Status::OK();
     };
-    SyncTail::ApplyCommandInLockFn applyCmd =
-        [&](OperationContext* opCtx, const BSONObj& theOperation, bool inSteadyStateReplication) {
-            applyCmdCalled = true;
-            ASSERT_TRUE(opCtx);
-            ASSERT_TRUE(opCtx->lockState()->isW());
-            ASSERT_TRUE(opCtx->writesAreReplicated());
-            ASSERT_FALSE(documentValidationDisabled(opCtx));
-            ASSERT_BSONOBJ_EQ(op, theOperation);
-            return Status::OK();
-        };
+    SyncTail::ApplyCommandInLockFn applyCmd = [&](OperationContext* opCtx,
+                                                  const BSONObj& theOperation,
+                                                  OplogApplication::Mode oplogApplicationMode) {
+        applyCmdCalled = true;
+        ASSERT_TRUE(opCtx);
+        ASSERT_TRUE(opCtx->lockState()->isW());
+        ASSERT_TRUE(opCtx->writesAreReplicated());
+        ASSERT_FALSE(documentValidationDisabled(opCtx));
+        ASSERT_BSONOBJ_EQ(op, theOperation);
+        return Status::OK();
+    };
     ASSERT_TRUE(_opCtx->writesAreReplicated());
     ASSERT_FALSE(documentValidationDisabled(_opCtx.get()));
-    ASSERT_OK(SyncTail::syncApply(_opCtx.get(), op, false, applyOp, applyCmd, _incOps));
+    ASSERT_OK(SyncTail::syncApply(
+        _opCtx.get(), op, OplogApplication::Mode::kInitialSync, applyOp, applyCmd, _incOps));
     ASSERT_TRUE(applyCmdCalled);
     ASSERT_EQUALS(1U, _opsApplied);
 }
@@ -340,20 +416,23 @@ TEST_F(SyncTailTest, SyncApplyCommandThrowsException) {
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
         FAIL("applyOperation unexpectedly invoked.");
         return Status::OK();
     };
-    SyncTail::ApplyCommandInLockFn applyCmd =
-        [&](OperationContext* opCtx, const BSONObj& theOperation, bool inSteadyStateReplication) {
-            applyCmdCalled++;
-            if (applyCmdCalled < 5) {
-                throw WriteConflictException();
-            }
-            return Status::OK();
-        };
-    ASSERT_OK(SyncTail::syncApply(_opCtx.get(), op, false, applyOp, applyCmd, _incOps));
+    SyncTail::ApplyCommandInLockFn applyCmd = [&](OperationContext* opCtx,
+                                                  const BSONObj& theOperation,
+                                                  OplogApplication::Mode oplogApplicationMode) {
+        applyCmdCalled++;
+        if (applyCmdCalled < 5) {
+            throw WriteConflictException();
+        }
+        return Status::OK();
+    };
+    ASSERT_OK(SyncTail::syncApply(
+        _opCtx.get(), op, OplogApplication::Mode::kInitialSync, applyOp, applyCmd, _incOps));
     ASSERT_EQUALS(5, applyCmdCalled);
     ASSERT_EQUALS(1U, _opsApplied);
 }
@@ -491,8 +570,8 @@ TEST_F(SyncTailTest, MultiApplyAssignsOperationsToWriterThreadsBasedOnNamespaceH
     stdx::lock_guard<stdx::mutex> lock(mutex);
     ASSERT_EQUALS(2U, operationsWrittenToOplog.size());
     ASSERT_EQUALS(NamespaceString::kRsOplogNamespace, nssForInsert);
-    ASSERT_BSONOBJ_EQ(op1.raw, operationsWrittenToOplog[0].doc);
-    ASSERT_BSONOBJ_EQ(op2.raw, operationsWrittenToOplog[1].doc);
+    ASSERT_EQUALS(op1, unittest::assertGet(OplogEntry::parse(operationsWrittenToOplog[0].doc)));
+    ASSERT_EQUALS(op2, unittest::assertGet(OplogEntry::parse(operationsWrittenToOplog[1].doc)));
 }
 
 TEST_F(SyncTailTest, MultiApplyUpdatesTheTransactionTable) {
@@ -506,35 +585,54 @@ TEST_F(SyncTailTest, MultiApplyUpdatesTheTransactionTable) {
 
     // Entries with a session id and a txnNumber update the transaction table.
     auto lsidSingle = makeLogicalSessionIdForTest();
-    auto opSingle = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(1), 0), 1LL}, NamespaceString("test.0"), BSON("x" << 1));
-    appendSessionTransactionInfo(opSingle, lsidSingle, 5LL, 0);
+    auto opSingle =
+        makeInsertDocumentOplogEntryWithSessionInfoAndStmtId({Timestamp(Seconds(1), 0), 1LL},
+                                                             NamespaceString("test.0"),
+                                                             BSON("x" << 1),
+                                                             lsidSingle,
+                                                             5LL,
+                                                             0);
 
     // For entries with the same session, the entry with a larger txnNumber is saved.
     auto lsidDiffTxn = makeLogicalSessionIdForTest();
-    auto opDiffTxnSmaller = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(2), 0), 1LL}, NamespaceString("test.1"), BSON("x" << 0));
-    appendSessionTransactionInfo(opDiffTxnSmaller, lsidDiffTxn, 10LL, 1);
-    auto opDiffTxnLarger = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(3), 0), 1LL}, NamespaceString("test.1"), BSON("x" << 1));
-    appendSessionTransactionInfo(opDiffTxnLarger, lsidDiffTxn, 20LL, 1);
+    auto opDiffTxnSmaller =
+        makeInsertDocumentOplogEntryWithSessionInfoAndStmtId({Timestamp(Seconds(2), 0), 1LL},
+                                                             NamespaceString("test.1"),
+                                                             BSON("x" << 0),
+                                                             lsidDiffTxn,
+                                                             10LL,
+                                                             1);
+    auto opDiffTxnLarger =
+        makeInsertDocumentOplogEntryWithSessionInfoAndStmtId({Timestamp(Seconds(3), 0), 1LL},
+                                                             NamespaceString("test.1"),
+                                                             BSON("x" << 1),
+                                                             lsidDiffTxn,
+                                                             20LL,
+                                                             1);
 
     // For entries with the same session and txnNumber, the later optime is saved.
     auto lsidSameTxn = makeLogicalSessionIdForTest();
-    auto opSameTxnLater = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(6), 0), 1LL}, NamespaceString("test.2"), BSON("x" << 0));
-    appendSessionTransactionInfo(opSameTxnLater, lsidSameTxn, 30LL, 0);
-    auto opSameTxnSooner = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(5), 0), 1LL}, NamespaceString("test.2"), BSON("x" << 1));
-    appendSessionTransactionInfo(opSameTxnSooner, lsidSameTxn, 30LL, 1);
+    auto opSameTxnLater =
+        makeInsertDocumentOplogEntryWithSessionInfoAndStmtId({Timestamp(Seconds(6), 0), 1LL},
+                                                             NamespaceString("test.2"),
+                                                             BSON("x" << 0),
+                                                             lsidSameTxn,
+                                                             30LL,
+                                                             0);
+    auto opSameTxnSooner =
+        makeInsertDocumentOplogEntryWithSessionInfoAndStmtId({Timestamp(Seconds(5), 0), 1LL},
+                                                             NamespaceString("test.2"),
+                                                             BSON("x" << 1),
+                                                             lsidSameTxn,
+                                                             30LL,
+                                                             1);
 
     // Entries with a session id but no txnNumber do not lead to updates.
     auto lsidNoTxn = makeLogicalSessionIdForTest();
-    auto opNoTxn = makeInsertDocumentOplogEntry(
-        {Timestamp(Seconds(7), 0), 1LL}, NamespaceString("test.3"), BSON("x" << 0));
-    auto info = opNoTxn.getOperationSessionInfo();
+    OperationSessionInfo info;
     info.setSessionId(lsidNoTxn);
-    opNoTxn.setOperationSessionInfo(info);
+    auto opNoTxn = makeInsertDocumentOplogEntryWithSessionInfo(
+        {Timestamp(Seconds(7), 0), 1LL}, NamespaceString("test.3"), BSON("x" << 0), info);
 
     // Apply the batch and verify the transaction collection was properly updated for each scenario.
     auto writerPool = SyncTail::makeWriterPool();
@@ -547,31 +645,40 @@ TEST_F(SyncTailTest, MultiApplyUpdatesTheTransactionTable) {
     DBDirectClient client(_opCtx.get());
 
     // The txnNum and optime of the only write were saved.
-    auto resultSingle =
+    auto resultSingleDoc =
         client.findOne(NamespaceString::kSessionTransactionsTableNamespace.ns(),
                        BSON(SessionTxnRecord::kSessionIdFieldName << lsidSingle.toBSON()));
-    ASSERT_TRUE(!resultSingle.isEmpty());
-    ASSERT_EQ(resultSingle[SessionTxnRecord::kTxnNumFieldName].numberLong(), 5LL);
-    ASSERT_EQ(resultSingle[SessionTxnRecord::kLastWriteOpTimeTsFieldName].timestamp(),
-              Timestamp(Seconds(1), 0));
+    ASSERT_TRUE(!resultSingleDoc.isEmpty());
+
+    auto resultSingle =
+        SessionTxnRecord::parse(IDLParserErrorContext("resultSingleDoc test"), resultSingleDoc);
+
+    ASSERT_EQ(resultSingle.getTxnNum(), 5LL);
+    ASSERT_EQ(resultSingle.getLastWriteOpTime(), repl::OpTime(Timestamp(Seconds(1), 0), 1));
 
     // The txnNum and optime of the write with the larger txnNum were saved.
-    auto resultDiffTxn =
+    auto resultDiffTxnDoc =
         client.findOne(NamespaceString::kSessionTransactionsTableNamespace.ns(),
                        BSON(SessionTxnRecord::kSessionIdFieldName << lsidDiffTxn.toBSON()));
-    ASSERT_TRUE(!resultDiffTxn.isEmpty());
-    ASSERT_EQ(resultDiffTxn[SessionTxnRecord::kTxnNumFieldName].numberLong(), 20LL);
-    ASSERT_EQ(resultDiffTxn[SessionTxnRecord::kLastWriteOpTimeTsFieldName].timestamp(),
-              Timestamp(Seconds(3), 0));
+    ASSERT_TRUE(!resultDiffTxnDoc.isEmpty());
+
+    auto resultDiffTxn =
+        SessionTxnRecord::parse(IDLParserErrorContext("resultDiffTxnDoc test"), resultDiffTxnDoc);
+
+    ASSERT_EQ(resultDiffTxn.getTxnNum(), 20LL);
+    ASSERT_EQ(resultDiffTxn.getLastWriteOpTime(), repl::OpTime(Timestamp(Seconds(3), 0), 1));
 
     // The txnNum and optime of the write with the later optime were saved.
-    auto resultSameTxn =
+    auto resultSameTxnDoc =
         client.findOne(NamespaceString::kSessionTransactionsTableNamespace.ns(),
                        BSON(SessionTxnRecord::kSessionIdFieldName << lsidSameTxn.toBSON()));
-    ASSERT_TRUE(!resultSameTxn.isEmpty());
-    ASSERT_EQ(resultSameTxn[SessionTxnRecord::kTxnNumFieldName].numberLong(), 30LL);
-    ASSERT_EQ(resultSameTxn[SessionTxnRecord::kLastWriteOpTimeTsFieldName].timestamp(),
-              Timestamp(Seconds(6), 0));
+    ASSERT_TRUE(!resultSameTxnDoc.isEmpty());
+
+    auto resultSameTxn =
+        SessionTxnRecord::parse(IDLParserErrorContext("resultSameTxnDoc test"), resultSameTxnDoc);
+
+    ASSERT_EQ(resultSameTxn.getTxnNum(), 30LL);
+    ASSERT_EQ(resultSameTxn.getLastWriteOpTime(), repl::OpTime(Timestamp(Seconds(6), 0), 1));
 
     // There is no entry for the write with no txnNumber.
     auto resultNoTxn =
@@ -592,15 +699,40 @@ TEST_F(SyncTailTest, MultiSyncApplyUsesSyncApplyToApplyOperation) {
     ASSERT_TRUE(AutoGetCollectionForReadCommand(_opCtx.get(), nss).getCollection());
 }
 
+DEATH_TEST_F(SyncTailTest,
+             MultiSyncApplyFailsWhenCollectionCreationTriesToMakeUUID,
+             "Attempted to create a new collection") {
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_SECONDARY));
+    NamespaceString nss("foo." + _agent.getSuiteName() + "_" + _agent.getTestName());
+
+    auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+    _opCtx.reset();
+    MultiApplier::OperationPtrs ops = {&op};
+    multiSyncApply(&ops, nullptr);
+}
+
+TEST_F(SyncTailTest, MultiInitialSyncApplyFailsWhenCollectionCreationTriesToMakeUUID) {
+    ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_STARTUP2));
+    NamespaceString nss("foo." + _agent.getSuiteName() + "_" + _agent.getTestName());
+
+    auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+
+    _opCtx.reset();
+    MultiApplier::OperationPtrs ops = {&op};
+    ASSERT_EQUALS(ErrorCodes::InvalidOptions, multiInitialSyncApply(&ops, nullptr, nullptr));
+}
+
 TEST_F(SyncTailTest, MultiSyncApplyDisablesDocumentValidationWhileApplyingOperations) {
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
-    auto syncApply = [](OperationContext* opCtx, const BSONObj&, bool convertUpdatesToUpserts) {
-        ASSERT_FALSE(opCtx->writesAreReplicated());
-        ASSERT_FALSE(opCtx->lockState()->shouldConflictWithSecondaryBatchApplication());
-        ASSERT_TRUE(documentValidationDisabled(opCtx));
-        ASSERT_TRUE(convertUpdatesToUpserts);
-        return Status::OK();
-    };
+    auto syncApply =
+        [](OperationContext* opCtx, const BSONObj&, OplogApplication::Mode oplogApplicationMode) {
+            ASSERT_FALSE(opCtx->writesAreReplicated());
+            ASSERT_FALSE(opCtx->lockState()->shouldConflictWithSecondaryBatchApplication());
+            ASSERT_TRUE(documentValidationDisabled(opCtx));
+            ASSERT_EQUALS(OplogApplication::Mode::kSecondary, oplogApplicationMode);
+            return Status::OK();
+        };
     auto op = makeUpdateDocumentOplogEntry(
         {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("_id" << 0), BSON("_id" << 0 << "x" << 2));
     MultiApplier::OperationPtrs ops = {&op};
@@ -609,8 +741,8 @@ TEST_F(SyncTailTest, MultiSyncApplyDisablesDocumentValidationWhileApplyingOperat
 
 TEST_F(SyncTailTest, MultiSyncApplyPassesThroughSyncApplyErrorAfterFailingToApplyOperation) {
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
-    OplogEntry op(OpTime(Timestamp(1, 1), 1), 1LL, OpTypeEnum::kDelete, nss, BSONObj());
-    auto syncApply = [](OperationContext*, const BSONObj&, bool) -> Status {
+    auto op = makeOplogEntry(nss);
+    auto syncApply = [](OperationContext*, const BSONObj&, OplogApplication::Mode) -> Status {
         return {ErrorCodes::OperationFailed, ""};
     };
     MultiApplier::OperationPtrs ops = {&op};
@@ -620,8 +752,8 @@ TEST_F(SyncTailTest, MultiSyncApplyPassesThroughSyncApplyErrorAfterFailingToAppl
 
 TEST_F(SyncTailTest, MultiSyncApplyPassesThroughSyncApplyException) {
     NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
-    OplogEntry op(OpTime(Timestamp(1, 1), 1), 1LL, OpTypeEnum::kDelete, nss, BSONObj());
-    auto syncApply = [](OperationContext*, const BSONObj&, bool) -> Status {
+    auto op = makeOplogEntry(nss);
+    auto syncApply = [](OperationContext*, const BSONObj&, OplogApplication::Mode) -> Status {
         uasserted(ErrorCodes::OperationFailed, "");
         MONGO_UNREACHABLE;
     };
@@ -631,20 +763,16 @@ TEST_F(SyncTailTest, MultiSyncApplyPassesThroughSyncApplyException) {
 }
 
 TEST_F(SyncTailTest, MultiSyncApplySortsOperationsStablyByNamespaceBeforeApplying) {
-    int x = 0;
-    auto makeOp = [&x](const char* ns) -> OplogEntry {
-        return OplogEntry(
-            OpTime(Timestamp(1, 1), 1), 1LL, OpTypeEnum::kDelete, NamespaceString(ns), BSONObj());
-    };
-    auto op1 = makeOp("test.t1");
-    auto op2 = makeOp("test.t1");
-    auto op3 = makeOp("test.t2");
-    auto op4 = makeOp("test.t3");
+    auto op1 = makeOplogEntry("test.t1");
+    auto op2 = makeOplogEntry("test.t1");
+    auto op3 = makeOplogEntry("test.t2");
+    auto op4 = makeOplogEntry("test.t3");
     MultiApplier::Operations operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(OplogEntry(op));
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(OplogEntry(op));
+            return Status::OK();
+        };
     MultiApplier::OperationPtrs ops = {&op4, &op1, &op3, &op2};
     ASSERT_OK(multiSyncApply_noAbort(_opCtx.get(), &ops, syncApply));
     ASSERT_EQUALS(4U, operationsApplied.size());
@@ -669,21 +797,22 @@ TEST_F(SyncTailTest, MultiSyncApplyGroupsInsertOperationByNamespaceBeforeApplyin
     auto insertOp2a = makeOp(nss2);
     auto insertOp2b = makeOp(nss2);
     std::vector<BSONObj> operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(op.copy());
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(op.copy());
+            return Status::OK();
+        };
 
     MultiApplier::OperationPtrs ops = {
         &createOp1, &createOp2, &insertOp1a, &insertOp2a, &insertOp1b, &insertOp2b};
     ASSERT_OK(multiSyncApply_noAbort(_opCtx.get(), &ops, syncApply));
 
     ASSERT_EQUALS(4U, operationsApplied.size());
-    ASSERT_BSONOBJ_EQ(createOp1.raw, operationsApplied[0]);
-    ASSERT_BSONOBJ_EQ(createOp2.raw, operationsApplied[1]);
+    ASSERT_EQUALS(createOp1, unittest::assertGet(OplogEntry::parse(operationsApplied[0])));
+    ASSERT_EQUALS(createOp2, unittest::assertGet(OplogEntry::parse(operationsApplied[1])));
 
     // Check grouped insert operations in namespace "nss1".
-    ASSERT_EQUALS(insertOp1a.getOpTime(), OpTime::parseFromOplogEntry(operationsApplied[2]));
+    ASSERT_EQUALS(insertOp1a.getOpTime(), parseFromOplogEntryArray(operationsApplied[2], 0));
     ASSERT_EQUALS(insertOp1a.getNamespace().ns(), operationsApplied[2]["ns"].valuestrsafe());
     ASSERT_EQUALS(BSONType::Array, operationsApplied[2]["o"].type());
     auto group1 = operationsApplied[2]["o"].Array();
@@ -692,7 +821,7 @@ TEST_F(SyncTailTest, MultiSyncApplyGroupsInsertOperationByNamespaceBeforeApplyin
     ASSERT_BSONOBJ_EQ(insertOp1b.getObject(), group1[1].Obj());
 
     // Check grouped insert operations in namespace "nss2".
-    ASSERT_EQUALS(insertOp2a.getOpTime(), OpTime::parseFromOplogEntry(operationsApplied[3]));
+    ASSERT_EQUALS(insertOp2a.getOpTime(), parseFromOplogEntryArray(operationsApplied[3], 0));
     ASSERT_EQUALS(insertOp2a.getNamespace().ns(), operationsApplied[3]["ns"].valuestrsafe());
     ASSERT_EQUALS(BSONType::Array, operationsApplied[3]["o"].type());
     auto group2 = operationsApplied[3]["o"].Array();
@@ -721,10 +850,11 @@ TEST_F(SyncTailTest, MultiSyncApplyLimitsBatchCountWhenGroupingInsertOperation) 
     operationsToApply.push_back(createOp);
     std::copy(insertOps.begin(), insertOps.end(), std::back_inserter(operationsToApply));
     std::vector<BSONObj> operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(op.copy());
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(op.copy());
+            return Status::OK();
+        };
 
     MultiApplier::OperationPtrs ops;
     for (auto&& op : operationsToApply) {
@@ -735,10 +865,10 @@ TEST_F(SyncTailTest, MultiSyncApplyLimitsBatchCountWhenGroupingInsertOperation) 
     // multiSyncApply should combine operations as follows:
     // {create}, {grouped_insert}, {insert_(limit+1)}
     ASSERT_EQUALS(3U, operationsApplied.size());
-    ASSERT_BSONOBJ_EQ(createOp.raw, operationsApplied[0]);
+    ASSERT_EQUALS(createOp, unittest::assertGet(OplogEntry::parse(operationsApplied[0])));
 
     const auto& groupedInsertOp = operationsApplied[1];
-    ASSERT_EQUALS(insertOps.front().getOpTime(), OpTime::parseFromOplogEntry(groupedInsertOp));
+    ASSERT_EQUALS(insertOps.front().getOpTime(), parseFromOplogEntryArray(groupedInsertOp, 0));
     ASSERT_EQUALS(insertOps.front().getNamespace().ns(), groupedInsertOp["ns"].valuestrsafe());
     ASSERT_EQUALS(BSONType::Array, groupedInsertOp["o"].type());
     auto groupedInsertDocuments = groupedInsertOp["o"].Array();
@@ -749,7 +879,7 @@ TEST_F(SyncTailTest, MultiSyncApplyLimitsBatchCountWhenGroupingInsertOperation) 
     }
 
     // (limit + 1)-th insert operations should not be included in group of first (limit) inserts.
-    ASSERT_BSONOBJ_EQ(insertOps.back().raw, operationsApplied[2]);
+    ASSERT_EQUALS(insertOps.back(), unittest::assertGet(OplogEntry::parse(operationsApplied[2])));
 }
 
 // Create an 'insert' oplog operation of an approximate size in bytes. The '_id' of the oplog entry
@@ -788,10 +918,11 @@ TEST_F(SyncTailTest, MultiSyncApplyLimitsBatchSizeWhenGroupingInsertOperations) 
     }
 
     std::vector<BSONObj> operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(op.copy());
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(op.copy());
+            return Status::OK();
+        };
 
     // Apply the ops.
     ASSERT_OK(multiSyncApply_noAbort(_opCtx.get(), &ops, syncApply));
@@ -808,7 +939,7 @@ TEST_F(SyncTailTest, MultiSyncApplyLimitsBatchSizeWhenGroupingInsertOperations) 
     }
 
     // Check that the last op was applied individually.
-    ASSERT_BSONOBJ_EQ(insertOps[3].raw, operationsApplied[2]);
+    ASSERT_EQUALS(insertOps[3], unittest::assertGet(OplogEntry::parse(operationsApplied[2])));
 }
 
 TEST_F(SyncTailTest, MultiSyncApplyAppliesOpIndividuallyWhenOpIndividuallyExceedsBatchSize) {
@@ -830,10 +961,11 @@ TEST_F(SyncTailTest, MultiSyncApplyAppliesOpIndividuallyWhenOpIndividuallyExceed
     }
 
     std::vector<BSONObj> operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(op.copy());
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(op.copy());
+            return Status::OK();
+        };
 
     // Apply the ops.
     ASSERT_OK(multiSyncApply_noAbort(_opCtx.get(), &ops, syncApply));
@@ -841,9 +973,9 @@ TEST_F(SyncTailTest, MultiSyncApplyAppliesOpIndividuallyWhenOpIndividuallyExceed
     // Applied ops should be as follows:
     // [ {create}, {large insert} {small insert} ]
     ASSERT_EQ(operationsToApply.size(), operationsApplied.size());
-    ASSERT_BSONOBJ_EQ(createOp.raw, operationsApplied[0]);
-    ASSERT_BSONOBJ_EQ(insertOpLarge.raw, operationsApplied[1]);
-    ASSERT_BSONOBJ_EQ(insertOpSmall.raw, operationsApplied[2]);
+    ASSERT_EQUALS(createOp, unittest::assertGet(OplogEntry::parse(operationsApplied[0])));
+    ASSERT_EQUALS(insertOpLarge, unittest::assertGet(OplogEntry::parse(operationsApplied[1])));
+    ASSERT_EQUALS(insertOpSmall, unittest::assertGet(OplogEntry::parse(operationsApplied[2])));
 }
 
 TEST_F(SyncTailTest, MultiSyncApplyAppliesInsertOpsIndividuallyWhenUnableToCreateGroupByNamespace) {
@@ -863,10 +995,11 @@ TEST_F(SyncTailTest, MultiSyncApplyAppliesInsertOpsIndividuallyWhenUnableToCreat
                                                   makeOp(NamespaceString(testNs + "_3"))};
 
     std::vector<BSONObj> operationsApplied;
-    auto syncApply = [&operationsApplied](OperationContext*, const BSONObj& op, bool) {
-        operationsApplied.push_back(op.copy());
-        return Status::OK();
-    };
+    auto syncApply =
+        [&operationsApplied](OperationContext*, const BSONObj& op, OplogApplication::Mode) {
+            operationsApplied.push_back(op.copy());
+            return Status::OK();
+        };
 
     MultiApplier::OperationPtrs ops;
     for (auto&& op : operationsToApply) {
@@ -880,7 +1013,8 @@ TEST_F(SyncTailTest, MultiSyncApplyAppliesInsertOpsIndividuallyWhenUnableToCreat
     // [{insert 1}, {insert 2}, {insert 3}]
     ASSERT_EQ(operationsToApply.size(), operationsApplied.size());
     for (std::size_t i = 0; i < operationsToApply.size(); i++) {
-        ASSERT_BSONOBJ_EQ(operationsToApply[i].raw, operationsApplied[i]);
+        ASSERT_EQUALS(operationsToApply[i],
+                      unittest::assertGet(OplogEntry::parse(operationsApplied[i])));
     }
 }
 
@@ -906,8 +1040,8 @@ TEST_F(SyncTailTest, MultiSyncApplyFallsBackOnApplyingInsertsIndividuallyWhenGro
 
     std::size_t numFailedGroupedInserts = 0;
     MultiApplier::Operations operationsApplied;
-    auto syncApply = [&numFailedGroupedInserts,
-                      &operationsApplied](OperationContext*, const BSONObj& op, bool) -> Status {
+    auto syncApply = [&numFailedGroupedInserts, &operationsApplied](
+        OperationContext*, const BSONObj& op, OplogApplication::Mode) -> Status {
         // Reject grouped insert operations.
         if (op["o"].type() == BSONType::Array) {
             numFailedGroupedInserts++;
@@ -1051,7 +1185,7 @@ TEST_F(SyncTailTest,
 TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnUpdate) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, loc: 'hi'}"));
     auto updateOp = update(1, fromjson("{$set: {loc: [1, 2]}}"));
     auto indexOp = buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3));
@@ -1060,14 +1194,14 @@ TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnUpdate) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 16755);
 }
 
 TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnIndexing) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto indexOp = buildIndex(fromjson("{loc: '2dsphere'}"), BSON("2dsphereIndexVersion" << 3));
     auto dropIndexOp = dropIndex("loc_index");
     auto insertOp = insert(fromjson("{_id: 1, loc: 'hi'}"));
@@ -1076,14 +1210,14 @@ TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnIndexing) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 16755);
 }
 
 TEST_F(IdempotencyTest, Geo2dIndex) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, loc: [1]}"));
     auto updateOp = update(1, fromjson("{$set: {loc: [1, 2]}}"));
     auto indexOp = buildIndex(fromjson("{loc: '2d'}"));
@@ -1092,14 +1226,14 @@ TEST_F(IdempotencyTest, Geo2dIndex) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 13068);
 }
 
 TEST_F(IdempotencyTest, UniqueKeyIndex) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, x: 5}"));
     auto updateOp = update(1, fromjson("{$set: {x: 6}}"));
     auto insertOp2 = insert(fromjson("{_id: 2, x: 5}"));
@@ -1109,7 +1243,7 @@ TEST_F(IdempotencyTest, UniqueKeyIndex) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), ErrorCodes::DuplicateKey);
 }
 
@@ -1117,8 +1251,8 @@ TEST_F(IdempotencyTest, ParallelArrayError) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
-    ASSERT_OK(runOp(insert(fromjson("{_id: 1}"))));
+    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1}"))));
 
     auto updateOp1 = update(1, fromjson("{$set: {x: [1, 2]}}"));
     auto updateOp2 = update(1, fromjson("{$set: {x: 1}}"));
@@ -1129,7 +1263,7 @@ TEST_F(IdempotencyTest, ParallelArrayError) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), ErrorCodes::CannotIndexParallelArrays);
 }
 
@@ -1137,8 +1271,8 @@ TEST_F(IdempotencyTest, IndexKeyTooLongError) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
-    ASSERT_OK(runOp(insert(fromjson("{_id: 1}"))));
+    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1}"))));
 
     // Key size limit is 1024 for ephemeral storage engine, so two 800 byte fields cannot
     // co-exist.
@@ -1152,7 +1286,7 @@ TEST_F(IdempotencyTest, IndexKeyTooLongError) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), ErrorCodes::KeyTooLong);
 }
 
@@ -1160,8 +1294,8 @@ TEST_F(IdempotencyTest, IndexWithDifferentOptions) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
-    ASSERT_OK(runOp(insert(fromjson("{_id: 1, x: 'hi'}"))));
+    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1, x: 'hi'}"))));
 
     auto indexOp1 = buildIndex(fromjson("{x: 'text'}"), fromjson("{default_language: 'spanish'}"));
     auto dropIndexOp = dropIndex("x_index");
@@ -1171,7 +1305,7 @@ TEST_F(IdempotencyTest, IndexWithDifferentOptions) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), ErrorCodes::IndexOptionsConflict);
 }
 
@@ -1179,7 +1313,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageField) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 1}"));
     auto updateOp = update(1, fromjson("{$unset: {language: 1}}"));
     auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
@@ -1188,7 +1322,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageField) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 17261);
 }
 
@@ -1196,7 +1330,7 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageFieldWhenTextIndexExi
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
     auto dropIndexOp = dropIndex("x_index");
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 1}"));
@@ -1205,7 +1339,7 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageFieldWhenTextIndexExi
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 17261);
 }
 
@@ -1213,7 +1347,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageOverrideField) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', y: 1}"));
     auto updateOp = update(1, fromjson("{$unset: {y: 1}}"));
     auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"));
@@ -1222,7 +1356,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasNonStringLanguageOverrideField) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 17261);
 }
 
@@ -1230,7 +1364,7 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageOverrideFieldWhenText
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto indexOp = buildIndex(fromjson("{x: 'text'}"), fromjson("{language_override: 'y'}"));
     auto dropIndexOp = dropIndex("x_index");
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', y: 1}"));
@@ -1239,7 +1373,7 @@ TEST_F(IdempotencyTest, InsertDocumentWithNonStringLanguageOverrideFieldWhenText
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 17261);
 }
 
@@ -1247,7 +1381,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasUnknownLanguage) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     auto insertOp = insert(fromjson("{_id: 1, x: 'words to index', language: 'bad'}"));
     auto updateOp = update(1, fromjson("{$unset: {language: 1}}"));
     auto indexOp = buildIndex(fromjson("{x: 'text'}"), BSONObj());
@@ -1256,7 +1390,7 @@ TEST_F(IdempotencyTest, TextIndexDocumentHasUnknownLanguage) {
     testOpsAreIdempotent(ops);
 
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOps(ops);
+    auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), 17262);
 }
 
@@ -1267,17 +1401,16 @@ TEST_F(IdempotencyTest, CreateCollectionWithValidation) {
 
     auto runOpsAndValidate = [this, uuidObj]() {
         auto options1 = fromjson("{'validator' : {'phone' : {'$type' : 'string' } } }");
+        options1 = options1.addField(uuidObj.firstElement());
         auto createColl1 = makeCreateCollectionOplogEntry(nextOpTime(), nss, options1);
         auto dropColl = makeCommandOplogEntry(nextOpTime(), nss, BSON("drop" << nss.coll()));
-        auto options2 = fromjson("{'validator' : {'phone' : {'$type' : 'number' } } }");
-        // The first collection will be dropped, so won't affect final validation. However, the
-        // final collection should have the correct UUID.
-        options2 = options2.addField(uuidObj.firstElement());
 
+        auto options2 = fromjson("{'validator' : {'phone' : {'$type' : 'number' } } }");
+        options2 = options2.addField(uuidObj.firstElement());
         auto createColl2 = makeCreateCollectionOplogEntry(nextOpTime(), nss, options2);
 
         auto ops = {createColl1, dropColl, createColl2};
-        ASSERT_OK(runOps(ops));
+        ASSERT_OK(runOpsInitialSync(ops));
         auto state = validate();
 
         return state;
@@ -1290,7 +1423,7 @@ TEST_F(IdempotencyTest, CreateCollectionWithValidation) {
 
 TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
     ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     CollectionUUID uuid = UUID::gen();
 
     auto runOpsAndValidate = [this, uuid]() {
@@ -1323,7 +1456,7 @@ TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
         auto createColl = makeCreateCollectionOplogEntry(nextOpTime(), nss, options);
 
         auto ops = {insertOp1, insertOp2, updateOp, dropColl, createColl};
-        ASSERT_OK(runOps(ops));
+        ASSERT_OK(runOpsInitialSync(ops));
         auto state = validate();
 
         return state;
@@ -1336,24 +1469,26 @@ TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
 
 TEST_F(IdempotencyTest, CreateCollectionWithIdIndex) {
     ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    CollectionUUID uuid = UUID::gen();
 
     auto options1 = BSON("idIndex" << BSON("key" << fromjson("{_id: 1}") << "name"
                                                  << "_id_"
                                                  << "v"
                                                  << 2
                                                  << "ns"
-                                                 << nss.ns()));
+                                                 << nss.ns())
+                                   << "uuid"
+                                   << uuid);
     auto createColl1 = makeCreateCollectionOplogEntry(nextOpTime(), nss, options1);
-    ASSERT_OK(runOp(createColl1));
+    ASSERT_OK(runOpInitialSync(createColl1));
 
-    CollectionUUID uuid = UUID::gen();
     auto runOpsAndValidate = [this, uuid]() {
         auto insertOp = insert(BSON("_id" << Decimal128(1)));
         auto dropColl = makeCommandOplogEntry(nextOpTime(), nss, BSON("drop" << nss.coll()));
         auto createColl2 = createCollection(uuid);
 
         auto ops = {insertOp, dropColl, createColl2};
-        ASSERT_OK(runOps(ops));
+        ASSERT_OK(runOpsInitialSync(ops));
         auto state = validate();
 
         return state;
@@ -1366,12 +1501,15 @@ TEST_F(IdempotencyTest, CreateCollectionWithIdIndex) {
 
 TEST_F(IdempotencyTest, CreateCollectionWithView) {
     ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    CollectionOptions options;
+    options.uuid = UUID::gen();
 
     // Create data collection
-    ASSERT_OK(runOp(createCollection()));
+    ASSERT_OK(runOpInitialSync(createCollection()));
     // Create "system.views" collection
     auto viewNss = NamespaceString(nss.db(), "system.views");
-    ASSERT_OK(runOp(makeCreateCollectionOplogEntry(nextOpTime(), viewNss)));
+    ASSERT_OK(
+        runOpInitialSync(makeCreateCollectionOplogEntry(nextOpTime(), viewNss, options.toBSON())));
 
     auto viewDoc =
         BSON("_id" << NamespaceString(nss.db(), "view").ns() << "viewOn" << nss.coll() << "pipeline"
@@ -1386,8 +1524,9 @@ TEST_F(IdempotencyTest, CreateCollectionWithView) {
 TEST_F(IdempotencyTest, CollModNamespaceNotFound) {
     ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
-    ASSERT_OK(runOp(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
+    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(
+        runOpInitialSync(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
 
     auto indexChange = fromjson("{keyPattern: {createdAt:1}, expireAfterSeconds:4000}}");
     auto collModCmd = BSON("collMod" << nss.coll() << "index" << indexChange);
@@ -1401,8 +1540,9 @@ TEST_F(IdempotencyTest, CollModNamespaceNotFound) {
 TEST_F(IdempotencyTest, CollModIndexNotFound) {
     ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
 
-    ASSERT_OK(runOp(createCollection()));
-    ASSERT_OK(runOp(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
+    ASSERT_OK(runOpInitialSync(createCollection()));
+    ASSERT_OK(
+        runOpInitialSync(buildIndex(BSON("createdAt" << 1), BSON("expireAfterSeconds" << 3600))));
 
     auto indexChange = fromjson("{keyPattern: {createdAt:1}, expireAfterSeconds:4000}}");
     auto collModCmd = BSON("collMod" << nss.coll() << "index" << indexChange);
@@ -1413,18 +1553,262 @@ TEST_F(IdempotencyTest, CollModIndexNotFound) {
     testOpsAreIdempotent(ops);
 }
 
-TEST_F(IdempotencyTest, ResyncOnRenameCollection) {
+TEST_F(SyncTailTest, FailOnAssigningUUIDToCollectionWithExistingUUID) {
+    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
+    auto oldUUID = UUID::gen();
+    CollectionOptions options;
+    options.uuid = oldUUID;
+    createCollection(_opCtx.get(), nss, options);
+
+    auto collModCmd = BSON("collMod" << nss.coll());
+    auto newUUID = UUID::gen();
+    auto collModOp = repl::OplogEntry(nextOpTime(),
+                                      1LL,
+                                      OpTypeEnum::kCommand,
+                                      nss,
+                                      newUUID,
+                                      boost::none,
+                                      repl::OplogEntry::kOplogVersion,
+                                      collModCmd,
+                                      boost::none,
+                                      {},
+                                      boost::none,
+                                      boost::none,
+                                      boost::none,
+                                      boost::none,
+                                      boost::none);
+
+    ASSERT_EQUALS(runOpInitialSync(collModOp), ErrorCodes::duplicateCodeForTest(50658));
+}
+
+TEST_F(SyncTailTest, SuccessOnAssigningUUIDToCollectionWithExistingUUID) {
+    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
+    auto oldUUID = UUID::gen();
+    CollectionOptions options;
+    options.uuid = oldUUID;
+    createCollection(_opCtx.get(), nss, options);
+
+    auto collModCmd = BSON("collMod" << nss.coll());
+    auto collModOp = repl::OplogEntry(nextOpTime(),
+                                      1LL,
+                                      OpTypeEnum::kCommand,
+                                      nss,
+                                      oldUUID,
+                                      boost::none,
+                                      repl::OplogEntry::kOplogVersion,
+                                      collModCmd,
+                                      boost::none,
+                                      {},
+                                      boost::none,
+                                      boost::none,
+                                      boost::none,
+                                      boost::none,
+                                      boost::none);
+
+    ASSERT_OK(runOpInitialSync(collModOp));
+}
+
+TEST_F(SyncTailTest, FailOnDropFCVCollection) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
 
-    auto cmd = BSON("renameCollection" << nss.ns() << "to"
-                                       << "test.bar"
-                                       << "stayTemp"
-                                       << false
-                                       << "dropTarget"
-                                       << false);
-    auto op = makeCommandOplogEntry(nextOpTime(), nss, cmd);
-    ASSERT_EQUALS(runOp(op), ErrorCodes::OplogOperationUnsupported);
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    auto cmd = BSON("drop" << fcvNS.coll());
+    auto op = makeCommandOplogEntry(
+        nextOpTime(), NamespaceString(FeatureCompatibilityVersion::kCollection), cmd);
+    ASSERT_EQUALS(runOpInitialSync(op), ErrorCodes::OplogOperationUnsupported);
+}
+
+TEST_F(SyncTailTest, FailOnInsertFCVDocument) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeInsertDocumentOplogEntry(
+        nextOpTime(), fcvNS, BSON("_id" << FeatureCompatibilityVersion::kParameterName));
+    ASSERT_EQUALS(runOpInitialSync(op), ErrorCodes::OplogOperationUnsupported);
+}
+
+TEST_F(IdempotencyTest, InsertToFCVCollectionBesidesFCVDocumentSucceeds) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeInsertDocumentOplogEntry(nextOpTime(),
+                                           fcvNS,
+                                           BSON("_id"
+                                                << "other"));
+    ASSERT_OK(runOpInitialSync(op));
+}
+
+TEST_F(IdempotencyTest, DropDatabaseSucceeds) {
+    auto ns = NamespaceString("foo.bar");
+    ::mongo::repl::createCollection(_opCtx.get(), ns, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeCommandOplogEntry(nextOpTime(), ns, BSON("dropDatabase" << 1));
+    ASSERT_OK(runOpInitialSync(op));
+}
+
+TEST_F(SyncTailTest, FailOnDropFCVCollectionInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto cmd = BSON("drop" << fcvNS.coll());
+    auto op = makeCommandOplogEntry(nextOpTime(), fcvNS, cmd);
+    ASSERT_EQUALS(runOpSteadyState(op), ErrorCodes::OplogOperationUnsupported);
+}
+
+TEST_F(SyncTailTest, SuccessOnUpdateFCV34TargetVersionUnsetDocumentInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34)
+                    << "$unset"
+                    << BSON(FeatureCompatibilityVersion::kTargetVersionField << 1)));
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, FailOnUpdateFCV34TargetVersion34DocumentInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersion::kTargetVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34)));
+    ASSERT_EQUALS(runOpSteadyState(op), ErrorCodes::OplogOperationUnsupported);
+}
+
+TEST_F(SyncTailTest, SuccessOnDropFCVCollectionInSecondary) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_SECONDARY));
+
+    auto cmd = BSON("drop" << fcvNS.coll());
+    auto op = makeCommandOplogEntry(nextOpTime(), fcvNS, cmd);
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, SuccessOnUpdateFCV34TargetVersion34DocumentInSecondary) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_SECONDARY));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersion::kTargetVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34)));
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, SuccessOnUpdateFCV36TargetVersionUnsetDocumentInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    CollectionOptions options;
+    options.uuid = UUID::gen();
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, options);
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion36)
+                    << "$unset"
+                    << BSON(FeatureCompatibilityVersion::kTargetVersionField << 1)));
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, SuccessOnUpdateFCV34TargetVersion36DocumentInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersion::kTargetVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion36)));
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, UpdateToFCVCollectionBesidesFCVDocumentSucceedsInRecovering) {
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id"
+             << "other"),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersion::kTargetVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion34)));
+    ASSERT_OK(runOpSteadyState(op));
+}
+
+TEST_F(SyncTailTest, UpgradeWithNoUUIDFailsInSecondary) {
+    // Set fCV to 3.4 so the node does not create a UUID for the collection.
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
+
+    auto fcvNS = NamespaceString(FeatureCompatibilityVersion::kCollection);
+    ::mongo::repl::createCollection(_opCtx.get(), fcvNS, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_SECONDARY));
+
+    auto op = makeUpdateDocumentOplogEntry(
+        nextOpTime(),
+        fcvNS,
+        BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+        BSON("$set" << BSON(FeatureCompatibilityVersion::kVersionField
+                            << FeatureCompatibilityVersionCommandParser::kVersion36)
+                    << "$unset"
+                    << BSON(FeatureCompatibilityVersion::kTargetVersionField << 1)));
+    ASSERT_EQUALS(runOpSteadyState(op), ErrorCodes::IllegalOperation);
+}
+
+TEST_F(SyncTailTest, DropDatabaseSucceedsInRecovering) {
+    auto ns = NamespaceString("foo.bar");
+    ::mongo::repl::createCollection(_opCtx.get(), ns, CollectionOptions());
+    ASSERT_OK(
+        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
+
+    auto op = makeCommandOplogEntry(nextOpTime(), ns, BSON("dropDatabase" << 1));
+    ASSERT_OK(runOpSteadyState(op));
 }
 
 }  // namespace

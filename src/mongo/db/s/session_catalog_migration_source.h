@@ -28,11 +28,14 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
 #include <memory>
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/client/dbclientcursor.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/repl/optime.h"
+#include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/transaction_history_iterator.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/with_lock.h"
@@ -46,12 +49,41 @@ class ServiceContext;
 /**
  * Provides facilities for extracting oplog entries of writes in a particular namespace that needs
  * to be migrated.
+ *
+ * This also ensures that oplog returned are majority committed. This is achieved by calling
+ * waitForWriteConcern. However, waitForWriteConcern does not support waiting for opTimes of
+ * previous terms. To get around this, the waitForWriteConcern is performed in two phases:
+ *
+ * During init() call phase:
+ * 1. Scan the entire config.transactions and extract all the lastWriteOpTime.
+ * 2. Insert a no-op oplog entry and wait for it to be majority committed.
+ * 3. At this point any writes before should be majority committed (including all the oplog
+ *    entries that the collected lastWriteOpTime points to). If the particular oplog with the
+ *    opTime cannot be found: it either means that the oplog was truncated or rolled back.
+ *
+ * New writes/xfer mods phase oplog entries:
+ * In this case, caller is responsible for calling waitForWriteConcern. If getLastFetchedOplog
+ * returns shouldWaitForMajority == true, it should wait for the highest opTime it has got from
+ * getLastFetchedOplog. It should also error if it detects a change of term within a batch since
+ * it would be wrong to wait for the highest opTime in this case.
  */
 class SessionCatalogMigrationSource {
     MONGO_DISALLOW_COPYING(SessionCatalogMigrationSource);
 
 public:
-    explicit SessionCatalogMigrationSource(NamespaceString ns);
+    struct OplogResult {
+        OplogResult(boost::optional<repl::OplogEntry> _oplog, bool _shouldWaitForMajority)
+            : oplog(std::move(_oplog)), shouldWaitForMajority(_shouldWaitForMajority) {}
+
+        // The oplog fetched.
+        boost::optional<repl::OplogEntry> oplog;
+
+        // If this is set to true, oplog returned is not confirmed to be majority committed,
+        // so the caller has to explicitly wait for it to be committed to majority.
+        bool shouldWaitForMajority = false;
+    };
+
+    SessionCatalogMigrationSource(OperationContext* opCtx, NamespaceString ns);
 
     /**
      * Returns true if there are more oplog entries to fetch at this moment. Note that new writes
@@ -68,15 +100,46 @@ public:
 
     /**
      * Returns the oplog document that was last fetched by the fetchNextOplog call.
+     * Returns an empty object if there are no oplog to fetch.
      */
-    BSONObj getLastFetchedOplog();
+    OplogResult getLastFetchedOplog();
 
     /**
      * Remembers the oplog timestamp of a new write that just occurred.
      */
-    void notifyNewWriteTS(Timestamp opTimestamp);
+    void notifyNewWriteOpTime(repl::OpTime opTimestamp);
 
 private:
+    /**
+     * An iterator for extracting session write oplogs that need to be cloned during migration.
+     */
+    class SessionOplogIterator {
+    public:
+        SessionOplogIterator(SessionTxnRecord txnRecord, int expectedRollbackId);
+
+        /**
+          * Returns true if there are more oplog entries to fetch for this session.
+          */
+        bool hasNext() const;
+
+        /**
+         * Returns the next oplog write that happened in this session. If the oplog is lost
+         * because the oplog rolled over, this will return a sentinel oplog entry instead with
+         * type 'n' and o2 field set to Session::kDeadEndSentinel. This will also mean that
+         * next subsequent calls to hasNext will return false.
+         */
+        repl::OplogEntry getNext(OperationContext* opCtx);
+
+        BSONObj toBSON() const {
+            return _record.toBSON();
+        }
+
+    private:
+        const SessionTxnRecord _record;
+        const int _initialRollbackId;
+        std::unique_ptr<TransactionHistoryIterator> _writeHistoryIterator;
+    };
+
     ///////////////////////////////////////////////////////////////////////////
     // Methods for extracting the oplog entries from session information.
 
@@ -96,7 +159,7 @@ private:
     /**
      * Returns the document that was last fetched by fetchNextOplogFromSessionCatalog.
      */
-    BSONObj _getLastFetchedOplogFromSessionCatalog();
+    repl::OplogEntry _getLastFetchedOplogFromSessionCatalog();
 
     /**
      * Extracts oplog information from the current writeHistoryIterator to _lastFetchedOplog. This
@@ -123,36 +186,41 @@ private:
     /**
      * Returns the oplog that was last fetched by fetchNextNewWriteOplog.
      */
-    BSONObj _getLastFetchedNewWriteOplog();
+    repl::OplogEntry _getLastFetchedNewWriteOplog();
 
+    // Namespace for which the migration is happening
     const NamespaceString _ns;
 
-    // Protects _sessionCatalogCursor, _writeHistoryIterator,
+    // The rollback id just before migration started. This value is needed so that step-down
+    // followed by step-up situations can be discovered.
+    const int _rollbackIdAtInit;
+
+    // Protects _sessionCatalogCursor, _sessionOplogIterators, _currentOplogIterator,
     // _lastFetchedOplogBuffer, _lastFetchedOplog
     stdx::mutex _sessionCloneMutex;
 
-    // Cursor for iterating over the session catalog.
-    std::unique_ptr<DBClientCursor> _sessionCatalogCursor;
+    // List of remaining session records that needs to be cloned.
+    std::vector<std::unique_ptr<SessionOplogIterator>> _sessionOplogIterators;
 
-    // Iterator for oplog entries for a specific transaction.
-    std::unique_ptr<TransactionHistoryIterator> _writeHistoryIterator;
+    // Points to the current session record eing cloned.
+    std::unique_ptr<SessionOplogIterator> _currentOplogIterator;
 
-    // Used for temporarily storing oplog entries for operations that has more than one entry.
+    // Used for temporarily storng oplog entries for operations that has more than one entry.
     // For example, findAndModify generates one for the actual operation and another for the
     // pre/post image.
-    std::vector<BSONObj> _lastFetchedOplogBuffer;
+    std::vector<repl::OplogEntry> _lastFetchedOplogBuffer;
 
     // Used to store the last fetched oplog. This enables calling get multiple times.
-    BSONObj _lastFetchedOplog;
+    boost::optional<repl::OplogEntry> _lastFetchedOplog;
 
     // Protects _newWriteTsList, _lastFetchedNewWriteOplog
     stdx::mutex _newOplogMutex;
 
-    // Stores oplog timestamps of new writes that are coming in.
-    std::list<Timestamp> _newWriteTsList;
+    // Stores oplog opTime of new writes that are coming in.
+    std::list<repl::OpTime> _newWriteOpTimeList;
 
     // Used to store the last fetched oplog from _newWriteTsList.
-    BSONObj _lastFetchedNewWriteOplog;
+    boost::optional<repl::OplogEntry> _lastFetchedNewWriteOplog;
 };
 
 }  // namespace mongo

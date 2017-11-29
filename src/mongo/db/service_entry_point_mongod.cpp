@@ -44,7 +44,6 @@
 #include "mongo/db/curop_metrics.h"
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/dbdirectclient.h"
-#include "mongo/db/diag_log.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/jsobj.h"
@@ -88,6 +87,7 @@
 namespace mongo {
 
 MONGO_FP_DECLARE(rsStopGetMore);
+MONGO_FP_DECLARE(respondWithNotPrimaryInCommandDispatch);
 
 namespace {
 using logger::LogComponent;
@@ -106,18 +106,6 @@ const StringMap<int> cmdWhitelist = {{"delete", 1},
                                      {"insert", 1},
                                      {"refreshLogicalSessionCacheNow", 1},
                                      {"update", 1}};
-
-inline void opread(const Message& m) {
-    if (_diaglog.getLevel() & 2) {
-        _diaglog.readop(m.singleData().view2ptr(), m.header().getLen());
-    }
-}
-
-inline void opwrite(const Message& m) {
-    if (_diaglog.getLevel() & 1) {
-        _diaglog.writeop(m.singleData().view2ptr(), m.header().getLen());
-    }
-}
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -243,27 +231,59 @@ void _generateErrorResponse(OperationContext* opCtx,
  * elsewhere.
  */
 class MaintenanceModeSetter {
+    MONGO_DISALLOW_COPYING(MaintenanceModeSetter);
+
 public:
-    MaintenanceModeSetter()
-        : maintenanceModeSet(
-              repl::getGlobalReplicationCoordinator()->setMaintenanceMode(true).isOK()) {}
+    MaintenanceModeSetter(OperationContext* opCtx)
+        : _opCtx(opCtx),
+          _maintenanceModeSet(
+              repl::ReplicationCoordinator::get(_opCtx)->setMaintenanceMode(true).isOK()) {}
+
     ~MaintenanceModeSetter() {
-        if (maintenanceModeSet)
-            repl::getGlobalReplicationCoordinator()
+        if (_maintenanceModeSet) {
+            repl::ReplicationCoordinator::get(_opCtx)
                 ->setMaintenanceMode(false)
                 .transitional_ignore();
+        }
     }
 
 private:
-    bool maintenanceModeSet;
+    OperationContext* const _opCtx;
+    const bool _maintenanceModeSet;
 };
+
+// Called from the error contexts where request may not be available.
+// It only attaches clusterTime and operationTime.
+void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadataBob) {
+    auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
+    const bool isReplSet =
+        replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
+
+    if (isReplSet) {
+        if (serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+                // No need to sign cluster times for internal clients.
+                SignedLogicalTime currentTime(
+                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+                auto currentTime =
+                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            }
+        }
+    }
+}
 
 void appendReplyMetadata(OperationContext* opCtx,
                          const OpMsgRequest& request,
                          BSONObjBuilder* metadataBob) {
     const bool isShardingAware = ShardingState::get(opCtx)->enabled();
     const bool isConfig = serverGlobalParams.clusterRole == ClusterRole::ConfigServer;
-    repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
+    auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
     const bool isReplSet =
         replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
 
@@ -278,21 +298,20 @@ void appendReplyMetadata(OperationContext* opCtx,
             rpc::ShardingMetadata(lastOpTimeFromClient, replCoord->getElectionId())
                 .writeToMetadata(metadataBob)
                 .transitional_ignore();
-            if (serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k36) {
-                if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
-                    // No need to sign cluster times for internal clients.
-                    SignedLogicalTime currentTime(LogicalClock::get(opCtx)->getClusterTime(),
-                                                  TimeProofService::TimeProof(),
-                                                  0);
-                    rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                    logicalTimeMetadata.writeToMetadata(metadataBob);
-                } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
-                    auto currentTime =
-                        validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-                    rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                    logicalTimeMetadata.writeToMetadata(metadataBob);
-                }
+        }
+        if (serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+                // No need to sign cluster times for internal clients.
+                SignedLogicalTime currentTime(
+                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+                auto currentTime =
+                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
             }
         }
     }
@@ -360,8 +379,7 @@ void _waitForWriteConcernAndAddToCommandResponse(OperationContext* opCtx,
  * uninitialized cluster time.
  */
 LogicalTime getClientOperationTime(OperationContext* opCtx) {
-    repl::ReplicationCoordinator* replCoord =
-        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+    auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
     const bool isReplSet =
         replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
     LogicalTime operationTime;
@@ -381,8 +399,7 @@ LogicalTime getClientOperationTime(OperationContext* opCtx) {
 LogicalTime computeOperationTime(OperationContext* opCtx,
                                  LogicalTime startOperationTime,
                                  repl::ReadConcernLevel level) {
-    repl::ReplicationCoordinator* replCoord =
-        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+    auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
     const bool isReplSet =
         replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
 
@@ -429,7 +446,8 @@ bool runCommandImpl(OperationContext* opCtx,
 
     BSONObjBuilder inPlaceReplyBob = replyBuilder->getInPlaceReplyBuilder(bytesToReserve);
 
-    Status rcStatus = waitForReadConcern(opCtx, repl::ReadConcernArgs::get(opCtx));
+    Status rcStatus = waitForReadConcern(
+        opCtx, repl::ReadConcernArgs::get(opCtx), command->allowsAfterClusterTime(cmd));
     if (!rcStatus.isOK()) {
         if (rcStatus == ErrorCodes::ExceededTimeLimit) {
             const int debugLevel =
@@ -441,7 +459,9 @@ bool runCommandImpl(OperationContext* opCtx,
 
         auto result = Command::appendCommandStatus(inPlaceReplyBob, rcStatus);
         inPlaceReplyBob.doneFast();
-        replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+        BSONObjBuilder metadataBob;
+        appendReplyMetadataOnError(opCtx, &metadataBob);
+        replyBuilder->setMetadata(metadataBob.done());
         return result;
     }
 
@@ -452,7 +472,9 @@ bool runCommandImpl(OperationContext* opCtx,
                 inPlaceReplyBob,
                 {ErrorCodes::InvalidOptions, "Command does not support writeConcern"});
             inPlaceReplyBob.doneFast();
-            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            BSONObjBuilder metadataBob;
+            appendReplyMetadataOnError(opCtx, &metadataBob);
+            replyBuilder->setMetadata(metadataBob.done());
             return result;
         }
 
@@ -462,7 +484,9 @@ bool runCommandImpl(OperationContext* opCtx,
         if (!wcResult.isOK()) {
             auto result = Command::appendCommandStatus(inPlaceReplyBob, wcResult.getStatus());
             inPlaceReplyBob.doneFast();
-            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            BSONObjBuilder metadataBob;
+            appendReplyMetadataOnError(opCtx, &metadataBob);
+            replyBuilder->setMetadata(metadataBob.done());
             return result;
         }
 
@@ -497,7 +521,9 @@ bool runCommandImpl(OperationContext* opCtx,
             inPlaceReplyBob.resetToEmpty();
             auto result = Command::appendCommandStatus(inPlaceReplyBob, linearizableReadStatus);
             inPlaceReplyBob.doneFast();
-            replyBuilder->setMetadata(rpc::makeEmptyMetadata());
+            BSONObjBuilder metadataBob;
+            appendReplyMetadataOnError(opCtx, &metadataBob);
+            replyBuilder->setMetadata(metadataBob.done());
             return result;
         }
     }
@@ -510,8 +536,8 @@ bool runCommandImpl(OperationContext* opCtx,
     // An uninitialized operation time means the cluster time is not propagated, so the operation
     // time should not be attached to the response.
     if (operationTime != LogicalTime::kUninitialized &&
-        serverGlobalParams.featureCompatibility.version.load() ==
-            ServerGlobalParams::FeatureCompatibility::Version::k36) {
+        (serverGlobalParams.featureCompatibility.getVersion() ==
+         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)) {
         operationTime.appendAsOperationTime(&inPlaceReplyBob);
     }
 
@@ -552,15 +578,15 @@ void execCommandDatabase(OperationContext* opCtx,
         rpc::readRequestMetadata(opCtx, request.body);
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
 
-        repl::ReplicationCoordinator* replCoord =
-            repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
-        initializeOperationSessionInfo(opCtx,
-                                       request.body,
-                                       command->requiresAuth(),
-                                       replCoord->getReplicationMode() ==
-                                           repl::ReplicationCoordinator::modeReplSet);
+        auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
+        initializeOperationSessionInfo(
+            opCtx,
+            request.body,
+            command->requiresAuth(),
+            replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet,
+            opCtx->getServiceContext()->getGlobalStorageEngine()->supportsDocLocking());
 
-        std::string dbname = request.getDatabase().toString();
+        const auto dbname = request.getDatabase().toString();
         uassert(
             ErrorCodes::InvalidNamespace,
             str::stream() << "Invalid database name: '" << dbname << "'",
@@ -569,6 +595,7 @@ void execCommandDatabase(OperationContext* opCtx,
         std::unique_ptr<MaintenanceModeSetter> mmSetter;
 
         BSONElement cmdOptionMaxTimeMSField;
+        BSONElement allowImplicitCollectionCreationField;
         BSONElement helpField;
         BSONElement shardVersionFieldIdx;
         BSONElement queryOptionMaxTimeMSField;
@@ -578,6 +605,8 @@ void execCommandDatabase(OperationContext* opCtx,
             StringData fieldName = element.fieldNameStringData();
             if (fieldName == QueryRequest::cmdOptionMaxTimeMS) {
                 cmdOptionMaxTimeMSField = element;
+            } else if (fieldName == "allowImplicitCollectionCreation") {
+                allowImplicitCollectionCreationField = element;
             } else if (fieldName == Command::kHelpFieldName) {
                 helpField = element;
             } else if (fieldName == ChunkVersion::kShardVersionField) {
@@ -631,7 +660,11 @@ void execCommandDatabase(OperationContext* opCtx,
                 uasserted(ErrorCodes::NotMasterNoSlaveOk, "not master and slaveOk=false");
             }
 
-            uassert(ErrorCodes::NotMaster, "not master", canRunHere);
+            if (MONGO_FAIL_POINT(respondWithNotPrimaryInCommandDispatch)) {
+                uassert(ErrorCodes::NotMaster, "not primary", canRunHere);
+            } else {
+                uassert(ErrorCodes::NotMaster, "not master", canRunHere);
+            }
 
             if (!command->maintenanceOk() &&
                 replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet &&
@@ -656,7 +689,7 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         if (command->maintenanceMode()) {
-            mmSetter.reset(new MaintenanceModeSetter);
+            mmSetter.reset(new MaintenanceModeSetter(opCtx));
         }
 
         if (command->shouldAffectCommandCounter()) {
@@ -678,22 +711,22 @@ void execCommandDatabase(OperationContext* opCtx,
             opCtx->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
         }
 
-        repl::ReadConcernArgs::get(opCtx) = uassertStatusOK(_extractReadConcern(
-            request.body,
-            command->supportsNonLocalReadConcern(request.getDatabase().toString(), request.body)));
+        auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        readConcernArgs = uassertStatusOK(_extractReadConcern(
+            request.body, command->supportsNonLocalReadConcern(dbname, request.body)));
 
-        // We do not redo shard version handling if this command was issued via the direct client.
-        if ((serverGlobalParams.featureCompatibility.version.load() ==
-                 ServerGlobalParams::FeatureCompatibility::Version::k36 ||
-             iAmPrimary) &&
-            !opCtx->getClient()->isInDirectClient() &&
-            repl::ReadConcernArgs::get(opCtx).getLevel() !=
-                repl::ReadConcernLevel::kAvailableReadConcern) {
-            // Handle a shard version that may have been sent along with the command.
-            auto commandNS = NamespaceString(command->parseNs(dbname, request.body));
-            auto& oss = OperationShardingState::get(opCtx);
-            oss.initializeShardVersion(commandNS, shardVersionFieldIdx);
-            auto shardingState = ShardingState::get(opCtx);
+        auto& oss = OperationShardingState::get(opCtx);
+
+        if (!opCtx->getClient()->isInDirectClient() &&
+            readConcernArgs.getLevel() != repl::ReadConcernLevel::kAvailableReadConcern &&
+            (iAmPrimary ||
+             ((serverGlobalParams.featureCompatibility.getVersion() ==
+               ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) &&
+              (readConcernArgs.hasLevel() || readConcernArgs.getArgsClusterTime())))) {
+            oss.initializeShardVersion(NamespaceString(command->parseNs(dbname, request.body)),
+                                       shardVersionFieldIdx);
+
+            auto const shardingState = ShardingState::get(opCtx);
             if (oss.hasShardVersion()) {
                 uassertStatusOK(shardingState->canAcceptShardedCommands());
             }
@@ -701,6 +734,8 @@ void execCommandDatabase(OperationContext* opCtx,
             // Handle config optime information that may have been sent along with the command.
             uassertStatusOK(shardingState->updateConfigServerOpTimeFromMetadata(opCtx));
         }
+
+        oss.setAllowImplicitCollectionCreation(allowImplicitCollectionCreationField);
 
         // Can throw
         opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
@@ -718,6 +753,7 @@ void execCommandDatabase(OperationContext* opCtx,
                 << rpc::TrackingMetadata::get(opCtx).toString();
             rpc::TrackingMetadata::get(opCtx).setIsLogged(true);
         }
+
         retval = runCommandImpl(opCtx, command, request, replyBuilder, startOperationTime);
 
         if (!retval) {
@@ -753,8 +789,8 @@ void execCommandDatabase(OperationContext* opCtx,
         // An uninitialized operation time means the cluster time is not propagated, so the
         // operation time should not be attached to the error response.
         if (operationTime != LogicalTime::kUninitialized &&
-            serverGlobalParams.featureCompatibility.version.load() ==
-                ServerGlobalParams::FeatureCompatibility::Version::k36) {
+            (serverGlobalParams.featureCompatibility.getVersion() ==
+             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)) {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
                    << "with arguments '" << command->getRedactedCopyForLogging(request.body)
@@ -800,11 +836,14 @@ DbResponse runCommands(OperationContext* opCtx, const Message& message) {
             if (ErrorCodes::isConnectionFatalMessageParseError(ex.code()))
                 throw;
 
+            auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
+            BSONObjBuilder metadataBob;
+            appendReplyMetadataOnError(opCtx, &metadataBob);
             // Otherwise, reply with the parse error. This is useful for cases where parsing fails
             // due to user-supplied input, such as the document too deep error. Since we failed
             // during parsing, we can't log anything about the command.
             LOG(1) << "assertion while parsing command: " << ex.toString();
-            _generateErrorResponse(opCtx, replyBuilder.get(), ex, rpc::makeEmptyMetadata());
+            _generateErrorResponse(opCtx, replyBuilder.get(), ex, metadataBob.obj(), operationTime);
 
             return;  // From lambda. Don't try executing if parsing failed.
         }
@@ -837,10 +876,13 @@ DbResponse runCommands(OperationContext* opCtx, const Message& message) {
 
             execCommandDatabase(opCtx, c, request, replyBuilder.get());
         } catch (const DBException& ex) {
+            BSONObjBuilder metadataBob;
+            appendReplyMetadataOnError(opCtx, &metadataBob);
+            auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "': " << ex.toString();
 
-            _generateErrorResponse(opCtx, replyBuilder.get(), ex, rpc::makeEmptyMetadata());
+            _generateErrorResponse(opCtx, replyBuilder.get(), ex, metadataBob.obj(), operationTime);
         }
     }();
 
@@ -1075,17 +1117,9 @@ DbResponse ServiceEntryPointMongod::handleRequest(OperationContext* opCtx, const
     if (op == dbQuery) {
         if (nsString.isCommand()) {
             isCommand = true;
-            opwrite(m);
-        } else {
-            opread(m);
         }
-    } else if (op == dbGetMore) {
-        opread(m);
     } else if (op == dbCommand || op == dbMsg) {
         isCommand = true;
-        opwrite(m);
-    } else {
-        opwrite(m);
     }
 
     CurOp& currentOp = *CurOp::get(opCtx);

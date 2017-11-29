@@ -89,23 +89,6 @@ MONGO_FP_DECLARE(WTWriteConflictExceptionForReads);
 
 const std::string kWiredTigerEngineName = "wiredTiger";
 
-class WiredTigerRecordStore::OplogInsertChange final : public RecoveryUnit::Change {
-public:
-    OplogInsertChange(WiredTigerOplogManager* om) : _om(om) {}
-
-    void commit() final {
-        _om->triggerJournalFlush();
-    }
-
-    void rollback() final {
-        // Trigger even on rollback since it might make later commits visible.
-        _om->triggerJournalFlush();
-    }
-
-private:
-    WiredTigerOplogManager* const _om;
-};
-
 class WiredTigerRecordStore::OplogStones::InsertChange final : public RecoveryUnit::Change {
 public:
     InsertChange(OplogStones* oplogStones,
@@ -506,7 +489,7 @@ public:
         if (_cursor && !wt_keeptxnopen()) {
             try {
                 _cursor->reset(_cursor);
-            } catch (const WriteConflictException& wce) {
+            } catch (const WriteConflictException&) {
                 // Ignore since this is only called when we are about to kill our transaction
                 // anyway.
             }
@@ -515,7 +498,7 @@ public:
 
     bool restore() final {
         // We can't use the CursorCache since this cursor needs a special config string.
-        WT_SESSION* session = WiredTigerRecoveryUnit::get(_opCtx)->getSession(_opCtx)->getSession();
+        WT_SESSION* session = WiredTigerRecoveryUnit::get(_opCtx)->getSession()->getSession();
 
         if (!_cursor) {
             invariantWTOK(session->open_cursor(
@@ -689,7 +672,7 @@ WiredTigerRecordStore::~WiredTigerRecordStore() {
 
     if (_isOplog) {
         // Delete oplog visibility manager on KV engine.
-        _kvEngine->deleteOplogManager();
+        _kvEngine->haltOplogManager();
     }
 }
 
@@ -733,7 +716,7 @@ void WiredTigerRecordStore::postConstructorInit(OperationContext* opCtx) {
 
     if (_isOplog) {
         invariant(_kvEngine);
-        _kvEngine->initializeOplogManager(opCtx, _uri, this);
+        _kvEngine->startOplogManager(opCtx, _uri, this);
     }
 }
 
@@ -774,7 +757,7 @@ int64_t WiredTigerRecordStore::storageSize(OperationContext* opCtx,
     if (_isEphemeral) {
         return dataSize(opCtx);
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx);
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
     StatusWith<int64_t> result =
         WiredTigerUtil::getStatisticsValueAs<int64_t>(session->getSession(),
                                                       "statistics:" + getURI(),
@@ -918,7 +901,7 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
     OperationContext::RecoveryUnitState const realRUstate =
         opCtx->setRecoveryUnit(new WiredTigerRecoveryUnit(sc), OperationContext::kNotInUnitOfWork);
 
-    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx)->getSession();
+    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
 
     int64_t dataSize = _dataSize.load();
     int64_t numRecords = _numRecords.load();
@@ -1020,7 +1003,7 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
                 _cappedFirstRecord = firstRemainingId;
             }
         }
-    } catch (const WriteConflictException& wce) {
+    } catch (const WriteConflictException&) {
         delete opCtx->releaseRecoveryUnit();
         opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
         log() << "got conflict truncating capped, ignoring";
@@ -1051,7 +1034,9 @@ bool WiredTigerRecordStore::yieldAndAwaitOplogDeletionRequest(OperationContext* 
 
     // The top-level locks were freed, so also release any potential low-level (storage engine)
     // locks that might be held.
-    opCtx->recoveryUnit()->abandonSnapshot();
+    WiredTigerRecoveryUnit* recoveryUnit = (WiredTigerRecoveryUnit*)opCtx->recoveryUnit();
+    recoveryUnit->abandonSnapshot();
+    recoveryUnit->beginIdle();
 
     // Wait for an oplog deletion request, or for this record store to have been destroyed.
     oplogStones->awaitHasExcessStonesOrDead();
@@ -1071,7 +1056,7 @@ void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx) {
                << " records totaling to " << stone->bytes << " bytes";
 
         WiredTigerRecoveryUnit* ru = WiredTigerRecoveryUnit::get(opCtx);
-        WT_SESSION* session = ru->getSession(opCtx)->getSession();
+        WT_SESSION* session = ru->getSession()->getSession();
 
         try {
             WriteUnitOfWork wuow(opCtx);
@@ -1095,7 +1080,7 @@ void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx) {
 
             // Stash the truncate point for next time to cleanly skip over tombstones, etc.
             _oplogStones->firstRecord = stone->lastRecord;
-        } catch (const WriteConflictException& wce) {
+        } catch (const WriteConflictException&) {
             LOG(1) << "Caught WriteConflictException while truncating oplog entries, retrying";
         }
     }
@@ -1130,12 +1115,6 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* opCtx,
     WT_CURSOR* c = curwrap.get();
     invariant(c);
 
-    if (_isOplog) {
-        // Register a change to notify the oplog journal flusher thread when this transaction
-        // finishes.
-        opCtx->recoveryUnit()->registerChange(new OplogInsertChange(_kvEngine->getOplogManager()));
-    }
-
     RecordId highestId = RecordId();
     dassert(nRecords != 0);
     for (size_t i = 0; i < nRecords; i++) {
@@ -1157,18 +1136,18 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* opCtx,
 
     for (size_t i = 0; i < nRecords; i++) {
         auto& record = records[i];
-        if (_isOplog) {
-            Timestamp ts;
-            if (timestamps[i].isNull()) {
-                // If the timestamp is 0, that probably means someone inserted a document directly
-                // into the oplog.  In this case, use the RecordId as the timestamp, since they are
-                // one and the same.
-                ts = Timestamp(record.id.repr());
-            } else {
-                ts = timestamps[i];
-            }
-            LOG(4) << "inserting record into oplog with timestamp " << ts.asULL();
-            fassertStatusOK(39001, opCtx->recoveryUnit()->setTimestamp(SnapshotName(ts)));
+        Timestamp ts;
+        if (timestamps[i].isNull() && _isOplog) {
+            // If the timestamp is 0, that probably means someone inserted a document directly
+            // into the oplog.  In this case, use the RecordId as the timestamp, since they are
+            // one and the same.
+            ts = Timestamp(record.id.repr());
+        } else {
+            ts = timestamps[i];
+        }
+        if (!ts.isNull()) {
+            LOG(4) << "inserting record with timestamp " << ts;
+            fassertStatusOK(39001, opCtx->recoveryUnit()->setTimestamp(ts));
         }
         setKey(c, record.id);
         WiredTigerItem value(record.data.data(), record.data.size());
@@ -1202,7 +1181,7 @@ StatusWith<RecordId> WiredTigerRecordStore::insertRecord(
 
 bool WiredTigerRecordStore::isOpHidden_forTest(const RecordId& id) const {
     invariant(id.repr() > 0);
-    invariant(_kvEngine->getOplogManager());
+    invariant(_kvEngine->getOplogManager()->isRunning());
     return _kvEngine->getOplogManager()->getOplogReadTimestamp() <
         static_cast<std::uint64_t>(id.repr());
 }
@@ -1355,7 +1334,7 @@ Status WiredTigerRecordStore::truncate(OperationContext* opCtx) {
     }
     invariantWTOK(ret);
 
-    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx)->getSession();
+    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
     invariantWTOK(WT_OP_CHECK(session->truncate(session, NULL, start, NULL, NULL)));
     _changeNumRecords(opCtx, -numRecords(opCtx));
     _increaseDataSize(opCtx, -dataSize(opCtx));
@@ -1373,7 +1352,7 @@ Status WiredTigerRecordStore::compact(OperationContext* opCtx,
                                       CompactStats* stats) {
     WiredTigerSessionCache* cache = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache();
     if (!cache->isEphemeral()) {
-        WT_SESSION* s = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx)->getSession();
+        WT_SESSION* s = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
         opCtx->recoveryUnit()->abandonSnapshot();
         int ret = s->compact(s, getURI().c_str(), "timeout=0");
         invariantWTOK(ret);
@@ -1457,7 +1436,7 @@ void WiredTigerRecordStore::appendCustomStats(OperationContext* opCtx,
         result->appendIntOrLL("sleepCount", _cappedSleep.load());
         result->appendIntOrLL("sleepMS", _cappedSleepMS.load());
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx);
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
     WT_SESSION* s = session->getSession();
     BSONObjBuilder bob(result->subobjStart(_engineName));
     {
@@ -1503,8 +1482,12 @@ Status WiredTigerRecordStore::touch(OperationContext* opCtx, BSONObjBuilder* out
 }
 
 void WiredTigerRecordStore::waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) const {
+    // Make sure that callers do not hold an active snapshot so it will be able to see the oplog
+    // entries it waited for afterwards.
+    invariant(!_getRecoveryUnit(opCtx)->inActiveTxn());
+
     auto oplogManager = _kvEngine->getOplogManager();
-    if (oplogManager) {
+    if (oplogManager->isRunning()) {
         oplogManager->waitForAllEarlierOplogWritesToBeVisible(this, opCtx);
     }
 }
@@ -1650,7 +1633,7 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
     WT_CURSOR* start = startwrap.get();
     setKey(start, firstRemovedId);
 
-    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession(opCtx)->getSession();
+    WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
     invariantWTOK(session->truncate(session, nullptr, start, nullptr, nullptr));
 
     _changeNumRecords(opCtx, -recordsRemoved);
@@ -1670,6 +1653,11 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                   sizeof(commitTSConfigString),
                                   "commit_timestamp=%llx",
                                   truncTs.asULL());
+        if (size < 0) {
+            int e = errno;
+            error() << "error snprintf " << errnoWithDescription(e);
+            fassertFailedNoTrace(40662);
+        }
 
         invariant(static_cast<std::size_t>(size) < sizeof(commitTSConfigString));
         auto conn = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache()->conn();
@@ -1687,10 +1675,10 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
 
 Status WiredTigerRecordStore::oplogDiskLocRegister(OperationContext* opCtx,
                                                    const Timestamp& opTime) {
-    // This starts a new transaction and gives it a timestamp.
+    // This labels the current transaction with a timestamp.
     // This is required for oplog visibility to work correctly, as WiredTiger uses the transaction
     // list to determine where there are holes in the oplog.
-    return opCtx->recoveryUnit()->setTimestamp(SnapshotName(opTime));
+    return opCtx->recoveryUnit()->setTimestamp(opTime);
 }
 
 // Cursor Base:
@@ -1714,11 +1702,15 @@ boost::optional<Record> WiredTigerRecordStoreCursorBase::next() {
         // Note that an unpositioned (or eof) WT_CURSOR returns the first/last entry in the
         // table when you call next/prev.
         int advanceRet = WT_READ_CHECK(_forward ? c->next(c) : c->prev(c));
-        if (advanceRet == WT_NOTFOUND || hasWrongPrefix(c, &id)) {
+        if (advanceRet == WT_NOTFOUND) {
             _eof = true;
             return {};
         }
         invariantWTOK(advanceRet);
+        if (hasWrongPrefix(c, &id)) {
+            _eof = true;
+            return {};
+        }
     }
 
     _skipNextAdvance = false;
@@ -1768,7 +1760,7 @@ void WiredTigerRecordStoreCursorBase::save() {
     try {
         if (_cursor)
             _cursor->reset();
-    } catch (const WriteConflictException& wce) {
+    } catch (const WriteConflictException&) {
         // Ignore since this is only called when we are about to kill our transaction
         // anyway.
     }
@@ -1788,7 +1780,7 @@ bool WiredTigerRecordStoreCursorBase::restore() {
         _cursor.emplace(_rs.getURI(), _rs.tableId(), true, _opCtx);
 
     // This will ensure an active session exists, so any restored cursors will bind to it
-    invariant(WiredTigerRecoveryUnit::get(_opCtx)->getSession(_opCtx) == _cursor->getSession());
+    invariant(WiredTigerRecoveryUnit::get(_opCtx)->getSession() == _cursor->getSession());
     _skipNextAdvance = false;
 
     // If we've hit EOF, then this iterator is done and need not be restored.
@@ -1806,11 +1798,15 @@ bool WiredTigerRecordStoreCursorBase::restore() {
     int cmp;
     int ret = WT_READ_CHECK(c->search_near(c, &cmp));
     RecordId id;
-    if (ret == WT_NOTFOUND || hasWrongPrefix(c, &id)) {
+    if (ret == WT_NOTFOUND) {
         _eof = true;
         return !_rs._isCapped;
     }
     invariantWTOK(ret);
+    if (hasWrongPrefix(c, &id)) {
+        _eof = true;
+        return !_rs._isCapped;
+    }
 
     if (cmp == 0)
         return true;  // Landed right where we left off.
@@ -1860,11 +1856,6 @@ RecordId StandardWiredTigerRecordStore::getKey(WT_CURSOR* cursor) const {
 
 void StandardWiredTigerRecordStore::setKey(WT_CURSOR* cursor, RecordId id) const {
     cursor->set_key(cursor, id.repr());
-}
-
-bool StandardWiredTigerRecordStore::hasWrongPrefix(WT_CURSOR* cursor, RecordId* id) const {
-    // The 'WT_NOTFOUND' check a caller does is sufficient.
-    return false;
 }
 
 std::unique_ptr<SeekableRecordCursor> StandardWiredTigerRecordStore::getCursor(
@@ -1949,13 +1940,6 @@ RecordId PrefixedWiredTigerRecordStore::getKey(WT_CURSOR* cursor) const {
 
 void PrefixedWiredTigerRecordStore::setKey(WT_CURSOR* cursor, RecordId id) const {
     cursor->set_key(cursor, _prefix.repr(), id.repr());
-}
-
-bool PrefixedWiredTigerRecordStore::hasWrongPrefix(WT_CURSOR* cursor, RecordId* id) const {
-    std::int64_t prefix;
-    invariantWTOK(cursor->get_key(cursor, &prefix, id));
-
-    return prefix != _prefix.repr();
 }
 
 WiredTigerRecordStorePrefixedCursor::WiredTigerRecordStorePrefixedCursor(

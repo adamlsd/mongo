@@ -31,15 +31,15 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/matcher/matcher.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_root_doc_eq.h"
+#include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
 namespace {
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesObject) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSON("a" << 1 << "b"
-                            << "string"));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(BSON("a" << 1 << "b"
+                                                              << "string"));
     ASSERT_TRUE(rootDocEq.matchesBSON(BSON("a" << 1 << "b"
                                                << "string")));
     ASSERT_FALSE(rootDocEq.matchesBSON(BSON("a" << 2 << "b"
@@ -47,40 +47,34 @@ TEST(InternalSchemaRootDocEqMatchExpression, MatchesObject) {
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesNestedObject) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSON("a" << 1 << "b" << BSON("c" << 1)));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(BSON("a" << 1 << "b" << BSON("c" << 1)));
     ASSERT_TRUE(rootDocEq.matchesBSON(BSON("a" << 1 << "b" << BSON("c" << 1))));
     ASSERT_FALSE(rootDocEq.matchesBSON(BSON("a" << 1 << "b" << BSON("c" << 2))));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesObjectIgnoresElementOrder) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSON("a" << 1 << "b" << BSON("c" << 1)));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(BSON("a" << 1 << "b" << BSON("c" << 1)));
     ASSERT_TRUE(rootDocEq.matchesBSON(BSON("b" << BSON("c" << 1) << "a" << 1)));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesNestedObjectIgnoresElementOrder) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSON("a" << BSON("b" << 1 << "c" << 1)));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(BSON("a" << BSON("b" << 1 << "c" << 1)));
     ASSERT_TRUE(rootDocEq.matchesBSON(BSON("a" << BSON("c" << 1 << "b" << 1))));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesEmptyObject) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSONObj());
+    InternalSchemaRootDocEqMatchExpression rootDocEq{BSONObj()};
     ASSERT_TRUE(rootDocEq.matchesBSON(BSONObj()));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesNestedArray) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(BSON("a" << BSON_ARRAY(1 << 2 << 3)));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(BSON("a" << BSON_ARRAY(1 << 2 << 3)));
     ASSERT_TRUE(rootDocEq.matchesBSON(BSON("a" << BSON_ARRAY(1 << 2 << 3))));
     ASSERT_FALSE(rootDocEq.matchesBSON(BSON("a" << BSON_ARRAY(1 << 3 << 2))));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, MatchesObjectWithNullElement) {
-    InternalSchemaRootDocEqMatchExpression rootDocEq;
-    rootDocEq.init(fromjson("{a: null}"));
+    InternalSchemaRootDocEqMatchExpression rootDocEq(fromjson("{a: null}"));
     ASSERT_TRUE(rootDocEq.matchesBSON(fromjson("{a: null}")));
     ASSERT_FALSE(rootDocEq.matchesBSON(fromjson("{a: 1}")));
     ASSERT_FALSE(rootDocEq.matchesBSON(fromjson("{}")));
@@ -92,26 +86,29 @@ TEST(InternalSchemaRootDocEqMatchExpression, EquivalentReturnsCorrectResults) {
              {$_internalSchemaRootDocEq: {
                  b: 1, c: 1
              }})");
-    Matcher rootDocEq(query, nullptr);
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    Matcher rootDocEq(std::move(query), expCtx);
 
     query = fromjson(R"(
              {$_internalSchemaRootDocEq: {
                  c: 1, b: 1
              }})");
-    Matcher exprEq(query, nullptr);
+    Matcher exprEq(std::move(query), expCtx);
     ASSERT_TRUE(rootDocEq.getMatchExpression()->equivalent(exprEq.getMatchExpression()));
 
     query = fromjson(R"(
              {$_internalSchemaRootDocEq: {
                  c: 1
              }})");
-    Matcher exprNotEq(query, nullptr);
+    Matcher exprNotEq(std::move(query), expCtx);
     ASSERT_FALSE(rootDocEq.getMatchExpression()->equivalent(exprNotEq.getMatchExpression()));
 }
 
 TEST(InternalSchemaRootDocEqMatchExpression, EquivalentToClone) {
     auto query = fromjson("{$_internalSchemaRootDocEq: {a:1, b: {c: 1, d: [1]}}}");
-    Matcher rootDocEq(query, nullptr);
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    Matcher rootDocEq(std::move(query), expCtx);
+
     auto clone = rootDocEq.getMatchExpression()->shallowClone();
     ASSERT_TRUE(rootDocEq.getMatchExpression()->equivalent(clone.get()));
 }

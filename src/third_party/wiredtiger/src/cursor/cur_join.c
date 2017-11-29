@@ -54,6 +54,7 @@ __curjoin_iter_init(WT_SESSION_IMPL *session, WT_CURSOR_JOIN *cjoin,
 	WT_CURSOR_JOIN_ITER *iter;
 
 	*iterp = NULL;
+
 	WT_RET(__wt_calloc_one(session, iterp));
 	iter = *iterp;
 	iter->cjoin = cjoin;
@@ -451,9 +452,9 @@ __curjoin_entry_in_range(WT_SESSION_IMPL *session, WT_CURSOR_JOIN_ENTRY *entry,
 {
 	WT_COLLATOR *collator;
 	WT_CURSOR_JOIN_ENDPOINT *end, *endmax;
-	bool disjunction, passed;
 	u_int pos;
 	int cmp;
+	bool disjunction, passed;
 
 	collator = (entry->index != NULL) ? entry->index->collator : NULL;
 	endmax = &entry->ends[entry->ends_next];
@@ -531,7 +532,8 @@ typedef struct {
  *	Handle a key produced by a custom extractor.
  */
 static int
-__curjoin_extract_insert(WT_CURSOR *cursor) {
+__curjoin_extract_insert(WT_CURSOR *cursor)
+{
 	WT_CURJOIN_EXTRACTOR *cextract;
 	WT_DECL_RET;
 	WT_ITEM ikey;
@@ -1369,10 +1371,10 @@ __wt_curjoin_join(WT_SESSION_IMPL *session, WT_CURSOR_JOIN *cjoin,
 	WT_CURSOR_JOIN *child;
 	WT_CURSOR_JOIN_ENDPOINT *end;
 	WT_CURSOR_JOIN_ENTRY *entry;
-	bool hasins, needbloom, nested, range_eq;
 	size_t len;
-	u_int i, ins, nonbloom;
 	uint8_t endrange;
+	u_int i, ins, nonbloom;
+	bool hasins, needbloom, nested, range_eq;
 
 	entry = NULL;
 	hasins = needbloom = false;

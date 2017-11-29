@@ -5,17 +5,17 @@
 (function() {
     "use strict";
 
+    load("jstests/libs/retryable_writes_util.js");
+
+    if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+        jsTestLog("Retryable writes are not supported, skipping test");
+        return;
+    }
+
     function checkFindAndModifyResult(expected, toCheck) {
         assert.eq(expected.ok, toCheck.ok);
         assert.eq(expected.value, toCheck.value);
-
-        // TODO: SERVER-30532: after adding upserted, just compare the entire lastErrorObject
-        var expectedLE = expected.lastErrorObject;
-        var toCheckLE = toCheck.lastErrorObject;
-
-        assert.neq(null, toCheckLE);
-        assert.eq(expected.updatedExisting, toCheck.updatedExisting);
-        assert.eq(expected.n, toCheck.n);
+        assert.docEq(expected.lastErrorObject, toCheck.lastErrorObject);
     }
 
     function runTests(mainConn, priConn) {
@@ -237,8 +237,9 @@
             {configureFailPoint: 'onPrimaryTransactionalWrite', mode: 'alwaysOn'}));
 
         try {
-            // If ran against mongos, the command will actually succeed, but only one of the writes
-            // would be executed
+            // Set skipRetryOnNetworkError so the shell doesn't automatically retry, since the
+            // command has a txnNumber.
+            TestData.skipRetryOnNetworkError = true;
             var res = assert.commandWorked(testDb.runCommand({
                 insert: 'user',
                 documents: [{x: 0}, {x: 1}],
@@ -246,12 +247,16 @@
                 lsid: {id: lsid},
                 txnNumber: NumberLong(1)
             }));
-            assert.eq(0, res.n);
-            assert.eq(1, res.writeErrors.length);
+            // Mongos will automatically retry on retryable errors if the request has a txnNumber,
+            // and the retry path for already completed writes does not trigger the failpoint, so
+            // the command will succeed when run through mongos.
+            assert.eq(2, res.n);
+            assert.eq(false, res.hasOwnProperty("writeErrors"));
         } catch (e) {
             var exceptionMsg = e.toString();
-            assert(exceptionMsg.indexOf("network error") > -1,
-                   'Incorrect exception thrown: ' + exceptionMsg);
+            assert(isNetworkError(e), 'Incorrect exception thrown: ' + exceptionMsg);
+        } finally {
+            TestData.skipRetryOnNetworkError = false;
         }
 
         assert.eq(2, testDb.user.find({}).itcount());
@@ -344,7 +349,7 @@
     }
 
     // Tests for replica set
-    var replTest = new ReplSetTest({nodes: 1});
+    var replTest = new ReplSetTest({nodes: 2});
     replTest.startSet();
     replTest.initiate();
 

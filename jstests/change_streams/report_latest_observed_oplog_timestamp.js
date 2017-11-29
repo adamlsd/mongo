@@ -4,18 +4,16 @@
 (function() {
     "use strict";
 
-    const testName = "report_latest_observed_oplog_timestamp";
-    const cursorCollection = db.getCollection(testName);
-    const otherCollection = db.getCollection("unrelated_" + testName);
+    load("jstests/libs/collection_drop_recreate.js");  // For assert[Drop|Create]Collection.
 
-    // Drop collections to assure a clean run.  Collections may not exist so do not check result.
-    cursorCollection.drop();
-    otherCollection.drop();
+    // Drop and recreate collections to assure a clean run.
+    const testName = "report_latest_observed_oplog_timestamp";
+    const cursorCollection = assertDropAndRecreateCollection(db, testName);
+    const otherCollection = assertDropAndRecreateCollection(db, "unrelated_" + testName);
 
     // Get a resume point.
     jsTestLog("Getting a resume point.");
     const batchSize = 2;
-    assert.commandWorked(db.createCollection(cursorCollection.getName()));
     const firstResponse = assert.commandWorked(cursorCollection.runCommand(
         {aggregate: testName, pipeline: [{$changeStream: {}}], cursor: {batchSize: batchSize}}));
     assert.eq(0, firstResponse.cursor.firstBatch.length);
@@ -44,16 +42,6 @@
         assert.writeOK(cursorCollection.insert({_id: i}, {writeConcern: {w: 1}}));
     }
 
-    // TODO: SERVER-29126
-    // While change streams still uses read concern level local instead of read concern level
-    // majority, we need to use causal consistency to be able to immediately read our own writes out
-    // of the oplog.  Once change streams read from the majority snapshot, we can remove this
-    // synchronization point from this test.
-    assert.commandWorked(db.runCommand({
-        find: "foo",
-        readConcern: {level: "local", afterClusterTime: db.getMongo().getOperationTime()}
-    }));
-
     // Look at one batch's worth.
     jsTestLog("Testing that operation time is present on initial aggregate command.");
     const cursorResponse = assert.commandWorked(cursorCollection.runCommand({
@@ -73,7 +61,12 @@
     let getMoreResponse = iterateCursor(cursorResponse);
     const getMoreOplogTimestamp = getMoreResponse.$_internalLatestOplogTimestamp;
     assert.neq(undefined, getMoreOplogTimestamp, tojson(getMoreResponse));
-    assert.gt(getMoreOplogTimestamp, firstBatchOplogTimestamp);
+    // SERVER-21861 Use bsonWoCompare to avoid the shell's flawed comparison of timestamps.
+    assert.eq(
+        bsonWoCompare(getMoreOplogTimestamp, firstBatchOplogTimestamp),
+        1,
+        `Expected oplog timestamp from getMore (${getMoreOplogTimestamp}) to be larger than the` +
+            ` oplog timestamp from the first batch (${firstBatchOplogTimestamp})`);
 
     // Now make sure that the reported operation time advances if there are writes to an unrelated
     // collection.
@@ -92,5 +85,10 @@
     getMoreResponse = iterateCursor(cursorResponse);
     const oplogTimeAfterUnrelatedInsert = getMoreResponse.$_internalLatestOplogTimestamp;
     assert.neq(undefined, oplogTimeAtExhaust, tojson(getMoreResponse));
-    assert.gt(oplogTimeAfterUnrelatedInsert, oplogTimeAtExhaust);
+    // SERVER-21861 Use bsonWoCompare to avoid the shell's flawed comparison of timestamps.
+    assert.eq(
+        bsonWoCompare(oplogTimeAfterUnrelatedInsert, oplogTimeAtExhaust),
+        1,
+        `Expected oplog timestamp from after unrelated insert (${oplogTimeAfterUnrelatedInsert})` +
+            ` to be larger than the oplog timestamp at time of exhaust (${oplogTimeAtExhaust})`);
 })();

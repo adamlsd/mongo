@@ -159,9 +159,9 @@ __sweep_discard_trees(WT_SESSION_IMPL *session, u_int *dead_handlesp)
 	WT_DATA_HANDLE *dhandle;
 	WT_DECL_RET;
 
-	conn = S2C(session);
-
 	*dead_handlesp = 0;
+
+	conn = S2C(session);
 
 	TAILQ_FOREACH(dhandle, &conn->dhqh, q) {
 		if (WT_DHANDLE_CAN_DISCARD(dhandle))
@@ -312,7 +312,7 @@ __sweep_server(void *arg)
 		 * bringing in and evicting pages from the lookaside table,
 		 * which will stop the cache from moving into the stuck state.
 		 */
-		if (__wt_las_is_written(session) &&
+		if (__wt_las_nonempty(session) &&
 		    !__wt_cache_stuck(session)) {
 			oldest_id = __wt_txn_oldest_id(session);
 			if (WT_TXNID_LT(last_las_sweep_id, oldest_id)) {
@@ -401,19 +401,20 @@ __wt_sweep_create(WT_SESSION_IMPL *session)
 
 	/*
 	 * Handle sweep does enough I/O it may be called upon to perform slow
-	 * operations for the block manager.
-	 *
-	 * The sweep thread sweeps the lookaside table for outdated records,
-	 * it gets its own cursor for that purpose.
-	 *
-	 * Don't tap the sweep thread for eviction.
+	 * operations for the block manager.  Sweep should not block due to the
+	 * cache being full.
 	 */
-	session_flags = WT_SESSION_CAN_WAIT | WT_SESSION_NO_EVICTION;
-	if (F_ISSET(conn, WT_CONN_LAS_OPEN))
-		session_flags |= WT_SESSION_LOOKASIDE_CURSOR;
+	session_flags = WT_SESSION_CAN_WAIT | WT_SESSION_IGNORE_CACHE_SIZE;
 	WT_RET(__wt_open_internal_session(
 	    conn, "sweep-server", true, session_flags, &conn->sweep_session));
 	session = conn->sweep_session;
+
+	/*
+	 * Sweep should have it's own lookaside cursor to avoid blocking reads
+	 * and eviction when processing drops.
+	 */
+	if (F_ISSET(conn, WT_CONN_LOOKASIDE_OPEN))
+		WT_RET(__wt_las_cursor_open(session));
 
 	WT_RET(__wt_cond_alloc(
 	    session, "handle sweep server", &conn->sweep_cond));
@@ -452,9 +453,6 @@ __wt_sweep_destroy(WT_SESSION_IMPL *session)
 
 		conn->sweep_session = NULL;
 	}
-
-	/* Discard any saved lookaside key. */
-	__wt_buf_free(session, &conn->las_sweep_key);
 
 	return (ret);
 }

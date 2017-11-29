@@ -32,6 +32,8 @@
 
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/db_raii.h"
+#include "mongo/db/op_observer_impl.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
@@ -46,16 +48,31 @@ void SyncTailTest::setUp() {
     ServiceContextMongoDTest::setUp();
 
     auto service = getServiceContext();
+    _opCtx = cc().makeOperationContext();
+
     ReplicationCoordinator::set(service, stdx::make_unique<ReplicationCoordinatorMock>(service));
+    ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
+
     auto storageInterface = stdx::make_unique<StorageInterfaceMock>();
     _storageInterface = storageInterface.get();
     storageInterface->insertDocumentsFn =
         [](OperationContext*, const NamespaceString&, const std::vector<InsertStatement>&) {
             return Status::OK();
         };
+
+    // Storage interface mock should get the real uuid.
+    storageInterface->getCollectionUUIDFn = [](
+        OperationContext* opCtx, const NamespaceString& nss) -> StatusWith<OptionalCollectionUUID> {
+        AutoGetCollectionForRead autoColl(opCtx, nss);
+        return autoColl.getCollection()->uuid();
+    };
+
     StorageInterface::set(service, std::move(storageInterface));
     DropPendingCollectionReaper::set(
         service, stdx::make_unique<DropPendingCollectionReaper>(_storageInterface));
+    repl::setOplogCollectionName();
+    repl::createOplog(_opCtx.get());
+    service->setOpObserver(stdx::make_unique<OpObserverImpl>());
 
     _replicationProcess =
         new ReplicationProcess(_storageInterface,
@@ -65,15 +82,20 @@ void SyncTailTest::setUp() {
                             std::unique_ptr<ReplicationProcess>(_replicationProcess));
 
 
-    _opCtx = cc().makeOperationContext();
     _opsApplied = 0;
     _applyOp = [](OperationContext* opCtx,
                   Database* db,
                   const BSONObj& op,
-                  bool inSteadyStateReplication,
+                  bool alwaysUpsert,
+                  OplogApplication::Mode oplogApplicationMode,
                   stdx::function<void()>) { return Status::OK(); };
-    _applyCmd = [](OperationContext* opCtx, const BSONObj& op, bool) { return Status::OK(); };
+    _applyCmd = [](OperationContext* opCtx,
+                   const BSONObj& op,
+                   OplogApplication::Mode oplogApplicationMode) { return Status::OK(); };
     _incOps = [this]() { _opsApplied++; };
+
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
 }
 
 void SyncTailTest::tearDown() {
@@ -95,7 +117,8 @@ void SyncTailTest::_testSyncApplyInsertDocument(ErrorCodes::Error expectedError,
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
                                                    const BSONObj& theOperation,
-                                                   bool inSteadyStateReplication,
+                                                   bool alwaysUpsert,
+                                                   OplogApplication::Mode oplogApplicationMode,
                                                    stdx::function<void()>) {
         applyOpCalled = true;
         ASSERT_TRUE(opCtx);
@@ -106,20 +129,53 @@ void SyncTailTest::_testSyncApplyInsertDocument(ErrorCodes::Error expectedError,
         ASSERT_TRUE(documentValidationDisabled(opCtx));
         ASSERT_TRUE(db);
         ASSERT_BSONOBJ_EQ(op, theOperation);
-        ASSERT_TRUE(inSteadyStateReplication);
+        ASSERT_TRUE(alwaysUpsert);
+        ASSERT_EQUALS(oplogApplicationMode, OplogApplication::Mode::kSecondary);
         return Status::OK();
     };
     ASSERT_TRUE(_opCtx->writesAreReplicated());
     ASSERT_FALSE(documentValidationDisabled(_opCtx.get()));
-    ASSERT_EQ(SyncTail::syncApply(_opCtx.get(), op, true, applyOp, failedApplyCommand, _incOps),
+    ASSERT_EQ(SyncTail::syncApply(_opCtx.get(),
+                                  op,
+                                  OplogApplication::Mode::kSecondary,
+                                  applyOp,
+                                  failedApplyCommand,
+                                  _incOps),
               expectedError);
     ASSERT_EQ(applyOpCalled, expectedError == ErrorCodes::OK);
 }
 
-Status failedApplyCommand(OperationContext* opCtx, const BSONObj& theOperation, bool) {
+Status failedApplyCommand(OperationContext* opCtx,
+                          const BSONObj& theOperation,
+                          OplogApplication::Mode) {
     FAIL("applyCommand unexpectedly invoked.");
     return Status::OK();
 }
+
+Status SyncTailTest::runOpSteadyState(const OplogEntry& op) {
+    SyncTail syncTail(nullptr, SyncTail::MultiSyncApplyFunc(), nullptr);
+    MultiApplier::OperationPtrs opsPtrs{&op};
+    auto syncApply = [](
+        OperationContext* opCtx, const BSONObj& op, OplogApplication::Mode oplogApplicationMode) {
+        return SyncTail::syncApply(opCtx, op, oplogApplicationMode);
+    };
+    return multiSyncApply_noAbort(_opCtx.get(), &opsPtrs, syncApply);
+}
+
+Status SyncTailTest::runOpInitialSync(const OplogEntry& op) {
+    return runOpsInitialSync({op});
+}
+
+Status SyncTailTest::runOpsInitialSync(std::vector<OplogEntry> ops) {
+    SyncTail syncTail(nullptr, SyncTail::MultiSyncApplyFunc(), nullptr);
+    MultiApplier::OperationPtrs opsPtrs;
+    for (auto& op : ops) {
+        opsPtrs.push_back(&op);
+    }
+    AtomicUInt32 fetchCount(0);
+    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount);
+}
+
 
 }  // namespace repl
 }  // namespace mongo

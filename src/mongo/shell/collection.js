@@ -143,10 +143,6 @@ DBCollection.prototype.help = function() {
         ".unsetWriteConcern( <write concern doc> ) - unsets the write concern for writes to the collection");
     print("\tdb." + shortName +
           ".latencyStats() - display operation latency histograms for this collection");
-    // print("\tdb." + shortName + ".getDiskStorageStats({...}) - prints a summary of disk usage
-    // statistics");
-    // print("\tdb." + shortName + ".getPagesInRAM({...}) - prints a summary of storage pages
-    // currently in physical memory");
     return __magicNoPrint;
 };
 
@@ -215,45 +211,6 @@ DBCollection.prototype._massageObject = function(q) {
 
 };
 
-DBCollection.prototype._validateObject = function(o) {
-    // Hidden property for testing purposes.
-    if (this.getMongo()._skipValidation)
-        return;
-
-    if (typeof(o) != "object")
-        throw Error("attempted to save a " + typeof(o) + " value.  document expected.");
-
-    if (o._ensureSpecial && o._checkModify)
-        throw Error("can't save a DBQuery object");
-};
-
-DBCollection._allowedFields = {
-    $id: 1,
-    $ref: 1,
-    $db: 1
-};
-
-DBCollection.prototype._validateForStorage = function(o) {
-    // Hidden property for testing purposes.
-    if (this.getMongo()._skipValidation)
-        return;
-
-    this._validateObject(o);
-    for (var k in o) {
-        if (k.indexOf(".") >= 0) {
-            throw Error("can't have . in field names [" + k + "]");
-        }
-
-        if (k.indexOf("$") == 0 && !DBCollection._allowedFields[k]) {
-            throw Error("field names cannot start with $ [" + k + "]");
-        }
-
-        if (o[k] !== null && typeof(o[k]) === "object") {
-            this._validateForStorage(o[k]);
-        }
-    }
-};
-
 DBCollection.prototype.find = function(query, fields, limit, skip, batchSize, options) {
     var cursor = new DBQuery(this._mongo,
                              this._db,
@@ -304,7 +261,7 @@ DBCollection.prototype.findOne = function(query, fields, options, readConcern, c
     return ret;
 };
 
-DBCollection.prototype.insert = function(obj, options, _allow_dot) {
+DBCollection.prototype.insert = function(obj, options) {
     if (!obj)
         throw Error("no object passed to insert!");
 
@@ -367,10 +324,6 @@ DBCollection.prototype.insert = function(obj, options, _allow_dot) {
             }
         }
     } else {
-        if (!_allow_dot) {
-            this._validateForStorage(obj);
-        }
-
         if (typeof(obj._id) == "undefined" && !Array.isArray(obj)) {
             var tmp = obj;  // don't want to modify input
             obj = {_id: new ObjectId()};
@@ -389,18 +342,6 @@ DBCollection.prototype.insert = function(obj, options, _allow_dot) {
     this._lastID = obj._id;
     this._printExtraInfo("Inserted", startTime);
     return result;
-};
-
-DBCollection.prototype._validateRemoveDoc = function(doc) {
-    // Hidden property for testing purposes.
-    if (this.getMongo()._skipValidation)
-        return;
-
-    for (var k in doc) {
-        if (k == "_id" && typeof(doc[k]) == "undefined") {
-            throw new Error("can't have _id set to undefined in a remove expression");
-        }
-    }
 };
 
 /**
@@ -473,7 +414,6 @@ DBCollection.prototype.remove = function(t, justOne) {
             throw new Error("collation requires use of write commands");
         }
 
-        this._validateRemoveDoc(t);
         this.getMongo().remove(this._fullName, query, justOne);
 
         // enforce write concern, if required
@@ -483,26 +423,6 @@ DBCollection.prototype.remove = function(t, justOne) {
 
     this._printExtraInfo("Removed", startTime);
     return result;
-};
-
-DBCollection.prototype._validateUpdateDoc = function(doc) {
-    // Hidden property for testing purposes.
-    if (this.getMongo()._skipValidation)
-        return;
-
-    var firstKey = null;
-    for (var key in doc) {
-        firstKey = key;
-        break;
-    }
-
-    if (firstKey != null && firstKey[0] == '$') {
-        // for mods we only validate partially, for example keys may have dots
-        this._validateObject(doc);
-    } else {
-        // we're basically inserting a brand new object, do full validation
-        this._validateForStorage(doc);
-    }
 };
 
 /**
@@ -610,7 +530,6 @@ DBCollection.prototype.update = function(query, obj, upsert, multi) {
             throw new Error("arrayFilters requires use of write commands");
         }
 
-        this._validateUpdateDoc(obj);
         this.getMongo().update(this._fullName, query, obj, upsert, multi);
 
         // Enforce write concern, if required
@@ -697,6 +616,10 @@ DBCollection.prototype.createIndex = function(keys, options) {
 };
 
 DBCollection.prototype.createIndexes = function(keys, options) {
+    if (!Array.isArray(keys)) {
+        throw new Error("createIndexes first argument should be an array");
+    }
+
     var indexSpecs = Array(keys.length);
     for (var i = 0; i < indexSpecs.length; i++) {
         indexSpecs[i] = this._indexSpec(keys[i], options);
@@ -710,7 +633,7 @@ DBCollection.prototype.createIndexes = function(keys, options) {
     } else if (this.getMongo().writeMode() == "compatibility") {
         // Use the downconversion machinery of the bulk api to do a safe write, report response as a
         // command response
-        var result = this._db.getCollection("system.indexes").insert(indexSpecs, 0, true);
+        var result = this._db.getCollection("system.indexes").insert(indexSpecs, 0);
 
         if (result.hasWriteErrors() || result.hasWriteConcernError()) {
             // Return the first error
@@ -721,7 +644,7 @@ DBCollection.prototype.createIndexes = function(keys, options) {
             return {ok: 1.0};
         }
     } else {
-        this._db.getCollection("system.indexes").insert(indexSpecs, 0, true);
+        this._db.getCollection("system.indexes").insert(indexSpecs, 0);
     }
 };
 
@@ -880,168 +803,6 @@ DBCollection.prototype.validate = function(full) {
     return res;
 };
 
-/**
- * Invokes the storageDetails command to provide aggregate and (if requested) detailed information
- * regarding the layout of records and deleted records in the collection extents.
- * getDiskStorageStats provides a human-readable summary of the command output
- */
-DBCollection.prototype.diskStorageStats = function(opt) {
-    var cmd = {storageDetails: this.getName(), analyze: 'diskStorage'};
-    if (typeof(opt) == 'object')
-        Object.extend(cmd, opt);
-
-    var res = this._db.runCommand(cmd);
-    if (!res.ok && res.errmsg.match(/no such cmd/)) {
-        print("this command requires starting mongod with --enableExperimentalStorageDetailsCmd");
-    }
-    return res;
-};
-
-// Refer to diskStorageStats
-DBCollection.prototype.getDiskStorageStats = function(params) {
-    var stats = this.diskStorageStats(params);
-    if (!stats.ok) {
-        print("error executing storageDetails command: " + stats.errmsg);
-        return;
-    }
-
-    print("\n    " + "size".pad(9) + " " + "# recs".pad(10) + " " +
-          "[===occupied by BSON=== ---occupied by padding---       free           ]" + "  " +
-          "bson".pad(8) + " " + "rec".pad(8) + " " + "padding".pad(8));
-    print();
-
-    var BAR_WIDTH = 70;
-
-    var formatSliceData = function(data) {
-        var bar = _barFormat(
-            [
-              [data.bsonBytes / data.onDiskBytes, "="],
-              [(data.recBytes - data.bsonBytes) / data.onDiskBytes, "-"]
-            ],
-            BAR_WIDTH);
-
-        return sh._dataFormat(data.onDiskBytes).pad(9) + " " + data.numEntries.toFixed(0).pad(10) +
-            " " + bar + "  " + (data.bsonBytes / data.onDiskBytes).toPercentStr().pad(8) + " " +
-            (data.recBytes / data.onDiskBytes).toPercentStr().pad(8) + " " +
-            (data.recBytes / data.bsonBytes).toFixed(4).pad(8);
-    };
-
-    var printExtent = function(ex, rng) {
-        print("--- extent " + rng + " ---");
-        print("tot " + formatSliceData(ex));
-        print();
-        if (ex.slices) {
-            for (var c = 0; c < ex.slices.length; c++) {
-                var slice = ex.slices[c];
-                print(("" + c).pad(3) + " " + formatSliceData(slice));
-            }
-            print();
-        }
-    };
-
-    if (stats.extents) {
-        print("--- extent overview ---\n");
-        for (var i = 0; i < stats.extents.length; i++) {
-            var ex = stats.extents[i];
-            print(("" + i).pad(3) + " " + formatSliceData(ex));
-        }
-        print();
-        if (params && (params.granularity || params.numberOfSlices)) {
-            for (var i = 0; i < stats.extents.length; i++) {
-                printExtent(stats.extents[i], i);
-            }
-        }
-    } else {
-        printExtent(stats, "range " + stats.range);
-    }
-
-};
-
-/**
- * Invokes the storageDetails command to report the percentage of virtual memory pages of the
- * collection storage currently in physical memory (RAM).
- * getPagesInRAM provides a human-readable summary of the command output
- */
-DBCollection.prototype.pagesInRAM = function(opt) {
-    var cmd = {storageDetails: this.getName(), analyze: 'pagesInRAM'};
-    if (typeof(opt) == 'object')
-        Object.extend(cmd, opt);
-
-    var res = this._db.runCommand(cmd);
-    if (!res.ok && res.errmsg.match(/no such cmd/)) {
-        print("this command requires starting mongod with --enableExperimentalStorageDetailsCmd");
-    }
-    return res;
-};
-
-// Refer to pagesInRAM
-DBCollection.prototype.getPagesInRAM = function(params) {
-    var stats = this.pagesInRAM(params);
-    if (!stats.ok) {
-        print("error executing storageDetails command: " + stats.errmsg);
-        return;
-    }
-
-    var BAR_WIDTH = 70;
-    var formatExtentData = function(data) {
-        return "size".pad(8) + " " + _barFormat([[data.inMem, '=']], BAR_WIDTH) + "  " +
-            data.inMem.toPercentStr().pad(7);
-    };
-
-    var printExtent = function(ex, rng) {
-        print("--- extent " + rng + " ---");
-        print("tot " + formatExtentData(ex));
-        print();
-        if (ex.slices) {
-            print("\tslices, percentage of pages in memory (< .1% : ' ', <25% : '.', " +
-                  "<50% : '_', <75% : '=', >75% : '#')");
-            print();
-            print("\t" + "offset".pad(8) + "  [slices...] (each slice is " +
-                  sh._dataFormat(ex.sliceBytes) + ")");
-            line = "\t" + ("" + 0).pad(8) + "  [";
-            for (var c = 0; c < ex.slices.length; c++) {
-                if (c % 80 == 0 && c != 0) {
-                    print(line + "]");
-                    line = "\t" + sh._dataFormat(ex.sliceBytes * c).pad(8) + "  [";
-                }
-                var inMem = ex.slices[c];
-                if (inMem <= .001)
-                    line += " ";
-                else if (inMem <= .25)
-                    line += ".";
-                else if (inMem <= .5)
-                    line += "_";
-                else if (inMem <= .75)
-                    line += "=";
-                else
-                    line += "#";
-            }
-            print(line + "]");
-            print();
-        }
-    };
-
-    if (stats.extents) {
-        print("--- extent overview ---\n");
-        for (var i = 0; i < stats.extents.length; i++) {
-            var ex = stats.extents[i];
-            print(("" + i).pad(3) + " " + formatExtentData(ex));
-        }
-        print();
-        if (params && (params.granularity || params.numberOfSlices)) {
-            for (var i = 0; i < stats.extents.length; i++) {
-                printExtent(stats.extents[i], i);
-            }
-        } else {
-            print("use getPagesInRAM({granularity: _bytes_}) or " +
-                  "getPagesInRAM({numberOfSlices: _num_} for details");
-            print("use pagesInRAM(...) for json output, same parameters apply");
-        }
-    } else {
-        printExtent(stats, "range " + stats.range);
-    }
-};
-
 DBCollection.prototype.getShardVersion = function() {
     return this._db._adminCommand({getShardVersion: this._fullName});
 };
@@ -1075,7 +836,7 @@ DBCollection.prototype._getIndexesCommand = function(filter) {
         throw _getErrorWithCode(res, "listIndexes failed: " + tojson(res));
     }
 
-    return new DBCommandCursor(res._mongo, res).toArray();
+    return new DBCommandCursor(this._db, res).toArray();
 };
 
 DBCollection.prototype.getIndexes = function(filter) {
@@ -1250,7 +1011,7 @@ DBCollection.prototype.convertToCapped = function(bytes) {
 DBCollection.prototype.exists = function() {
     var res = this._db.runCommand("listCollections", {filter: {name: this._shortName}});
     if (res.ok) {
-        var cursor = new DBCommandCursor(res._mongo, res);
+        const cursor = new DBCommandCursor(this._db, res);
         if (!cursor.hasNext())
             return null;
         return cursor.next();
@@ -1714,6 +1475,25 @@ DBCollection.prototype.latencyStats = function(options) {
     return this.aggregate([{$collStats: {latencyStats: options}}]);
 };
 
+DBCollection.prototype.watch = function(pipeline, options) {
+    pipeline = pipeline || [];
+    options = options || {};
+    assert(pipeline instanceof Array, "'pipeline' argument must be an array");
+    assert(options instanceof Object, "'options' argument must be an object");
+
+    let changeStreamStage = {fullDocument: options.fullDocument || "default"};
+    delete options.fullDocument;
+
+    if (options.hasOwnProperty("resumeAfter")) {
+        changeStreamStage.resumeAfter = options.resumeAfter;
+        delete options.resumeAfter;
+    }
+
+    pipeline.unshift({$changeStream: changeStreamStage});
+    // Pass options "batchSize", "collation" and "maxAwaitTimeMS" down to aggregate().
+    return this.aggregate(pipeline, options);
+};
+
 /**
  * PlanCache
  * Holds a reference to the collection.
@@ -1853,10 +1633,8 @@ PlanCache.prototype.clear = function() {
  * List plans for a query shape.
  */
 PlanCache.prototype.getPlansByQuery = function(query, projection, sort, collation) {
-    return this
-        ._runCommandThrowOnError("planCacheListPlans",
-                                 this._parseQueryShape(query, projection, sort, collation))
-        .plans;
+    return this._runCommandThrowOnError("planCacheListPlans",
+                                        this._parseQueryShape(query, projection, sort, collation));
 };
 
 /**

@@ -34,6 +34,12 @@ namespace mongo {
 
 constexpr StringData InternalSchemaObjectMatchExpression::kName;
 
+InternalSchemaObjectMatchExpression::InternalSchemaObjectMatchExpression(
+    StringData path, std::unique_ptr<MatchExpression> expr)
+    : PathMatchExpression(INTERNAL_SCHEMA_OBJECT_MATCH, path), _sub(std::move(expr)) {
+    setTraverseLeafArray();
+}
+
 bool InternalSchemaObjectMatchExpression::matchesSingleElement(const BSONElement& elem,
                                                                MatchDetails* details) const {
     if (elem.type() != BSONType::Object) {
@@ -65,12 +71,22 @@ bool InternalSchemaObjectMatchExpression::equivalent(const MatchExpression* othe
 }
 
 std::unique_ptr<MatchExpression> InternalSchemaObjectMatchExpression::shallowClone() const {
-    auto clone = stdx::make_unique<InternalSchemaObjectMatchExpression>();
-    invariantOK(clone->init(_sub->shallowClone(), path()));
+    auto clone =
+        stdx::make_unique<InternalSchemaObjectMatchExpression>(path(), _sub->shallowClone());
     if (getTag()) {
         clone->setTag(getTag()->clone());
     }
     return std::move(clone);
 }
 
+MatchExpression::ExpressionOptimizerFunc InternalSchemaObjectMatchExpression::getOptimizer() const {
+    return [](std::unique_ptr<MatchExpression> expression) {
+        auto& objectMatchExpression =
+            static_cast<InternalSchemaObjectMatchExpression&>(*expression);
+        objectMatchExpression._sub =
+            MatchExpression::optimize(std::move(objectMatchExpression._sub));
+
+        return expression;
+    };
+}
 }  // namespace mongo

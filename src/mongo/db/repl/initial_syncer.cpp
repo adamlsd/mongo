@@ -41,6 +41,7 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/fetcher.h"
 #include "mongo/client/remote_command_retry_scheduler.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/jsobj.h"
@@ -275,6 +276,7 @@ void InitialSyncer::_cancelRemainingWork_inlock() {
         _shutdownComponent_inlock(_initialSyncState->dbsCloner);
     }
     _shutdownComponent_inlock(_applier);
+    _shutdownComponent_inlock(_fCVFetcher);
     _shutdownComponent_inlock(_lastOplogEntryFetcher);
 }
 
@@ -353,9 +355,8 @@ void InitialSyncer::_setUp_inlock(OperationContext* opCtx, std::uint32_t initial
     _replicationProcess->getConsistencyMarkers()->setInitialSyncFlag(opCtx);
 
     auto serviceCtx = opCtx->getServiceContext();
-    _storage->setInitialDataTimestamp(serviceCtx,
-                                      SnapshotName(Timestamp::kAllowUnstableCheckpointsSentinel));
-    _storage->setStableTimestamp(serviceCtx, SnapshotName::min());
+    _storage->setInitialDataTimestamp(serviceCtx, Timestamp::kAllowUnstableCheckpointsSentinel);
+    _storage->setStableTimestamp(serviceCtx, Timestamp::min());
 
     LOG(1) << "Creating oplogBuffer.";
     _oplogBuffer = _dataReplicatorExternalState->makeInitialSyncOplogBuffer(opCtx);
@@ -378,10 +379,14 @@ void InitialSyncer::_tearDown_inlock(OperationContext* opCtx,
         return;
     }
 
+    // This is necessary to ensure that the oplog contains at least one visible document prior to
+    // setting an externally visible lastApplied.  That way if any other node attempts to read from
+    // this node's oplog, it won't appear empty.
+    _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx);
+
     _storage->setInitialDataTimestamp(opCtx->getServiceContext(),
-                                      SnapshotName(lastApplied.getValue().opTime.getTimestamp()));
+                                      lastApplied.getValue().opTime.getTimestamp());
     _replicationProcess->getConsistencyMarkers()->clearInitialSyncFlag(opCtx);
-    _opts.setMyLastOptime(lastApplied.getValue().opTime);
     log() << "initial sync done; took "
           << duration_cast<Seconds>(_stats.initialSyncEnd - _stats.initialSyncStart) << ".";
     initialSyncCompletes.increment();
@@ -423,6 +428,11 @@ void InitialSyncer::_startInitialSyncAttemptCallback(
     _opts.resetOptimes();
     _lastApplied = {};
     _lastFetched = {};
+
+    LOG(2) << "Resetting feature compatibility version to 3.4. If the sync source is in feature "
+              "compatibility version 3.6, we will find out when we clone the admin.system.version "
+              "collection.";
+    serverGlobalParams.featureCompatibility.reset();
 
     // Clear the oplog buffer.
     _oplogBuffer->clear(makeOpCtx().get());
@@ -593,6 +603,89 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForBeginTimestamp(
         return;
     }
 
+    const auto& lastOpTimeWithHash = opTimeWithHashResult.getValue();
+
+    BSONObjBuilder queryBob;
+    queryBob.append("find", nsToCollectionSubstring(FeatureCompatibilityVersion::kCollection));
+    auto filterBob = BSONObjBuilder(queryBob.subobjStart("filter"));
+    filterBob.append("_id", FeatureCompatibilityVersion::kParameterName);
+    filterBob.done();
+
+    _fCVFetcher = stdx::make_unique<Fetcher>(
+        _exec,
+        _syncSource,
+        nsToDatabaseSubstring(FeatureCompatibilityVersion::kCollection).toString(),
+        queryBob.obj(),
+        stdx::bind(&InitialSyncer::_fcvFetcherCallback,
+                   this,
+                   stdx::placeholders::_1,
+                   onCompletionGuard,
+                   lastOpTimeWithHash),
+        ReadPreferenceSetting::secondaryPreferredMetadata(),
+        RemoteCommandRequest::kNoTimeout /* find network timeout */,
+        RemoteCommandRequest::kNoTimeout /* getMore network timeout */,
+        RemoteCommandRetryScheduler::makeRetryPolicy(
+            numInitialSyncOplogFindAttempts.load(),
+            executor::RemoteCommandRequest::kNoTimeout,
+            RemoteCommandRetryScheduler::kAllRetriableErrors));
+    Status scheduleStatus = _fCVFetcher->schedule();
+    if (!scheduleStatus.isOK()) {
+        _fCVFetcher.reset();
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, scheduleStatus);
+        return;
+    }
+}
+
+void InitialSyncer::_fcvFetcherCallback(const StatusWith<Fetcher::QueryResponse>& result,
+                                        std::shared_ptr<OnCompletionGuard> onCompletionGuard,
+                                        const OpTimeWithHash& lastOpTimeWithHash) {
+    stdx::unique_lock<stdx::mutex> lock(_mutex);
+    auto status = _checkForShutdownAndConvertStatus_inlock(
+        result.getStatus(), "error while getting the remote feature compatibility version");
+    if (!status.isOK()) {
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, status);
+        return;
+    }
+
+    const auto docs = result.getValue().documents;
+    if (docs.size() > 1) {
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(
+            lock,
+            Status(ErrorCodes::TooManyMatchingDocuments,
+                   str::stream() << "Expected to receive one document, but received: "
+                                 << docs.size()
+                                 << ". First: "
+                                 << redact(docs.front())
+                                 << ". Last: "
+                                 << redact(docs.back())));
+        return;
+    }
+    const auto hasDoc = docs.begin() != docs.end();
+    if (!hasDoc) {
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(
+            lock,
+            Status(ErrorCodes::IncompatibleServerVersion,
+                   "Sync source had no feature compatibility version document"));
+        return;
+    }
+
+    auto fCVParseSW = FeatureCompatibilityVersion::parse(docs.front());
+    if (!fCVParseSW.isOK()) {
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, fCVParseSW.getStatus());
+        return;
+    }
+
+    auto version = fCVParseSW.getValue();
+    if (version != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34 &&
+        version != ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+        onCompletionGuard->setResultAndCancelRemainingWork_inlock(
+            lock,
+            Status(ErrorCodes::IncompatibleServerVersion,
+                   str::stream() << "Sync source had unsafe feature compatibility version: "
+                                 << FeatureCompatibilityVersion::toString(version)));
+        return;
+    }
+
     // This is where the flow of control starts to split into two parallel tracks:
     // - oplog fetcher
     // - data cloning and applier
@@ -617,7 +710,6 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForBeginTimestamp(
                                                       stdx::placeholders::_1,
                                                       onCompletionGuard)));
 
-    const auto& lastOpTimeWithHash = opTimeWithHashResult.getValue();
     _initialSyncState->beginTimestamp = lastOpTimeWithHash.opTime.getTimestamp();
 
     invariant(!result.getValue().documents.empty());
@@ -756,7 +848,6 @@ void InitialSyncer::_databasesClonerCallback(const Status& databaseClonerFinishS
 void InitialSyncer::_lastOplogEntryFetcherCallbackForStopTimestamp(
     const StatusWith<Fetcher::QueryResponse>& result,
     std::shared_ptr<OnCompletionGuard> onCompletionGuard) {
-    Timestamp oplogSeedDocTimestamp;
     OpTimeWithHash optimeWithHash;
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
@@ -774,8 +865,7 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForStopTimestamp(
             return;
         }
         optimeWithHash = optimeWithHashStatus.getValue();
-        oplogSeedDocTimestamp = _initialSyncState->stopTimestamp =
-            optimeWithHash.opTime.getTimestamp();
+        _initialSyncState->stopTimestamp = optimeWithHash.opTime.getTimestamp();
 
         if (_initialSyncState->beginTimestamp != _initialSyncState->stopTimestamp) {
             invariant(_lastApplied.opTime.isNull());
@@ -800,17 +890,13 @@ void InitialSyncer::_lastOplogEntryFetcherCallbackForStopTimestamp(
         auto status = _storage->insertDocument(
             opCtx.get(),
             _opts.localOplogNS,
-            TimestampedBSONObj{oplogSeedDoc, SnapshotName(oplogSeedDocTimestamp)});
+            TimestampedBSONObj{oplogSeedDoc, optimeWithHash.opTime.getTimestamp()},
+            optimeWithHash.opTime.getTerm());
         if (!status.isOK()) {
             stdx::lock_guard<stdx::mutex> lock(_mutex);
             onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, status);
             return;
         }
-
-        // This is necessary to ensure that the seed doc is visible in the oplog prior to setting
-        // _lastApplied.  That way if any other node attempts to read from this node's oplog, it
-        // won't appear empty.
-        _storage->waitForAllEarlierOplogWritesToBeVisible(opCtx.get());
     }
 
     stdx::lock_guard<stdx::mutex> lock(_mutex);
@@ -934,7 +1020,8 @@ void InitialSyncer::_multiApplierCallback(const Status& multiApplierStatus,
 
     _initialSyncState->appliedOps += numApplied;
     _lastApplied = lastApplied;
-    _opts.setMyLastOptime(_lastApplied.opTime);
+    _opts.setMyLastOptime(_lastApplied.opTime,
+                          ReplicationCoordinator::DataConsistency::Inconsistent);
 
     auto fetchCount = _fetchCount.load();
     if (fetchCount > 0) {
@@ -1005,6 +1092,29 @@ void InitialSyncer::_rollbackCheckerCheckForRollbackCallback(
                    str::stream() << "Rollback occurred on our sync source " << _syncSource
                                  << " during initial sync"));
         return;
+    }
+
+    // Set UUIDs for all non-replicated collections on secondaries. See comment in
+    // ReplicationCoordinatorExternalStateImpl::initializeReplSetStorage() for the explanation of
+    // why we do this and why it is not necessary for sharded clusters.
+    if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
+        const NamespaceString nss("admin", "system.version");
+        auto opCtx = makeOpCtx();
+        auto statusWithUUID = _storage->getCollectionUUID(opCtx.get(), nss);
+        if (!statusWithUUID.isOK()) {
+            // If the admin database does not exist, we intentionally fail initial sync. As part of
+            // SERVER-29448, we disallow dropping the admin database, so failing here is fine.
+            onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock,
+                                                                      statusWithUUID.getStatus());
+            return;
+        }
+        if (statusWithUUID.getValue()) {
+            auto schemaStatus = _storage->upgradeUUIDSchemaVersionNonReplicated(opCtx.get());
+            if (!schemaStatus.isOK()) {
+                onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, schemaStatus);
+                return;
+            }
+        }
     }
 
     // Success!
@@ -1267,11 +1377,7 @@ Status InitialSyncer::_checkForShutdownAndConvertStatus_inlock(const Status& sta
         return Status(ErrorCodes::CallbackCanceled, message + ": initial syncer is shutting down");
     }
 
-    if (!status.isOK()) {
-        return Status(status.code(), message + ": " + status.reason());
-    }
-
-    return Status::OK();
+    return status.withContext(message);
 }
 
 Status InitialSyncer::_scheduleWorkAndSaveHandle_inlock(

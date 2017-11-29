@@ -98,6 +98,10 @@ public:
 
     void closeCursorsForQueuedDrops(WiredTigerKVEngine* engine);
 
+    /**
+     * Closes all cached cursors matching the uri.  If the uri is empty,
+     * all cached cursors are closed.
+     */
     void closeAllCursors(const std::string& uri);
 
     int cursorsOut() const {
@@ -173,8 +177,8 @@ public:
     void closeCursorsForQueuedDrops();
 
     /**
-     * Closes all cached cursors and ensures that previously opened cursors will be closed on
-     * release.
+     * Closes all cached cursors matching the uri.  If the uri is empty,
+     * all cached cursors are closed.
      */
     void closeAllCursors(const std::string& uri);
 
@@ -243,6 +247,9 @@ private:
     stdx::mutex _journalListenerMutex;
     // Notified when we commit to the journal.
     JournalListener* _journalListener = &NoOpJournalListener::instance;
+
+    WT_SESSION* _waitUntilDurableSession = nullptr;  // owned, and never explicitly closed
+                                                     // (uses connection close to clean up)
 
     /**
      * Returns a session to the cache for later reuse. If closeAll was called between getting this

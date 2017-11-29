@@ -113,7 +113,8 @@ TEST_F(ReplicationProcessTest,
                                                 ReplicationProcess::kRollbackProgressNamespace,
                                                 TimestampedBSONObj{BSON("_id"
                                                                         << "not progress"),
-                                                                   SnapshotName(0)}));
+                                                                   Timestamp()},
+                                                OpTime::kUninitializedTerm));
     ASSERT_EQUALS(ErrorCodes::NoSuchKey, replicationProcess.getRollbackProgress(opCtx.get()));
 }
 
@@ -122,12 +123,14 @@ TEST_F(ReplicationProcessTest, GetRollbackProgressReturnsBadStatusIfApplyUntilFi
                                        << "rollbackProgress"
                                        << "applyUntil"
                                        << "not op time!"),
-                                  SnapshotName(0)};
+                                  Timestamp(0)};
     auto opCtx = makeOpCtx();
     ASSERT_OK(_storageInterface->createCollection(
         opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, {}));
-    ASSERT_OK(_storageInterface->insertDocument(
-        opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, doc));
+    ASSERT_OK(_storageInterface->insertDocument(opCtx.get(),
+                                                ReplicationProcess::kRollbackProgressNamespace,
+                                                doc,
+                                                OpTime::kUninitializedTerm));
 
     ReplicationProcess replicationProcess(
         _storageInterface.get(),
@@ -145,12 +148,14 @@ TEST_F(ReplicationProcessTest,
                                                << "not_timestamp"
                                                << "t"
                                                << 1LL)),
-                                  SnapshotName(0)};
+                                  Timestamp(0)};
     auto opCtx = makeOpCtx();
     ASSERT_OK(_storageInterface->createCollection(
         opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, {}));
-    ASSERT_OK(_storageInterface->insertDocument(
-        opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, doc));
+    ASSERT_OK(_storageInterface->insertDocument(opCtx.get(),
+                                                ReplicationProcess::kRollbackProgressNamespace,
+                                                doc,
+                                                OpTime::kUninitializedTerm));
 
     ReplicationProcess replicationProcess(
         _storageInterface.get(),
@@ -166,12 +171,14 @@ TEST_F(ReplicationProcessTest,
                                        << "rollbackProgress"
                                        << "applyUntil"
                                        << applyUntil),
-                                  SnapshotName(0)};
+                                  Timestamp(0)};
     auto opCtx = makeOpCtx();
     ASSERT_OK(_storageInterface->createCollection(
         opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, {}));
-    ASSERT_OK(_storageInterface->insertDocument(
-        opCtx.get(), ReplicationProcess::kRollbackProgressNamespace, doc));
+    ASSERT_OK(_storageInterface->insertDocument(opCtx.get(),
+                                                ReplicationProcess::kRollbackProgressNamespace,
+                                                doc,
+                                                OpTime::kUninitializedTerm));
 
     ReplicationProcess replicationProcess(
         _storageInterface.get(),
@@ -237,6 +244,23 @@ TEST_F(ReplicationProcessTest,
         stdx::make_unique<ReplicationRecoveryMock>());
     ASSERT_EQUALS(ErrorCodes::IllegalOperation,
                   replicationProcess.clearRollbackProgress(opCtx.get()));
+}
+
+TEST_F(ReplicationProcessTest, RollbackIDIncrementsBy1) {
+    auto opCtx = makeOpCtx();
+    ReplicationProcess replicationProcess(
+        _storageInterface.get(),
+        stdx::make_unique<ReplicationConsistencyMarkersImpl>(_storageInterface.get()),
+        stdx::make_unique<ReplicationRecoveryMock>());
+
+    // We make no assumptions about the initial value of the rollback ID.
+    ASSERT_OK(replicationProcess.initializeRollbackID(opCtx.get()));
+    int initRBID = unittest::assertGet(replicationProcess.getRollbackID(opCtx.get()));
+
+    // Make sure the rollback ID is incremented by exactly 1.
+    ASSERT_OK(replicationProcess.incrementRollbackID(opCtx.get()));
+    int rbid = unittest::assertGet(replicationProcess.getRollbackID(opCtx.get()));
+    ASSERT_EQ(rbid, initRBID + 1);
 }
 
 }  // namespace

@@ -72,6 +72,14 @@ namespace {
 ExportedServerParameter<bool, ServerParameterType::kStartupOnly> testCommandsParameter(
     ServerParameterSet::getGlobal(), "enableTestCommands", &Command::testCommandsEnabled);
 
+const char kWriteConcernField[] = "writeConcern";
+const WriteConcernOptions kMajorityWriteConcern(
+    WriteConcernOptions::kMajority,
+    // Note: Even though we're setting UNSET here, kMajority implies JOURNAL if journaling is
+    // supported by the mongod.
+    WriteConcernOptions::SyncMode::UNSET,
+    Seconds(60));
+
 }  // namespace
 
 Command::~Command() = default;
@@ -90,6 +98,16 @@ BSONObj Command::appendPassthroughFields(const BSONObj& cmdObjWithPassthroughFie
     return b.obj();
 }
 
+BSONObj Command::appendMajorityWriteConcern(const BSONObj& cmdObj) {
+    if (cmdObj.hasField(kWriteConcernField)) {
+        return cmdObj;
+    }
+    BSONObjBuilder cmdObjWithWriteConcern;
+    cmdObjWithWriteConcern.appendElementsUnique(cmdObj);
+    cmdObjWithWriteConcern.append(kWriteConcernField, kMajorityWriteConcern.toBSON());
+    return cmdObjWithWriteConcern.obj();
+}
+
 string Command::parseNsFullyQualified(const string& dbname, const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     uassert(ErrorCodes::BadValue,
@@ -106,7 +124,7 @@ NamespaceString Command::parseNsCollectionRequired(const string& dbname, const B
     // Accepts both BSON String and Symbol for collection name per SERVER-16260
     // TODO(kangas) remove Symbol support in MongoDB 3.0 after Ruby driver audit
     BSONElement first = cmdObj.firstElement();
-    uassert(ErrorCodes::BadValue,
+    uassert(ErrorCodes::InvalidNamespace,
             str::stream() << "collection name has invalid type " << typeName(first.type()),
             first.canonicalType() == canonicalizeBSONType(mongo::String));
     const NamespaceString nss(dbname, first.valueStringData());
@@ -121,10 +139,18 @@ NamespaceString Command::parseNsOrUUID(OperationContext* opCtx,
                                        const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
-        StatusWith<UUID> uuidRes = UUID::parse(first);
-        uassertStatusOK(uuidRes);
         UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
-        return catalog.lookupNSSByUUID(uuidRes.getValue());
+        UUID uuid = uassertStatusOK(UUID::parse(first));
+        NamespaceString nss = catalog.lookupNSSByUUID(uuid);
+        uassert(ErrorCodes::NamespaceNotFound,
+                str::stream() << "UUID " << uuid << " specified in "
+                              << cmdObj.firstElement().fieldNameStringData()
+                              << " command not found in "
+                              << dbname
+                              << " database",
+                nss.isValid() && nss.db() == dbname);
+
+        return nss;
     } else {
         // Ensure collection identifier is not a Command
         const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
@@ -191,7 +217,7 @@ BSONObj Command::runCommandDirectly(OperationContext* opCtx, const OpMsgRequest&
     try {
         bool ok = command->publicRun(opCtx, request, out);
         appendCommandStatus(out, ok);
-    } catch (const StaleConfigException& ex) {
+    } catch (const StaleConfigException&) {
         // These exceptions are intended to be handled at a higher level and cannot losslessly
         // round-trip through Status.
         throw;
@@ -412,8 +438,9 @@ BSONObj Command::filterCommandRequestForPassthrough(const BSONObj& cmdObj) {
                    name == "$queryOptions" ||            //
                    name == "maxTimeMS" ||                //
                    name == "readConcern" ||              //
-                   name == "writeConcern" ||
-                   name == "lsid" || name == "txnNumber") {
+                   name == "writeConcern" ||             //
+                   name == "lsid" ||                     //
+                   name == "txnNumber") {
             // This is the whitelist of generic arguments that commands can be trusted to blindly
             // forward to the shards.
             bob.append(elem);

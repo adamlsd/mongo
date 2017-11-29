@@ -142,7 +142,7 @@ var DB;
     // runCommand uses this impl to actually execute the command
     DB.prototype._runCommandImpl = function(name, obj, options) {
         const session = this.getSession();
-        return session._serverSession.client.runCommand(session, name, obj, options);
+        return session._getSessionAwareClient().runCommand(session, name, obj, options);
     };
 
     DB.prototype.runCommand = function(obj, extra, queryOptions) {
@@ -173,7 +173,7 @@ var DB;
 
     DB.prototype.runCommandWithMetadata = function(commandArgs, metadata) {
         const session = this.getSession();
-        return session._serverSession.client.runCommandWithMetadata(
+        return session._getSessionAwareClient().runCommandWithMetadata(
             session, this._name, metadata, commandArgs);
     };
 
@@ -214,6 +214,9 @@ var DB;
 
             delete optcpy['useCursor'];
         }
+
+        const maxAwaitTimeMS = optcpy.maxAwaitTimeMS;
+        delete optcpy.maxAwaitTimeMS;
 
         // Reassign the cleaned-up options.
         aggregateOptions = optcpy;
@@ -263,7 +266,7 @@ var DB;
                 batchSizeValue = cmdObj["cursor"]["batchSize"];
             }
 
-            return new DBCommandCursor(res._mongo, res, batchSizeValue);
+            return new DBCommandCursor(this, res, batchSizeValue, maxAwaitTimeMS);
         }
 
         return res;
@@ -322,10 +325,8 @@ var DB;
         var options = opt || {};
 
         // We have special handling for the 'flags' field, and provide sugar for specific flags. If
-        // the
-        // user specifies any flags we send the field in the command. Otherwise, we leave it blank
-        // and
-        // use the server's defaults.
+        // the user specifies any flags we send the field in the command. Otherwise, we leave it
+        // blank and use the server's defaults.
         var sendFlags = false;
         var flags = 0;
         if (options.usePowerOf2Sizes != undefined) {
@@ -940,7 +941,7 @@ var DB;
             throw _getErrorWithCode(res, "listCollections failed: " + tojson(res));
         }
 
-        return new DBCommandCursor(res._mongo, res).toArray().sort(compareOn("name"));
+        return new DBCommandCursor(this, res).toArray().sort(compareOn("name"));
     };
 
     /**
@@ -1857,7 +1858,7 @@ var DB;
     (function(hasOwnProperty) {
         DB.prototype.getSession = function() {
             if (!hasOwnProperty.call(this, "_session")) {
-                this._session = new _DummyDriverSession(this.getMongo());
+                this._session = this.getMongo()._getDefaultSession();
             }
             return this._session;
         };

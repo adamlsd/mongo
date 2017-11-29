@@ -62,22 +62,6 @@ private:
             return appendCommandStatus(result, status);
         }
 
-        // We want to keep request vote connection open when relinquishing primary.
-        // Tag it here.
-        transport::Session::TagMask originalTag = 0;
-        auto session = opCtx->getClient()->session();
-        if (session) {
-            originalTag = session->getTags();
-            session->replaceTags(originalTag | transport::Session::kKeepOpen);
-        }
-
-        // Untag the connection on exit.
-        ON_BLOCK_EXIT([session, originalTag]() {
-            if (session) {
-                session->replaceTags(originalTag);
-            }
-        });
-
         ReplSetRequestVotesResponse response;
         status = getGlobalReplicationCoordinator()->processReplSetRequestVotes(
             opCtx, parsedArgs, &response);

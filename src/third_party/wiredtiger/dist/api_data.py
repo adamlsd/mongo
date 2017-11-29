@@ -131,6 +131,20 @@ file_runtime_config = [
         do not ever evict the object's pages from cache. Not compatible with
         LSM tables; see @ref tuning_cache_resident for more information''',
         type='boolean'),
+    Config('assert', '', r'''
+        enable enhanced checking. ''',
+        type='category', subconfig= [
+        Config('commit_timestamp', 'none', r'''
+            verify that timestamps should 'always' or 'never' be used
+            on modifications with this table.  Verification is 'none'
+            if mixed update use is allowed.''',
+            choices=['always','never','none']),
+        Config('read_timestamp', 'none', r'''
+            verify that timestamps should 'always' or 'never' be used
+            on reads with this table.  Verification is 'none'
+            if mixed read use is allowed.''',
+            choices=['always','never','none'])
+        ], undoc=True),
     Config('log', '', r'''
         the transaction log configuration for this object.  Only valid if
         log is enabled in ::wiredtiger_open''',
@@ -539,6 +553,7 @@ connection_runtime_config = [
             'api',
             'block',
             'checkpoint',
+            'checkpoint_progress',
             'compact',
             'evict',
             'evict_stuck',
@@ -546,6 +561,7 @@ connection_runtime_config = [
             'fileops',
             'handleops',
             'log',
+            'lookaside',
             'lookaside_activity',
             'lsm',
             'lsm_manager',
@@ -560,7 +576,6 @@ connection_runtime_config = [
             'salvage',
             'shared_cache',
             'split',
-            'temporary',
             'thread_group',
             'timestamp',
             'transaction',
@@ -1097,8 +1112,13 @@ methods = {
         Transactions with higher values are less likely to abort''',
         min='-100', max='100'),
     Config('read_timestamp', '', r'''
-        read using the specified timestamp, see
+        read using the specified timestamp.  The supplied value should not be
+        older than the current oldest timestamp.  See
         @ref transaction_timestamps'''),
+    Config('round_to_oldest', 'false', r'''
+        if read timestamp is earlier than oldest timestamp,
+        read timestamp will be rounded to oldest timestamp''',
+        type='boolean'),
     Config('snapshot', '', r'''
         use a named, in-memory snapshot, see
         @ref transaction_named_snapshots'''),
@@ -1110,7 +1130,10 @@ methods = {
 
 'WT_SESSION.commit_transaction' : Method([
     Config('commit_timestamp', '', r'''
-        set the commit timestamp for the current transaction, see
+        set the commit timestamp for the current transaction.  The supplied
+        value should not be older than the first commit timestamp set for the
+        current transaction.  The value should also not be older than the
+        current oldest and stable timestamps.  See
         @ref transaction_timestamps'''),
     Config('sync', '', r'''
         override whether to sync log records when the transaction commits,
@@ -1125,7 +1148,10 @@ methods = {
 
 'WT_SESSION.timestamp_transaction' : Method([
     Config('commit_timestamp', '', r'''
-        set the commit timestamp for the current transaction, see
+        set the commit timestamp for the current transaction.  The supplied
+        value should not be older than the first commit timestamp set for the
+        current transaction.  The value should also not be older than the
+        current oldest and stable timestamps.  See
         @ref transaction_timestamps'''),
 ]),
 
@@ -1259,10 +1285,13 @@ methods = {
 'WT_CONNECTION.query_timestamp' : Method([
     Config('get', 'all_committed', r'''
         specify which timestamp to query: \c all_committed returns the largest
-        timestamp such that all earlier timestamps have committed.  See @ref
-        transaction_timestamps''',
-        choices=['all_committed']),
-    # We also support "oldest_reader" as an internal-only choice.
+        timestamp such that all earlier timestamps have committed, \c oldest
+        returns the most recent \c oldest_timestamp set with
+        WT_CONNECTION::set_timestamp, \c pinned returns the minimum of the
+        \c oldest_timestamp and the read timestamps of all active readers, and
+        \c stable returns the most recent \c stable_timestamp set with
+        WT_CONNECTION::set_timestamp.  See @ref transaction_timestamps''',
+        choices=['all_committed','oldest','pinned','stable']),
 ]),
 
 'WT_CONNECTION.set_timestamp' : Method([
@@ -1272,17 +1301,25 @@ methods = {
         timestamps greater than the specified value until the next commit moves
         the tracked commit timestamp forwards.  This is only intended for use
         where the application is rolling back locally committed transactions.
-        See @ref transaction_timestamps'''),
+        The supplied value should not be older than the current oldest and
+        stable timestamps.  See @ref transaction_timestamps'''),
+    Config('force', 'false', r'''
+        set timestamps even if they violate normal ordering requirements.
+        For example allow the \c oldest_timestamp to move backwards''',
+        type='boolean'),
     Config('oldest_timestamp', '', r'''
         future commits and queries will be no earlier than the specified
-        timestamp. Supplied values must be monotonically increasing.
-        See @ref transaction_timestamps'''),
+        timestamp.  Supplied values must be monotonically increasing, any
+        attempt to set the value to older than the current is silently ignored.
+        The supplied value should not be newer than the current
+        stable timestamp.  See @ref transaction_timestamps'''),
     Config('stable_timestamp', '', r'''
         checkpoints will not include commits that are newer than the specified
         timestamp in tables configured with \c log=(enabled=false).  Supplied
-        values must be monotonically increasing.  The stable timestamp data
-        stability only applies to tables that are not being logged.  See @ref
-        transaction_timestamps'''),
+        values must be monotonically increasing, any attempt to set the value to
+        older than the current is silently ignored.  The supplied value should
+        not be older than the current oldest timestamp.  See
+        @ref transaction_timestamps'''),
 ]),
 
 'WT_CONNECTION.rollback_to_stable' : Method([]),

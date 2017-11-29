@@ -209,7 +209,7 @@ BSONObj ShardKeyPattern::normalizeShardKey(const BSONObj& shardKey) const {
 static BSONElement extractKeyElementFromMatchable(const MatchableDocument& matchable,
                                                   StringData pathStr) {
     ElementPath path;
-    path.init(pathStr).transitional_ignore();
+    path.init(pathStr);
     path.setTraverseNonleafArrays(false);
     path.setTraverseLeafArray(false);
 
@@ -289,8 +289,7 @@ StatusWith<BSONObj> ShardKeyPattern::extractShardKeyFromQuery(OperationContext* 
                                      std::move(qr),
                                      expCtx,
                                      ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                     MatchExpressionParser::kAllowAllSpecialFeatures);
     if (!statusWithCQ.isOK()) {
         return StatusWith<BSONObj>(statusWithCQ.getStatus());
     }

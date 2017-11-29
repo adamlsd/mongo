@@ -101,7 +101,11 @@ public:
         return *_t;
     }
 
-    const Status&& getStatus() const {
+    const Status& getStatus() const {
+        return _status;
+    }
+
+    Status getStatus() && {
         return std::move(_status);
     }
 

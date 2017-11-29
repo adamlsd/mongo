@@ -136,7 +136,6 @@ public:
      * status variable and then ignore it.
      */
     inline void ignore() && noexcept {}
-    inline void ignore() const&& noexcept {}
     inline void ignore() const& noexcept = delete;
 
     /**

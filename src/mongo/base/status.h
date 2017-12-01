@@ -154,12 +154,9 @@ public:
     }
 
     /**
-     * Call this method to indicate that it is your intention to ignore a returned status. Ignoring
-     * is only possible if the value being ignored is an xvalue -- it is not appropriate to create a
-     * status variable and then ignore it.
+     * Call this method to indicate that it is your intention to ignore a returned status.
      */
-    inline void ignore() && noexcept {}
-    inline void ignore() const& noexcept = delete;
+    inline void ignore() const noexcept {}
 
     /**
      * This method is a transitional tool, to facilitate transition to compile-time enforced status

@@ -105,10 +105,6 @@ public:
         return _status;
     }
 
-    Status getStatus() && {
-        return std::move(_status);
-    }
-
     bool isOK() const {
         return _status.isOK();
     }

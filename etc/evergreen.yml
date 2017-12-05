@@ -163,6 +163,10 @@ variables:
   standard_port: "20000"
   virtualenv_dir: venv_powercycle
   virtualenv_requirements: psutil
+  windows_crash_cmd: \"notmyfault/notmyfaultc64.exe -accepteula crash 1\"
+  windows_crash_dl: https://download.sysinternals.com/files/NotMyFault.zip
+  windows_crash_dir: notmyfault
+  windows_crash_zip: notmyfault.zip
 
 - &powercycle_expansions
   params:
@@ -181,7 +185,7 @@ variables:
   program_options: --logLevel=info --backupPathBefore=${backup_path_before} --backupPathAfter=${backup_path_after}
   connection_options: --sshUserHost=${ip_address} --sshConnection=\"${ssh_identity} ${ssh_connection_options}\"
   test_options: --testLoops=15 --seedDocNum=10000 --rsync --validate=local --canary=local
-  crash_options: "--crashMethod=aws_ec2 --crashOptions=${instance_id}:private_ip_address --crashWaitTime=45 --jitterForCrashWaitTime=5"
+  crash_options: --crashMethod=internal --crashOption=${windows_crash_cmd} --crashWaitTime=45 --jitterForCrashWaitTime=5
   client_options: --numCrudClients=20 --numFsmClients=20
   mongodb_options: --rootDir=${remote_dir}-${task_id} --mongodbBinDir=${remote_dir}
   mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path}
@@ -298,7 +302,7 @@ functions:
           get_pids() {
             proc_pids=$(tasklist /fo:csv |
                         awk -F'","' '{x=$1; gsub("\"","",x); print $2, x}' |
-                        grep -i -E $1 |
+                        grep -iE $1 |
                         cut -f1 -d ' ');
           }
           get_process_info() {
@@ -883,9 +887,11 @@ functions:
           echo "{\"failures\": $failures, \"results\": [{\"status\": $status, \"exit_code\": $exit_code, \"test_file\": \"${task_name}\", \"start\": $start_time, \"end\": $end_time, \"elapsed\": $elapsed_secs}]}" > $report_json
           generate_report_json="--reportJsonFile=$report_json"
 
-          # # On Windows execute 10 test loops, cap the maximum number of clients to 10 each.
+          # Windows task overrides:
+          #   - Execute 10 test loops
+          #   - Cap the maximum number of clients to 10 each
           if [ "Windows_NT" = "$OS" ]; then
-            test_override="--testLoops=10"
+            test_override=--testLoops=10
             max_clients=10
             for client in --numCrudClients --numFsmClients
             do
@@ -977,7 +983,7 @@ functions:
           # - The second column (and beyond) has task name
           # - Grep for the task names of interest while ignoring any names that are in the exclude list
 
-          processes=$(tasklist /fo:csv | awk -F'","' '{x=$1; gsub("\"","",x); print $2, x}' | grep -i -E "$process_kill_list" | grep -i -v -E "$process_exclude_list")
+          processes=$(tasklist /fo:csv | awk -F'","' '{x=$1; gsub("\"","",x); print $2, x}' | grep -iE "$process_kill_list" | grep -ivE "$process_exclude_list")
 
           # Kill the Windows process by process ID with force (/f)
           kill_process () { pid=$(echo $1 | cut -f1 -d ' '); echo "Killing process $1"; taskkill /pid "$pid" /f; }
@@ -987,22 +993,10 @@ functions:
           # - The first column has the process ID
           # - The second column (and beyond) has task name
 
-          # There are 2 "styles" of grep, figure out which one works
-          grep=grep
-          echo "a" | $grep -qE "(a)" > /dev/null 2>&1
-          if [ $? -ne 0 ]; then
-            # Extended grep on Solaris is in the following location
-            grep=/usr/xpg4/bin/grep
-            if [ ! -f $grep ]; then
-              echo "Extended $grep does not exist"
-              return 1
-            fi
-          fi
-
           # There are 2 "styles" of pgrep, figure out which one works.
           # Due to https://bugs.launchpad.net/ubuntu/+source/procps/+bug/1501916
           # we cannot rely on the return status ($?) to detect if the option is supported.
-          pgrep -f --list-full ".*" 2>&1 | $grep -qE "(illegal|invalid|unrecognized) option"
+          pgrep -f --list-full ".*" 2>&1 | grep -qE "(illegal|invalid|unrecognized) option"
           if [ $? -ne 0 ]; then
             pgrep_list=$(pgrep -f --list-full "$process_kill_list")
           else
@@ -1011,7 +1005,7 @@ functions:
 
           # Since a process name might have a CR or LF in it, we need to delete any lines from
           # pgrep which do not start with space(s) and 1 digit and trim any leading spaces.
-          processes=$(echo "$pgrep_list" | $grep -ivE "$process_exclude_list" | sed -e '/^ *[0-9]/!d; s/^ *//; s/[[:cntrl:]]//g;')
+          processes=$(echo "$pgrep_list" | grep -ivE "$process_exclude_list" | sed -e '/^ *[0-9]/!d; s/^ *//; s/[[:cntrl:]]//g;')
 
           # Kill the Unix process ID with signal KILL (9)
           kill_process () { pid=$(echo $1 | cut -f1 -d ' '); echo "Killing process $1"; kill -9 $pid; }
@@ -1388,6 +1382,27 @@ functions:
               --commands "$cmds"
           fi
 
+    - command: shell.exec
+      params:
+        shell: bash
+        working_dir: src
+        script: |
+          set -o errexit
+          if [[ "Windows_NT" != "$OS" || -z "${windows_crash_zip}" ]]; then
+            exit 0
+          fi
+          # Install NotMyFault, used to crash Windows.
+          cmds="curl -s -o ${windows_crash_zip} ${windows_crash_dl}"
+          cmds="$cmds; unzip -q ${windows_crash_zip} -d ${windows_crash_dir}"
+          cmds="$cmds; chmod +x ${windows_crash_dir}/*.exe"
+          ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
+          ${python|/opt/mongodbtoolchain/v2/bin/python2} buildscripts/remote_operations.py \
+            --verbose                                        \
+            --userHost $USER@${ip_address}                   \
+            --sshConnectionOptions "$ssh_connection_options" \
+            --retries ${ssh_retries|0}                       \
+            --commands "$cmds"
+
   "copy EC2 artifacts":
     - command: shell.exec
       params:
@@ -1546,7 +1561,7 @@ post:
           echo "Cannot check for OOM (Out of memory) killed processes on this platform"
           exit 0
         fi
-        egrep -i '(Out of memory|OOM[- ]killer|Killed process)' dmesg.txt > oom.txt
+        grep -iE '(Out of memory|OOM[- ]killer|Killed process)' dmesg.txt > oom.txt
         if [ -s oom.txt ]; then
           echo "OOM (Out of memory) killed processes detected"
           cat oom.txt
@@ -2556,6 +2571,19 @@ tasks:
       <<: *jstestfuzz_config_vars
       resmoke_args: --suites=jstestfuzz_sharded_causal_consistency --storageEngine=wiredTiger --numClientsPerFixture=10
 
+## jstestfuzz concurrent sharded cluster continuous stepdown ##
+- <<: *jstestfuzz_template
+  name: jstestfuzz_concurrent_sharded_continuous_stepdown
+  commands:
+  - func: "do setup"
+  - func: "run jstestfuzz"
+    vars:
+      jstestfuzz_vars: --numGeneratedFiles 25
+  - <<: *run_jstestfuzz_tests
+    vars:
+      <<: *jstestfuzz_config_vars
+      resmoke_args: --suites=jstestfuzz_sharded_continuous_stepdown --storageEngine=wiredTiger --numClientsPerFixture=10
+
 ## jstestfuzz concurrent sharded cluster with logical session mmapv1 ##
 - <<: *jstestfuzz_template
   name: jstestfuzz_concurrent_sharded_session
@@ -2721,6 +2749,19 @@ tasks:
     vars:
       <<: *jstestfuzz_config_vars
       resmoke_args: --suites=jstestfuzz_sharded_causal_consistency --storageEngine=wiredTiger
+
+## jstestfuzz sharded cluster continuous stepdown ##
+- <<: *jstestfuzz_template
+  name: jstestfuzz_sharded_continuous_stepdown
+  commands:
+  - func: "do setup"
+  - func: "run jstestfuzz"
+    vars:
+      jstestfuzz_vars: --numGeneratedFiles 50
+  - <<: *run_jstestfuzz_tests
+    vars:
+      <<: *jstestfuzz_config_vars
+      resmoke_args: --suites=jstestfuzz_sharded_continuous_stepdown --storageEngine=wiredTiger
 
 ## jstestfuzz sharded cluster with logical session mmapv1 ##
 - <<: *jstestfuzz_template
@@ -4231,6 +4272,7 @@ tasks:
     vars:
       <<: *powercycle_test
       client_options: --numCrudClients=20 --numFsmClients=0
+      test_options: --testLoops=15 --seedDocNum=10000 --rsync --validate=local --canary=local --removeLockFile
       mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine mmapv1\"
 
 - name: powercycle_WT
@@ -6433,11 +6475,13 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session_WT
   - name: jstestfuzz_concurrent_sharded_WT
   - name: jstestfuzz_concurrent_sharded_causal_consistency_WT
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session_WT
   - name: jstestfuzz_replication_WT
   - name: jstestfuzz_replication_session_WT
   - name: jstestfuzz_sharded_WT
   - name: jstestfuzz_sharded_causal_consistency_WT
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session_WT
   - name: master_slave_WT
   - name: master_slave_jscore_passthrough_WT
@@ -6576,11 +6620,13 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session_WT
   - name: jstestfuzz_concurrent_sharded_WT
   - name: jstestfuzz_concurrent_sharded_causal_consistency_WT
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session_WT
   - name: jstestfuzz_replication_WT
   - name: jstestfuzz_replication_session_WT
   - name: jstestfuzz_sharded_WT
   - name: jstestfuzz_sharded_causal_consistency_WT
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session_WT
   - name: master_slave_WT
   - name: master_slave_jscore_passthrough_WT
@@ -6832,12 +6878,14 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session_WT
   - name: jstestfuzz_concurrent_sharded_WT
   - name: jstestfuzz_concurrent_sharded_causal_consistency_WT
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session_WT
   - name: jstestfuzz_replication_WT
   - name: jstestfuzz_replication_initsync_WT
   - name: jstestfuzz_replication_session_WT
   - name: jstestfuzz_sharded_WT
   - name: jstestfuzz_sharded_causal_consistency_WT
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session_WT
   - name: master_slave_WT
   - name: master_slave_auth
@@ -8724,10 +8772,12 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session_WT
   - name: jstestfuzz_concurrent_sharded_WT
   - name: jstestfuzz_concurrent_sharded_causal_consistency_WT
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session_WT
   - name: jstestfuzz_replication_WT
   - name: jstestfuzz_replication_session_WT
   - name: jstestfuzz_sharded_WT
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session_WT
   - name: jstestfuzz_sharded_causal_consistency_WT
   - name: master_slave_WT
@@ -9186,11 +9236,13 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session_WT
   - name: jstestfuzz_concurrent_sharded_WT
   - name: jstestfuzz_concurrent_sharded_causal_consistency_WT
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session_WT
   - name: jstestfuzz_replication_WT
   - name: jstestfuzz_replication_session_WT
   - name: jstestfuzz_sharded_WT
   - name: jstestfuzz_sharded_causal_consistency_WT
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session_WT
 
 - name: ubuntu1604-debug-ubsan
@@ -9636,6 +9688,7 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_concurrent_sharded_causal_consistency
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session
   - name: jstestfuzz_replication
   - name: jstestfuzz_replication_initsync
@@ -9643,6 +9696,7 @@ buildvariants:
   - name: jstestfuzz_replication_session
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_causal_consistency
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
   - name: master_slave
   - name: master_slave_jscore_passthrough
@@ -9765,6 +9819,7 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_concurrent_sharded_causal_consistency
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session
   - name: jstestfuzz_replication
   - name: jstestfuzz_replication_initsync
@@ -9772,6 +9827,7 @@ buildvariants:
   - name: jstestfuzz_replication_session
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_causal_consistency
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
   - name: master_slave
   - name: master_slave_jscore_passthrough
@@ -9869,6 +9925,7 @@ buildvariants:
   - name: jstestfuzz_concurrent_replication_session
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_concurrent_sharded_causal_consistency
+  - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_concurrent_sharded_session
   - name: jstestfuzz_replication
   - name: jstestfuzz_replication_initsync
@@ -9876,6 +9933,7 @@ buildvariants:
   - name: jstestfuzz_replication_session
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_causal_consistency
+  - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
   - name: master_slave
   - name: master_slave_jscore_passthrough

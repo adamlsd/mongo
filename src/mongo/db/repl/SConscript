@@ -1146,29 +1146,6 @@ env.CppUnitTest(
 )
 
 env.Library(
-    target='rollback_common_point_resolver',
-    source=[
-        'rollback_common_point_resolver.cpp',
-    ],
-    LIBDEPS=[
-        'abstract_oplog_fetcher',
-        'replica_set_messages',
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/namespace_string',
-    ],
-)
-
-env.CppUnitTest(
-    target='rollback_common_point_resolver_test',
-    source='rollback_common_point_resolver_test.cpp',
-    LIBDEPS=[
-        'rollback_common_point_resolver',
-        'oplog_interface_mock',
-        'abstract_oplog_fetcher_test_fixture',
-    ],
-)
-
-env.Library(
     target='reporter',
     source=[
         'reporter.cpp',
@@ -1519,45 +1496,6 @@ env.CppUnitTest(
         'rollback_checker',
         '$BUILD_DIR/mongo/unittest/concurrency',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
-    ],
-)
-
-env.Library(
-    target='rollback_fix_up_info',
-    source=[
-        'rollback_fix_up_info.cpp',
-        'rollback_fix_up_info_descriptions.cpp',
-    ],
-    LIBDEPS=[
-        'storage_interface',
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/catalog/collection_options',
-        '$BUILD_DIR/mongo/db/namespace_string',
-        '$BUILD_DIR/mongo/util/uuid',
-    ],
-)
-
-env.CppUnitTest(
-    target='rollback_fix_up_info_test',
-    source=[
-        'rollback_fix_up_info_test.cpp',
-    ],
-    LIBDEPS=[
-        'replmocks',
-        'rollback_fix_up_info',
-        'storage_interface_impl',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
-    ],
-)
-
-env.CppUnitTest(
-    target='rollback_fix_up_info_descriptions_test',
-    source=[
-        'rollback_fix_up_info_descriptions_test.cpp',
-    ],
-    LIBDEPS=[
-        'rollback_fix_up_info',
     ],
 )
 

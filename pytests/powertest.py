@@ -23,12 +23,15 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import stat
 import string
 import sys
 import tarfile
 import tempfile
+import threading
 import time
+import traceback
 import urlparse
 import zipfile
 
@@ -78,6 +81,10 @@ _try_import("buildscripts.aws_ec2", "aws_ec2")
 _try_import("buildscripts.remote_operations", "remote_operations")
 
 if _IS_WINDOWS:
+
+    # These modules are used on both sides for dumping python stacks.
+    import win32api
+    import win32event
 
     # These modules are used on the 'server' side.
     _try_import("ntsecuritycon")
@@ -151,6 +158,80 @@ def exit_handler():
         NamedTempFile.delete_all()
     except:
         pass
+
+
+def register_signal_handler(handler):
+
+    def _handle_set_event(event_handle, handler):
+        """
+        Windows event object handler that will dump the stacks of all threads.
+        """
+        while True:
+            try:
+                # Wait for task time out to dump stacks.
+                ret = win32event.WaitForSingleObject(event_handle, win32event.INFINITE)
+                if ret != win32event.WAIT_OBJECT_0:
+                    LOGGER.error("_handle_set_event WaitForSingleObject failed: %d", ret)
+                    return
+            except win32event.error as err:
+                LOGGER.error("Exception from win32event.WaitForSingleObject with error: %s", err)
+            else:
+                handler(None, None)
+
+    if _IS_WINDOWS:
+        # Create unique event_name.
+        event_name = "Global\\Mongo_Python_%d".format(os.getpid())
+        LOGGER.debug("Registering event %s", event_name)
+
+        try:
+            security_attributes = None
+            manual_reset = False
+            initial_state = False
+            task_timeout_handle = win32event.CreateEvent(
+                security_attributes, manual_reset, initial_state, event_name)
+        except win32event.error as err:
+            LOGGER.error("Exception from win32event.CreateEvent with error: %s", err)
+            return
+
+        # Register to close event object handle on exit.
+        atexit.register(win32api.CloseHandle, task_timeout_handle)
+
+        # Create thread.
+        event_handler_thread = threading.Thread(
+            target=_handle_set_event,
+            kwargs={"event_handle": task_timeout_handle, "handler": handler},
+            name="windows_event_handler_thread")
+        event_handler_thread.daemon = True
+        event_handler_thread.start()
+    else:
+        # Otherwise register a signal handler for SIGUSR1.
+        signal_num = signal.SIGUSR1
+        signal.signal(signal_num, handler)
+
+
+def dump_stacks_and_exit(signum, frame):
+    """
+    Handler that will dump the stacks of all threads.
+    """
+    LOGGER.info("Dumping stacks!")
+
+    sb = []
+    frames = sys._current_frames()
+    sb.append("Total threads: {}\n".format(len(frames)))
+    sb.append("")
+
+    for thread_id in frames:
+        stack = frames[thread_id]
+        sb.append("Thread {}:".format(thread_id))
+        sb.append("".join(traceback.format_stack(stack)))
+
+    LOGGER.info("".join(sb))
+
+    if _IS_WINDOWS:
+        exit_handler()
+        os._exit(1)
+    else:
+        sys.exit(1)
 
 
 def child_processes(parent_pid):
@@ -311,7 +392,7 @@ def execute_cmd(cmd, use_file=False):
     return error_code, output
 
 
-def get_aws_crash_options(option):
+def get_aws_crash_option(option):
     """ Returns a tuple (instance_id, address_type) of the AWS crash option. """
     if ":" in option:
         return tuple(option.split(":"))
@@ -1056,14 +1137,14 @@ def remote_handler(options, operations):
         port=options.port,
         options=options.mongod_options)
 
-    mongo_client_opts = get_mongo_client_args(options, host="localhost", port=options.port)
+    mongo_client_opts = get_mongo_client_args(host="localhost", port=options.port, options=options)
 
     # Perform the sequence of operations specified. If any operation fails
     # then return immediately.
     for operation in operations:
         # This is the internal "crash" mechanism, which is executed on the remote host.
         if operation == "crash_server":
-            ret, output = internal_crash(options.remote_sudo)
+            ret, output = internal_crash(options.remote_sudo, options.crash_option)
             # An internal crash on Windows is not immediate
             try:
                 LOGGER.info("Waiting after issuing internal crash!")
@@ -1157,6 +1238,18 @@ def remote_handler(options, operations):
                 LOGGER.error(err.message)
                 ret = err.code
 
+        elif operation == "remove_lock_file":
+            lock_file = os.path.join(options.db_path, "mongod.lock")
+            ret = 0
+            if os.path.exists(lock_file):
+                LOGGER.debug("Deleting mongod lockfile %s", lock_file)
+                try:
+                    os.remove(lock_file)
+                except (IOError, OSError) as err:
+                    LOGGER.warn(
+                        "Unable to delete mongod lockfile %s with error %s", lock_file, err)
+                    ret = err.code
+
         else:
             LOGGER.error("Unsupported remote option specified '%s'", operation)
             ret = 1
@@ -1178,13 +1271,14 @@ def rsync(src_dir, dest_dir):
     return ret, output
 
 
-def internal_crash(use_sudo=False):
+def internal_crash(use_sudo=False, crash_option=None):
     """ Internally crash the host this excutes on. """
 
-    # Windows does not have a way to immediately crash itself. It's
-    # better to use an external mechanism instead.
+    # Windows can use NotMyFault to immediately crash itself, if it's been installed.
+    # See https://docs.microsoft.com/en-us/sysinternals/downloads/notmyfault
+    # Otherwise it's better to use an external mechanism instead.
     if _IS_WINDOWS:
-        cmds = "shutdown /r /f /t 0"
+        cmds = crash_option if crash_option else "shutdown /r /f /t 0"
         ret, output = execute_cmd(cmds, use_file=True)
         return ret, output
     else:
@@ -1222,12 +1316,12 @@ def crash_server(options, crash_canary, canary_port, local_ops, script_name, cli
         # Provide time for power to dissipate by sleeping 10 seconds before turning it back on.
         crash_func = local_ops.shell
         crash_args = ["""
-            echo 0 > /dev/{crash_options} ;
+            echo 0 > /dev/{crash_option} ;
             sleep 10 ;
-            echo 1 > /dev/{crash_options}""".format(crash_options=options.crash_options)]
+            echo 1 > /dev/{crash_option}""".format(crash_option=options.crash_option)]
         local_ops = LocalToRemoteOperations(
             user_host=options.ssh_crash_user_host,
-            ssh_connection_options=options.ssh_crash_options,
+            ssh_connection_options=options.ssh_crash_option,
             shell_binary="/bin/sh")
 
     elif options.crash_method == "internal":
@@ -1251,7 +1345,7 @@ def crash_server(options, crash_canary, canary_port, local_ops, script_name, cli
     elif options.crash_method == "aws_ec2":
         ec2 = aws_ec2.AwsEc2()
         crash_func = ec2.control_instance
-        instance_id, _ = get_aws_crash_options(options.crash_options)
+        instance_id, _ = get_aws_crash_option(options.crash_option)
         crash_args = ["force-stop", instance_id, 600, True]
 
     else:
@@ -1284,21 +1378,23 @@ def wait_for_mongod_shutdown(data_dir, timeout=120):
     return 0
 
 
-def get_mongo_client_args(options, host=None, port=None):
+def get_mongo_client_args(host=None, port=None, options=None):
     """ Returns keyword arg dict used in PyMongo client. """
-    # Set the serverSelectionTimeoutMS to 600 seconds
-    mongo_args = {"serverSelectionTimeoutMS": 600000}
-    # Set the serverSelectionTimeoutMS to 120 seconds
-    mongo_args["socketTimeoutMS"] = 120000
-    # Set the writeConcern
-    mongo_args = yaml.safe_load(options.write_concern)
-    # Set the readConcernLevel
-    if options.read_concern_level:
-        mongo_args["readConcernLevel"] = options.read_concern_level
+    # Set the serverSelectionTimeoutMS & socketTimeoutMS to 10 minutes
+    mongo_args = {
+        "serverSelectionTimeoutMS": 600000,
+        "socketTimeoutMS": 600000
+    }
     if host:
         mongo_args["host"] = host
     if port:
         mongo_args["port"] = port
+    # Set the writeConcern
+    if hasattr(options, "write_concern"):
+        mongo_args.update(yaml.safe_load(options.write_concern))
+    # Set the readConcernLevel
+    if hasattr(options, "read_concern_level") and options.read_concern_level:
+        mongo_args["readConcernLevel"] = options.read_concern_level
     return mongo_args
 
 
@@ -1505,6 +1601,7 @@ def main():
     global _report_json_file
 
     atexit.register(exit_handler)
+    register_signal_handler(dump_stacks_and_exit)
 
     parser = optparse.OptionParser(usage="""
 %prog [options]
@@ -1519,9 +1616,9 @@ Examples:
             --rootDir pt-mmap
             --replSet power
             --crashMethod mpower
-            --crashOptions output1
+            --crashOption output1
             --sshCrashUserHost admin@10.4.100.2
-            --sshCrashOptions "-oKexAlgorithms=+diffie-hellman-group1-sha1 -i /Users/jonathan/.ssh/mFi.pem"
+            --sshCrashOption "-oKexAlgorithms=+diffie-hellman-group1-sha1 -i /Users/jonathan/.ssh/mFi.pem"
             --mongodOptions "--storageEngine mmapv1"
 
     Linux server running in AWS, testing nojournal:
@@ -1650,14 +1747,15 @@ Examples:
 
     aws_address_types = [
         "private_ip_address", "public_ip_address", "private_dns_name", "public_dns_name"]
-    crash_options.add_option("--crashOptions",
-                             dest="crash_options",
+    crash_options.add_option("--crashOption",
+                             dest="crash_option",
                              help="Secondary argument (REQUIRED) for the following --crashMethod:"
                                   " 'aws_ec2': specify EC2 'instance_id[:address_type]'."
                                   " The address_type is one of {} and defaults to"
-                                  " 'public_ip_address'."
-                                  " 'mpower': specify output<num> to turn off/on, i.e.,"
-                                  " 'output1'.".format(aws_address_types),
+                                  " 'public_ip_address'. 'mpower': specify output<num> to turn"
+                                  " off/on, i.e., 'output1'. 'internal': for Windows, optionally"
+                                  " specify a crash method, i.e., 'notmyfault/notmyfaultc64.exe"
+                                  " -accepteula crash 1'".format(aws_address_types),
                              default=None)
 
     crash_options.add_option("--crashWaitTime",
@@ -1670,8 +1768,7 @@ Examples:
     crash_options.add_option("--jitterForCrashWaitTime",
                              dest="crash_wait_time_jitter",
                              help="The maximum time, in seconds, to be added to --crashWaitTime,"
-                                  " as a uniform distributed random value,"
-                                  " [default: %default]",
+                                  " as a uniform distributed random value, [default: %default]",
                              type="int",
                              default=10)
 
@@ -1680,8 +1777,8 @@ Examples:
                              help="The crash host's user@host for performing the crash.",
                              default=None)
 
-    crash_options.add_option("--sshCrashOptions",
-                             dest="ssh_crash_options",
+    crash_options.add_option("--sshCrashOption",
+                             dest="ssh_crash_option",
                              help="The crash host's ssh connection options, i.e., '-i ident.pem'",
                              default=None)
 
@@ -1755,6 +1852,15 @@ Examples:
                               dest="fcv_version",
                               help="Set the FeatureCompatibilityVersion of mongod.",
                               default=None)
+
+    mongod_options.add_option("--removeLockFile",
+                              dest="remove_lock_file",
+                              help="If specified, the mongod.lock file will be deleted after a"
+                                   " powercycle event, before mongod is started. This is a"
+                                   " workaround for mongod failing start with MMAPV1 (See"
+                                   " SERVER-15109).",
+                              action="store_true",
+                              default=False)
 
     # Client options
     mongo_path = distutils.spawn.find_executable(
@@ -1966,18 +2072,18 @@ Examples:
 
     # Setup the crash options
     if ((options.crash_method == "aws_ec2" or options.crash_method == "mpower") and
-            options.crash_options is None):
-        parser.error("Missing required argument --crashOptions for crashMethod '{}'".format(
+            options.crash_option is None):
+        parser.error("Missing required argument --crashOption for crashMethod '{}'".format(
             options.crash_method))
 
     if options.crash_method == "aws_ec2":
-        instance_id, address_type = get_aws_crash_options(options.crash_options)
+        instance_id, address_type = get_aws_crash_option(options.crash_option)
         address_type = address_type if address_type is not None else "public_ip_address"
         if address_type not in aws_address_types:
-            LOGGER.error("Invalid crashOptions address_type '%s' specified for crashMethod"
+            LOGGER.error("Invalid crashOption address_type '%s' specified for crashMethod"
                          " 'aws_ec2', specify one of %s", address_type, aws_address_types)
             sys.exit(1)
-        options.crash_options = "{}:{}".format(instance_id, address_type)
+        options.crash_option = "{}:{}".format(instance_id, address_type)
 
     # Initialize the mongod options
     # Note - We use posixpath for Windows client to Linux server scenarios.
@@ -1989,6 +2095,7 @@ Examples:
         options.log_path = posixpath.join(options.root_dir, "log", "mongod.log")
     mongod_options_map = parse_options(options.mongod_options)
     set_fcv_cmd = "set_fcv" if options.fcv_version is not None else ""
+    remove_lock_file_cmd = "remove_lock_file" if options.remove_lock_file else ""
 
     # Error out earlier if these options are not properly specified
     write_concern = yaml.safe_load(options.write_concern)
@@ -2203,6 +2310,7 @@ Examples:
                             " {canary_opt}"
                             " --mongodPort {port}"
                             " {rsync_cmd}"
+                            " {remove_lock_file_cmd}"
                             " start_mongod"
                             " {set_fcv_cmd}"
                             " {validate_collections_cmd}"
@@ -2212,6 +2320,7 @@ Examples:
                                 canary_opt=canary_opt,
                                 port=secret_port,
                                 rsync_cmd=rsync_cmd,
+                                remove_lock_file_cmd=remove_lock_file_cmd,
                                 set_fcv_cmd=set_fcv_cmd if loop_num == 1 else "",
                                 validate_collections_cmd=validate_collections_cmd,
                                 validate_canary_cmd=validate_canary_cmd,
@@ -2230,7 +2339,7 @@ Examples:
         # Optionally validate canary document locally.
         if validate_canary_local:
             mongo = pymongo.MongoClient(
-                **get_mongo_client_args(options, host=mongod_host, port=secret_port))
+                **get_mongo_client_args(host=mongod_host, port=secret_port))
             ret = mongo_validate_canary(
                 mongo, options.db_name, options.collection_name, canary_doc)
             LOGGER.info("Local canary validation: %d", ret)
@@ -2283,7 +2392,7 @@ Examples:
                      " {}"
                      " {}"
                      " start_mongod").format(
-                        rsync_opt, standard_port, use_replica_set, rsync_cmd)
+                         rsync_opt, standard_port, use_replica_set, rsync_cmd)
         ret, output = call_remote_operation(
             local_ops,
             options.remote_python,
@@ -2344,7 +2453,7 @@ Examples:
             canary_doc = {"x": time.time()}
             orig_canary_doc = copy.deepcopy(canary_doc)
             mongo = pymongo.MongoClient(
-                **get_mongo_client_args(options, host=mongod_host, port=standard_port))
+                **get_mongo_client_args(host=mongod_host, port=standard_port))
             crash_canary["function"] = mongo_insert_canary
             crash_canary["args"] = [
                 mongo,

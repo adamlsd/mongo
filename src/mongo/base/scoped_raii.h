@@ -50,6 +50,52 @@ struct select_dtor<Na> {
 };
 }  // namespace raii_detail
 
+/**
+ * The `ScopedRAII` is a facility to create ad-hoc classes for scoped resource management using
+ * RAII.  The `ScopedRAII` type internally stores a user-specified function to be called in its
+ * destructor.  The `ScopedRAII` type is capable of impersonating either a pointer or a value type.
+ * A `ScopedRAII` is constructed from two C++ callable function-like entities (functions, bind
+ * expressions, or lambdas will all do).  The first callable will be invoked by the constructor to
+ * create a new instance of the specified type.  The second callable will be captured by the
+ * constructor to be invoked later by the destructor to free the resources associated with the
+ * specified type.
+ *
+ * This set of facilities makes `ScopedRAII` useful for quickly adapting C++ "wrappers" around C
+ * libraries which give out resources to be managed.  For example:
+ *
+ * ~~~
+ * void stdioExample() {
+ *     ScopedRAII<FILE*> file([]{ return fopen("datafile.txt", "wt"); }, fclose);
+ *     fprintf(file, "Hello World!\n");
+ * }
+ * ~~~
+ * In the above example, the file represented by `file` will be automatically closed when it goes
+ * out of scope.  The `ScopedRAII` type prevents accidental reassignment to a `file`, to avoid
+ * resource leakage.  `ScopedRAII` types are intended to be fire-and-forget.
+ *
+ * `ScopedRAII` types can represent any type.  Unix file descriptors are raw integers.  `ScopedRAII`
+ * can adapt integers to wrap Unix file IO.
+ *
+ * ~~~
+ * void unixExample() {
+ *     ScopedRAII<int> file([]{ return open("datafile.txt", O_RDWR); }, close);
+ *     const std::string message = "Hello World!\n";
+ *     write(file, message.c_str(), message.size());
+ * }
+ * ~~~
+ * In the above example, the Unix file descriptor represented by `file` will be automatically closed
+ * when it goes out of scope.
+ *
+ * `ScopedRAII` is not assignable, as exact semantics of lifetime management during assignment can
+ * vary -- shared resource, unique resource, etc.  `ScopedRAII` managed objects have their lifetime
+ * permanently bound to the scope in which their owner lives.
+ *
+ * `ScopedRAII` is intended as a better replacement for many use cases of `ScopeGuard`.
+ * `ScopeGuard` is not a resource owning object, it is merely a hook to indicate a particular piece
+ * of code should run on exiting a scope.  Nearly all use cases for `ScopeGuard` are resource
+ * management idioms which would benefit from more explicit grouping between the resource being
+ * managed and its retirement scheme.
+ */
 template <typename T = scoped_raii_detail::Na,
           typename Dtor = typename scoped_raii_detail::select_dtor<T>::type>
 class ScopedRAII;
@@ -61,14 +107,29 @@ private:
     T resource;
 
 public:
+    /**
+     * Constructs a `ScopedRAII`.  This is done by saving the specified `Dtor_`, `d`, for calling in
+     * the destructor and then invoking the specified `Ctor`, `c`, to construct the new object.
+     * This ordering prevents resource leakage due to exceptions -- if the constructor accepted a
+     * fully constructed object then any expressions on that line or failures within the
+     * construction could cause resource leakage.
+     */
     template <typename Ctor, typename Dtor_>
     explicit ScopedRAII(Ctor c, Dtor_ d) : dtor(std::move(d)), resource(c()) {}
 
+    /**
+     * Destroy a `ScopedRAII`.  This is done by invoking the specified `Dtor_`, `d`, on the
+     * internally stored object.
+     */
     ~ScopedRAII() noexcept {
         this->dtor(this->resource);
     }
 
-    inline operator const T&() const {
+    /**
+     * Returns an immutable reference to the object being managed.  The reference is immutable, as
+     * mutability would imply a state change which might require lifecycle tracking.
+     */
+    operator const T&() const {
         return this->resource;
     }
 };
@@ -87,21 +148,21 @@ public:
         this->dtor(this->resource);
     }
 
-    inline operator const T*() const {
+    operator const T*() const {
         return this->resource;
     }
 
-    inline T& operator*() {
+    T& operator*() {
         return *this->resource;
     }
-    inline const T& operator*() const {
+    const T& operator*() const {
         return *this->resource;
     }
 
-    inline T* operator->() {
+    T* operator->() {
         return this->resource;
     }
-    inline const T* operator->() const {
+    const T* operator->() const {
         return this->resource;
     }
 };
@@ -121,16 +182,6 @@ public:
     ~ScopedRAII() noexcept {
         if (this->dtor)
             this->dtor();
-    }
-};
-
-class DismissableRAII : ScopedRAII<scoped_raii_detail::Na> {
-public:
-    template <typename Ctor, typename Dtor>
-    explicit DismissableRAII(Ctor c, Dtor d) : ScopedRAII<scoped_raii_detail::Na>(c, d) {}
-
-    void dismiss() {
-        this->dtor = nullptr;
     }
 };
 }  // namespace mongo

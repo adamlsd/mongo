@@ -58,6 +58,54 @@ public:
 };
 }  // namespace unique_raii_detail
 
+/**
+ * The `UniqueRAII` is a facility to create ad-hoc classes for scoped resource management using
+ * RAII.  The `UniqueRAII` type internally stores a user-specified function to be called in its
+ * destructor.  The `UniqueRAII` type is capable of impersonating either a pointer or a value type.
+ * A `UniqueRAII` is constructed from two C++ callable function-like entities (functions, bind
+ * expressions, or lambdas will all do).  The first callable will be invoked by the constructor to
+ * create a new instance of the specified type.  The second callable will be captured by the
+ * constructor to be invoked later by the destructor to free the resources associated with the
+ * specified type.  Unlike the `ScopedRAII` type, a `UniqueRAII` requires specification of the
+ * destructor function's type.  This facilitates faster invocation of the destructor and potential
+ * inlining benefits.
+ *
+ * This set of facilities makes `UniqueRAII` useful for quickly adapting C++ "wrappers" around C
+ * libraries which give out resources to be managed.  The `makeUniqueRAII` function should be used
+ * to create `UniqueRAII` objects.  For example:
+ *
+ * ~~~
+ * void stdioExample() {
+ *     auto file = makeUniqueRAII([]{ return fopen("datafile.txt", "wt"); }, fclose);
+ *     fprintf(file, "Hello World!\n");
+ * }
+ * ~~~
+ * In the above example, the file represented by `file` will be automatically closed when it goes
+ * out of scope.  The `UniqueRAII` type permits no reassignment to a `file`, but the object can be
+ * moved to another new instance.
+ *
+ * `UniqueRAII` types can represent any type.  Unix file descriptors are raw integers.  `UniqueRAII`
+ * can adapt integers to wrap Unix file IO.
+ *
+ * ~~~
+ * void unixExample() {
+ *     auto file = makeUniqueRAII([]{ return open("datafile.txt", O_RDWR); }, close);
+ *     const std::string message = "Hello World!\n";
+ *     write(file, message.c_str(), message.size());
+ * }
+ * ~~~
+ * In the above example, the Unix file descriptor represented by `file` will be automatically closed
+ * when it goes out of scope.
+ *
+ * `UniqueRAII` is assignable, using similar semantics to `std::unique_ptr`as long as the
+ * destruction functioni of the source and destination are of identical type.
+ *
+ * `UniqueRAII` is intended as a better replacement for many use cases of `ScopeGuard`.
+ * `ScopeGuard` is not a resource owning object, it is merely a hook to indicate a particular piece
+ * of code should run on exiting a scope.  Nearly all use cases for `ScopeGuard` are resource
+ * management idioms which would benefit from more explicit grouping between the resource being
+ * managed and its retirement scheme.
+ */
 template <typename T, typename Dtor>
 class UniqueRAII : boost::noncopyable {
 private:
@@ -88,14 +136,6 @@ public:
         swap(this->active_, copy.active_);
     }
 
-    UniqueRAII& operator=(UniqueRAII copy) {
-        using std::swap;
-        swap(this->dtor, copy.dtor);
-        swap(this->resource, copy.resource);
-        swap(this->active_, copy.active_);
-        return *this;
-    }
-
     template <typename Ctor, typename D>
     explicit UniqueRAII(Ctor c, D d) : dtor(std::move(d)), resource(c()), active_(true) {}
 
@@ -120,13 +160,6 @@ public:
     UniqueRAII(UniqueRAII&& copy) : UniqueRAIIScopeGuardBase(false), dtor(std::move(copy.dtor)) {
         using std::swap;
         swap(this->active_, copy.active_);
-    }
-
-    UniqueRAII& operator=(UniqueRAII copy) {
-        using std::swap;
-        swap(this->dtor, copy.dtor);
-        swap(this->active_, copy.active_);
-        return *this;
     }
 
     template <typename Ctor, typename D>
@@ -166,14 +199,6 @@ public:
         swap(this->active_, copy.active_);
     }
 
-    UniqueRAII& operator=(UniqueRAII&& copy) {
-        using std::swap;
-        swap(this->dtor, copy.dtor);
-        swap(this->resource, copy.resource);
-        swap(this->active_, copy.active_);
-        return *this;
-    }
-
     template <typename Ctor, typename D>
     explicit UniqueRAII(Ctor c, D d) : dtor(std::move(d)), resource(c()), active_(true) {}
 
@@ -190,8 +215,12 @@ public:
     }
 };
 
+/**
+ * Returns a new instance of a `UniqueRAII`.  It is constructed from the specified `Ctor` and `Dtor`
+ * parameters.
+ */
 template <typename Ctor, typename Dtor>
-inline auto make_unique_raii(Ctor c, Dtor d) {
+inline auto makeUniqueRAII(Ctor c, Dtor d) {
     return UniqueRAII<decltype(c()), Dtor>(std::move(c), std::move(d));
 }
 }  // namespace mongo

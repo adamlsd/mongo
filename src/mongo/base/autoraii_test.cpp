@@ -64,17 +64,6 @@ TEST(ScopedRAIITest, NoParam) {
     ASSERT_TRUE(state == 2);
 }
 
-TEST(DismissableRAIITest, BasicTest) {
-    int state = 0;
-    for (int i = 0; i < 20; ++i) {
-        DismissableRAII scope([s = &state] { ++*s; }, [s = &state] { ++*s; });
-
-        if (i % 2)
-            scope.dismiss();
-    }
-    ASSERT_TRUE(state == 30);
-}
-
 TEST(UniqueRAIITest, BasicTest) {
     bool destroyed = false;
     {
@@ -113,10 +102,9 @@ TEST(UniqueRAIITest, TransferTestOuter) {
         {
             UniqueRAII<DtorCheck*, decltype(release)> raii2 = std::move(raii);
             ASSERT_FALSE(destroyed);
-            raii = std::move(raii2);
-            ASSERT_FALSE(destroyed);
         }
-        ASSERT_FALSE(destroyed);
+        ASSERT_TRUE(destroyed);
+        destroyed = false;
     }
     ASSERT_TRUE(destroyed);
 }
@@ -124,7 +112,7 @@ TEST(UniqueRAIITest, TransferTestOuter) {
 TEST(UniqueRAIITest, makeRAII) {
     bool destroyed = false;
     {
-        auto raii = make_unique_raii([d = &destroyed] { return new DtorCheck(d); },
+        auto raii = makeUniqueRAII([d = &destroyed] { return new DtorCheck(d); },
                                      [](DtorCheck* const p) { delete p; });
         ASSERT_FALSE(destroyed);
     }

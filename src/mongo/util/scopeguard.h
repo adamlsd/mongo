@@ -35,25 +35,25 @@ using ScopeGuard = const mongo::unique_raii_detail::UniqueRAIIScopeGuardBase&;
 
 template <typename F, typename... Args>
 auto MakeGuard(F dtor, const Args... args) {
-    return make_unique_raii([] {}, [ dtor = std::move(dtor), args... ] { dtor(args...); });
+    return makeUniqueRAII([] {}, [ dtor = std::move(dtor), args... ] { dtor(args...); });
 }
 
 template <typename O, typename Rv, typename... Args>
 auto MakeGuard(Rv (O::*dtor)(Args...), O* const obj, const Args... args) {
-    return make_unique_raii([] {},
-                            [ dtor = std::move(dtor), obj, args... ] { (obj->*dtor)(args...); });
+    return makeUniqueRAII([] {},
+                          [ dtor = std::move(dtor), obj, args... ] { (obj->*dtor)(args...); });
 }
 
 
 template <typename O, typename Rv, typename... Args>
 auto MakeObjGuard(O* const obj, Rv (O::*dtor)(Args...), const Args... args) {
-    return make_unique_raii([] {},
-                            [ dtor = std::move(dtor), obj, args... ] { (obj->*dtor)(args...); });
+    return makeUniqueRAII([] {},
+                          [ dtor = std::move(dtor), obj, args... ] { (obj->*dtor)(args...); });
 }
 
 template <typename O, typename Rv, typename... Args>
 auto MakeObjGuard(O& objRef, Rv (O::*dtor)(Args...), const Args... args) {
-    return make_unique_raii(
+    return makeUniqueRAII(
         [] {}, [ dtor = std::move(dtor), obj = &objRef, args... ] { (obj->*dtor)(args...); });
 }
 

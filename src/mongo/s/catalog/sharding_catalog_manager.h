@@ -193,30 +193,22 @@ public:
     //
 
     /**
-     * Creates a new database entry for the specified database name in the configuration
-     * metadata and sets the specified shard as primary.
+     * Checks if a database with the same name already exists, and if not, selects a primary shard
+     * for the database and creates a new entry for it in config.databases.
      *
-     * @param dbName name of the database (case sensitive)
+     * Returns the database entry.
      *
-     * Returns Status::OK on success or any error code indicating the failure. These are some
-     * of the known failures:
-     *  - NamespaceExists - database already exists
-     *  - DatabaseDifferCase - database already exists, but with a different case
-     *  - ShardNotFound - could not find a shard to place the DB on
+     * Throws DatabaseDifferCase if the database already exists with a different case.
      */
-    Status createDatabase(OperationContext* opCtx, const std::string& dbName);
+    DatabaseType createDatabase(OperationContext* opCtx, const std::string& dbName);
 
     /**
-     * Creates a new database or updates the sharding status for an existing one. Cannot be
-     * used for the admin/config/local DBs, which should not be created or sharded manually
-     * anyways.
+     * Creates the database if it does not exist, then marks its entry in config.databases as
+     * sharding-enabled.
      *
-     * Returns Status::OK on success or any error code indicating the failure. These are some
-     * of the known failures:
-     *  - DatabaseDifferCase - database already exists, but with a different case
-     *  - ShardNotFound - could not find a shard to place the DB on
+     * Throws DatabaseDifferCase if the database already exists with a different case.
      */
-    Status enableSharding(OperationContext* opCtx, const std::string& dbName);
+    void enableSharding(OperationContext* opCtx, const std::string& dbName);
 
     /**
      * Retrieves all databases for a shard.
@@ -226,7 +218,6 @@ public:
     Status getDatabasesForShard(OperationContext* opCtx,
                                 const ShardId& shardId,
                                 std::vector<std::string>* dbs);
-
 
     //
     // Collection Operations
@@ -254,7 +245,16 @@ public:
                          const BSONObj& defaultCollation,
                          bool unique,
                          const std::vector<BSONObj>& initPoints,
-                         const bool distributeInitialChunks);
+                         const bool distributeInitialChunks,
+                         const ShardId& dbPrimaryShardId);
+
+    /**
+     * Iterates through each entry in config.collections that does not have a UUID, generates a UUID
+     * for the collection, and updates the entry with the generated UUID.
+     *
+     * Remove after 3.4 -> 3.6 upgrade.
+     */
+    void generateUUIDsForExistingShardedCollections(OperationContext* opCtx);
 
     //
     // Shard Operations
@@ -304,8 +304,7 @@ public:
     /**
      * Runs the setFeatureCompatibilityVersion command on all shards.
      */
-    Status setFeatureCompatibilityVersionOnShards(OperationContext* opCtx,
-                                                  const std::string& version);
+    Status setFeatureCompatibilityVersionOnShards(OperationContext* opCtx, const BSONObj& cmdObj);
 
     //
     // For Diagnostics
@@ -372,6 +371,12 @@ private:
                                                const ConnectionString& connectionString);
 
     /**
+     * Drops the sessions collection on the specified host.
+     */
+    Status _dropSessionsCollection(OperationContext* opCtx,
+                                   std::shared_ptr<RemoteCommandTargeter> targeter);
+
+    /**
      * Runs the listDatabases command on the specified host and returns the names of all databases
      * it returns excluding those named local, config and admin, since they serve administrative
      * purposes.
@@ -387,20 +392,6 @@ private:
                                                               RemoteCommandTargeter* targeter,
                                                               const std::string& dbName,
                                                               const BSONObj& cmdObj);
-
-    /**
-     * Checks that the given database name doesn't already exist in the config.databases
-     * collection, including under different casing. Optional db can be passed and will
-     * be set with the database details if the given dbName exists.
-     *
-     * Returns OK status if the db does not exist.
-     * Some known errors include:
-     *  NamespaceExists if it exists with the same casing
-     *  DatabaseDifferCase if it exists under different casing.
-     */
-    Status _checkDbDoesNotExist(OperationContext* opCtx,
-                                const std::string& dbName,
-                                DatabaseType* db);
 
     /**
      * Selects an optimal shard on which to place a newly created database from the set of

@@ -78,7 +78,7 @@ TEST_F(CollShardingStateTest, GlobalInitGetsCalledAfterWriteCommits) {
     shardIdentity.setClusterId(OID::gen());
 
     WriteUnitOfWork wuow(operationContext());
-    collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON());
+    collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON(), {});
 
     ASSERT_EQ(0, getInitCallCount());
 
@@ -103,7 +103,7 @@ TEST_F(CollShardingStateTest, GlobalInitDoesntGetCalledIfWriteAborts) {
 
     {
         WriteUnitOfWork wuow(operationContext());
-        collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON());
+        collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON(), {});
 
         ASSERT_EQ(0, getInitCallCount());
     }
@@ -125,7 +125,7 @@ TEST_F(CollShardingStateTest, GlobalInitDoesntGetsCalledIfNSIsNotForShardIdentit
     shardIdentity.setClusterId(OID::gen());
 
     WriteUnitOfWork wuow(operationContext());
-    collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON());
+    collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON(), {});
 
     ASSERT_EQ(0, getInitCallCount());
 
@@ -144,7 +144,7 @@ TEST_F(CollShardingStateTest, OnInsertOpThrowWithIncompleteShardIdentityDocument
     ShardIdentityType shardIdentity;
     shardIdentity.setShardName("a");
 
-    ASSERT_THROWS(collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON()),
+    ASSERT_THROWS(collShardingState.onInsertOp(operationContext(), shardIdentity.toBSON(), {}),
                   AssertionException);
 }
 
@@ -156,7 +156,7 @@ TEST_F(CollShardingStateTest, GlobalInitDoesntGetsCalledIfShardIdentityDocWasNot
                                               NamespaceString::kServerConfigurationNamespace);
 
     WriteUnitOfWork wuow(operationContext());
-    collShardingState.onInsertOp(operationContext(), BSON("_id" << 1));
+    collShardingState.onInsertOp(operationContext(), BSON("_id" << 1), {});
 
     ASSERT_EQ(0, getInitCallCount());
 
@@ -180,7 +180,7 @@ auto makeAMetadata(BSONObj const& keyPattern) -> std::unique_ptr<CollectionMetad
     auto range = ChunkRange(BSON("key" << MINKEY), BSON("key" << MAXKEY));
     auto chunk = ChunkType(testNss, std::move(range), ChunkVersion(1, 0, epoch), ShardId("other"));
     auto cm = ChunkManager::makeNew(
-        testNss, KeyPattern(keyPattern), nullptr, false, epoch, {std::move(chunk)});
+        testNss, UUID::gen(), KeyPattern(keyPattern), nullptr, false, epoch, {std::move(chunk)});
     return stdx::make_unique<CollectionMetadata>(std::move(cm), ShardId("this"));
 }
 

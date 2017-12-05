@@ -268,6 +268,15 @@ struct __wt_connection_impl {
 	uint64_t  ckpt_time_recent;	/* Checkpoint time recent/total */
 	uint64_t  ckpt_time_total;
 
+	/* Checkpoint stats and verbosity timers */
+	struct timespec ckpt_timer_start;
+	struct timespec ckpt_timer_scrub_end;
+
+	/* Checkpoint progress message data */
+	uint64_t ckpt_progress_msg_count;
+	uint64_t ckpt_write_bytes;
+	uint64_t ckpt_write_pages;
+
 	uint32_t stat_flags;		/* Options declared in flags.py */
 
 					/* Connection statistics */
@@ -288,15 +297,6 @@ struct __wt_connection_impl {
 	WT_THREAD_GROUP  evict_threads;
 	uint32_t	 evict_threads_max;/* Max eviction threads */
 	uint32_t	 evict_threads_min;/* Min eviction threads */
-
-	uint32_t         evict_tune_datapts_needed;/* Data needed to tune */
-	struct timespec  evict_tune_last_action_time;/* Time of last action */
-	struct timespec  evict_tune_last_time;	/* Time of last check */
-	uint32_t         evict_tune_num_points;	/* Number of values tried */
-	uint64_t	 evict_tune_pgs_last;	/* Number of pages evicted */
-	uint64_t	 evict_tune_pg_sec_max;	/* Max throughput encountered */
-	bool             evict_tune_stable;	/* Are we stable? */
-	uint32_t	 evict_tune_workers_best;/* Best performing value */
 
 #define	WT_STATLOG_FILENAME	"WiredTigerStat.%d.%H"
 	WT_SESSION_IMPL *stat_session;	/* Statistics log session */
@@ -357,26 +357,6 @@ struct __wt_connection_impl {
 	uint64_t         sweep_idle_time;  /* Handle sweep idle time */
 	uint64_t         sweep_interval;   /* Handle sweep interval */
 	uint64_t         sweep_handles_min;/* Handle sweep minimum open */
-
-	/*
-	 * Shared lookaside lock, session and cursor, used by threads accessing
-	 * the lookaside table (other than eviction server and worker threads
-	 * and the sweep thread, all of which have their own lookaside cursors).
-	 */
-	WT_SPINLOCK	 las_lock;	/* Lookaside table spinlock */
-	WT_SESSION_IMPL *las_session;	/* Lookaside table session */
-	bool		 las_written;	/* Lookaside table has been written */
-
-	WT_ITEM		 las_sweep_key;	/* Sweep server's saved key */
-	uint64_t	 las_record_cnt;/* Count of lookaside records */
-
-	/*
-	 * The "lookaside_activity" verbose messages are throttled to once per
-	 * checkpoint. To accomplish this we track the checkpoint generation
-	 * for the most recent read and write verbose messages.
-	 */
-	volatile uint64_t	las_verb_gen_read;
-	volatile uint64_t	las_verb_gen_write;
 
 	/* Set of btree IDs not being rolled back */
 	uint8_t *stable_rollback_bitstring;

@@ -127,9 +127,10 @@ void WiredTigerSession::releaseCursor(uint64_t id, WT_CURSOR* cursor) {
 void WiredTigerSession::closeAllCursors(const std::string& uri) {
     invariant(_session);
 
+    bool all = (uri == "");
     for (auto i = _cursors.begin(); i != _cursors.end();) {
         WT_CURSOR* cursor = i->_cursor;
-        if (cursor && uri == cursor->uri) {
+        if (cursor && (all || uri == cursor->uri)) {
             invariantWTOK(cursor->close(cursor));
             i = _cursors.erase(i);
         } else
@@ -249,20 +250,24 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint, bool stableC
     _lastSyncTime.store(current + 1);
 
     // Nobody has synched yet, so we have to sync ourselves.
-    auto session = getSession();
-    WT_SESSION* s = session->getSession();
 
     // This gets the token (OpTime) from the last write, before flushing (either the journal, or a
     // checkpoint), and then reports that token (OpTime) as a durable write.
     stdx::unique_lock<stdx::mutex> jlk(_journalListenerMutex);
     JournalListener::Token token = _journalListener->getToken();
 
+    // Initialize on first use.
+    if (!_waitUntilDurableSession) {
+        invariantWTOK(
+            _conn->open_session(_conn, NULL, "isolation=snapshot", &_waitUntilDurableSession));
+    }
+
     // Use the journal when available, or a checkpoint otherwise.
     if (_engine && _engine->isDurable()) {
-        invariantWTOK(s->log_flush(s, "sync=on"));
+        invariantWTOK(_waitUntilDurableSession->log_flush(_waitUntilDurableSession, "sync=on"));
         LOG(4) << "flushed journal";
     } else {
-        invariantWTOK(s->checkpoint(s, NULL));
+        invariantWTOK(_waitUntilDurableSession->checkpoint(_waitUntilDurableSession, NULL));
         LOG(4) << "created checkpoint";
     }
     _journalListener->onDurable(token);

@@ -37,18 +37,28 @@
 #include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
+#include "mongo/db/dbdirectclient.h"
+#include "mongo/db/keys_collection_document.h"
 #include "mongo/db/logical_time_validator.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/s/catalog/sharding_catalog_client_impl.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
+#include "mongo/s/client/shard_registry.h"
+#include "mongo/util/exit.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
 namespace {
 
+MONGO_FP_DECLARE(featureCompatibilityDowngrade);
+MONGO_FP_DECLARE(featureCompatibilityUpgrade);
 /**
  * Sets the minimum allowed version for the cluster. If it is 3.4, then the node should not use 3.6
  * features.
@@ -72,7 +82,7 @@ public:
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
+        return true;
     }
 
     virtual void help(std::stringstream& help) const {
@@ -97,50 +107,144 @@ public:
         return Status::OK();
     }
 
-    bool isFCVUpgrade(StringData version) {
-        const auto existingVersion = FeatureCompatibilityVersion::toString(
-            serverGlobalParams.featureCompatibility.version.load());
-        return version == FeatureCompatibilityVersionCommandParser::kVersion36 &&
-            existingVersion == FeatureCompatibilityVersionCommandParser::kVersion34;
-    }
-
     bool run(OperationContext* opCtx,
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
-        const auto version = uassertStatusOK(
+        // Always wait for at least majority writeConcern to ensure all writes involved in the
+        // upgrade process cannot be rolled back. There is currently no mechanism to specify a
+        // default writeConcern, so we manually call waitForWriteConcern upon exiting this command.
+        //
+        // TODO SERVER-25778: replace this with the general mechanism for specifying a default
+        // writeConcern.
+        ON_BLOCK_EXIT([&] {
+            // Propagate the user's wTimeout if one was given.
+            auto timeout =
+                opCtx->getWriteConcern().usedDefault ? INT_MAX : opCtx->getWriteConcern().wTimeout;
+            WriteConcernResult res;
+            auto waitForWCStatus = waitForWriteConcern(
+                opCtx,
+                repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
+                WriteConcernOptions(
+                    WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::UNSET, timeout),
+                &res);
+            Command::appendCommandWCStatus(result, waitForWCStatus, res);
+        });
+
+        // Only allow one instance of setFeatureCompatibilityVersion to run at a time.
+        Lock::ExclusiveLock lk(opCtx->lockState(), FeatureCompatibilityVersion::fcvLock);
+
+        const auto requestedVersion = uassertStatusOK(
             FeatureCompatibilityVersionCommandParser::extractVersionFromCommand(getName(), cmdObj));
-        auto existingVersion = FeatureCompatibilityVersion::toString(
-                                   serverGlobalParams.featureCompatibility.version.load())
-                                   .toString();
 
-        // Wait for majority commit in case we're upgrading simultaneously with another session.
-        if (version == existingVersion) {
-            const WriteConcernOptions writeConcern(WriteConcernOptions::kMajority,
-                                                   WriteConcernOptions::SyncMode::UNSET,
-                                                   /*timeout*/ INT_MAX);
-            repl::getGlobalReplicationCoordinator()->awaitReplicationOfLastOpForClient(
-                opCtx, writeConcern);
-        }
+        if (requestedVersion == FeatureCompatibilityVersionCommandParser::kVersion36) {
+            uassert(ErrorCodes::IllegalOperation,
+                    "cannot initiate featureCompatibilityVersion upgrade while a previous "
+                    "featureCompatibilityVersion downgrade has not completed",
+                    serverGlobalParams.featureCompatibility.getVersion() !=
+                        ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34);
 
-        if (version != existingVersion && isFCVUpgrade(version)) {
-            serverGlobalParams.featureCompatibility.isSchemaVersion36.store(true);
+            if (serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+                // Set the client's last opTime to the system last opTime so no-ops wait for
+                // writeConcern.
+                repl::ReplClientInfo::forClient(opCtx->getClient())
+                    .setLastOpToSystemLastOpTime(opCtx);
+                return true;
+            }
+
+            FeatureCompatibilityVersion::setTargetUpgrade(opCtx);
+
+            // First put UUIDs in the storage layer metadata. UUIDs will be generated for unsharded
+            // collections; shards will query the config server for sharded collection UUIDs.
+            // Remove after 3.4 -> 3.6 upgrade.
             updateUUIDSchemaVersion(opCtx, /*upgrade*/ true);
-            existingVersion = version;
-        }
 
-        FeatureCompatibilityVersion::set(opCtx, version);
+            // If config server, upgrade shards *after* upgrading self.
+            if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+                // Remove after 3.4 -> 3.6 upgrade.
+                ShardingCatalogManager::get(opCtx)->generateUUIDsForExistingShardedCollections(
+                    opCtx);
 
-        // If version and existingVersion are still not equal, we must be downgrading.
-        if (version != existingVersion) {
-            serverGlobalParams.featureCompatibility.isSchemaVersion36.store(false);
+                uassertStatusOK(
+                    ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
+                        opCtx,
+                        Command::appendMajorityWriteConcern(Command::appendPassthroughFields(
+                            cmdObj,
+                            BSON(FeatureCompatibilityVersion::kCommandName << requestedVersion)))));
+            }
+
+            if (ShardingState::get(opCtx)->enabled()) {
+                // Ensure we try reading the keys for signing clusterTime immediately on upgrade.
+                // Remove after 3.4 -> 3.6 upgrade.
+                LogicalTimeValidator::get(opCtx)->forceKeyRefreshNow(opCtx);
+            }
+
+            // Fail after adding UUIDs but before updating the FCV document.
+            if (MONGO_FAIL_POINT(featureCompatibilityUpgrade)) {
+                exitCleanly(EXIT_CLEAN);
+            }
+
+            FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(opCtx, requestedVersion);
+        } else {
+            invariant(requestedVersion == FeatureCompatibilityVersionCommandParser::kVersion34);
+
+            uassert(ErrorCodes::IllegalOperation,
+                    "cannot initiate featureCompatibilityVersion downgrade while a previous "
+                    "featureCompatibilityVersion upgrade has not completed",
+                    serverGlobalParams.featureCompatibility.getVersion() !=
+                        ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36);
+
+            if (serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
+                // Set the client's last opTime to the system last opTime so no-ops wait for
+                // writeConcern.
+                repl::ReplClientInfo::forClient(opCtx->getClient())
+                    .setLastOpToSystemLastOpTime(opCtx);
+                return true;
+            }
+
+            FeatureCompatibilityVersion::setTargetDowngrade(opCtx);
+
+            // Fail after updating the FCV document but before removing UUIDs.
+            if (MONGO_FAIL_POINT(featureCompatibilityDowngrade)) {
+                exitCleanly(EXIT_CLEAN);
+            }
+
+            // If config server, downgrade shards *before* downgrading self; and clear the keys
+            // collection to ensure all shards will have the same key information on re-upgrade.
+            if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
+                uassertStatusOK(
+                    ShardingCatalogManager::get(opCtx)->setFeatureCompatibilityVersionOnShards(
+                        opCtx,
+                        Command::appendMajorityWriteConcern(Command::appendPassthroughFields(
+                            cmdObj,
+                            BSON(FeatureCompatibilityVersion::kCommandName << requestedVersion)))));
+
+                // Stop the background key generator thread from running before trying to drop the
+                // collection so we know the key won't just be recreated.
+                //
+                // Note: no need to restart the key generator if downgrade doesn't succeed at once
+                // because downgrade must be completed before upgrade is allowed; and clusterTime
+                // auth is inactive unless fully upgraded.
+                LogicalTimeValidator::get(opCtx)->enableKeyGenerator(opCtx, false);
+
+                DBDirectClient client(opCtx);
+                BSONObj result;
+                if (!client.dropCollection(NamespaceString::kSystemKeysCollectionName.toString(),
+                                           ShardingCatalogClient::kMajorityWriteConcern,
+                                           &result)) {
+                    Status status = getStatusFromCommandResult(result);
+                    if (status != ErrorCodes::NamespaceNotFound) {
+                        uassertStatusOK(status);
+                    }
+                }
+            }
+
+            // Remove after 3.6 -> 3.4 downgrade.
             updateUUIDSchemaVersion(opCtx, /*upgrade*/ false);
-        }
 
-        // Ensure we try reading the keys for signing clusterTime immediately on upgrade to 3.6.
-        if (ShardingState::get(opCtx)->enabled() &&
-            version == FeatureCompatibilityVersionCommandParser::kVersion36) {
-            LogicalTimeValidator::get(opCtx)->forceKeyRefreshNow(opCtx);
+            FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(opCtx, requestedVersion);
         }
 
         return true;

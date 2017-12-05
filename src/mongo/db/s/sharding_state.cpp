@@ -243,26 +243,23 @@ Status ShardingState::onStaleShardVersion(OperationContext* opCtx,
     auto& oss = OperationShardingState::get(opCtx);
     oss.waitForMigrationCriticalSectionSignal(opCtx);
 
-    ChunkVersion collectionShardVersion;
-
-    // Fast path - check if the requested version is at a higher version than the current metadata
-    // version or a different epoch before verifying against config server.
-    ScopedCollectionMetadata currentMetadata;
-
-    {
+    const auto collectionShardVersion = [&] {
+        // Fast path - check if the requested version is at a higher version than the current
+        // metadata version or a different epoch before verifying against config server
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
-
-        currentMetadata = CollectionShardingState::get(opCtx, nss)->getMetadata();
+        const auto currentMetadata = CollectionShardingState::get(opCtx, nss)->getMetadata();
         if (currentMetadata) {
-            collectionShardVersion = currentMetadata->getShardVersion();
+            return currentMetadata->getShardVersion();
         }
 
-        if (collectionShardVersion.epoch() == expectedVersion.epoch() &&
-            collectionShardVersion >= expectedVersion) {
-            // Don't need to remotely reload if we're in the same epoch and the requested version is
-            // smaller than the one we know about. This means that the remote side is behind.
-            return Status::OK();
-        }
+        return ChunkVersion::UNSHARDED();
+    }();
+
+    if (collectionShardVersion.epoch() == expectedVersion.epoch() &&
+        collectionShardVersion >= expectedVersion) {
+        // Don't need to remotely reload if we're in the same epoch and the requested version is
+        // smaller than the one we know about. This means that the remote side is behind.
+        return Status::OK();
     }
 
     try {
@@ -348,6 +345,7 @@ Status ShardingState::initializeFromShardIdentity(OperationContext* opCtx,
                                repl::MemberState::RS_PRIMARY);
 
             CatalogCacheLoader::get(opCtx).initializeReplicaSetRole(isStandaloneOrPrimary);
+
             _chunkSplitter->setReplicaSetMode(isStandaloneOrPrimary);
 
             log() << "initialized sharding components for "
@@ -499,29 +497,54 @@ ChunkVersion ShardingState::_refreshMetadata(OperationContext* opCtx, const Name
                           << " before shard name has been set",
             shardId.isValid());
 
-    auto newCollectionMetadata = [&]() -> std::unique_ptr<CollectionMetadata> {
-        auto const catalogCache = Grid::get(opCtx)->catalogCache();
-        catalogCache->invalidateShardedCollection(nss);
+    const auto routingInfo = uassertStatusOK(
+        Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfoWithRefresh(opCtx, nss));
+    const auto cm = routingInfo.cm();
 
-        const auto routingInfo =
-            uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, nss));
-        const auto cm = routingInfo.cm();
-        if (!cm) {
-            return nullptr;
+    if (!cm) {
+        // No chunk manager, so unsharded.
+
+        // Exclusive collection lock needed since we're now changing the metadata
+        AutoGetCollection autoColl(opCtx, nss, MODE_IX, MODE_X);
+
+        auto css = CollectionShardingState::get(opCtx, nss);
+        css->refreshMetadata(opCtx, nullptr);
+
+        return ChunkVersion::UNSHARDED();
+    }
+
+    {
+        AutoGetCollection autoColl(opCtx, nss, MODE_IS);
+        auto css = CollectionShardingState::get(opCtx, nss);
+
+        // We already have newer version
+        if (css->getMetadata() &&
+            css->getMetadata()->getCollVersion().epoch() == cm->getVersion().epoch() &&
+            css->getMetadata()->getCollVersion() >= cm->getVersion()) {
+            LOG(1) << "Skipping refresh of metadata for " << nss << " "
+                   << css->getMetadata()->getCollVersion() << " with an older " << cm->getVersion();
+            return css->getMetadata()->getShardVersion();
         }
-
-        return stdx::make_unique<CollectionMetadata>(cm, shardId);
-    }();
+    }
 
     // Exclusive collection lock needed since we're now changing the metadata
     AutoGetCollection autoColl(opCtx, nss, MODE_IX, MODE_X);
 
     auto css = CollectionShardingState::get(opCtx, nss);
-    css->refreshMetadata(opCtx, std::move(newCollectionMetadata));
 
-    if (!css->getMetadata()) {
-        return ChunkVersion::UNSHARDED();
+    // We already have newer version
+    if (css->getMetadata() &&
+        css->getMetadata()->getCollVersion().epoch() == cm->getVersion().epoch() &&
+        css->getMetadata()->getCollVersion() >= cm->getVersion()) {
+        LOG(1) << "Skipping refresh of metadata for " << nss << " "
+               << css->getMetadata()->getCollVersion() << " with an older " << cm->getVersion();
+        return css->getMetadata()->getShardVersion();
     }
+
+    std::unique_ptr<CollectionMetadata> newCollectionMetadata =
+        stdx::make_unique<CollectionMetadata>(cm, shardId);
+
+    css->refreshMetadata(opCtx, std::move(newCollectionMetadata));
 
     return css->getMetadata()->getShardVersion();
 }

@@ -30,22 +30,46 @@
 
 #include "mongo/db/initialize_operation_session_info.h"
 
+#include "mongo/db/auth/authorization_session.h"
+#include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/logical_session_cache.h"
 #include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/server_options.h"
 
 namespace mongo {
 
 void initializeOperationSessionInfo(OperationContext* opCtx,
                                     const BSONObj& requestBody,
-                                    bool requiresAuth) {
+                                    bool requiresAuth,
+                                    bool isReplSetMemberOrMongos,
+                                    bool supportsDocLocking) {
     if (!requiresAuth) {
         return;
+    }
+
+    {
+        // If we're using the localhost bypass, and the client hasn't authenticated,
+        // logical sessions are disabled. A client may authenticate as the __sytem user,
+        // or as an externally authorized user.
+        AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
+        if (authSession && authSession->isUsingLocalhostBypass() &&
+            !authSession->getAuthenticatedUserNames().more()) {
+            return;
+        }
     }
 
     auto osi = OperationSessionInfoFromClient::parse("OperationSessionInfo"_sd, requestBody);
 
     if (osi.getSessionId()) {
+        uassert(ErrorCodes::InvalidOptions,
+                str::stream() << "cannot pass logical session id unless fully upgraded to "
+                                 "featureCompatibilityVersion 3.6. See "
+                              << feature_compatibility_version::kDochubLink
+                              << " .",
+                serverGlobalParams.featureCompatibility.getVersion() ==
+                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
+
         stdx::lock_guard<Client> lk(*opCtx->getClient());
 
         opCtx->setLogicalSessionId(makeLogicalSessionId(osi.getSessionId().get(), opCtx));
@@ -60,6 +84,13 @@ void initializeOperationSessionInfo(OperationContext* opCtx,
         uassert(ErrorCodes::IllegalOperation,
                 "Transaction number requires a sessionId to be specified",
                 opCtx->getLogicalSessionId());
+        uassert(ErrorCodes::IllegalOperation,
+                "Transaction numbers are only allowed on a replica set member or mongos",
+                isReplSetMemberOrMongos);
+        uassert(ErrorCodes::IllegalOperation,
+                "Transaction numbers are only allowed on storage engines that support "
+                "document-level locking",
+                supportsDocLocking);
         uassert(ErrorCodes::BadValue,
                 "Transaction number cannot be negative",
                 *osi.getTxnNumber() >= 0);

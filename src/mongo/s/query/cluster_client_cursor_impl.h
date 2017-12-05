@@ -89,7 +89,7 @@ public:
                                          executor::TaskExecutor* executor,
                                          ClusterClientCursorParams&& params);
 
-    StatusWith<ClusterQueryResult> next() final;
+    StatusWith<ClusterQueryResult> next(RouterExecStage::ExecContext) final;
 
     void kill(OperationContext* opCtx) final;
 
@@ -98,6 +98,8 @@ public:
     void detachFromOperationContext() final;
 
     bool isTailable() const final;
+
+    bool isTailableAndAwaitData() const final;
 
     UserNameIterator getAuthenticatedUsers() const final;
 
@@ -110,6 +112,8 @@ public:
     Status setAwaitDataTimeout(Milliseconds awaitDataTimeout) final;
 
     boost::optional<LogicalSessionId> getLsid() const final;
+
+    boost::optional<ReadPreferenceSetting> getReadPreference() const final;
 
 public:
     /** private for tests */

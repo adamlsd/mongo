@@ -164,7 +164,9 @@ TEST_F(QueryStageMultiPlanTest, MPSCollectionScanVsHighlySelectiveIXScan) {
     // Make the filter.
     BSONObj filterObj = BSON("foo" << 7);
     const CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, collator);
+    const boost::intrusive_ptr<ExpressionContext> expCtx(
+        new ExpressionContext(_opCtx.get(), collator));
+    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, expCtx);
     verify(statusWithMatcher.isOK());
     unique_ptr<MatchExpression> filter = std::move(statusWithMatcher.getValue());
     // Make the stage.
@@ -403,7 +405,8 @@ TEST_F(QueryStageMultiPlanTest, MPSSummaryStats) {
     auto qr = stdx::make_unique<QueryRequest>(nss);
     qr->setFilter(BSON("foo" << BSON("$gte" << 0)));
     auto cq = uassertStatusOK(CanonicalQuery::canonicalize(opCtx(), std::move(qr)));
-    auto exec = uassertStatusOK(getExecutor(opCtx(), coll, std::move(cq), PlanExecutor::NO_YIELD));
+    auto exec =
+        uassertStatusOK(getExecutor(opCtx(), coll, std::move(cq), PlanExecutor::NO_YIELD, 0));
     ASSERT_EQ(exec->getRootStage()->stageType(), STAGE_MULTI_PLAN);
 
     ASSERT_OK(exec->executePlan());
@@ -458,7 +461,9 @@ TEST_F(QueryStageMultiPlanTest, ShouldReportErrorIfExceedsTimeLimitDuringPlannin
     // Make the filter.
     BSONObj filterObj = BSON("foo" << 7);
     const CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, collator);
+    const boost::intrusive_ptr<ExpressionContext> expCtx(
+        new ExpressionContext(_opCtx.get(), collator));
+    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, expCtx);
     verify(statusWithMatcher.isOK());
     unique_ptr<MatchExpression> filter = std::move(statusWithMatcher.getValue());
     // Make the stage.
@@ -521,7 +526,9 @@ TEST_F(QueryStageMultiPlanTest, ShouldReportErrorIfKilledDuringPlanning) {
     // Make the filter.
     BSONObj filterObj = BSON("foo" << 7);
     const CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, collator);
+    const boost::intrusive_ptr<ExpressionContext> expCtx(
+        new ExpressionContext(_opCtx.get(), collator));
+    StatusWithMatchExpression statusWithMatcher = MatchExpressionParser::parse(filterObj, expCtx);
     verify(statusWithMatcher.isOK());
     unique_ptr<MatchExpression> filter = std::move(statusWithMatcher.getValue());
     // Make the stage.

@@ -33,6 +33,7 @@
 #include "mongo/db/repl/rollback_impl.h"
 
 #include "mongo/db/concurrency/d_concurrency.h"
+#include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_process.h"
@@ -131,6 +132,11 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     // At this point these functions need to always be called before returning, even on failure.
     // These functions fassert on failure.
     ON_BLOCK_EXIT([this, opCtx] {
+        auto validator = LogicalTimeValidator::get(opCtx);
+        if (validator) {
+            validator->resetKeyManagerCache(opCtx->getClient()->getServiceContext());
+        }
+
         _checkShardIdentityRollback(opCtx);
         _resetSessions(opCtx);
         _transitionFromRollbackToSecondary(opCtx);
@@ -163,12 +169,12 @@ Status RollbackImpl::_transitionToRollback(OperationContext* opCtx) {
 
         auto status = _replicationCoordinator->setFollowerMode(MemberState::RS_ROLLBACK);
         if (!status.isOK()) {
-            std::string msg = str::stream()
-                << "Cannot transition from " << _replicationCoordinator->getMemberState().toString()
-                << " to " << MemberState(MemberState::RS_ROLLBACK).toString()
-                << causedBy(status.reason());
-            log() << msg;
-            return Status(status.code(), msg);
+            status.addContext(str::stream() << "Cannot transition from "
+                                            << _replicationCoordinator->getMemberState().toString()
+                                            << " to "
+                                            << MemberState(MemberState::RS_ROLLBACK).toString());
+            log() << status;
+            return status;
         }
     }
     return Status::OK();
@@ -191,7 +197,24 @@ StatusWith<Timestamp> RollbackImpl::_findCommonPoint() {
     if (!commonPointSW.isOK()) {
         return commonPointSW.getStatus();
     }
-    return commonPointSW.getValue().first.getTimestamp();
+
+    OpTime commonPoint = commonPointSW.getValue().first;
+    OpTime lastCommittedOpTime = _replicationCoordinator->getLastCommittedOpTime();
+    OpTime committedSnapshot = _replicationCoordinator->getCurrentCommittedSnapshotOpTime();
+
+    log() << "Rollback common point is " << commonPoint;
+
+    // Rollback common point should be >= the replication commit point.
+    invariant(!_replicationCoordinator->isV1ElectionProtocol() ||
+              commonPoint.getTimestamp() >= lastCommittedOpTime.getTimestamp());
+    invariant(!_replicationCoordinator->isV1ElectionProtocol() ||
+              commonPoint >= lastCommittedOpTime);
+
+    // Rollback common point should be >= the committed snapshot optime.
+    invariant(commonPoint.getTimestamp() >= committedSnapshot.getTimestamp());
+    invariant(commonPoint >= committedSnapshot);
+
+    return commonPoint.getTimestamp();
 }
 
 Status RollbackImpl::_recoverToStableTimestamp(OperationContext* opCtx) {
@@ -238,7 +261,7 @@ void RollbackImpl::_resetSessions(OperationContext* opCtx) {
 
     log() << "resetting in-memory state of active sessions";
 
-    SessionCatalog::get(opCtx)->resetSessions();
+    SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
 }
 
 void RollbackImpl::_transitionFromRollbackToSecondary(OperationContext* opCtx) {

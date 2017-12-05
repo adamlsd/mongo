@@ -210,7 +210,7 @@ Status DatabasesCloner::startup() noexcept {
     _listDBsScheduler = stdx::make_unique<RemoteCommandRetryScheduler>(
         _exec,
         listDBsReq,
-        stdx::bind(&DatabasesCloner::_onListDatabaseFinish, this, stdx::placeholders::_1),
+        [this](const auto& x) { this->_onListDatabaseFinish(x); },
         RemoteCommandRetryScheduler::makeRetryPolicy(
             numInitialSyncListDatabasesAttempts.load(),
             executor::RemoteCommandRequest::kNoTimeout,
@@ -248,7 +248,7 @@ StatusWith<std::vector<BSONElement>> DatabasesCloner::_parseListDatabasesRespons
     BSONElement response = dbResponse["databases"];
     try {
         return response.Array();
-    } catch (const AssertionException& e) {
+    } catch (const AssertionException&) {
         return Status(ErrorCodes::BadValue,
                       "The 'listDatabases' response is unable to be transformed into an array.");
     }

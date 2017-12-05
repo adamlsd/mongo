@@ -175,7 +175,7 @@ bool GlobalCursorIdCache::eraseCursor(OperationContext* opCtx, CursorId id, bool
     if (CursorManager::isGloballyManagedCursor(id)) {
         auto pin = globalCursorManager->pinCursor(opCtx, id);
         if (!pin.isOK()) {
-            invariant(pin == ErrorCodes::CursorNotFound);
+            invariant(pin == ErrorCodes::CursorNotFound || pin == ErrorCodes::Unauthorized);
             // No such cursor.  TODO: Consider writing to audit log here (even though we don't
             // have a namespace).
             return false;
@@ -196,10 +196,18 @@ bool GlobalCursorIdCache::eraseCursor(OperationContext* opCtx, CursorId id, bool
 
     // Check if we are authorized to erase this cursor.
     if (checkAuth) {
-        AuthorizationSession* as = AuthorizationSession::get(opCtx->getClient());
-        Status authorizationStatus = as->checkAuthForKillCursors(nss, id);
-        if (!authorizationStatus.isOK()) {
-            audit::logKillCursorsAuthzCheck(opCtx->getClient(), nss, id, ErrorCodes::Unauthorized);
+        auto status = CursorManager::withCursorManager(
+            opCtx, id, nss, [nss, id, opCtx](CursorManager* manager) {
+                auto ccPin = manager->pinCursor(opCtx, id);
+                if (!ccPin.isOK()) {
+                    return ccPin.getStatus();
+                }
+                AuthorizationSession* as = AuthorizationSession::get(opCtx->getClient());
+                auto cursorOwner = ccPin.getValue().getCursor()->getAuthenticatedUsers();
+                return as->checkAuthForKillCursors(nss, cursorOwner);
+            });
+        if (!status.isOK()) {
+            audit::logKillCursorsAuthzCheck(opCtx->getClient(), nss, id, status.code());
             return false;
         }
     }
@@ -309,15 +317,24 @@ void CursorManager::appendAllActiveSessions(OperationContext* opCtx, LogicalSess
     globalCursorIdCache->visitAllCursorManagers(opCtx, &visitor);
 }
 
-Status CursorManager::killCursorsWithMatchingSessions(OperationContext* opCtx,
-                                                      const SessionKiller::Matcher& matcher) {
+std::vector<GenericCursor> CursorManager::getAllCursors(OperationContext* opCtx) {
+    std::vector<GenericCursor> cursors;
+    auto visitor = [&](CursorManager& mgr) { mgr.appendActiveCursors(&cursors); };
+    globalCursorIdCache->visitAllCursorManagers(opCtx, &visitor);
+
+    return cursors;
+}
+
+std::pair<Status, int> CursorManager::killCursorsWithMatchingSessions(
+    OperationContext* opCtx, const SessionKiller::Matcher& matcher) {
     auto eraser = [&](CursorManager& mgr, CursorId id) {
         uassertStatusOK(mgr.eraseCursor(opCtx, id, true));
     };
 
     auto visitor = makeKillSessionsCursorManagerVisitor(opCtx, matcher, std::move(eraser));
     globalCursorIdCache->visitAllCursorManagers(opCtx, &visitor);
-    return visitor.getStatus();
+
+    return std::make_pair(visitor.getStatus(), visitor.getCursorsKilled());
 }
 
 std::size_t CursorManager::timeoutCursorsGlobal(OperationContext* opCtx, Date_t now) {
@@ -342,6 +359,28 @@ bool CursorManager::eraseCursorGlobal(OperationContext* opCtx, CursorId id) {
     return globalCursorIdCache->eraseCursor(opCtx, id, false);
 }
 
+Status CursorManager::withCursorManager(OperationContext* opCtx,
+                                        CursorId id,
+                                        const NamespaceString& nss,
+                                        stdx::function<Status(CursorManager*)> callback) {
+    boost::optional<AutoGetCollectionForReadCommand> readLock;
+    CursorManager* cursorManager = nullptr;
+
+    if (CursorManager::isGloballyManagedCursor(id)) {
+        cursorManager = CursorManager::getGlobalCursorManager();
+    } else {
+        readLock.emplace(opCtx, nss);
+        Collection* collection = readLock->getCollection();
+        if (!collection) {
+            return {ErrorCodes::CursorNotFound,
+                    str::stream() << "collection does not exist: " << nss.ns()};
+        }
+        cursorManager = collection->getCursorManager();
+    }
+    invariant(cursorManager);
+
+    return callback(cursorManager);
+}
 
 // --------------------------
 
@@ -495,7 +534,9 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(OperationContext* opCtx, Cu
     }
 
     ClientCursor* cursor = it->second;
-    uassert(12051, str::stream() << "cursor id " << id << " is already in use", !cursor->_isPinned);
+    uassert(ErrorCodes::CursorInUse,
+            str::stream() << "cursor id " << id << " is already in use",
+            !cursor->_isPinned);
     if (cursor->getExecutor()->isMarkedAsKilled()) {
         // This cursor was killed while it was idle.
         Status error{ErrorCodes::QueryPlanKilled,
@@ -551,6 +592,20 @@ void CursorManager::appendActiveSessions(LogicalSessionIdSet* lsids) const {
             if (auto id = cursor->getSessionId()) {
                 lsids->insert(id.value());
             }
+        }
+    }
+}
+
+void CursorManager::appendActiveCursors(std::vector<GenericCursor>* cursors) const {
+    auto allPartitions = _cursorMap->lockAllPartitions();
+    for (auto&& partition : allPartitions) {
+        for (auto&& entry : partition) {
+            auto cursor = entry.second;
+            cursors->emplace_back();
+            auto& gc = cursors->back();
+            gc.setId(cursor->_cursorid);
+            gc.setNs(cursor->nss());
+            gc.setLsid(cursor->getSessionId());
         }
     }
 }

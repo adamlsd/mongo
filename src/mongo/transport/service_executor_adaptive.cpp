@@ -32,9 +32,12 @@
 
 #include "mongo/transport/service_executor_adaptive.h"
 
+#include <array>
 #include <random>
 
 #include "mongo/db/server_parameters.h"
+#include "mongo/transport/service_entry_point_utils.h"
+#include "mongo/transport/service_executor_task_names.h"
 #include "mongo/util/concurrency/thread_name.h"
 #include "mongo/util/log.h"
 #include "mongo/util/processinfo.h"
@@ -64,23 +67,26 @@ MONGO_EXPORT_SERVER_PARAMETER(adaptiveServiceExecutorStuckThreadTimeoutMillis, i
 
 // The maximum allowed latency between when a task is scheduled and a thread is started to
 // service it.
-MONGO_EXPORT_SERVER_PARAMETER(adaptiveServiceExecutorMaxQueueLatencyMicros, int, 50);
+MONGO_EXPORT_SERVER_PARAMETER(adaptiveServiceExecutorMaxQueueLatencyMicros, int, 500);
 
 // Threads will exit themselves if they spent less than this percentage of the time they ran
 // doing actual work.
 MONGO_EXPORT_SERVER_PARAMETER(adaptiveServiceExecutorIdlePctThreshold, int, 60);
 
+// Tasks scheduled with MayRecurse may be called recursively if the recursion depth is below this
+// value.
+MONGO_EXPORT_SERVER_PARAMETER(adaptiveServiceExecutorRecursionLimit, int, 8);
+
 constexpr auto kTotalQueued = "totalQueued"_sd;
 constexpr auto kTotalExecuted = "totalExecuted"_sd;
-constexpr auto kTasksQueued = "tasksQueued"_sd;
 constexpr auto kTotalTimeExecutingUs = "totalTimeExecutingMicros"_sd;
 constexpr auto kTotalTimeRunningUs = "totalTimeRunningMicros"_sd;
 constexpr auto kTotalTimeQueuedUs = "totalTimeQueuedMicros"_sd;
-constexpr auto kTasksExecuting = "tasksExecuting";
-constexpr auto kThreadsRunning = "threadsRunning";
-constexpr auto kThreadsPending = "threadsPending";
-constexpr auto kExecutorLabel = "executor";
-constexpr auto kExecutorName = "adaptive";
+constexpr auto kThreadsInUse = "threadsInUse"_sd;
+constexpr auto kThreadsRunning = "threadsRunning"_sd;
+constexpr auto kThreadsPending = "threadsPending"_sd;
+constexpr auto kExecutorLabel = "executor"_sd;
+constexpr auto kExecutorName = "adaptive"_sd;
 
 int64_t ticksToMicros(TickSource::Tick ticks, TickSource* tickSource) {
     invariant(tickSource->getTicksPerSecond() >= 1000000);
@@ -121,6 +127,10 @@ struct ServerParameterOptions : public ServiceExecutorAdaptive::Options {
     int idlePctThreshold() const final {
         return adaptiveServiceExecutorIdlePctThreshold.load();
     }
+
+    int recursionLimit() const final {
+        return adaptiveServiceExecutorRecursionLimit.load();
+    }
 };
 
 }  // namespace
@@ -155,7 +165,7 @@ Status ServiceExecutorAdaptive::start() {
     return Status::OK();
 }
 
-Status ServiceExecutorAdaptive::shutdown() {
+Status ServiceExecutorAdaptive::shutdown(Milliseconds timeout) {
     if (!_isRunning.load())
         return Status::OK();
 
@@ -166,60 +176,98 @@ Status ServiceExecutorAdaptive::shutdown() {
 
     stdx::unique_lock<stdx::mutex> lk(_threadsMutex);
     _ioContext->stop();
-    _deathCondition.wait(lk, [&] { return _threads.empty(); });
+    bool result =
+        _deathCondition.wait_for(lk, timeout.toSystemDuration(), [&] { return _threads.empty(); });
 
-    return Status::OK();
+    return result
+        ? Status::OK()
+        : Status(ErrorCodes::Error::ExceededTimeLimit,
+                 "adaptive executor couldn't shutdown all worker threads within time limit.");
 }
 
-Status ServiceExecutorAdaptive::schedule(ServiceExecutorAdaptive::Task task, ScheduleFlags flags) {
+Status ServiceExecutorAdaptive::schedule(ServiceExecutorAdaptive::Task task,
+                                         ScheduleFlags flags,
+                                         ServiceExecutorTaskName taskName) {
     auto scheduleTime = _tickSource->getTicks();
-    auto pending = _tasksQueued.addAndFetch(1);
+    auto pendingCounterPtr = (flags & kDeferredTask) ? &_deferredTasksQueued : &_tasksQueued;
+    pendingCounterPtr->addAndFetch(1);
 
-    _ioContext->post([ this, task = std::move(task), scheduleTime ] {
-        _tasksQueued.subtractAndFetch(1);
+    if (!_isRunning.load()) {
+        return {ErrorCodes::ShutdownInProgress, "Executor is not running"};
+    }
+
+    auto wrappedTask = [ this, task = std::move(task), scheduleTime, pendingCounterPtr, taskName ] {
+        pendingCounterPtr->subtractAndFetch(1);
         auto start = _tickSource->getTicks();
-        _totalSpentScheduled.addAndFetch(start - scheduleTime);
-        _tasksExecuting.addAndFetch(1);
+        _totalSpentQueued.addAndFetch(start - scheduleTime);
 
-        _localThreadState->executing.markRunning();
-        const auto guard = MakeGuard([this, start] {
-            _tasksExecuting.subtractAndFetch(1);
-            _localThreadState->executingCurRun += _localThreadState->executing.markStopped();
+        _localThreadState->threadMetrics[static_cast<size_t>(taskName)]
+            ._totalSpentQueued.addAndFetch(start - scheduleTime);
+
+        if (_localThreadState->recursionDepth++ == 0) {
+            _localThreadState->executing.markRunning();
+            _threadsInUse.addAndFetch(1);
+        }
+        const auto guard = MakeGuard([this, taskName] {
+            if (--_localThreadState->recursionDepth == 0) {
+                _localThreadState->executingCurRun += _localThreadState->executing.markStopped();
+                _threadsInUse.subtractAndFetch(1);
+            }
             _totalExecuted.addAndFetch(1);
+            _localThreadState->threadMetrics[static_cast<size_t>(taskName)]
+                ._totalExecuted.addAndFetch(1);
         });
 
+        TickTimer _localTimer(_tickSource);
         task();
-    });
+        _localThreadState->threadMetrics[static_cast<size_t>(taskName)]
+            ._totalSpentExecuting.addAndFetch(_localTimer.sinceStartTicks());
+    };
+
+    // Dispatching a task on the io_context will run the task immediately, and may run it
+    // on the current thread (if the current thread is running the io_context right now).
+    //
+    // Posting a task on the io_context will run the task without recursion.
+    //
+    // If the task is allowed to recurse and we are not over the depth limit, dispatch it so it
+    // can be called immediately and recursively.
+    if ((flags & kMayRecurse) &&
+        (_localThreadState->recursionDepth + 1 < _config->recursionLimit())) {
+        _ioContext->dispatch(std::move(wrappedTask));
+    } else {
+        _ioContext->post(std::move(wrappedTask));
+    }
 
     _lastScheduleTimer.reset();
     _totalQueued.addAndFetch(1);
 
-    if (_isStarved(pending) && !(flags & DeferredTask)) {
+    _accumulatedMetrics[static_cast<size_t>(taskName)]._totalQueued.addAndFetch(1);
+
+    // Deferred tasks never count against the thread starvation avoidance. For other tasks, we
+    // notify the controller thread that a task has been scheduled and we should monitor thread
+    // starvation.
+    if (_isStarved() && !(flags & kDeferredTask)) {
         _scheduleCondition.notify_one();
     }
 
     return Status::OK();
 }
 
-bool ServiceExecutorAdaptive::_isStarved(int pending) const {
+bool ServiceExecutorAdaptive::_isStarved() const {
     // If threads are still starting, then assume we won't be starved pretty soon, return false
     if (_threadsPending.load() > 0)
         return false;
 
-    if (pending == -1) {
-        pending = _tasksQueued.load();
-    }
+    auto tasksQueued = _tasksQueued.load();
     // If there are no pending tasks, then we definitely aren't starved
-    if (pending == 0)
+    if (tasksQueued == 0)
         return false;
 
     // The available threads is the number that are running - the number that are currently
     // executing
-    auto available = _threadsRunning.load() - _tasksExecuting.load();
-    if (pending <= available)
-        return false;
+    auto available = _threadsRunning.load() - _threadsInUse.load();
 
-    return (pending > available);
+    return (tasksQueued > available);
 }
 
 void ServiceExecutorAdaptive::_controllerThreadRoutine() {
@@ -229,8 +277,10 @@ void ServiceExecutorAdaptive::_controllerThreadRoutine() {
     stdx::unique_lock<stdx::mutex> fakeLk(fakeMutex);
 
     TickTimer sinceLastControlRound(_tickSource);
-    TickSource::Tick lastSpentExecuting = _getThreadTimerTotal(ThreadTimer::Executing);
-    TickSource::Tick lastSpentRunning = _getThreadTimerTotal(ThreadTimer::Running);
+    stdx::unique_lock<stdx::mutex> lk(_threadsMutex);
+    TickSource::Tick lastSpentExecuting = _getThreadTimerTotal(ThreadTimer::Executing, lk);
+    TickSource::Tick lastSpentRunning = _getThreadTimerTotal(ThreadTimer::Running, lk);
+    lk.unlock();
 
     while (_isRunning.load()) {
         // Make sure that the timer gets reset whenever this loop completes
@@ -245,8 +295,11 @@ void ServiceExecutorAdaptive::_controllerThreadRoutine() {
 
         double utilizationPct;
         {
-            auto spentExecuting = _getThreadTimerTotal(ThreadTimer::Executing);
-            auto spentRunning = _getThreadTimerTotal(ThreadTimer::Running);
+
+            stdx::unique_lock<stdx::mutex> lk(_threadsMutex);
+            auto spentExecuting = _getThreadTimerTotal(ThreadTimer::Executing, lk);
+            auto spentRunning = _getThreadTimerTotal(ThreadTimer::Running, lk);
+            lk.unlock();
             auto diffExecuting = spentExecuting - lastSpentExecuting;
             auto diffRunning = spentRunning - lastSpentRunning;
 
@@ -275,7 +328,7 @@ void ServiceExecutorAdaptive::_controllerThreadRoutine() {
             // In that case we should start the reserve number of threads so fully unblock the
             // thread pool.
             //
-            if ((_tasksExecuting.load() == _threadsRunning.load()) &&
+            if ((_threadsInUse.load() == _threadsRunning.load()) &&
                 (sinceLastSchedule >= _config->stuckThreadTimeout())) {
                 log() << "Detected blocked worker threads, "
                       << "starting new reserve threads to unblock service executor";
@@ -330,7 +383,19 @@ void ServiceExecutorAdaptive::_startWorkerThread() {
 
     _threadsPending.addAndFetch(1);
     _threadsRunning.addAndFetch(1);
-    it->thread = stdx::thread(&ServiceExecutorAdaptive::_workerThreadRoutine, this, num, it);
+
+    lk.unlock();
+
+    const auto launchResult =
+        launchServiceWorkerThread([this, num, it] { _workerThreadRoutine(num, it); });
+
+    if (!launchResult.isOK()) {
+        warning() << "Failed to launch new worker thread: " << launchResult;
+        lk.lock();
+        _threadsPending.subtractAndFetch(1);
+        _threadsRunning.subtractAndFetch(1);
+        _threads.erase(it);
+    }
 }
 
 Milliseconds ServiceExecutorAdaptive::_getThreadJitter() const {
@@ -348,13 +413,35 @@ Milliseconds ServiceExecutorAdaptive::_getThreadJitter() const {
 
     stdx::lock_guard<stdx::mutex> lk(jitterMutex);
     auto jitter = jitterDist(randomEngine);
-    if (jitter < _config->workerThreadRunTime().count())
+    if (jitter > _config->workerThreadRunTime().count())
         jitter = 0;
 
     return Milliseconds{jitter};
 }
 
-TickSource::Tick ServiceExecutorAdaptive::_getThreadTimerTotal(ThreadTimer which) const {
+void ServiceExecutorAdaptive::_accumulateTaskMetrics(MetricsArray* outArray,
+                                                     const MetricsArray& inputArray) const {
+    for (auto it = inputArray.begin(); it != inputArray.end(); ++it) {
+        auto taskName = static_cast<ServiceExecutorTaskName>(std::distance(inputArray.begin(), it));
+        auto& output = outArray->at(static_cast<size_t>(taskName));
+
+        output._totalSpentExecuting.addAndFetch(it->_totalSpentExecuting.load());
+        output._totalSpentQueued.addAndFetch(it->_totalSpentQueued.load());
+        output._totalExecuted.addAndFetch(it->_totalExecuted.load());
+        output._totalQueued.addAndFetch(it->_totalQueued.load());
+    }
+}
+
+void ServiceExecutorAdaptive::_accumulateAllTaskMetrics(
+    MetricsArray* outputMetricsArray, const stdx::unique_lock<stdx::mutex>& lk) const {
+    _accumulateTaskMetrics(outputMetricsArray, _accumulatedMetrics);
+    for (auto& thread : _threads) {
+        _accumulateTaskMetrics(outputMetricsArray, thread.threadMetrics);
+    }
+}
+
+TickSource::Tick ServiceExecutorAdaptive::_getThreadTimerTotal(
+    ThreadTimer which, const stdx::unique_lock<stdx::mutex>& lk) const {
     TickSource::Tick accumulator;
     switch (which) {
         case ThreadTimer::Running:
@@ -365,7 +452,6 @@ TickSource::Tick ServiceExecutorAdaptive::_getThreadTimerTotal(ThreadTimer which
             break;
     }
 
-    stdx::lock_guard<stdx::mutex> lk(_threadsMutex);
     for (auto& thread : _threads) {
         switch (which) {
             case ThreadTimer::Running:
@@ -389,7 +475,7 @@ void ServiceExecutorAdaptive::_workerThreadRoutine(
         setThreadName(threadName);
     }
 
-    log() << "Starting new database worker thread " << threadId;
+    log() << "Started new database worker thread " << threadId;
 
     // Whether a thread is "pending" reflects whether its had a chance to do any useful work.
     // When a thread is pending, it will only try to run one task through ASIO, and report back
@@ -404,9 +490,9 @@ void ServiceExecutorAdaptive::_workerThreadRoutine(
         _pastThreadsSpentRunning.addAndFetch(state->running.totalTime());
         _pastThreadsSpentExecuting.addAndFetch(state->executing.totalTime());
 
+        _accumulateTaskMetrics(&_accumulatedMetrics, state->threadMetrics);
         {
             stdx::lock_guard<stdx::mutex> lk(_threadsMutex);
-            state->thread.detach();
             _threads.erase(state);
         }
         _deathCondition.notify_one();
@@ -487,19 +573,38 @@ void ServiceExecutorAdaptive::_workerThreadRoutine(
 }
 
 void ServiceExecutorAdaptive::appendStats(BSONObjBuilder* bob) const {
+    stdx::unique_lock<stdx::mutex> lk(_threadsMutex);
     BSONObjBuilder section(bob->subobjStart("serviceExecutorTaskStats"));
-    section << kExecutorLabel << kExecutorName                                                //
-            << kTotalQueued << _totalQueued.load()                                            //
-            << kTotalExecuted << _totalExecuted.load()                                        //
-            << kTasksQueued << _tasksQueued.load()                                            //
-            << kTasksExecuting << _tasksExecuting.load()                                      //
-            << kTotalTimeRunningUs                                                            //
-            << ticksToMicros(_getThreadTimerTotal(ThreadTimer::Running), _tickSource)         //
-            << kTotalTimeExecutingUs                                                          //
-            << ticksToMicros(_getThreadTimerTotal(ThreadTimer::Executing), _tickSource)       //
-            << kTotalTimeQueuedUs << ticksToMicros(_totalSpentScheduled.load(), _tickSource)  //
-            << kThreadsRunning << _threadsRunning.load()                                      //
+    section << kExecutorLabel << kExecutorName                                               //
+            << kTotalQueued << _totalQueued.load()                                           //
+            << kTotalExecuted << _totalExecuted.load()                                       //
+            << kThreadsInUse << _threadsInUse.load()                                         //
+            << kTotalTimeRunningUs                                                           //
+            << ticksToMicros(_getThreadTimerTotal(ThreadTimer::Running, lk), _tickSource)    //
+            << kTotalTimeExecutingUs                                                         //
+            << ticksToMicros(_getThreadTimerTotal(ThreadTimer::Executing, lk), _tickSource)  //
+            << kTotalTimeQueuedUs << ticksToMicros(_totalSpentQueued.load(), _tickSource)    //
+            << kThreadsRunning << _threadsRunning.load()                                     //
             << kThreadsPending << _threadsPending.load();
+
+    BSONObjBuilder metricsByTask(section.subobjStart("metricsByTask"));
+    MetricsArray totalMetrics;
+    _accumulateAllTaskMetrics(&totalMetrics, lk);
+    lk.unlock();
+    for (auto it = totalMetrics.begin(); it != totalMetrics.end(); ++it) {
+        auto taskName =
+            static_cast<ServiceExecutorTaskName>(std::distance(totalMetrics.begin(), it));
+        auto taskNameString = taskNameToString(taskName);
+        BSONObjBuilder subSection(metricsByTask.subobjStart(taskNameString));
+        subSection << kTotalQueued << it->_totalQueued.load() << kTotalExecuted
+                   << it->_totalExecuted.load() << kTotalTimeExecutingUs
+                   << ticksToMicros(it->_totalSpentExecuting.load(), _tickSource)
+                   << kTotalTimeQueuedUs
+                   << ticksToMicros(it->_totalSpentQueued.load(), _tickSource);
+
+        subSection.doneFast();
+    }
+    metricsByTask.doneFast();
     section.doneFast();
 }
 

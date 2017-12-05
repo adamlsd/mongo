@@ -30,7 +30,6 @@
 #   Timestamps: make sure they don't end up in metadata
 #
 
-from helper import copy_wiredtiger_home
 import random
 from suite_subprocess import suite_subprocess
 import wiredtiger, wttest
@@ -38,12 +37,6 @@ from wtscenario import make_scenarios
 
 def timestamp_str(t):
     return '%x' % t
-
-def timestamp_ret_str(t):
-    s = timestamp_str(t)
-    if len(s) % 2 == 1:
-        s = '0' + s
-    return s
 
 class test_timestamp05(wttest.WiredTigerTestCase, suite_subprocess):
     uri = 'table:ts05'

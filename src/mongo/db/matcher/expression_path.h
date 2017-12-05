@@ -41,7 +41,10 @@ namespace mongo {
  */
 class PathMatchExpression : public MatchExpression {
 public:
-    PathMatchExpression(MatchType matchType) : MatchExpression(matchType) {}
+    explicit PathMatchExpression(MatchType matchType, StringData path)
+        : MatchExpression(matchType), _path(path) {
+        _elementPath.init(_path);
+    }
 
     virtual ~PathMatchExpression() {}
 
@@ -74,15 +77,50 @@ public:
         return _path;
     }
 
-    Status setPath(StringData path) {
+    void setPath(StringData path) {
         _path = path;
-        auto status = _elementPath.init(_path);
-        if (!status.isOK()) {
-            return status;
+        _elementPath.init(_path);
+    }
+
+    void setTraverseLeafArray() {
+        _elementPath.setTraverseLeafArray(shouldExpandLeafArray());
+    }
+
+    /**
+     * Finds an applicable rename from 'renameList' (if one exists) and applies it to the expression
+     * path. Each pair in 'renameList' specifies a path prefix that should be renamed (as the first
+     * element) and the path components that should replace the renamed prefix (as the second
+     * element).
+     */
+    void applyRename(const StringMap<std::string>& renameList) {
+        FieldRef pathFieldRef(_path);
+
+        int renamesFound = 0;
+        for (auto rename : renameList) {
+            if (rename.first == _path) {
+                _rewrittenPath = rename.second;
+                setPath(_rewrittenPath);
+
+                ++renamesFound;
+            }
+
+            FieldRef prefixToRename(rename.first);
+            if (prefixToRename.isPrefixOf(pathFieldRef)) {
+                // Get the 'pathTail' by chopping off the 'prefixToRename' path components from the
+                // beginning of the 'pathFieldRef' path.
+                auto pathTail = pathFieldRef.dottedSubstring(prefixToRename.numParts(),
+                                                             pathFieldRef.numParts());
+                // Replace the chopped off components with the component names resulting from the
+                // rename.
+                _rewrittenPath = str::stream() << rename.second << "." << pathTail.toString();
+                setPath(_rewrittenPath);
+
+                ++renamesFound;
+            }
         }
 
-        _elementPath.setTraverseLeafArray(shouldExpandLeafArray());
-        return Status::OK();
+        // There should never be multiple applicable renames.
+        invariant(renamesFound <= 1);
     }
 
 protected:
@@ -95,5 +133,9 @@ protected:
 private:
     StringData _path;
     ElementPath _elementPath;
+
+    // We use this when we rewrite the value in '_path' and we need a backing store for the
+    // rewritten string.
+    std::string _rewrittenPath;
 };
 }  // namespace mongo

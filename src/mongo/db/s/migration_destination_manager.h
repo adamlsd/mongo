@@ -39,6 +39,7 @@
 #include "mongo/db/s/active_migrations_registry.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/migration_session_id.h"
+#include "mongo/db/s/session_catalog_migration_destination.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
@@ -163,8 +164,10 @@ private:
      * it schedules deletion of any documents in the range, so that process must be seen to be
      * complete before migrating any new documents in.
      */
-    auto _notePending(OperationContext*, NamespaceString const&, OID const&, ChunkRange const&)
-        -> CollectionShardingState::CleanupNotification;
+    CollectionShardingState::CleanupNotification _notePending(OperationContext*,
+                                                              NamespaceString const&,
+                                                              OID const&,
+                                                              ChunkRange const&);
 
     /**
      * Stops tracking a chunk range between 'min' and 'max' that previously was having data
@@ -211,6 +214,8 @@ private:
 
     State _state{READY};
     std::string _errmsg;
+
+    std::unique_ptr<SessionCatalogMigrationDestination> _sessionMigration;
 };
 
 }  // namespace mongo

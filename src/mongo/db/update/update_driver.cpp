@@ -46,6 +46,7 @@
 #include "mongo/db/update/storage_validation.h"
 #include "mongo/util/embedded_builder.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/stringutils.h"
 
 namespace mongo {
 
@@ -58,6 +59,23 @@ using std::vector;
 using pathsupport::EqualityMatches;
 
 namespace {
+
+StatusWith<UpdateSemantics> updateSemanticsFromElement(BSONElement element) {
+    if (element.type() != BSONType::NumberInt && element.type() != BSONType::NumberLong) {
+        return {ErrorCodes::BadValue, "'$v' (UpdateSemantics) field must be an integer."};
+    }
+
+    auto updateSemantics = element.numberLong();
+
+    if (updateSemantics < 0 ||
+        updateSemantics >= static_cast<int>(UpdateSemantics::kNumUpdateSemantics)) {
+        return {ErrorCodes::BadValue,
+                str::stream() << "Unrecognized value for '$v' (UpdateSemantics) field: "
+                              << updateSemantics};
+    }
+
+    return static_cast<UpdateSemantics>(updateSemantics);
+}
 
 modifiertable::ModifierType validateMod(BSONElement mod) {
     auto modType = modifiertable::getType(mod.fieldName());
@@ -90,15 +108,27 @@ modifiertable::ModifierType validateMod(BSONElement mod) {
 bool parseUpdateExpression(
     BSONObj updateExpr,
     UpdateObjectNode* root,
-    const CollatorInterface* collator,
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
     const std::map<StringData, std::unique_ptr<ExpressionWithPlaceholder>>& arrayFilters) {
     bool positional = false;
     std::set<std::string> foundIdentifiers;
+    bool foundUpdateSemanticsField = false;
     for (auto&& mod : updateExpr) {
+        // If there is a "$v" field among the modifiers, it should have already been used by the
+        // caller to determine that this is the correct parsing function.
+        if (mod.fieldNameStringData() == LogBuilder::kUpdateSemanticsFieldName) {
+            uassert(ErrorCodes::BadValue,
+                    "Duplicate $v in oplog update document",
+                    !foundUpdateSemanticsField);
+            foundUpdateSemanticsField = true;
+            invariant(mod.numberLong() == static_cast<long long>(UpdateSemantics::kUpdateNode));
+            continue;
+        }
+
         auto modType = validateMod(mod);
         for (auto&& field : mod.Obj()) {
             auto statusWithPositional = UpdateObjectNode::parseAndMerge(
-                root, modType, field, collator, arrayFilters, foundIdentifiers);
+                root, modType, field, expCtx, arrayFilters, foundIdentifiers);
             uassertStatusOK(statusWithPositional);
             positional = positional || statusWithPositional.getValue();
         }
@@ -136,7 +166,7 @@ Status UpdateDriver::parse(
     clear();
 
     // Check if the update expression is a full object replacement.
-    if (*updateExpr.firstElementFieldName() != '$') {
+    if (isDocReplacement(updateExpr)) {
         if (multi) {
             return Status(ErrorCodes::FailedToParse, "multi update only works with $ operators");
         }
@@ -152,29 +182,70 @@ Status UpdateDriver::parse(
     // Register the fact that this driver is not doing a full object replacement.
     _replacementMode = false;
 
-    // If the featureCompatibilityVersion is 3.4, parse using the ModifierInterfaces.
-    if (serverGlobalParams.featureCompatibility.version.load() ==
-        ServerGlobalParams::FeatureCompatibility::Version::k34) {
-        uassert(
-            ErrorCodes::InvalidOptions,
-            str::stream() << "The featureCompatibilityVersion must be 3.6 to use arrayFilters. See "
-                          << feature_compatibility_version::kDochubLink
-                          << ".",
-            arrayFilters.empty());
-        for (auto&& mod : updateExpr) {
-            auto modType = validateMod(mod);
-            for (auto&& field : mod.Obj()) {
-                auto status = addAndParse(modType, field);
-                if (!status.isOK()) {
-                    return status;
+    // Decide which update semantics to used, using the criteria outlined in the comment above this
+    // function's declaration.
+    BSONElement updateSemanticsElement = updateExpr[LogBuilder::kUpdateSemanticsFieldName];
+    UpdateSemantics updateSemantics;
+    if (updateSemanticsElement) {
+        if (!_modOptions.fromOplogApplication) {
+            return {ErrorCodes::FailedToParse, "The $v update field is only recognized internally"};
+        }
+        auto statusWithUpdateSemantics = updateSemanticsFromElement(updateSemanticsElement);
+        if (!statusWithUpdateSemantics.isOK()) {
+            return statusWithUpdateSemantics.getStatus();
+        }
+
+        updateSemantics = statusWithUpdateSemantics.getValue();
+    } else if (_modOptions.fromOplogApplication) {
+        updateSemantics = UpdateSemantics::kModifierInterface;
+    } else {
+        updateSemantics = (serverGlobalParams.featureCompatibility.getVersion() !=
+                           ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)
+            ? UpdateSemantics::kModifierInterface
+            : UpdateSemantics::kUpdateNode;
+    }
+
+    switch (updateSemantics) {
+        case UpdateSemantics::kModifierInterface: {
+            uassert(ErrorCodes::InvalidOptions,
+                    str::stream()
+                        << "The featureCompatibilityVersion must be 3.6 to use arrayFilters. See "
+                        << feature_compatibility_version::kDochubLink
+                        << ".",
+                    arrayFilters.empty());
+            bool foundUpdateSemanticsField = false;
+            for (auto&& mod : updateExpr) {
+                // If there is a "$v" field among the modifiers, we have already used it to
+                // determine that this is the correct parsing code.
+                if (mod.fieldNameStringData() == LogBuilder::kUpdateSemanticsFieldName) {
+                    uassert(ErrorCodes::BadValue,
+                            "Duplicate $v in oplog update document",
+                            !foundUpdateSemanticsField);
+                    foundUpdateSemanticsField = true;
+                    invariant(mod.numberLong() ==
+                              static_cast<long long>(UpdateSemantics::kModifierInterface));
+                    continue;
+                }
+
+                auto modType = validateMod(mod);
+                for (auto&& field : mod.Obj()) {
+                    auto status = addAndParse(modType, field);
+                    if (!status.isOK()) {
+                        return status;
+                    }
                 }
             }
+            break;
         }
-    } else {
-        auto root = stdx::make_unique<UpdateObjectNode>();
-        _positional =
-            parseUpdateExpression(updateExpr, root.get(), _modOptions.collator, arrayFilters);
-        _root = std::move(root);
+        case UpdateSemantics::kUpdateNode: {
+            auto root = stdx::make_unique<UpdateObjectNode>();
+            _positional =
+                parseUpdateExpression(updateExpr, root.get(), _modOptions.expCtx, arrayFilters);
+            _root = std::move(root);
+            break;
+        }
+        default:
+            MONGO_UNREACHABLE;
     }
 
     return Status::OK();
@@ -218,6 +289,8 @@ Status UpdateDriver::populateDocumentWithQueryFields(OperationContext* opCtx,
     auto qr = stdx::make_unique<QueryRequest>(NamespaceString(""));
     qr->setFilter(query);
     const boost::intrusive_ptr<ExpressionContext> expCtx;
+    // $expr is not allowed in the query for an upsert, since it is not clear what the equality
+    // extraction behavior for $expr should be.
     auto statusWithCQ =
         CanonicalQuery::canonicalize(opCtx,
                                      std::move(qr),
@@ -276,7 +349,7 @@ Status UpdateDriver::update(StringData matchedField,
         UpdateNode::ApplyParams applyParams(doc->root(), immutablePaths);
         applyParams.matchedField = matchedField;
         applyParams.insert = _insert;
-        applyParams.fromReplication = _modOptions.fromReplication;
+        applyParams.fromOplogApplication = _modOptions.fromOplogApplication;
         applyParams.validateForStorage = validateForStorage;
         applyParams.indexData = _indexedFields;
         if (_logOp && logOpRec) {
@@ -289,6 +362,14 @@ Status UpdateDriver::update(StringData matchedField,
         }
         if (docWasModified) {
             *docWasModified = !applyResult.noop;
+        }
+        if (!_replacementMode && _logOp && logOpRec) {
+            // When using kUpdateNode update semantics on the primary, we must include a "$v" field
+            // in the update document so that the secondary knows to apply the update with
+            // kUpdateNode semantics. If this is a full document replacement, we don't need to
+            // specify the semantics (and there would be no place to put a "$v" field in the update
+            // document).
+            invariantOK(logBuilder.setUpdateSemantics(UpdateSemantics::kUpdateNode));
         }
 
     } else {
@@ -368,7 +449,17 @@ Status UpdateDriver::update(StringData matchedField,
                 // Find the updated field in the updated document.
                 auto newElem = doc->root();
                 for (size_t i = 0; i < (*path)->numParts(); ++i) {
-                    newElem = newElem[(*path)->getPart(i)];
+                    if (newElem.getType() == BSONType::Array) {
+                        auto indexFromField = parseUnsignedBase10Integer((*path)->getPart(i));
+                        if (indexFromField) {
+                            newElem = newElem.findNthChild(*indexFromField);
+                        } else {
+                            newElem = newElem.getDocument().end();
+                        }
+                    } else {
+                        newElem = newElem[(*path)->getPart(i)];
+                    }
+
                     if (!newElem.ok()) {
                         break;
                     }
@@ -477,28 +568,9 @@ void UpdateDriver::setCollator(const CollatorInterface* collator) {
         mod->setCollator(collator);
     }
 
-    _modOptions.collator = collator;
+    _modOptions.expCtx->setCollator(collator);
 }
 
-BSONObj UpdateDriver::makeOplogEntryQuery(const BSONObj& doc, bool multi) const {
-    BSONObjBuilder idPattern;
-    BSONElement id;
-    // NOTE: If the matching object lacks an id, we'll log
-    // with the original pattern.  This isn't replay-safe.
-    // It might make sense to suppress the log instead
-    // if there's no id.
-    if (doc.getObjectID(id)) {
-        idPattern.append(id);
-        return idPattern.obj();
-    } else {
-        uassert(16980,
-                str::stream() << "Multi-update operations require all documents to "
-                                 "have an '_id' field. "
-                              << doc.toString(),
-                !multi);
-        return doc;
-    }
-}
 void UpdateDriver::clear() {
     for (vector<ModifierInterface*>::iterator it = _mods.begin(); it != _mods.end(); ++it) {
         delete *it;
@@ -507,6 +579,10 @@ void UpdateDriver::clear() {
     _indexedFields = NULL;
     _replacementMode = false;
     _positional = false;
+}
+
+bool UpdateDriver::isDocReplacement(const BSONObj& updateExpr) {
+    return *updateExpr.firstElementFieldName() != '$';
 }
 
 }  // namespace mongo

@@ -41,7 +41,7 @@ class DocumentSourceMatch : public DocumentSource {
 public:
     virtual ~DocumentSourceMatch() = default;
 
-    GetNextResult getNext() final;
+    GetNextResult getNext() override;
     boost::intrusive_ptr<DocumentSource> optimize() final;
     BSONObjSet getOutputSorts() final {
         return pSource ? pSource->getOutputSorts()
@@ -50,10 +50,13 @@ public:
 
     const char* getSourceName() const override;
 
-    StageConstraints constraints() const override {
-        StageConstraints constraints;
-        constraints.hostRequirement = HostTypeRequirement::kAnyShardOrMongoS;
-        return constraints;
+    StageConstraints constraints(Pipeline::SplitState pipeState) const override {
+        return {StreamType::kStreaming,
+                PositionRequirement::kNone,
+                HostTypeRequirement::kNone,
+                DiskUseRequirement::kNoDiskUse,
+                FacetRequirement::kAllowed,
+                ChangeStreamRequirement::kWhitelist};
     }
 
     Value serialize(
@@ -153,7 +156,7 @@ public:
 
 protected:
     DocumentSourceMatch(const BSONObj& query,
-                        const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
+                        const boost::intrusive_ptr<ExpressionContext>& expCtx);
 
 private:
     std::unique_ptr<MatchExpression> _expression;

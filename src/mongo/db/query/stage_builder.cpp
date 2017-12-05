@@ -78,6 +78,7 @@ PlanStage* buildStages(OperationContext* opCtx,
             CollectionScanParams params;
             params.collection = collection;
             params.tailable = csn->tailable;
+            params.shouldTrackLatestOplogTimestamp = csn->shouldTrackLatestOplogTimestamp;
             params.direction = (csn->direction == 1) ? CollectionScanParams::FORWARD
                                                      : CollectionScanParams::BACKWARD;
             params.maxScan = csn->maxScan;
@@ -284,6 +285,7 @@ PlanStage* buildStages(OperationContext* opCtx,
             // planning a query that contains "no-op" expressions. TODO: make StageBuilder::build()
             // fail in this case (this improvement is being tracked by SERVER-21510).
             params.query = static_cast<FTSQueryImpl&>(*node->ftsQuery);
+            params.wantTextScore = (cq.getProj() && cq.getProj()->wantTextScore());
             return new TextStage(opCtx, params, ws, node->filter.get());
         }
         case STAGE_SHARDING_FILTER: {

@@ -30,6 +30,7 @@
 #pragma once
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/mutex.h"
@@ -47,10 +48,21 @@ class WiredTigerOplogManager {
     MONGO_DISALLOW_COPYING(WiredTigerOplogManager);
 
 public:
-    WiredTigerOplogManager(OperationContext* opCtx,
-                           const std::string& uri,
-                           WiredTigerRecordStore* oplogRecordStore);
-    ~WiredTigerOplogManager();
+    WiredTigerOplogManager() {}
+    ~WiredTigerOplogManager() {}
+
+    // This method will initialize the oplog read timestamp and start the background thread that
+    // refreshes the value.
+    void start(OperationContext* opCtx,
+               const std::string& uri,
+               WiredTigerRecordStore* oplogRecordStore);
+
+    void halt();
+
+    bool isRunning() {
+        stdx::lock_guard<stdx::mutex> lk(_oplogVisibilityStateMutex);
+        return _isRunning && !_shuttingDown;
+    }
 
     // The oplogReadTimestamp is the timestamp used for oplog reads, to prevent readers from
     // reading past uncommitted transactions (which may create "holes" in the oplog after an
@@ -67,16 +79,13 @@ public:
                                                  OperationContext* opCtx) const;
 
 private:
-    // TIMESTAMP_SIZE is configured to be 8 bytes, and so its hexadecimal string representation
-    // is 2 characters per byte (00 through FF), plus one more for the null terminator.
-    static const int TIMESTAMP_BUF_SIZE = 2 * /*TIMESTAMP_SIZE*/ 8 + 1;
-
     void _oplogJournalThreadLoop(WiredTigerSessionCache* sessionCache,
-                                 WiredTigerRecordStore* oplogRecordStore) noexcept;
+                                 WiredTigerRecordStore* oplogRecordStore,
+                                 bool isMasterSlave) noexcept;
 
-    void _setOplogReadTimestamp(char buf[TIMESTAMP_BUF_SIZE]);
+    void _setOplogReadTimestamp(uint64_t newTimestamp);
 
-    void _fetchAllCommittedValue(WT_CONNECTION* conn, char buf[TIMESTAMP_BUF_SIZE]);
+    uint64_t _fetchAllCommittedValue(WT_CONNECTION* conn);
 
     stdx::thread _oplogJournalThread;
     mutable stdx::mutex _oplogVisibilityStateMutex;
@@ -85,6 +94,7 @@ private:
     mutable stdx::condition_variable
         _opsBecameVisibleCV;  // Signaled when a journal flush is complete.
 
+    bool _isRunning = false;     // Guarded by the oplogVisibilityStateMutex.
     bool _shuttingDown = false;  // Guarded by oplogVisibilityStateMutex.
 
     // This is the RecordId of the newest oplog document in the oplog on startup.  It is used as a

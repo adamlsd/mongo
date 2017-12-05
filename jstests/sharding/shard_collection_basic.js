@@ -81,6 +81,16 @@
     assert.commandFailed(
         mongos.adminCommand({shardCollection: kDbName + '.foo', key: {aKey: "hahahashed"}}));
 
+    // Shard key cannot contain embedded objects.
+    assert.commandFailed(
+        mongos.adminCommand({shardCollection: kDbName + '.foo', key: {_id: {a: 1}}}));
+    assert.commandFailed(
+        mongos.adminCommand({shardCollection: kDbName + '.foo', key: {_id: {'a.b': 1}}}));
+
+    // Shard key can contain dotted path to embedded element.
+    assert.commandWorked(mongos.adminCommand(
+        {shardCollection: kDbName + '.shard_key_dotted_path', key: {'_id.a': 1}}));
+
     //
     // Test shardCollection's idempotency
     //
@@ -171,6 +181,21 @@
 
     assert.commandFailed(
         mongos.adminCommand({shardCollection: kDbName + '.foo', key: {aKey: 1}, unique: true}));
+
+    //
+    // Session-related tests
+    //
+
+    assert.commandWorked(mongos.getDB(kDbName).dropDatabase());
+    assert.commandWorked(mongos.adminCommand({enableSharding: kDbName}));
+
+    // shardCollection can be called under a session.
+    const sessionDb = mongos.startSession().getDatabase(kDbName);
+    assert.commandWorked(
+        sessionDb.adminCommand({shardCollection: kDbName + '.foo', key: {_id: 'hashed'}}));
+    sessionDb.getSession().endSession();
+
+    assert.commandWorked(mongos.getDB(kDbName).dropDatabase());
 
     //
     // Collation-related tests

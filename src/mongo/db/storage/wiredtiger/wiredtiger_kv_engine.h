@@ -38,6 +38,7 @@
 #include <wiredtiger.h>
 
 #include "mongo/bson/ordering.h"
+#include "mongo/bson/timestamp.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_oplog_manager.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
@@ -162,9 +163,9 @@ public:
 
     void setJournalListener(JournalListener* jl) final;
 
-    virtual void setStableTimestamp(SnapshotName stableTimestamp) override;
+    virtual void setStableTimestamp(Timestamp stableTimestamp) override;
 
-    virtual void setInitialDataTimestamp(SnapshotName initialDataTimestamp) override;
+    virtual void setInitialDataTimestamp(Timestamp initialDataTimestamp) override;
 
     virtual bool supportsRecoverToStableTimestamp() const override;
 
@@ -184,19 +185,29 @@ public:
     void syncSizeInfo(bool sync) const;
 
     /*
-     * Initializes and reference counts an oplog manager, to control oplog entry visibility for
-     * reads.
-     * The oplogManager object is held by this class but is constructed and deleted as per
-     * the Oplog record store (the record store corresponding to the oplog collection).  If
-     * multiple oplog record stores are created, the first oplog record store to be constructed will
-     * construct the Manager, and the last oplog record store to be deleted will destruct the
-     * Manager.
+     * An oplog manager is always accessible, but this method will start the background thread to
+     * control oplog entry visibility for reads.
+     *
+     * On mongod, the background thread will be started when the first oplog record store is
+     * created, and stopped when the last oplog record store is destroyed, at shutdown time. For
+     * unit tests, the background thread may be started and stopped multiple times as tests create
+     * and destroy oplog record stores.
      */
-    void initializeOplogManager(OperationContext* opCtx,
-                                const std::string& uri,
-                                WiredTigerRecordStore* oplogRecordStore);
-    void deleteOplogManager();
+    void startOplogManager(OperationContext* opCtx,
+                           const std::string& uri,
+                           WiredTigerRecordStore* oplogRecordStore);
+    void haltOplogManager();
 
+    /*
+     * Always returns a non-nil pointer. However, the WiredTigerOplogManager may not have been
+     * initialized and its background refreshing thread may not be running.
+     *
+     * A caller that wants to get the oplog read timestamp, or call
+     * `waitForAllEarlierOplogWritesToBeVisible`, is advised to first see if the oplog manager is
+     * running with a call to `isRunning`.
+     *
+     * A caller that simply wants to call `triggerJournalFlush` may do so without concern.
+     */
     WiredTigerOplogManager* getOplogManager() const {
         return _oplogManager.get();
     }
@@ -234,13 +245,15 @@ private:
     bool _hasUri(WT_SESSION* session, const std::string& uri) const;
 
     std::string _uri(StringData ident) const;
-    bool _drop(StringData ident);
 
-    void _setOldestTimestamp(SnapshotName oldestTimestamp);
+    // Not threadsafe; callers must be serialized.
+    void _setOldestTimestamp(Timestamp oldestTimestamp);
+    Timestamp _previousSetOldestTimestamp;
 
     WT_CONNECTION* _conn;
     WT_EVENT_HANDLER _eventHandler;
     std::unique_ptr<WiredTigerSessionCache> _sessionCache;
+    ClockSource* const _clockSource;
 
     // Mutex to protect use of _oplogManager and _oplogManagerCount by this instance of KV
     // engine.

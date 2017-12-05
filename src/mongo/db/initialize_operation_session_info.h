@@ -41,9 +41,14 @@ namespace mongo {
  *
  * requiresAuth specifies if the command we're initializing operationSessionInfo for requires
  * authorization or not.  This can be determined by invoking ->requiresAuth() on the parsed command.
+ *
+ * Both isReplSetMemberOrMongos and supportsDocLocking need to be true if the command contains a
+ * transaction number, otherwise this function will throw.
  */
 void initializeOperationSessionInfo(OperationContext* opCtx,
                                     const BSONObj& requestBody,
-                                    bool requiresAuth);
+                                    bool requiresAuth,
+                                    bool isReplSetMemberOrMongos,
+                                    bool supportsDocLocking);
 
 }  // namespace mongo

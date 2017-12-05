@@ -159,10 +159,8 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
       _indexCatalog(_this_init, this->getCatalogEntry()->getMaxAllowedIndexes()),
       _collator(parseCollation(opCtx, _ns, _details->getCollectionOptions(opCtx).collation)),
       _validatorDoc(_details->getCollectionOptions(opCtx).validator.getOwned()),
-      _validator(
-          uassertStatusOK(parseValidator(_validatorDoc,
-                                         MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kExpr))),
+      _validator(uassertStatusOK(
+          parseValidator(opCtx, _validatorDoc, MatchExpressionParser::kAllowAllSpecialFeatures))),
       _validationAction(uassertStatusOK(
           parseValidationAction(_details->getCollectionOptions(opCtx).validationAction))),
       _validationLevel(uassertStatusOK(
@@ -268,25 +266,36 @@ Status CollectionImpl::checkValidation(OperationContext* opCtx, const BSONObj& d
 }
 
 StatusWithMatchExpression CollectionImpl::parseValidator(
-    const BSONObj& validator, MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
+    OperationContext* opCtx,
+    const BSONObj& validator,
+    MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
     if (validator.isEmpty())
         return {nullptr};
 
     if (ns().isSystem() && !ns().isDropPendingNamespace()) {
         return {ErrorCodes::InvalidOptions,
-                "Document validators not allowed on system collections."};
+                str::stream() << "Document validators not allowed on system collection "
+                              << ns().ns()
+                              << (_uuid ? " with UUID " + _uuid->toString() : "")};
     }
 
     if (ns().isOnInternalDb()) {
         return {ErrorCodes::InvalidOptions,
-                str::stream() << "Document validators are not allowed on collections in"
-                              << " the "
+                str::stream() << "Document validators are not allowed on collection " << ns().ns()
+                              << (_uuid ? " with UUID " + _uuid->toString() : "")
+                              << " in the "
                               << ns().db()
-                              << " database"};
+                              << " internal database"};
     }
 
-    auto statusWithMatcher = MatchExpressionParser::parse(
-        validator, _collator.get(), nullptr, ExtensionsCallbackNoop(), allowedFeatures);
+    boost::intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext(opCtx, _collator.get()));
+
+    // The MatchExpression and contained ExpressionContext created as part of the validator are
+    // owned by the Collection and will outlive the OperationContext they were created under.
+    expCtx->opCtx = nullptr;
+
+    auto statusWithMatcher =
+        MatchExpressionParser::parse(validator, expCtx, ExtensionsCallbackNoop(), allowedFeatures);
     if (!statusWithMatcher.isOK())
         return statusWithMatcher.getStatus();
 
@@ -894,9 +903,8 @@ Status CollectionImpl::setValidator(OperationContext* opCtx, BSONObj validatorDo
 
     // Note that, by the time we reach this, we should have already done a pre-parse that checks for
     // banned features, so we don't need to include that check again.
-    auto statusWithMatcher = parseValidator(validatorDoc,
-                                            MatchExpressionParser::kAllowAllSpecialFeatures &
-                                                ~MatchExpressionParser::AllowedFeatures::kExpr);
+    auto statusWithMatcher =
+        parseValidator(opCtx, validatorDoc, MatchExpressionParser::kAllowAllSpecialFeatures);
     if (!statusWithMatcher.isOK())
         return statusWithMatcher.getStatus();
 
@@ -989,6 +997,37 @@ Status CollectionImpl::setValidationAction(OperationContext* opCtx, StringData n
     return Status::OK();
 }
 
+Status CollectionImpl::updateValidator(OperationContext* opCtx,
+                                       BSONObj newValidator,
+                                       StringData newLevel,
+                                       StringData newAction) {
+    invariant(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_X));
+
+    _details->updateValidator(opCtx, newValidator, newLevel, newAction);
+    _validatorDoc = std::move(newValidator);
+
+    auto validatorSW =
+        parseValidator(opCtx, _validatorDoc, MatchExpressionParser::kAllowAllSpecialFeatures);
+    if (!validatorSW.isOK()) {
+        return validatorSW.getStatus();
+    }
+    _validator = std::move(validatorSW.getValue());
+
+    auto levelSW = parseValidationLevel(newLevel);
+    if (!levelSW.isOK()) {
+        return levelSW.getStatus();
+    }
+    _validationLevel = levelSW.getValue();
+
+    auto actionSW = parseValidationAction(newAction);
+    if (!actionSW.isOK()) {
+        return actionSW.getStatus();
+    }
+    _validationAction = actionSW.getValue();
+
+    return Status::OK();
+}
+
 const CollatorInterface* CollectionImpl::getDefaultCollator() const {
     return _collator.get();
 }
@@ -997,6 +1036,15 @@ void CollectionImpl::informIndexObserver(OperationContext* opCtx,
                                          const IndexDescriptor* descriptor,
                                          const IndexKeyEntry& indexEntry,
                                          const ValidationOperation operation) const {
+    // The index observer was used for a project that would allow concurrent validation of
+    // collection/index consistency while updates were happening to the collection. That project did
+    // not make it in for 3.6. This mutex is in a hot code path, so we're going to avoid locking it
+    // for the time being. See SERVER-31948.
+    const bool unusedReturnEarlyForPerf = true;
+    if (unusedReturnEarlyForPerf) {
+        return;
+    }
+
     stdx::lock_guard<stdx::mutex> lock(_indexObserverMutex);
     if (_indexObserver) {
         _indexObserver->inform(opCtx, descriptor, std::move(indexEntry), operation);

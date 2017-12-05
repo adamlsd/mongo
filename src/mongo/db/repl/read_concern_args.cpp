@@ -93,6 +93,10 @@ ReadConcernLevel ReadConcernArgs::getLevel() const {
     return _level.value_or(ReadConcernLevel::kLocalReadConcern);
 }
 
+bool ReadConcernArgs::hasLevel() const {
+    return _level.is_initialized();
+}
+
 boost::optional<OpTime> ReadConcernArgs::getArgsOpTime() const {
     return _opTime;
 }

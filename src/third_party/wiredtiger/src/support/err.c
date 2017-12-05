@@ -177,10 +177,10 @@ __wt_eventv(WT_SESSION_IMPL *session, bool msg_event, int error,
     const char *file_name, int line_number, const char *fmt, va_list ap)
     WT_GCC_FUNC_ATTRIBUTE((cold))
 {
-	WT_EVENT_HANDLER *handler;
-	WT_DECL_RET;
-	WT_SESSION *wt_session;
 	struct timespec ts;
+	WT_DECL_RET;
+	WT_EVENT_HANDLER *handler;
+	WT_SESSION *wt_session;
 	size_t len, remain;
 	const char *err, *prefix;
 	char *p, tid[128];
@@ -217,7 +217,7 @@ __wt_eventv(WT_SESSION_IMPL *session, bool msg_event, int error,
 	 * followed by a colon.
 	 */
 	__wt_epoch(session, &ts);
-	WT_ERR(__wt_thread_id(tid, sizeof(tid)));
+	WT_ERR(__wt_thread_str(tid, sizeof(tid)));
 	WT_ERROR_APPEND(p, remain,
 	    "[%" PRIuMAX ":%" PRIuMAX "][%s]",
 	    (uintmax_t)ts.tv_sec, (uintmax_t)ts.tv_nsec / WT_THOUSAND, tid);
@@ -512,7 +512,23 @@ __wt_panic(WT_SESSION_IMPL *session)
     WT_GCC_FUNC_ATTRIBUTE((cold))
     WT_GCC_FUNC_ATTRIBUTE((visibility("default")))
 {
-	F_SET(S2C(session), WT_CONN_PANIC);
+	WT_CONNECTION_IMPL *conn;
+
+	/*
+	 * !!!
+	 * This function MUST handle a NULL WT_SESSION_IMPL handle.
+	 */
+	if (session != NULL) {
+		/*
+		 * Panic the connection; if the connection has already been
+		 * marked, just return the error.
+		 */
+		conn = S2C(session);
+		if (F_ISSET(conn, WT_CONN_PANIC))
+			return (WT_PANIC);
+		F_SET(conn, WT_CONN_PANIC);
+	}
+
 	__wt_err(session, WT_PANIC, "the process must exit and restart");
 
 #if defined(HAVE_DIAGNOSTIC)

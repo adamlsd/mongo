@@ -3,6 +3,9 @@ Testing hook that periodically makes the primary of a replica set step down.
 """
 from __future__ import absolute_import
 
+import collections
+import random
+import sys
 import time
 import threading
 
@@ -64,21 +67,25 @@ class ContinuousStepdown(interface.CustomBehavior):
         self._stepdown_thread.stop()
 
     def before_test(self, test, test_report):
-        self._check_thread()
+        self._check_thread(test, test_report)
         self.logger.info("Resuming the stepdown thread.")
         self._stepdown_thread.resume()
 
     def after_test(self, test, test_report):
-        self._check_thread()
+        self._check_thread(test, test_report)
         self.logger.info("Pausing the stepdown thread.")
         self._stepdown_thread.pause()
         self.logger.info("Paused the stepdown thread.")
 
-    def _check_thread(self):
+    def _check_thread(self, test, test_report):
         if not self._stepdown_thread.is_alive():
             msg = "The stepdown thread is not running."
             self.logger.error(msg)
-            raise errors.StopExecution(msg)
+            try:
+                raise errors.StopExecution(msg)
+            except errors.StopExecution:
+                test_report.addError(test, sys.exc_info())
+                raise
 
     def _add_fixture(self, fixture):
         if isinstance(fixture, replicaset.ReplicaSetFixture):
@@ -113,6 +120,8 @@ class _StepdownThread(threading.Thread):
         # Event set when the thread is not performing stepdowns.
         self._is_idle_evt = threading.Event()
         self._is_idle_evt.set()
+
+        self._step_up_stats = collections.Counter()
 
     def run(self):
         if not self._rs_fixtures:
@@ -156,6 +165,10 @@ class _StepdownThread(threading.Thread):
         """Resumes the thread."""
         self._is_resumed_evt.set()
 
+        self.logger.info(
+            "Current statistics about which nodes have been successfully stepped up: %s",
+            self._step_up_stats)
+
     def _pause_if_needed(self):
         # Wait until resume or stop.
         self._is_resumed_evt.wait()
@@ -172,22 +185,58 @@ class _StepdownThread(threading.Thread):
 
     def _step_down(self, rs_fixture):
         try:
-            self.logger.info("Stepping down the primary of replica set '%s'",
-                             rs_fixture.replset_name)
-            client = rs_fixture.mongo_client()
+            primary = rs_fixture.get_primary(timeout_secs=self._stepdown_interval_secs)
+        except errors.ServerFailure:
+            # We ignore the ServerFailure exception because it means a primary wasn't available.
+            # We'll try again after self._stepdown_interval_secs seconds.
+            return
+
+        self.logger.info("Stepping down the primary on port %d of replica set '%s'.",
+                         primary.port, rs_fixture.replset_name)
+
+        secondaries = rs_fixture.get_secondaries()
+
+        try:
+            client = primary.mongo_client()
             client.admin.command(bson.SON([
                 ("replSetStepDown", self._stepdown_duration_secs),
                 ("force", True),
             ]))
-        except (pymongo.errors.AutoReconnect,
-                pymongo.errors.ConnectionFailure,
-                pymongo.errors.ServerSelectionTimeoutError):
+        except pymongo.errors.AutoReconnect:
             # AutoReconnect exceptions are expected as connections are closed during stepdown.
-            # We ignore ConnectionFailure and ServerSelectionTimeoutError exceptions since they
-            # mean a primary wasn't available, but we'll try again after self._stepdown_interval_sec
-            # seconds.
             pass
         except pymongo.errors.PyMongoError:
-            self.logger.exception("Error while stepping down the primary of replica set '%s'",
-                                  rs_fixture.replset_name)
+            self.logger.exception(
+                "Error while stepping down the primary on port %d of replica set '%s'.",
+                primary.port, rs_fixture.replset_name)
             raise
+
+        # We pick arbitrary secondary to run for election immediately in order to avoid a long
+        # period where the replica set doesn't have write availability. If none of the secondaries
+        # are eligible, or their election attempt fails, then we'll simply not have write
+        # availability until the self._stepdown_duration_secs duration expires and 'primary' steps
+        # back up again.
+        while secondaries:
+            chosen = random.choice(secondaries)
+
+            self.logger.info("Attempting to step up the secondary on port %d of replica set '%s'.",
+                             chosen.port, rs_fixture.replset_name)
+
+            try:
+                client = chosen.mongo_client()
+                client.admin.command("replSetStepUp")
+                break
+            except pymongo.errors.OperationFailure:
+                # OperationFailure exceptions are expected when the election attempt fails due to
+                # not receiving enough votes. This can happen when the 'chosen' secondary's opTime
+                # is behind that of other secondaries. We handle this by attempting to elect a
+                # different secondary.
+                self.logger.info("Failed to step up the secondary on port %d of replica set '%s'.",
+                                 chosen.port, rs_fixture.replset_name)
+                secondaries.remove(chosen)
+
+        # Bump the counter for the chosen secondary to indicate that the replSetStepUp command
+        # executed successfully.
+        key = "{}/{}".format(rs_fixture.replset_name,
+                             chosen.get_internal_connection_string() if secondaries else "none")
+        self._step_up_stats[key] += 1

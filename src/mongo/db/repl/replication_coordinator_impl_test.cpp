@@ -55,7 +55,7 @@
 #include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/replication_coordinator_test_fixture.h"
 #include "mongo/db/repl/storage_interface_mock.h"
-#include "mongo/db/repl/topology_coordinator_impl.h"
+#include "mongo/db/repl/topology_coordinator.h"
 #include "mongo/db/repl/update_position_args.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/service_context_noop.h"
@@ -101,20 +101,6 @@ struct OpTimeWithTermOne {
 
     Timestamp timestamp;
 };
-
-void runSingleNodeElection(ServiceContext::UniqueOperationContext opCtx,
-                           ReplicationCoordinatorImpl* replCoord,
-                           executor::NetworkInterfaceMock* net) {
-    replCoord->setMyLastAppliedOpTime(OpTime(Timestamp(1, 0), 0));
-    replCoord->setMyLastDurableOpTime(OpTime(Timestamp(1, 0), 0));
-    ASSERT_OK(replCoord->setFollowerMode(MemberState::RS_SECONDARY));
-    replCoord->waitForElectionFinish_forTest();
-
-    ASSERT(replCoord->getApplierState() == ReplicationCoordinator::ApplierState::Draining);
-    ASSERT(replCoord->getMemberState().primary()) << replCoord->getMemberState().toString();
-
-    replCoord->signalDrainComplete(opCtx.get(), replCoord->getTerm());
-}
 
 /**
  * Helper that kills an operation, taking the necessary locks.
@@ -343,13 +329,13 @@ TEST_F(ReplCoordTest, NodeReturnsNodeNotFoundWhenQuorumCheckFailsWhileInitiating
     start(HostAndPort("node1", 12345));
     ASSERT_EQUALS(MemberState::RS_STARTUP, getReplCoord()->getMemberState().s);
 
-    ReplSetHeartbeatArgs hbArgs;
+    ReplSetHeartbeatArgsV1 hbArgs;
     hbArgs.setSetName("mySet");
-    hbArgs.setProtocolVersion(1);
     hbArgs.setConfigVersion(1);
-    hbArgs.setCheckEmpty(true);
+    hbArgs.setCheckEmpty();
     hbArgs.setSenderHost(HostAndPort("node1", 12345));
     hbArgs.setSenderId(0);
+    hbArgs.setTerm(0);
 
     Status status(ErrorCodes::InternalError, "Not set");
     stdx::thread prsiThread(stdx::bind(doReplSetInitiate, getReplCoord(), &status));
@@ -375,13 +361,13 @@ TEST_F(ReplCoordTest, InitiateSucceedsWhenQuorumCheckPasses) {
     start(HostAndPort("node1", 12345));
     ASSERT_EQUALS(MemberState::RS_STARTUP, getReplCoord()->getMemberState().s);
 
-    ReplSetHeartbeatArgs hbArgs;
+    ReplSetHeartbeatArgsV1 hbArgs;
     hbArgs.setSetName("mySet");
-    hbArgs.setProtocolVersion(1);
     hbArgs.setConfigVersion(1);
-    hbArgs.setCheckEmpty(true);
+    hbArgs.setCheckEmpty();
     hbArgs.setSenderHost(HostAndPort("node1", 12345));
     hbArgs.setSenderId(0);
+    hbArgs.setTerm(0);
 
     auto appliedTS = Timestamp(3, 3);
     getReplCoord()->setMyLastAppliedOpTime(OpTime(appliedTS, 1));
@@ -407,8 +393,7 @@ TEST_F(ReplCoordTest, InitiateSucceedsWhenQuorumCheckPasses) {
     ASSERT_OK(status);
     ASSERT_EQUALS(ReplicationCoordinator::modeReplSet, getReplCoord()->getReplicationMode());
 
-    ASSERT_EQUALS(getStorageInterface()->getInitialDataTimestamp().asU64(),
-                  SnapshotName(appliedTS.asULL()).asU64());
+    ASSERT_EQUALS(getStorageInterface()->getInitialDataTimestamp(), appliedTS);
 }
 
 TEST_F(ReplCoordTest,
@@ -959,7 +944,6 @@ TEST_F(
     OpTime time1(Timestamp(100, 1), 1);
     OpTime time2(Timestamp(100, 2), 1);
 
-
     // Set up valid write concerns for the rest of the test
     WriteConcernOptions majorityWriteConcern;
     majorityWriteConcern.wTimeout = WriteConcernOptions::kNoWaiting;
@@ -991,7 +975,6 @@ TEST_F(
     getReplCoord()->setLastDurableOptime_forTest(2, 1, time1).transitional_ignore();
     getReplCoord()->setLastAppliedOptime_forTest(2, 2, time1).transitional_ignore();
     getReplCoord()->setLastDurableOptime_forTest(2, 2, time1).transitional_ignore();
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
 
     statusAndDur = getReplCoord()->awaitReplication(opCtx.get(), time1, majorityWriteConcern);
     ASSERT_OK(statusAndDur.status);
@@ -1009,39 +992,6 @@ TEST_F(
     statusAndDur = getReplCoord()->awaitReplication(opCtx.get(), time1, multiDCWriteConcern);
     ASSERT_OK(statusAndDur.status);
     statusAndDur = getReplCoord()->awaitReplication(opCtx.get(), time1, multiRackWriteConcern);
-    ASSERT_OK(statusAndDur.status);
-
-    // Majority also waits for the committed snapshot to be newer than all snapshots reserved by
-    // this operation. Custom modes not affected by this.
-    while (getReplCoord()->reserveSnapshotName(opCtx.get()) <= SnapshotName(1)) {
-        // These unittests "cheat" and use SnapshotName(1) without advancing the counter. Reserve
-        // another name if we didn't get a high enough one.
-    }
-
-    auto zeroOpTimeInCurrentTerm = OpTime(Timestamp(0, 0), 1);
-    ReplClientInfo::forClient(opCtx.get()->getClient()).setLastOp(zeroOpTimeInCurrentTerm);
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), majorityWriteConcern);
-    ASSERT_EQUALS(ErrorCodes::WriteConcernFailed, statusAndDur.status);
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), multiDCWriteConcern);
-    ASSERT_OK(statusAndDur.status);
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), multiRackWriteConcern);
-    ASSERT_OK(statusAndDur.status);
-
-    // All modes satisfied
-    getReplCoord()->createSnapshot(
-        opCtx.get(), time1, getReplCoord()->reserveSnapshotName(nullptr));
-
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), majorityWriteConcern);
-    ASSERT_OK(statusAndDur.status);
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), multiDCWriteConcern);
-    ASSERT_OK(statusAndDur.status);
-    statusAndDur =
-        getReplCoord()->awaitReplicationOfLastOpForClient(opCtx.get(), multiRackWriteConcern);
     ASSERT_OK(statusAndDur.status);
 
     // multiDC satisfied but not majority or multiRack
@@ -1403,6 +1353,9 @@ protected:
         PromisedClientAndOperation operationPromise;
         auto operationFuture = operationPromise.get_future();
         stdx::thread(std::move(task), std::move(operationPromise)).detach();
+
+        getReplCoord()->waitForStepDownAttempt_forTest();
+
         return std::make_pair(operationFuture.get(), std::move(result));
     }
 
@@ -1595,6 +1548,54 @@ TEST_F(ReplCoordTest, ConcurrentStepDownShouldNotSignalTheSameFinishEventMoreTha
         // Update term event handles will wait for potential stepdown.
         ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
     }
+}
+
+TEST_F(ReplCoordTest, DrainCompletionMidStepDown) {
+    init("mySet/test1:1234,test2:1234,test3:1234");
+
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 1
+                            << "members"
+                            << BSON_ARRAY(BSON("_id" << 0 << "host"
+                                                     << "test1:1234")
+                                          << BSON("_id" << 1 << "host"
+                                                        << "test2:1234")
+                                          << BSON("_id" << 2 << "host"
+                                                        << "test3:1234"))
+                            << "protocolVersion"
+                            << 1),
+                       HostAndPort("test1", 1234));
+    getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(100, 1), 0));
+    getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(100, 1), 0));
+    ASSERT_OK(getReplCoord()->setFollowerMode(MemberState::RS_SECONDARY));
+    ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
+
+    simulateSuccessfulV1ElectionWithoutExitingDrainMode(
+        getReplCoord()->getElectionTimeout_forTest());
+
+    ASSERT_EQUALS(1, getReplCoord()->getTerm());
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Now update term to trigger a stepdown.
+    TopologyCoordinator::UpdateTermResult termUpdated;
+    auto updateTermEvh = getReplCoord()->updateTerm_forTest(2, &termUpdated);
+    ASSERT(updateTermEvh.isValid());
+    ASSERT(termUpdated == TopologyCoordinator::UpdateTermResult::kTriggerStepDown);
+
+    // Now signal that replication applier is finished draining its buffer.
+    const auto opCtx = makeOperationContext();
+    getReplCoord()->signalDrainComplete(opCtx.get(), getReplCoord()->getTerm());
+
+    // Now wait for stepdown to complete
+    getReplExec()->waitForEvent(updateTermEvh);
+
+    // By now drain mode should be cancelled.
+    ASSERT_OK(getReplCoord()->waitForDrainFinish(Milliseconds(0)));
+
+    ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
+    // ASSERT_EQUALS(2, getReplCoord()->getTerm()); // SERVER-28290
 }
 
 TEST_F(StepDownTest, NodeReturnsNotMasterWhenAskedToStepDownAsANonPrimaryNode) {
@@ -1824,8 +1825,8 @@ TEST_F(ReplCoordTest, NodeBecomesPrimaryAgainWhenStepDownTimeoutExpiresInASingle
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
-    const auto opCtx = makeOperationContext();
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
     getNet()->enterNetwork();  // Must do this before inspecting the topocoord
@@ -1856,8 +1857,8 @@ TEST_F(
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
     const auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     ASSERT_OK(getReplCoord()->stepDown(opCtx.get(), true, Milliseconds(0), Milliseconds(1000)));
     getNet()->enterNetwork();  // Must do this before inspecting the topocoord
@@ -2040,8 +2041,11 @@ TEST_F(StepDownTest, OnlyOneStepDownCmdIsAllowedAtATime) {
     // the heartbeat requests.
     auto result = stepDown_nonBlocking(false, Seconds(10), Seconds(60));
 
-    // Now while the first stepdown request is waiting for secondaries to catch up, attempt another
-    // stepdown request and ensure it fails.
+    // We should still be primary at this point
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Now while the first stepdown request is waiting for secondaries to catch up, attempt
+    // another stepdown request and ensure it fails.
     const auto opCtx = makeOperationContext();
     auto status = getReplCoord()->stepDown(opCtx.get(), false, Seconds(10), Seconds(60));
     ASSERT_EQUALS(ErrorCodes::ConflictingOperationInProgress, status);
@@ -2051,6 +2055,148 @@ TEST_F(StepDownTest, OnlyOneStepDownCmdIsAllowedAtATime) {
 
     ASSERT_OK(*result.second.get());
     ASSERT_TRUE(repl->getMemberState().secondary());
+}
+
+// Test that if a stepdown command is blocked waiting for secondaries to catch up when an
+// unconditional stepdown happens, the stepdown command fails.
+TEST_F(StepDownTest, UnconditionalStepDownFailsStepDownCommand) {
+    OpTime optime1(Timestamp(100, 1), 1);
+    OpTime optime2(Timestamp(100, 2), 1);
+
+    // No secondary is caught up
+    auto repl = getReplCoord();
+    repl->setMyLastAppliedOpTime(optime2);
+    repl->setMyLastDurableOpTime(optime2);
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 1, optime1));
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 2, optime1));
+
+    simulateSuccessfulV1Election();
+
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Step down where the secondary actually has to catch up before the stepDown can succeed.
+    // On entering the network, _stepDownContinue should cancel the heartbeats scheduled for
+    // T + 2 seconds and send out a new round of heartbeats immediately.
+    // This makes it unnecessary to advance the clock after entering the network to process
+    // the heartbeat requests.
+
+    // Start a stepdown command that needs to wait for secondaries to catch up.
+    auto result = stepDown_nonBlocking(false, Seconds(10), Seconds(60));
+
+    // We should still be primary at this point
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Now while the first stepdown request is waiting for secondaries to catch up, force an
+    // unconditional stepdown.
+    const auto opCtx = makeOperationContext();
+    ASSERT_EQUALS(ErrorCodes::StaleTerm, getReplCoord()->updateTerm(opCtx.get(), 2));
+    ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
+
+    // Ensure that the stepdown command failed.
+    ASSERT_EQUALS(ErrorCodes::PrimarySteppedDown, *result.second.get());
+}
+
+// Test that if a stepdown command is blocked waiting for secondaries to catch up when an
+// unconditional stepdown happens, and then is interrupted, we stay stepped down, even though
+// normally if we were just interrupted we would step back up.
+TEST_F(StepDownTest, InterruptingStepDownCommandRestoresWriteAvailability) {
+    OpTime optime1(Timestamp(100, 1), 1);
+    OpTime optime2(Timestamp(100, 2), 1);
+
+    // No secondary is caught up
+    auto repl = getReplCoord();
+    repl->setMyLastAppliedOpTime(optime2);
+    repl->setMyLastDurableOpTime(optime2);
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 1, optime1));
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 2, optime1));
+
+    simulateSuccessfulV1Election();
+
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Step down where the secondary actually has to catch up before the stepDown can succeed.
+    // On entering the network, _stepDownContinue should cancel the heartbeats scheduled for
+    // T + 2 seconds and send out a new round of heartbeats immediately.
+    // This makes it unnecessary to advance the clock after entering the network to process
+    // the heartbeat requests.
+
+    // Start a stepdown command that needs to wait for secondaries to catch up.
+    auto result = stepDown_nonBlocking(false, Seconds(10), Seconds(60));
+
+    // We should still be primary at this point
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Interrupt the ongoing stepdown command.
+    {
+        stdx::lock_guard<Client> lk(*result.first.client.get());
+        result.first.opCtx->markKilled(ErrorCodes::Interrupted);
+    }
+
+    // Ensure that the stepdown command failed.
+    ASSERT_EQUALS(*result.second.get(), ErrorCodes::Interrupted);
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // This is the important check, that we didn't accidentally step back up when aborting the
+    // stepdown command attempt.
+    const auto opCtx = makeOperationContext();
+    Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
+    ASSERT_TRUE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
+}
+
+// Test that if a stepdown command is blocked waiting for secondaries to catch up when an
+// unconditional stepdown happens, and then is interrupted, we stay stepped down, even though
+// normally if we were just interrupted we would step back up.
+TEST_F(StepDownTest, InterruptingAfterUnconditionalStepdownDoesNotRestoreWriteAvailability) {
+    OpTime optime1(Timestamp(100, 1), 1);
+    OpTime optime2(Timestamp(100, 2), 1);
+
+    // No secondary is caught up
+    auto repl = getReplCoord();
+    repl->setMyLastAppliedOpTime(optime2);
+    repl->setMyLastDurableOpTime(optime2);
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 1, optime1));
+    ASSERT_OK(repl->setLastAppliedOptime_forTest(1, 2, optime1));
+
+    simulateSuccessfulV1Election();
+
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Step down where the secondary actually has to catch up before the stepDown can succeed.
+    // On entering the network, _stepDownContinue should cancel the heartbeats scheduled for
+    // T + 2 seconds and send out a new round of heartbeats immediately.
+    // This makes it unnecessary to advance the clock after entering the network to process
+    // the heartbeat requests.
+
+    // Start a stepdown command that needs to wait for secondaries to catch up.
+    auto result = stepDown_nonBlocking(false, Seconds(10), Seconds(60));
+
+    // We should still be primary at this point
+    ASSERT_TRUE(getReplCoord()->getMemberState().primary());
+
+    // Interrupt the ongoing stepdown command.
+    {
+        stdx::lock_guard<Client> lk(*result.first.client.get());
+        result.first.opCtx->markKilled(ErrorCodes::Interrupted);
+    }
+
+    // Now while the first stepdown request is waiting for secondaries to catch up, force an
+    // unconditional stepdown.
+    const auto opCtx = makeOperationContext();
+    ASSERT_EQUALS(ErrorCodes::StaleTerm, getReplCoord()->updateTerm(opCtx.get(), 2));
+    ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
+
+    // Ensure that the stepdown command failed.
+    auto stepDownStatus = *result.second.get();
+    ASSERT_NOT_OK(stepDownStatus);
+    // Which code is returned is racy.
+    ASSERT(stepDownStatus == ErrorCodes::PrimarySteppedDown ||
+           stepDownStatus == ErrorCodes::Interrupted);
+    ASSERT_TRUE(getReplCoord()->getMemberState().secondary());
+
+    // This is the important check, that we didn't accidentally step back up when aborting the
+    // stepdown command attempt.
+    Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
+    ASSERT_FALSE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
 }
 
 TEST_F(ReplCoordTest, GetReplicationModeNone) {
@@ -2437,7 +2583,7 @@ TEST_F(ReplCoordTest, DoNotAllowSettingMaintenanceModeWhileConductingAnElection)
         .transitional_ignore();
 
     // Can't modify maintenance mode when running for election (before and after dry run).
-    ASSERT_EQUALS(TopologyCoordinator::Role::follower, getTopoCoord().getRole());
+    ASSERT_EQUALS(TopologyCoordinator::Role::kFollower, getTopoCoord().getRole());
     auto net = this->getNet();
     net->enterNetwork();
     auto when = getReplCoord()->getElectionTimeout_forTest();
@@ -2450,14 +2596,14 @@ TEST_F(ReplCoordTest, DoNotAllowSettingMaintenanceModeWhileConductingAnElection)
     }
     ASSERT_EQUALS(when, net->now());
     net->exitNetwork();
-    ASSERT_EQUALS(TopologyCoordinator::Role::candidate, getTopoCoord().getRole());
+    ASSERT_EQUALS(TopologyCoordinator::Role::kCandidate, getTopoCoord().getRole());
     Status status = getReplCoord()->setMaintenanceMode(false);
     ASSERT_EQUALS(ErrorCodes::NotSecondary, status);
     status = getReplCoord()->setMaintenanceMode(true);
     ASSERT_EQUALS(ErrorCodes::NotSecondary, status);
 
     simulateSuccessfulDryRun();
-    ASSERT_EQUALS(TopologyCoordinator::Role::candidate, getTopoCoord().getRole());
+    ASSERT_EQUALS(TopologyCoordinator::Role::kCandidate, getTopoCoord().getRole());
     status = getReplCoord()->setMaintenanceMode(false);
     ASSERT_EQUALS(ErrorCodes::NotSecondary, status);
     status = getReplCoord()->setMaintenanceMode(true);
@@ -2711,18 +2857,16 @@ TEST_F(ReplCoordTest, IsMasterWithCommittedSnapshot) {
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     time_t lastWriteDate = 101;
     OpTime opTime = OpTime(Timestamp(lastWriteDate, 2), 1);
-    time_t majorityWriteDate = 100;
-    OpTime majorityOpTime = OpTime(Timestamp(majorityWriteDate, 1), 1);
-
-    auto opCtx = makeOperationContext();
+    time_t majorityWriteDate = lastWriteDate;
+    OpTime majorityOpTime = opTime;
 
     getReplCoord()->setMyLastAppliedOpTime(opTime);
     getReplCoord()->setMyLastDurableOpTime(opTime);
-    getReplCoord()->createSnapshot(opCtx.get(), majorityOpTime, SnapshotName(1));
     ASSERT_EQUALS(majorityOpTime, getReplCoord()->getCurrentCommittedSnapshotOpTime());
 
     IsMasterResponse response;
@@ -3223,7 +3367,7 @@ TEST_F(ReplCoordTest, AwaitReplicationShouldResolveAsNormalDuringAReconfig) {
     Status status(ErrorCodes::InternalError, "Not Set");
     stdx::thread reconfigThread(stdx::bind(doReplSetReconfig, getReplCoord(), &status));
 
-    replyToReceivedHeartbeat();
+    replyToReceivedHeartbeatV1();
     reconfigThread.join();
     ASSERT_OK(status);
 
@@ -3313,7 +3457,7 @@ TEST_F(
     Status status(ErrorCodes::InternalError, "Not Set");
     stdx::thread reconfigThread(stdx::bind(doReplSetReconfigToFewer, getReplCoord(), &status));
 
-    replyToReceivedHeartbeat();
+    replyToReceivedHeartbeatV1();
 
     reconfigThread.join();
     ASSERT_OK(status);
@@ -3370,7 +3514,6 @@ TEST_F(ReplCoordTest,
 
     getReplCoord()->setMyLastAppliedOpTime(time);
     getReplCoord()->setMyLastDurableOpTime(time);
-    getReplCoord()->createSnapshot(opCtx.get(), time, SnapshotName(1));
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(2, 1, time));
 
 
@@ -3399,7 +3542,7 @@ TEST_F(ReplCoordTest,
     Status status(ErrorCodes::InternalError, "Not Set");
     stdx::thread reconfigThread(stdx::bind(doReplSetReconfig, getReplCoord(), &status));
 
-    replyToReceivedHeartbeat();
+    replyToReceivedHeartbeatV1();
     reconfigThread.join();
     ASSERT_OK(status);
 
@@ -3475,10 +3618,6 @@ TEST_F(ReplCoordTest,
 
     ASSERT_OK(getReplCoord()->setLastAppliedOptime_forTest(2, 2, time));
     ASSERT_OK(getReplCoord()->setLastDurableOptime_forTest(2, 2, time));
-    ASSERT_EQUALS(ErrorCodes::WriteConcernFailed,
-                  getReplCoord()->awaitReplication(opCtx.get(), time, majorityWriteConcern).status);
-
-    getReplCoord()->createSnapshot(opCtx.get(), time, SnapshotName(1));
     ASSERT_OK(getReplCoord()->awaitReplication(opCtx.get(), time, majorityWriteConcern).status);
 }
 
@@ -3557,17 +3696,17 @@ TEST_F(ReplCoordTest,
 
 /**
  * Tests to ensure that ReplicationCoordinator correctly calculates and updates the stable
- * timestamp.
+ * optime.
  */
-class StableTimestampTest : public ReplCoordTest {
+class StableOpTimeTest : public ReplCoordTest {
 protected:
     /**
      * Return a string representation of the given set 's'.
      */
-    std::string timestampSetString(std::set<Timestamp> s) {
+    std::string opTimeSetString(std::set<OpTime> s) {
         std::stringstream ss;
         ss << "{ ";
-        for (Timestamp const& el : s) {
+        for (auto const& el : s) {
             ss << el << " ";
         }
         ss << "}";
@@ -3587,218 +3726,309 @@ protected:
     }
 };
 
-// An equality assertion for two std::set<Timestamp> values. Prints the elements of each set when
-// the assertion fails. Only to be used in a 'StableTimestampTest' unit test function.
-#define ASSERT_TIMESTAMP_SET_EQ(a, b) \
-    ASSERT(a == b) << (timestampSetString(a) + " != " + timestampSetString(b));
+// An equality assertion for two std::set<OpTime> values. Prints the elements of each set when
+// the assertion fails. Only to be used in a 'StableOpTimeTest' unit test function.
+#define ASSERT_OPTIME_SET_EQ(a, b) \
+    ASSERT(a == b) << (opTimeSetString(a) + " != " + opTimeSetString(b));
 
-TEST_F(StableTimestampTest, CalculateStableTimestamp) {
+TEST_F(StableOpTimeTest, CalculateStableOpTime) {
 
     /**
-     * Tests the 'ReplicationCoordinatorImpl::_calculateStableTimestamp' method.
+     * Tests the 'ReplicationCoordinatorImpl::_calculateStableOpTime' method.
      */
 
     initReplSetMode();
     auto repl = getReplCoord();
-    Timestamp commitPoint;
-    boost::optional<Timestamp> expectedStableTimestamp, stableTimestamp;
-    std::set<Timestamp> stableTimestampCandidates;
+    OpTime commitPoint;
+    boost::optional<OpTime> expectedStableOpTime, stableOpTime;
+    std::set<OpTime> stableOpTimeCandidates;
+    long long term = 0;
 
-    // There is a valid stable timestamp less than the commit point.
-    commitPoint = {0, 3};
-    stableTimestampCandidates = {{0, 0}, {0, 1}, {0, 2}, {0, 4}};
-    expectedStableTimestamp = Timestamp(0, 2);
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    // There is a valid stable optime less than the commit point.
+    commitPoint = OpTime({0, 3}, term);
+    stableOpTimeCandidates = {
+        OpTime({0, 0}, term), OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 4}, term)};
+    expectedStableOpTime = OpTime({0, 2}, term);
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
-    // There is a valid stable timestamp equal to the commit point.
-    commitPoint = Timestamp(0, 2);
-    stableTimestampCandidates = {{0, 0}, {0, 1}, {0, 2}, {0, 3}};
-    expectedStableTimestamp = Timestamp(0, 2);
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    // There is a valid stable optime equal to the commit point.
+    commitPoint = OpTime({0, 2}, term);
+    stableOpTimeCandidates = {
+        OpTime({0, 0}, term), OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term)};
+    expectedStableOpTime = OpTime({0, 2}, term);
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
-    // There is a valid stable timestamp, all candidates are smaller than the commit point.
-    commitPoint = Timestamp(0, 4);
-    stableTimestampCandidates = {{0, 1}, {0, 2}, {0, 3}};
-    expectedStableTimestamp = Timestamp(0, 3);
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    // There is a valid stable optime, all candidates are smaller than the commit point.
+    commitPoint = OpTime({0, 4}, term);
+    stableOpTimeCandidates = {OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term)};
+    expectedStableOpTime = OpTime({0, 3}, term);
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
-    // There is no valid stable timestamp, all candidates are greater than the commit point.
-    commitPoint = Timestamp(0, 0);
-    stableTimestampCandidates = {{0, 1}, {0, 2}, {0, 3}};
-    expectedStableTimestamp = boost::none;
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    // There is no valid stable optime, all candidates are greater than the commit point.
+    commitPoint = OpTime({0, 0}, term);
+    stableOpTimeCandidates = {OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term)};
+    expectedStableOpTime = boost::none;
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
     // There are no timestamp candidates.
-    commitPoint = Timestamp(0, 0);
-    stableTimestampCandidates = {};
-    expectedStableTimestamp = boost::none;
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    commitPoint = OpTime({0, 0}, term);
+    stableOpTimeCandidates = {};
+    expectedStableOpTime = boost::none;
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
     // There is a single timestamp candidate which is equal to the commit point.
-    commitPoint = Timestamp(0, 1);
-    stableTimestampCandidates = {{0, 1}};
-    expectedStableTimestamp = Timestamp(0, 1);
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    commitPoint = OpTime({0, 1}, term);
+    stableOpTimeCandidates = {OpTime({0, 1}, term)};
+    expectedStableOpTime = OpTime({0, 1}, term);
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
     // There is a single timestamp candidate which is greater than the commit point.
-    commitPoint = Timestamp(0, 0);
-    stableTimestampCandidates = {{0, 1}};
-    expectedStableTimestamp = boost::none;
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    commitPoint = OpTime({0, 0}, term);
+    stableOpTimeCandidates = {OpTime({0, 1}, term)};
+    expectedStableOpTime = boost::none;
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 
     // There is a single timestamp candidate which is less than the commit point.
-    commitPoint = Timestamp(0, 2);
-    stableTimestampCandidates = {{0, 1}};
-    expectedStableTimestamp = Timestamp(0, 1);
-    stableTimestamp =
-        repl->calculateStableTimestamp_forTest(stableTimestampCandidates, commitPoint);
-    ASSERT_EQ(expectedStableTimestamp, stableTimestamp);
+    commitPoint = OpTime({0, 2}, term);
+    stableOpTimeCandidates = {OpTime({0, 1}, term)};
+    expectedStableOpTime = OpTime({0, 1}, term);
+    stableOpTime = repl->calculateStableOpTime_forTest(stableOpTimeCandidates, commitPoint);
+    ASSERT_EQ(expectedStableOpTime, stableOpTime);
 }
 
-TEST_F(StableTimestampTest, CleanupStableTimestampCandidates) {
+TEST_F(StableOpTimeTest, CleanupStableOpTimeCandidates) {
 
     /**
-     * Tests the 'ReplicationCoordinatorImpl::_cleanupStableTimestampCandidates' method.
+     * Tests the 'ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates' method.
      */
 
     initReplSetMode();
     auto repl = getReplCoord();
-    Timestamp stableTimestamp;
-    std::set<Timestamp> timestampCandidates, expectedTimestampCandidates;
+    OpTime stableOpTime;
+    std::set<OpTime> opTimeCandidates, expectedOpTimeCandidates;
+    long long term = 0;
 
-    // Cleanup should remove all timestamp candidates < the stable timestamp.
-    stableTimestamp = Timestamp(0, 3);
-    timestampCandidates = {{0, 1}, {0, 2}, {0, 3}, {0, 4}};
-    expectedTimestampCandidates = {{0, 3}, {0, 4}};
-    repl->cleanupStableTimestampCandidates_forTest(&timestampCandidates, stableTimestamp);
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    // Cleanup should remove all timestamp candidates < the stable optime.
+    stableOpTime = OpTime({0, 3}, term);
+    opTimeCandidates = {
+        OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term), OpTime({0, 4}, term)};
+    expectedOpTimeCandidates = {OpTime({0, 3}, term), OpTime({0, 4}, term)};
+    repl->cleanupStableOpTimeCandidates_forTest(&opTimeCandidates, stableOpTime);
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 
-    // Cleanup should remove all timestamp candidates if they are all < the stable timestamp.
-    stableTimestamp = Timestamp(0, 5);
-    timestampCandidates = {{0, 1}, {0, 2}, {0, 3}, {0, 4}};
-    expectedTimestampCandidates = {};
-    repl->cleanupStableTimestampCandidates_forTest(&timestampCandidates, stableTimestamp);
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    // Cleanup should remove all timestamp candidates if they are all < the stable optime.
+    stableOpTime = OpTime({0, 5}, term);
+    opTimeCandidates = {
+        OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term), OpTime({0, 4}, term)};
+    expectedOpTimeCandidates = {};
+    repl->cleanupStableOpTimeCandidates_forTest(&opTimeCandidates, stableOpTime);
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 
-    // Cleanup should have no effect when stable timestamp is less than all candidates.
-    stableTimestamp = Timestamp(0, 0);
-    timestampCandidates = {{0, 1}, {0, 2}, {0, 3}, {0, 4}};
-    expectedTimestampCandidates = {{0, 1}, {0, 2}, {0, 3}, {0, 4}};
-    repl->cleanupStableTimestampCandidates_forTest(&timestampCandidates, stableTimestamp);
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    // Cleanup should have no effect when stable optime is less than all candidates.
+    stableOpTime = OpTime({0, 0}, term);
+    opTimeCandidates = {
+        OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term), OpTime({0, 4}, term)};
+    expectedOpTimeCandidates = {
+        OpTime({0, 1}, term), OpTime({0, 2}, term), OpTime({0, 3}, term), OpTime({0, 4}, term)};
+    repl->cleanupStableOpTimeCandidates_forTest(&opTimeCandidates, stableOpTime);
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 
-    // Cleanup should have no effect for a single candidate that is equal to stable timestamp.
-    stableTimestamp = Timestamp(0, 1);
-    timestampCandidates = {{0, 1}};
-    expectedTimestampCandidates = {{0, 1}};
-    repl->cleanupStableTimestampCandidates_forTest(&timestampCandidates, stableTimestamp);
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    // Cleanup should have no effect for a single candidate that is equal to stable optime.
+    stableOpTime = OpTime({0, 1}, term);
+    opTimeCandidates = {OpTime({0, 1}, term)};
+    expectedOpTimeCandidates = {OpTime({0, 1}, term)};
+    repl->cleanupStableOpTimeCandidates_forTest(&opTimeCandidates, stableOpTime);
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 
     // Cleanup should leave an empty candidate list unchanged.
-    stableTimestamp = Timestamp(0, 0);
-    timestampCandidates = {};
-    expectedTimestampCandidates = {};
-    repl->cleanupStableTimestampCandidates_forTest(&timestampCandidates, stableTimestamp);
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    stableOpTime = OpTime({0, 0}, term);
+    opTimeCandidates = {};
+    expectedOpTimeCandidates = {};
+    repl->cleanupStableOpTimeCandidates_forTest(&opTimeCandidates, stableOpTime);
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 }
 
 
-TEST_F(StableTimestampTest, SetMyLastAppliedSetsStableTimestampForStorage) {
+TEST_F(StableOpTimeTest, SetMyLastAppliedSetsStableOpTimeForStorage) {
 
     /**
      * Test that 'setMyLastAppliedOpTime' sets the stable timestamp properly for the storage engine
      * and that timestamp cleanup occurs. This test is not meant to fully exercise the stable
-     * timestamp calculation logic.
+     * optime calculation logic.
      */
 
     initReplSetMode();
     auto repl = getReplCoord();
     Timestamp stableTimestamp;
+    long long term = 0;
 
-    // There should be no stable timestamp candidates until setMyLastAppliedOpTime is called.
-    repl->advanceCommitPoint(OpTime({0, 2}, 0));
-    ASSERT_EQUALS(SnapshotName::min(), getStorageInterface()->getStableTimestamp());
+    // There should be no stable optime candidates until setMyLastAppliedOpTime is called.
+    repl->advanceCommitPoint(OpTime({1, 2}, 0));
+    ASSERT_EQUALS(Timestamp::min(), getStorageInterface()->getStableTimestamp());
 
-    // Check that the stable timestamp is updated when we set the applied optime.
-    repl->setMyLastAppliedOpTime(OpTime({0, 1}, 0));
-    stableTimestamp = Timestamp(getStorageInterface()->getStableTimestamp().asU64());
-    ASSERT_EQUALS(Timestamp(0, 1), stableTimestamp);
+    // Check that the stable timestamp is updated for the storage engine when we set the applied
+    // optime.
+    repl->setMyLastAppliedOpTime(OpTime({1, 1}, 0));
+    stableTimestamp = getStorageInterface()->getStableTimestamp();
+    ASSERT_EQUALS(Timestamp(1, 1), stableTimestamp);
 
     // Check that timestamp cleanup occurs.
-    repl->setMyLastAppliedOpTime(OpTime({0, 2}, 0));
-    stableTimestamp = Timestamp(getStorageInterface()->getStableTimestamp().asU64());
-    ASSERT_EQUALS(Timestamp(0, 2), stableTimestamp);
+    repl->setMyLastAppliedOpTime(OpTime({1, 2}, 0));
+    stableTimestamp = getStorageInterface()->getStableTimestamp();
+    ASSERT_EQUALS(Timestamp(1, 2), stableTimestamp);
 
-    auto timestampCandidates = repl->getStableTimestampCandidates_forTest();
-    std::set<Timestamp> expectedTimestampCandidates = {{0, 2}};
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    auto opTimeCandidates = repl->getStableOpTimeCandidates_forTest();
+    std::set<OpTime> expectedOpTimeCandidates = {OpTime({1, 2}, term)};
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 }
 
-TEST_F(StableTimestampTest, AdvanceCommitPointSetsStableTimestampForStorage) {
+TEST_F(StableOpTimeTest, AdvanceCommitPointSetsStableOpTimeForStorage) {
 
     /**
-     * Test that 'advanceCommitPoint' sets the stable timestamp for the storage engine and that
-     * timestamp cleanup occurs. This test is not meant to fully exercise the stable timestamp
+     * Test that 'advanceCommitPoint' sets the stable optime for the storage engine and that
+     * timestamp cleanup occurs. This test is not meant to fully exercise the stable optime
      * calculation logic.
      */
 
     initReplSetMode();
     auto repl = getReplCoord();
     Timestamp stableTimestamp;
+    long long term = 0;
 
-    // Add two stable timestamp candidates.
-    repl->setMyLastAppliedOpTime(OpTime({0, 1}, 0));
-    repl->setMyLastAppliedOpTime(OpTime({0, 2}, 0));
+    // Add two stable optime candidates.
+    repl->setMyLastAppliedOpTime(OpTime({1, 1}, term));
+    repl->setMyLastAppliedOpTime(OpTime({1, 2}, term));
 
-    // Set a commit point and check the stable timestamp.
-    repl->advanceCommitPoint(OpTime({0, 1}, 0));
-    stableTimestamp = Timestamp(getStorageInterface()->getStableTimestamp().asU64());
-    ASSERT_EQUALS(Timestamp(0, 1), stableTimestamp);
+    // Set a commit point and check the stable optime.
+    repl->advanceCommitPoint(OpTime({1, 1}, term));
+    stableTimestamp = getStorageInterface()->getStableTimestamp();
+    ASSERT_EQUALS(Timestamp(1, 1), stableTimestamp);
 
     // Check that the stable timestamp is updated when we advance the commit point.
-    repl->advanceCommitPoint(OpTime({0, 2}, 0));
-    stableTimestamp = Timestamp(getStorageInterface()->getStableTimestamp().asU64());
-    ASSERT_EQUALS(Timestamp(0, 2), stableTimestamp);
+    repl->advanceCommitPoint(OpTime({1, 2}, term));
+    stableTimestamp = getStorageInterface()->getStableTimestamp();
+    ASSERT_EQUALS(Timestamp(1, 2), stableTimestamp);
 
     // Check that timestamp candidate cleanup occurs.
-    auto timestampCandidates = getReplCoord()->getStableTimestampCandidates_forTest();
-    std::set<Timestamp> expectedTimestampCandidates = {{0, 2}};
-    ASSERT_TIMESTAMP_SET_EQ(expectedTimestampCandidates, timestampCandidates);
+    auto opTimeCandidates = getReplCoord()->getStableOpTimeCandidates_forTest();
+    std::set<OpTime> expectedOpTimeCandidates = {OpTime({1, 2}, term)};
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
 }
 
-TEST_F(StableTimestampTest, SetMyLastAppliedDoesntAddTimestampCandidateInMasterSlaveMode) {
+TEST_F(StableOpTimeTest, SetMyLastAppliedDoesntAddTimestampCandidateInMasterSlaveMode) {
 
     /**
-     * Test that 'setMyLastAppliedOpTime' doesn't add timestamp candidates to the stable timestamp
+     * Test that 'setMyLastAppliedOpTime' doesn't add timestamp candidates to the stable optime
      * list when running in master-slave mode.
      */
 
     initMasterSlaveMode();
     auto repl = getReplCoord();
-    Timestamp stableTimestamp;
 
-    ASSERT(repl->getStableTimestampCandidates_forTest().empty());
+    ASSERT(repl->getStableOpTimeCandidates_forTest().empty());
 
     repl->setMyLastAppliedOpTime(OpTime({0, 1}, 0));
     repl->setMyLastAppliedOpTime(OpTime({0, 2}, 0));
 
     // Make sure no timestamps candidates were added.
-    ASSERT(repl->getStableTimestampCandidates_forTest().empty());
+    ASSERT(repl->getStableOpTimeCandidates_forTest().empty());
 }
+
+TEST_F(StableOpTimeTest, ClearOpTimeCandidatesPastCommonPointAfterRollback) {
+
+    assertStartSuccess(BSON("_id"
+                            << "mySet"
+                            << "version"
+                            << 1
+                            << "members"
+                            << BSON_ARRAY(BSON("host"
+                                               << "node1:12345"
+                                               << "_id"
+                                               << 0))
+                            << "protocolVersion"
+                            << 1),
+                       HostAndPort("node1", 12345));
+
+    auto repl = getReplCoord();
+    long long term = 0;
+    ASSERT_OK(repl->setFollowerMode(MemberState::RS_SECONDARY));
+
+    OpTime rollbackCommonPoint = OpTime({1, 2}, term);
+    OpTime commitPoint = OpTime({1, 2}, term);
+    repl->advanceCommitPoint(commitPoint);
+    ASSERT_EQUALS(Timestamp::min(), getStorageInterface()->getStableTimestamp());
+
+    repl->setMyLastAppliedOpTime(OpTime({1, 1}, term));
+    repl->setMyLastAppliedOpTime(OpTime({1, 2}, term));
+    repl->setMyLastAppliedOpTime(OpTime({1, 3}, term));
+    repl->setMyLastAppliedOpTime(OpTime({1, 4}, term));
+
+    // The stable timestamp should be equal to the commit point timestamp.
+    const Timestamp stableTimestamp = getStorageInterface()->getStableTimestamp();
+    Timestamp expectedStableTimestamp = commitPoint.getTimestamp();
+    ASSERT_EQUALS(expectedStableTimestamp, stableTimestamp);
+
+    // The stable optime candidate set should contain optimes >= the stable optime.
+    std::set<OpTime> opTimeCandidates = repl->getStableOpTimeCandidates_forTest();
+    std::set<OpTime> expectedOpTimeCandidates = {
+        OpTime({1, 2}, term), OpTime({1, 3}, term), OpTime({1, 4}, term)};
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
+
+    // Transition to ROLLBACK. The set of stable optime candidates should not have changed.
+    ASSERT_OK(repl->setFollowerMode(MemberState::RS_ROLLBACK));
+    opTimeCandidates = repl->getStableOpTimeCandidates_forTest();
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
+
+    // Simulate a rollback to the common point.
+    auto opCtx = makeOperationContext();
+    getExternalState()->setLastOpTime(rollbackCommonPoint);
+    repl->resetLastOpTimesFromOplog(opCtx.get(),
+                                    ReplicationCoordinator::DataConsistency::Inconsistent);
+
+    // Transition to RECOVERING from ROLLBACK.
+    ASSERT_OK(repl->setFollowerMode(MemberState::RS_RECOVERING));
+
+    // Make sure the stable optime candidate set has been cleared of all entries past the common
+    // point.
+    opTimeCandidates = repl->getStableOpTimeCandidates_forTest();
+    auto stableOpTime = repl->getStableOpTime_forTest();
+    ASSERT(stableOpTime);
+    expectedOpTimeCandidates = {*stableOpTime};
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
+}
+
+TEST_F(StableOpTimeTest, OpTimeCandidatesAreNotAddedWhenStateIsNotConsistent) {
+
+    initReplSetMode();
+    auto repl = getReplCoord();
+    long long term = 0;
+
+    OpTime consistentOpTime = OpTime({1, 1}, term);
+    OpTime inconsistentOpTime = OpTime({1, 2}, term);
+    std::set<OpTime> expectedOpTimeCandidates = {OpTime({1, 1}, term)};
+
+    // Set the lastApplied optime forward when data is consistent, and check that it was added to
+    // the candidate set.
+    repl->setMyLastAppliedOpTimeForward(consistentOpTime,
+                                        ReplicationCoordinator::DataConsistency::Consistent);
+    ASSERT_EQUALS(consistentOpTime, repl->getMyLastAppliedOpTime());
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, repl->getStableOpTimeCandidates_forTest());
+
+    // Set the lastApplied optime forward when data is not consistent, and check that it wasn't
+    // added to the candidate set.
+    repl->setMyLastAppliedOpTimeForward(inconsistentOpTime,
+                                        ReplicationCoordinator::DataConsistency::Inconsistent);
+    ASSERT_EQUALS(inconsistentOpTime, repl->getMyLastAppliedOpTime());
+    ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, repl->getStableOpTimeCandidates_forTest());
+}
+
 
 TEST_F(ReplCoordTest, NodeReturnsShutdownInProgressWhenWaitingUntilAnOpTimeDuringShutdown) {
     assertStartSuccess(BSON("_id"
@@ -3924,9 +4154,7 @@ TEST_F(ReplCoordTest,
 }
 
 TEST_F(ReplCoordTest, NodeReturnsNotAReplicaSetWhenWaitUntilOpTimeIsRunAgainstAStandaloneNode) {
-    auto settings = ReplSettings();
-    settings.setMajorityReadConcernEnabled(true);
-    init(settings);
+    init(ReplSettings());
 
     auto opCtx = makeOperationContext();
 
@@ -3949,12 +4177,12 @@ TEST_F(ReplCoordTest, ReadAfterCommittedWhileShutdown) {
                                                << 0))),
                        HostAndPort("node1", 12345));
 
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(10, 0), 0));
     getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(10, 0), 0));
 
-    auto opCtx = makeOperationContext();
     shutdown(opCtx.get());
 
     auto status = getReplCoord()->waitUntilOpTimeForRead(
@@ -3974,8 +4202,8 @@ TEST_F(ReplCoordTest, ReadAfterCommittedInterrupted) {
                                                << "_id"
                                                << 0))),
                        HostAndPort("node1", 12345));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
     const auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(10, 0), 0));
     getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(10, 0), 0));
@@ -3997,12 +4225,11 @@ TEST_F(ReplCoordTest, ReadAfterCommittedGreaterOpTime) {
                                                << "_id"
                                                << 0))),
                        HostAndPort("node1", 12345));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
-
     auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
+
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(100, 0), 1));
     getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(100, 0), 1));
-    getReplCoord()->createSnapshot(opCtx.get(), OpTime(Timestamp(100, 0), 1), SnapshotName(1));
 
     ASSERT_OK(getReplCoord()->waitUntilOpTimeForRead(
         opCtx.get(),
@@ -4020,13 +4247,12 @@ TEST_F(ReplCoordTest, ReadAfterCommittedEqualOpTime) {
                                                << "_id"
                                                << 0))),
                        HostAndPort("node1", 12345));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
     auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     OpTime time(Timestamp(100, 0), 1);
     getReplCoord()->setMyLastAppliedOpTime(time);
     getReplCoord()->setMyLastDurableOpTime(time);
-    getReplCoord()->createSnapshot(opCtx.get(), time, SnapshotName(1));
 
     ASSERT_OK(getReplCoord()->waitUntilOpTimeForRead(
         opCtx.get(), ReadConcernArgs(time, ReadConcernLevel::kMajorityReadConcern)));
@@ -4043,7 +4269,9 @@ TEST_F(ReplCoordTest, ReadAfterCommittedDeferredGreaterOpTime) {
                                                << "_id"
                                                << 0))),
                        HostAndPort("node1", 12345));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(0, 0), 1));
     getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(0, 0), 1));
     OpTime committedOpTime(Timestamp(200, 0), 1);
@@ -4051,10 +4279,7 @@ TEST_F(ReplCoordTest, ReadAfterCommittedDeferredGreaterOpTime) {
         // Not guaranteed to be scheduled after waitUntil blocks...
         getReplCoord()->setMyLastAppliedOpTime(committedOpTime);
         getReplCoord()->setMyLastDurableOpTime(committedOpTime);
-        getReplCoord()->createSnapshot(nullptr, committedOpTime, SnapshotName(1));
     });
-
-    auto opCtx = makeOperationContext();
 
     ASSERT_OK(getReplCoord()->waitUntilOpTimeForRead(
         opCtx.get(),
@@ -4072,7 +4297,8 @@ TEST_F(ReplCoordTest, ReadAfterCommittedDeferredEqualOpTime) {
                                                << "_id"
                                                << 0))),
                        HostAndPort("node1", 12345));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
     getReplCoord()->setMyLastAppliedOpTime(OpTime(Timestamp(0, 0), 1));
     getReplCoord()->setMyLastDurableOpTime(OpTime(Timestamp(0, 0), 1));
 
@@ -4082,10 +4308,7 @@ TEST_F(ReplCoordTest, ReadAfterCommittedDeferredEqualOpTime) {
         // Not guaranteed to be scheduled after waitUntil blocks...
         getReplCoord()->setMyLastAppliedOpTime(opTimeToWait);
         getReplCoord()->setMyLastDurableOpTime(opTimeToWait);
-        getReplCoord()->createSnapshot(nullptr, opTimeToWait, SnapshotName(1));
     });
-
-    auto opCtx = makeOperationContext();
 
     ASSERT_OK(getReplCoord()->waitUntilOpTimeForRead(
         opCtx.get(), ReadConcernArgs(opTimeToWait, ReadConcernLevel::kMajorityReadConcern)));
@@ -4178,7 +4401,7 @@ TEST_F(ReplCoordTest, UpdateLastCommittedOpTimeWhenTheLastCommittedOpTimeIsNewer
 
     OpTime time(Timestamp(10, 0), 1);
     OpTime oldTime(Timestamp(9, 0), 1);
-    getReplCoord()->createSnapshot(opCtx.get(), time, SnapshotName(1));
+    getReplCoord()->setMyLastAppliedOpTime(time);
 
     // higher OpTime, should change
     getReplCoord()->advanceCommitPoint(time);
@@ -4839,7 +5062,9 @@ TEST_F(ReplCoordTest, AdvanceCommittedSnapshotToMostRecentSnapshotPriorToOpTimeW
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     OpTime time1(Timestamp(100, 1), 1);
     OpTime time2(Timestamp(100, 2), 1);
@@ -4847,85 +5072,19 @@ TEST_F(ReplCoordTest, AdvanceCommittedSnapshotToMostRecentSnapshotPriorToOpTimeW
     OpTime time4(Timestamp(100, 4), 1);
     OpTime time5(Timestamp(100, 5), 1);
     OpTime time6(Timestamp(100, 6), 1);
-    auto opCtx = makeOperationContext();
 
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
-    getReplCoord()->createSnapshot(opCtx.get(), time2, SnapshotName(2));
-    getReplCoord()->createSnapshot(opCtx.get(), time5, SnapshotName(3));
+    getReplCoord()->setMyLastAppliedOpTime(time1);
+    getReplCoord()->setMyLastAppliedOpTime(time2);
+    getReplCoord()->setMyLastAppliedOpTime(time5);
 
     // ensure current snapshot follows price is right rules (closest but not greater than)
-    getReplCoord()->setMyLastAppliedOpTime(time3);
+
     getReplCoord()->setMyLastDurableOpTime(time3);
     ASSERT_EQUALS(time2, getReplCoord()->getCurrentCommittedSnapshotOpTime());
-    getReplCoord()->setMyLastAppliedOpTime(time4);
     getReplCoord()->setMyLastDurableOpTime(time4);
     ASSERT_EQUALS(time2, getReplCoord()->getCurrentCommittedSnapshotOpTime());
-}
-
-TEST_F(ReplCoordTest, DoNotAdvanceCommittedSnapshotWhenAnOpTimeIsNewerThanOurLatestSnapshot) {
-    init("mySet");
-
-    assertStartSuccess(BSON("_id"
-                            << "mySet"
-                            << "version"
-                            << 1
-                            << "members"
-                            << BSON_ARRAY(BSON("_id" << 0 << "host"
-                                                     << "test1:1234"))),
-                       HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
-
-    OpTime time1(Timestamp(100, 1), 1);
-    OpTime time2(Timestamp(100, 2), 1);
-    OpTime time3(Timestamp(100, 3), 1);
-    OpTime time4(Timestamp(100, 4), 1);
-    OpTime time5(Timestamp(100, 5), 1);
-    OpTime time6(Timestamp(100, 6), 1);
-    auto opCtx = makeOperationContext();
-
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
-    getReplCoord()->createSnapshot(opCtx.get(), time2, SnapshotName(2));
-    getReplCoord()->createSnapshot(opCtx.get(), time5, SnapshotName(3));
-
-    // ensure current snapshot will not advance beyond existing snapshots
-    getReplCoord()->setMyLastAppliedOpTime(time6);
-    getReplCoord()->setMyLastDurableOpTime(time6);
+    getReplCoord()->setMyLastDurableOpTime(time5);
     ASSERT_EQUALS(time5, getReplCoord()->getCurrentCommittedSnapshotOpTime());
-}
-
-TEST_F(ReplCoordTest,
-       AdvanceCommittedSnapshotWhenASnapshotAtNewestAsOldAsOurNewestOpTimeIsCreated) {
-    init("mySet");
-
-    assertStartSuccess(BSON("_id"
-                            << "mySet"
-                            << "version"
-                            << 1
-                            << "members"
-                            << BSON_ARRAY(BSON("_id" << 0 << "host"
-                                                     << "test1:1234"))),
-                       HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
-
-    OpTime time1(Timestamp(100, 1), 1);
-    OpTime time2(Timestamp(100, 2), 1);
-    OpTime time3(Timestamp(100, 3), 1);
-    OpTime time4(Timestamp(100, 4), 1);
-    OpTime time5(Timestamp(100, 5), 1);
-    OpTime time6(Timestamp(100, 6), 1);
-    auto opCtx = makeOperationContext();
-
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
-    getReplCoord()->createSnapshot(opCtx.get(), time2, SnapshotName(2));
-    getReplCoord()->createSnapshot(opCtx.get(), time5, SnapshotName(3));
-
-    getReplCoord()->setMyLastAppliedOpTime(time6);
-    getReplCoord()->setMyLastDurableOpTime(time6);
-    ASSERT_EQUALS(time5, getReplCoord()->getCurrentCommittedSnapshotOpTime());
-
-    // ensure current snapshot updates on new snapshot if we are that far
-    getReplCoord()->createSnapshot(opCtx.get(), time6, SnapshotName(4));
-    ASSERT_EQUALS(time6, getReplCoord()->getCurrentCommittedSnapshotOpTime());
 }
 
 TEST_F(ReplCoordTest, ZeroCommittedSnapshotWhenAllSnapshotsAreDropped) {
@@ -4939,7 +5098,9 @@ TEST_F(ReplCoordTest, ZeroCommittedSnapshotWhenAllSnapshotsAreDropped) {
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     OpTime time1(Timestamp(100, 1), 1);
     OpTime time2(Timestamp(100, 2), 1);
@@ -4947,11 +5108,11 @@ TEST_F(ReplCoordTest, ZeroCommittedSnapshotWhenAllSnapshotsAreDropped) {
     OpTime time4(Timestamp(100, 4), 1);
     OpTime time5(Timestamp(100, 5), 1);
     OpTime time6(Timestamp(100, 6), 1);
-    auto opCtx = makeOperationContext();
 
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
-    getReplCoord()->createSnapshot(opCtx.get(), time2, SnapshotName(2));
-    getReplCoord()->createSnapshot(opCtx.get(), time5, SnapshotName(3));
+    getReplCoord()->setMyLastAppliedOpTime(time1);
+    getReplCoord()->setMyLastAppliedOpTime(time2);
+    getReplCoord()->setMyLastAppliedOpTime(time5);
+    getReplCoord()->setMyLastDurableOpTime(time5);
 
     // ensure dropping all snapshots should reset the current committed snapshot
     getReplCoord()->dropAllSnapshots();
@@ -4969,21 +5130,19 @@ TEST_F(ReplCoordTest, DoNotAdvanceCommittedSnapshotWhenAppliedOpTimeChanges) {
                             << BSON_ARRAY(BSON("_id" << 0 << "host"
                                                      << "test1:1234"))),
                        HostAndPort("test1", 1234));
-    runSingleNodeElection(makeOperationContext(), getReplCoord(), getNet());
+
+    auto opCtx = makeOperationContext();
+    runSingleNodeElection(opCtx.get());
 
     OpTime time1(Timestamp(100, 1), 1);
     OpTime time2(Timestamp(100, 2), 1);
-    auto opCtx = makeOperationContext();
-
-    getReplCoord()->createSnapshot(opCtx.get(), time1, SnapshotName(1));
 
     getReplCoord()->setMyLastAppliedOpTime(time1);
     ASSERT_EQUALS(OpTime(), getReplCoord()->getCurrentCommittedSnapshotOpTime());
     getReplCoord()->setMyLastAppliedOpTime(time2);
     ASSERT_EQUALS(OpTime(), getReplCoord()->getCurrentCommittedSnapshotOpTime());
-    getReplCoord()->setMyLastAppliedOpTime(time2);
     getReplCoord()->setMyLastDurableOpTime(time2);
-    ASSERT_EQUALS(time1, getReplCoord()->getCurrentCommittedSnapshotOpTime());
+    ASSERT_EQUALS(time2, getReplCoord()->getCurrentCommittedSnapshotOpTime());
 }
 
 TEST_F(ReplCoordTest,
@@ -5004,11 +5163,12 @@ TEST_F(ReplCoordTest,
     OpTime time2(Timestamp(100, 2), 1);
     OpTime time3(Timestamp(100, 3), 1);
 
+    auto consistency = ReplicationCoordinator::DataConsistency::Consistent;
     getReplCoord()->setMyLastAppliedOpTime(time1);
     ASSERT_EQUALS(time1, getReplCoord()->getMyLastAppliedOpTime());
-    getReplCoord()->setMyLastAppliedOpTimeForward(time3);
+    getReplCoord()->setMyLastAppliedOpTimeForward(time3, consistency);
     ASSERT_EQUALS(time3, getReplCoord()->getMyLastAppliedOpTime());
-    getReplCoord()->setMyLastAppliedOpTimeForward(time2);
+    getReplCoord()->setMyLastAppliedOpTimeForward(time2, consistency);
     getReplCoord()->setMyLastDurableOpTimeForward(time2);
     ASSERT_EQUALS(time3, getReplCoord()->getMyLastAppliedOpTime());
 }
@@ -5146,7 +5306,6 @@ TEST_F(ReplCoordTest, NewStyleUpdatePositionCmdHasMetadata) {
     rpc::ReplSetMetadata syncSourceMetadata(optime.getTerm(), optime, optime, 1, OID(), -1, 1);
     getReplCoord()->processReplSetMetadata(syncSourceMetadata);
     getReplCoord()->advanceCommitPoint(optime);
-    getReplCoord()->createSnapshot(opCtx.get(), optime, SnapshotName(1));
 
     BSONObj cmd = unittest::assertGet(getReplCoord()->prepareReplSetUpdatePositionCommand(
         ReplicationCoordinator::ReplSetUpdatePositionCommandStyle::kNewStyle));
@@ -5271,14 +5430,14 @@ TEST_F(ReplCoordTest, StepDownWhenHandleLivenessTimeoutMarksAMajorityOfVotingNod
                                                  << startingOpTime.getTimestamp())))));
     ASSERT_OK(getReplCoord()->processReplSetUpdatePosition(args2, 0));
 
-    ReplSetHeartbeatArgs hbArgs;
+    ReplSetHeartbeatArgsV1 hbArgs;
     hbArgs.setSetName("mySet");
-    hbArgs.setProtocolVersion(1);
     hbArgs.setConfigVersion(2);
     hbArgs.setSenderId(1);
     hbArgs.setSenderHost(HostAndPort("node2", 12345));
+    hbArgs.setTerm(0);
     ReplSetHeartbeatResponse hbResp;
-    ASSERT_OK(getReplCoord()->processHeartbeat(hbArgs, &hbResp));
+    ASSERT_OK(getReplCoord()->processHeartbeatV1(hbArgs, &hbResp));
 
     // Confirm that the node relinquishes PRIMARY after only one node is left UP.
     const Date_t startDate1 = getNet()->now();
@@ -5364,7 +5523,7 @@ TEST_F(ReplCoordTest, WaitForDrainFinish) {
     ASSERT_EQUALS(ErrorCodes::BadValue, replCoord->waitForDrainFinish(Milliseconds(-1)));
 
     const auto opCtx = makeOperationContext();
-    replCoord->signalDrainComplete(opCtx.get(), replCoord->getTerm());
+    signalDrainComplete(opCtx.get());
     ASSERT_OK(replCoord->waitForDrainFinish(timeout));
 
     // Zero timeout is fine.

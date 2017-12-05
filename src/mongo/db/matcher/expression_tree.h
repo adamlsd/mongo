@@ -41,7 +41,7 @@ namespace mongo {
 
 class ListOfMatchExpression : public MatchExpression {
 public:
-    ListOfMatchExpression(MatchType type) : MatchExpression(type) {}
+    explicit ListOfMatchExpression(MatchType type) : MatchExpression(type) {}
     virtual ~ListOfMatchExpression();
 
     /**
@@ -99,11 +99,15 @@ protected:
     void _listToBSON(BSONArrayBuilder* out) const;
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final;
+
     std::vector<MatchExpression*> _expressions;
 };
 
 class AndMatchExpression : public ListOfMatchExpression {
 public:
+    static constexpr StringData kName = "$and"_sd;
+
     AndMatchExpression() : ListOfMatchExpression(AND) {}
     virtual ~AndMatchExpression() {}
 
@@ -129,6 +133,8 @@ public:
 
 class OrMatchExpression : public ListOfMatchExpression {
 public:
+    static constexpr StringData kName = "$or"_sd;
+
     OrMatchExpression() : ListOfMatchExpression(OR) {}
     virtual ~OrMatchExpression() {}
 
@@ -154,6 +160,8 @@ public:
 
 class NorMatchExpression : public ListOfMatchExpression {
 public:
+    static constexpr StringData kName = "$nor"_sd;
+
     NorMatchExpression() : ListOfMatchExpression(NOR) {}
     virtual ~NorMatchExpression() {}
 
@@ -179,19 +187,11 @@ public:
 
 class NotMatchExpression final : public MatchExpression {
 public:
-    NotMatchExpression() : MatchExpression(NOT) {}
-    NotMatchExpression(MatchExpression* e) : MatchExpression(NOT), _exp(e) {}
-    /**
-     * @param exp - I own it, and will delete
-     */
-    virtual Status init(MatchExpression* exp) {
-        _exp.reset(exp);
-        return Status::OK();
-    }
+    explicit NotMatchExpression(MatchExpression* e) : MatchExpression(NOT), _exp(e) {}
 
     virtual std::unique_ptr<MatchExpression> shallowClone() const {
-        std::unique_ptr<NotMatchExpression> self = stdx::make_unique<NotMatchExpression>();
-        self->init(_exp->shallowClone().release()).transitional_ignore();
+        std::unique_ptr<NotMatchExpression> self =
+            stdx::make_unique<NotMatchExpression>(_exp->shallowClone().release());
         if (getTag()) {
             self->setTag(getTag()->clone());
         }
@@ -237,6 +237,8 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final;
+
     std::unique_ptr<MatchExpression> _exp;
 };
 }

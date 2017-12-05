@@ -132,12 +132,11 @@ struct SockAddr {
     std::string getAddr() const;
 
     bool isLocalHost() const;
+    bool isDefaultRoute() const;
 
     bool operator==(const SockAddr& r) const;
 
     bool operator!=(const SockAddr& r) const;
-
-    bool operator<(const SockAddr& r) const;
 
     const sockaddr* raw() const {
         return (sockaddr*)&sa;

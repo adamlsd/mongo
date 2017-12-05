@@ -55,14 +55,19 @@ public:
     ~UpdateDriver();
 
     /**
-     * Parses the update expression 'updateExpr'. If the featurCompatibilityVersion is 3.6,
-     * 'updateExpr' is parsed into '_root'. Otherwise, 'updateExpr' is parsed into '_mods'. This is
-     * done because applying updates via UpdateNode creates new fields in lexicographic order,
-     * whereas applying updates via ModifierInterface creates new fields in the order they are
-     * specified in 'updateExpr', so it is necessary that the whole replica set have version 3.6 in
-     * order to use UpdateNode. Uasserts if the featureCompatibilityVersion is 3.4 and
-     * 'arrayFilters' is non-empty. Uasserts or returns a non-ok status if 'updateExpr' fails to
-     * parse.
+     * Parses the 'updateExpr' update expression. When parsing with the kUpdateNode update
+     * semantics, 'updateExpr' is parsed into the '_root' member variable, and when parsing with the
+     * kModifierInterface update semantics, 'updateExpr' is parsed into the '_mods' member variable.
+     * It is important that the secondary applies updates with the same semantics that the primary
+     * used.
+     *   - The primary can add a "$v" field with an integer value (storing on UpdateSemantics enum
+     *     value) that this function will use to determine which update semantics to use.
+     *   - When applying an oplog entry that has no "$v" field, this function assumes
+     *     kModifierInterface semantics.
+     *   - When applying an update on the primary, this function uses the feature compatibility
+     *     version to determine which update semantics to use.
+     * Uasserts if the featureCompatibilityVersion is 3.4 and 'arrayFilters' is non-empty. Uasserts
+     * or returns a non-ok status if 'updateExpr' fails to parse.
      */
     Status parse(
         const BSONObj& updateExpr,
@@ -93,12 +98,6 @@ public:
                                            mutablebson::Document& doc) const;
 
     /**
-     * return a BSONObj with the _id field of the doc passed in, or the doc itself.
-     * If no _id and multi, error.
-     */
-    BSONObj makeOplogEntryQuery(const BSONObj& doc, bool multi) const;
-
-    /**
      * Executes the update over 'doc'. If any modifier is positional, use 'matchedField' (index of
      * the array item matched). If 'doc' allows the modifiers to be applied in place and no index
      * updating is involved, then the modifiers may be applied "in place" over 'doc'.
@@ -127,6 +126,7 @@ public:
     size_t numMods() const;
 
     bool isDocReplacement() const;
+    static bool isDocReplacement(const BSONObj& updateExpr);
 
     bool modsAffectIndices() const;
     void refreshIndexKeys(const UpdateIndexData* indexedFields);
@@ -219,7 +219,8 @@ struct UpdateDriver::Options {
     bool logOp;
     ModifierInterface::Options modOptions;
 
-    Options() : logOp(false), modOptions() {}
+    explicit Options(const boost::intrusive_ptr<ExpressionContext>& expCtx)
+        : logOp(false), modOptions(ModifierInterface::Options::normal(expCtx)) {}
 };
 
 }  // namespace mongo

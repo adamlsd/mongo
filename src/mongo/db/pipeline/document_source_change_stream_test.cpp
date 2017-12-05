@@ -33,19 +33,23 @@
 
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/json.h"
+#include "mongo/db/catalog/collection_mock.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
-#include "mongo/db/pipeline/close_change_stream_exception.h"
 #include "mongo/db/pipeline/document.h"
+#include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_change_stream.h"
 #include "mongo/db/pipeline/document_source_limit.h"
 #include "mongo/db/pipeline/document_source_match.h"
 #include "mongo/db/pipeline/document_source_mock.h"
 #include "mongo/db/pipeline/document_source_sort.h"
 #include "mongo/db/pipeline/document_value_test_util.h"
+#include "mongo/db/pipeline/stub_mongo_process_interface.h"
 #include "mongo/db/pipeline/value.h"
 #include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/unittest/ensure_fcv.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/uuid.h"
 
@@ -64,23 +68,78 @@ using V = Value;
 
 using DSChangeStream = DocumentSourceChangeStream;
 
+using unittest::EnsureFCV;
+
 static const Timestamp ts(100, 1);
 static const repl::OpTime optime(ts, 1);
 static const NamespaceString nss("unittests.change_stream");
 
-using ChangeStreamStageTestNoSetup = AggregationContextFixture;
+/**
+ * Creates an OplogEntry with given parameters and preset defaults for this test suite.
+ */
+repl::OplogEntry makeOplogEntry(repl::OpTypeEnum opType,
+                                NamespaceString nss,
+                                boost::optional<UUID> uuid,
+                                boost::optional<bool> fromMigrate,
+                                BSONObj object,
+                                boost::optional<BSONObj> object2) {
+    long long hash = 1LL;
+    return repl::OplogEntry(optime,                           // optime
+                            hash,                             // hash
+                            opType,                           // opType
+                            nss,                              // namespace
+                            uuid,                             // uuid
+                            fromMigrate,                      // fromMigrate
+                            repl::OplogEntry::kOplogVersion,  // version
+                            object,                           // o
+                            object2,                          // o2
+                            {},                               // sessionInfo
+                            boost::none,                      // wall clock time
+                            boost::none,                      // statement id
+                            boost::none,   // optime of previous write within same transaction
+                            boost::none,   // pre-image optime
+                            boost::none);  // post-image optime
+}
 
-class ChangeStreamStageTest : public AggregationContextFixture {
+class ChangeStreamStageTestNoSetup : public AggregationContextFixture {
 public:
-    ChangeStreamStageTest() : AggregationContextFixture(nss) {
+    ChangeStreamStageTestNoSetup() : ChangeStreamStageTestNoSetup(nss) {}
+    ChangeStreamStageTestNoSetup(NamespaceString nsString)
+        : AggregationContextFixture(nsString), _ensureFCV(EnsureFCV::Version::kFullyUpgradedTo36) {}
+
+private:
+    EnsureFCV _ensureFCV;
+};
+
+// This is needed only for the "insert" tests.
+struct MockMongoProcessInterface final : public StubMongoProcessInterface {
+
+    MockMongoProcessInterface(std::vector<FieldPath> fields) : _fields(std::move(fields)) {}
+
+    std::vector<FieldPath> collectDocumentKeyFields(UUID) const final {
+        return _fields;
+    }
+
+    std::vector<FieldPath> _fields;
+};
+
+class ChangeStreamStageTest : public ChangeStreamStageTestNoSetup {
+public:
+    ChangeStreamStageTest() : ChangeStreamStageTestNoSetup() {
         repl::ReplicationCoordinator::set(getExpCtx()->opCtx->getServiceContext(),
                                           stdx::make_unique<repl::ReplicationCoordinatorMock>(
                                               getExpCtx()->opCtx->getServiceContext()));
     }
 
-    void checkTransformation(const OplogEntry& entry, const boost::optional<Document> expectedDoc) {
+    void checkTransformation(const OplogEntry& entry,
+                             const boost::optional<Document> expectedDoc,
+                             std::vector<FieldPath> docKeyFields = {}) {
         vector<intrusive_ptr<DocumentSource>> stages = makeStages(entry);
         auto transform = stages[2].get();
+
+        auto mongoProcess = std::make_shared<MockMongoProcessInterface>(docKeyFields);
+        using NeedyDS = DocumentSourceNeedsMongoProcessInterface;
+        dynamic_cast<NeedyDS&>(*transform).injectMongoProcessInterface(std::move(mongoProcess));
 
         auto next = transform->getNext();
         // Match stage should pass the doc down if expectedDoc is given.
@@ -100,42 +159,52 @@ public:
             DSChangeStream::createFromBson(spec.firstElement(), getExpCtx());
         vector<intrusive_ptr<DocumentSource>> stages(std::begin(result), std::end(result));
 
+        // This match stage is a DocumentSourceOplogMatch, which we explicitly disallow from
+        // executing as a safety mechanism, since it needs to use the collection-default collation,
+        // even if the rest of the pipeline is using some other collation. To avoid ever executing
+        // that stage here, we'll up-convert it from the non-executable DocumentSourceOplogMatch to
+        // a fully-executable DocumentSourceMatch. This is safe because all of the unit tests will
+        // use the 'simple' collation.
         auto match = dynamic_cast<DocumentSourceMatch*>(stages[0].get());
         ASSERT(match);
+        auto executableMatch = DocumentSourceMatch::create(match->getQuery(), getExpCtx());
+
         auto mock = DocumentSourceMock::create(D(entry.toBSON()));
-        match->setSource(mock.get());
+        executableMatch->setSource(mock.get());
 
         // Check the oplog entry is transformed correctly.
         auto transform = stages[1].get();
         ASSERT(transform);
         ASSERT_EQ(string(transform->getSourceName()), DSChangeStream::kStageName);
-        transform->setSource(match);
+        transform->setSource(executableMatch.get());
 
         auto closeCursor = stages.back().get();
         ASSERT(closeCursor);
         closeCursor->setSource(transform);
 
-        // Include the mock stage in the "stages" so it won't get destroyed outside the function
-        // scope.
-        stages.insert(stages.begin(), mock);
-        return stages;
+        return {mock, executableMatch, transform, closeCursor};
     }
 
     OplogEntry createCommand(const BSONObj& oField,
-                             const boost::optional<UUID> uuid = boost::none) {
-        auto entry = OplogEntry(optime, 1, OpTypeEnum::kCommand, nss.getCommandNS(), oField);
-        if (uuid)
-            entry.setUuid(uuid.get());
-        return entry;
+                             const boost::optional<UUID> uuid = boost::none,
+                             const boost::optional<bool> fromMigrate = boost::none) {
+        return makeOplogEntry(OpTypeEnum::kCommand,  // op type
+                              nss.getCommandNS(),    // namespace
+                              uuid,                  // uuid
+                              fromMigrate,           // fromMigrate
+                              oField,                // o
+                              boost::none);          // o2
     }
 
     Document makeResumeToken(Timestamp ts,
                              ImplicitValue uuid = Value(),
-                             ImplicitValue id = Value()) {
-        if (id.missing()) {
-            return {{"clusterTime", D{{"ts", ts}}}, {"uuid", uuid}};
-        }
-        return {{"clusterTime", D{{"ts", ts}}}, {"uuid", uuid}, {"documentKey", D{{"_id", id}}}};
+                             ImplicitValue docKey = Value()) {
+        ResumeTokenData tokenData;
+        tokenData.clusterTime = ts;
+        tokenData.documentKey = docKey;
+        if (!uuid.missing())
+            tokenData.uuid = uuid.getUuid();
+        return ResumeToken(tokenData).toDocument();
     }
 
     /**
@@ -181,6 +250,25 @@ TEST_F(ChangeStreamStageTest, ShouldRejectUnrecognizedFullDocumentOption) {
         40575);
 }
 
+TEST_F(ChangeStreamStageTest, ShouldRejectBothResumeAfterClusterTimeAndResumeAfterOptions) {
+    auto expCtx = getExpCtx();
+
+    // Need to put the collection in the UUID catalog so the resume token is valid.
+    Collection collection(stdx::make_unique<CollectionMock>(nss));
+    UUIDCatalog::get(expCtx->opCtx).onCreateCollection(expCtx->opCtx, &collection, testUuid());
+
+    ASSERT_THROWS_CODE(
+        DSChangeStream::createFromBson(
+            BSON(DSChangeStream::kStageName << BSON(
+                     "resumeAfter" << makeResumeToken(ts, testUuid(), BSON("x" << 2 << "_id" << 1))
+                                   << "$_resumeAfterClusterTime"
+                                   << BSON("ts" << ts)))
+                .firstElement(),
+            expCtx),
+        AssertionException,
+        50656);
+}
+
 TEST_F(ChangeStreamStageTestNoSetup, FailsWithNoReplicationCoordinator) {
     const auto spec = fromjson("{$changeStream: {}}");
 
@@ -204,38 +292,121 @@ TEST_F(ChangeStreamStageTest, StagesGeneratedCorrectly) {
     // TODO: Check explain result.
 }
 
-TEST_F(ChangeStreamStageTest, TransformInsert) {
-    OplogEntry insert(optime, 1, OpTypeEnum::kInsert, nss, BSON("_id" << 1 << "x" << 1));
-    insert.setUuid(testUuid());
-    // Insert
+TEST_F(ChangeStreamStageTest, TransformInsertDocKeyXAndId) {
+    auto insert = makeOplogEntry(OpTypeEnum::kInsert,           // op type
+                                 nss,                           // namespace
+                                 testUuid(),                    // uuid
+                                 boost::none,                   // fromMigrate
+                                 BSON("_id" << 1 << "x" << 2),  // o
+                                 boost::none);                  // o2
+
     Document expectedInsert{
-        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), 1)},
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), BSON("x" << 2 << "_id" << 1))},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kInsertOpType},
-        {DSChangeStream::kFullDocumentField, D{{"_id", 1}, {"x", 1}}},
+        {DSChangeStream::kFullDocumentField, D{{"_id", 1}, {"x", 2}}},
+        {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
+        {DSChangeStream::kDocumentKeyField, D{{"x", 2}, {"_id", 1}}},  // Note _id <-> x reversal.
+    };
+    checkTransformation(insert, expectedInsert, {{"x"}, {"_id"}});
+    bool fromMigrate = false;  // also check actual "fromMigrate: false" not filtered
+    auto insert2 = makeOplogEntry(insert.getOpType(),     // op type
+                                  insert.getNamespace(),  // namespace
+                                  insert.getUuid(),       // uuid
+                                  fromMigrate,            // fromMigrate
+                                  insert.getObject(),     // o
+                                  insert.getObject2());   // o2
+    checkTransformation(insert2, expectedInsert, {{"x"}, {"_id"}});
+}
+
+TEST_F(ChangeStreamStageTest, TransformInsertDocKeyIdAndX) {
+    auto insert = makeOplogEntry(OpTypeEnum::kInsert,           // op type
+                                 nss,                           // namespace
+                                 testUuid(),                    // uuid
+                                 boost::none,                   // fromMigrate
+                                 BSON("x" << 2 << "_id" << 1),  // o
+                                 boost::none);                  // o2
+
+    Document expectedInsert{
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), BSON("_id" << 1 << "x" << 2))},
+        {DSChangeStream::kOperationTypeField, DSChangeStream::kInsertOpType},
+        {DSChangeStream::kFullDocumentField, D{{"x", 2}, {"_id", 1}}},
+        {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
+        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}, {"x", 2}}},  // _id first
+    };
+    checkTransformation(insert, expectedInsert, {{"_id"}, {"x"}});
+}
+
+TEST_F(ChangeStreamStageTest, TransformInsertDocKeyJustId) {
+    auto insert = makeOplogEntry(OpTypeEnum::kInsert,           // op type
+                                 nss,                           // namespace
+                                 testUuid(),                    // uuid
+                                 boost::none,                   // fromMigrate
+                                 BSON("_id" << 1 << "x" << 2),  // o
+                                 boost::none);                  // o2
+
+    Document expectedInsert{
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), BSON("_id" << 1))},
+        {DSChangeStream::kOperationTypeField, DSChangeStream::kInsertOpType},
+        {DSChangeStream::kFullDocumentField, D{{"_id", 1}, {"x", 2}}},
         {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
         {DSChangeStream::kDocumentKeyField, D{{"_id", 1}}},
     };
-    checkTransformation(insert, expectedInsert);
-    insert.setFromMigrate(false);  // also check actual "fromMigrate: false" not filtered
-    checkTransformation(insert, expectedInsert);
+    checkTransformation(insert, expectedInsert, {{"_id"}});
 }
 
 TEST_F(ChangeStreamStageTest, TransformInsertFromMigrate) {
-    OplogEntry insert(optime, 1, OpTypeEnum::kInsert, nss, BSON("_id" << 1 << "x" << 1));
-    insert.setFromMigrate(true);
+    bool fromMigrate = true;
+    auto insert = makeOplogEntry(OpTypeEnum::kInsert,           // op type
+                                 nss,                           // namespace
+                                 boost::none,                   // uuid
+                                 fromMigrate,                   // fromMigrate
+                                 BSON("_id" << 1 << "x" << 1),  // o
+                                 boost::none);                  // o2
+
     checkTransformation(insert, boost::none);
 }
 
 TEST_F(ChangeStreamStageTest, TransformUpdateFields) {
-    OplogEntry updateField(
-        optime, 1, OpTypeEnum::kUpdate, nss, BSON("$set" << BSON("y" << 1)), BSON("_id" << 1));
-    updateField.setUuid(testUuid());
+    BSONObj o = BSON("$set" << BSON("y" << 1));
+    BSONObj o2 = BSON("_id" << 1 << "x" << 2);
+    auto updateField = makeOplogEntry(OpTypeEnum::kUpdate,  // op type
+                                      nss,                  // namespace
+                                      testUuid(),           // uuid
+                                      boost::none,          // fromMigrate
+                                      o,                    // o
+                                      o2);                  // o2
+
     // Update fields
     Document expectedUpdateField{
-        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), 1)},
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), o2)},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kUpdateOpType},
         {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
-        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}}},
+        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}, {"x", 2}}},
+        {
+            "updateDescription", D{{"updatedFields", D{{"y", 1}}}, {"removedFields", vector<V>()}},
+        },
+    };
+    checkTransformation(updateField, expectedUpdateField);
+}
+
+// Legacy documents might not have an _id field; then the document key is the full (post-update)
+// document.
+TEST_F(ChangeStreamStageTest, TransformUpdateFieldsLegacyNoId) {
+    BSONObj o = BSON("$set" << BSON("y" << 1));
+    BSONObj o2 = BSON("x" << 1 << "y" << 1);
+    auto updateField = makeOplogEntry(OpTypeEnum::kUpdate,  // op type
+                                      nss,                  // namespace
+                                      testUuid(),           // uuid
+                                      boost::none,          // fromMigrate
+                                      o,                    // o
+                                      o2);                  // o2
+
+    // Update fields
+    Document expectedUpdateField{
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), o2)},
+        {DSChangeStream::kOperationTypeField, DSChangeStream::kUpdateOpType},
+        {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
+        {DSChangeStream::kDocumentKeyField, D{{"x", 1}, {"y", 1}}},
         {
             "updateDescription", D{{"updatedFields", D{{"y", 1}}}, {"removedFields", vector<V>()}},
         },
@@ -244,15 +415,21 @@ TEST_F(ChangeStreamStageTest, TransformUpdateFields) {
 }
 
 TEST_F(ChangeStreamStageTest, TransformRemoveFields) {
-    OplogEntry removeField(
-        optime, 1, OpTypeEnum::kUpdate, nss, BSON("$unset" << BSON("y" << 1)), BSON("_id" << 1));
-    removeField.setUuid(testUuid());
+    BSONObj o = BSON("$unset" << BSON("y" << 1));
+    BSONObj o2 = BSON("_id" << 1 << "x" << 2);
+    auto removeField = makeOplogEntry(OpTypeEnum::kUpdate,  // op type
+                                      nss,                  // namespace
+                                      testUuid(),           // uuid
+                                      boost::none,          // fromMigrate
+                                      o,                    // o
+                                      o2);                  // o2
+
     // Remove fields
     Document expectedRemoveField{
-        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), 1)},
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), o2)},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kUpdateOpType},
         {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
-        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}}},
+        {DSChangeStream::kDocumentKeyField, D{{{"_id", 1}, {"x", 2}}}},
         {
             "updateDescription", D{{"updatedFields", D{}}, {"removedFields", vector<V>{V("y"_sd)}}},
         }};
@@ -260,38 +437,64 @@ TEST_F(ChangeStreamStageTest, TransformRemoveFields) {
 }
 
 TEST_F(ChangeStreamStageTest, TransformReplace) {
-    OplogEntry replace(
-        optime, 1, OpTypeEnum::kUpdate, nss, BSON("_id" << 1 << "y" << 1), BSON("_id" << 1));
-    replace.setUuid(testUuid());
+    BSONObj o = BSON("_id" << 1 << "x" << 2 << "y" << 1);
+    BSONObj o2 = BSON("_id" << 1 << "x" << 2);
+    auto replace = makeOplogEntry(OpTypeEnum::kUpdate,  // op type
+                                  nss,                  // namespace
+                                  testUuid(),           // uuid
+                                  boost::none,          // fromMigrate
+                                  o,                    // o
+                                  o2);                  // o2
+
     // Replace
     Document expectedReplace{
-        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), 1)},
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), o2)},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kReplaceOpType},
-        {DSChangeStream::kFullDocumentField, D{{"_id", 1}, {"y", 1}}},
+        {DSChangeStream::kFullDocumentField, D{{"_id", 1}, {"x", 2}, {"y", 1}}},
         {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
-        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}}},
+        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}, {"x", 2}}},
     };
     checkTransformation(replace, expectedReplace);
 }
 
 TEST_F(ChangeStreamStageTest, TransformDelete) {
-    OplogEntry deleteEntry(optime, 1, OpTypeEnum::kDelete, nss, BSON("_id" << 1));
-    deleteEntry.setUuid(testUuid());
+    BSONObj o = BSON("_id" << 1 << "x" << 2);
+    auto deleteEntry = makeOplogEntry(OpTypeEnum::kDelete,  // op type
+                                      nss,                  // namespace
+                                      testUuid(),           // uuid
+                                      boost::none,          // fromMigrate
+                                      o,                    // o
+                                      boost::none);         // o2
+
     // Delete
     Document expectedDelete{
-        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), 1)},
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), o)},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kDeleteOpType},
         {DSChangeStream::kNamespaceField, D{{"db", nss.db()}, {"coll", nss.coll()}}},
-        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}}},
+        {DSChangeStream::kDocumentKeyField, D{{"_id", 1}, {"x", 2}}},
     };
     checkTransformation(deleteEntry, expectedDelete);
-    deleteEntry.setFromMigrate(false);  // also check actual "fromMigrate: false" not filtered
-    checkTransformation(deleteEntry, expectedDelete);
+
+    bool fromMigrate = false;  // also check actual "fromMigrate: false" not filtered
+    auto deleteEntry2 = makeOplogEntry(deleteEntry.getOpType(),     // op type
+                                       deleteEntry.getNamespace(),  // namespace
+                                       deleteEntry.getUuid(),       // uuid
+                                       fromMigrate,                 // fromMigrate
+                                       deleteEntry.getObject(),     // o
+                                       deleteEntry.getObject2());   // o2
+
+    checkTransformation(deleteEntry2, expectedDelete);
 }
 
 TEST_F(ChangeStreamStageTest, TransformDeleteFromMigrate) {
-    OplogEntry deleteEntry(optime, 1, OpTypeEnum::kDelete, nss, BSON("_id" << 1));
-    deleteEntry.setFromMigrate(true);
+    bool fromMigrate = true;
+    auto deleteEntry = makeOplogEntry(OpTypeEnum::kDelete,  // op type
+                                      nss,                  // namespace
+                                      boost::none,          // uuid
+                                      fromMigrate,          // fromMigrate
+                                      BSON("_id" << 1),     // o
+                                      boost::none);         // o2
+
     checkTransformation(deleteEntry, boost::none);
 }
 
@@ -299,8 +502,8 @@ TEST_F(ChangeStreamStageTest, TransformInvalidate) {
     NamespaceString otherColl("test.bar");
 
     OplogEntry dropColl = createCommand(BSON("drop" << nss.coll()), testUuid());
-    OplogEntry dropDB = createCommand(BSON("dropDatabase" << 1));
-    dropDB.setFromMigrate(false);  // verify this doesn't get it filtered
+    bool dropDBFromMigrate = false;  // verify this doesn't get it filtered
+    OplogEntry dropDB = createCommand(BSON("dropDatabase" << 1), boost::none, dropDBFromMigrate);
     OplogEntry rename =
         createCommand(BSON("renameCollection" << nss.ns() << "to" << otherColl.ns()), testUuid());
 
@@ -324,13 +527,16 @@ TEST_F(ChangeStreamStageTest, TransformInvalidate) {
 TEST_F(ChangeStreamStageTest, TransformInvalidateFromMigrate) {
     NamespaceString otherColl("test.bar");
 
-    OplogEntry dropColl = createCommand(BSON("drop" << nss.coll()), testUuid());
-    dropColl.setFromMigrate(true);
-    OplogEntry dropDB = createCommand(BSON("dropDatabase" << 1));
-    dropDB.setFromMigrate(true);
+    bool dropCollFromMigrate = true;
+    OplogEntry dropColl =
+        createCommand(BSON("drop" << nss.coll()), testUuid(), dropCollFromMigrate);
+    bool dropDBFromMigrate = true;
+    OplogEntry dropDB = createCommand(BSON("dropDatabase" << 1), boost::none, dropDBFromMigrate);
+    bool renameFromMigrate = true;
     OplogEntry rename =
-        createCommand(BSON("renameCollection" << nss.ns() << "to" << otherColl.ns()));
-    rename.setFromMigrate(true);
+        createCommand(BSON("renameCollection" << nss.ns() << "to" << otherColl.ns()),
+                      boost::none,
+                      renameFromMigrate);
 
     for (auto& entry : {dropColl, dropDB, rename}) {
         checkTransformation(entry, boost::none);
@@ -339,17 +545,35 @@ TEST_F(ChangeStreamStageTest, TransformInvalidateFromMigrate) {
 
 TEST_F(ChangeStreamStageTest, TransformInvalidateRenameDropTarget) {
     NamespaceString otherColl("test.bar");
-    OplogEntry rename(optime,
-                      1,
-                      OpTypeEnum::kCommand,
-                      otherColl.getCommandNS(),
-                      BSON("renameCollection" << otherColl.ns() << "to" << nss.ns()));
-    rename.setUuid(testUuid());
+    auto rename =
+        makeOplogEntry(OpTypeEnum::kCommand,      // op type
+                       otherColl.getCommandNS(),  // namespace
+                       testUuid(),                // uuid
+                       boost::none,               // fromMigrate
+                       BSON("renameCollection" << otherColl.ns() << "to" << nss.ns()),  // o
+                       boost::none);                                                    // o2
+
     Document expectedInvalidate{
         {DSChangeStream::kIdField, makeResumeToken(ts, testUuid())},
         {DSChangeStream::kOperationTypeField, DSChangeStream::kInvalidateOpType},
     };
     checkTransformation(rename, expectedInvalidate);
+}
+
+TEST_F(ChangeStreamStageTest, TransformNewShardDetected) {
+    auto o2Field = D{{"type", "migrateChunkToNewShard"_sd}};
+    auto newShardDetected = makeOplogEntry(OpTypeEnum::kNoop,
+                                           nss,
+                                           testUuid(),
+                                           boost::none,  // fromMigrate
+                                           BSONObj(),
+                                           o2Field.toBson());
+
+    Document expectedNewShardDetected{
+        {DSChangeStream::kIdField, makeResumeToken(ts, testUuid(), BSON("_id" << o2Field))},
+        {DSChangeStream::kOperationTypeField, DSChangeStream::kNewShardDetectedOpType},
+    };
+    checkTransformation(newShardDetected, expectedNewShardDetected);
 }
 
 TEST_F(ChangeStreamStageTest, MatchFiltersCreateCollection) {
@@ -361,24 +585,42 @@ TEST_F(ChangeStreamStageTest, MatchFiltersCreateCollection) {
 }
 
 TEST_F(ChangeStreamStageTest, MatchFiltersNoOp) {
-    OplogEntry noOp(
-        optime, 1, OpTypeEnum::kNoop, NamespaceString(), fromjson("{'msg':'new primary'}"));
+    auto noOp = makeOplogEntry(OpTypeEnum::kNoop,  // op type
+                               {},                 // namespace
+                               boost::none,        // uuid
+                               boost::none,        // fromMigrate
+                               BSON("msg"
+                                    << "new primary"),  // o
+                               boost::none);            // o2
+
     checkTransformation(noOp, boost::none);
 }
 
 TEST_F(ChangeStreamStageTest, MatchFiltersCreateIndex) {
     auto indexSpec = D{{"v", 2}, {"key", D{{"a", 1}}}, {"name", "a_1"_sd}, {"ns", nss.ns()}};
     NamespaceString indexNs(nss.getSystemIndexesCollection());
-    OplogEntry createIndex(optime, 1, OpTypeEnum::kInsert, indexNs, indexSpec.toBson());
-    createIndex.setFromMigrate(false);  // At the moment this makes no difference.
+    bool fromMigrate = false;  // At the moment this makes no difference.
+    auto createIndex = makeOplogEntry(OpTypeEnum::kInsert,  // op type
+                                      indexNs,              // namespace
+                                      boost::none,          // uuid
+                                      fromMigrate,          // fromMigrate
+                                      indexSpec.toBson(),   // o
+                                      boost::none);         // o2
+
     checkTransformation(createIndex, boost::none);
 }
 
 TEST_F(ChangeStreamStageTest, MatchFiltersCreateIndexFromMigrate) {
     auto indexSpec = D{{"v", 2}, {"key", D{{"a", 1}}}, {"name", "a_1"_sd}, {"ns", nss.ns()}};
     NamespaceString indexNs(nss.getSystemIndexesCollection());
-    OplogEntry createIndex(optime, 1, OpTypeEnum::kInsert, indexNs, indexSpec.toBson());
-    createIndex.setFromMigrate(true);
+    bool fromMigrate = true;
+    auto createIndex = makeOplogEntry(OpTypeEnum::kInsert,  // op type
+                                      indexNs,              // namespace
+                                      boost::none,          // uuid
+                                      fromMigrate,          // fromMigrate
+                                      indexSpec.toBson(),   // o
+                                      boost::none);         // o2
+
     checkTransformation(createIndex, boost::none);
 }
 
@@ -430,8 +672,7 @@ TEST_F(ChangeStreamStageTest, CloseCursorOnInvalidateEntries) {
     // Transform into invalidate entry.
     ASSERT_DOCUMENT_EQ(next.releaseDocument(), expectedInvalidate);
     // Then throw an exception on the next call of getNext().
-    ASSERT_THROWS_CODE(
-        closeCursor->getNext(), CloseChangeStreamException, ErrorCodes::CloseChangeStream);
+    ASSERT_THROWS(closeCursor->getNext(), ExceptionFor<ErrorCodes::CloseChangeStream>);
 }
 
 TEST_F(ChangeStreamStageTest, CloseCursorEvenIfInvalidateEntriesGetFilteredOut) {
@@ -443,7 +684,7 @@ TEST_F(ChangeStreamStageTest, CloseCursorEvenIfInvalidateEntriesGetFilteredOut) 
     match->setSource(closeCursor.get());
 
     // Throw an exception on the call of getNext().
-    ASSERT_THROWS_CODE(match->getNext(), CloseChangeStreamException, ErrorCodes::CloseChangeStream);
+    ASSERT_THROWS(match->getNext(), ExceptionFor<ErrorCodes::CloseChangeStream>);
 }
 
 }  // namespace

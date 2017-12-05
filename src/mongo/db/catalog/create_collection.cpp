@@ -26,6 +26,8 @@
  *    it in the license file.
  */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/catalog/create_collection.h"
@@ -41,6 +43,8 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/insert.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/logger/redaction.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace {
@@ -70,6 +74,10 @@ Status createCollection(OperationContext* opCtx,
         const auto elem = it.next();
         if (!Command::isGenericArgument(elem.fieldNameStringData()))
             optionsBuilder.append(elem);
+        if (elem.fieldNameStringData() == "viewOn") {
+            // Views don't have UUIDs so it should always be parsed for command.
+            kind = CollectionOptions::parseForCommand;
+        }
     }
 
     BSONObj options = optionsBuilder.obj();
@@ -161,7 +169,8 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                 // node.
                 const bool stayTemp = true;
                 if (auto futureColl = db ? db->getCollection(opCtx, newCollName) : nullptr) {
-                    auto tmpNameResult = db->makeUniqueCollectionNamespace(opCtx, "tmp%%%%%");
+                    auto tmpNameResult =
+                        db->makeUniqueCollectionNamespace(opCtx, "tmp%%%%%.create");
                     if (!tmpNameResult.isOK()) {
                         return Result(Status(tmpNameResult.getStatus().code(),
                                              str::stream() << "Cannot generate temporary "
@@ -172,6 +181,10 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                                                            << tmpNameResult.getStatus().reason()));
                     }
                     const auto& tmpName = tmpNameResult.getValue();
+                    // It is ok to log this because this doesn't happen very frequently.
+                    log() << "CMD: create " << newCollName
+                          << " - renaming existing collection with conflicting UUID " << uuid
+                          << " to temporary collection " << tmpName;
                     Status status =
                         db->renameCollection(opCtx, newCollName.ns(), tmpName.ns(), stayTemp);
                     if (!status.isOK())
@@ -188,6 +201,11 @@ Status createCollectionForApplyOps(OperationContext* opCtx,
                 // If the collection with the requested UUID already exists, but with a different
                 // name, just rename it to 'newCollName'.
                 if (catalog.lookupCollectionByUUID(uuid)) {
+                    uassert(40655,
+                            str::stream() << "Invalid name " << redact(newCollName.ns())
+                                          << " for UUID "
+                                          << uuid.toString(),
+                            currentName.db() == newCollName.db());
                     Status status =
                         db->renameCollection(opCtx, currentName.ns(), newCollName.ns(), stayTemp);
                     if (!status.isOK())

@@ -40,6 +40,12 @@ def _get_field_member_name(field):
     return '_%s' % (common.camel_case(field.cpp_name))
 
 
+def _get_field_member_setter_name(field):
+    # type: (ast.Field) -> unicode
+    """Get the C++ class setter name for a field."""
+    return "set%s" % (common.title_case(field.cpp_name))
+
+
 def _get_has_field_member_name(field):
     # type: (ast.Field) -> unicode
     """Get the C++ class member name for bool 'has' member field."""
@@ -54,7 +60,7 @@ def _is_required_serializer_field(field):
     Fields that must be set before serialization are fields without default values, that are not
     optional, and are not chained.
     """
-    return not field.ignore and not field.optional and not field.default and not field.chained
+    return not field.ignore and not field.optional and not field.default and not field.chained and not field.chained_struct_field
 
 
 def _get_field_constant_name(field):
@@ -147,7 +153,8 @@ class _SlowFieldUsageChecker(_FieldUsageCheckerBase):
     def add_store(self, field_name):
         # type: (unicode) -> None
         self._writer.write_line('auto push_result = usedFields.insert(%s);' % (field_name))
-        with writer.IndentedScopedBlock(self._writer, 'if (push_result.second == false) {', '}'):
+        with writer.IndentedScopedBlock(self._writer,
+                                        'if (MONGO_unlikely(push_result.second == false)) {', '}'):
             self._writer.write_line('ctxt.throwDuplicateField(%s);' % (field_name))
 
     def add(self, field, bson_element_variable):
@@ -159,9 +166,9 @@ class _SlowFieldUsageChecker(_FieldUsageCheckerBase):
         # type: () -> None
         for field in self._fields:
             if (not field.optional) and (not field.ignore) and (not field.chained):
-                with writer.IndentedScopedBlock(self._writer,
-                                                'if (usedFields.find(%s) == usedFields.end()) {' %
-                                                (_get_field_constant_name(field)), '}'):
+                pred = 'if (MONGO_unlikely(usedFields.find(%s) == usedFields.end())) {' % \
+                    (_get_field_constant_name(field))
+                with writer.IndentedScopedBlock(self._writer, pred, '}'):
                     if field.default:
                         self._writer.write_line('%s = %s;' %
                                                 (_get_field_member_name(field), field.default))
@@ -211,7 +218,7 @@ class _FastFieldUsageChecker(_FieldUsageCheckerBase):
         if not field in self._fields:
             self._fields.append(field)
 
-        with writer.IndentedScopedBlock(self._writer, 'if (usedFields[%s]) {' %
+        with writer.IndentedScopedBlock(self._writer, 'if (MONGO_unlikely(usedFields[%s])) {' %
                                         (_gen_field_usage_constant(field)), '}'):
             self._writer.write_line('ctxt.throwDuplicateField(%s);' % (bson_element_variable))
         self._writer.write_empty_line()
@@ -222,7 +229,8 @@ class _FastFieldUsageChecker(_FieldUsageCheckerBase):
     def add_final_checks(self):
         # type: () -> None
         """Output the code to check for missing fields."""
-        with writer.IndentedScopedBlock(self._writer, 'if (!usedFields.all()) {', '}'):
+        with writer.IndentedScopedBlock(self._writer, 'if (MONGO_unlikely(!usedFields.all())) {',
+                                        '}'):
             for field in self._fields:
                 if (not field.optional) and (not field.ignore):
                     with writer.IndentedScopedBlock(self._writer, 'if (!usedFields[%s]) {' %
@@ -444,7 +452,7 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
             post_body = '%s = true;' % (_get_has_field_member_name(field))
 
         template_params = {
-            'method_name': common.title_case(field.cpp_name),
+            'method_name': _get_field_member_setter_name(field),
             'member_name': member_name,
             'param_type': param_type,
             'body': cpp_type_info.get_setter_body(member_name),
@@ -452,7 +460,7 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
         }
 
         with self._with_template(template_params):
-            self._writer.write_template('void set${method_name}(${param_type} value) & ' +
+            self._writer.write_template('void ${method_name}(${param_type} value) & ' +
                                         '{ ${body} ${post_body} }')
 
         self._writer.write_empty_line()
@@ -619,11 +627,12 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
 
                     # Write getters & setters
                     for field in struct.fields:
-                        if not field.ignore:
+                        if not field.ignore and not field.chained_struct_field:
                             if field.description:
                                 self.gen_description_comment(field.description)
                             self.gen_getter(field)
-                            self.gen_setter(field)
+                            if not struct.immutable:
+                                self.gen_setter(field)
 
                     self.write_unindented_line('protected:')
                     self.gen_protected_serializer_methods(struct)
@@ -639,7 +648,7 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
 
                     # Write member variables
                     for field in struct.fields:
-                        if not field.ignore:
+                        if not field.ignore and not field.chained_struct_field:
                             self.gen_member(field)
 
                     # Write serializer member variables
@@ -781,9 +790,18 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             self._writer.write_line('%s = %s;' % (_get_field_member_name(field), expression))
         else:
             # May be an empty block if the type is 'any'
-            with self._predicate(_get_bson_type_check('element', 'ctxt', field)):
+            predicate = _get_bson_type_check('element', 'ctxt', field)
+            if predicate:
+                predicate = "MONGO_likely(%s)" % (predicate)
+            with self._predicate(predicate):
                 object_value = self._gen_field_deserializer_expression('element', field)
-                self._writer.write_line('%s = %s;' % (_get_field_member_name(field), object_value))
+                if field.chained_struct_field:
+                    self._writer.write_line('%s.%s(%s);' %
+                                            (_get_field_member_name(field.chained_struct_field),
+                                             _get_field_member_setter_name(field), object_value))
+                else:
+                    self._writer.write_line('%s = %s;' %
+                                            (_get_field_member_name(field), object_value))
 
     def gen_doc_sequence_deserializer(self, field):
         # type: (ast.Field) -> None
@@ -940,33 +958,45 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                     with self._predicate(command_predicate):
                         self._writer.write_line('ctxt.throwUnknownField(fieldName);')
 
-        # Parse chained types
-        for field in struct.fields:
-            if not field.chained:
-                continue
+        # Parse chained types if not inlined
+        if not struct.inline_chained_structs:
+            for field in struct.fields:
+                if not field.chained:
+                    continue
 
-            # Simply generate deserializers since these are all 'any' types
-            self.gen_field_deserializer(field, bson_object)
+                # Simply generate deserializers since these are all 'any' types
+                self.gen_field_deserializer(field, bson_object)
         self._writer.write_empty_line()
 
         self._writer.write_empty_line()
 
         return field_usage_check
 
+    def get_bson_deserializer_static_common(self, struct, static_method_info, method_info):
+        # type: (ast.Struct, struct_types.MethodInfo, struct_types.MethodInfo) -> None
+        """Generate the C++ deserializer static method."""
+        # pylint: disable=invalid-name
+        func_def = static_method_info.get_definition()
+
+        with self._block('%s {' % (func_def), '}'):
+            if isinstance(struct,
+                          ast.Command) and struct.namespace != common.COMMAND_NAMESPACE_IGNORED:
+                self._writer.write_line('NamespaceString localNS;')
+                self._writer.write_line('%s object(localNS);' % (common.title_case(struct.name)))
+            else:
+                self._writer.write_line('%s object;' % common.title_case(struct.name))
+
+            self._writer.write_line(method_info.get_call('object'))
+            self._writer.write_line('return object;')
+
     def gen_bson_deserializer_methods(self, struct):
         # type: (ast.Struct) -> None
         """Generate the C++ deserializer method definitions."""
         struct_type_info = struct_types.get_struct_info(struct)
 
-        if not struct_type_info.get_deserializer_static_method():
-            return
-        assert not isinstance(struct, ast.Command)
-
-        with self._block('%s {' %
-                         (struct_type_info.get_deserializer_static_method().get_definition()), '}'):
-            self._writer.write_line('%s object;' % common.title_case(struct.name))
-            self._writer.write_line(struct_type_info.get_deserializer_method().get_call('object'))
-            self._writer.write_line('return object;')
+        self.get_bson_deserializer_static_common(struct,
+                                                 struct_type_info.get_deserializer_static_method(),
+                                                 struct_type_info.get_deserializer_method())
 
         func_def = struct_type_info.get_deserializer_method().get_definition()
         with self._block('%s {' % (func_def), '}'):
@@ -991,18 +1021,10 @@ class _CppSourceFileWriter(_CppFileWriterBase):
 
         struct_type_info = struct_types.get_struct_info(struct)
 
-        func_def = struct_type_info.get_op_msg_request_deserializer_static_method().get_definition()
-        with self._block('%s {' % (func_def), '}'):
-            if isinstance(struct,
-                          ast.Command) and struct.namespace != common.COMMAND_NAMESPACE_IGNORED:
-                self._writer.write_line('NamespaceString localNS;')
-                self._writer.write_line('%s object(localNS);' % (common.title_case(struct.name)))
-            else:
-                self._writer.write_line('%s object;' % common.title_case(struct.name))
-
-            self._writer.write_line(
-                struct_type_info.get_op_msg_request_deserializer_method().get_call('object'))
-            self._writer.write_line('return object;')
+        self.get_bson_deserializer_static_common(
+            struct,
+            struct_type_info.get_op_msg_request_deserializer_static_method(),
+            struct_type_info.get_op_msg_request_deserializer_method())
 
         func_def = struct_type_info.get_op_msg_request_deserializer_method().get_definition()
         with self._block('%s {' % (func_def), '}'):
@@ -1172,6 +1194,9 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             # If fields are meant to be ignored during deserialization, there is no need to
             # serialize. Ignored fields have no backing storage.
             if field.ignore:
+                continue
+
+            if field.chained_struct_field:
                 continue
 
             # The $db injected field should only be inject when serializing to OpMsgRequest. In the

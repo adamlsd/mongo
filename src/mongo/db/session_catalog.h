@@ -112,31 +112,25 @@ public:
     ScopedSession getOrCreateSession(OperationContext* opCtx, const LogicalSessionId& lsid);
 
     /**
-     * Resets all created sessions and increments their generation, forcing each to be reloaded by
-     * subsequent write commands. Invoked after rollback.
+     * Callback to be invoked when it is suspected that the on-disk session contents might not be in
+     * sync with what is in the sessions cache.
+     *
+     * If no specific document is available, the method will invalidate all sessions. Otherwise if
+     * one is avaiable (which is the case for insert/update/delete), it must contain _id field with
+     * a valid session entry, in which case only that particular session will be invalidated. If the
+     * _id field is missing or doesn't contain a valid serialization of logical session, the method
+     * will throw. This prevents invalid entries from making it in the collection.
      */
-    void resetSessions();
+    void invalidateSessions(OperationContext* opCtx, boost::optional<BSONObj> singleSessionDoc);
 
 private:
     struct SessionRuntimeInfo {
         SessionRuntimeInfo(LogicalSessionId lsid) : txnState(std::move(lsid)) {}
 
-        enum State {
-            // Session can be checked out
-            kAvailable,
-
-            // Session is in use by another operation and the caller must wait to check it out
-            kInUse,
-
-            // Session is at the end of its lifetime and is in a state where its persistent
-            // information is being cleaned up. Sessions in this state can never be checked out. The
-            // reason to put the session in this state is to allow for cleanup to happen
-            // asynchronous and while not holding locks.
-            kInCleanup
-        };
-
-        // Current state of the runtime info for a session
-        State state{kAvailable};
+        // Current check-out state of the session. If set to false, the session can be checked out.
+        // If set to true, the session is in use by another operation and the caller must wait to
+        // check it out.
+        bool checkedOut{false};
 
         // Signaled when the state becomes available. Uses the transaction table's mutex to protect
         // the state transitions.
@@ -207,10 +201,9 @@ private:
 class ScopedCheckedOutSession {
     MONGO_DISALLOW_COPYING(ScopedCheckedOutSession);
 
-public:
-    ScopedCheckedOutSession(OperationContext* opCtx, ScopedSession scopedSession)
-        : _opCtx(opCtx), _scopedSession(std::move(scopedSession)) {}
+    friend ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext*);
 
+public:
     ScopedCheckedOutSession(ScopedCheckedOutSession&&) = default;
 
     ~ScopedCheckedOutSession() {
@@ -236,6 +229,9 @@ public:
     }
 
 private:
+    ScopedCheckedOutSession(OperationContext* opCtx, ScopedSession scopedSession)
+        : _opCtx(opCtx), _scopedSession(std::move(scopedSession)) {}
+
     OperationContext* const _opCtx;
 
     ScopedSession _scopedSession;
@@ -250,7 +246,7 @@ class OperationContextSession {
     MONGO_DISALLOW_COPYING(OperationContextSession);
 
 public:
-    OperationContextSession(OperationContext* opCtx);
+    OperationContextSession(OperationContext* opCtx, bool checkOutSession);
     ~OperationContextSession();
 
     static Session* get(OperationContext* opCtx);

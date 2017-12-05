@@ -14,6 +14,7 @@ selector:
   - jstests/core/capped_update.js # uses godinsert and can't run under replication.
   - jstests/core/check_shard_index.js  # checkShardingIndex.
   - jstests/core/collection_truncate.js  # emptycapped.
+  - jstests/core/collmod_without_uuid.js # applyOps, SERVER-1439
   - jstests/core/compact_keeps_indexes.js  # compact.
   - jstests/core/currentop.js  # uses fsync.
   - jstests/core/dbadmin.js  # "local" database.
@@ -36,7 +37,6 @@ selector:
   - jstests/core/repair_server12955.js # repairDatabase
   - jstests/core/stages*.js  # stageDebug.
   - jstests/core/startup_log.js  # "local" database.
-  - jstests/core/storageDetailsCommand.js  # diskStorageStats.
   - jstests/core/top.js  # top.
   # The following tests fail because mongos behaves differently from mongod when testing certain
   # functionality. The differences are in a comment next to the failing test.
@@ -48,9 +48,8 @@ selector:
   # TODO: SERVER-27269: mongos can't establish cursor if view has $collStats and views another view.
   - jstests/core/views/views_coll_stats.js
   - jstests/core/killop_drop_collection.js # Uses fsyncLock.
-  - jstests/core/list_local_sessions.js # SERVER-29628 needs MongoSOnly support
-  - jstests/core/list_all_local_sessions.js # SERVER-29628 needs MongoSOnly support
-
+  exclude_with_any_tags:
+  - assumes_against_mongod_not_mongos
 
 executor:
   config:

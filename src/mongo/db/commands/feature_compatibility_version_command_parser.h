@@ -48,7 +48,10 @@ public:
      * Known server release versions.
      */
     static constexpr StringData kVersion34 = "3.4"_sd;
+    static constexpr StringData kVersionUpgradingTo36 = "upgrading to 3.6"_sd;
     static constexpr StringData kVersion36 = "3.6"_sd;
+    static constexpr StringData kVersionDowngradingTo34 = "downgrading to 3.4"_sd;
+    static constexpr StringData kVersionUnset = "Unset"_sd;
 
     /**
      * Interprets the specified BSON as a command and extracts the desired compatibility version

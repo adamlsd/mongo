@@ -151,7 +151,10 @@ TEST(PlanCacheCommandsTest, planCacheListQueryShapesOneKey) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     vector<BSONObj> shapes = getShapes(planCache);
     ASSERT_EQUALS(shapes.size(), 1U);
@@ -183,7 +186,10 @@ TEST(PlanCacheCommandsTest, planCacheClearAllShapes) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
     ASSERT_EQUALS(getShapes(planCache).size(), 1U);
 
     // Clear cache and confirm number of keys afterwards.
@@ -231,7 +237,6 @@ TEST(PlanCacheCommandsTest, Canonicalize) {
     ASSERT_OK(statusWithCQ.getStatus());
     unique_ptr<CanonicalQuery> query = std::move(statusWithCQ.getValue());
 
-
     // Equivalent query should generate same key.
     statusWithCQ =
         PlanCacheCommand::canonicalize(opCtx.get(), nss.ns(), fromjson("{query: {b: 1, a: 1}}"));
@@ -266,6 +271,24 @@ TEST(PlanCacheCommandsTest, Canonicalize) {
     ASSERT_OK(statusWithCQ.getStatus());
     unique_ptr<CanonicalQuery> projectionQuery = std::move(statusWithCQ.getValue());
     ASSERT_NOT_EQUALS(planCache.computeKey(*query), planCache.computeKey(*projectionQuery));
+}
+
+TEST(PlanCacheCommandsTest, PlanCacheIgnoresIsolated) {
+    PlanCache planCache;
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
+    // Query with $isolated should generate the same key as a query without $siolated.
+    auto statusWithCQ =
+        PlanCacheCommand::canonicalize(opCtx.get(), nss.ns(), fromjson("{query: {a: 1, b: 1}}"));
+    ASSERT_OK(statusWithCQ.getStatus());
+    unique_ptr<CanonicalQuery> query = std::move(statusWithCQ.getValue());
+
+    statusWithCQ = PlanCacheCommand::canonicalize(
+        opCtx.get(), nss.ns(), fromjson("{query: {a: 1, b: 1}, $isolated: 1}"));
+    ASSERT_OK(statusWithCQ.getStatus());
+    unique_ptr<CanonicalQuery> queryWithIsolated = std::move(statusWithCQ.getValue());
+    ASSERT_EQUALS(planCache.computeKey(*query), planCache.computeKey(*queryWithIsolated));
 }
 
 /**
@@ -322,8 +345,14 @@ TEST(PlanCacheCommandsTest, planCacheClearOneKey) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cqA, solns, createDecision(1U)).transitional_ignore();
-    planCache.add(*cqB, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cqA,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
+    ASSERT_OK(planCache.add(*cqB,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     // Check keys in cache before dropping {b: 1}
     vector<BSONObj> shapesBefore = getShapes(planCache);
@@ -379,8 +408,14 @@ TEST(PlanCacheCommandsTest, planCacheClearOneKeyCollation) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(1U)).transitional_ignore();
-    planCache.add(*cqCollation, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
+    ASSERT_OK(planCache.add(*cqCollation,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     // Check keys in cache before dropping the query with collation.
     vector<BSONObj> shapesBefore = getShapes(planCache);
@@ -522,7 +557,10 @@ TEST(PlanCacheCommandsTest, planCacheListPlansOnlyOneSolutionTrue) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     vector<BSONObj> plans = getPlans(planCache,
                                      cq->getQueryObj(),
@@ -551,7 +589,10 @@ TEST(PlanCacheCommandsTest, planCacheListPlansOnlyOneSolutionFalse) {
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(2U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(2U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     vector<BSONObj> plans = getPlans(planCache,
                                      cq->getQueryObj(),
@@ -588,11 +629,17 @@ TEST(PlanCacheCommandsTest, planCacheListPlansCollation) {
     qs.cacheData.reset(createSolutionCacheData());
     std::vector<QuerySolution*> solns;
     solns.push_back(&qs);
-    planCache.add(*cq, solns, createDecision(1U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cq,
+                            solns,
+                            createDecision(1U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
     std::vector<QuerySolution*> twoSolns;
     twoSolns.push_back(&qs);
     twoSolns.push_back(&qs);
-    planCache.add(*cqCollation, twoSolns, createDecision(2U)).transitional_ignore();
+    ASSERT_OK(planCache.add(*cqCollation,
+                            twoSolns,
+                            createDecision(2U),
+                            opCtx->getServiceContext()->getPreciseClockSource()->now()));
 
     // Normal query should have one solution.
     vector<BSONObj> plans = getPlans(planCache,
@@ -609,6 +656,33 @@ TEST(PlanCacheCommandsTest, planCacheListPlansCollation) {
                                               cqCollation->getQueryRequest().getProj(),
                                               cqCollation->getQueryRequest().getCollation());
     ASSERT_EQUALS(plansCollation.size(), 2U);
+}
+
+TEST(PlanCacheCommandsTest, planCacheListPlansTimeOfCreationIsCorrect) {
+    QueryTestServiceContext serviceContext;
+    auto opCtx = serviceContext.makeOperationContext();
+
+    // Create a canonical query.
+    auto qr = stdx::make_unique<QueryRequest>(nss);
+    qr->setFilter(fromjson("{a: 1}"));
+    auto statusWithCQ = CanonicalQuery::canonicalize(opCtx.get(), std::move(qr));
+    ASSERT_OK(statusWithCQ.getStatus());
+    auto cq = std::move(statusWithCQ.getValue());
+
+    // Plan cache with one entry.
+    PlanCache planCache;
+    QuerySolution qs;
+    qs.cacheData.reset(createSolutionCacheData());
+    std::vector<QuerySolution*> solns;
+    solns.push_back(&qs);
+    auto now = opCtx->getServiceContext()->getPreciseClockSource()->now();
+    ASSERT_OK(planCache.add(*cq, solns, createDecision(1U), now));
+
+    PlanCacheEntry* out;
+    ASSERT_OK(planCache.getEntry(*cq, &out));
+    unique_ptr<PlanCacheEntry> entry(out);
+
+    ASSERT_EQ(entry->timeOfCreation, now);
 }
 
 }  // namespace

@@ -91,6 +91,8 @@ var blacklist = [
     'rename_collection_dbname_droptarget.js',
     'rename_collection_droptarget.js',
 
+    'toggle_feature_compatibility.js',  // Sets FCV to 3.4, which will cause session use to fail
+
     'update_simple_eval.js',           // eval doesn't work with sharded collections
     'update_simple_eval_nolock.js',    // eval doesn't work with sharded collections
     'update_upsert_multi.js',          // our update queries lack shard keys
@@ -98,12 +100,15 @@ var blacklist = [
     'upsert_where.js',      // cannot use upsert command with $where with sharded collections
     'yield_and_hashed.js',  // stagedebug can only be run against a standalone mongod
     'yield_and_sorted.js',  // stagedebug can only be run against a standalone mongod
+
+    'reindex_background.js'  // TODO SERVER-30983
 ].map(function(file) {
     return dir + '/' + file;
 });
 
-runWorkloadsSerially(ls(dir).filter(function(file) {
-    return !Array.contains(blacklist, file);
-}),
-                     {sharded: {enabled: true, enableBalancer: true}, replication: {enabled: true}},
-                     {sessionOptions: {causallyConsistentReads: true}});
+runWorkloadsSerially(
+    ls(dir).filter(function(file) {
+        return !Array.contains(blacklist, file);
+    }),
+    {sharded: {enabled: true, enableBalancer: true}, replication: {enabled: true}},
+    {sessionOptions: {causalConsistency: true, readPreference: {mode: "secondary"}}});

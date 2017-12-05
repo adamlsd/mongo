@@ -19,7 +19,7 @@ load("jstests/aggregation/extras/utils.js");  // For assertErrorCode.
     function generateNestedPipeline(foreignCollName, numLevels) {
         let pipeline = [{"$lookup": {pipeline: [], from: foreignCollName, as: "same"}}];
 
-        for (let level = 0; level < numLevels; level++) {
+        for (let level = 1; level < numLevels; level++) {
             pipeline = [{"$lookup": {pipeline: pipeline, from: foreignCollName, as: "same"}}];
         }
 
@@ -791,6 +791,122 @@ load("jstests/aggregation/extras/utils.js");  // For assertErrorCode.
                         }],
                         17276);
 
+        // The dotted path offset of a non-object variable is equivalent referencing an undefined
+        // field.
+        pipeline = [
+            {
+              $lookup: {
+                  let : {var1: "$x"},
+                  pipeline: [
+                      {
+                        $match: {
+                            $expr: {
+                                $eq: [
+                                    "FIELD-IS-NULL",
+                                    {$ifNull: ["$$var1.y.z", "FIELD-IS-NULL"]}
+                                ]
+                            }
+                        }
+                      },
+                  ],
+                  from: "from",
+                  as: "as",
+              }
+            },
+            {$project: {_id: 0}}
+        ];
+
+        expectedResults = [
+            {"x": 1, "as": [{"_id": 1}, {"_id": 2}, {"_id": 3}]},
+            {"x": 2, "as": [{"_id": 1}, {"_id": 2}, {"_id": 3}]},
+            {"x": 3, "as": [{"_id": 1}, {"_id": 2}, {"_id": 3}]}
+        ];
+        testPipeline(pipeline, expectedResults, coll);
+
+        // Comparison where a 'let' variable references an array.
+        coll.drop();
+        assert.writeOK(coll.insert({x: [1, 2, 3]}));
+
+        pipeline = [
+            {
+              $lookup: {
+                  let : {var1: "$x"},
+                  pipeline: [
+                      {$match: {$expr: {$eq: ["$$var1", [1, 2, 3]]}}},
+                  ],
+                  from: "from",
+                  as: "as",
+              }
+            },
+            {$project: {_id: 0}}
+        ];
+
+        expectedResults = [{"x": [1, 2, 3], "as": [{"_id": 1}, {"_id": 2}, {"_id": 3}]}];
+        testPipeline(pipeline, expectedResults, coll);
+
+        //
+        // Pipeline syntax with nested object.
+        //
+        coll.drop();
+        assert.writeOK(coll.insert({x: {y: {z: 10}}}));
+
+        // Subfields of 'let' variables can be referenced via dotted path.
+        pipeline = [
+            {
+              $lookup: {
+                  let : {var1: "$x"},
+                  pipeline: [
+                      {$project: {z: "$$var1.y.z"}},
+                  ],
+                  from: "from",
+                  as: "as",
+              }
+            },
+            {$project: {_id: 0}}
+        ];
+
+        expectedResults = [{
+            "x": {"y": {"z": 10}},
+            "as": [{"_id": 1, "z": 10}, {"_id": 2, "z": 10}, {"_id": 3, "z": 10}]
+        }];
+        testPipeline(pipeline, expectedResults, coll);
+
+        // 'let' variable with dotted field path off of $$ROOT.
+        pipeline = [
+            {
+              $lookup: {
+                  let : {var1: "$$ROOT.x.y.z"},
+                  pipeline:
+                      [{$match: {$expr: {$eq: ["$$var1", "$$ROOT.x.y.z"]}}}, {$project: {_id: 0}}],
+                  from: "lookUp",
+                  as: "as",
+              }
+            },
+            {$project: {_id: 0}}
+        ];
+
+        expectedResults = [{"x": {"y": {"z": 10}}, "as": [{"x": {"y": {"z": 10}}}]}];
+        testPipeline(pipeline, expectedResults, coll);
+
+        // 'let' variable with dotted field path off of $$CURRENT.
+        pipeline = [
+            {
+              $lookup: {
+                  let : {var1: "$$CURRENT.x.y.z"},
+                  pipeline: [
+                      {$match: {$expr: {$eq: ["$$var1", "$$CURRENT.x.y.z"]}}},
+                      {$project: {_id: 0}}
+                  ],
+                  from: "lookUp",
+                  as: "as",
+              }
+            },
+            {$project: {_id: 0}}
+        ];
+
+        expectedResults = [{"x": {"y": {"z": 10}}, "as": [{"x": {"y": {"z": 10}}}]}];
+        testPipeline(pipeline, expectedResults, coll);
+
         //
         // Pipeline syntax with nested $lookup.
         //
@@ -856,12 +972,38 @@ load("jstests/aggregation/extras/utils.js");  // For assertErrorCode.
         }];
         testPipeline(pipeline, expectedResults, coll);
 
-        // Deeply nested $lookup pipeline. Each $lookup stage adds 3 levels to the JSON object
-        // depth. The chosen depth allows for an aggregate command that is within the JSON-to-BSON
-        // conversion depth limit of 150 (with a small buffer to allow for running this test in
-        // passthroughs that may wrap a given pipeline, increasing depth).
-        const nestedPipeline = generateNestedPipeline("lookup", 45);
-        coll.aggregate(nestedPipeline);
+        // Deeply nested $lookup pipeline. Confirm that we can execute an aggregation with nested
+        // $lookup sub-pipelines up to the maximum depth, but not beyond.
+        let nestedPipeline = generateNestedPipeline("lookup", 20);
+        assert.commandWorked(coll.getDB().runCommand(
+            {aggregate: coll.getName(), pipeline: nestedPipeline, cursor: {}}));
+
+        nestedPipeline = generateNestedPipeline("lookup", 21);
+        assertErrorCode(coll, nestedPipeline, ErrorCodes.MaxSubPipelineDepthExceeded);
+
+        // Confirm that maximum $lookup sub-pipeline depth is respected when aggregating views whose
+        // combined nesting depth exceeds the limit.
+        nestedPipeline = generateNestedPipeline("lookup", 10);
+        coll.getDB().view1.drop();
+        assert.commandWorked(
+            coll.getDB().runCommand({create: "view1", viewOn: "lookup", pipeline: nestedPipeline}));
+
+        nestedPipeline = generateNestedPipeline("view1", 10);
+        coll.getDB().view2.drop();
+        assert.commandWorked(
+            coll.getDB().runCommand({create: "view2", viewOn: "view1", pipeline: nestedPipeline}));
+
+        // Confirm that a composite sub-pipeline depth of 20 is allowed.
+        assert.commandWorked(
+            coll.getDB().runCommand({aggregate: "view2", pipeline: [], cursor: {}}));
+
+        const pipelineWhichExceedsNestingLimit = generateNestedPipeline("view2", 1);
+        coll.getDB().view3.drop();
+        assert.commandWorked(coll.getDB().runCommand(
+            {create: "view3", viewOn: "view2", pipeline: pipelineWhichExceedsNestingLimit}));
+
+        // Confirm that a composite sub-pipeline depth greater than 20 fails.
+        assertErrorCode(coll.getDB().view3, [], ErrorCodes.MaxSubPipelineDepthExceeded);
 
         //
         // Error cases.

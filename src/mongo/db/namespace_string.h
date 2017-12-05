@@ -65,7 +65,11 @@ public:
 
     // Name for a shard's collections metadata collection, each document of which indicates the
     // state of a specific collection.
-    static constexpr StringData kShardConfigCollectionsCollectionName = "config.collections"_sd;
+    static constexpr StringData kShardConfigCollectionsCollectionName =
+        "config.cache.collections"_sd;
+
+    // Name for causal consistency's key collection.
+    static constexpr StringData kSystemKeysCollectionName = "admin.system.keys"_sd;
 
     // Namespace for storing configuration data, which needs to be replicated if the server is
     // running as a replica set. Documents in this collection should represent some configuration
@@ -187,6 +191,9 @@ public:
     }
     bool isSystemDotViews() const {
         return coll() == kSystemDotViewsCollectionName;
+    }
+    bool isAdminDotSystemDotVersion() const {
+        return ((db() == "admin") && (coll() == "system.version"));
     }
     bool isConfigDB() const {
         return db() == "config";

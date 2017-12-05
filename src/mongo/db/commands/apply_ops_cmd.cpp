@@ -33,10 +33,12 @@
 #include <vector>
 
 #include "mongo/bson/util/bson_check.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -51,9 +53,32 @@
 #include "mongo/db/service_context.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/uuid.h"
 
 namespace mongo {
 namespace {
+
+bool checkCOperationType(const BSONObj& opObj, const StringData opName) {
+    BSONElement opTypeElem = opObj["op"];
+    checkBSONType(BSONType::String, opTypeElem);
+    const StringData opType = opTypeElem.checkAndGetStringData();
+
+    if (opType == "c"_sd) {
+        BSONElement oElem = opObj["o"];
+        checkBSONType(BSONType::Object, oElem);
+        BSONObj o = oElem.Obj();
+
+        if (o.firstElement().fieldNameStringData() == opName) {
+            return true;
+        }
+    }
+    return false;
+};
+
+UUID getUUIDFromOplogEntry(const BSONObj& oplogEntry) {
+    BSONElement uiElem = oplogEntry["ui"];
+    return uassertStatusOK(UUID::parse(uiElem));
+};
 
 Status checkOperationAuthorization(OperationContext* opCtx,
                                    const std::string& dbname,
@@ -78,17 +103,35 @@ Status checkOperationAuthorization(OperationContext* opCtx,
     checkBSONType(BSONType::String, nsElem);
     NamespaceString ns(oplogEntry["ns"].checkAndGetStringData());
 
+    if (oplogEntry.hasField("ui"_sd)) {
+        // ns by UUID overrides the ns specified if they are different.
+        auto& uuidCatalog = UUIDCatalog::get(opCtx);
+        NamespaceString uuidCollNS = uuidCatalog.lookupNSSByUUID(getUUIDFromOplogEntry(oplogEntry));
+        if (!uuidCollNS.isEmpty() && uuidCollNS != ns)
+            ns = uuidCollNS;
+    }
+
     BSONElement oElem = oplogEntry["o"];
     checkBSONType(BSONType::Object, oElem);
     BSONObj o = oElem.Obj();
 
     if (opType == "c"_sd) {
-        Command* command = Command::findCommand(o.firstElement().fieldNameStringData());
+        StringData commandName = o.firstElement().fieldNameStringData();
+        Command* command = Command::findCommand(commandName);
         if (!command) {
             return Status(ErrorCodes::FailedToParse, "Unrecognized command in op");
         }
 
-        return Command::checkAuthorization(command, opCtx, OpMsgRequest::fromDBAndBody(dbname, o));
+        std::string dbNameForAuthCheck = ns.db().toString();
+        if (commandName == "renameCollection") {
+            // renameCollection commands must be run on the 'admin' database. Its arguments are
+            // fully qualified namespaces. Catalog internals don't know the op produced by running
+            // renameCollection was originally run on 'admin', so we must restore this.
+            dbNameForAuthCheck = "admin";
+        }
+
+        return Command::checkAuthorization(
+            command, opCtx, OpMsgRequest::fromDBAndBody(dbNameForAuthCheck, o));
     }
 
     if (opType == "i"_sd) {
@@ -124,18 +167,34 @@ Status checkOperationAuthorization(OperationContext* opCtx,
     return Status(ErrorCodes::FailedToParse, "Unrecognized opType");
 }
 
-enum class ApplyOpsValidity { kOk, kNeedsSuperuser };
+enum class ApplyOpsValidity { kOk, kNeedsUseUUID, kNeedsForceAndUseUUID, kNeedsSuperuser };
 
 /**
- * Returns either kNeedsSuperuser, if the provided applyOps command contains an empty applyOps
- * command, or kOk if no other handlable conditions detected. May throw exceptions if the input
- * is malformed.
+ * Returns kNeedsSuperuser, if the provided applyOps command contains
+ * an empty applyOps command or createCollection/renameCollection commands are mixed in applyOps
+ * batch. Returns kNeedForceAndUseUUID if an operation contains a UUID, and will create a collection
+ * with the user-specified UUID. Returns
+ * kNeedsUseUUID if the operation contains a UUID. Returns kOk if no conditions
+ * which must be specially handled are detected. May throw exceptions if the input is malformed.
  */
 ApplyOpsValidity validateApplyOpsCommand(const BSONObj& cmdObj) {
     const size_t maxApplyOpsDepth = 10;
     std::stack<std::pair<size_t, BSONObj>> toCheck;
 
-    auto operationContainsApplyOps = [](const BSONObj& opObj) {
+    auto operationContainsUUID = [](const BSONObj& opObj) {
+        auto anyTopLevelElementIsUUID = [](const BSONObj& opObj) {
+            for (const BSONElement opElement : opObj) {
+                if (opElement.type() == BSONType::BinData &&
+                    opElement.binDataType() == BinDataType::newUUID) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (anyTopLevelElementIsUUID(opObj)) {
+            return true;
+        }
+
         BSONElement opTypeElem = opObj["op"];
         checkBSONType(BSONType::String, opTypeElem);
         const StringData opType = opTypeElem.checkAndGetStringData();
@@ -145,49 +204,86 @@ ApplyOpsValidity validateApplyOpsCommand(const BSONObj& cmdObj) {
             checkBSONType(BSONType::Object, oElem);
             BSONObj o = oElem.Obj();
 
-            if (o.firstElement().fieldNameStringData() == "applyOps"_sd) {
+            if (anyTopLevelElementIsUUID(o)) {
                 return true;
             }
         }
+
         return false;
     };
+
+    ApplyOpsValidity ret = ApplyOpsValidity::kOk;
 
     // Insert the top level applyOps command into the stack.
     toCheck.emplace(std::make_pair(0, cmdObj));
 
     while (!toCheck.empty()) {
-        std::pair<size_t, BSONObj> item = toCheck.top();
+        size_t depth;
+        BSONObj applyOpsObj;
+        std::tie(depth, applyOpsObj) = toCheck.top();
         toCheck.pop();
 
-        checkBSONType(BSONType::Array, item.second.firstElement());
+        checkBSONType(BSONType::Array, applyOpsObj.firstElement());
         // Check if the applyOps command is empty. This is probably not something that should
         // happen, so require a superuser to do this.
-        if (item.second.firstElement().Array().empty()) {
+        if (applyOpsObj.firstElement().Array().empty()) {
             return ApplyOpsValidity::kNeedsSuperuser;
         }
 
-        // For each applyOps command, iterate the ops.
-        for (BSONElement element : item.second.firstElement().Array()) {
-            checkBSONType(BSONType::Object, element);
-            BSONObj elementObj = element.Obj();
+        // createCollection and renameCollection are only allowed to be applied
+        // individually. Ensure there is no create/renameCollection in a batch
+        // of size greater than 1.
+        if (applyOpsObj.firstElement().Array().size() > 1) {
+            for (const BSONElement& e : applyOpsObj.firstElement().Array()) {
+                checkBSONType(BSONType::Object, e);
+                auto oplogEntry = e.Obj();
+                if (checkCOperationType(oplogEntry, "create"_sd) ||
+                    checkCOperationType(oplogEntry, "renameCollection"_sd)) {
+                    return ApplyOpsValidity::kNeedsSuperuser;
+                }
+            }
+        }
 
-            // If the op itself contains an applyOps...
-            if (operationContainsApplyOps(elementObj)) {
+        // For each applyOps command, iterate the ops.
+        for (BSONElement element : applyOpsObj.firstElement().Array()) {
+            checkBSONType(BSONType::Object, element);
+            BSONObj opObj = element.Obj();
+
+            bool opHasUUIDs = operationContainsUUID(opObj);
+
+            if (serverGlobalParams.featureCompatibility.getVersion() ==
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
+                uassert(ErrorCodes::OplogOperationUnsupported,
+                        "applyOps with UUID requires upgrading to FeatureCompatibilityVersion 3.6",
+                        !opHasUUIDs);
+            }
+
+            // If the op uses any UUIDs at all then the user must possess extra privileges.
+            if (opHasUUIDs && ret == ApplyOpsValidity::kOk)
+                ret = ApplyOpsValidity::kNeedsUseUUID;
+            if (opHasUUIDs && checkCOperationType(opObj, "create"_sd)) {
+                // If the op is 'c' and forces the server to ingest a collection
+                // with a specific, user defined UUID.
+                ret = ApplyOpsValidity::kNeedsForceAndUseUUID;
+            }
+
+            // If the op contains a nested applyOps...
+            if (checkCOperationType(opObj, "applyOps"_sd)) {
                 // And we've recursed too far, then bail out.
                 uassert(ErrorCodes::FailedToParse,
                         "Too many nested applyOps",
-                        item.first < maxApplyOpsDepth);
+                        depth < maxApplyOpsDepth);
 
                 // Otherwise, if the op contains an applyOps, but we haven't recursed too far:
                 // extract the applyOps command, and insert it into the stack.
-                checkBSONType(BSONType::Object, elementObj["o"]);
-                BSONObj oObj = elementObj["o"].Obj();
-                toCheck.emplace(std::make_pair(item.first + 1, std::move(oObj)));
+                checkBSONType(BSONType::Object, opObj["o"]);
+                BSONObj oObj = opObj["o"].Obj();
+                toCheck.emplace(std::make_pair(depth + 1, std::move(oObj)));
             }
         }
     }
 
-    return ApplyOpsValidity::kOk;
+    return ret;
 }
 
 class ApplyOpsCmd : public ErrmsgCommandDeprecated {
@@ -220,6 +316,21 @@ public:
                 return Status(ErrorCodes::Unauthorized, "Unauthorized");
             }
             return Status::OK();
+        }
+        if (validity == ApplyOpsValidity::kNeedsForceAndUseUUID) {
+            if (!authSession->isAuthorizedForActionsOnResource(
+                    ResourcePattern::forClusterResource(),
+                    {ActionType::forceUUID, ActionType::useUUID})) {
+                return Status(ErrorCodes::Unauthorized, "Unauthorized");
+            }
+            validity = ApplyOpsValidity::kOk;
+        }
+        if (validity == ApplyOpsValidity::kNeedsUseUUID) {
+            if (!authSession->isAuthorizedForActionsOnResource(
+                    ResourcePattern::forClusterResource(), ActionType::useUUID)) {
+                return Status(ErrorCodes::Unauthorized, "Unauthorized");
+            }
+            validity = ApplyOpsValidity::kOk;
         }
         fassert(40314, validity == ApplyOpsValidity::kOk);
 
@@ -295,7 +406,38 @@ public:
         // then we won’t wait for C to be replicated and it could be rolled back, even though B
         // was acknowledged. To fix this, we should wait for replication of the node’s last applied
         // OpTime if the last write operation was a no-op write.
-        auto applyOpsStatus = appendCommandStatus(result, applyOps(opCtx, dbname, cmdObj, &result));
+
+        // We set the OplogApplication::Mode argument based on the mode argument given in the
+        // command object. If no mode is given, default to the 'kApplyOpsCmd' mode.
+        repl::OplogApplication::Mode oplogApplicationMode =
+            repl::OplogApplication::Mode::kApplyOpsCmd;  // the default mode.
+        std::string oplogApplicationModeString;
+        auto status = bsonExtractStringField(
+            cmdObj, ApplyOps::kOplogApplicationModeFieldName, &oplogApplicationModeString);
+
+        if (status.isOK()) {
+            auto modeSW = repl::OplogApplication::parseMode(oplogApplicationModeString);
+            if (!modeSW.isOK()) {
+                // Unable to parse the mode argument.
+                return appendCommandStatus(
+                    result,
+                    modeSW.getStatus().withContext(str::stream() << "Could not parse " +
+                                                       ApplyOps::kOplogApplicationModeFieldName));
+            }
+            oplogApplicationMode = modeSW.getValue();
+        } else if (status != ErrorCodes::NoSuchKey) {
+            // NoSuchKey means the user did not supply a mode.
+            return appendCommandStatus(result,
+                                       Status(status.code(),
+                                              str::stream()
+                                                  << "Could not parse out "
+                                                  << ApplyOps::kOplogApplicationModeFieldName
+                                                  << ": "
+                                                  << status.reason()));
+        }
+
+        auto applyOpsStatus = appendCommandStatus(
+            result, applyOps(opCtx, dbname, cmdObj, oplogApplicationMode, &result));
 
         return applyOpsStatus;
     }

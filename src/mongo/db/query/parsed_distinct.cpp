@@ -207,7 +207,7 @@ StatusWith<ParsedDistinct> ParsedDistinct::parse(OperationContext* opCtx,
                                            expCtx,
                                            extensionsCallback,
                                            MatchExpressionParser::kAllowAllSpecialFeatures &
-                                               ~MatchExpressionParser::AllowedFeatures::kExpr);
+                                               ~MatchExpressionParser::AllowedFeatures::kIsolated);
     if (!cq.isOK()) {
         return cq.getStatus();
     }

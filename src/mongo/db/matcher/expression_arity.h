@@ -93,13 +93,6 @@ public:
     }
 
     /**
-     * Takes ownership of the MatchExpressions in 'expressions'.
-     */
-    void init(std::array<std::unique_ptr<MatchExpression>, nargs> expressions) {
-        _expressions = std::move(expressions);
-    }
-
-    /**
      * The name of this MatchExpression.
      */
     virtual StringData name() const = 0;
@@ -121,7 +114,6 @@ public:
      * Clones this MatchExpression by recursively cloning each sub-expression.
      */
     std::unique_ptr<MatchExpression> shallowClone() const final {
-        std::unique_ptr<T> clone = stdx::make_unique<T>();
         std::array<std::unique_ptr<MatchExpression>, nargs> clonedExpressions;
         std::transform(_expressions.begin(),
                        _expressions.end(),
@@ -130,7 +122,7 @@ public:
                            return orig ? orig->shallowClone()
                                        : std::unique_ptr<MatchExpression>(nullptr);
                        });
-        clone->_expressions = std::move(clonedExpressions);
+        std::unique_ptr<T> clone = stdx::make_unique<T>(std::move(clonedExpressions));
 
         if (getTag()) {
             clone->setTag(getTag()->clone());
@@ -140,13 +132,32 @@ public:
     }
 
 protected:
-    explicit FixedArityMatchExpression(MatchType type) : MatchExpression(type) {}
+    /**
+     * Takes ownership of the MatchExpressions in 'expressions'.
+     */
+    explicit FixedArityMatchExpression(
+        MatchType type, std::array<std::unique_ptr<MatchExpression>, nargs> expressions)
+        : MatchExpression(type), _expressions(std::move(expressions)) {}
 
     const auto& expressions() const {
         return _expressions;
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) {
+            for (auto& subExpression :
+                 static_cast<FixedArityMatchExpression&>(*expression)._expressions) {
+                // Since 'subExpression' is a reference to a member of the
+                // FixedArityMatchExpression's child array, this assignment replaces the original
+                // child with the optimized child.
+                subExpression = MatchExpression::optimize(std::move(subExpression));
+            }
+
+            return expression;
+        };
+    }
+
     std::array<std::unique_ptr<MatchExpression>, nargs> _expressions;
 };
 

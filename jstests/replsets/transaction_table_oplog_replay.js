@@ -4,6 +4,13 @@
 (function() {
     "use strict";
 
+    load("jstests/libs/retryable_writes_util.js");
+
+    if (!RetryableWritesUtil.storageEngineSupportsRetryableWrites(jsTest.options().storageEngine)) {
+        jsTestLog("Retryable writes are not supported, skipping test");
+        return;
+    }
+
     /**
      * Asserts the connection has a document in its transaction collection that has the given
      * sessionId, txnNumber, and lastWriteOptimeTs.
@@ -13,7 +20,7 @@
         let res = table.findOne({"_id.id": lsid.id});
 
         assert.eq(res.txnNum, txnNumber);
-        assert.eq(res.lastWriteOpTimeTs, ts);
+        assert.eq(res.lastWriteOpTime.ts, ts);
     }
 
     /**
@@ -180,10 +187,10 @@
         {
           delete: "foo",
           deletes: [
-              {q: {_id: 10}, limit: 0},
-              {q: {_id: 20}, limit: 0},
-              {q: {_id: 30}, limit: 0},
-              {q: {_id: 40}, limit: 0}
+              {q: {_id: 10}, limit: 1},
+              {q: {_id: 20}, limit: 1},
+              {q: {_id: 30}, limit: 1},
+              {q: {_id: 40}, limit: 1}
           ],
           ordered: true,
           lsid: {id: UUID()},

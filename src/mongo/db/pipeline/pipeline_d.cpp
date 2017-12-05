@@ -37,6 +37,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/concurrency/d_concurrency.h"
@@ -65,7 +66,9 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
+#include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/metadata_manager.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/stats/fill_locker_info.h"
@@ -74,7 +77,10 @@
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/storage/sorted_data_interface.h"
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
+#include "mongo/s/catalog_cache.h"
+#include "mongo/s/chunk_manager.h"
 #include "mongo/s/chunk_version.h"
+#include "mongo/s/grid.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/sock.h"
@@ -88,9 +94,11 @@ using std::string;
 using std::unique_ptr;
 
 namespace {
-class MongodImplementation final : public DocumentSourceNeedsMongod::MongodInterface {
+
+class MongodProcessInterface final
+    : public DocumentSourceNeedsMongoProcessInterface::MongoProcessInterface {
 public:
-    MongodImplementation(const intrusive_ptr<ExpressionContext>& ctx)
+    MongodProcessInterface(const intrusive_ptr<ExpressionContext>& ctx)
         : _ctx(ctx), _client(ctx->opCtx) {}
 
     void setOperationContext(OperationContext* opCtx) {
@@ -191,9 +199,10 @@ public:
 
     StatusWith<std::unique_ptr<Pipeline, Pipeline::Deleter>> makePipeline(
         const std::vector<BSONObj>& rawPipeline,
-        const boost::intrusive_ptr<ExpressionContext>& expCtx) final {
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        const MakePipelineOptions opts = MakePipelineOptions{}) final {
         // 'expCtx' may represent the settings for an aggregation pipeline on a different namespace
-        // than the DocumentSource this MongodImplementation is injected into, but both
+        // than the DocumentSource this MongodProcessInterface is injected into, but both
         // ExpressionContext instances should still have the same OperationContext.
         invariant(_ctx->opCtx == expCtx->opCtx);
 
@@ -202,9 +211,38 @@ public:
             return pipeline.getStatus();
         }
 
-        pipeline.getValue()->optimizePipeline();
+        if (opts.optimize) {
+            pipeline.getValue()->optimizePipeline();
+        }
 
-        AutoGetCollectionForReadCommand autoColl(expCtx->opCtx, expCtx->ns);
+        Status cursorStatus = Status::OK();
+
+        if (opts.attachCursorSource) {
+            cursorStatus = attachCursorSourceToPipeline(expCtx, pipeline.getValue().get());
+        } else if (opts.forceInjectMongoProcessInterface) {
+            PipelineD::injectMongodInterface(pipeline.getValue().get());
+        }
+
+        return cursorStatus.isOK() ? std::move(pipeline) : cursorStatus;
+    }
+
+    Status attachCursorSourceToPipeline(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                                        Pipeline* pipeline) final {
+        invariant(_ctx->opCtx == expCtx->opCtx);
+        invariant(pipeline->getSources().empty() ||
+                  !dynamic_cast<DocumentSourceCursor*>(pipeline->getSources().front().get()));
+
+        boost::optional<AutoGetCollectionForReadCommand> autoColl;
+        if (expCtx->uuid) {
+            autoColl.emplace(expCtx->opCtx, expCtx->ns.db(), *expCtx->uuid);
+            if (autoColl->getCollection() == nullptr) {
+                // The UUID doesn't exist anymore.
+                return {ErrorCodes::NamespaceNotFound,
+                        "No namespace with UUID " + expCtx->uuid->toString()};
+            }
+        } else {
+            autoColl.emplace(expCtx->opCtx, expCtx->ns);
+        }
 
         // makePipeline() is only called to perform secondary aggregation requests and expects the
         // collection representing the document source to be not-sharded. We confirm sharding state
@@ -214,12 +252,16 @@ public:
         // TODO SERVER-24960: Use CollectionShardingState::collectionIsSharded() to confirm sharding
         // state.
         auto css = CollectionShardingState::get(_ctx->opCtx, expCtx->ns);
-        uassert(4567, "from collection cannot be sharded", !bool(css->getMetadata()));
+        uassert(4567,
+                str::stream() << "from collection (" << expCtx->ns.ns() << ") cannot be sharded",
+                !bool(css->getMetadata()));
 
-        PipelineD::prepareCursorSource(
-            autoColl.getCollection(), expCtx->ns, nullptr, pipeline.getValue().get());
+        PipelineD::prepareCursorSource(autoColl->getCollection(), expCtx->ns, nullptr, pipeline);
+        // Optimize again, since there may be additional optimizations that can be done after adding
+        // the initial cursor stage.
+        pipeline->optimizePipeline();
 
-        return pipeline;
+        return Status::OK();
     }
 
     std::vector<BSONObj> getCurrentOps(CurrentOpConnectionsMode connMode,
@@ -310,9 +352,101 @@ public:
         return std::string();
     }
 
+    std::vector<FieldPath> collectDocumentKeyFields(UUID uuid) const final {
+        if (!ShardingState::get(_ctx->opCtx)->enabled()) {
+            return {"_id"};  // Nothing is sharded.
+        }
+
+        auto scm = [this]() -> ScopedCollectionMetadata {
+            AutoGetCollection autoColl(_ctx->opCtx, _ctx->ns, MODE_IS);
+            return CollectionShardingState::get(_ctx->opCtx, _ctx->ns)->getMetadata();
+        }();
+
+        if (!scm) {
+            return {"_id"};  // Collection is not sharded.
+        }
+
+        uassert(ErrorCodes::InvalidUUID,
+                str::stream() << "Collection " << _ctx->ns.ns()
+                              << " UUID differs from UUID on change stream operations",
+                scm->uuidMatches(uuid));
+
+        // Unpack the shard key.
+        std::vector<FieldPath> result;
+        bool gotId = false;
+        for (auto& field : scm->getKeyPatternFields()) {
+            result.emplace_back(field->dottedField());
+            gotId |= (result.back().fullPath() == "_id");
+        }
+        if (!gotId) {  // If not part of the shard key, "_id" comes last.
+            result.emplace_back("_id");
+        }
+        return result;
+    }
+
+    boost::optional<Document> lookupSingleDocument(const NamespaceString& nss,
+                                                   UUID collectionUUID,
+                                                   const Document& documentKey,
+                                                   boost::optional<BSONObj> readConcern) final {
+        invariant(!readConcern);  // We don't currently support a read concern on mongod - it's only
+                                  // expected to be necessary on mongos.
+                                  //
+        // Be sure to do the lookup using the collection default collation.
+        auto foreignExpCtx =
+            _ctx->copyWith(nss, collectionUUID, _getCollectionDefaultCollator(nss, collectionUUID));
+        auto swPipeline = makePipeline({BSON("$match" << documentKey)}, foreignExpCtx);
+        if (swPipeline == ErrorCodes::NamespaceNotFound) {
+            return boost::none;
+        }
+        auto pipeline = uassertStatusOK(std::move(swPipeline));
+
+        auto lookedUpDocument = pipeline->getNext();
+        if (auto next = pipeline->getNext()) {
+            uasserted(ErrorCodes::TooManyMatchingDocuments,
+                      str::stream() << "found more than one document with document key "
+                                    << documentKey.toString()
+                                    << " ["
+                                    << lookedUpDocument->toString()
+                                    << ", "
+                                    << next->toString()
+                                    << "]");
+        }
+        return lookedUpDocument;
+    }
+
+    std::vector<GenericCursor> getCursors(const intrusive_ptr<ExpressionContext>& expCtx) const {
+        return CursorManager::getAllCursors(expCtx->opCtx);
+    }
+
 private:
+    /**
+     * Looks up the collection default collator for the collection given by 'collectionUUID'. A
+     * collection's default collation is not allowed to change, so we cache the result to allow for
+     * quick lookups in the future. Looks up the collection by UUID, and returns 'nullptr' if the
+     * collection does not exist or if the collection's default collation is the simple collation.
+     */
+    std::unique_ptr<CollatorInterface> _getCollectionDefaultCollator(const NamespaceString& nss,
+                                                                     UUID collectionUUID) {
+        if (_collatorCache.find(collectionUUID) == _collatorCache.end()) {
+            AutoGetCollection autoColl(_ctx->opCtx, nss, collectionUUID, MODE_IS);
+            if (!autoColl.getCollection()) {
+                // This collection doesn't exist - since we looked up by UUID, it will never exist
+                // in the future, so we cache a null pointer as the default collation.
+                _collatorCache[collectionUUID] = nullptr;
+            } else {
+                auto defaultCollator = autoColl.getCollection()->getDefaultCollator();
+                // Clone the collator so that we can safely use the pointer if the collection
+                // disappears right after we release the lock.
+                _collatorCache[collectionUUID] =
+                    defaultCollator ? defaultCollator->clone() : nullptr;
+            }
+        }
+        return _collatorCache[collectionUUID] ? _collatorCache[collectionUUID]->clone() : nullptr;
+    }
+
     intrusive_ptr<ExpressionContext> _ctx;
     DBDirectClient _client;
+    std::map<UUID, std::unique_ptr<const CollatorInterface>> _collatorCache;
 };
 
 /**
@@ -422,12 +556,8 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> attemptToGetExe
 
     const ExtensionsCallbackReal extensionsCallback(pExpCtx->opCtx, &nss);
 
-    auto cq = CanonicalQuery::canonicalize(opCtx,
-                                           std::move(qr),
-                                           pExpCtx,
-                                           extensionsCallback,
-                                           MatchExpressionParser::AllowedFeatures::kText |
-                                               MatchExpressionParser::AllowedFeatures::kExpr);
+    auto cq = CanonicalQuery::canonicalize(
+        opCtx, std::move(qr), pExpCtx, extensionsCallback, Pipeline::kAllowedMatcherFeatures);
 
     if (!cq.isOK()) {
         // Return an error instead of uasserting, since there are cases where the combination of
@@ -450,6 +580,16 @@ BSONObj removeSortKeyMetaProjection(BSONObj projectionObj) {
 }
 }  // namespace
 
+void PipelineD::injectMongodInterface(Pipeline* pipeline) {
+    for (auto&& source : pipeline->_sources) {
+        if (auto needsMongod =
+                dynamic_cast<DocumentSourceNeedsMongoProcessInterface*>(source.get())) {
+            needsMongod->injectMongoProcessInterface(
+                std::make_shared<MongodProcessInterface>(pipeline->getContext()));
+        }
+    }
+}
+
 void PipelineD::prepareCursorSource(Collection* collection,
                                     const NamespaceString& nss,
                                     const AggregationRequest* aggRequest,
@@ -459,14 +599,8 @@ void PipelineD::prepareCursorSource(Collection* collection,
     // We will be modifying the source vector as we go.
     Pipeline::SourceContainer& sources = pipeline->_sources;
 
-    // Inject a MongodImplementation to sources that need them.
-    for (auto&& source : sources) {
-        DocumentSourceNeedsMongod* needsMongod =
-            dynamic_cast<DocumentSourceNeedsMongod*>(source.get());
-        if (needsMongod) {
-            needsMongod->injectMongodInterface(std::make_shared<MongodImplementation>(expCtx));
-        }
-    }
+    // Inject a MongodProcessInterface to sources that need them.
+    injectMongodInterface(pipeline);
 
     if (!sources.empty() && !sources.front()->constraints().requiresInputDocSource) {
         return;
@@ -617,6 +751,10 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
         plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
     }
 
+    if (expCtx->needsMerge && expCtx->tailableMode == TailableMode::kTailableAndAwaitData) {
+        plannerOpts |= QueryPlannerParams::TRACK_LATEST_OPLOG_TS;
+    }
+
     const BSONObj emptyProjection;
     const BSONObj metaSortProjection = BSON("$meta"
                                             << "sortKey");
@@ -764,11 +902,15 @@ void PipelineD::addCursorSource(Collection* collection,
 
         pSource->setProjection(deps.toProjection(), deps.toParsedDeps());
     }
-
-    // Add the initial DocumentSourceCursor to the front of the pipeline. Then optimize again in
-    // case the new stage can be absorbed with the first stages of the pipeline.
     pipeline->addInitialSource(pSource);
-    pipeline->optimizePipeline();
+}
+
+Timestamp PipelineD::getLatestOplogTimestamp(const Pipeline* pipeline) {
+    if (auto docSourceCursor =
+            dynamic_cast<DocumentSourceCursor*>(pipeline->_sources.front().get())) {
+        return docSourceCursor->getLatestOplogTimestamp();
+    }
+    return Timestamp();
 }
 
 std::string PipelineD::getPlanSummaryStr(const Pipeline* pPipeline) {

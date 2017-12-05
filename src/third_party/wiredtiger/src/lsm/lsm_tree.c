@@ -16,7 +16,7 @@ static int __lsm_tree_set_name(WT_SESSION_IMPL *, WT_LSM_TREE *, const char *);
 
 /*
  * __lsm_tree_discard_state --
- *	Free the metadata configuration state  related LSM tree pointers.
+ *	Free the metadata configuration state-related LSM tree pointers.
  */
 static void
 __lsm_tree_discard_state(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
@@ -102,8 +102,6 @@ __lsm_tree_discard(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 static void
 __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 {
-	int i;
-
 	/*
 	 * Stop any new work units being added. The barrier is necessary
 	 * because we rely on the state change being visible before checking
@@ -118,8 +116,7 @@ __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 	 * we know a user is holding a reference to the tree, so exclusive
 	 * access is not available.
 	 */
-	for (i = 0;
-	    lsm_tree->queue_ref > 0 || (final && lsm_tree->refcnt > 1); ++i) {
+	while (lsm_tree->queue_ref > 0 || (final && lsm_tree->refcnt > 1)) {
 		/*
 		 * Remove any work units from the manager queues. Do this step
 		 * repeatedly in case a work unit was in the process of being
@@ -133,10 +130,8 @@ __lsm_tree_close(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree, bool final)
 		 * other schema level operations will return EBUSY, even though
 		 * we're dropping the schema lock here.
 		 */
-		if (i % WT_THOUSAND == 0)
-			WT_WITHOUT_LOCKS(session,
-			    __wt_lsm_manager_clear_tree(session, lsm_tree));
-		__wt_yield();
+		WT_WITHOUT_LOCKS(session,
+		    __wt_lsm_manager_clear_tree(session, lsm_tree));
 	}
 }
 
@@ -329,6 +324,7 @@ int
 __wt_lsm_tree_create(WT_SESSION_IMPL *session,
     const char *uri, bool exclusive, const char *config)
 {
+	WT_CONFIG_ITEM cval;
 	WT_DECL_RET;
 	WT_LSM_TREE *lsm_tree;
 	const char *cfg[] =
@@ -345,6 +341,12 @@ __wt_lsm_tree_create(WT_SESSION_IMPL *session,
 	WT_RET_NOTFOUND_OK(ret);
 
 	if (!F_ISSET(S2C(session), WT_CONN_READONLY)) {
+		/* LSM doesn't yet support the 'r' format. */
+		WT_ERR(__wt_config_gets(session, cfg, "key_format", &cval));
+		if (WT_STRING_MATCH("r", cval.str, cval.len))
+			WT_ERR_MSG(session, EINVAL,
+			    "LSM trees do not support a key format of 'r'");
+
 		WT_ERR(__wt_config_merge(session, cfg, NULL, &metadata));
 		WT_ERR(__wt_metadata_insert(session, uri, metadata));
 	}
@@ -455,7 +457,7 @@ __lsm_tree_open_check(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 		    "must be at least %" PRIu64 " (%" PRIu64 "MB)",
 		    S2C(session)->cache_size,
 		    S2C(session)->cache_size / WT_MEGABYTE,
-		    required, required / WT_MEGABYTE);
+		    required, (required + (WT_MEGABYTE - 1))/ WT_MEGABYTE);
 	return (0);
 }
 
@@ -876,8 +878,8 @@ __wt_lsm_tree_drop(
 	WT_DECL_RET;
 	WT_LSM_CHUNK *chunk;
 	WT_LSM_TREE *lsm_tree;
-	int tret;
 	u_int i;
+	int tret;
 	bool locked;
 
 	locked = false;
@@ -933,9 +935,9 @@ __wt_lsm_tree_rename(WT_SESSION_IMPL *session,
 	WT_DECL_RET;
 	WT_LSM_CHUNK *chunk;
 	WT_LSM_TREE *lsm_tree;
-	const char *old;
-	int tret;
 	u_int i;
+	int tret;
+	const char *old;
 	bool locked;
 
 	old = NULL;
@@ -1066,7 +1068,8 @@ __wt_lsm_tree_readlock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 * Diagnostic: avoid deadlocks with the schema lock: if we need it for
 	 * an operation, we should already have it.
 	 */
-	F_SET(session, WT_SESSION_NO_EVICTION | WT_SESSION_NO_SCHEMA_LOCK);
+	F_SET(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_NO_SCHEMA_LOCK);
 }
 
 /*
@@ -1076,7 +1079,8 @@ __wt_lsm_tree_readlock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 void
 __wt_lsm_tree_readunlock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 {
-	F_CLR(session, WT_SESSION_NO_EVICTION | WT_SESSION_NO_SCHEMA_LOCK);
+	F_CLR(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_NO_SCHEMA_LOCK);
 
 	__wt_readunlock(session, &lsm_tree->rwlock);
 }
@@ -1094,7 +1098,8 @@ __wt_lsm_tree_writelock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 	 * Diagnostic: avoid deadlocks with the schema lock: if we need it for
 	 * an operation, we should already have it.
 	 */
-	F_SET(session, WT_SESSION_NO_EVICTION | WT_SESSION_NO_SCHEMA_LOCK);
+	F_SET(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_NO_SCHEMA_LOCK);
 }
 
 /*
@@ -1104,7 +1109,8 @@ __wt_lsm_tree_writelock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 void
 __wt_lsm_tree_writeunlock(WT_SESSION_IMPL *session, WT_LSM_TREE *lsm_tree)
 {
-	F_CLR(session, WT_SESSION_NO_EVICTION | WT_SESSION_NO_SCHEMA_LOCK);
+	F_CLR(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_NO_SCHEMA_LOCK);
 
 	__wt_writeunlock(session, &lsm_tree->rwlock);
 }
@@ -1121,7 +1127,7 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 	WT_LSM_TREE *lsm_tree;
 	uint64_t progress;
 	uint32_t i;
-	bool compacting, flushing, locked, ref;
+	bool compacting, flushing, locked, push_flush, ref;
 
 	compacting = flushing = locked = ref = false;
 	chunk = NULL;
@@ -1182,10 +1188,15 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 	/*
 	 * Set the switch transaction on the current chunk, if it
 	 * hasn't been set before.  This prevents further writes, so it
-	 * can be flushed by the checkpoint worker.
+	 * can be flushed by the checkpoint worker. If this is a newly
+	 * opened tree the primary chunk may already be stable. Only
+	 * push a flush work unit if necessary.
 	 */
+	push_flush = false;
 	if (lsm_tree->nchunks > 0 &&
-	    (chunk = lsm_tree->chunk[lsm_tree->nchunks - 1]) != NULL) {
+	    (chunk = lsm_tree->chunk[lsm_tree->nchunks - 1]) != NULL &&
+	    !F_ISSET(chunk, (WT_LSM_CHUNK_ONDISK | WT_LSM_CHUNK_STABLE))) {
+		push_flush = true;
 		if (chunk->switch_txn == WT_TXN_NONE) {
 			/*
 			 * Make sure any cursors open on the tree see the
@@ -1203,15 +1214,14 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 		ref = true;
 	}
 
-	locked = false;
-	__wt_lsm_tree_writeunlock(session, lsm_tree);
-
-	if (chunk != NULL) {
+	if (push_flush) {
 		__wt_verbose(session, WT_VERB_LSM,
 		    "Compact force flush %s flags 0x%" PRIx32
 		    " chunk %" PRIu32 " flags 0x%" PRIx32,
 		    name, lsm_tree->flags, chunk->id, chunk->flags);
 		flushing = true;
+		locked = false;
+		__wt_lsm_tree_writeunlock(session, lsm_tree);
 		/*
 		 * Make sure the in-memory chunk gets flushed do not push a
 		 * switch, because we don't want to create a new in-memory
@@ -1229,6 +1239,8 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 		F_SET(lsm_tree, WT_LSM_TREE_COMPACTING);
 		__wt_verbose(session, WT_VERB_LSM,
 		    "COMPACT: Start compacting %s", lsm_tree->name);
+		locked = false;
+		__wt_lsm_tree_writeunlock(session, lsm_tree);
 	}
 
 	/* Wait for the work unit queues to drain. */
@@ -1278,7 +1290,14 @@ __wt_lsm_compact(WT_SESSION_IMPL *session, const char *name, bool *skipp)
 			} else
 				break;
 		}
+
+		/*
+		 * Periodically check if we've timed out or eviction is stuck.
+		 * Quit if eviction is stuck, we're making the problem worse.
+		 */
 		WT_ERR(__wt_session_compact_check_timeout(session));
+		if (__wt_cache_stuck(session))
+			WT_ERR(EBUSY);
 		__wt_sleep(1, 0);
 
 		/*
@@ -1328,11 +1347,13 @@ __wt_lsm_tree_worker(WT_SESSION_IMPL *session,
 	WT_LSM_CHUNK *chunk;
 	WT_LSM_TREE *lsm_tree;
 	u_int i;
-	bool exclusive, locked;
+	bool exclusive, locked, need_release;
 
 	locked = false;
+	need_release = false;
 	exclusive = FLD_ISSET(open_flags, WT_DHANDLE_EXCLUSIVE);
 	WT_RET(__wt_lsm_tree_get(session, uri, exclusive, &lsm_tree));
+	need_release = true;
 
 	/*
 	 * We mark that we're busy using the tree to coordinate
@@ -1370,13 +1391,22 @@ __wt_lsm_tree_worker(WT_SESSION_IMPL *session,
 	if (FLD_ISSET(open_flags, WT_BTREE_ALTER)) {
 		WT_ERR(__wt_lsm_meta_write(session, lsm_tree, cfg[0]));
 		/*
-		 * We're about to read in the new configuration that
-		 * we just wrote.  Free the old ones.
+		 * We're about to discard the tree so we do not need to
+		 * release it later.
 		 */
-		__lsm_tree_discard_state(session, lsm_tree);
-		if ((ret = __wt_lsm_meta_read(session, lsm_tree)) != 0)
-			WT_PANIC_ERR(session, ret,
-			    "Failed to read updated LSM configuration");
+		need_release = false;
+		if (exclusive)
+			__wt_lsm_tree_writeunlock(session, lsm_tree);
+		else
+			__wt_lsm_tree_readunlock(session, lsm_tree);
+		locked = false;
+		/*
+		 * We rewrote the meta-data.  Discard the tree and the next
+		 * access will reopen it.
+		 */
+		WT_WITH_HANDLE_LIST_WRITE_LOCK(session,
+		    ret = __lsm_tree_discard(session, lsm_tree, false));
+		WT_ERR(ret);
 	}
 
 err:	if (locked) {
@@ -1385,6 +1415,7 @@ err:	if (locked) {
 		else
 			__wt_lsm_tree_readunlock(session, lsm_tree);
 	}
-	__wt_lsm_tree_release(session, lsm_tree);
+	if (need_release)
+		__wt_lsm_tree_release(session, lsm_tree);
 	return (ret);
 }

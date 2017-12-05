@@ -40,7 +40,6 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/config.h"
 #include "mongo/db/db.h"
-#include "mongo/db/diag_log.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_options_helpers.h"
@@ -131,12 +130,6 @@ Status addMongodOptions(moe::OptionSection* options) {
         .setSources(moe::SourceYAMLConfig);
 
     // Diagnostic Options
-
-    general_options
-        .addOptionChaining(
-            "diaglog", "diaglog", moe::Int, "DEPRECATED: 0=off 1=W 2=R 3=both 7=W+some reads")
-        .hidden()
-        .setSources(moe::SourceAllLegacy);
 
     general_options
         .addOptionChaining("operationProfiling.slowOpThresholdMs",
@@ -444,19 +437,25 @@ Status addMongodOptions(moe::OptionSection* options) {
                            "specify index prefetching behavior (if secondary) [none|_id_only|all]")
         .format("(:?none)|(:?_id_only)|(:?all)", "(none/_id_only/all)");
 
-    rs_options.addOptionChaining("replication.enableMajorityReadConcern",
-                                 "enableMajorityReadConcern",
-                                 moe::Switch,
-                                 "enables majority readConcern");
+    // `enableMajorityReadConcern` is always enabled starting in 3.6, regardless of user
+    // settings. We're leaving the option in to not break existing deployment scripts. A warning
+    // will appear if explicitly set to false.
+    rs_options
+        .addOptionChaining("replication.enableMajorityReadConcern",
+                           "enableMajorityReadConcern",
+                           moe::Switch,
+                           "enables majority readConcern")
+        .setDefault(moe::Value(true));
 
     // Sharding Options
 
     sharding_options
-        .addOptionChaining("configsvr",
-                           "configsvr",
-                           moe::Switch,
-                           "declare this is a config db of a cluster; default port 27019; "
-                           "default dir /data/configdb")
+        .addOptionChaining(
+            "configsvr",
+            "configsvr",
+            moe::Switch,
+            "declare this is a config db of a cluster; default port 27019; "
+            "default dir /data/configdb; requires starting this server as a replica set")
         .setSources(moe::SourceAllLegacy)
         .incompatibleWith("shardsvr")
         .incompatibleWith("nojournal");
@@ -465,7 +464,8 @@ Status addMongodOptions(moe::OptionSection* options) {
         .addOptionChaining("shardsvr",
                            "shardsvr",
                            moe::Switch,
-                           "declare this is a shard db of a cluster; default port 27018")
+                           "declare this is a shard db of a cluster; default port 27018; requires "
+                           "starting this server as a replica set")
         .setSources(moe::SourceAllLegacy)
         .incompatibleWith("configsvr")
         .incompatibleWith("master")
@@ -1076,15 +1076,6 @@ Status storeMongodOptions(const moe::Environment& params) {
     if (params.count("storage.mmapv1.smallFiles")) {
         mmapv1GlobalOptions.smallfiles = params["storage.mmapv1.smallFiles"].as<bool>();
     }
-    if (params.count("diaglog")) {
-        warning() << "--diaglog is deprecated and will be removed in a future release"
-                  << startupWarningsLog;
-        int x = params["diaglog"].as<int>();
-        if (x < 0 || x > 7) {
-            return Status(ErrorCodes::BadValue, "can't interpret --diaglog setting");
-        }
-        _diaglog.setLevel(x);
-    }
 
     if ((params.count("storage.journal.enabled") &&
          params["storage.journal.enabled"].as<bool>() == true) &&
@@ -1145,8 +1136,11 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
 
     if (params.count("replication.enableMajorityReadConcern")) {
-        replSettings.setMajorityReadConcernEnabled(
-            params["replication.enableMajorityReadConcern"].as<bool>());
+        bool val = params["replication.enableMajorityReadConcern"].as<bool>();
+        if (!val) {
+            warning() << "enableMajorityReadConcern startup parameter was supplied, but its value "
+                         "was ignored; majority read concern cannot be disabled.";
+        }
     }
 
     if (params.count("storage.indexBuildRetry")) {
@@ -1210,9 +1204,20 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
     if (params.count("sharding.clusterRole")) {
         auto clusterRoleParam = params["sharding.clusterRole"].as<std::string>();
+
+        if (!(params.count("replication.replSet") || params.count("replication.replSetName")) &&
+            !Command::testCommandsEnabled) {
+            return {
+                ErrorCodes::InvalidOptions,
+                str::stream()
+                    << "Cannot start a "
+                    << clusterRoleParam
+                    << " as a standalone server. Please start this node as a replica "
+                       "set using --replSet or the config file option replication.replSetName."};
+        }
+
         if (clusterRoleParam == "configsvr") {
             serverGlobalParams.clusterRole = ClusterRole::ConfigServer;
-            replSettings.setMajorityReadConcernEnabled(true);
 
             // If we haven't explicitly specified a journal option, default journaling to true for
             // the config server role

@@ -22,8 +22,8 @@ __lsm_copy_chunks(WT_SESSION_IMPL *session,
     WT_LSM_TREE *lsm_tree, WT_LSM_WORKER_COOKIE *cookie, bool old_chunks)
 {
 	WT_DECL_RET;
-	u_int i, nchunks;
 	size_t alloc;
+	u_int i, nchunks;
 
 	/* Always return zero chunks on error. */
 	cookie->nchunks = 0;
@@ -77,6 +77,7 @@ __wt_lsm_get_chunk_to_flush(WT_SESSION_IMPL *session,
 	uint32_t i;
 
 	*chunkp = NULL;
+
 	chunk = evict_chunk = flush_chunk = NULL;
 
 	WT_ASSERT(session, lsm_tree->queue_ref > 0);
@@ -130,7 +131,6 @@ __wt_lsm_get_chunk_to_flush(WT_SESSION_IMPL *session,
 	}
 
 err:	__wt_lsm_tree_readunlock(session, lsm_tree);
-
 	*chunkp = chunk;
 	return (ret);
 }
@@ -168,8 +168,8 @@ __wt_lsm_work_switch(
 
 	/* We've become responsible for freeing the work unit. */
 	entry = *entryp;
-	*ran = false;
 	*entryp = NULL;
+	*ran = false;
 
 	if (entry->lsm_tree->need_switch) {
 		WT_WITH_SCHEMA_LOCK(session,
@@ -320,11 +320,12 @@ int
 __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
     WT_LSM_TREE *lsm_tree, WT_LSM_CHUNK *chunk)
 {
+	WT_BTREE *btree;
 	WT_DECL_RET;
 	WT_TXN_ISOLATION saved_isolation;
-	bool flush_set, release_btree;
+	bool flush_set, release_dhandle;
 
-	flush_set = release_btree = false;
+	flush_set = release_dhandle = false;
 
 	/*
 	 * If the chunk is already checkpointed, make sure it is also evicted.
@@ -374,7 +375,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	 * take a long time.
 	 */
 	WT_ERR(__wt_session_get_dhandle(session, chunk->uri, NULL, NULL, 0));
-	release_btree = true;
+	release_dhandle = true;
 
 	/*
 	 * Set read-uncommitted: we have already checked that all of the updates
@@ -407,18 +408,15 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	if (ret != 0)
 		WT_ERR_MSG(session, ret, "LSM checkpoint");
 
-	release_btree = false;
-	WT_ERR(__wt_session_release_dhandle(session));
-
 	/* Now the file is written, get the chunk size. */
 	WT_ERR(__wt_lsm_tree_set_chunk_size(session, chunk));
 
-	/* Update the flush timestamp to help track ongoing progress. */
-	__wt_epoch(session, &lsm_tree->last_flush_time);
 	++lsm_tree->chunks_flushed;
 
 	/* Lock the tree, mark the chunk as on disk and update the metadata. */
 	__wt_lsm_tree_writelock(session, lsm_tree);
+	/* Update the flush timestamp to help track ongoing progress. */
+	__wt_epoch(session, &lsm_tree->last_flush_time);
 	F_SET(chunk, WT_LSM_CHUNK_ONDISK);
 	ret = __wt_lsm_meta_write(session, lsm_tree, NULL);
 	++lsm_tree->dsk_gen;
@@ -428,6 +426,19 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 	__wt_lsm_tree_writeunlock(session, lsm_tree);
 	if (ret != 0)
 		WT_ERR_MSG(session, ret, "LSM metadata write");
+
+	/*
+	 * Enable eviction on the live chunk so it doesn't block the cache.
+	 * Future reads should direct to the on-disk chunk anyway.
+	 */
+	btree = session->dhandle->handle;
+	if (btree->evict_disabled_open) {
+		btree->evict_disabled_open = false;
+		__wt_evict_file_exclusive_off(session);
+	}
+
+	release_dhandle = false;
+	WT_ERR(__wt_session_release_dhandle(session));
 
 	WT_PUBLISH(chunk->flushing, 0);
 	flush_set = false;
@@ -448,7 +459,7 @@ __wt_lsm_checkpoint_chunk(WT_SESSION_IMPL *session,
 
 err:	if (flush_set)
 		WT_PUBLISH(chunk->flushing, 0);
-	if (release_btree)
+	if (release_dhandle)
 		WT_TRET(__wt_session_release_dhandle(session));
 
 	return (ret);
@@ -492,7 +503,8 @@ __lsm_bloom_create(WT_SESSION_IMPL *session,
 	 * ourselves to get stuck creating bloom filters, the entire tree
 	 * can stall since there may be no worker threads available to flush.
 	 */
-	F_SET(session, WT_SESSION_NO_CACHE | WT_SESSION_NO_EVICTION);
+	F_SET(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_READ_WONT_NEED);
 	for (insert_count = 0; (ret = src->next(src)) == 0; insert_count++) {
 		WT_ERR(src->get_key(src, &key));
 		__wt_bloom_insert(bloom, &key);
@@ -503,7 +515,7 @@ __lsm_bloom_create(WT_SESSION_IMPL *session,
 	WT_TRET(__wt_bloom_finalize(bloom));
 	WT_ERR(ret);
 
-	F_CLR(session, WT_SESSION_NO_CACHE);
+	F_CLR(session, WT_SESSION_READ_WONT_NEED);
 
 	/* Load the new Bloom filter into cache. */
 	WT_CLEAR(key);
@@ -526,7 +538,8 @@ __lsm_bloom_create(WT_SESSION_IMPL *session,
 
 err:	if (bloom != NULL)
 		WT_TRET(__wt_bloom_close(bloom));
-	F_CLR(session, WT_SESSION_NO_CACHE | WT_SESSION_NO_EVICTION);
+	F_CLR(session,
+	    WT_SESSION_IGNORE_CACHE_SIZE | WT_SESSION_READ_WONT_NEED);
 	return (ret);
 }
 

@@ -38,7 +38,6 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/storage/snapshot_name.h"
 #include "mongo/stdx/functional.h"
 
 namespace mongo {
@@ -64,9 +63,8 @@ public:
     InsertStatement(StmtId statementId, BSONObj toInsert) : stmtId(statementId), doc(toInsert) {}
     InsertStatement(StmtId statementId, BSONObj toInsert, OplogSlot os)
         : stmtId(statementId), oplogSlot(os), doc(toInsert) {}
-    InsertStatement(BSONObj toInsert, SnapshotName ts)
-        : oplogSlot(repl::OpTime(Timestamp(ts.asU64()), repl::OpTime::kUninitializedTerm), 0),
-          doc(toInsert) {}
+    InsertStatement(BSONObj toInsert, Timestamp ts, long long term)
+        : oplogSlot(repl::OpTime(ts, term), 0), doc(toInsert) {}
 
     StmtId stmtId = kUninitializedStmtId;
     OplogSlot oplogSlot;
@@ -79,9 +77,9 @@ class ReplSettings;
 struct OplogLink {
     OplogLink() = default;
 
-    Timestamp prevTs;
-    Timestamp preImageTs;
-    Timestamp postImageTs;
+    OpTime prevOpTime;
+    OpTime preImageOpTime;
+    OpTime postImageOpTime;
 };
 
 /**
@@ -103,15 +101,16 @@ extern int OPLOG_VERSION;
 
 /**
  * Log insert(s) to the local oplog.
- * Returns the OpTime of the last insert.
+ * Returns the OpTime of every insert.
  */
-OpTime logInsertOps(OperationContext* opCtx,
-                    const NamespaceString& nss,
-                    OptionalCollectionUUID uuid,
-                    Session* session,
-                    std::vector<InsertStatement>::const_iterator begin,
-                    std::vector<InsertStatement>::const_iterator end,
-                    bool fromMigrate);
+std::vector<OpTime> logInsertOps(OperationContext* opCtx,
+                                 const NamespaceString& nss,
+                                 OptionalCollectionUUID uuid,
+                                 Session* session,
+                                 std::vector<InsertStatement>::const_iterator begin,
+                                 std::vector<InsertStatement>::const_iterator end,
+                                 bool fromMigrate,
+                                 Date_t wallClockTime);
 
 /**
  * @param opstr
@@ -125,6 +124,9 @@ OpTime logInsertOps(OperationContext* opCtx,
  * For 'u' records, 'obj' captures the mutation made to the object but not
  * the object itself. 'o2' captures the the criteria for the object that will be modified.
  *
+ * wallClockTime this specifies the wall-clock timestamp of then this oplog entry was generated. It
+ *   is purely informational, may not be monotonically increasing and is not interpreted in any way
+ *   by the replication subsystem.
  * oplogLink this contains the timestamp that points to the previous write that will be
  *   linked via prevTs, and the timestamps of the oplog entry that contains the document
  *   before/after update was applied. The timestamps are ignored if isNull() is true.
@@ -139,6 +141,7 @@ OpTime logOp(OperationContext* opCtx,
              const BSONObj& obj,
              const BSONObj* o2,
              bool fromMigrate,
+             Date_t wallClockTime,
              const OperationSessionInfo& sessionInfo,
              StmtId stmtId,
              const OplogLink& oplogLink);
@@ -162,29 +165,72 @@ using IncrementOpsAppliedStatsFn = stdx::function<void()>;
 std::pair<BSONObj, NamespaceString> prepForApplyOpsIndexInsert(const BSONElement& fieldO,
                                                                const BSONObj& op,
                                                                const NamespaceString& requestNss);
+
+/**
+ * This class represents the different modes of oplog application that are used within the
+ * replication system. Oplog application semantics may differ depending on the mode.
+ *
+ * It also includes functions to serialize/deserialize the oplog application mode.
+ */
+class OplogApplication {
+public:
+    static constexpr StringData kInitialSyncOplogApplicationMode = "InitialSync"_sd;
+    static constexpr StringData kMasterSlaveOplogApplicationMode = "MasterSlave"_sd;
+    static constexpr StringData kRecoveringOplogApplicationMode = "Recovering"_sd;
+    static constexpr StringData kSecondaryOplogApplicationMode = "Secondary"_sd;
+    static constexpr StringData kApplyOpsCmdOplogApplicationMode = "ApplyOps"_sd;
+
+    enum class Mode {
+        // Used during the oplog application phase of the initial sync process.
+        kInitialSync,
+
+        // Used when a slave is applying operations from a master node in master-slave.
+        kMasterSlave,
+
+        // Used when we are applying oplog operations to recover the database state following an
+        // unclean shutdown, or when we are recovering from the oplog after we rollback to a
+        // checkpoint.
+        kRecovering,
+
+        // Used when a secondary node is applying oplog operations from the primary during steady
+        // state replication.
+        kSecondary,
+
+        // Used when we are applying operations as part of a direct client invocation of the
+        // 'applyOps' command.
+        kApplyOpsCmd
+    };
+
+    static StringData modeToString(Mode mode);
+
+    static StatusWith<Mode> parseMode(const std::string& mode);
+};
+
+inline std::ostream& operator<<(std::ostream& s, OplogApplication::Mode mode) {
+    return (s << OplogApplication::modeToString(mode));
+}
+
 /**
  * Take a non-command op and apply it locally
  * Used for applying from an oplog
- * @param inSteadyStateReplication convert some updates to upserts for idempotency reasons
+ * @param alwaysUpsert convert some updates to upserts for idempotency reasons
+ * @param mode specifies what oplog application mode we are in
  * @param incrementOpsAppliedStats is called whenever an op is applied.
  * Returns failure status if the op was an update that could not be applied.
  */
 Status applyOperation_inlock(OperationContext* opCtx,
                              Database* db,
                              const BSONObj& op,
-                             bool inSteadyStateReplication = false,
+                             bool alwaysUpsert,
+                             OplogApplication::Mode mode,
                              IncrementOpsAppliedStatsFn incrementOpsAppliedStats = {});
 
 /**
  * Take a command op and apply it locally
  * Used for applying from an oplog
- * inSteadyStateReplication indicates whether we are in steady state replication, rather than
- * initial sync.
  * Returns failure status if the op that could not be applied.
  */
-Status applyCommand_inlock(OperationContext* opCtx,
-                           const BSONObj& op,
-                           bool inSteadyStateReplication);
+Status applyCommand_inlock(OperationContext* opCtx, const BSONObj& op, OplogApplication::Mode mode);
 
 /**
  * Initializes the global Timestamp with the value from the timestamp of the last oplog entry.

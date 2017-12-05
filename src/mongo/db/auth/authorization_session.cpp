@@ -466,35 +466,57 @@ Status AuthorizationSession::checkAuthForDelete(OperationContext* opCtx,
 }
 
 Status AuthorizationSession::checkAuthForKillCursors(const NamespaceString& ns,
-                                                     long long cursorID) {
-    // See implementation comments in checkAuthForGetMore().  This method looks very similar.
-
-    // SERVER-20364 Check for find or killCursor privileges until we have a way of associating
-    // a cursor with an owner.
-    if (ns.isListCollectionsCursorNS()) {
-        if (!(isAuthorizedForActionsOnResource(ResourcePattern::forDatabaseName(ns.db()),
-                                               ActionType::killCursors) ||
-              isAuthorizedToListCollections(ns.db()))) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized to kill listCollections cursor on "
-                                        << ns.ns());
-        }
-    } else if (ns.isListIndexesCursorNS()) {
-        NamespaceString targetNS = ns.getTargetNSForListIndexes();
-        if (!(isAuthorizedForActionsOnNamespace(targetNS, ActionType::killCursors) ||
-              isAuthorizedForActionsOnNamespace(targetNS, ActionType::listIndexes))) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized to kill listIndexes cursor on "
-                                        << ns.ns());
-        }
-    } else {
-        if (!(isAuthorizedForActionsOnNamespace(ns, ActionType::killCursors) ||
-              isAuthorizedForActionsOnNamespace(ns, ActionType::find))) {
-            return Status(ErrorCodes::Unauthorized,
-                          str::stream() << "not authorized to kill cursor on " << ns.ns());
-        }
+                                                     UserNameIterator cursorOwner) {
+    if (isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
+                                         ActionType::killAnyCursor)) {
+        return Status::OK();
     }
-    return Status::OK();
+
+    if (ns.isListCollectionsCursorNS()) {
+        // listCollections: Target the database being enumerated.
+        if (isAuthorizedForActionsOnResource(ResourcePattern::forDatabaseName(ns.db()),
+                                             ActionType::killAnyCursor)) {
+            return Status::OK();
+        }
+        const bool canKill =
+            isAuthorizedForActionsOnResource(ResourcePattern::forDatabaseName(ns.db()),
+                                             ActionType::killCursors) ||
+            isAuthorizedToListCollections(ns.db());
+        if (canKill && isCoauthorizedWith(cursorOwner)) {
+            return Status::OK();
+        }
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "not authorized to kill listCollections cursor on "
+                                    << ns.ns());
+    } else if (ns.isListIndexesCursorNS()) {
+
+        // listIndexes: Target the underlying collection.
+        NamespaceString targetNS = ns.getTargetNSForListIndexes();
+        if (isAuthorizedForActionsOnNamespace(targetNS, ActionType::killAnyCursor)) {
+            return Status::OK();
+        }
+        const bool canKill = isAuthorizedForActionsOnNamespace(targetNS, ActionType::killCursors) ||
+            isAuthorizedForActionsOnNamespace(targetNS, ActionType::listIndexes);
+        if (canKill && isCoauthorizedWith(cursorOwner)) {
+            return Status::OK();
+        }
+
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "not authorized to kill listIndexes cursor on " << ns.ns());
+    } else {
+
+        // Otherwise: Target the collection as named.
+        if (isAuthorizedForActionsOnNamespace(ns, ActionType::killAnyCursor)) {
+            return Status::OK();
+        }
+        const bool canKill = isAuthorizedForActionsOnNamespace(ns, ActionType::killCursors) ||
+            isAuthorizedForActionsOnNamespace(ns, ActionType::find);
+        if (canKill && isCoauthorizedWith(cursorOwner)) {
+            return Status::OK();
+        }
+        return Status(ErrorCodes::Unauthorized,
+                      str::stream() << "not authorized to kill cursor on " << ns.ns());
+    }
 }
 
 Status AuthorizationSession::checkAuthForCreate(const NamespaceString& ns,
@@ -599,6 +621,21 @@ Status AuthorizationSession::checkAuthorizedToRevokePrivilege(const Privilege& p
                       " must be authorized to revoke roles from the admin database");
     }
     return Status::OK();
+}
+
+bool AuthorizationSession::isAuthorizedToParseNamespaceElement(const BSONElement& element) {
+    const bool isUUID = element.type() == BinData && element.binDataType() == BinDataType::newUUID;
+
+    uassert(ErrorCodes::InvalidNamespace,
+            "Failed to parse namespace element",
+            element.type() == String || isUUID);
+
+    if (isUUID) {
+        return isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
+                                                ActionType::useUUID);
+    }
+
+    return true;
 }
 
 bool AuthorizationSession::isAuthorizedToCreateRole(
@@ -960,6 +997,10 @@ UserNameIterator AuthorizationSession::getImpersonatedUserNames() {
 
 RoleNameIterator AuthorizationSession::getImpersonatedRoleNames() {
     return makeRoleNameIterator(_impersonatedRoleNames.begin(), _impersonatedRoleNames.end());
+}
+
+bool AuthorizationSession::isUsingLocalhostBypass() {
+    return getAuthorizationManager().isAuthEnabled() && _externalState->shouldAllowLocalhost();
 }
 
 // Clear the vectors of impersonated usernames and roles.

@@ -45,6 +45,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/balancer_configuration.h"
@@ -64,6 +65,7 @@
 
 namespace mongo {
 
+using CollectionUUID = UUID;
 using std::string;
 using std::vector;
 using std::set;
@@ -122,8 +124,13 @@ ChunkVersion createFirstChunks(OperationContext* opCtx,
                 0));
         }
 
-        // Since docs already exist for the collection, must use primary shard
-        shardIds.push_back(primaryShardId);
+        // If docs already exist for the collection, must use primary shard,
+        // otherwise defer to passed-in distribution option.
+        if (numObjects == 0 && distributeInitialChunks) {
+            Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
+        } else {
+            shardIds.push_back(primaryShardId);
+        }
     } else {
         // Make sure points are unique and ordered
         auto orderedPts = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
@@ -221,12 +228,11 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                                              const BSONObj& defaultCollation,
                                              bool unique,
                                              const vector<BSONObj>& initPoints,
-                                             const bool distributeInitialChunks) {
+                                             const bool distributeInitialChunks,
+                                             const ShardId& dbPrimaryShardId) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
     const auto shardRegistry = Grid::get(opCtx)->shardRegistry();
 
-    auto dbEntry = uassertStatusOK(catalogClient->getDatabase(opCtx, nsToDatabase(ns))).value;
-    auto dbPrimaryShardId = dbEntry.getPrimary();
     const auto primaryShard = uassertStatusOK(shardRegistry->getShard(opCtx, dbPrimaryShardId));
 
     // Fail if there are partially written chunks from a previous failed shardCollection.
@@ -282,6 +288,9 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
             opCtx, ns, coll, true /*upsert*/));
     }
 
+    auto shard = uassertStatusOK(shardRegistry->getShard(opCtx, dbPrimaryShardId));
+    invariant(!shard->isConfig());
+
     // Tell the primary mongod to refresh its data
     // TODO:  Think the real fix here is for mongos to just
     //        assume that all collections are sharded, when we get there
@@ -292,8 +301,6 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
         NamespaceString(ns),
         collVersion,
         true);
-
-    auto shard = uassertStatusOK(shardRegistry->getShard(opCtx, dbPrimaryShardId));
 
     auto ssvResponse =
         shard->runCommandWithFixedRetryAttempts(opCtx,
@@ -315,6 +322,51 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                     BSON("version" << collVersion.toString()),
                     ShardingCatalogClient::kMajorityWriteConcern)
         .transitional_ignore();
+}
+
+void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(OperationContext* opCtx) {
+    // Retrieve all collections in config.collections that do not have a UUID. Some collections
+    // may already have a UUID if an earlier upgrade attempt failed after making some progress.
+    auto shardedColls =
+        uassertStatusOK(
+            Grid::get(opCtx)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+                opCtx,
+                ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+                repl::ReadConcernLevel::kLocalReadConcern,
+                NamespaceString(CollectionType::ConfigNS),
+                BSON(CollectionType::uuid.name() << BSON("$exists" << false) << "dropped" << false),
+                BSONObj(),   // sort
+                boost::none  // limit
+                ))
+            .docs;
+
+    if (shardedColls.empty()) {
+        LOG(0) << "all sharded collections already have UUIDs";
+
+        // We did a local read of the collections collection above and found that all sharded
+        // collections already have UUIDs. However, the data may not be majority committed (a
+        // previous setFCV attempt may have failed with a write concern error). Since the current
+        // Client doesn't know the opTime of the last write to the collections collection, make it
+        // wait for the last opTime in the system when we wait for writeConcern.
+        repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
+        return;
+    }
+
+    // Generate and persist a new UUID for each collection that did not have a UUID.
+    LOG(0) << "generating UUIDs for " << shardedColls.size()
+           << " sharded collections that do not yet have a UUID";
+    for (auto& coll : shardedColls) {
+        auto collType = uassertStatusOK(CollectionType::fromBSON(coll));
+        invariant(!collType.getUUID());
+
+        auto uuid = CollectionUUID::gen();
+        collType.setUUID(uuid);
+
+        uassertStatusOK(ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
+            opCtx, collType.getNs().ns(), collType, false /* upsert */));
+        LOG(2) << "updated entry in config.collections for sharded collection " << collType.getNs()
+               << " with generated UUID " << uuid;
+    }
 }
 
 }  // namespace mongo

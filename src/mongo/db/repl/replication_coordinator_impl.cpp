@@ -90,6 +90,7 @@
 namespace mongo {
 namespace repl {
 
+MONGO_FP_DECLARE(stepdownHangBeforePerformingPostMemberStateUpdateActions);
 MONGO_FP_DECLARE(transitionToPrimaryHangBeforeTakingGlobalExclusiveLock);
 
 using CallbackArgs = executor::TaskExecutor::CallbackArgs;
@@ -107,6 +108,24 @@ const OperationContext::Decoration<bool> alwaysAllowNonLocalWrites =
     OperationContext::declareDecoration<bool>();
 
 MONGO_EXPORT_SERVER_PARAMETER(numInitialSyncAttempts, int, 10);
+
+// Number of seconds between noop writer writes.
+MONGO_EXPORT_STARTUP_SERVER_PARAMETER(periodicNoopIntervalSecs, int, 10);
+
+MONGO_INITIALIZER(periodicNoopIntervalSecs)(InitializerContext*) {
+    if (periodicNoopIntervalSecs <= 0) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream() << "Periodic noop interval must be greater than 0 seconds: "
+                                    << periodicNoopIntervalSecs);
+    } else if (periodicNoopIntervalSecs > 10) {
+        return Status(ErrorCodes::BadValue,
+                      str::stream()
+                          << "Periodic noop interval must be less than or equal to 10 seconds: "
+                          << periodicNoopIntervalSecs);
+    }
+    return Status::OK();
+}
+
 
 /**
  * Allows non-local writes despite _canAcceptNonlocalWrites being false on a single OperationContext
@@ -159,7 +178,15 @@ BSONObj incrementConfigVersionByRandom(BSONObj config) {
     return builder.obj();
 }
 
-const Seconds kNoopWriterPeriod(10);
+// This is a special flag that allows for testing of snapshot behavior by skipping the replication
+// related checks and isolating the storage/query side of snapshotting.
+// SERVER-31304 rename this parameter to something more appropriate.
+bool testingSnapshotBehaviorInIsolation = false;
+ExportedServerParameter<bool, ServerParameterType::kStartupOnly> TestingSnapshotBehaviorInIsolation(
+    ServerParameterSet::getGlobal(),
+    "testingSnapshotBehaviorInIsolation",
+    &testingSnapshotBehaviorInIsolation);
+
 }  // namespace
 
 ReplicationCoordinatorImpl::Waiter::Waiter(OpTime _opTime, const WriteConcernOptions* _writeConcern)
@@ -288,8 +315,9 @@ InitialSyncerOptions createInitialSyncerOptions(
     ReplicationCoordinator* replCoord, ReplicationCoordinatorExternalState* externalState) {
     InitialSyncerOptions options;
     options.getMyLastOptime = [replCoord]() { return replCoord->getMyLastAppliedOpTime(); };
-    options.setMyLastOptime = [replCoord, externalState](const OpTime& opTime) {
-        replCoord->setMyLastAppliedOpTime(opTime);
+    options.setMyLastOptime = [replCoord, externalState](
+        const OpTime& opTime, ReplicationCoordinator::DataConsistency consistency) {
+        replCoord->setMyLastAppliedOpTimeForward(opTime, consistency);
         externalState->setGlobalTimestamp(replCoord->getServiceContext(), opTime.getTimestamp());
     };
     options.resetOptimes = [replCoord]() { replCoord->resetMyLastOpTimes(); };
@@ -327,13 +355,15 @@ ReplicationCoordinatorImpl::ReplicationCoordinatorImpl(
       _storage(storage),
       _random(prngSeed) {
 
+    _termShadow.store(OpTime::kUninitializedTerm);
+
     invariant(_service);
 
     if (!isReplEnabled()) {
         return;
     }
 
-    _externalState->setupNoopWriter(kNoopWriterPeriod);
+    _externalState->setupNoopWriter(Seconds(periodicNoopIntervalSecs));
 }
 
 ReplicationCoordinatorImpl::~ReplicationCoordinatorImpl() = default;
@@ -402,7 +432,7 @@ OpTime ReplicationCoordinatorImpl::getCurrentCommittedSnapshotOpTime() const {
 
 OpTime ReplicationCoordinatorImpl::_getCurrentCommittedSnapshotOpTime_inlock() const {
     if (_currentCommittedSnapshot) {
-        return _currentCommittedSnapshot->opTime;
+        return _currentCommittedSnapshot.get();
     }
     return OpTime();
 }
@@ -551,13 +581,26 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
         }
     }
 
+    auto opCtx = cc().makeOperationContext();
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     invariant(_rsConfigState == kConfigStartingUp);
     const PostMemberStateUpdateAction action =
-        _setCurrentRSConfig_inlock(localConfig, myIndex.getValue());
+        _setCurrentRSConfig_inlock(opCtx.get(), localConfig, myIndex.getValue());
+
+    // Set our last applied and durable optimes to the top of the oplog, if we have one.
     if (!lastOpTime.isNull()) {
-        _setMyLastAppliedOpTime_inlock(lastOpTime, false);
-        _setMyLastDurableOpTime_inlock(lastOpTime, false);
+        bool isRollbackAllowed = false;
+
+        // If we have an oplog, it is still possible that our data is not in a consistent state. For
+        // example, if we are starting up after a crash following a post-rollback RECOVERING state.
+        // To detect this, we see if our last optime is >= the 'minValid' optime, which
+        // should be persistent across node crashes.
+        OpTime minValid = _replicationProcess->getConsistencyMarkers()->getMinValid(opCtx.get());
+        auto consistency =
+            (lastOpTime >= minValid) ? DataConsistency::Consistent : DataConsistency::Inconsistent;
+
+        _setMyLastAppliedOpTime_inlock(lastOpTime, isRollbackAllowed, consistency);
+        _setMyLastDurableOpTime_inlock(lastOpTime, isRollbackAllowed);
         _reportUpstream_inlock(std::move(lock));  // unlocks _mutex.
     } else {
         lock.unlock();
@@ -574,7 +617,6 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
 
     if (!isArbiter) {
         _externalState->startThreads(_settings);
-        auto opCtx = cc().makeOperationContext();
         _startDataReplication(opCtx.get());
     }
 }
@@ -607,11 +649,12 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
     const auto needsInitialSync =
         lastOpTime.isNull() || _externalState->isInitialSyncFlagSet(opCtx);
     if (!needsInitialSync) {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        if (!_inShutdown) {
-            // Start steady replication, since we already have data.
-            _externalState->startSteadyStateReplication(opCtx, this);
-        }
+        // Start steady replication, since we already have data.
+        // ReplSetConfig has been installed, so it's either in STARTUP2 or REMOVED.
+        auto memberState = getMemberState();
+        invariant(memberState.startup2() || memberState.removed());
+        invariantOK(setFollowerMode(MemberState::RS_RECOVERING));
+        _externalState->startSteadyStateReplication(opCtx, this);
         return;
     }
 
@@ -639,7 +682,7 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
             }
 
             const auto lastApplied = status.getValue();
-            _setMyLastAppliedOpTime_inlock(lastApplied.opTime, false);
+            _setMyLastAppliedOpTime_inlock(lastApplied.opTime, false, DataConsistency::Consistent);
         }
 
         // Clear maint. mode.
@@ -653,6 +696,10 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
         // Repair local db (to compact it).
         auto opCtxHolder = cc().makeOperationContext();
         uassertStatusOK(_externalState->runRepairOnLocalDB(opCtxHolder.get()));
+        // Because initial sync completed, we can only be in STARTUP2, not REMOVED.
+        // Transition from STARTUP2 to RECOVERING and start the producer and the applier.
+        invariant(getMemberState().startup2());
+        invariantOK(setFollowerMode(MemberState::RS_RECOVERING));
         _externalState->startSteadyStateReplication(opCtxHolder.get(), this);
     };
 
@@ -760,7 +807,7 @@ void ReplicationCoordinatorImpl::shutdown(OperationContext* opCtx) {
         _opTimeWaiterList.signalAndRemoveAll_inlock();
         _currentCommittedSnapshotCond.notify_all();
         _initialSyncer.swap(initialSyncerCopy);
-        _signalStepDownWaiter_inlock();
+        _stepDownWaiters.notify_all();
     }
 
 
@@ -832,11 +879,10 @@ void ReplicationCoordinatorImpl::clearSyncSourceBlacklist() {
 
 Status ReplicationCoordinatorImpl::setFollowerMode(const MemberState& newState) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-
     if (newState == _topCoord->getMemberState()) {
         return Status::OK();
     }
-    if (_topCoord->getRole() == TopologyCoordinator::Role::leader) {
+    if (_topCoord->getRole() == TopologyCoordinator::Role::kLeader) {
         return Status(ErrorCodes::NotSecondary,
                       "Cannot set follower mode when node is currently the leader");
     }
@@ -855,7 +901,8 @@ Status ReplicationCoordinatorImpl::setFollowerMode(const MemberState& newState) 
 
     _topCoord->setFollowerMode(newState.s);
 
-    const PostMemberStateUpdateAction action = _updateMemberStateFromTopologyCoordinator_inlock();
+    const PostMemberStateUpdateAction action =
+        _updateMemberStateFromTopologyCoordinator_inlock(nullptr);
     lk.unlock();
     _performPostMemberStateUpdateAction(action);
 
@@ -921,8 +968,10 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* opCtx,
     Lock::GlobalWrite globalWriteLock(opCtx);
     lk.lock();
 
-    // Exit drain mode when the buffer is empty in the current term and we're in Draining mode.
-    if (_applierState != ApplierState::Draining || termWhenBufferIsEmpty != _topCoord->getTerm()) {
+    // Exit drain mode only if we're actually in draining mode, the apply buffer is empty in the
+    // current term, and we're allowed to become the write master.
+    if (_applierState != ApplierState::Draining ||
+        !_topCoord->canCompleteTransitionToPrimary(termWhenBufferIsEmpty)) {
         return;
     }
     _applierState = ApplierState::Stopped;
@@ -935,15 +984,22 @@ void ReplicationCoordinatorImpl::signalDrainComplete(OperationContext* opCtx,
         AllowNonLocalWritesBlock writesAllowed(opCtx);
         OpTime firstOpTime = _externalState->onTransitionToPrimary(opCtx, isV1ElectionProtocol());
         lk.lock();
-        _topCoord->completeTransitionToPrimary(firstOpTime);
+
+        auto status = _topCoord->completeTransitionToPrimary(firstOpTime);
+        if (status.code() == ErrorCodes::PrimarySteppedDown) {
+            log() << "Transition to primary failed" << causedBy(status);
+            return;
+        }
+        invariantOK(status);
     }
 
     // Must calculate the commit level again because firstOpTimeOfMyTerm wasn't set when we logged
     // our election in onTransitionToPrimary(), above.
     _updateLastCommittedOpTime_inlock();
 
-    invariant(!_canAcceptNonLocalWrites);
-    _canAcceptNonLocalWrites = true;
+    // Update _canAcceptNonLocalWrites
+    _updateMemberStateFromTopologyCoordinator_inlock(opCtx);
+
     log() << "transition to primary complete; database writes are now permitted" << rsLog;
     _drainFinishedCond.notify_all();
     _externalState->startNoopWriter(_getMyLastAppliedOpTime_inlock());
@@ -994,11 +1050,11 @@ void ReplicationCoordinatorImpl::setMyHeartbeatMessage(const std::string& msg) {
     _topCoord->setMyHeartbeatMessage(_replExecutor->now(), msg);
 }
 
-void ReplicationCoordinatorImpl::setMyLastAppliedOpTimeForward(const OpTime& opTime) {
+void ReplicationCoordinatorImpl::setMyLastAppliedOpTimeForward(const OpTime& opTime,
+                                                               DataConsistency consistency) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
     if (opTime > _getMyLastAppliedOpTime_inlock()) {
-        const bool allowRollback = false;
-        _setMyLastAppliedOpTime_inlock(opTime, allowRollback);
+        _setMyLastAppliedOpTime_inlock(opTime, false, consistency);
         _reportUpstream_inlock(std::move(lock));
     }
 }
@@ -1013,7 +1069,8 @@ void ReplicationCoordinatorImpl::setMyLastDurableOpTimeForward(const OpTime& opT
 
 void ReplicationCoordinatorImpl::setMyLastAppliedOpTime(const OpTime& opTime) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    _setMyLastAppliedOpTime_inlock(opTime, false);
+    // The optime passed to this function is required to represent a consistent database state.
+    _setMyLastAppliedOpTime_inlock(opTime, false, DataConsistency::Consistent);
     _reportUpstream_inlock(std::move(lock));
 }
 
@@ -1032,8 +1089,10 @@ void ReplicationCoordinatorImpl::resetMyLastOpTimes() {
 void ReplicationCoordinatorImpl::_resetMyLastOpTimes_inlock() {
     LOG(1) << "resetting durable/applied optimes.";
     // Reset to uninitialized OpTime
-    _setMyLastAppliedOpTime_inlock(OpTime(), true);
-    _setMyLastDurableOpTime_inlock(OpTime(), true);
+    bool isRollbackAllowed = true;
+    _setMyLastAppliedOpTime_inlock(OpTime(), isRollbackAllowed, DataConsistency::Inconsistent);
+    _setMyLastDurableOpTime_inlock(OpTime(), isRollbackAllowed);
+    _stableOpTimeCandidates.clear();
 }
 
 void ReplicationCoordinatorImpl::_reportUpstream_inlock(stdx::unique_lock<stdx::mutex> lock) {
@@ -1053,27 +1112,44 @@ void ReplicationCoordinatorImpl::_reportUpstream_inlock(stdx::unique_lock<stdx::
 }
 
 void ReplicationCoordinatorImpl::_setMyLastAppliedOpTime_inlock(const OpTime& opTime,
-                                                                bool isRollbackAllowed) {
+                                                                bool isRollbackAllowed,
+                                                                DataConsistency consistency) {
     auto* myMemberData = _topCoord->getMyMemberData();
-    invariant(isRollbackAllowed || myMemberData->getLastAppliedOpTime() <= opTime);
+    invariant(isRollbackAllowed || opTime >= myMemberData->getLastAppliedOpTime());
     myMemberData->setLastAppliedOpTime(opTime, _replExecutor->now());
-    _updateLastCommittedOpTime_inlock();
-
-    // Add the new applied timestamp to the list of stable timestamp candidates and then set the
-    // last stable timestamp. Stable timestamps are used to determine the last timestamp that it is
-    // safe to revert the database to, in the event of a rollback. Note that master-slave mode has
-    // no automatic fail over, and so rollbacks never occur. Additionally, the commit point for a
-    // master-slave set will never advance, since it doesn't use any consensus protocol. Since the
-    // set of stable timestamp candidates can only get cleaned up when the commit point advances, we
-    // should refrain from updating stable timestamp candidates in master-slave mode, to avoid the
-    // candidates list from growing unbounded.
-    if (getReplicationMode() == Mode::modeReplSet) {
-        _stableTimestampCandidates.insert(opTime.getTimestamp());
-        _setStableTimestampForStorage_inlock();
+    // If we are using applied times to calculate the commit level, update it now.
+    if (!_rsConfig.getWriteConcernMajorityShouldJournal()) {
+        _updateLastCommittedOpTime_inlock();
     }
 
+    // Signal anyone waiting on optime changes.
     _opTimeWaiterList.signalAndRemoveIf_inlock(
         [opTime](Waiter* waiter) { return waiter->opTime <= opTime; });
+
+
+    // Note that master-slave mode has no automatic fail over, and so rollbacks never occur.
+    // Additionally, the commit point for a master-slave set will never advance, since it doesn't
+    // use any consensus protocol. Since the set of stable optime candidates can only get cleaned up
+    // when the commit point advances, we should refrain from updating stable optime candidates in
+    // master-slave mode, to avoid the candidates list from growing unbounded.
+    if (opTime.isNull() || getReplicationMode() != Mode::modeReplSet) {
+        return;
+    }
+
+    // Add the new applied optime to the list of stable optime candidates and then set the last
+    // stable optime. Stable optimes are used to determine the last optime that it is safe to revert
+    // the database to, in the event of a rollback via the 'recover to timestamp' method. If we are
+    // setting our applied optime to a value that doesn't represent a consistent database state, we
+    // should not add it to the set of stable optime candidates. For example, if we are in
+    // RECOVERING after a rollback using the 'rollbackViaRefetch' algorithm, we will be inconsistent
+    // until we reach the 'minValid' optime.
+    if (consistency == DataConsistency::Consistent) {
+        _stableOpTimeCandidates.insert(opTime);
+        // If we are lagged behind the commit optime, set a new stable timestamp here.
+        if (opTime <= _topCoord->getLastCommittedOpTime()) {
+            _setStableTimestampForStorage_inlock();
+        }
+    }
 }
 
 void ReplicationCoordinatorImpl::_setMyLastDurableOpTime_inlock(const OpTime& opTime,
@@ -1081,7 +1157,10 @@ void ReplicationCoordinatorImpl::_setMyLastDurableOpTime_inlock(const OpTime& op
     auto* myMemberData = _topCoord->getMyMemberData();
     invariant(isRollbackAllowed || myMemberData->getLastDurableOpTime() <= opTime);
     myMemberData->setLastDurableOpTime(opTime, _replExecutor->now());
-    _updateLastCommittedOpTime_inlock();
+    // If we are using durable times to calculate the commit level, update it now.
+    if (_rsConfig.getWriteConcernMajorityShouldJournal()) {
+        _updateLastCommittedOpTime_inlock();
+    }
 }
 
 OpTime ReplicationCoordinatorImpl::getMyLastAppliedOpTime() const {
@@ -1103,9 +1182,6 @@ Status ReplicationCoordinatorImpl::_validateReadConcern(OperationContext* opCtx,
                 "Waiting for replication not allowed while holding a lock"};
     }
 
-    const bool isMajorityReadConcern =
-        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern;
-
     if (readConcern.getArgsClusterTime() &&
         readConcern.getLevel() != ReadConcernLevel::kMajorityReadConcern &&
         readConcern.getLevel() != ReadConcernLevel::kLocalReadConcern) {
@@ -1114,11 +1190,10 @@ Status ReplicationCoordinatorImpl::_validateReadConcern(OperationContext* opCtx,
                 "afterClusterTime"};
     }
 
-    if (isMajorityReadConcern && !getSettings().isMajorityReadConcernEnabled()) {
-        // This is an opt-in feature. Fail if the user didn't opt-in.
+    if (readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern &&
+        !_externalState->isReadCommittedSupportedByStorageEngine(opCtx)) {
         return {ErrorCodes::ReadConcernMajorityNotEnabled,
-                "Majority read concern requested, but server was not started with "
-                "--enableMajorityReadConcern."};
+                "Majority read concern requested, but it is not supported by the storage engine."};
     }
 
     return Status::OK();
@@ -1136,6 +1211,12 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
         return Status::OK();
     }
 
+    return waitUntilOpTimeForReadUntil(opCtx, readConcern, boost::none);
+}
+
+Status ReplicationCoordinatorImpl::waitUntilOpTimeForReadUntil(OperationContext* opCtx,
+                                                               const ReadConcernArgs& readConcern,
+                                                               boost::optional<Date_t> deadline) {
     if (getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) {
         // For master/slave and standalone nodes, readAfterOpTime is not supported, so we return an
         // error. However, we consider all writes "committed" and can treat MajorityReadConcern as
@@ -1145,7 +1226,7 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
     }
 
     if (readConcern.getArgsClusterTime()) {
-        return _waitUntilClusterTimeForRead(opCtx, readConcern);
+        return _waitUntilClusterTimeForRead(opCtx, readConcern, deadline);
     } else {
         return _waitUntilOpTimeForReadDeprecated(opCtx, readConcern);
     }
@@ -1153,7 +1234,8 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
 
 Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
                                                     bool isMajorityReadConcern,
-                                                    OpTime targetOpTime) {
+                                                    OpTime targetOpTime,
+                                                    boost::optional<Date_t> deadline) {
     if (!isMajorityReadConcern) {
         // This assumes the read concern is "local" level.
         // We need to wait for all committed writes to be visible, even in the oplog (which uses
@@ -1205,7 +1287,19 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
         LOG(3) << "waitUntilOpTime: OpID " << opCtx->getOpID() << " is waiting for OpTime "
                << waiter << " until " << opCtx->getDeadline();
 
-        auto waitStatus = opCtx->waitForConditionOrInterruptNoAssert(condVar, lock);
+        auto waitStatus = Status::OK();
+        if (deadline) {
+            auto waitUntilStatus =
+                opCtx->waitForConditionOrInterruptNoAssertUntil(condVar, lock, *deadline);
+            if (!waitUntilStatus.isOK()) {
+                waitStatus = waitUntilStatus.getStatus();
+            }
+            // If deadline is set no need to wait until the targetTime time is reached.
+            return waitStatus;
+        } else {
+            waitStatus = opCtx->waitForConditionOrInterruptNoAssert(condVar, lock);
+        }
+
         if (!waitStatus.isOK()) {
             return waitStatus;
         }
@@ -1214,8 +1308,9 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
     return Status::OK();
 }
 
-Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(
-    OperationContext* opCtx, const ReadConcernArgs& readConcern) {
+Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext* opCtx,
+                                                                const ReadConcernArgs& readConcern,
+                                                                boost::optional<Date_t> deadline) {
     auto clusterTime = *readConcern.getArgsClusterTime();
     invariant(clusterTime != LogicalTime::kUninitialized);
 
@@ -1227,7 +1322,7 @@ Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(
     const bool isMajorityReadConcern =
         readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern;
 
-    return _waitUntilOpTime(opCtx, isMajorityReadConcern, targetOpTime);
+    return _waitUntilOpTime(opCtx, isMajorityReadConcern, targetOpTime, deadline);
 }
 
 // TODO: remove when SERVER-29729 is done
@@ -1412,7 +1507,7 @@ Status ReplicationCoordinatorImpl::_setLastOptime_inlock(const UpdatePositionArg
 }
 
 bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
-    const OpTime& opTime, SnapshotName minSnapshot, const WriteConcernOptions& writeConcern) {
+    const OpTime& opTime, Timestamp minSnapshot, const WriteConcernOptions& writeConcern) {
     // The syncMode cannot be unset.
     invariant(writeConcern.syncMode != WriteConcernOptions::SyncMode::UNSET);
     Status status = _checkIfWriteConcernCanBeSatisfied_inlock(writeConcern);
@@ -1429,15 +1524,15 @@ bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
 
     StringData patternName;
     if (writeConcern.wMode == WriteConcernOptions::kMajority) {
-        if (_externalState->snapshotsEnabled()) {
+        if (_externalState->snapshotsEnabled() && !testingSnapshotBehaviorInIsolation) {
             // Make sure we have a valid "committed" snapshot up to the needed optime.
             if (!_currentCommittedSnapshot) {
                 return false;
             }
 
             // Wait for the "current" snapshot to advance to/past the opTime.
-            const auto haveSnapshot = (_currentCommittedSnapshot->opTime >= opTime &&
-                                       _currentCommittedSnapshot->name >= minSnapshot);
+            const auto haveSnapshot = (_currentCommittedSnapshot >= opTime &&
+                                       _currentCommittedSnapshot->getTimestamp() >= minSnapshot);
             if (!haveSnapshot) {
                 LOG(1) << "Required snapshot optime: " << opTime << " is not yet part of the "
                        << "current 'committed' snapshot: " << *_currentCommittedSnapshot;
@@ -1465,8 +1560,7 @@ ReplicationCoordinator::StatusAndDuration ReplicationCoordinatorImpl::awaitRepli
     Timer timer;
     WriteConcernOptions fixedWriteConcern = populateUnsetWriteConcernOptionsSyncMode(writeConcern);
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    auto status =
-        _awaitReplication_inlock(&lock, opCtx, opTime, SnapshotName::min(), fixedWriteConcern);
+    auto status = _awaitReplication_inlock(&lock, opCtx, opTime, Timestamp(), fixedWriteConcern);
     return {std::move(status), duration_cast<Milliseconds>(timer.elapsed())};
 }
 
@@ -1486,7 +1580,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     stdx::unique_lock<stdx::mutex>* lock,
     OperationContext* opCtx,
     const OpTime& opTime,
-    SnapshotName minSnapshot,
+    Timestamp minSnapshot,
     const WriteConcernOptions& writeConcern) {
 
     // We should never wait for replication if we are holding any locks, because this can
@@ -1507,7 +1601,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
         return Status::OK();
     }
 
-    if (opTime.isNull() && minSnapshot == SnapshotName::min()) {
+    if (opTime.isNull() && minSnapshot == Timestamp()) {
         // If waiting for the empty optime, always say it's been replicated.
         return Status::OK();
     }
@@ -1600,6 +1694,13 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     return _checkIfWriteConcernCanBeSatisfied_inlock(writeConcern);
 }
 
+void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    while (!_topCoord->isSteppingDown()) {
+        _stepDownWaiters.wait(lk);
+    }
+}
+
 Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
                                             const bool force,
                                             const Milliseconds& waitTime,
@@ -1611,119 +1712,149 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
 
     if (!getMemberState().primary()) {
         // Note this check is inherently racy - it's always possible for the node to
-        // stepdown from some other path before we acquire the global shared lock, but
-        // that's okay because we are resiliant to that happening in _stepDownContinue.
+        // stepdown from some other path before we acquire the global exclusive lock.  This check
+        // is just to try to save us from acquiring the global X lock unnecessarily.
         return {ErrorCodes::NotMaster, "not primary so can't step down"};
     }
 
-    Lock::GlobalLock globalReadLock(
-        opCtx, MODE_S, durationCount<Milliseconds>(stepdownTime), Lock::GlobalLock::EnqueueOnly());
+    auto globalLock = stdx::make_unique<Lock::GlobalLock>(
+        opCtx, MODE_X, durationCount<Milliseconds>(stepdownTime), Lock::GlobalLock::EnqueueOnly());
 
-    // We've requested the global shared lock which will stop new writes from coming in,
-    // but existing writes could take a long time to finish, so kill all user operations
+    // We've requested the global exclusive lock which will stop new operations from coming in,
+    // but existing operations could take a long time to finish, so kill all user operations
     // to help us get the global lock faster.
     _externalState->killAllUserOperations(opCtx);
 
-    globalReadLock.waitForLock(durationCount<Milliseconds>(stepdownTime));
-
-    if (!globalReadLock.isLocked()) {
+    globalLock->waitForLock(durationCount<Milliseconds>(stepdownTime));
+    if (!globalLock->isLocked()) {
         return {ErrorCodes::ExceededTimeLimit,
                 "Could not acquire the global shared lock within the amount of time "
                 "specified that we should step down for"};
     }
 
-    PostMemberStateUpdateAction action = kActionNone;
-    try {
-        stdx::unique_lock<stdx::mutex> lk(_mutex);
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
 
-        Status status = _topCoord->prepareForStepDownAttempt();
-        if (!status.isOK()) {
-            // This will cause us to fail if we're already in the process of stepping down.
-            return status;
-        }
-        // If we return before this stepdown completes successfully, reset our state back as it was
-        // before we attempted the stepdown.
-        auto guard = MakeGuard([this] { _topCoord->abortAttemptedStepDownIfNeeded(); });
-
-        opCtx->checkForInterrupt();
-        if (!_tryToStepDown_inlock(waitUntil, stepDownUntil, force)) {
-            // We send out a fresh round of heartbeats because stepping down successfully
-            // without {force: true} is dependent on timely heartbeat data.
-            _restartHeartbeats_inlock();
-            do {
-                opCtx->waitForConditionOrInterruptUntil(
-                    _stepDownWaiters, lk, std::min(stepDownUntil, waitUntil));
-            } while (!_tryToStepDown_inlock(waitUntil, stepDownUntil, force));
-        }
-        action = _updateMemberStateFromTopologyCoordinator_inlock();
-    } catch (const DBException& ex) {
-        return ex.toStatus();
+    auto status = opCtx->checkForInterruptNoAssert();
+    if (!status.isOK()) {
+        return status;
     }
 
-    _performPostMemberStateUpdateAction(action);
+    const long long termAtStart = _topCoord->getTerm();
 
+    status = _topCoord->prepareForStepDownAttempt();
+    if (!status.isOK()) {
+        // This will cause us to fail if we're already in the process of stepping down.
+        return status;
+    }
+
+    // Wake up threads blocked in waitForStepDownAttempt_forTest.
+    _stepDownWaiters.notify_all();
+
+    // Update _canAcceptNonLocalWrites from the TopologyCoordinator now that we're in the middle
+    // of a stepdown attempt.  This will prevent us from accepting writes so that if our stepdown
+    // attempt fails later we can release the global lock and go to sleep to allow secondaries to
+    // catch up without allowing new writes in.
+    auto action = _updateMemberStateFromTopologyCoordinator_inlock(opCtx);
+    invariant(action == PostMemberStateUpdateAction::kActionNone);
+    invariant(!_canAcceptNonLocalWrites);
+
+    // Make sure that we leave _canAcceptNonLocalWrites in the proper state.
+    auto updateMemberState = [&] {
+        invariant(lk.owns_lock());
+        invariant(opCtx->lockState()->isW());
+
+        auto action = _updateMemberStateFromTopologyCoordinator_inlock(opCtx);
+        lk.unlock();
+
+        if (MONGO_FAIL_POINT(stepdownHangBeforePerformingPostMemberStateUpdateActions)) {
+            log() << "stepping down from primary - "
+                     "stepdownHangBeforePerformingPostMemberStateUpdateActions fail point enabled. "
+                     "Blocking until fail point is disabled.";
+            while (MONGO_FAIL_POINT(stepdownHangBeforePerformingPostMemberStateUpdateActions)) {
+                mongo::sleepsecs(1);
+                {
+                    stdx::lock_guard<stdx::mutex> lock(_mutex);
+                    if (_inShutdown) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        _performPostMemberStateUpdateAction(action);
+    };
+    ScopeGuard onExitGuard = MakeGuard([&] {
+        _topCoord->abortAttemptedStepDownIfNeeded();
+        updateMemberState();
+    });
+
+    try {
+
+        bool firstTime = true;
+        while (!_topCoord->attemptStepDown(
+            termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
+
+            // The stepdown attempt failed.
+
+            if (firstTime) {
+                // We send out a fresh round of heartbeats because stepping down successfully
+                // without {force: true} is dependent on timely heartbeat data.
+                _restartHeartbeats_inlock();
+                firstTime = false;
+            }
+
+            // Now release the global lock to allow secondaries to read the oplog, then wait until
+            // enough secondaries are caught up for us to finish stepdown.
+            globalLock.reset();
+            invariant(!opCtx->lockState()->isLocked());
+
+            // Make sure we re-acquire the global lock before returning so that we're always holding
+            // the
+            // global lock when the onExitGuard set up earlier runs.
+            ON_BLOCK_EXIT([&] {
+                // Need to release _mutex before re-acquiring the global lock to preserve lock
+                // acquisition order rules.
+                lk.unlock();
+
+                // Need to re-acquire the global lock before re-attempting stepdown.
+                // We use no timeout here even though that means the lock acquisition could take
+                // longer
+                // than the stepdown window.  If that happens, the call to _tryToStepDown
+                // immediately
+                // after will error.  Since we'll need the global lock no matter what to clean up a
+                // failed stepdown attempt, we might as well spend whatever time we need to acquire
+                // it
+                // now.
+                globalLock.reset(new Lock::GlobalLock(opCtx, MODE_X, UINT_MAX));
+                invariant(globalLock->isLocked());
+                lk.lock();
+            });
+
+            // We ignore the case where waitForConditionOrInterruptUntil returns
+            // stdx::cv_status::timeout because in that case coming back around the loop and calling
+            // attemptStepDown again will cause attemptStepDown to return ExceededTimeLimit with
+            // the proper error message.
+            opCtx->waitForConditionOrInterruptUntil(
+                _stepDownWaiters, lk, std::min(stepDownUntil, waitUntil));
+        }
+    } catch (const DBException& e) {
+        return e.toStatus();
+    }
+
+    // Stepdown success!
+    onExitGuard.Dismiss();
+    updateMemberState();
     // Schedule work to (potentially) step back up once the stepdown period has ended.
     _scheduleWorkAt(
         stepDownUntil,
         stdx::bind(&ReplicationCoordinatorImpl::_handleTimePassing, this, stdx::placeholders::_1));
-
     return Status::OK();
 }
 
-void ReplicationCoordinatorImpl::_signalStepDownWaiter_inlock() {
-    _stepDownWaiters.notify_all();
-}
-
-bool ReplicationCoordinatorImpl::_tryToStepDown_inlock(const Date_t waitUntil,
-                                                       const Date_t stepDownUntil,
-                                                       const bool force) {
-    if (_topCoord->getRole() != TopologyCoordinator::Role::leader) {
-        uasserted(ErrorCodes::NotMaster,
-                  "Already stepped down from primary while processing step down request");
+void ReplicationCoordinatorImpl::_signalStepDownWaiterIfReady_inlock() {
+    if (_topCoord->isSafeToStepDown()) {
+        _stepDownWaiters.notify_all();
     }
-    if (_topCoord->isUnconditionallySteppingDown()) {
-        uasserted(ErrorCodes::PrimarySteppedDown,
-                  "While waiting for secondaries to catch up before stepping down, "
-                  "this node decided to step down for other reasons");
-    }
-
-
-    const Date_t now = _replExecutor->now();
-    if (now >= stepDownUntil) {
-        uasserted(ErrorCodes::ExceededTimeLimit,
-                  "By the time we were ready to step down, we were already past the "
-                  "time we were supposed to step down until");
-    }
-
-    const bool forceNow = force && (now >= waitUntil);
-    OpTime lastApplied = _getMyLastAppliedOpTime_inlock();
-
-    if (forceNow) {
-        return _topCoord->finishAttemptedStepDown(stepDownUntil, forceNow);
-    }
-
-    auto tagStatus = _rsConfig.findCustomWriteMode(ReplSetConfig::kMajorityWriteConcernModeName);
-    invariant(tagStatus.isOK());
-
-    // Check if a majority of nodes have reached the last applied optime
-    // and there exist an electable node that has my last applied optime.
-    if (_topCoord->haveTaggedNodesReachedOpTime(lastApplied, tagStatus.getValue(), false) &&
-        _topCoord->finishAttemptedStepDown(stepDownUntil, forceNow)) {
-        return true;
-    }
-
-    // Stepdown attempt failed.
-
-    // Check waitUntil after at least one stepdown attempt, so that stepdown could succeed even if
-    // secondaryCatchUpPeriodSecs == 0.
-    if (now >= waitUntil) {
-        uasserted(ErrorCodes::ExceededTimeLimit,
-                  str::stream() << "No electable secondaries caught up as of "
-                                << dateToISOStringLocal(now)
-                                << "Please use the replSetStepDown command with the argument "
-                                << "{force: true} to force node to step down.");
-    }
-    return false;
 }
 
 void ReplicationCoordinatorImpl::_handleTimePassing(
@@ -1803,7 +1934,8 @@ bool ReplicationCoordinatorImpl::canAcceptWritesFor_UNSAFE(OperationContext* opC
                                                            const NamespaceString& ns) {
     StringData dbName = ns.db();
     bool canWriteToDB = canAcceptWritesForDatabase_UNSAFE(opCtx, dbName);
-    if (!canWriteToDB) {
+
+    if (!canWriteToDB && !ns.isSystemDotProfile()) {
         return false;
     }
 
@@ -1963,8 +2095,8 @@ void ReplicationCoordinatorImpl::fillIsMasterForReplSet(IsMasterResponse* respon
     OpTime lastOpTime = _getMyLastAppliedOpTime_inlock();
     response->setLastWrite(lastOpTime, lastOpTime.getTimestamp().getSecs());
     if (_currentCommittedSnapshot) {
-        OpTime majorityOpTime = _currentCommittedSnapshot->opTime;
-        response->setLastMajorityWrite(majorityOpTime, majorityOpTime.getTimestamp().getSecs());
+        response->setLastMajorityWrite(_currentCommittedSnapshot.get(),
+                                       _currentCommittedSnapshot->getTimestamp().getSecs());
     }
 
     if (response->isMaster() && !_canAcceptNonLocalWrites) {
@@ -2027,7 +2159,7 @@ Status ReplicationCoordinatorImpl::setMaintenanceMode(bool activate) {
     }
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    if (_topCoord->getRole() == TopologyCoordinator::Role::candidate) {
+    if (_topCoord->getRole() == TopologyCoordinator::Role::kCandidate) {
         return Status(ErrorCodes::NotSecondary, "currently running for election");
     }
 
@@ -2041,7 +2173,7 @@ Status ReplicationCoordinatorImpl::setMaintenanceMode(bool activate) {
               << " other maintenance mode tasks in progress" << rsLog;
         _topCoord->adjustMaintenanceCountBy(1);
     } else if (curMaintenanceCalls > 0) {
-        invariant(_topCoord->getRole() == TopologyCoordinator::Role::follower);
+        invariant(_topCoord->getRole() == TopologyCoordinator::Role::kFollower);
 
         _topCoord->adjustMaintenanceCountBy(-1);
 
@@ -2052,7 +2184,8 @@ Status ReplicationCoordinatorImpl::setMaintenanceMode(bool activate) {
         return Status(ErrorCodes::OperationFailed, "already out of maintenance mode");
     }
 
-    const PostMemberStateUpdateAction action = _updateMemberStateFromTopologyCoordinator_inlock();
+    const PostMemberStateUpdateAction action =
+        _updateMemberStateFromTopologyCoordinator_inlock(nullptr);
     lk.unlock();
     _performPostMemberStateUpdateAction(action);
     return Status::OK();
@@ -2219,7 +2352,8 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
           << " members parses ok";
 
     if (!args.force) {
-        status = checkQuorumForReconfig(_replExecutor.get(), newConfig, myIndex.getValue());
+        status = checkQuorumForReconfig(
+            _replExecutor.get(), newConfig, myIndex.getValue(), _topCoord->getTerm());
         if (!status.isOK()) {
             error() << "replSetReconfig failed; " << status;
             return status;
@@ -2286,7 +2420,8 @@ void ReplicationCoordinatorImpl::_finishReplSetReconfig(
     }
 
     const ReplSetConfig oldConfig = _rsConfig;
-    const PostMemberStateUpdateAction action = _setCurrentRSConfig_inlock(newConfig, myIndex);
+    const PostMemberStateUpdateAction action =
+        _setCurrentRSConfig_inlock(opCtx.get(), newConfig, myIndex);
 
     // On a reconfig we drop all snapshots so we don't mistakenely read from the wrong one.
     // For example, if we change the meaning of the "committed" snapshot from applied -> durable.
@@ -2351,7 +2486,13 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
     log() << "replSetInitiate config object with " << newConfig.getNumMembers()
           << " members parses ok";
 
-    status = checkQuorumForInitiate(_replExecutor.get(), newConfig, myIndex.getValue());
+    // In pv1, the TopologyCoordinator has not set the term yet. It will be set to kInitialTerm if
+    // the initiate succeeds so we pass that here.
+    status = checkQuorumForInitiate(
+        _replExecutor.get(),
+        newConfig,
+        myIndex.getValue(),
+        newConfig.getProtocolVersion() == 1 ? OpTime::kInitialTerm : OpTime::kUninitializedTerm);
 
     if (!status.isOK()) {
         error() << "replSetInitiate failed; " << status;
@@ -2365,6 +2506,8 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
         return status;
     }
 
+    _replicationProcess->getConsistencyMarkers()->initializeMinValidDocument(opCtx);
+
     auto lastAppliedOpTime = getMyLastAppliedOpTime();
 
     // Since the JournalListener has not yet been set up, we must manually set our
@@ -2373,10 +2516,9 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
 
     // Sets the initial data timestamp on the storage engine so it can assign a timestamp
     // to data on disk. We do this after writing the "initiating set" oplog entry.
-    auto initialDataTS = SnapshotName(lastAppliedOpTime.getTimestamp().asULL());
-    _storage->setInitialDataTimestamp(getServiceContext(), initialDataTS);
+    _storage->setInitialDataTimestamp(getServiceContext(), lastAppliedOpTime.getTimestamp());
 
-    _finishReplSetInitiate(newConfig, myIndex.getValue());
+    _finishReplSetInitiate(opCtx, newConfig, myIndex.getValue());
 
     // A configuration passed to replSetInitiate() with the current node as an arbiter
     // will fail validation with a "replSet initiate got ... while validating" reason.
@@ -2388,12 +2530,13 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
     return Status::OK();
 }
 
-void ReplicationCoordinatorImpl::_finishReplSetInitiate(const ReplSetConfig& newConfig,
+void ReplicationCoordinatorImpl::_finishReplSetInitiate(OperationContext* opCtx,
+                                                        const ReplSetConfig& newConfig,
                                                         int myIndex) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     invariant(_rsConfigState == kConfigInitiating);
     invariant(!_rsConfig.isInitialized());
-    auto action = _setCurrentRSConfig_inlock(newConfig, myIndex);
+    auto action = _setCurrentRSConfig_inlock(opCtx, newConfig, myIndex);
     lk.unlock();
     _performPostMemberStateUpdateAction(action);
 }
@@ -2406,10 +2549,25 @@ void ReplicationCoordinatorImpl::_setConfigState_inlock(ConfigState newState) {
 }
 
 ReplicationCoordinatorImpl::PostMemberStateUpdateAction
-ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
+ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock(
+    OperationContext* opCtx) {
+    {
+        // We have to do this check even if our current and target state are the same as we might
+        // have just failed a stepdown attempt and thus are staying in PRIMARY state but restoring
+        // our ability to accept writes.
+        bool canAcceptWrites = _topCoord->canAcceptWrites();
+        if (canAcceptWrites != _canAcceptNonLocalWrites) {
+            // We must be holding the global X lock to change _canAcceptNonLocalWrites.
+            invariant(opCtx);
+            invariant(opCtx->lockState()->isW());
+        }
+        _canAcceptNonLocalWrites = canAcceptWrites;
+    }
+
+
     const MemberState newState = _topCoord->getMemberState();
     if (newState == _memberState) {
-        if (_topCoord->getRole() == TopologyCoordinator::Role::candidate) {
+        if (_topCoord->getRole() == TopologyCoordinator::Role::kCandidate) {
             invariant(_rsConfig.getNumMembers() == 1 && _selfIndex == 0 &&
                       _rsConfig.getMemberAt(0).isElectable());
             if (isV1ElectionProtocol()) {
@@ -2427,8 +2585,13 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _replicationWaiterList.signalAndRemoveAll_inlock();
         // Wake up the optime waiter that is waiting for primary catch-up to finish.
         _opTimeWaiterList.signalAndRemoveAll_inlock();
-        _canAcceptNonLocalWrites = false;
-        serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(false);
+        // If there are any pending stepdown command requests wake them up.
+        _stepDownWaiters.notify_all();
+
+        // _canAcceptNonLocalWrites should already be set above.
+        invariant(!_canAcceptNonLocalWrites);
+
+        serverGlobalParams.validateFeaturesAsMaster.store(false);
         result = kActionCloseAllConnections;
     } else {
         result = kActionFollowerModeStateChange;
@@ -2451,7 +2614,7 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _canServeNonLocalReads.store(1U);
     }
 
-    if (newState.secondary() && _topCoord->getRole() == TopologyCoordinator::Role::candidate) {
+    if (newState.secondary() && _topCoord->getRole() == TopologyCoordinator::Role::kCandidate) {
         // When transitioning to SECONDARY, the only way for _topCoord to report the candidate
         // role is if the configuration represents a single-node replica set.  In that case, the
         // overriding requirement is to elect this singleton node primary.
@@ -2463,13 +2626,6 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         } else {
             result = kActionWinElection;
         }
-    }
-
-    if (newState.readable() && !_memberState.readable()) {
-        // When we transition to a readable state from a non-readable one, force the SnapshotThread
-        // to take a snapshot, if it is running. This is because it never takes snapshots when not
-        // in readable states.
-        _externalState->forceSnapshotCreation();
     }
 
     if (newState.rollback()) {
@@ -2494,10 +2650,18 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _dropAllSnapshots_inlock();
     }
 
+    // Upon transitioning out of ROLLBACK, we must clear any stable optime candidates that may have
+    // been rolled back.
     if (_memberState.rollback()) {
+        // Our 'lastApplied' optime at this point should be the rollback common point. We should
+        // remove any stable optime candidates greater than the common point.
+        auto lastApplied = _getMyLastAppliedOpTime_inlock();
+        // The upper bound will give us the first optime T such that T > lastApplied.
+        auto deletePoint = _stableOpTimeCandidates.upper_bound(lastApplied);
+        _stableOpTimeCandidates.erase(deletePoint, _stableOpTimeCandidates.end());
+
         // Ensure that no snapshots were created while we were in rollback.
         invariant(!_currentCommittedSnapshot);
-        invariant(_uncommittedSnapshots.empty());
     }
 
     // If we are transitioning from secondary, cancel any scheduled takeovers.
@@ -2506,8 +2670,14 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock() {
         _cancelPriorityTakeover_inlock();
     }
 
+    log() << "transition to " << newState << " from " << _memberState << rsLog;
+    // Initializes the featureCompatibilityVersion to the default value, because arbiters do not
+    // receive the replicated version.
+    if (newState.arbiter()) {
+        serverGlobalParams.featureCompatibility.reset();
+    }
+
     _memberState = newState;
-    log() << "transition to " << newState.toString() << rsLog;
 
     _cancelAndRescheduleElectionTimeout_inlock();
 
@@ -2544,7 +2714,7 @@ void ReplicationCoordinatorImpl::_performPostMemberStateUpdateAction(
             auto ts = LogicalClock::get(getServiceContext())->reserveTicks(1).asTimestamp();
             _topCoord->processWinElection(_electionId, ts);
             const PostMemberStateUpdateAction nextAction =
-                _updateMemberStateFromTopologyCoordinator_inlock();
+                _updateMemberStateFromTopologyCoordinator_inlock(nullptr);
             invariant(nextAction != kActionWinElection);
             lk.unlock();
             _performPostMemberStateUpdateAction(nextAction);
@@ -2710,16 +2880,52 @@ Status ReplicationCoordinatorImpl::processReplSetElect(const ReplSetElectArgs& a
 }
 
 ReplicationCoordinatorImpl::PostMemberStateUpdateAction
-ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(const ReplSetConfig& newConfig,
+ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(OperationContext* opCtx,
+                                                       const ReplSetConfig& newConfig,
                                                        int myIndex) {
     invariant(_settings.usingReplSets());
     _cancelHeartbeats_inlock();
     _setConfigState_inlock(kConfigSteady);
 
     _topCoord->updateConfig(newConfig, myIndex, _replExecutor->now());
+
+    // updateConfig() can change terms, so update our term shadow to match.
+    _termShadow.store(_topCoord->getTerm());
+
     const ReplSetConfig oldConfig = _rsConfig;
     _rsConfig = newConfig;
     _protVersion.store(_rsConfig.getProtocolVersion());
+
+    // Warn if this config has protocol version 0
+    if (newConfig.getProtocolVersion() == 0 &&
+        (!oldConfig.isInitialized() || oldConfig.getProtocolVersion() == 1)) {
+        log() << startupWarningsLog;
+        log() << "** WARNING: This replica set was configured with protocol version 0."
+              << startupWarningsLog;
+        log() << "**          This protocol version is deprecated and subject to be removed "
+              << startupWarningsLog;
+        log() << "**          in a future version." << startupWarningsLog;
+    }
+
+    // Warn if running --nojournal and writeConcernMajorityJournalDefault = false
+    StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+    if (storageEngine && !storageEngine->isDurable() &&
+        (newConfig.getWriteConcernMajorityShouldJournal() &&
+         (!oldConfig.isInitialized() || !oldConfig.getWriteConcernMajorityShouldJournal()))) {
+        log() << startupWarningsLog;
+        log() << "** WARNING: This replica set is running without journaling enabled but the "
+              << startupWarningsLog;
+        log() << "**          writeConcernMajorityJournalDefault option to the replica set config "
+              << startupWarningsLog;
+        log() << "**          is set to true. The writeConcernMajorityJournalDefault "
+              << startupWarningsLog;
+        log() << "**          option to the replica set config must be set to false "
+              << startupWarningsLog;
+        log() << "**          or w:majority write concerns will never complete."
+              << startupWarningsLog;
+        log() << startupWarningsLog;
+    }
+
     log() << "New replica set config in use: " << _rsConfig.toBSON() << rsLog;
     _selfIndex = myIndex;
     if (_selfIndex >= 0) {
@@ -2733,7 +2939,8 @@ ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(const ReplSetConfig& newC
     _cancelPriorityTakeover_inlock();
     _cancelAndRescheduleElectionTimeout_inlock();
 
-    const PostMemberStateUpdateAction action = _updateMemberStateFromTopologyCoordinator_inlock();
+    const PostMemberStateUpdateAction action =
+        _updateMemberStateFromTopologyCoordinator_inlock(opCtx);
     if (_selfIndex >= 0) {
         // Don't send heartbeats if we're not in the config, if we get re-added one of the
         // nodes in the set will contact us.
@@ -2765,7 +2972,7 @@ ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(const ReplSetConfig& newC
 void ReplicationCoordinatorImpl::_wakeReadyWaiters_inlock() {
     _replicationWaiterList.signalAndRemoveIf_inlock([this](Waiter* waiter) {
         return _doneWaitingForReplication_inlock(
-            waiter->opTime, SnapshotName::min(), *waiter->writeConcern);
+            waiter->opTime, Timestamp(), *waiter->writeConcern);
     });
 }
 
@@ -2966,7 +3173,8 @@ void ReplicationCoordinatorImpl::blacklistSyncSource(const HostAndPort& host, Da
                                host));
 }
 
-void ReplicationCoordinatorImpl::resetLastOpTimesFromOplog(OperationContext* opCtx) {
+void ReplicationCoordinatorImpl::resetLastOpTimesFromOplog(OperationContext* opCtx,
+                                                           DataConsistency consistency) {
     StatusWith<OpTime> lastOpTimeStatus = _externalState->loadLastOpTime(opCtx);
     OpTime lastOpTime;
     if (!lastOpTimeStatus.isOK()) {
@@ -2977,8 +3185,9 @@ void ReplicationCoordinatorImpl::resetLastOpTimesFromOplog(OperationContext* opC
     }
 
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    _setMyLastAppliedOpTime_inlock(lastOpTime, true);
-    _setMyLastDurableOpTime_inlock(lastOpTime, true);
+    bool isRollbackAllowed = true;
+    _setMyLastAppliedOpTime_inlock(lastOpTime, isRollbackAllowed, consistency);
+    _setMyLastDurableOpTime_inlock(lastOpTime, isRollbackAllowed);
     _reportUpstream_inlock(std::move(lock));
     // Unlocked below.
 
@@ -2996,7 +3205,7 @@ bool ReplicationCoordinatorImpl::shouldChangeSyncSource(
 
 void ReplicationCoordinatorImpl::_updateLastCommittedOpTime_inlock() {
     if (_topCoord->updateLastCommittedOpTime()) {
-        _updateCommitPoint_inlock();
+        _setStableTimestampForStorage_inlock();
     }
     // Wake up any threads waiting for replication that now have their replication
     // check satisfied.  We must do this regardless of whether we updated the lastCommittedOpTime,
@@ -3005,72 +3214,98 @@ void ReplicationCoordinatorImpl::_updateLastCommittedOpTime_inlock() {
     _wakeReadyWaiters_inlock();
 }
 
-boost::optional<Timestamp> ReplicationCoordinatorImpl::_calculateStableTimestamp(
-    const std::set<Timestamp>& candidates, const Timestamp& commitPoint) {
+boost::optional<OpTime> ReplicationCoordinatorImpl::_calculateStableOpTime(
+    const std::set<OpTime>& candidates, const OpTime& commitPoint) {
 
-    // No timestamp candidates.
+    // No optime candidates.
     if (candidates.empty()) {
         return boost::none;
     }
 
-    // Find the greatest timestamp candidate that is less than or equal to the commit point.
+    // Find the greatest optime candidate that is less than or equal to the commit point.
     // To do this we first find the upper bound of 'commitPoint', which points to the smallest
     // element in 'candidates' that is greater than 'commitPoint'. We then step back one element,
     // which should give us the largest element in 'candidates' that is less than or equal to the
     // 'commitPoint'.
     auto upperBoundIter = candidates.upper_bound(commitPoint);
 
-    // All timestamp candidates are greater than the commit point.
+    // All optime candidates are greater than the commit point.
     if (upperBoundIter == candidates.begin()) {
         return boost::none;
     }
-    // There is a valid stable timestamp.
+    // There is a valid stable optime.
     else {
         return *std::prev(upperBoundIter);
     }
 }
 
-void ReplicationCoordinatorImpl::_cleanupStableTimestampCandidates(std::set<Timestamp>* candidates,
-                                                                   Timestamp stableTimestamp) {
-    // Discard timestamp candidates earlier than the current stable timestamp, since we don't need
-    // them anymore. To do this, we find the lower bound of the 'stableTimestamp' which is the first
-    // element that is greater than or equal to the 'stableTimestamp'. Then we discard everything up
+void ReplicationCoordinatorImpl::_cleanupStableOpTimeCandidates(std::set<OpTime>* candidates,
+                                                                OpTime stableOpTime) {
+    // Discard optime candidates earlier than the current stable optime, since we don't need
+    // them anymore. To do this, we find the lower bound of the 'stableOpTime' which is the first
+    // element that is greater than or equal to the 'stableOpTime'. Then we discard everything up
     // to but not including this lower bound i.e. 'deletePoint'.
-    auto deletePoint = candidates->lower_bound(stableTimestamp);
+    auto deletePoint = candidates->lower_bound(stableOpTime);
 
-    // Delete the entire range of unneeded timestamps.
+    // Delete the entire range of unneeded optimes.
     candidates->erase(candidates->begin(), deletePoint);
 }
 
-boost::optional<Timestamp> ReplicationCoordinatorImpl::calculateStableTimestamp_forTest(
-    const std::set<Timestamp>& candidates, const Timestamp& commitPoint) {
-    return _calculateStableTimestamp(candidates, commitPoint);
+boost::optional<OpTime> ReplicationCoordinatorImpl::calculateStableOpTime_forTest(
+    const std::set<OpTime>& candidates, const OpTime& commitPoint) {
+    return _calculateStableOpTime(candidates, commitPoint);
 }
-void ReplicationCoordinatorImpl::cleanupStableTimestampCandidates_forTest(
-    std::set<Timestamp>* candidates, Timestamp stableTimestamp) {
-    _cleanupStableTimestampCandidates(candidates, stableTimestamp);
+void ReplicationCoordinatorImpl::cleanupStableOpTimeCandidates_forTest(std::set<OpTime>* candidates,
+                                                                       OpTime stableOpTime) {
+    _cleanupStableOpTimeCandidates(candidates, stableOpTime);
 }
 
-std::set<Timestamp> ReplicationCoordinatorImpl::getStableTimestampCandidates_forTest() {
+std::set<OpTime> ReplicationCoordinatorImpl::getStableOpTimeCandidates_forTest() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    return _stableTimestampCandidates;
+    return _stableOpTimeCandidates;
+}
+
+boost::optional<OpTime> ReplicationCoordinatorImpl::getStableOpTime_forTest() {
+    return _getStableOpTime_inlock();
+}
+
+boost::optional<OpTime> ReplicationCoordinatorImpl::_getStableOpTime_inlock() {
+    auto commitPoint = _topCoord->getLastCommittedOpTime();
+    if (_currentCommittedSnapshot) {
+        auto snapshotOpTime = *_currentCommittedSnapshot;
+        invariant(snapshotOpTime.getTimestamp() <= commitPoint.getTimestamp());
+        invariant(snapshotOpTime <= commitPoint);
+    }
+
+    // Compute the current stable optime.
+    auto stableOpTime = _calculateStableOpTime(_stableOpTimeCandidates, commitPoint);
+    if (stableOpTime) {
+        // By definition, the stable optime should never be greater than the commit point.
+        invariant(stableOpTime->getTimestamp() <= commitPoint.getTimestamp());
+        invariant(*stableOpTime <= commitPoint);
+    }
+
+    return stableOpTime;
 }
 
 void ReplicationCoordinatorImpl::_setStableTimestampForStorage_inlock() {
 
-    // Get the current stable timestamp.
-    auto commitPoint = _topCoord->getLastCommittedOpTime();
-    auto stableTimestamp =
-        _calculateStableTimestamp(_stableTimestampCandidates, commitPoint.getTimestamp());
+    // Get the current stable optime.
+    auto stableOpTime = _getStableOpTime_inlock();
 
-    // If there is a valid stable timestamp, set it for the storage engine, and then remove any
-    // old, unneeded stable timestamp candidates.
-    if (stableTimestamp) {
-        LOG(2) << "Setting replication's stable timestamp to " << stableTimestamp.value();
+    // If there is a valid stable optime, set it for the storage engine, and then remove any
+    // old, unneeded stable optime candidates.
+    if (stableOpTime) {
+        LOG(2) << "Setting replication's stable optime to " << stableOpTime.value();
 
-        _storage->setStableTimestamp(getServiceContext(), SnapshotName(stableTimestamp.get()));
-
-        _cleanupStableTimestampCandidates(&_stableTimestampCandidates, stableTimestamp.get());
+        if (!testingSnapshotBehaviorInIsolation) {
+            // Update committed snapshot and wake up any threads waiting on read concern or
+            // write concern.
+            _updateCommittedSnapshot_inlock(stableOpTime.get());
+            // Update the stable timestamp for the storage engine.
+            _storage->setStableTimestamp(getServiceContext(), stableOpTime->getTimestamp());
+        }
+        _cleanupStableOpTimeCandidates(&_stableOpTimeCandidates, stableOpTime.get());
     }
 }
 
@@ -3082,39 +3317,13 @@ void ReplicationCoordinatorImpl::advanceCommitPoint(const OpTime& committedOpTim
 void ReplicationCoordinatorImpl::_advanceCommitPoint_inlock(const OpTime& committedOpTime) {
     if (_topCoord->advanceLastCommittedOpTime(committedOpTime)) {
         if (_getMemberState_inlock().arbiter()) {
-            _setMyLastAppliedOpTime_inlock(committedOpTime, false);
+            // Arbiters do not store replicated data, so we consider their data trivially
+            // consistent.
+            _setMyLastAppliedOpTime_inlock(committedOpTime, false, DataConsistency::Consistent);
         }
 
-        _updateCommitPoint_inlock();
-    }
-}
-
-void ReplicationCoordinatorImpl::_updateCommitPoint_inlock() {
-    auto committedOpTime = _topCoord->getLastCommittedOpTime();
-
-    // Update the stable timestamp.
-    _setStableTimestampForStorage_inlock();
-
-    auto maxSnapshotForOpTime = SnapshotInfo{committedOpTime, SnapshotName::max()};
-
-    if (!_uncommittedSnapshots.empty() && _uncommittedSnapshots.front() <= maxSnapshotForOpTime) {
-        // At least one uncommitted snapshot is ready to be blessed as committed.
-
-        // Seek to the first entry > the commit point. Previous element must be <=.
-        const auto onePastCommitPoint = std::upper_bound(
-            _uncommittedSnapshots.begin(), _uncommittedSnapshots.end(), maxSnapshotForOpTime);
-        const auto newSnapshot = *std::prev(onePastCommitPoint);
-
-        // Forget about all snapshots <= the new commit point.
-        _uncommittedSnapshots.erase(_uncommittedSnapshots.begin(), onePastCommitPoint);
-        _uncommittedSnapshotsSize.store(_uncommittedSnapshots.size());
-
-        // Update committed snapshot and wake up any threads waiting on read concern or
-        // write concern.
-        _updateCommittedSnapshot_inlock(newSnapshot);
-    } else {
-        // Even if we have no new snapshot, we need to notify waiters that the commit point
-        // moved.
+        _setStableTimestampForStorage_inlock();
+        // Even if we have no new snapshot, we need to notify waiters that the commit point moved.
         _externalState->notifyOplogMetadataWaiters(committedOpTime);
     }
 }
@@ -3264,8 +3473,8 @@ void ReplicationCoordinatorImpl::summarizeAsHtml(ReplSetHtmlSummary* output) {
 }
 
 long long ReplicationCoordinatorImpl::getTerm() {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
-    return _topCoord->getTerm();
+    // Note: no mutex acquisition here, as we are reading an Atomic variable.
+    return _termShadow.load();
 }
 
 EventHandle ReplicationCoordinatorImpl::updateTerm_forTest(
@@ -3327,6 +3536,7 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
     TopologyCoordinator::UpdateTermResult localUpdateTermResult = _topCoord->updateTerm(term, now);
     {
         if (localUpdateTermResult == TopologyCoordinator::UpdateTermResult::kUpdatedTerm) {
+            _termShadow.store(term);
             _cancelPriorityTakeover_inlock();
             _cancelAndRescheduleElectionTimeout_inlock();
         }
@@ -3348,25 +3558,32 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
     return EventHandle();
 }
 
-SnapshotName ReplicationCoordinatorImpl::reserveSnapshotName(OperationContext* opCtx) {
-    auto reservedName = SnapshotName(_snapshotNameGenerator.addAndFetch(1));
-    dassert(reservedName > SnapshotName::min());
-    dassert(reservedName < SnapshotName::max());
-    if (opCtx) {
-        ReplClientInfo::forClient(opCtx->getClient()).setLastSnapshot(reservedName);
+Timestamp ReplicationCoordinatorImpl::reserveSnapshotName(OperationContext* opCtx) {
+    Timestamp reservedName;
+    if (getReplicationMode() == Mode::modeReplSet) {
+        invariant(opCtx->lockState()->isLocked());
+        if (getMemberState().primary()) {
+            // Use the current optime on the node, for primary nodes.
+            reservedName = LogicalClock::get(getServiceContext())->getClusterTime().asTimestamp();
+        } else {
+            // Use lastApplied time, for secondary nodes.
+            reservedName = getMyLastAppliedOpTime().getTimestamp();
+        }
+    } else {
+        // All snapshots are the same for a standalone node.
+        reservedName = Timestamp();
     }
+    // This was just in case the snapshot name was different from the lastOp in the client.
+    ReplClientInfo::forClient(opCtx->getClient()).setLastSnapshot(reservedName);
     return reservedName;
 }
 
-void ReplicationCoordinatorImpl::forceSnapshotCreation() {
-    _externalState->forceSnapshotCreation();
-}
-
 void ReplicationCoordinatorImpl::waitUntilSnapshotCommitted(OperationContext* opCtx,
-                                                            const SnapshotName& untilSnapshot) {
+                                                            const Timestamp& untilSnapshot) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
 
-    while (!_currentCommittedSnapshot || _currentCommittedSnapshot->name < untilSnapshot) {
+    while (!_currentCommittedSnapshot ||
+           _currentCommittedSnapshot->getTimestamp() < untilSnapshot) {
         opCtx->waitForConditionOrInterrupt(_currentCommittedSnapshotCond, lock);
     }
 }
@@ -3375,43 +3592,34 @@ size_t ReplicationCoordinatorImpl::getNumUncommittedSnapshots() {
     return _uncommittedSnapshotsSize.load();
 }
 
-void ReplicationCoordinatorImpl::createSnapshot(OperationContext* opCtx,
-                                                OpTime timeOfSnapshot,
-                                                SnapshotName name) {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
-    _externalState->createSnapshot(opCtx, name);
-    auto snapshotInfo = SnapshotInfo{timeOfSnapshot, name};
+MONGO_FP_DECLARE(disableSnapshotting);
 
-    if (timeOfSnapshot <= _topCoord->getLastCommittedOpTime()) {
-        // This snapshot is ready to be marked as committed.
-        invariant(_uncommittedSnapshots.empty());
-        _updateCommittedSnapshot_inlock(snapshotInfo);
+void ReplicationCoordinatorImpl::_updateCommittedSnapshot_inlock(
+    const OpTime& newCommittedSnapshot) {
+    if (testingSnapshotBehaviorInIsolation) {
         return;
     }
 
-    if (!_uncommittedSnapshots.empty()) {
-        invariant(snapshotInfo > _uncommittedSnapshots.back());
-        // The name must independently be newer.
-        invariant(snapshotInfo.name > _uncommittedSnapshots.back().name);
-        // Technically, we could delete older snapshots from the same optime since we will only ever
-        // want the newest. However, multiple snapshots on the same optime will be very rare so it
-        // isn't worth the effort and potential bugs that would introduce.
+    // If we are in ROLLBACK state, do not set any new _currentCommittedSnapshot, as it will be
+    // cleared at the end of rollback anyway.
+    if (_memberState.rollback()) {
+        log() << "Not updating committed snapshot because we are in rollback";
+        return;
     }
-    _uncommittedSnapshots.push_back(snapshotInfo);
-    _uncommittedSnapshotsSize.store(_uncommittedSnapshots.size());
-}
+    invariant(!newCommittedSnapshot.isNull());
 
-void ReplicationCoordinatorImpl::_updateCommittedSnapshot_inlock(
-    SnapshotInfo newCommittedSnapshot) {
-    invariant(!newCommittedSnapshot.opTime.isNull());
-    invariant(newCommittedSnapshot.opTime <= _topCoord->getLastCommittedOpTime());
+    // The new committed snapshot should be <= the current replication commit point.
+    OpTime lastCommittedOpTime = _topCoord->getLastCommittedOpTime();
+    invariant(newCommittedSnapshot.getTimestamp() <= lastCommittedOpTime.getTimestamp());
+    invariant(newCommittedSnapshot <= lastCommittedOpTime);
+
+    // The new committed snapshot should be >= the current snapshot.
     if (_currentCommittedSnapshot) {
-        invariant(newCommittedSnapshot.opTime >= _currentCommittedSnapshot->opTime);
-        invariant(newCommittedSnapshot.name > _currentCommittedSnapshot->name);
+        invariant(newCommittedSnapshot.getTimestamp() >= _currentCommittedSnapshot->getTimestamp());
+        invariant(newCommittedSnapshot >= _currentCommittedSnapshot);
     }
-    if (!_uncommittedSnapshots.empty())
-        invariant(newCommittedSnapshot < _uncommittedSnapshots.front());
-
+    if (MONGO_FAIL_POINT(disableSnapshotting))
+        return;
     _currentCommittedSnapshot = newCommittedSnapshot;
     _currentCommittedSnapshotCond.notify_all();
 
@@ -3427,8 +3635,6 @@ void ReplicationCoordinatorImpl::dropAllSnapshots() {
 }
 
 void ReplicationCoordinatorImpl::_dropAllSnapshots_inlock() {
-    _uncommittedSnapshots.clear();
-    _uncommittedSnapshotsSize.store(_uncommittedSnapshots.size());
     _currentCommittedSnapshot = boost::none;
     _externalState->dropAllSnapshots();
 }
@@ -3541,7 +3747,7 @@ void ReplicationCoordinatorImpl::setIndexPrefetchConfig(
 }
 
 executor::TaskExecutor::EventHandle ReplicationCoordinatorImpl::_cancelElectionIfNeeded_inlock() {
-    if (_topCoord->getRole() != TopologyCoordinator::Role::candidate) {
+    if (_topCoord->getRole() != TopologyCoordinator::Role::kCandidate) {
         return {};
     }
     if (isV1ElectionProtocol()) {

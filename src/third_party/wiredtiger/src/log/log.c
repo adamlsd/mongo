@@ -345,14 +345,15 @@ __wt_log_needs_recovery(WT_SESSION_IMPL *session, WT_LSN *ckp_lsn, bool *recp)
 	uint64_t dummy_txnid;
 	uint32_t dummy_fileid, dummy_optype, rectype;
 
-	conn = S2C(session);
-	log = conn->log;
-
 	/*
 	 * Default is to run recovery always (regardless of whether this
 	 * connection has logging enabled).
 	 */
 	*recp = true;
+
+	conn = S2C(session);
+	log = conn->log;
+
 	if (log == NULL)
 		return (0);
 
@@ -424,17 +425,17 @@ __wt_log_get_all_files(WT_SESSION_IMPL *session,
 {
 	WT_DECL_RET;
 	WT_LOG *log;
-	char **files;
 	uint32_t id, max;
 	u_int count, i;
+	char **files;
 
 	*filesp = NULL;
 	*countp = 0;
+	*maxid = 0;
 
 	id = 0;
 	log = S2C(session)->log;
 
-	*maxid = 0;
 	/*
 	 * These may be files needed by backup.  Force the current slot
 	 * to get written to the file.
@@ -790,9 +791,9 @@ __log_file_header(
 	WT_DECL_ITEM(buf);
 	WT_DECL_RET;
 	WT_LOG *log;
+	WT_LOGSLOT tmp;
 	WT_LOG_DESC *desc;
 	WT_LOG_RECORD *logrec;
-	WT_LOGSLOT tmp;
 	WT_MYSLOT myslot;
 
 	conn = S2C(session);
@@ -1659,10 +1660,11 @@ __log_has_hole(WT_SESSION_IMPL *session,
 	size_t bufsz, rdlen;
 	char *buf, *zerobuf;
 
+	*hole = false;
+
 	conn = S2C(session);
 	log = conn->log;
 	remainder = log_size - offset;
-	*hole = false;
 
 	/*
 	 * It can be very slow looking for the last real record in the log
@@ -1712,8 +1714,8 @@ __wt_log_release(WT_SESSION_IMPL *session, WT_LOGSLOT *slot, bool *freep)
 	WT_DECL_RET;
 	WT_LOG *log;
 	WT_LSN sync_lsn;
-	int64_t release_buffered, release_bytes;
 	uint64_t fsync_duration_usecs;
+	int64_t release_buffered, release_bytes;
 	bool locked;
 
 	conn = S2C(session);
@@ -1891,11 +1893,11 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 	WT_LSN end_lsn, next_lsn, prev_eof, prev_lsn, rd_lsn, start_lsn;
 	wt_off_t log_size;
 	uint32_t allocsize, firstlog, lastlog, lognum, rdup_len, reclen;
+	uint16_t version;
 	u_int i, logcount;
 	int firstrecord;
-	uint16_t version;
-	bool eol, partial_record;
 	char **logfiles;
+	bool eol, partial_record;
 
 	conn = S2C(session);
 	log = conn->log;
@@ -1911,11 +1913,6 @@ __wt_log_scan(WT_SESSION_IMPL *session, WT_LSN *lsnp, uint32_t flags,
 	 */
 	if (func == NULL)
 		return (0);
-
-	if (LF_ISSET(WT_LOGSCAN_RECOVER))
-		__wt_verbose(session, WT_VERB_LOG,
-		    "__wt_log_scan truncating to %" PRIu32 "/%" PRIu32,
-		    log->trunc_lsn.l.file, log->trunc_lsn.l.offset);
 
 	if (lsnp != NULL &&
 	    LF_ISSET(WT_LOGSCAN_FIRST|WT_LOGSCAN_FROM_CKP))
@@ -2040,8 +2037,13 @@ advance:
 			/*
 			 * Truncate this log file before we move to the next.
 			 */
-			if (LF_ISSET(WT_LOGSCAN_RECOVER))
+			if (LF_ISSET(WT_LOGSCAN_RECOVER) &&
+			    __wt_log_cmp(&rd_lsn, &log->trunc_lsn) < 0) {
+				__wt_verbose(session, WT_VERB_LOG,
+				    "Truncate end of log %" PRIu32 "/%" PRIu32,
+				    rd_lsn.l.file, rd_lsn.l.offset);
 				WT_ERR(__log_truncate(session, &rd_lsn, true));
+			}
 			/*
 			 * If we had a partial record, we'll want to break
 			 * now after closing and truncating.  Although for now
@@ -2226,7 +2228,7 @@ advance:
 	if (LF_ISSET(WT_LOGSCAN_RECOVER) &&
 	    __wt_log_cmp(&rd_lsn, &log->trunc_lsn) < 0) {
 		__wt_verbose(session, WT_VERB_LOG,
-		    "__wt_log_scan truncating to %" PRIu32 "/%" PRIu32,
+		    "End of recovery truncate end of log %" PRIu32 "/%" PRIu32,
 		    rd_lsn.l.file, rd_lsn.l.offset);
 		WT_ERR(__log_truncate(session, &rd_lsn, false));
 	}
@@ -2301,9 +2303,9 @@ __wt_log_write(WT_SESSION_IMPL *session, WT_ITEM *record, WT_LSN *lsnp,
 	WT_KEYED_ENCRYPTOR *kencryptor;
 	WT_LOG *log;
 	WT_LOG_RECORD *newlrp;
-	int compression_failed;
 	size_t dst_len, len, new_size, result_len, src_len;
 	uint8_t *dst, *src;
+	int compression_failed;
 
 	conn = S2C(session);
 	log = conn->log;
@@ -2576,12 +2578,14 @@ __wt_log_vprintf(WT_SESSION_IMPL *session, const char *fmt, va_list ap)
 	WT_CONNECTION_IMPL *conn;
 	WT_DECL_ITEM(logrec);
 	WT_DECL_RET;
-	va_list ap_copy;
-	const char *rec_fmt = WT_UNCHECKED_STRING(I);
-	uint32_t rectype = WT_LOGREC_MESSAGE;
 	size_t header_size, len;
+	uint32_t rectype;
+	const char *rec_fmt;
+	va_list ap_copy;
 
 	conn = S2C(session);
+	rectype = WT_LOGREC_MESSAGE;
+	rec_fmt = WT_UNCHECKED_STRING(I);
 
 	if (!FLD_ISSET(conn->log_flags, WT_CONN_LOG_ENABLED))
 		return (0);
@@ -2654,8 +2658,10 @@ __wt_log_flush(WT_SESSION_IMPL *session, uint32_t flags)
 	 * Wait until all current outstanding writes have been written
 	 * to the file system.
 	 */
-	while (__wt_log_cmp(&last_lsn, &lsn) > 0)
+	while (__wt_log_cmp(&last_lsn, &lsn) > 0) {
+		__wt_sleep(0, WT_THOUSAND);
 		WT_RET(__wt_log_flush_lsn(session, &lsn, false));
+	}
 
 	__wt_verbose(session, WT_VERB_LOG,
 	    "log_flush: flags %#" PRIx32 " LSN %" PRIu32 "/%" PRIu32,

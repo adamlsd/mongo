@@ -206,7 +206,7 @@ bool handleError(OperationContext* opCtx,
     }
 
     if (ErrorCodes::isStaleShardingError(ex.code())) {
-        auto staleConfigException = dynamic_cast<const SendStaleConfigException*>(&ex);
+        auto staleConfigException = dynamic_cast<const StaleConfigException*>(&ex);
         if (!staleConfigException) {
             // We need to get extra info off of the SCE, but some common patterns can result in the
             // exception being converted to a Status then rethrown as a AssertionException, losing
@@ -225,8 +225,7 @@ bool handleError(OperationContext* opCtx,
                 ->onStaleShardVersion(opCtx, nss, staleConfigException->getVersionReceived())
                 .transitional_ignore();
         }
-        out->staleConfigException =
-            stdx::make_unique<SendStaleConfigException>(*staleConfigException);
+        out->staleConfigException = stdx::make_unique<StaleConfigException>(*staleConfigException);
         return false;
     }
 
@@ -425,6 +424,13 @@ StmtId getStmtIdForWriteOp(OperationContext* opCtx, const T& wholeOp, size_t opI
                                  : kUninitializedStmtId;
 }
 
+SingleWriteResult makeWriteResultForInsertOrDeleteRetry() {
+    SingleWriteResult res;
+    res.setN(1);
+    res.setNModified(0);
+    return res;
+}
+
 }  // namespace
 
 WriteResult performInserts(OperationContext* opCtx, const write_ops::Insert& wholeOp) {
@@ -483,9 +489,9 @@ WriteResult performInserts(OperationContext* opCtx, const write_ops::Insert& who
             const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
             if (opCtx->getTxnNumber()) {
                 auto session = OperationContextSession::get(opCtx);
-                if (auto entry =
-                        session->checkStatementExecuted(opCtx, *opCtx->getTxnNumber(), stmtId)) {
-                    out.results.emplace_back(parseOplogEntryForInsert(*entry));
+                if (session->checkStatementExecutedNoOplogEntryFetch(*opCtx->getTxnNumber(),
+                                                                     stmtId)) {
+                    out.results.emplace_back(makeWriteResultForInsertOrDeleteRetry());
                     continue;
                 }
             }
@@ -503,12 +509,13 @@ WriteResult performInserts(OperationContext* opCtx, const write_ops::Insert& who
 
         if (canContinue && !fixedDoc.isOK()) {
             globalOpCounters.gotInsert();
-            canContinue = handleError(
-                opCtx,
-                AssertionException(fixedDoc.getStatus().code(), fixedDoc.getStatus().reason()),
-                wholeOp.getNamespace(),
-                wholeOp.getWriteCommandBase(),
-                &out);
+            try {
+                uassertStatusOK(fixedDoc.getStatus());
+                MONGO_UNREACHABLE;
+            } catch (const DBException& ex) {
+                canContinue = handleError(
+                    opCtx, ex, wholeOp.getNamespace(), wholeOp.getWriteCommandBase(), &out);
+            }
         }
 
         if (!canContinue)
@@ -522,6 +529,10 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::UpdateOpEntry& op) {
+    uassert(ErrorCodes::InvalidOptions,
+            "Cannot use (or request) retryable writes with multi=true",
+            !(opCtx->getTxnNumber() && op.getMulti()));
+
     globalOpCounters.gotUpdate();
     auto& curOp = *CurOp::get(opCtx);
     {
@@ -664,6 +675,10 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::DeleteOpEntry& op) {
+    uassert(ErrorCodes::InvalidOptions,
+            "Cannot use (or request) retryable writes with limit=0",
+            !(opCtx->getTxnNumber() && op.getMulti()));
+
     globalOpCounters.gotDelete();
     auto& curOp = *CurOp::get(opCtx);
     {
@@ -751,9 +766,8 @@ WriteResult performDeletes(OperationContext* opCtx, const write_ops::Delete& who
         const auto stmtId = getStmtIdForWriteOp(opCtx, wholeOp, stmtIdIndex++);
         if (opCtx->getTxnNumber()) {
             auto session = OperationContextSession::get(opCtx);
-            if (auto entry =
-                    session->checkStatementExecuted(opCtx, *opCtx->getTxnNumber(), stmtId)) {
-                out.results.emplace_back(parseOplogEntryForDelete(*entry));
+            if (session->checkStatementExecutedNoOplogEntryFetch(*opCtx->getTxnNumber(), stmtId)) {
+                out.results.emplace_back(makeWriteResultForInsertOrDeleteRetry());
                 continue;
             }
         }

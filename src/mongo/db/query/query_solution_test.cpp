@@ -34,6 +34,7 @@
 #include "mongo/db/query/index_bounds_builder.h"
 #include "mongo/db/query/index_entry.h"
 #include "mongo/db/query/query_solution.h"
+#include "mongo/db/query/query_test_service_context.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 
@@ -685,11 +686,17 @@ TEST(QuerySolutionTest, IndexScanNodeHasFieldExcludesSimpleBoundsStringFieldWhen
 
 std::unique_ptr<ParsedProjection> createParsedProjection(const BSONObj& query,
                                                          const BSONObj& projObj) {
+    QueryTestServiceContext serviceCtx;
+    auto opCtx = serviceCtx.makeOperationContext();
     const CollatorInterface* collator = nullptr;
-    StatusWithMatchExpression queryMatchExpr = MatchExpressionParser::parse(query, collator);
+    const boost::intrusive_ptr<ExpressionContext> expCtx(
+        new ExpressionContext(opCtx.get(), collator));
+    StatusWithMatchExpression queryMatchExpr =
+        MatchExpressionParser::parse(query, std::move(expCtx));
     ASSERT(queryMatchExpr.isOK());
     ParsedProjection* out = nullptr;
-    Status status = ParsedProjection::make(projObj, queryMatchExpr.getValue().get(), &out);
+    Status status =
+        ParsedProjection::make(opCtx.get(), projObj, queryMatchExpr.getValue().get(), &out);
     if (!status.isOK()) {
         FAIL(mongoutils::str::stream() << "failed to parse projection " << projObj << " (query: "
                                        << query
@@ -868,6 +875,32 @@ TEST(QuerySolutionTest, SimpleRangeAllEqualExcludesFieldWithMultikeyComponent) {
     ASSERT(node.getSort().count(BSON("a" << 1)));
     ASSERT(node.getSort().count(BSON("d" << 1 << "e" << 1)));
     ASSERT(node.getSort().count(BSON("e" << 1)));
+}
+
+TEST(QuerySolutionTest, MultikeyFieldsEmptyWhenIndexIsNotMultikey) {
+    IndexScanNode node{IndexEntry(BSON("a.b" << 1 << "c.d" << 1))};
+    node.index.multikey = false;
+    node.index.multikeyPaths = MultikeyPaths{};
+    node.computeProperties();
+    ASSERT(node.multikeyFields.empty());
+}
+
+TEST(QuerySolutionTest, MultikeyFieldsEmptyWhenIndexHasNoMultikeynessMetadata) {
+    IndexScanNode node{IndexEntry(BSON("a.b" << 1 << "c.d" << 1))};
+    node.index.multikey = true;
+    node.index.multikeyPaths = MultikeyPaths{};
+    node.computeProperties();
+    ASSERT(node.multikeyFields.empty());
+}
+
+TEST(QuerySolutionTest, MultikeyFieldsChosenCorrectlyWhenIndexHasPathLevelMultikeyMetadata) {
+    IndexScanNode node{IndexEntry(BSON("a.b" << 1 << "c.d" << 1 << "e.f" << 1))};
+    node.index.multikey = true;
+    node.index.multikeyPaths = MultikeyPaths{{0U}, {}, {0U, 1U}};
+    node.computeProperties();
+    ASSERT_EQ(node.multikeyFields.size(), 2U);
+    ASSERT(node.multikeyFields.count("a.b"));
+    ASSERT(node.multikeyFields.count("e.f"));
 }
 
 TEST(QuerySolutionTest, NonSimpleRangeAllEqualExcludesFieldWithMultikeyComponent) {

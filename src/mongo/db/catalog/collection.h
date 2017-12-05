@@ -36,6 +36,7 @@
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/mutable/damage_vector.h"
+#include "mongo/bson/timestamp.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/collection_info_cache.h"
 #include "mongo/db/catalog/collection_options.h"
@@ -302,6 +303,7 @@ public:
         virtual void cappedTruncateAfter(OperationContext* opCtx, RecordId end, bool inclusive) = 0;
 
         virtual StatusWithMatchExpression parseValidator(
+            OperationContext* opCtx,
             const BSONObj& validator,
             MatchExpressionParser::AllowedFeatureSet allowedFeatures) const = 0;
 
@@ -312,6 +314,11 @@ public:
 
         virtual StringData getValidationLevel() const = 0;
         virtual StringData getValidationAction() const = 0;
+
+        virtual Status updateValidator(OperationContext* opCtx,
+                                       BSONObj newValidator,
+                                       StringData newLevel,
+                                       StringData newAction) = 0;
 
         virtual bool isCapped() const = 0;
 
@@ -325,9 +332,9 @@ public:
                                       BSONObjBuilder* details,
                                       int scale) = 0;
 
-        virtual boost::optional<SnapshotName> getMinimumVisibleSnapshot() = 0;
+        virtual boost::optional<Timestamp> getMinimumVisibleSnapshot() = 0;
 
-        virtual void setMinimumVisibleSnapshot(SnapshotName name) = 0;
+        virtual void setMinimumVisibleSnapshot(Timestamp name) = 0;
 
         virtual void notifyCappedWaitersIfNeeded() = 0;
 
@@ -627,8 +634,10 @@ public:
      * Returns a non-ok Status if validator is not legal for this collection.
      */
     inline StatusWithMatchExpression parseValidator(
-        const BSONObj& validator, MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
-        return this->_impl().parseValidator(validator, allowedFeatures);
+        OperationContext* opCtx,
+        const BSONObj& validator,
+        MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
+        return this->_impl().parseValidator(opCtx, validator, allowedFeatures);
     }
 
     static StatusWith<ValidationLevel> parseValidationLevel(StringData);
@@ -661,6 +670,13 @@ public:
     }
     inline StringData getValidationAction() const {
         return this->_impl().getValidationAction();
+    }
+
+    inline Status updateValidator(OperationContext* opCtx,
+                                  BSONObj newValidator,
+                                  StringData newLevel,
+                                  StringData newAction) {
+        return this->_impl().updateValidator(opCtx, newValidator, newLevel, newAction);
     }
 
     // -----------
@@ -709,11 +725,11 @@ public:
      * If return value is not boost::none, reads with majority read concern using an older snapshot
      * must error.
      */
-    inline boost::optional<SnapshotName> getMinimumVisibleSnapshot() {
+    inline boost::optional<Timestamp> getMinimumVisibleSnapshot() {
         return this->_impl().getMinimumVisibleSnapshot();
     }
 
-    inline void setMinimumVisibleSnapshot(const SnapshotName name) {
+    inline void setMinimumVisibleSnapshot(const Timestamp name) {
         return this->_impl().setMinimumVisibleSnapshot(name);
     }
 

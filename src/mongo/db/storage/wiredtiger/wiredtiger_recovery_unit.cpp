@@ -39,6 +39,7 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
+#include "mongo/util/hex.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -52,7 +53,12 @@ logger::LogSeverity kSlowTransactionSeverity = logger::LogSeverity::Debug(1);
 }  // namespace
 
 WiredTigerRecoveryUnit::WiredTigerRecoveryUnit(WiredTigerSessionCache* sc)
+    : WiredTigerRecoveryUnit(sc, sc->getKVEngine()->getOplogManager()) {}
+
+WiredTigerRecoveryUnit::WiredTigerRecoveryUnit(WiredTigerSessionCache* sc,
+                                               WiredTigerOplogManager* oplogManager)
     : _sessionCache(sc),
+      _oplogManager(oplogManager),
       _inUnitOfWork(false),
       _active(false),
       _mySnapshotId(nextSnapshotId.fetchAndAdd(1)) {}
@@ -68,7 +74,7 @@ void WiredTigerRecoveryUnit::prepareForCreateSnapshot(OperationContext* opCtx) {
     invariant(!_readFromMajorityCommittedSnapshot);
 
     // Starts the WT transaction that will be the basis for creating a named snapshot.
-    getSession(opCtx);
+    getSession();
     _areWriteUnitOfWorksBanned = true;
 }
 
@@ -152,14 +158,14 @@ void WiredTigerRecoveryUnit::assertInActiveTxn() const {
     fassert(28575, _active);
 }
 
-WiredTigerSession* WiredTigerRecoveryUnit::getSession(OperationContext* opCtx) {
+WiredTigerSession* WiredTigerRecoveryUnit::getSession() {
     if (!_active) {
         _txnOpen();
     }
     return _session.get();
 }
 
-WiredTigerSession* WiredTigerRecoveryUnit::getSessionNoTxn(OperationContext* opCtx) {
+WiredTigerSession* WiredTigerRecoveryUnit::getSessionNoTxn() {
     _ensureSession();
     return _session.get();
 }
@@ -171,6 +177,11 @@ void WiredTigerRecoveryUnit::abandonSnapshot() {
         _txnClose(false);
     }
     _areWriteUnitOfWorksBanned = false;
+}
+
+void WiredTigerRecoveryUnit::prepareSnapshot() {
+    // Begin a new transaction, if one is not already started.
+    getSession();
 }
 
 void* WiredTigerRecoveryUnit::writingPtr(void* data, size_t len) {
@@ -189,13 +200,22 @@ void WiredTigerRecoveryUnit::_txnClose(bool commit) {
         }
     }
 
+    int wtRet;
     if (commit) {
-        invariantWTOK(s->commit_transaction(s, NULL));
+        wtRet = s->commit_transaction(s, NULL);
         LOG(3) << "WT commit_transaction for snapshot id " << _mySnapshotId;
     } else {
-        invariantWTOK(s->rollback_transaction(s, NULL));
+        wtRet = s->rollback_transaction(s, NULL);
+        invariant(!wtRet);
         LOG(3) << "WT rollback_transaction for snapshot id " << _mySnapshotId;
     }
+
+    if (_isTimestamped) {
+        _oplogManager->triggerJournalFlush();
+        _isTimestamped = false;
+    }
+    invariantWTOK(wtRet);
+
     _active = false;
     _mySnapshotId = nextSnapshotId.fetchAndAdd(1);
     _isOplogReader = false;
@@ -218,7 +238,7 @@ Status WiredTigerRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
     return Status::OK();
 }
 
-boost::optional<SnapshotName> WiredTigerRecoveryUnit::getMajorityCommittedSnapshot() const {
+boost::optional<Timestamp> WiredTigerRecoveryUnit::getMajorityCommittedSnapshot() const {
     if (!_readFromMajorityCommittedSnapshot)
         return {};
     return _majorityCommittedSnapshot;
@@ -234,8 +254,9 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     }
     WT_SESSION* session = _session->getSession();
 
-    if (_readAtTimestamp != SnapshotName::min()) {
-        _sessionCache->snapshotManager().beginTransactionAtTimestamp(_readAtTimestamp, session);
+    if (_readAtTimestamp != Timestamp::min()) {
+        uassertStatusOK(_sessionCache->snapshotManager().beginTransactionAtTimestamp(
+            _readAtTimestamp, session));
     } else if (_readFromMajorityCommittedSnapshot) {
         _majorityCommittedSnapshot =
             _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(session);
@@ -251,21 +272,24 @@ void WiredTigerRecoveryUnit::_txnOpen() {
 }
 
 
-Status WiredTigerRecoveryUnit::setTimestamp(SnapshotName timestamp) {
+Status WiredTigerRecoveryUnit::setTimestamp(Timestamp timestamp) {
     _ensureSession();
     LOG(3) << "WT set timestamp of future write operations to " << timestamp;
     WT_SESSION* session = _session->getSession();
     invariant(_inUnitOfWork);
 
     // Starts the WT transaction associated with this session.
-    getSession(nullptr);
+    getSession();
 
-    const std::string conf = str::stream() << "commit_timestamp=" << timestamp.toString();
+    const std::string conf = "commit_timestamp=" + integerToHex(timestamp.asULL());
     auto rc = session->timestamp_transaction(session, conf.c_str());
+    if (rc == 0) {
+        _isTimestamped = true;
+    }
     return wtRCToStatus(rc, "timestamp_transaction");
 }
 
-Status WiredTigerRecoveryUnit::selectSnapshot(SnapshotName timestamp) {
+Status WiredTigerRecoveryUnit::selectSnapshot(Timestamp timestamp) {
     _readAtTimestamp = timestamp;
     return Status::OK();
 }
@@ -276,6 +300,13 @@ void WiredTigerRecoveryUnit::setIsOplogReader() {
     _isOplogReader = true;
 }
 
+void WiredTigerRecoveryUnit::beginIdle() {
+    // Close all cursors, we don't want to keep any old cached cursors around.
+    if (_session) {
+        _session->closeAllCursors("");
+    }
+}
+
 // ---------------------
 
 WiredTigerCursor::WiredTigerCursor(const std::string& uri,
@@ -284,7 +315,7 @@ WiredTigerCursor::WiredTigerCursor(const std::string& uri,
                                    OperationContext* opCtx) {
     _tableID = tableId;
     _ru = WiredTigerRecoveryUnit::get(opCtx);
-    _session = _ru->getSession(opCtx);
+    _session = _ru->getSession();
     _cursor = _session->getCursor(uri, tableId, forRecordStore);
     if (!_cursor) {
         error() << "no cursor for uri: " << uri;

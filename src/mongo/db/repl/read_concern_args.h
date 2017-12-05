@@ -108,6 +108,11 @@ public:
     ReadConcernLevel getLevel() const;
 
     /**
+     * Checks whether _level is explicitly set.
+     */
+    bool hasLevel() const;
+
+    /**
      * Returns the opTime. Deprecated: will be replaced with getArgsClusterTime.
      */
     boost::optional<OpTime> getArgsOpTime() const;

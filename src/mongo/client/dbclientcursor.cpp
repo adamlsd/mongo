@@ -204,6 +204,10 @@ bool DBClientCursor::initLazyFinish(bool& retry) {
 }
 
 void DBClientCursor::requestMore() {
+    if (opts & QueryOption_Exhaust) {
+        return exhaustReceiveMore();
+    }
+
     invariant(!_connectionHasPendingReplies);
     verify(cursorId && batch.pos == batch.objs.size());
 
@@ -238,7 +242,7 @@ void DBClientCursor::requestMore() {
 /** with QueryOption_Exhaust, the server just blasts data at us (marked at end with cursorid==0). */
 void DBClientCursor::exhaustReceiveMore() {
     verify(cursorId && batch.pos == batch.objs.size());
-    verify(!haveLimit);
+    uassert(50657, "Cannot have limit for exhaust query", !haveLimit);
     Message response;
     verify(_client);
     if (!_client->recv(response, _lastRequestId)) {
@@ -254,9 +258,9 @@ BSONObj DBClientCursor::commandDataReceived(const Message& reply) {
     auto commandReply = _client->parseCommandReplyMessage(_client->getServerAddress(), reply);
     auto commandStatus = getStatusFromCommandResult(commandReply->getCommandReply());
 
-    if (ErrorCodes::SendStaleConfig == commandStatus) {
-        throw RecvStaleConfigException("stale config in DBClientCursor::dataReceived()",
-                                       commandReply->getCommandReply());
+    if (ErrorCodes::StaleConfig == commandStatus) {
+        throw StaleConfigException("stale config in DBClientCursor::dataReceived()",
+                                   commandReply->getCommandReply());
     } else if (!commandStatus.isOK()) {
         wasError = true;
     }
@@ -342,7 +346,7 @@ void DBClientCursor::dataReceived(const Message& reply, bool& retry, string& hos
     if (qr.getResultFlags() & ResultFlag_ShardConfigStale) {
         BSONObj error;
         verify(peekError(&error));
-        throw RecvStaleConfigException(
+        throw StaleConfigException(
             (string) "stale config on lazy receive" + causedBy(getErrField(error)), error);
     }
 

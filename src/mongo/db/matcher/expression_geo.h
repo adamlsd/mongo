@@ -78,14 +78,12 @@ private:
 
 class GeoMatchExpression : public LeafMatchExpression {
 public:
-    GeoMatchExpression() : LeafMatchExpression(GEO), _canSkipValidation(false) {}
+    GeoMatchExpression(StringData path, const GeoExpression* query, const BSONObj& rawObj);
+    GeoMatchExpression(StringData path,
+                       std::shared_ptr<const GeoExpression> query,
+                       const BSONObj& rawObj);
 
     virtual ~GeoMatchExpression() {}
-
-    /**
-     * Takes ownership of the passed-in GeoExpression.
-     */
-    Status init(StringData path, const GeoExpression* query, const BSONObj& rawObj);
 
     bool matchesSingleElement(const BSONElement&, MatchDetails* details = nullptr) const final;
 
@@ -110,6 +108,10 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     // The original geo specification provided by the user.
     BSONObj _rawObj;
 
@@ -163,10 +165,12 @@ private:
 
 class GeoNearMatchExpression : public LeafMatchExpression {
 public:
-    GeoNearMatchExpression() : LeafMatchExpression(GEO_NEAR) {}
-    virtual ~GeoNearMatchExpression() {}
+    GeoNearMatchExpression(StringData path, const GeoNearExpression* query, const BSONObj& rawObj);
+    GeoNearMatchExpression(StringData path,
+                           std::shared_ptr<const GeoNearExpression> query,
+                           const BSONObj& rawObj);
 
-    Status init(StringData path, const GeoNearExpression* query, const BSONObj& rawObj);
+    virtual ~GeoNearMatchExpression() {}
 
     /**
      * Stub implementation that should never be called, since geoNear execution requires an
@@ -187,6 +191,10 @@ public:
     }
 
 private:
+    ExpressionOptimizerFunc getOptimizer() const final {
+        return [](std::unique_ptr<MatchExpression> expression) { return expression; };
+    }
+
     // The original geo specification provided by the user.
     BSONObj _rawObj;
 

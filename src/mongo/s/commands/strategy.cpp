@@ -42,6 +42,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/initialize_operation_session_info.h"
+#include "mongo/db/lasterror.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/logical_time_validator.h"
@@ -94,7 +95,6 @@ Status processCommandMetadata(OperationContext* opCtx, const BSONObj& cmdObj) {
         return logicalTimeMetadata.getStatus();
     }
 
-    auto authSession = AuthorizationSession::get(opCtx->getClient());
     auto logicalTimeValidator = LogicalTimeValidator::get(opCtx);
     const auto& signedTime = logicalTimeMetadata.getValue().getSignedTime();
 
@@ -103,7 +103,7 @@ Status processCommandMetadata(OperationContext* opCtx, const BSONObj& cmdObj) {
         return Status::OK();
     }
 
-    if (authSession->getAuthorizationManager().isAuthEnabled()) {
+    if (!LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
         auto advanceClockStatus = logicalTimeValidator->validate(opCtx, signedTime);
 
         if (!advanceClockStatus.isOK()) {
@@ -121,18 +121,23 @@ void appendRequiredFieldsToResponse(OperationContext* opCtx, BSONObjBuilder* res
     auto validator = LogicalTimeValidator::get(opCtx);
     if (validator->shouldGossipLogicalTime()) {
         // Add $clusterTime.
-        auto currentTime =
-            validator->signLogicalTime(opCtx, LogicalClock::get(opCtx)->getClusterTime());
-        rpc::LogicalTimeMetadata(currentTime).writeToMetadata(responseBuilder);
+        auto now = LogicalClock::get(opCtx)->getClusterTime();
+        if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+            SignedLogicalTime dummySignedTime(now, TimeProofService::TimeProof(), 0);
+            rpc::LogicalTimeMetadata(dummySignedTime).writeToMetadata(responseBuilder);
+        } else {
+            auto currentTime = validator->signLogicalTime(opCtx, now);
+            rpc::LogicalTimeMetadata(currentTime).writeToMetadata(responseBuilder);
+        }
 
         // Add operationTime.
         auto operationTime = OperationTimeTracker::get(opCtx)->getMaxOperationTime();
         if (operationTime != LogicalTime::kUninitialized) {
             responseBuilder->append(kOperationTime, operationTime.asTimestamp());
-        } else if (currentTime.getTime() != LogicalTime::kUninitialized) {
+        } else if (now != LogicalTime::kUninitialized) {
             // If we don't know the actual operation time, use the cluster time instead. This is
             // safe but not optimal because we can always return a later operation time than actual.
-            responseBuilder->append(kOperationTime, currentTime.getTime().asTimestamp());
+            responseBuilder->append(kOperationTime, now.asTimestamp());
         }
     }
 }
@@ -209,34 +214,21 @@ void execCommandClient(OperationContext* opCtx,
         return;
     }
 
-    try {
-        bool ok = false;
-        if (!supportsWriteConcern) {
-            ok = c->publicRun(opCtx, request, result);
-        } else {
-            // Change the write concern while running the command.
-            const auto oldWC = opCtx->getWriteConcern();
-            ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
-            opCtx->setWriteConcern(wcResult.getValue());
+    bool ok = false;
+    if (!supportsWriteConcern) {
+        ok = c->publicRun(opCtx, request, result);
+    } else {
+        // Change the write concern while running the command.
+        const auto oldWC = opCtx->getWriteConcern();
+        ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
+        opCtx->setWriteConcern(wcResult.getValue());
 
-            ok = c->publicRun(opCtx, request, result);
-        }
-        if (!ok) {
-            c->incrementCommandsFailed();
-        }
-        Command::appendCommandStatus(result, ok);
-    } catch (const DBException& e) {
-        result.resetToEmpty();
-        const int code = e.code();
-
-        // Codes for StaleConfigException
-        if (code == ErrorCodes::RecvStaleConfig || code == ErrorCodes::SendStaleConfig) {
-            throw;
-        }
-
-        c->incrementCommandsFailed();
-        Command::appendCommandStatus(result, e.toStatus());
+        ok = c->publicRun(opCtx, request, result);
     }
+    if (!ok) {
+        c->incrementCommandsFailed();
+    }
+    Command::appendCommandStatus(result, ok);
 }
 
 void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBuilder&& builder) {
@@ -255,6 +247,7 @@ void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBui
     auto const commandName = request.getCommandName();
     auto const command = Command::findCommand(commandName);
     if (!command) {
+        ON_BLOCK_EXIT([opCtx, &builder] { appendRequiredFieldsToResponse(opCtx, &builder); });
         Command::appendCommandStatus(
             builder,
             {ErrorCodes::CommandNotFound, str::stream() << "no such cmd: " << commandName});
@@ -262,7 +255,7 @@ void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBui
         return;
     }
 
-    initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth());
+    initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
 
     int loops = 5;
 
@@ -295,8 +288,11 @@ void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBui
 
             continue;
         } catch (const DBException& e) {
+            ON_BLOCK_EXIT([opCtx, &builder] { appendRequiredFieldsToResponse(opCtx, &builder); });
             builder.resetToEmpty();
+            command->incrementCommandsFailed();
             Command::appendCommandStatus(builder, e.toStatus());
+            LastError::get(opCtx->getClient()).setLastError(e.code(), e.reason());
             return;
         }
 
@@ -342,8 +338,7 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
                                      q,
                                      expCtx,
                                      ExtensionsCallbackNoop(),
-                                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kExpr));
+                                     MatchExpressionParser::kAllowAllSpecialFeatures));
 
     // If the $explain flag was set, we must run the operation on the shards as an explain command
     // rather than a find command.
@@ -418,6 +413,7 @@ DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
             reply->reset();
             auto bob = reply->getInPlaceReplyBuilder(0);
             Command::appendCommandStatus(bob, ex.toStatus());
+            appendRequiredFieldsToResponse(opCtx, &bob);
 
             return;  // From lambda. Don't try executing if parsing failed.
         }
@@ -433,6 +429,7 @@ DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
             reply->reset();
             auto bob = reply->getInPlaceReplyBuilder(0);
             Command::appendCommandStatus(bob, ex.toStatus());
+            appendRequiredFieldsToResponse(opCtx, &bob);
         }
     }();
 
@@ -550,16 +547,28 @@ void Strategy::killCursors(OperationContext* opCtx, DbMessage* dbm) {
             continue;
         }
 
-        Status authorizationStatus = authSession->checkAuthForKillCursors(*nss, cursorId);
-        audit::logKillCursorsAuthzCheck(client,
-                                        *nss,
-                                        cursorId,
-                                        authorizationStatus.isOK() ? ErrorCodes::OK
-                                                                   : ErrorCodes::Unauthorized);
-        if (!authorizationStatus.isOK()) {
-            LOG(3) << "Not authorized to kill cursor.  Namespace: '" << *nss
-                   << "', cursor id: " << cursorId << ".";
-            continue;
+        {
+            // Block scope ccPin so that it releases our checked out cursor
+            // prior to the killCursor invocation below.
+            auto ccPin = manager->checkOutCursor(*nss, cursorId, opCtx);
+            if (!ccPin.isOK()) {
+                LOG(3) << "Unable to check out cursor for killCursor.  Namespace: '" << *nss
+                       << "', cursor id: " << cursorId << ".";
+                continue;
+            }
+            auto cursorOwners = ccPin.getValue().getAuthenticatedUsers();
+            auto authorizationStatus = authSession->checkAuthForKillCursors(*nss, cursorOwners);
+
+            audit::logKillCursorsAuthzCheck(client,
+                                            *nss,
+                                            cursorId,
+                                            authorizationStatus.isOK() ? ErrorCodes::OK
+                                                                       : ErrorCodes::Unauthorized);
+            if (!authorizationStatus.isOK()) {
+                LOG(3) << "Not authorized to kill cursor.  Namespace: '" << *nss
+                       << "', cursor id: " << cursorId << ".";
+                continue;
+            }
         }
 
         Status killCursorStatus = manager->killCursor(*nss, cursorId);
@@ -607,17 +616,16 @@ Status Strategy::explainFind(OperationContext* opCtx,
     Timer timer;
 
     BSONObj viewDefinition;
-    auto swShardResponses = scatterGather(opCtx,
-                                          qr.nss().db().toString(),
-                                          qr.nss(),
-                                          explainCmd,
-                                          readPref,
-                                          ShardTargetingPolicy::UseRoutingTable,
-                                          qr.getFilter(),
-                                          qr.getCollation(),
-                                          true,  // do shard versioning
-                                          true,  // retry on stale shard version
-                                          &viewDefinition);
+    auto swShardResponses =
+        scatterGatherVersionedTargetByRoutingTable(opCtx,
+                                                   qr.nss().db().toString(),
+                                                   qr.nss(),
+                                                   explainCmd,
+                                                   readPref,
+                                                   Shard::RetryPolicy::kIdempotent,
+                                                   qr.getFilter(),
+                                                   qr.getCollation(),
+                                                   &viewDefinition);
 
     long long millisElapsed = timer.millis();
 

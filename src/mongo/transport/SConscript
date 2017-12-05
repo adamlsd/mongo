@@ -79,12 +79,26 @@ tlEnv.Library(
     target='service_executor',
     source=[
         'service_executor_adaptive.cpp',
+        'service_executor_synchronous.cpp'
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/service_context',
     ],
     LIBDEPS_PRIVATE=[
         "$BUILD_DIR/mongo/util/processinfo",
+        '$BUILD_DIR/third_party/shim_asio',
+    ],
+)
+
+tlEnv.CppUnitTest(
+    target='service_executor_test',
+    source=[
+        'service_executor_test.cpp',
+    ],
+    LIBDEPS=[
+        'service_executor',
+        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/unittest/unittest',
         '$BUILD_DIR/third_party/shim_asio',
     ],
 )
@@ -175,7 +189,7 @@ env.CppUnitTest(
 
 
 zlibEnv = env.Clone()
-zlibEnv.InjectThirdPartyIncludePaths(libraries=['zlib'])
+zlibEnv.InjectThirdPartyIncludePaths(libraries=['zlib', 'snappy'])
 zlibEnv.Library(
     target='message_compressor',
     source=[

@@ -32,6 +32,7 @@
 #include <string>
 
 #include "mongo/db/jsobj.h"
+#include "mongo/db/keys_collection_client_sharded.h"
 #include "mongo/db/keys_collection_document.h"
 #include "mongo/db/keys_collection_manager_sharding.h"
 #include "mongo/db/logical_clock.h"
@@ -58,9 +59,9 @@ protected:
     void setUp() override {
         ConfigServerTestFixture::setUp();
 
-        serverGlobalParams.featureCompatibility.version.store(
-            ServerGlobalParams::FeatureCompatibility::Version::k36);
-        serverGlobalParams.featureCompatibility.validateFeaturesAsMaster.store(true);
+        serverGlobalParams.featureCompatibility.setVersion(
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
+        serverGlobalParams.validateFeaturesAsMaster.store(true);
 
         auto clockSource = stdx::make_unique<ClockSourceMock>();
         // Timestamps of "0 seconds" are not allowed, so we must advance our clock mock to the first
@@ -68,9 +69,10 @@ protected:
         clockSource->advance(Seconds(1));
 
         operationContext()->getServiceContext()->setFastClockSource(std::move(clockSource));
-        auto catalogClient = Grid::get(operationContext())->catalogClient();
-        _keyManager =
-            stdx::make_unique<KeysCollectionManagerSharding>("dummy", catalogClient, Seconds(1));
+        auto catalogClient = stdx::make_unique<KeysCollectionClientSharded>(
+            Grid::get(operationContext())->catalogClient());
+        _keyManager = stdx::make_unique<KeysCollectionManagerSharding>(
+            "dummy", std::move(catalogClient), Seconds(1));
     }
 
     void tearDown() override {
@@ -373,8 +375,8 @@ TEST_F(KeysManagerShardedTest, HasSeenKeysIsFalseUntilKeysAreFound) {
 }
 
 TEST_F(KeysManagerShardedTest, ShouldNotReturnKeysInFeatureCompatibilityVersion34) {
-    serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k34);
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
 
     keyManager()->startMonitoring(getServiceContext());
     keyManager()->enableKeyGenerator(operationContext(), true);

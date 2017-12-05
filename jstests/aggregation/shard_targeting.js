@@ -38,6 +38,13 @@
     const shard0DB = primaryShardDB = st.shard0.getDB(jsTestName());
     const shard1DB = st.shard1.getDB(jsTestName());
 
+    // Turn off best-effort recipient metadata refresh post-migration commit on both shards because
+    // it creates non-determinism for the profiler.
+    assert.commandWorked(st.shard0.getDB('admin').runCommand(
+        {configureFailPoint: 'doNotRefreshRecipientAfterCommit', mode: 'alwaysOn'}));
+    assert.commandWorked(st.shard1.getDB('admin').runCommand(
+        {configureFailPoint: 'doNotRefreshRecipientAfterCommit', mode: 'alwaysOn'}));
+
     assert.commandWorked(mongosDB.dropDatabase());
 
     // Enable sharding on the test DB and ensure its primary is shard0000.
@@ -68,12 +75,8 @@
     assert.writeOK(mongosColl.insert({_id: 50}));
     assert.writeOK(mongosColl.insert({_id: 150}));
 
-    const shardExceptions = [
-        ErrorCodes.RecvStaleConfig,
-        ErrorCodes.SendStaleConfig,
-        ErrorCodes.StaleShardVersion,
-        ErrorCodes.StaleEpoch
-    ];
+    const shardExceptions =
+        [ErrorCodes.StaleConfig, ErrorCodes.StaleShardVersion, ErrorCodes.StaleEpoch];
 
     // Create an $_internalSplitPipeline stage that forces the merge to occur on the Primary shard.
     const forcePrimaryMerge = [{$_internalSplitPipeline: {mergeType: "primaryShard"}}];

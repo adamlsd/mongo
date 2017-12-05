@@ -67,7 +67,13 @@ const auto operationSessionDecoration =
 
 SessionCatalog::SessionCatalog(ServiceContext* serviceContext) : _serviceContext(serviceContext) {}
 
-SessionCatalog::~SessionCatalog() = default;
+SessionCatalog::~SessionCatalog() {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    for (const auto& entry : _txnTable) {
+        auto& sri = entry.second;
+        invariant(!sri->checkedOut);
+    }
+}
 
 void SessionCatalog::create(ServiceContext* service) {
     auto& sessionTransactionTable = sessionTransactionTableDecoration(service);
@@ -104,6 +110,8 @@ boost::optional<UUID> SessionCatalog::getTransactionTableUUID(OperationContext* 
 }
 
 void SessionCatalog::onStepUp(OperationContext* opCtx) {
+    invalidateSessions(opCtx, boost::none);
+
     DBDirectClient client(opCtx);
 
     const size_t initialExtentSize = 0;
@@ -143,12 +151,12 @@ ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext* opCtx)
 
     auto sri = _getOrCreateSessionRuntimeInfo(opCtx, lsid, ul);
 
-    // Wait until the session is no longer in use
+    // Wait until the session is no longer checked out
     opCtx->waitForConditionOrInterrupt(
-        sri->availableCondVar, ul, [&sri]() { return sri->state != SessionRuntimeInfo::kInUse; });
+        sri->availableCondVar, ul, [&sri]() { return !sri->checkedOut; });
 
-    invariant(sri->state == SessionRuntimeInfo::kAvailable);
-    sri->state = SessionRuntimeInfo::kInUse;
+    invariant(!sri->checkedOut);
+    sri->checkedOut = true;
 
     return ScopedCheckedOutSession(opCtx, ScopedSession(std::move(sri)));
 }
@@ -170,10 +178,40 @@ ScopedSession SessionCatalog::getOrCreateSession(OperationContext* opCtx,
     return ss;
 }
 
-void SessionCatalog::resetSessions() {
+void SessionCatalog::invalidateSessions(OperationContext* opCtx,
+                                        boost::optional<BSONObj> singleSessionDoc) {
+    uassert(40528,
+            str::stream() << "Direct writes against "
+                          << NamespaceString::kSessionTransactionsTableNamespace.ns()
+                          << " cannot be performed using a transaction or on a session.",
+            !opCtx->getLogicalSessionId());
+
+    const auto invalidateSessionFn = [&](WithLock, SessionRuntimeInfoMap::iterator it) {
+        auto& sri = it->second;
+        sri->txnState.invalidate();
+
+        // We cannot remove checked-out sessions from the cache, because operations expect to find
+        // them there to check back in
+        if (!sri->checkedOut) {
+            _txnTable.erase(it);
+        }
+    };
+
     stdx::lock_guard<stdx::mutex> lg(_mutex);
-    for (const auto& it : _txnTable) {
-        it.second->txnState.invalidate();
+
+    if (singleSessionDoc) {
+        const auto lsid = LogicalSessionId::parse(IDLParserErrorContext("lsid"),
+                                                  singleSessionDoc->getField("_id").Obj());
+
+        auto it = _txnTable.find(lsid);
+        if (it != _txnTable.end()) {
+            invalidateSessionFn(lg, it);
+        }
+    } else {
+        auto it = _txnTable.begin();
+        while (it != _txnTable.end()) {
+            invalidateSessionFn(lg, it++);
+        }
     }
 }
 
@@ -196,14 +234,24 @@ void SessionCatalog::_releaseSession(const LogicalSessionId& lsid) {
     invariant(it != _txnTable.end());
 
     auto& sri = it->second;
-    invariant(sri->state == SessionRuntimeInfo::kInUse);
+    invariant(sri->checkedOut);
 
-    sri->state = SessionRuntimeInfo::kAvailable;
+    sri->checkedOut = false;
     sri->availableCondVar.notify_one();
 }
 
-OperationContextSession::OperationContextSession(OperationContext* opCtx) : _opCtx(opCtx) {
+OperationContextSession::OperationContextSession(OperationContext* opCtx, bool checkOutSession)
+    : _opCtx(opCtx) {
     if (!opCtx->getLogicalSessionId()) {
+        return;
+    }
+
+    if (!checkOutSession) {
+        // The session may have already been checked out by this operation, so bump the nesting
+        // level if necessary to avoid resetting the session when this command completes.
+        if (auto& checkedOutSession = operationSessionDecoration(opCtx)) {
+            checkedOutSession->checkOutNestingLevel++;
+        }
         return;
     }
 

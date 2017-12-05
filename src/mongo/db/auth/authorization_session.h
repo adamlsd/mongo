@@ -202,7 +202,7 @@ public:
     // Checks if this connection has the privileges necessary to perform a killCursor on
     // the identified cursor, supposing that cursor is associated with the supplied namespace
     // identifier.
-    Status checkAuthForKillCursors(const NamespaceString& ns, long long cursorID);
+    Status checkAuthForKillCursors(const NamespaceString& cursorNss, UserNameIterator cursorOwner);
 
     // Checks if this connection has the privileges necessary to run the aggregation pipeline
     // specified in 'cmdObj' on the namespace 'ns' either directly on mongoD or via mongoS.
@@ -223,6 +223,13 @@ public:
     // Checks if this connection has the privileges necessary to revoke the given privilege
     // from a role.
     Status checkAuthorizedToRevokePrivilege(const Privilege& privilege);
+
+    // Checks if this connection is using the localhost bypass
+    bool isUsingLocalhostBypass();
+
+    // Checks if this connection has the privileges necessary to parse a namespace from a
+    // given BSONElement.
+    bool isAuthorizedToParseNamespaceElement(const BSONElement& elem);
 
     // Checks if this connection has the privileges necessary to create a new role
     bool isAuthorizedToCreateRole(const auth::CreateOrUpdateRoleArgs& args);

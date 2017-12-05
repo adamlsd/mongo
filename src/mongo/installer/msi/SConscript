@@ -13,6 +13,7 @@ env['WIXHEAT'] = r'$WIXPATH\heat.exe'
 env['WIXCANDLE'] = r'$WIXPATH\candle.exe'
 env['WIXLIGHT'] = r'$WIXPATH\light.exe'
 env['WIXUIEXT'] = r'$WIXPATH\WixUIExtension.dll'
+env['WIXUTILEXT'] = r'$WIXPATH\WixUtilExtension.dll'
 env['MERGEMODULESBASEPATH'] = os.environ.get('MERGEMODULESBASEPATH')
 if env['MERGEMODULESBASEPATH'] == None and os.environ.get('ProgramFiles(x86)') != None:
     env['MERGEMODULESBASEPATH'] = (os.environ.get('ProgramFiles(x86)') +
@@ -47,15 +48,15 @@ msi_platform = 'x64'
 # Enterprise
 if 'enterprise' in env['MONGO_MODULES']:
   msi_edition = 'Enterprise'
-  upgrade_code = '822C75A4-40BA-456B-91D3-C339155F0F90'
+  upgrade_code = '4E54E7FE-4C19-4291-B21B-6C2742199A6B'
 # Community
 else:
   if has_option('ssl'):
     msi_edition = 'SSL'
-    upgrade_code = 'FDAA2775-060E-4C54-9C19-A84197F3070D'
+    upgrade_code = '74770C0B-53B0-4F8C-A453-B92CF7448FCD'
   else:
     msi_edition = 'Standard'
-    upgrade_code = '7BCCBD4E-AC8A-48BC-9922-E9EBB158A060'
+    upgrade_code = '94AF64D6-0A84-4238-ACB7-E112E13EE0B4'
 
 sourcesList.append("Installer_64.wxs")
 
@@ -79,7 +80,7 @@ major_version = "%s.%s" % (mv[0], mv[1])
 #    It allows upgrade from 3.2.0 to 3.2.1 in place instead of side-by-side.
 # 3. Update the check for the next major release below so we bump the GUIDs in the future.
 #
-if float(major_version) > 3.6:
+if float(major_version) > 3.8:
     # If you are troubleshooting this error, see the comment above
     env.FatalError("The upgrade codes are out of date for this release. Please \n" +
     "replace the existing GUIDs listed in this file with new GUIDs so " +
@@ -118,6 +119,7 @@ env.Command(objects,
             ' -dFlavor=' + msi_flavor +
             r' -dProjectDir=buildscripts\packaging\msi\\'
             ' -dProjectName=MongoDB'
+            ' -dCompassDir=src\mongo\installer\compass'
             ' -dTargetDir=' + buildDir + r'\msi'
             ' -dTargetExt=.msi'
             ' -dTargetFileName=${SERVER_ARCHIVE}'
@@ -142,7 +144,7 @@ pre_msi = "$BUILD_DIR/msi/${SERVER_DIST_BASENAME}.pre.msi"
 pre_msi_cmd = env.Command(pre_msi,
             objects,
             '"$WIXLIGHT" -out ${TARGET} -wx -cultures:null -sice:ICE82 -sice:ICE03'
-            ' -ext "$WIXUIEXT"'
+            ' -ext "$WIXUIEXT" -ext "$WIXUTILEXT"'
             ' ${SOURCES}')
 
 env.Depends(pre_msi_cmd, '$BUILD_DIR/mongo/mongo.exe')
@@ -161,4 +163,3 @@ env.Command(msi,
 env.AlwaysBuild(msi)
 
 env.Alias( "msi" , msi )
-

@@ -28,25 +28,26 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/ops/write_ops_retryability.h"
+
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/db/operation_context.h"
-#include "mongo/db/ops/single_write_result_gen.h"
-#include "mongo/db/ops/write_ops.h"
+#include "mongo/db/ops/find_and_modify_result.h"
 #include "mongo/db/ops/write_ops_exec.h"
-#include "mongo/db/ops/write_ops_retryability.h"
 #include "mongo/db/query/find_and_modify_request.h"
 #include "mongo/logger/redaction.h"
 
 namespace mongo {
-
 namespace {
 
 /**
  * Validates that the request is retry-compatible with the operation that occurred.
+ * In the case of nested oplog entry where the correct links are in the top level
+ * oplog, oplogWithCorrectLinks can be used to specify the outer oplog.
  */
 void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
-                                       const repl::OplogEntry& oplogEntry) {
+                                       const repl::OplogEntry& oplogEntry,
+                                       const repl::OplogEntry& oplogWithCorrectLinks) {
     auto opType = oplogEntry.getOpType();
     auto ts = oplogEntry.getTimestamp();
 
@@ -64,7 +65,7 @@ void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
         uassert(40607,
                 str::stream() << "No pre-image available for findAndModify retry request:"
                               << redact(request.toBSON()),
-                oplogEntry.getPreImageTs());
+                oplogWithCorrectLinks.getPreImageOpTime());
     } else if (opType == repl::OpTypeEnum::kInsert) {
         uassert(
             40608,
@@ -87,16 +88,6 @@ void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
                           << ", oplog: "
                           << redact(oplogEntry.toBSON()),
             opType == repl::OpTypeEnum::kUpdate);
-        uassert(
-            40610,
-            str::stream() << "findAndModify retry request: " << redact(request.toBSON())
-                          << " is not compatible with previous write in the transaction of type: "
-                          << OpType_serializer(oplogEntry.getOpType())
-                          << ", oplogTs: "
-                          << ts.toString()
-                          << ", oplog: "
-                          << redact(oplogEntry.toBSON()),
-            !request.isUpsert());
 
         if (request.shouldReturnNew()) {
             uassert(40611,
@@ -106,7 +97,7 @@ void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
                                   << ts.toString()
                                   << ", oplog: "
                                   << redact(oplogEntry.toBSON()),
-                    oplogEntry.getPostImageTs());
+                    oplogWithCorrectLinks.getPostImageOpTime());
         } else {
             uassert(40612,
                     str::stream() << "findAndModify retry request: " << redact(request.toBSON())
@@ -115,7 +106,7 @@ void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
                                   << ts.toString()
                                   << ", oplog: "
                                   << redact(oplogEntry.toBSON()),
-                    oplogEntry.getPreImageTs());
+                    oplogWithCorrectLinks.getPreImageOpTime());
         }
     }
 }
@@ -125,34 +116,66 @@ void validateFindAndModifyRetryability(const FindAndModifyRequest& request,
  * oplog.
  */
 BSONObj extractPreOrPostImage(OperationContext* opCtx, const repl::OplogEntry& oplog) {
-    invariant(oplog.getPreImageTs() || oplog.getPostImageTs());
-    auto ts =
-        oplog.getPreImageTs() ? oplog.getPreImageTs().value() : oplog.getPostImageTs().value();
+    invariant(oplog.getPreImageOpTime() || oplog.getPostImageOpTime());
+    auto opTime = oplog.getPreImageOpTime() ? oplog.getPreImageOpTime().value()
+                                            : oplog.getPostImageOpTime().value();
 
     DBDirectClient client(opCtx);
-    auto oplogDoc = client.findOne(NamespaceString::kRsOplogNamespace.ns(), BSON("ts" << ts));
+    auto oplogDoc = client.findOne(NamespaceString::kRsOplogNamespace.ns(), opTime.asQuery());
 
     uassert(40613,
             str::stream() << "oplog no longer contains the complete write history of this "
-                             "transaction, log with ts "
-                          << ts.toString()
+                             "transaction, log with opTime "
+                          << opTime.toString()
                           << " cannot be found",
             !oplogDoc.isEmpty());
-    auto oplogEntry = uassertStatusOK(repl::OplogEntry::parse(oplogDoc));
 
+    auto oplogEntry = uassertStatusOK(repl::OplogEntry::parse(oplogDoc));
     return oplogEntry.getObject().getOwned();
 }
 
-}  // namespace
+/**
+ * Extracts the findAndModify result by inspecting the oplog entries that where generated by a
+ * previous execution of the command. In the case of nested oplog entry where the correct links
+ * are in the top level oplog, oplogWithCorrectLinks can be used to specify the outer oplog.
+ */
+void parseOplogEntryForFindAndModify(OperationContext* opCtx,
+                                     const FindAndModifyRequest& request,
+                                     const repl::OplogEntry& oplogEntry,
+                                     const repl::OplogEntry& oplogWithCorrectLinks,
+                                     BSONObjBuilder* builder) {
+    validateFindAndModifyRetryability(request, oplogEntry, oplogWithCorrectLinks);
 
-SingleWriteResult parseOplogEntryForInsert(const repl::OplogEntry& entry) {
-    invariant(entry.getOpType() == repl::OpTypeEnum::kInsert);
-
-    SingleWriteResult res;
-    res.setN(1);
-    res.setNModified(0);
-    return res;
+    switch (oplogEntry.getOpType()) {
+        case repl::OpTypeEnum::kInsert:
+            return find_and_modify::serializeUpsert(
+                1,
+                request.shouldReturnNew() ? oplogEntry.getObject() : boost::optional<BSONObj>(),
+                false,
+                oplogEntry.getObject(),
+                builder);
+        case repl::OpTypeEnum::kUpdate:
+            return find_and_modify::serializeUpsert(
+                1, extractPreOrPostImage(opCtx, oplogWithCorrectLinks), true, {}, builder);
+        case repl::OpTypeEnum::kDelete:
+            return find_and_modify::serializeRemove(
+                1, extractPreOrPostImage(opCtx, oplogWithCorrectLinks), builder);
+        default:
+            MONGO_UNREACHABLE;
+    }
 }
+
+repl::OplogEntry getInnerNestedOplogEntry(const repl::OplogEntry& entry) {
+    uassert(40635,
+            str::stream() << "expected nested oplog entry with ts: "
+                          << entry.getTimestamp().toString()
+                          << " to have o2 field: "
+                          << redact(entry.toBSON()),
+            entry.getObject2());
+    return uassertStatusOK(repl::OplogEntry::parse(*entry.getObject2()));
+}
+
+}  // namespace
 
 SingleWriteResult parseOplogEntryForUpdate(const repl::OplogEntry& entry) {
     SingleWriteResult res;
@@ -167,61 +190,33 @@ SingleWriteResult parseOplogEntryForUpdate(const repl::OplogEntry& entry) {
     } else if (entry.getOpType() == repl::OpTypeEnum::kUpdate) {
         res.setN(1);
         res.setNModified(1);
+    } else if (entry.getOpType() == repl::OpTypeEnum::kNoop) {
+        return parseOplogEntryForUpdate(getInnerNestedOplogEntry(entry));
     } else {
-        MONGO_UNREACHABLE;
+        uasserted(40638,
+                  str::stream() << "update retry request is not compatible with previous write in "
+                                   "the transaction of type: "
+                                << OpType_serializer(entry.getOpType())
+                                << ", oplogTs: "
+                                << entry.getTimestamp().toString()
+                                << ", oplog: "
+                                << redact(entry.toBSON()));
     }
+
     return res;
 }
 
-SingleWriteResult parseOplogEntryForDelete(const repl::OplogEntry& entry) {
-    invariant(entry.getOpType() == repl::OpTypeEnum::kDelete);
-
-    SingleWriteResult res;
-    res.setN(1);
-    res.setNModified(0);
-    return res;
-}
-
-FindAndModifyResult parseOplogEntryForFindAndModify(OperationContext* opCtx,
-                                                    const FindAndModifyRequest& request,
-                                                    const repl::OplogEntry& oplogEntry) {
-    validateFindAndModifyRetryability(request, oplogEntry);
-
-    FindAndModifyResult result;
-
-    auto opType = oplogEntry.getOpType();
-
-    if (opType == repl::OpTypeEnum::kDelete) {
-        FindAndModifyLastError lastError;
-        lastError.setN(1);
-        result.setLastErrorObject(std::move(lastError));
-        result.setValue(extractPreOrPostImage(opCtx, oplogEntry));
-
-        return result;
+void parseOplogEntryForFindAndModify(OperationContext* opCtx,
+                                     const FindAndModifyRequest& request,
+                                     const repl::OplogEntry& oplogEntry,
+                                     BSONObjBuilder* builder) {
+    // Migrated op case.
+    if (oplogEntry.getOpType() == repl::OpTypeEnum::kNoop) {
+        parseOplogEntryForFindAndModify(
+            opCtx, request, getInnerNestedOplogEntry(oplogEntry), oplogEntry, builder);
+    } else {
+        parseOplogEntryForFindAndModify(opCtx, request, oplogEntry, oplogEntry, builder);
     }
-
-    // Upsert case
-    if (opType == repl::OpTypeEnum::kInsert) {
-        FindAndModifyLastError lastError;
-        lastError.setN(1);
-        lastError.setUpdatedExisting(false);
-        // TODO: SERVER-30532 set upserted
-
-        result.setLastErrorObject(std::move(lastError));
-        result.setValue(oplogEntry.getObject().getOwned());
-
-        return result;
-    }
-
-    // Update case
-    FindAndModifyLastError lastError;
-    lastError.setN(1);
-    lastError.setUpdatedExisting(true);
-
-    result.setLastErrorObject(std::move(lastError));
-    result.setValue(extractPreOrPostImage(opCtx, oplogEntry));
-
-    return result;
 }
 
 }  // namespace mongo

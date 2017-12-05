@@ -79,7 +79,8 @@ struct InitialSyncerOptions {
     using GetMyLastOptimeFn = stdx::function<OpTime()>;
 
     /** Function to update optime of last operation applied on this node */
-    using SetMyLastOptimeFn = stdx::function<void(const OpTime&)>;
+    using SetMyLastOptimeFn =
+        stdx::function<void(const OpTime&, ReplicationCoordinator::DataConsistency consistency)>;
 
     /** Function to reset all optimes on this node (e.g. applied & durable). */
     using ResetOptimesFn = stdx::function<void()>;
@@ -289,6 +290,10 @@ private:
      *    _lastOplogEntryFetcherCallbackForBeginTimestamp()
      *         |
      *         |
+     *         V
+     *    _fcvFetcherCallback()
+     *         |
+     *         |
      *         +------------------------------+
      *         |                              |
      *         |                              |
@@ -388,6 +393,15 @@ private:
     void _lastOplogEntryFetcherCallbackForBeginTimestamp(
         const StatusWith<Fetcher::QueryResponse>& result,
         std::shared_ptr<OnCompletionGuard> onCompletionGuard);
+
+
+    /**
+     * Callback for the '_fCVFetcher'. A successful response lets us check if the remote node
+     * is in a currently acceptable fCV and if it has a 'targetVersion' set.
+     */
+    void _fcvFetcherCallback(const StatusWith<Fetcher::QueryResponse>& result,
+                             std::shared_ptr<OnCompletionGuard> onCompletionGuard,
+                             const OpTimeWithHash& lastOpTimeWithHash);
 
     /**
      * Callback for oplog fetcher.
@@ -592,6 +606,7 @@ private:
     std::unique_ptr<InitialSyncState> _initialSyncState;  // (M)
     std::unique_ptr<OplogFetcher> _oplogFetcher;          // (S)
     std::unique_ptr<Fetcher> _lastOplogEntryFetcher;      // (S)
+    std::unique_ptr<Fetcher> _fCVFetcher;                 // (S)
     std::unique_ptr<MultiApplier> _applier;               // (M)
     HostAndPort _syncSource;                              // (M)
     OpTimeWithHash _lastFetched;                          // (MX)

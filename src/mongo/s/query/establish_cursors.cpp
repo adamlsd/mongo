@@ -32,6 +32,7 @@
 
 #include "mongo/s/query/establish_cursors.h"
 
+#include "mongo/client/remote_command_retry_scheduler.h"
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/db/query/getmore_request.h"
@@ -61,7 +62,12 @@ StatusWith<std::vector<ClusterClientCursorParams::RemoteCursor>> establishCursor
     }
 
     // Send the requests
-    AsyncRequestsSender ars(opCtx, executor, nss.db().toString(), std::move(requests), readPref);
+    AsyncRequestsSender ars(opCtx,
+                            executor,
+                            nss.db().toString(),
+                            std::move(requests),
+                            readPref,
+                            Shard::RetryPolicy::kIdempotent);
 
     // Get the responses
     std::vector<ClusterClientCursorParams::RemoteCursor> remoteCursors;
@@ -110,10 +116,17 @@ StatusWith<std::vector<ClusterClientCursorParams::RemoteCursor>> establishCursor
             break;
         }
 
-        // Unreachable host errors are swallowed if the 'allowPartialResults' option is set.
-        if (allowPartialResults) {
+
+        // Retriable errors are swallowed if 'allowPartialResults' is true.
+        if (allowPartialResults &&
+            std::find(RemoteCommandRetryScheduler::kAllRetriableErrors.begin(),
+                      RemoteCommandRetryScheduler::kAllRetriableErrors.end(),
+                      swCursorResponse.getStatus().code()) !=
+                RemoteCommandRetryScheduler::kAllRetriableErrors.end()) {
             continue;
         }
+
+        // Set the overall status to the status of the first remote for which we saw a failure.
         status = std::move(swCursorResponse.getStatus());
         break;
     }
@@ -160,6 +173,7 @@ StatusWith<std::vector<ClusterClientCursorParams::RemoteCursor>> establishCursor
         return status;
     }
 
+    invariant(status.isOK());
     return std::move(remoteCursors);
 }
 

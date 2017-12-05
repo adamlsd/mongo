@@ -276,6 +276,8 @@ class TestParser(testcase.IDLTestcase):
             foo:
                 description: foo
                 strict: true
+                immutable: true
+                inline_chained_structs: true
                 fields:
                     foo: bar
             """))
@@ -287,6 +289,8 @@ class TestParser(testcase.IDLTestcase):
             foo:
                 description: foo
                 strict: false
+                immutable: false
+                inline_chained_structs: false
                 fields:
                     foo: bar
             """))
@@ -329,6 +333,17 @@ class TestParser(testcase.IDLTestcase):
             foo:
                 description: foo
                 strict: bar
+                fields:
+                    foo: bar
+            """), idl.errors.ERROR_ID_IS_NODE_VALID_BOOL)
+
+        # immutable is a bool
+        self.assert_parse_fail(
+            textwrap.dedent("""
+        structs:
+            foo:
+                description: foo
+                immutable: bar
                 fields:
                     foo: bar
             """), idl.errors.ERROR_ID_IS_NODE_VALID_BOOL)

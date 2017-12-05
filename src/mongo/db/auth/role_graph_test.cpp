@@ -674,6 +674,7 @@ TEST(RoleGraphTest, getRolesForDatabase) {
 
     // Admin DB
     it = graph.getRolesForDatabase("admin");
+    ASSERT_EQUALS(RoleName("__queryableBackup", "admin"), it.next());
     ASSERT_EQUALS(RoleName("__system", "admin"), it.next());
     ASSERT_EQUALS(RoleName("backup", "admin"), it.next());
     ASSERT_EQUALS(RoleName("clusterAdmin", "admin"), it.next());
@@ -773,8 +774,8 @@ TEST(RoleGraphTest, AddRoleFromDocument) {
         return builder.obj();
     };
 
-    serverGlobalParams.featureCompatibility.version.store(
-        ServerGlobalParams::FeatureCompatibility::Version::k36);
+    serverGlobalParams.featureCompatibility.setVersion(
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
 
     RoleGraph graph;
 

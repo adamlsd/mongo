@@ -40,6 +40,8 @@
 #include "mongo/rpc/metadata/client_metadata_ismaster.h"
 #include "mongo/transport/message_compressor_manager.h"
 #include "mongo/util/map_util.h"
+#include "mongo/util/net/sock.h"
+#include "mongo/util/version.h"
 
 namespace mongo {
 namespace {
@@ -95,6 +97,11 @@ public:
 
             swParseClientMetadata.getValue().get().logClientMetadata(opCtx->getClient());
 
+            swParseClientMetadata.getValue().get().setMongoSMetadata(
+                getHostNameCachedAndPort(),
+                opCtx->getClient()->clientAddress(true),
+                VersionInfoInterface::instance().version());
+
             clientMetadataIsMasterState.setClientMetadata(
                 opCtx->getClient(), std::move(swParseClientMetadata.getValue()));
         }
@@ -105,12 +112,15 @@ public:
         result.appendNumber("maxMessageSizeBytes", MaxMessageSizeBytes);
         result.appendNumber("maxWriteBatchSize", write_ops::kMaxWriteBatchSize);
         result.appendDate("localTime", jsTime());
-        result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
+        if (serverGlobalParams.featureCompatibility.getVersion() ==
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+            result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
+        }
 
         // Mongos tries to keep exactly the same version range of the server for which
         // it is compiled.
-        result.append("maxWireVersion", WireSpec::instance().incoming.maxWireVersion);
-        result.append("minWireVersion", WireSpec::instance().incoming.minWireVersion);
+        result.append("maxWireVersion", WireSpec::instance().incomingExternalClient.maxWireVersion);
+        result.append("minWireVersion", WireSpec::instance().incomingExternalClient.minWireVersion);
 
         const auto parameter = mapFindWithDefault(ServerParameterSet::getGlobal()->getMap(),
                                                   "automationServiceDescriptor",

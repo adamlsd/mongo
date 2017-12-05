@@ -40,15 +40,13 @@
 
 namespace mongo {
 
-// How long to wait before starting cleanup of an emigrated chunk range.
-extern AtomicInt32 orphanCleanupDelaySecs;
-
 class BalancerConfiguration;
 class BSONObj;
 struct ChunkVersion;
 class CollectionMetadata;
 class MigrationSourceManager;
 class OperationContext;
+class Timestamp;
 
 /**
  * Contains all sharding-related runtime state for a given collection. One such object is assigned
@@ -157,8 +155,7 @@ public:
      * by running queries that overlap the argument range, suitable for identifying and invalidating
      * those queries.
      */
-    auto overlappingMetadata(ChunkRange const& range) const
-        -> std::vector<ScopedCollectionMetadata>;
+    std::vector<ScopedCollectionMetadata> overlappingMetadata(ChunkRange const& range) const;
 
     /**
      * Returns the active migration source manager, if one is available.
@@ -181,10 +178,10 @@ public:
 
     /**
      * Checks whether the shard version in the context is compatible with the shard version of the
-     * collection locally and if not throws SendStaleConfigException populated with the expected and
+     * collection locally and if not throws StaleConfigException populated with the expected and
      * actual versions.
      *
-     * Because SendStaleConfigException has special semantics in terms of how a sharded command's
+     * Because StaleConfigException has special semantics in terms of how a sharded command's
      * response is constructed, this function should be the only means of checking for shard version
      * match.
      */
@@ -198,9 +195,12 @@ public:
 
     /**
      * Tracks deletion of any documents within the range, returning when deletion is complete.
-     * Throws if the collection is dropped while it sleeps. Call this with the collection unlocked.
+     * Throws if the collection is dropped while it sleeps.
      */
-    static Status waitForClean(OperationContext*, NamespaceString, OID const& epoch, ChunkRange);
+    static Status waitForClean(OperationContext* opCtx,
+                               const NamespaceString& nss,
+                               OID const& epoch,
+                               ChunkRange orphanRange);
 
     /**
      * Reports whether any range still scheduled for deletion overlaps the argument range. If so,
@@ -223,48 +223,59 @@ public:
      *
      * The global exclusive lock is expected to be held by the caller of any of these functions.
      */
-    void onInsertOp(OperationContext* opCtx, const BSONObj& insertedDoc);
+    void onInsertOp(OperationContext* opCtx,
+                    const BSONObj& insertedDoc,
+                    const repl::OpTime& opTime);
     void onUpdateOp(OperationContext* opCtx,
                     const BSONObj& query,
                     const BSONObj& update,
-                    const BSONObj& updatedDoc);
-    void onDeleteOp(OperationContext* opCtx, const DeleteState& deleteState);
+                    const BSONObj& updatedDoc,
+                    const repl::OpTime& opTime,
+                    const repl::OpTime& prePostImageOpTime);
+    void onDeleteOp(OperationContext* opCtx,
+                    const DeleteState& deleteState,
+                    const repl::OpTime& opTime,
+                    const repl::OpTime& preImageOpTime);
     void onDropCollection(OperationContext* opCtx, const NamespaceString& collectionName);
 
 private:
     /**
-     * Registers a task on the opCtx -- to run after writes from the oplog are committed and visible
-     * to reads -- to notify the catalog cache loader of a new collection version. The catalog
-     * cache's routing table for the collection will also be invalidated at that time so that the
-     * next caller to the catalog cache for routing information will provoke a routing table
-     * refresh.
+     * This runs on updates to the shard's persisted cache of the config server's
+     * config.collections collection.
      *
-     * This only runs on secondaries, and only when 'lastRefreshedCollectionVersion' is in 'update',
-     * meaning a chunk metadata refresh finished being applied to the collection's locally persisted
-     * metadata store.
+     * If an update occurs to the 'lastRefreshedCollectionVersion' field, registers a task on the
+     * opCtx -- to run after writes from the oplog are committed and visible to reads -- to notify
+     * the catalog cache loader of a new collection version and clear the routing table so the next
+     * caller with routing information will provoke a routing table refresh. When
+     * 'lastRefreshedCollectionVersion' is in 'update', it means that a chunk metadata refresh
+     * finished being applied to the collection's locally persisted metadata store.
+     *
+     * If an update occurs to the 'enterCriticalSectionSignal' field, simply clear the routing table
+     * immediately. This will provoke the next secondary caller to refresh through the primary,
+     * blocking behind the critical section.
      *
      * query - BSON with an _id that identifies which collections entry is being updated.
      * update - the update being applied to the collections entry.
      * updatedDoc - the document identified by 'query' with the 'update' applied.
      *
+     * This only runs on secondaries.
      * The global exclusive lock is expected to be held by the caller.
      */
-    void _onConfigRefreshCompleteInvalidateCachedMetadataAndNotify(OperationContext* opCtx,
-                                                                   const BSONObj& query,
-                                                                   const BSONObj& update,
-                                                                   const BSONObj& updatedDoc);
+    void _onConfigCollectionsUpdateOp(OperationContext* opCtx,
+                                      const BSONObj& query,
+                                      const BSONObj& update,
+                                      const BSONObj& updatedDoc);
 
     /**
-     * Registers a task on the opCtx -- to run after writes from the oplog are committed and visible
-     * to reads -- to notify the catalog cache loader of a new collection version. The catalog
-     * cache's routing table for the collection will also be invalidated at that time so that the
-     * next caller to the catalog cache for routing information will provoke a routing table
-     * refresh.
+     * Invalidates the in-memory routing table cache when a collection is dropped, so the next
+     * caller with routing information will provoke a routing table refresh and see the drop.
      *
-     * This only runs on secondaries
+     * Registers a task on the opCtx -- to run after writes from the oplog are committed and visible
+     * to reads.
      *
      * query - BSON with an _id field that identifies which collections entry is being updated.
      *
+     * This only runs on secondaries.
      * The global exclusive lock is expected to be held by the caller.
      */
     void _onConfigDeleteInvalidateCachedMetadataAndNotify(OperationContext* opCtx,

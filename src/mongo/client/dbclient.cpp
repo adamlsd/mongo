@@ -60,7 +60,7 @@
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/metadata/client_metadata.h"
 #include "mongo/rpc/reply_interface.h"
-#include "mongo/s/stale_exception.h"  // for RecvStaleConfigException
+#include "mongo/s/stale_exception.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
@@ -179,10 +179,8 @@ rpc::UniqueReply DBClientBase::parseCommandReplyMessage(const std::string& host,
         uassertStatusOK(_metadataReader(opCtx, commandReply->getMetadata(), host));
     }
 
-    if (ErrorCodes::SendStaleConfig ==
-        getStatusFromCommandResult(commandReply->getCommandReply())) {
-        throw RecvStaleConfigException("stale config in runCommand",
-                                       commandReply->getCommandReply());
+    if (ErrorCodes::StaleConfig == getStatusFromCommandResult(commandReply->getCommandReply())) {
+        throw StaleConfigException("stale config in runCommand", commandReply->getCommandReply());
     }
 
     return rpc::UniqueReply(replyMsg, std::move(commandReply));
@@ -261,6 +259,13 @@ std::pair<rpc::UniqueReply, DBClientBase*> DBClientBase::runCommandWithTarget(
     return {std::move(commandReply), this};
 }
 
+std::pair<rpc::UniqueReply, std::shared_ptr<DBClientBase>> DBClientBase::runCommandWithTarget(
+    OpMsgRequest request, std::shared_ptr<DBClientBase> me) {
+
+    auto out = runCommandWithTarget(std::move(request));
+    return {std::move(out.first), std::move(me)};
+}
+
 std::tuple<bool, DBClientBase*> DBClientBase::runCommandWithTarget(const string& dbname,
                                                                    BSONObj cmd,
                                                                    BSONObj& info,
@@ -269,6 +274,19 @@ std::tuple<bool, DBClientBase*> DBClientBase::runCommandWithTarget(const string&
     // requestBuilder is a legacyRequest builder. Not sure what the best
     // way to get around that is without breaking the abstraction.
     auto result = runCommandWithTarget(rpc::upconvertRequest(dbname, std::move(cmd), options));
+
+    info = result.first->getCommandReply().getOwned();
+    return std::make_tuple(isOk(info), result.second);
+}
+
+std::tuple<bool, std::shared_ptr<DBClientBase>> DBClientBase::runCommandWithTarget(
+    const string& dbname,
+    BSONObj cmd,
+    BSONObj& info,
+    std::shared_ptr<DBClientBase> me,
+    int options) {
+    auto result =
+        runCommandWithTarget(rpc::upconvertRequest(dbname, std::move(cmd), options), std::move(me));
 
     info = result.first->getCommandReply().getOwned();
     return std::make_tuple(isOk(info), result.second);
@@ -665,7 +683,7 @@ void DBClientBase::findN(vector<BSONObj>& out,
     if (c->hasResultFlag(ResultFlag_ShardConfigStale)) {
         BSONObj error;
         c->peekError(&error);
-        throw RecvStaleConfigException("findN stale config", error);
+        throw StaleConfigException("findN stale config", error);
     }
 
     for (int i = 0; i < nToReturn; i++) {
@@ -843,6 +861,18 @@ Status DBClientConnection::connect(const HostAndPort& serverAddress, StringData 
     }
 
     {
+        // The Server Discovery and Monitoring (SDAM) specification identifies a replica set member
+        // as either (a) having a "setName" field in the isMaster response, or (b) having
+        // "isreplicaset: true" in the isMaster response.
+        //
+        // https://github.com/mongodb/specifications/blob/c386e23724318e2fa82f4f7663d77581b755b2c3/
+        // source/server-discovery-and-monitoring/server-discovery-and-monitoring.rst#type
+        const bool hasSetNameField = swIsMasterReply.data.hasField("setName");
+        const bool isReplicaSetField = swIsMasterReply.data.getBoolField("isreplicaset");
+        _isReplicaSetMember = hasSetNameField || isReplicaSetField;
+    }
+
+    {
         std::string msgField;
         auto msgFieldExtractStatus = bsonExtractStringField(swIsMasterReply.data, "msg", &msgField);
 
@@ -968,7 +998,20 @@ std::pair<rpc::UniqueReply, DBClientBase*> DBClientConnection::runCommandWithTar
     if (!_parentReplSetName.empty()) {
         const auto replyBody = out.first->getCommandReply();
         if (!isOk(replyBody)) {
-            handleNotMasterResponse(replyBody["errmsg"]);
+            handleNotMasterResponse(replyBody, "errmsg");
+        }
+    }
+
+    return out;
+}
+
+std::pair<rpc::UniqueReply, std::shared_ptr<DBClientBase>> DBClientConnection::runCommandWithTarget(
+    OpMsgRequest request, std::shared_ptr<DBClientBase> me) {
+    auto out = DBClientBase::runCommandWithTarget(std::move(request), std::move(me));
+    if (!_parentReplSetName.empty()) {
+        const auto replyBody = out.first->getCommandReply();
+        if (!isOk(replyBody)) {
+            handleNotMasterResponse(replyBody, "errmsg");
         }
     }
 
@@ -1389,7 +1432,7 @@ bool DBClientConnection::call(Message& toSend,
         if (response.operation() == dbCompressed) {
             response = uassertStatusOK(_compressorManager.decompressMessage(response));
         }
-    } catch (const DBException& ex) {
+    } catch (const DBException&) {
         _failed = true;
         _port->shutdown();
         throw;
@@ -1431,7 +1474,7 @@ void DBClientConnection::checkResponse(const std::vector<BSONObj>& batch,
     *host = _serverAddress.toString();
 
     if (!_parentReplSetName.empty() && !batch.empty()) {
-        handleNotMasterResponse(getErrField(batch[0]));
+        handleNotMasterResponse(batch[0], "$err");
     }
 }
 
@@ -1439,8 +1482,13 @@ void DBClientConnection::setParentReplSetName(const string& replSetName) {
     _parentReplSetName = replSetName;
 }
 
-void DBClientConnection::handleNotMasterResponse(const BSONElement& elemToCheck) {
-    if (!isNotMasterErrorString(elemToCheck)) {
+void DBClientConnection::handleNotMasterResponse(const BSONObj& replyBody,
+                                                 StringData errorMsgFieldName) {
+    const BSONElement errorMsgElem = replyBody[errorMsgFieldName];
+    const BSONElement codeElem = replyBody["code"];
+
+    if (!isNotMasterErrorString(errorMsgElem) &&
+        !ErrorCodes::isNotMasterError(ErrorCodes::Error(codeElem.numberInt()))) {
         return;
     }
 

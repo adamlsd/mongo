@@ -459,7 +459,6 @@ void IndexCatalogImpl::IndexBuildBlock::success() {
         // and no one can try to read this index before we set the visibility.
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
         auto snapshotName = replCoord->reserveSnapshotName(opCtx);
-        replCoord->forceSnapshotCreation();  // Ensures a newer snapshot gets created even if idle.
         entry->setMinimumVisibleSnapshot(snapshotName);
 
         // TODO remove this once SERVER-20439 is implemented. It is a stopgap solution for
@@ -666,8 +665,19 @@ Status IndexCatalogImpl::_isSpecOk(OperationContext* opCtx, const BSONObj& spec)
         }
 
         // The collator must outlive the constructed MatchExpression.
+        boost::intrusive_ptr<ExpressionContext> expCtx(
+            new ExpressionContext(opCtx, collator.get()));
+
+        // Parsing the partial filter expression is not expected to fail here since the
+        // expression would have been successfully parsed upstream during index creation. However,
+        // filters that were allowed in partial filter expressions prior to 3.6 may be present in
+        // the index catalog and must also successfully parse (e.g., partial index filters with the
+        // $isolated/$atomic option).
         StatusWithMatchExpression statusWithMatcher =
-            MatchExpressionParser::parse(filterElement.Obj(), collator.get());
+            MatchExpressionParser::parse(filterElement.Obj(),
+                                         std::move(expCtx),
+                                         ExtensionsCallbackNoop(),
+                                         MatchExpressionParser::kIsolated);
         if (!statusWithMatcher.isOK()) {
             return statusWithMatcher.getStatus();
         }
@@ -724,10 +734,9 @@ Status IndexCatalogImpl::_isSpecOk(OperationContext* opCtx, const BSONObj& spec)
                       "Please remove the field or include valid options.");
     }
     Status storageEngineStatus =
-        validateStorageOptions(storageEngineOptions,
-                               stdx::bind(&StorageEngine::Factory::validateIndexStorageOptions,
-                                          stdx::placeholders::_1,
-                                          stdx::placeholders::_2));
+        validateStorageOptions(storageEngineOptions, [](const auto& x, const auto& y) {
+            return x->validateIndexStorageOptions(y);
+        });
     if (!storageEngineStatus.isOK()) {
         return storageEngineStatus;
     }
@@ -954,7 +963,6 @@ public:
         // Ban reading from this collection on committed reads on snapshots before now.
         auto replCoord = repl::ReplicationCoordinator::get(_opCtx);
         auto snapshotName = replCoord->reserveSnapshotName(_opCtx);
-        replCoord->forceSnapshotCreation();  // Ensures a newer snapshot gets created even if idle.
         _collection->setMinimumVisibleSnapshot(snapshotName);
 
         delete _entry;

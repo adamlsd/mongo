@@ -83,7 +83,6 @@ TransportLayerLegacy::LegacySession::LegacySession(std::unique_ptr<AbstractMessa
     : _remote(amp->remoteAddr()),
       _local(amp->localAddr()),
       _tl(tl),
-      _tags(kEmptyTagMask),
       _connection(stdx::make_unique<Connection>(std::move(amp))) {}
 
 TransportLayerLegacy::LegacySession::~LegacySession() {
@@ -128,9 +127,13 @@ Status TransportLayerLegacy::start() {
         return {ErrorCodes::InternalError, "TransportLayer is already running"};
     }
 
-    _listenerThread = stdx::thread([this]() { _listener->initAndListen(); });
-
-    return Status::OK();
+    try {
+        _listenerThread = stdx::thread([this]() { _listener->initAndListen(); });
+        _listener->waitUntilListening();
+        return Status::OK();
+    } catch (...) {
+        return {ErrorCodes::InternalError, "Failed to start listener thread."};
+    }
 }
 
 TransportLayerLegacy::~TransportLayerLegacy() = default;
@@ -151,15 +154,6 @@ Ticket TransportLayerLegacy::sourceMessage(const SessionHandle& session,
     return Ticket(
         this,
         stdx::make_unique<LegacyTicket>(std::move(legacySession), expiration, std::move(sourceCb)));
-}
-
-TransportLayer::Stats TransportLayerLegacy::sessionStats() {
-    Stats stats;
-    stats.numOpenSessions = _currentConnections.load();
-    stats.numAvailableSessions = Listener::globalTicketHolder.available();
-    stats.numCreatedSessions = Listener::globalConnectionNumber.load();
-
-    return stats;
 }
 
 Ticket TransportLayerLegacy::sinkMessage(const SessionHandle& session,
@@ -207,21 +201,21 @@ void TransportLayerLegacy::_closeConnection(Connection* conn) {
 
     conn->closed = true;
     conn->amp->shutdown();
-    Listener::globalTicketHolder.release();
 }
 
 void TransportLayerLegacy::shutdown() {
     _running.store(false);
+    ListeningSockets::get()->closeAll();
     _listener->shutdown();
-    _listenerThread.join();
+    if (_listenerThread.joinable()) {
+        _listenerThread.join();
+    }
 }
 
 void TransportLayerLegacy::_destroy(LegacySession& session) {
     if (!session.conn()->closed) {
         _closeConnection(session.conn());
     }
-
-    _currentConnections.subtractAndFetch(1);
 }
 
 Status TransportLayerLegacy::_runTicket(Ticket ticket) {
@@ -268,16 +262,8 @@ Status TransportLayerLegacy::_runTicket(Ticket ticket) {
 }
 
 void TransportLayerLegacy::_handleNewConnection(std::unique_ptr<AbstractMessagingPort> amp) {
-    if (!Listener::globalTicketHolder.tryAcquire()) {
-        log() << "connection refused because too many open connections: "
-              << Listener::globalTicketHolder.used();
-        amp->shutdown();
-        return;
-    }
-
     amp->setLogLevel(logger::LogSeverity::Debug(1));
 
-    _currentConnections.addAndFetch(1);
     auto session = LegacySession::create(std::move(amp), this);
     invariant(_sep);
     _sep->startSession(std::move(session));

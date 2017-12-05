@@ -312,10 +312,9 @@ struct FixUpInfo {
     void removeRedundantOperations();
 
     /**
-     * Removes any redundant index commands. An example is if we create
-     * an index with name "a_1" and then later proceed to drop that index.
-     * We return true if a redundant index command was found and false
-     * if it was not.
+     * Removes any redundant index commands. For example, if we create an index with name "a_1" and
+     * then later proceed to drop that index, we can ignore the first index creation. We return true
+     * if a redundant index command was removed and false if it was not.
      */
     bool removeRedundantIndexCommands(UUID uuid, std::string indexName);
 
@@ -356,7 +355,9 @@ private:
  * rolling back node from after the common point. "ourObj" is the oplog document that needs
  * to be reverted.
  */
-Status updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInfo, const BSONObj& ourObj);
+Status updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInfo,
+                                          const BSONObj& ourObj,
+                                          bool isNestedApplyOpsCommand);
 
 /**
  * This function uses the FixUpInfo struct to undo all of the operations that occurred after the

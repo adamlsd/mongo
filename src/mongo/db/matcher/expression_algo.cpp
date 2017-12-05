@@ -89,9 +89,10 @@ bool _isSubsetOf(const ComparisonMatchExpression* lhs, const ComparisonMatchExpr
         return false;
     }
 
-    // Either collator may be used by compareElementValues() here, since either the collators are
+    // Either collator may be used by compareElements() here, since either the collators are
     // the same or lhsData does not contain string comparison.
-    int cmp = compareElementValues(lhsData, rhsData, rhs->getCollator());
+    int cmp = BSONElement::compareElements(
+        lhsData, rhsData, BSONElement::ComparisonRules::kConsiderFieldName, rhs->getCollator());
 
     // Check whether the two expressions are equivalent.
     if (lhs->matchType() == rhs->matchType() && cmp == 0) {
@@ -152,8 +153,7 @@ bool _isSubsetOf(const MatchExpression* lhs, const ComparisonMatchExpression* rh
         }
         for (BSONElement elem : ime->getEqualities()) {
             // Each element in the $in-array represents an equality predicate.
-            EqualityMatchExpression equality;
-            equality.init(lhs->path(), elem).transitional_ignore();
+            EqualityMatchExpression equality(lhs->path(), elem);
             equality.setCollator(ime->getCollator());
             if (!_isSubsetOf(&equality, rhs)) {
                 return false;
@@ -178,7 +178,7 @@ bool _isSubsetOf(const MatchExpression* lhs, const ExistsMatchExpression* rhs) {
 
     if (ComparisonMatchExpression::isComparisonMatchExpression(lhs)) {
         const ComparisonMatchExpression* cme = static_cast<const ComparisonMatchExpression*>(lhs);
-        // CompareMatchExpression::init() prohibits creating a match expression with EOO or
+        // The CompareMatchExpression constructor prohibits creating a match expression with EOO or
         // Undefined types, so only need to ensure that the value is not of type jstNULL.
         return cme->getData().type() != jstNULL;
     }
@@ -282,11 +282,8 @@ void applyRenamesToExpression(MatchExpression* expr, const StringMap<std::string
     }
 
     if (expr->getCategory() == MatchExpression::MatchCategory::kLeaf) {
-        auto it = renames.find(expr->path());
-        if (it != renames.end()) {
-            LeafMatchExpression* leafExpr = checked_cast<LeafMatchExpression*>(expr);
-            leafExpr->setPath(it->second).transitional_ignore();
-        }
+        LeafMatchExpression* leafExpr = checked_cast<LeafMatchExpression*>(expr);
+        leafExpr->applyRename(renames);
     }
 
     for (size_t i = 0; i < expr->numChildren(); ++i) {

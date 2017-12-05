@@ -32,6 +32,7 @@
 #include "mongo/db/matcher/expression_parser.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_cond.h"
 #include "mongo/db/matcher/schema/expression_internal_schema_object_match.h"
+#include "mongo/db/pipeline/expression_context_for_test.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -42,18 +43,19 @@ namespace {
 std::unique_ptr<InternalSchemaCondMatchExpression> createCondMatchExpression(BSONObj condition,
                                                                              BSONObj thenBranch,
                                                                              BSONObj elseBranch) {
-    auto cond = stdx::make_unique<InternalSchemaCondMatchExpression>();
-
-    const CollatorInterface* kSimpleCollator = nullptr;
-    auto conditionExpr = MatchExpressionParser::parse(condition, kSimpleCollator);
+    boost::intrusive_ptr<ExpressionContextForTest> expCtx(new ExpressionContextForTest());
+    auto conditionExpr = MatchExpressionParser::parse(condition, expCtx);
     ASSERT_OK(conditionExpr.getStatus());
-    auto thenBranchExpr = MatchExpressionParser::parse(thenBranch, kSimpleCollator);
+    auto thenBranchExpr = MatchExpressionParser::parse(thenBranch, expCtx);
     ASSERT_OK(thenBranchExpr.getStatus());
-    auto elseBranchExpr = MatchExpressionParser::parse(elseBranch, kSimpleCollator);
+    auto elseBranchExpr = MatchExpressionParser::parse(elseBranch, expCtx);
 
-    cond->init({{std::move(conditionExpr.getValue()),
-                 std::move(thenBranchExpr.getValue()),
-                 std::move(elseBranchExpr.getValue())}});
+    std::array<std::unique_ptr<MatchExpression>, 3> expressions = {
+        {std::move(conditionExpr.getValue()),
+         std::move(thenBranchExpr.getValue()),
+         std::move(elseBranchExpr.getValue())}};
+
+    auto cond = stdx::make_unique<InternalSchemaCondMatchExpression>(std::move(expressions));
 
     return cond;
 }
@@ -102,9 +104,8 @@ TEST(InternalSchemaCondMatchExpressionTest, AppliesToSubobjectsViaObjectMatch) {
     auto elseQuery = BSON("interests"
                           << "query optimization");
 
-    InternalSchemaObjectMatchExpression objMatch;
-    ASSERT_OK(
-        objMatch.init(createCondMatchExpression(conditionQuery, thenQuery, elseQuery), "job"_sd));
+    InternalSchemaObjectMatchExpression objMatch(
+        "job"_sd, createCondMatchExpression(conditionQuery, thenQuery, elseQuery));
 
     ASSERT_TRUE(objMatch.matchesBSON(
         fromjson("{name: 'anne', job: {team: 'engineering', subteam: 'query'}}")));

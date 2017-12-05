@@ -101,7 +101,7 @@ public:
         return *_t;
     }
 
-    const Status& getStatus() const & {
+    const Status& getStatus() const {
         return _status;
     }
 
@@ -122,8 +122,8 @@ public:
      * value. The function is named to be auditable independently from unaudited `Status` ignore
      * cases.
      */
-    inline void status_with_transitional_ignore() && noexcept {};
-    inline void status_with_transitional_ignore() const& noexcept = delete;
+    void status_with_transitional_ignore() && noexcept {};
+    void status_with_transitional_ignore() const& noexcept = delete;
 
 private:
     Status _status;

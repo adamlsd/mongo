@@ -220,7 +220,7 @@ public:
  * parameters.
  */
 template <typename Ctor, typename Dtor>
-inline auto makeUniqueRAII(Ctor c, Dtor d) {
+MONGO_FUNCTION_NODISCARD inline auto makeUniqueRAII(Ctor c, Dtor d) {
     return UniqueRAII<decltype(c()), Dtor>(std::move(c), std::move(d));
 }
 }  // namespace mongo

@@ -70,7 +70,3 @@ std::string Status::toString() const {
 }
 
 }  // namespace mongo
-
-#ifdef __FreeBSD__
-extern "C" void __cxa_thread_atexit( ... ) {}
-#endif

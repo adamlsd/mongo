@@ -183,8 +183,8 @@ bool Listener::setupSockets() {
             return _setupSocketsSuccessful;
         }
 
-        SOCKET sock = ::socket(me.getType(), SOCK_STREAM, 0);
-        ScopeGuard socketGuard = MakeGuard(&closesocket, sock);
+        auto sock =
+            makeUniqueRAII([&me] { return ::socket(me.getType(), SOCK_STREAM, 0) }, closesocket);
         massert(15863,
                 str::stream() << "listen(): invalid socket? " << errnoWithDescription(),
                 sock >= 0);
@@ -234,8 +234,8 @@ bool Listener::setupSockets() {
         }
 #endif
 
+        sock.dismiss();
         _socks.push_back(sock);
-        socketGuard.Dismiss();
     }
 
     _setupSocketsSuccessful = true;

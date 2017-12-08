@@ -150,6 +150,12 @@
  *    Tells the compiler that a class defines a type for which checking results is necessary.  Types
  *    thus defined turn functions returning them into "must check results" style functions.  Preview
  *    of the `[[nodiscard]]` C++17 attribute.
+ *
+ * MONGO_FUNCTION_NODISCARD
+ * MONGO_CLASS_NODISCARD
+ *
+ *    Tells the compiler that a class or function uses the C++17 `[[nodiscard]]` attribute.  May not
+ *    be supported on all compilers.
  */
 
 

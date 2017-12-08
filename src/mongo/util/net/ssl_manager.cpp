@@ -548,9 +548,8 @@ SSLManagerInterface* getSSLManager() {
 std::string getCertificateSubjectName(X509* cert) {
     std::string result;
 
-    BIO* out = BIO_new(BIO_s_mem());
+    auto out = makeUniqueRAII([] { return BIO_new(BIO_s_mem()); }, BIOFree{});
     uassert(16884, "unable to allocate BIO memory", NULL != out);
-    ON_BLOCK_EXIT(BIO_free, out);
 
     if (X509_NAME_print_ex(out, X509_get_subject_name(cert), 0, XN_FLAG_RFC2253) >= 0) {
         if (BIO_number_written(out) > 0) {
@@ -870,9 +869,8 @@ bool SSLManager::_initSynchronousSSLContext(UniqueSSLContext* contextPtr,
 }
 
 unsigned long long SSLManager::_convertASN1ToMillis(ASN1_TIME* asn1time) {
-    BIO* outBIO = BIO_new(BIO_s_mem());
+    auto outBIO = makeUniqueRAII([] { return BIO_new(BIO_s_mem()); }, BIOFree{});
     int timeError = ASN1_TIME_print(outBIO, asn1time);
-    ON_BLOCK_EXIT(BIO_free, outBIO);
 
     if (timeError <= 0) {
         error() << "ASN1_TIME_print failed or wrote no data.";
@@ -909,13 +907,12 @@ bool SSLManager::_parseAndValidateCertificate(const std::string& keyFile,
                                               const std::string& keyPassword,
                                               std::string* subjectName,
                                               Date_t* serverCertificateExpirationDate) {
-    BIO* inBIO = BIO_new(BIO_s_file());
+    auto inBIO = makeUniqueRAII([] { return BIO_new(BIO_s_mem()); }, BIOFree{});
     if (inBIO == NULL) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
         return false;
     }
 
-    ON_BLOCK_EXIT(BIO_free, inBIO);
     if (BIO_read_filename(inBIO, keyFile.c_str()) <= 0) {
         error() << "cannot read key file when setting subject name: " << keyFile << ' '
                 << getSSLErrorMessage(ERR_get_error());
@@ -968,12 +965,11 @@ bool SSLManager::_setupPEM(SSL_CTX* context,
         return false;
     }
 
-    BIO* inBio = BIO_new(BIO_s_file());
+    auto inBio = makeUniqueRAII([] { return BIO_new(BIO_s_file()); }, BIOFree{});
     if (!inBio) {
         error() << "failed to allocate BIO object: " << getSSLErrorMessage(ERR_get_error());
         return false;
     }
-    const auto bioGuard = MakeGuard([&inBio]() { BIO_free(inBio); });
 
     if (BIO_read_filename(inBio, keyFile.c_str()) <= 0) {
         error() << "cannot read PEM key file: " << keyFile << ' '
@@ -990,13 +986,18 @@ bool SSLManager::_setupPEM(SSL_CTX* context,
         // SSLManager::password_cb will not manipulate the password, so const_cast is safe.
         userdata = const_cast<void*>(static_cast<const void*>(&password));
     }
-    EVP_PKEY* privateKey = PEM_read_bio_PrivateKey(inBio, nullptr, password_cb, userdata);
+    auto freeKey = [](const auto& priv) {
+        if (priv) {
+            EVP_PKEY_free(priv);
+        }
+    };
+    const auto privateKey = makeUniqueRAII(
+        [&] { return PEM_read_bio_PrivateKey(inBio, nullptr, password_cb, userdata); }, freeKey);
     if (!privateKey) {
         error() << "cannot read PEM key file: " << keyFile << ' '
                 << getSSLErrorMessage(ERR_get_error());
         return false;
     }
-    const auto privateKeyGuard = MakeGuard([&privateKey]() { EVP_PKEY_free(privateKey); });
 
     if (SSL_CTX_use_PrivateKey(context, privateKey) != 1) {
         error() << "cannot use PEM key file: " << keyFile << ' '

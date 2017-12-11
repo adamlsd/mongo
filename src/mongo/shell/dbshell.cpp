@@ -1,4 +1,3 @@
-// dbshell.cpp
 /*
  *    Copyright 2010 10gen Inc.
  *
@@ -57,6 +56,7 @@
 #include "mongo/shell/shell_options.h"
 #include "mongo/shell/shell_utils.h"
 #include "mongo/shell/shell_utils_launcher.h"
+#include "mongo/stdx/utility.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/file.h"
 #include "mongo/util/log.h"
@@ -81,6 +81,7 @@
 #endif
 
 using namespace std;
+using namespace std::literals::string_literals;
 using namespace mongo;
 
 string historyFile;
@@ -99,6 +100,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion36, ("EndStar
         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
     return Status::OK();
 }
+const auto kAuthParam = "authSource"s;
 }  // namespace
 
 namespace mongo {
@@ -743,14 +745,26 @@ int _main(int argc, char* argv[], char** envp) {
             new logger::ConsoleAppender<logger::MessageEventEphemeral>(
                 new logger::MessageEventUnadornedEncoder)));
 
+    std::string &cmdlineURI = shellGlobalParams.url;
+    MongoURI parsedURI;
+    if (!cmdlineURI.empty()) {
+        parsedURI = uassertStatusOK(MongoURI::parse(stdx::as_const(cmdlineURI)));
+    }
+
+    std::string processedURI = cmdlineURI;
+    auto pos = cmdlineURI.find('@');
+    if (pos != std::string::npos) {
+        auto protocolLength = processedURI.find("://");
+        processedURI = processedURI.substr(0, protocolLength) + "://" + processedURI.substr(pos + 1);
+        std::cerr << "Stripped URI: " << processedURI << std::endl;
+    }
+
     if (!shellGlobalParams.nodb) {  // connect to db
         stringstream ss;
         if (mongo::serverGlobalParams.quiet.load())
             ss << "__quiet = true;";
         ss << "db = connect( \""
-           << getURIFromArgs(
-                  shellGlobalParams.url, shellGlobalParams.dbhost, shellGlobalParams.port)
-           << "\");";
+           << getURIFromArgs(processedURI, shellGlobalParams.dbhost, shellGlobalParams.port) << "\");";
 
         if (shellGlobalParams.shouldRetryWrites) {
             // If the user specified --retryWrites to the mongo shell, then we replace the global
@@ -760,10 +774,23 @@ int _main(int argc, char* argv[], char** envp) {
 
         mongo::shell_utils::_dbConnect = ss.str();
 
-        if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
-            shellGlobalParams.password = mongo::askPassword();
+        if (!cmdlineURI.empty()) {
+            shellGlobalParams.usingPassword |= parsedURI.getPassword().empty();
+            if (!parsedURI.getUser().empty() ||
+                (shellGlobalParams.usingPassword && shellGlobalParams.password.empty())) {
+                shellGlobalParams.password = mongo::askPassword();
+            }
+            if (!parsedURI.getUser().empty()) {
+                shellGlobalParams.username = parsedURI.getUser();
+            }
+            auto authParam= parsedURI.getOptions().find(kAuthParam);
+            if (authParam != end(parsedURI.getOptions())) {
+                shellGlobalParams.authenticationDatabase = authParam->second;
+            }
         }
     }
+    cmdlineURI = processedURI;
+
 
     // Construct the authentication-related code to execute on shell startup.
     //
@@ -817,6 +844,7 @@ int _main(int argc, char* argv[], char** envp) {
     }
     authStringStream << "}())";
     mongo::shell_utils::_dbAuth = authStringStream.str();
+    std::cout << "Going to launch with this string: " << mongo::shell_utils::_dbAuth;
 
     mongo::ScriptEngine::setConnectCallback(mongo::shell_utils::onConnect);
     mongo::ScriptEngine::setup();

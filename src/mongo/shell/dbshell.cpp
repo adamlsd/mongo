@@ -745,7 +745,7 @@ int _main(int argc, char* argv[], char** envp) {
             new logger::ConsoleAppender<logger::MessageEventEphemeral>(
                 new logger::MessageEventUnadornedEncoder)));
 
-    std::string &cmdlineURI = shellGlobalParams.url;
+    std::string& cmdlineURI = shellGlobalParams.url;
     MongoURI parsedURI;
     if (!cmdlineURI.empty()) {
         parsedURI = uassertStatusOK(MongoURI::parse(stdx::as_const(cmdlineURI)));
@@ -755,8 +755,8 @@ int _main(int argc, char* argv[], char** envp) {
     auto pos = cmdlineURI.find('@');
     if (pos != std::string::npos) {
         auto protocolLength = processedURI.find("://");
-        processedURI = processedURI.substr(0, protocolLength) + "://" + processedURI.substr(pos + 1);
-        std::cerr << "Stripped URI: " << processedURI << std::endl;
+        processedURI =
+            processedURI.substr(0, protocolLength) + "://" + processedURI.substr(pos + 1);
     }
 
     if (!shellGlobalParams.nodb) {  // connect to db
@@ -764,7 +764,8 @@ int _main(int argc, char* argv[], char** envp) {
         if (mongo::serverGlobalParams.quiet.load())
             ss << "__quiet = true;";
         ss << "db = connect( \""
-           << getURIFromArgs(processedURI, shellGlobalParams.dbhost, shellGlobalParams.port) << "\");";
+           << getURIFromArgs(processedURI, shellGlobalParams.dbhost, shellGlobalParams.port)
+           << "\");";
 
         if (shellGlobalParams.shouldRetryWrites) {
             // If the user specified --retryWrites to the mongo shell, then we replace the global
@@ -776,15 +777,16 @@ int _main(int argc, char* argv[], char** envp) {
 
         if (!cmdlineURI.empty()) {
             shellGlobalParams.usingPassword |= parsedURI.getPassword().empty();
-            if (!parsedURI.getUser().empty() ||
-                (shellGlobalParams.usingPassword && shellGlobalParams.password.empty())) {
+            if (!(parsedURI.getUser().empty() || shellGlobalParams.usingPassword) &&
+                shellGlobalParams.password.empty()) {
                 shellGlobalParams.password = mongo::askPassword();
             }
-            if (!parsedURI.getUser().empty()) {
+            if (!parsedURI.getUser().empty() && shellGlobalParams.username.empty()) {
                 shellGlobalParams.username = parsedURI.getUser();
             }
-            auto authParam= parsedURI.getOptions().find(kAuthParam);
-            if (authParam != end(parsedURI.getOptions())) {
+            auto authParam = parsedURI.getOptions().find(kAuthParam);
+            if (authParam != end(parsedURI.getOptions()) &&
+                shellGlobalParams.authenticationDatabase.empty()) {
                 shellGlobalParams.authenticationDatabase = authParam->second;
             }
         }

@@ -451,11 +451,12 @@ Status storeMongoShellOptions(const moe::Environment& params,
         } else if (shellGlobalParams.gssapiServiceName != saslDefaultServiceName &&
                    uriOptions.count("gssapiServiceName")) {
             sb << "the GSSAPI service name";
+        } else {
+            return Status::OK();
         }
-        else{return Status::OK();}
 
-            sb << " in connection URI and as a command-line option";
-            return Status(ErrorCodes::InvalidOptions, sb.str());
+        sb << " in connection URI and as a command-line option";
+        return Status(ErrorCodes::InvalidOptions, sb.str());
     }
 
     ret = storeMessageCompressionOptions(params);

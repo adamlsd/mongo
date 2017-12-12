@@ -437,17 +437,19 @@ Status storeMongoShellOptions(const moe::Environment& params,
         StringBuilder sb;
         sb << "ERROR: Cannot specify ";
 
-        if (!shellGlobalParams.username.empty() && !cs.getUser().empty()) {
-            sb << "username";
-        } else if (!shellGlobalParams.password.empty() && !cs.getPassword().empty()) {
-            sb << "password";
+        if (!shellGlobalParams.username.empty() && !cs.getUser().empty() &&
+            shellGlobalParams.username != cs.getUser()) {
+            sb << "different usernames";
+        } else if (!shellGlobalParams.password.empty() && !cs.getPassword().empty() &&
+                   shellGlobalParams.password != cs.getPassword()) {
+            sb << "different passwords";
         } else if (!shellGlobalParams.authenticationMechanism.empty() &&
                    uriOptions.count("authMechanism")) {
             sb << "the authentication mechanism";
         } else if (!shellGlobalParams.authenticationDatabase.empty() &&
                    uriOptions.count("authSource") &&
                    uriOptions["authSource"] != shellGlobalParams.authenticationDatabase) {
-            sb << "the authentication database";
+            sb << "different authentication databases ";
         } else if (shellGlobalParams.gssapiServiceName != saslDefaultServiceName &&
                    uriOptions.count("gssapiServiceName")) {
             sb << "the GSSAPI service name";

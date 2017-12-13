@@ -714,7 +714,7 @@ bool mechanismRequiresPassword() {
     using std::end;
     const std::string passwordlessMechanisms[] = {"GSSAPI", "MONGODB-X509"};
     auto isInShellParameters = [](const auto& mech) {
-        return mech == shellGlobalParameters.authenticationMechanism;
+        return mech == shellGlobalParams.authenticationMechanism;
     };
 
     return std::none_of(

@@ -708,6 +708,20 @@ static void edit(const string& whatToEdit) {
     }
 }
 
+namespace {
+bool mechanismRequiresPassword() {
+    using std::begin;
+    using std::end;
+    const std::string passwordlessMechanisms[] = {"GSSAPI", "MONGODB-X509"};
+    auto isInShellParameters = [](const auto& mech) {
+        return mech == shellGlobalParameters.authenticationMechanism;
+    };
+
+    return std::none_of(
+        begin(passwordlessMechanisms), end(passwordlessMechanisms), isInShellParameters);
+}
+}  // namespace
+
 int _main(int argc, char* argv[], char** envp) {
     registerShutdownTask([] {
         // NOTE: This function may be called at any time. It must not
@@ -779,7 +793,14 @@ int _main(int argc, char* argv[], char** envp) {
         mongo::shell_utils::_dbConnect = ss.str();
 
         if (cmdlineURI.size()) {
-            if (parsedURI.getUser().size() || shellGlobalParams.username.size()) {
+            const auto mechanismKey = parsedURI.getOptions().find("authMechanism");
+            if (mechanismKey != end(parsedURI.getOptions()) &&
+                shellGlobalParams.authenticationMechanism.empty()) {
+                shellGlobalParams.authenticationMechanism = mechanismKey->second;
+            }
+
+            if (mechanismRequiresPassword() &&
+                (parsedURI.getUser().size() || shellGlobalParams.username.size())) {
                 shellGlobalParams.usingPassword = true;
             }
             if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {

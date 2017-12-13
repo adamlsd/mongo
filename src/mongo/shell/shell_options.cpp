@@ -444,8 +444,9 @@ Status storeMongoShellOptions(const moe::Environment& params,
                    shellGlobalParams.password != cs.getPassword()) {
             sb << "different passwords";
         } else if (!shellGlobalParams.authenticationMechanism.empty() &&
-                   uriOptions.count("authMechanism")) {
-            sb << "the authentication mechanism";
+                   uriOptions.count("authMechanism") &&
+                   uriOptions["authMechanism"] != shellGlobalParams.authenticationMechanism) {
+            sb << "different authentication mechanisms";
         } else if (!shellGlobalParams.authenticationDatabase.empty() &&
                    uriOptions.count("authSource") &&
                    uriOptions["authSource"] != shellGlobalParams.authenticationDatabase) {

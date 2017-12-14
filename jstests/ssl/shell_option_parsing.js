@@ -53,8 +53,7 @@
             return checkProgram(clientPID).alive;
         };
 
-        var isNotRunning =
-            function() {
+        var isNotRunning = function() {
             return !isRunning();
         };
 

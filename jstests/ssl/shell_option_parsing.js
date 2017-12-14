@@ -56,7 +56,7 @@
         var isNotRunning =
             function() {
             return !isRunning();
-        }
+        };
 
         var terminated = false;
         sleep(1000);
@@ -77,7 +77,7 @@
                 stopMongoProgramByPid(clientPID);
             }
         }
-    };
+    }
 
     testConnect(false, `mongodb://${username}@${host}/test`);
     testConnect(false, `mongodb://${username}@${host}/test`, '--password');

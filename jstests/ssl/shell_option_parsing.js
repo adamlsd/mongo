@@ -89,6 +89,9 @@
                 '--password',
                 '--username',
                 usernameNotTest);
+
+    testConnect(false, `mongodb://${usernameNotTest}@${host}/test?authSource=notTest`);
+
     testConnect(false,
                 `mongodb://${usernameNotTest}@${host}/test?authSource=notTest`,
                 '--password',
@@ -96,6 +99,7 @@
                 usernameNotTest,
                 '--authenticationDatabase',
                 'notTest');
+
     testConnect(false,
                 `mongodb://${usernameNotTest}@${host}/test`,
                 '--password',
@@ -103,6 +107,8 @@
                 usernameNotTest,
                 '--authenticationDatabase',
                 'notTest');
+
+    testConnect(false, `mongodb://${host}/test?authSource=notTest`, '--username', usernameNotTest);
 
     testConnect(false, `mongodb://${host}/test`, '--username', username);
     testConnect(false, `mongodb://${host}/test`, '--password', '--username', username);
@@ -113,6 +119,34 @@
     testConnect(true, `mongodb://${username}:${password}@${host}/test`, '--password');
     testConnect(true, `mongodb://${username}:${password}@${host}/test`, '--password', password);
     testConnect(true, `mongodb://${username}@${host}/test`, '--password', password);
+
+    testConnect(true,
+                `mongodb://${usernameNotTest}@${host}/test?authSource=notTest`,
+                '--username',
+                usernameNotTest,
+                '--password',
+                passwordNotTest,
+                '--authenticationDatabase',
+                'notTest');
+
+    testConnect(true,
+                `mongodb://${usernameNotTest}@${host}/test?authSource=notTest`,
+                '--username',
+                usernameNotTest,
+                '--password',
+                passwordNotTest);
+
+    testConnect(true,
+                `mongodb://${usernameNotTest}@${host}/test?authSource=notTest`,
+                '--password',
+                passwordNotTest);
+
+    testConnect(true,
+                `mongodb://${host}/test?authSource=notTest`,
+                '--username',
+                usernameNotTest,
+                '--password',
+                passwordNotTest);
 
     /* TODO: Enable this set of tests in the future */
     if (false) {

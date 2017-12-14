@@ -48,34 +48,16 @@
         ];
         print("=========================================> The command (" + (i++) +
               ") I am going to run is: " + command.join(' '));
+
+        clearRawMongoProgramOutput();
         var clientPID = _startMongoProgram.apply(null, command);
-        var isRunning = function() {
-            return checkProgram(clientPID).alive;
-        };
+        sleep(30000);
 
-        var isNotRunning = function() {
-            return !isRunning();
-        };
-
-        var terminated = false;
-        sleep(1000);
-        try {
-            if (noPasswordPrompt) {
-                sleep(30000);  // ms
-                assert(isNotRunning(),
-                       "unexpectedly asked for password with `" + command.join(' ') + "`");
-                terminated = true;
-            } else {
-                sleep(30000);  // ms
-                terminated = true;
-                assert(isRunning(), "failed to ask for password with `" + command.join(' ') + "`");
-                terminated = false;
-            }
-        } finally {
-            if (!terminated) {
-                stopMongoProgramByPid(clientPID);
-            }
+        if (checkProgram(clientPID).alive) {
+            stopMongoProgramByPid(clientPID);
         }
+
+        assert.eq(!noPasswordPrompt, rawMongoProgramOutput().includes("Enter password:"));
     }
 
     testConnect(false, `mongodb://${username}@${host}/test`);
@@ -148,7 +130,8 @@
                 '--password',
                 passwordNotTest);
 
-    /* TODO: Enable this set of tests in the future */
+    // TODO: Enable this set of tests in the future -- needs proper encoding for X509 username in
+    // URI
     if (false) {
         testConnect(
             true,

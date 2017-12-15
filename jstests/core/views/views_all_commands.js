@@ -1,3 +1,6 @@
+// @tags: [does_not_support_stepdowns, requires_getmore, requires_non_retryable_commands,
+// requires_non_retryable_writes]
+
 /*
  * Declaratively-defined tests for views for all database commands. This file contains a map of test
  * definitions as well as code to run them.
@@ -67,6 +70,7 @@
         _configsvrCommitChunkMigration: {skip: isAnInternalCommand},
         _configsvrCommitChunkSplit: {skip: isAnInternalCommand},
         _configsvrCreateDatabase: {skip: isAnInternalCommand},
+        _configsvrDropCollection: {skip: isAnInternalCommand},
         _configsvrEnableSharding: {skip: isAnInternalCommand},
         _configsvrMoveChunk: {skip: isAnInternalCommand},
         _configsvrMovePrimary: {skip: isAnInternalCommand},
@@ -127,7 +131,6 @@
         connectionStatus: {skip: isUnrelated},
         convertToCapped: {command: {convertToCapped: "view", size: 12345}, expectFailure: true},
         copydb: {skip: "Tested in replsets/copydb.js"},
-        copydbgetnonce: {skip: isUnrelated},
         copydbsaslstart: {skip: isUnrelated},
         count: {command: {count: "view"}},
         cpuload: {skip: isAnInternalCommand},

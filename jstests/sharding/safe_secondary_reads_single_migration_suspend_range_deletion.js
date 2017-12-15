@@ -62,6 +62,7 @@
         _configsvrCommitChunkMerge: {skip: "primary only"},
         _configsvrCommitChunkMigration: {skip: "primary only"},
         _configsvrCommitChunkSplit: {skip: "primary only"},
+        _configsvrDropCollection: {skip: "primary only"},
         _configsvrMoveChunk: {skip: "primary only"},
         _configsvrMovePrimary: {skip: "primary only"},
         _configsvrRemoveShardFromZone: {skip: "primary only"},
@@ -123,7 +124,6 @@
         connectionStatus: {skip: "does not return user data"},
         convertToCapped: {skip: "primary only"},
         copydb: {skip: "primary only"},
-        copydbgetnonce: {skip: "primary only"},
         copydbsaslstart: {skip: "primary only"},
         count: {
             setUp: function(mongosConn) {

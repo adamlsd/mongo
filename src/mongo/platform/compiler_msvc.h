@@ -52,6 +52,14 @@
 
 #define MONGO_WARN_UNUSED_RESULT_CLASS
 
+#ifndef MONGO_FUNCTION_NODISCARD
+#define MONGO_FUNCTION_NODISCARD
+#endif
+
+#ifndef MONGO_CLASS_NODISCARD
+#define MONGO_CLASS_NODISCARD
+#endif
+
 #ifdef _M_IX86
 // 32-bit x86 supports multiple of calling conventions.  We build supporting the cdecl convention
 // (most common).  By labeling our exported and imported functions as such, we do a small favor to

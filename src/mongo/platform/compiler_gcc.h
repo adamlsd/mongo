@@ -45,10 +45,28 @@
 // MONGO_WARN_UNUSED_RESULT is only supported in the semantics we want for classes in Clang, not in
 // GCC.
 #define MONGO_WARN_UNUSED_RESULT_CLASS [[gnu::warn_unused_result]]
+
+#ifndef MONGO_FUNCTION_NODISCARD
+#define MONGO_FUNCTION_NODISCARD [[gnu::warn_unused_result]]
+#endif
+
+#ifndef MONGO_CLASS_NODISCARD
+#define MONGO_CLASS_NODISCARD [[gnu::warn_unused_result]]
+#endif
+
 #else
 #define MONGO_COMPILER_COLD_FUNCTION __attribute__((__cold__))
 #define MONGO_COMPILER_NORETURN __attribute__((__noreturn__, __cold__))
 #define MONGO_WARN_UNUSED_RESULT_CLASS
+
+#ifndef MONGO_FUNCTION_NODISCARD
+#define MONGO_FUNCTION_NODISCARD [[gnu::warn_unused_result]]
+#endif
+
+#ifndef MONGO_CLASS_NODISCARD
+#define MONGO_CLASS_NODISCARD
+#endif
+
 #endif
 
 #define MONGO_COMPILER_VARIABLE_UNUSED __attribute__((__unused__))

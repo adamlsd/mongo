@@ -158,6 +158,10 @@
  *    be supported on all compilers.
  */
 
+#if __cplusplus > 201703L
+#define MONGO_FUNCTION_NODISCARD [[nodiscard]]
+#define MONGO_CLASS_NODISCARD [[nodiscard]]
+#endif
 
 #if defined(_MSC_VER)
 #include "mongo/platform/compiler_msvc.h"

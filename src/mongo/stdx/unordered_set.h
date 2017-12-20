@@ -52,16 +52,18 @@ using ::std::unordered_multiset;  // NOLINT
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename KeyEqual = typename map_detail::unordered_set<Key, Value, Hash>::key_equal,
+          typename Allocator =
+              typename map_detail::unordered_set<Key, Value, Hash, KeyEqual>::allocator,
           typename... Args>
 using unordered_set = set_detail::unordered_set<Key, Value, Hash, KeyEqual, Allocator, Args...>;
 
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename KeyEqual = typename map_detail::unordered_multiset<Key, Value, Hash>::key_equal,
+          typename Allocator =
+              typename map_detail::unordered_multiset<Key, Value, Hash, KeyEqual>::allocator,
           typename... Args>
 using unordered_multiset =
     set_detail::unordered_multiset<Key, Value, Hash, KeyEqual, Allocator, Args...>;

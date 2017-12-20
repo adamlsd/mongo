@@ -52,16 +52,18 @@ using ::std::unordered_multimap;  // NOLINT
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename KeyEqual = typename map_detail::unordered_map<Key, Value, Hash>::key_equal,
+          typename Allocator =
+              typename map_detail::unordered_map<Key, Value, Hash, KeyEqual>::allocator,
           typename... Args>
 using unordered_map = map_detail::unordered_map<Key, Value, Hash, KeyEqual, Allocator, Args...>;
 
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename KeyEqual = typename map_detail::unordered_multimap<Key, Value, Hash>::key_equal,
+          typename Allocator =
+              typename map_detail::unordered_multimap<Key, Value, Hash, KeyEqual>::allocator,
           typename... Args>
 using unordered_multimap =
     map_detail::unordered_multimap<Key, Value, Hash, KeyEqual, Allocator, Args...>;

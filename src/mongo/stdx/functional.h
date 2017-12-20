@@ -43,11 +43,33 @@ using ::std::function;                         // NOLINT
 using ::std::ref;                              // NOLINT
 namespace placeholders = ::std::placeholders;  // NOLINT
 
+namespace hash_detail {
+template <typename... Args>
 #if defined(_WIN32)
-using ::boost::hash;  // NOLINT
+using hash = ::boost::hash<Args...>;  // NOLINT
 #else
-using ::std::hash;  // NOLINT
+using hash = ::std::hash<Args...>;  // NOLINT
 #endif
+}  // namespace hash_impl
+
+template <typename T, typename... Args> struct hash;
+
+
+template <typename... Args>
+struct hash< int, Args... >
+		: hash_detail::hash< int, Args...> {};
+
+template <typename... Args>
+struct hash< float, Args... >
+		: hash_detail::hash< float, Args...> {};
+
+template <typename... Args>
+struct hash< std::string, Args... >
+		: hash_detail::hash< std::string, Args...> {};
+
+
+template <typename T, typename... Args>
+struct hash : std::hash<T, Args...> {};
 
 }  // namespace stdx
 }  // namespace mongo

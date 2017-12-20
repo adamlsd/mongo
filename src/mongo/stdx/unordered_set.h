@@ -34,9 +34,12 @@
 #include <unordered_set>
 #endif
 
+#include "stdx/functional.h"
+
 namespace mongo {
 namespace stdx {
 
+namespace set_detail {
 #if defined(_WIN32)
 using ::boost::unordered_set;       // NOLINT
 using ::boost::unordered_multiset;  // NOLINT
@@ -44,6 +47,21 @@ using ::boost::unordered_multiset;  // NOLINT
 using ::std::unordered_set;       // NOLINT
 using ::std::unordered_multiset;  // NOLINT
 #endif
+} // namespace set_detail
+
+template <typename Key,
+          typename Value,
+          typename Hash = stdx::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>,
+          typename Allocator = std::allocator<std::pair<const Key, Value>>>
+using unordered_set = set_detail::unordered_set<Key, Value, Hash, KeyEqual, Allocator>;
+
+template <typename Key,
+          typename Value,
+          typename Hash = stdx::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>,
+          typename Allocator = std::allocator<std::pair<const Key, Value>>>
+using unordered_multiset = set_detail::unordered_multiset<Key, Value, Hash, KeyEqual, Allocator>;
 
 }  // namespace stdx
 }  // namespace mongo

@@ -34,9 +34,12 @@
 #include <unordered_map>
 #endif
 
+#include "stdx/functional.h"
+
 namespace mongo {
 namespace stdx {
 
+namespace map_detail {
 #if defined(_WIN32)
 using ::boost::unordered_map;       // NOLINT
 using ::boost::unordered_multimap;  // NOLINT
@@ -44,6 +47,21 @@ using ::boost::unordered_multimap;  // NOLINT
 using ::std::unordered_map;       // NOLINT
 using ::std::unordered_multimap;  // NOLINT
 #endif
+} // namespace map_detail
+
+template <typename Key,
+          typename Value,
+          typename Hash = stdx::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>,
+          typename Allocator = std::allocator<std::pair<const Key, Value>>>
+using unordered_map = map_detail::unordered_map<Key, Value, Hash, KeyEqual, Allocator>;
+
+template <typename Key,
+          typename Value,
+          typename Hash = stdx::hash<Key>,
+          typename KeyEqual = std::equal_to<Key>,
+          typename Allocator = std::allocator<std::pair<const Key, Value>>>
+using unordered_multimap = map_detail::unordered_multimap<Key, Value, Hash, KeyEqual, Allocator>;
 
 }  // namespace stdx
 }  // namespace mongo

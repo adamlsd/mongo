@@ -30,6 +30,10 @@
 
 #include <functional>
 
+#if defined(_WIN32)
+#include <boost/functional/hash.hpp>
+#endif
+
 namespace mongo {
 namespace stdx {
 
@@ -38,6 +42,12 @@ using ::std::cref;                             // NOLINT
 using ::std::function;                         // NOLINT
 using ::std::ref;                              // NOLINT
 namespace placeholders = ::std::placeholders;  // NOLINT
+
+#if defined(_WIN32)
+using ::boost::hash;  // NOLINT
+#else
+using ::std::hash;  // NOLINT
+#endif
 
 }  // namespace stdx
 }  // namespace mongo

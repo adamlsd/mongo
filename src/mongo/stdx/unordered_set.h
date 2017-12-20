@@ -47,7 +47,7 @@ using ::boost::unordered_multiset;  // NOLINT
 using ::std::unordered_set;       // NOLINT
 using ::std::unordered_multiset;  // NOLINT
 #endif
-} // namespace set_detail
+}  // namespace set_detail
 
 template <typename Key,
           typename Value,

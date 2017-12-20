@@ -47,7 +47,7 @@ using ::boost::unordered_multimap;  // NOLINT
 using ::std::unordered_map;       // NOLINT
 using ::std::unordered_multimap;  // NOLINT
 #endif
-} // namespace map_detail
+}  // namespace map_detail
 
 template <typename Key,
           typename Value,

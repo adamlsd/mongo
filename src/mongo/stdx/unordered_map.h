@@ -53,15 +53,18 @@ template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
           typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>>
-using unordered_map = map_detail::unordered_map<Key, Value, Hash, KeyEqual, Allocator>;
+          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename... Args>
+using unordered_map = map_detail::unordered_map<Key, Value, Hash, KeyEqual, Allocator, Args...>;
 
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
           typename KeyEqual = std::equal_to<Key>,
-          typename Allocator = std::allocator<std::pair<const Key, Value>>>
-using unordered_multimap = map_detail::unordered_multimap<Key, Value, Hash, KeyEqual, Allocator>;
+          typename Allocator = std::allocator<std::pair<const Key, Value>>,
+          typename... Args>
+using unordered_multimap =
+    map_detail::unordered_multimap<Key, Value, Hash, KeyEqual, Allocator, Args...>;
 
 }  // namespace stdx
 }  // namespace mongo

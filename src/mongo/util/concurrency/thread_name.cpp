@@ -110,7 +110,7 @@ thread_local std::string threadNameStorage;
 namespace for_debuggers {
 // This needs external linkage to ensure that debuggers can use it.
 thread_local StringData threadName;
-}//namespace for_debuggers
+}  // namespace for_debuggers
 using for_debuggers::threadName;
 
 void setThreadName(StringData name) {
@@ -122,7 +122,8 @@ void setThreadName(StringData name) {
     // Naming should not be expensive compared to thread creation and connection set up, but if
     // testing shows otherwise we should make this depend on DEBUG again.
     setWindowsThreadName(GetCurrentThreadId(), threadName.c_str());
-#elif defined(__APPLE__) && !defined(MONGO_CONFIG_BUILDING_MOBILE)
+#elif defined(__APPLE__)
+#if !TARGET_OS_IOS && !TARGET_OS_TV
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.
     MONGO_STATIC_ASSERT(MAXTHREADNAMESIZE >= kMaxThreadNameSize + 1);
@@ -130,6 +131,9 @@ void setThreadName(StringData name) {
     if (error) {
         log() << "Ignoring error from setting thread name: " << errnoWithDescription(error);
     }
+#else
+// Do not set thread name in the OS at all on iOS or TV-OS
+#endif
 #elif defined(__linux__) && defined(MONGO_CONFIG_HAVE_PTHREAD_SETNAME_NP)
     // Do not set thread name on the main() thread. Setting the name on main thread breaks
     // pgrep/pkill since these programs base this name on /proc/*/status which displays the thread

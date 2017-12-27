@@ -49,6 +49,7 @@
 #include "mongo/db/pipeline/value_comparator.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/stdx/memory.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/uuid.h"
 
@@ -106,11 +107,13 @@ public:
 };
 
 // This is needed only for the "insert" tests.
-struct MockMongoProcessInterface final : public StubMongoProcessInterface {
+struct MockMongoInterface final : public StubMongoProcessInterface {
 
-    MockMongoProcessInterface(std::vector<FieldPath> fields) : _fields(std::move(fields)) {}
+    MockMongoInterface(std::vector<FieldPath> fields) : _fields(std::move(fields)) {}
 
-    std::vector<FieldPath> collectDocumentKeyFields(UUID) const final {
+    std::vector<FieldPath> collectDocumentKeyFields(OperationContext*,
+                                                    const NamespaceString&,
+                                                    UUID) const final {
         return _fields;
     }
 
@@ -131,9 +134,7 @@ public:
         vector<intrusive_ptr<DocumentSource>> stages = makeStages(entry);
         auto transform = stages[2].get();
 
-        auto mongoProcess = std::make_shared<MockMongoProcessInterface>(docKeyFields);
-        using NeedyDS = DocumentSourceNeedsMongoProcessInterface;
-        dynamic_cast<NeedyDS&>(*transform).injectMongoProcessInterface(std::move(mongoProcess));
+        getExpCtx()->mongoProcessInterface = stdx::make_unique<MockMongoInterface>(docKeyFields);
 
         auto next = transform->getNext();
         // Match stage should pass the doc down if expectedDoc is given.
@@ -152,6 +153,8 @@ public:
         list<intrusive_ptr<DocumentSource>> result =
             DSChangeStream::createFromBson(spec.firstElement(), getExpCtx());
         vector<intrusive_ptr<DocumentSource>> stages(std::begin(result), std::end(result));
+        getExpCtx()->mongoProcessInterface =
+            stdx::make_unique<MockMongoInterface>(std::vector<FieldPath>{});
 
         // This match stage is a DocumentSourceOplogMatch, which we explicitly disallow from
         // executing as a safety mechanism, since it needs to use the collection-default collation,

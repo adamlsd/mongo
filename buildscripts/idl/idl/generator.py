@@ -236,8 +236,13 @@ class _FastFieldUsageChecker(_FieldUsageCheckerBase):
                     with writer.IndentedScopedBlock(self._writer, 'if (!usedFields[%s]) {' %
                                                     (_gen_field_usage_constant(field)), '}'):
                         if field.default:
-                            self._writer.write_line('%s = %s;' %
-                                                    (_get_field_member_name(field), field.default))
+                            if field.chained_struct_field:
+                                self._writer.write_line('%s.%s(%s);' % (
+                                    _get_field_member_name(field.chained_struct_field),
+                                    _get_field_member_setter_name(field), field.default))
+                            else:
+                                self._writer.write_line(
+                                    '%s = %s;' % (_get_field_member_name(field), field.default))
                         else:
                             self._writer.write_line('ctxt.throwMissingField(%s);' %
                                                     (_get_field_constant_name(field)))
@@ -715,9 +720,10 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
 class _CppSourceFileWriter(_CppFileWriterBase):
     """C++ .cpp File writer."""
 
-    def __init__(self, indented_writer):
-        # type: (writer.IndentedTextWriter) -> None
+    def __init__(self, indented_writer, target_arch):
+        # type: (writer.IndentedTextWriter, unicode) -> None
         """Create a C++ .cpp file code writer."""
+        self._target_arch = target_arch
         super(_CppSourceFileWriter, self).__init__(indented_writer)
 
     def _gen_field_deserializer_expression(self, element_name, field):
@@ -810,14 +816,26 @@ class _CppSourceFileWriter(_CppFileWriterBase):
 
                 with self._predicate(_get_bson_type_check('arrayElement', 'arrayCtxt', field)):
                     array_value = self._gen_field_deserializer_expression('arrayElement', field)
-                    self._writer.write_line('values.emplace_back(%s);' % (array_value))
+
+                    # HACK - SERVER-32431
+                    # GCC 5.4.0 on s390x has a code gen bug, work around it by not using std::move
+                    if self._target_arch == "s390x":
+                        self._writer.write_line('auto localValue = %s;' % (array_value))
+                        self._writer.write_line('values.push_back(localValue);')
+                    else:
+                        self._writer.write_line('values.emplace_back(%s);' % (array_value))
 
             with self._block('else {', '}'):
                 self._writer.write_line('arrayCtxt.throwBadArrayFieldNumberValue(arrayFieldName);')
 
             self._writer.write_line('++expectedFieldNumber;')
 
-        self._writer.write_line('%s = std::move(values);' % (_get_field_member_name(field)))
+        if field.chained_struct_field:
+            self._writer.write_line('%s.%s(std::move(values));' %
+                                    (_get_field_member_name(field.chained_struct_field),
+                                     _get_field_member_setter_name(field)))
+        else:
+            self._writer.write_line('%s = std::move(values);' % (_get_field_member_name(field)))
 
     def gen_field_deserializer(self, field, bson_object):
         # type: (ast.Field, unicode) -> None
@@ -976,7 +994,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
             first_field = True
             for field in struct.fields:
                 # Do not parse chained fields as fields since they are actually chained types.
-                if field.chained:
+                if field.chained and not field.chained_struct_field:
                     continue
 
                 field_predicate = 'fieldName == %s' % (_get_field_constant_name(field))
@@ -1009,15 +1027,16 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                     with self._predicate(command_predicate):
                         self._writer.write_line('ctxt.throwUnknownField(fieldName);')
 
-        # Parse chained types if not inlined
-        if not struct.inline_chained_structs:
-            for field in struct.fields:
-                if not field.chained:
-                    continue
+        # Parse chained structs if not inlined
+        # Parse chained types always here
+        for field in struct.fields:
+            if not field.chained or \
+                    (field.chained and field.struct_type and struct.inline_chained_structs):
+                continue
 
-                # Simply generate deserializers since these are all 'any' types
-                self.gen_field_deserializer(field, bson_object)
-        self._writer.write_empty_line()
+            # Simply generate deserializers since these are all 'any' types
+            self.gen_field_deserializer(field, bson_object)
+            self._writer.write_empty_line()
 
         self._writer.write_empty_line()
 
@@ -1510,9 +1529,9 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                 self.write_empty_line()
 
 
-def _generate_header(spec, file_name):
-    # type: (ast.IDLAST, unicode) -> None
-    """Generate a C++ header."""
+def generate_header_str(spec):
+    # type: (ast.IDLAST) -> unicode
+    """Generate a C++ header in-memory."""
     stream = io.StringIO()
     text_writer = writer.IndentedTextWriter(stream)
 
@@ -1520,28 +1539,45 @@ def _generate_header(spec, file_name):
 
     header.generate(spec)
 
+    return stream.getvalue()
+
+
+def _generate_header(spec, file_name):
+    # type: (ast.IDLAST, unicode) -> None
+    """Generate a C++ header."""
+
+    str_value = generate_header_str(spec)
+
     # Generate structs
     with io.open(file_name, mode='wb') as file_handle:
-        file_handle.write(stream.getvalue().encode())
+        file_handle.write(str_value.encode())
 
 
-def _generate_source(spec, file_name, header_file_name):
-    # type: (ast.IDLAST, unicode, unicode) -> None
-    """Generate a C++ source file."""
+def generate_source_str(spec, target_arch, header_file_name):
+    # type: (ast.IDLAST, unicode, unicode) -> unicode
+    """Generate a C++ source file in-memory."""
     stream = io.StringIO()
     text_writer = writer.IndentedTextWriter(stream)
 
-    source = _CppSourceFileWriter(text_writer)
+    source = _CppSourceFileWriter(text_writer, target_arch)
 
     source.generate(spec, header_file_name)
 
+    return stream.getvalue()
+
+
+def _generate_source(spec, target_arch, file_name, header_file_name):
+    # type: (ast.IDLAST, unicode, unicode, unicode) -> None
+    """Generate a C++ source file."""
+    str_value = generate_source_str(spec, target_arch, header_file_name)
+
     # Generate structs
     with io.open(file_name, mode='wb') as file_handle:
-        file_handle.write(stream.getvalue().encode())
+        file_handle.write(str_value.encode())
 
 
-def generate_code(spec, output_base_dir, header_file_name, source_file_name):
-    # type: (ast.IDLAST, unicode, unicode, unicode) -> None
+def generate_code(spec, target_arch, output_base_dir, header_file_name, source_file_name):
+    # type: (ast.IDLAST, unicode, unicode, unicode, unicode) -> None
     """Generate a C++ header and source file from an idl.ast tree."""
 
     _generate_header(spec, header_file_name)
@@ -1555,4 +1591,4 @@ def generate_code(spec, output_base_dir, header_file_name, source_file_name):
     # Normalize to POSIX style for consistency across Windows and POSIX.
     include_h_file_name = include_h_file_name.replace("\\", "/")
 
-    _generate_source(spec, source_file_name, include_h_file_name)
+    _generate_source(spec, target_arch, source_file_name, include_h_file_name)

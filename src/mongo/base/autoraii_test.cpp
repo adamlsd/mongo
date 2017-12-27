@@ -34,7 +34,10 @@
 
 namespace mongo {
 namespace {
-struct DtorCheck : private boost::noncopyable {
+struct DtorCheck {
+    DtorCheck(const DtorCheck&) = delete;
+    DtorCheck& operator=(const DtorCheck&) = delete;
+
     bool* const notification;
 
     explicit DtorCheck(bool* const n) : notification(n) {}
@@ -113,7 +116,7 @@ TEST(UniqueRAIITest, makeRAII) {
     bool destroyed = false;
     {
         auto raii = makeUniqueRAII([d = &destroyed] { return new DtorCheck(d); },
-                                     [](DtorCheck* const p) { delete p; });
+                                   [](DtorCheck* const p) { delete p; });
         ASSERT_FALSE(destroyed);
     }
     ASSERT_TRUE(destroyed);

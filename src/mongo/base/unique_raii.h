@@ -32,14 +32,15 @@
 #include <memory>
 #include <utility>
 
-#include <boost/noncopyable.hpp>
-
 #include "mongo/base/scoped_raii.h"
 
 namespace mongo {
 namespace unique_raii_detail {
-class UniqueRAIIScopeGuardBase : boost::noncopyable {
+class UniqueRAIIScopeGuardBase {
 protected:
+    UniqueRAIIScopeGuardBase(const UniqueRAIIScopeGuardBase&) = delete;
+    UniqueRAIIScopeGuardBase& operator=(const UniqueRAIIScopeGuardBase&) = delete;
+
     mutable bool active_ = false;
 
     inline bool active() const noexcept {
@@ -107,8 +108,11 @@ public:
  * managed and its retirement scheme.
  */
 template <typename T, typename Dtor>
-class UniqueRAII : boost::noncopyable {
+class UniqueRAII {
 private:
+    UniqueRAII(const UniqueRAII&) = delete;
+    UniqueRAII& operator=(UniqueRAII) = delete;
+
     Dtor dtor;
     T resource;
 
@@ -147,6 +151,8 @@ public:
 template <typename Dtor>
 class UniqueRAII<void, Dtor> : public unique_raii_detail::UniqueRAIIScopeGuardBase {
 private:
+    UniqueRAII(const UniqueRAII&) = delete;
+    UniqueRAII& operator=(UniqueRAII) = delete;
     Dtor dtor;
 
 public:
@@ -170,8 +176,10 @@ public:
 };
 
 template <typename T, typename Dtor>
-class UniqueRAII<T*, Dtor> : boost::noncopyable {
+class UniqueRAII<T*, Dtor> {
 private:
+    UniqueRAII(const UniqueRAII&) = delete;
+    UniqueRAII& operator=(UniqueRAII) = delete;
     Dtor dtor;
     T* resource;
 

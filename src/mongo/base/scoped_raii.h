@@ -32,9 +32,6 @@
 #include <memory>
 #include <utility>
 
-#include <boost/noncopyable.hpp>
-#include <boost/optional.hpp>
-
 namespace mongo {
 namespace scoped_raii_detail {
 struct Na;
@@ -101,8 +98,11 @@ template <typename T = scoped_raii_detail::Na,
 class ScopedRAII;
 
 template <typename T, typename Dtor>
-class ScopedRAII : boost::noncopyable {
+class ScopedRAII {
 private:
+    ScopedRAII(const ScopedRAII&) = delete;
+    ScopedRAII& operator=(const ScopedRAII&) = delete;
+
     Dtor dtor;
     T resource;
 
@@ -135,8 +135,11 @@ public:
 };
 
 template <typename T, typename Dtor>
-class ScopedRAII<T*, Dtor> : boost::noncopyable {
+class ScopedRAII<T*, Dtor> {
 private:
+    ScopedRAII(const ScopedRAII&) = delete;
+    ScopedRAII& operator=(const ScopedRAII&) = delete;
+
     Dtor dtor;
     T* resource;
 
@@ -168,10 +171,12 @@ public:
 };
 
 template <>
-class ScopedRAII<scoped_raii_detail::Na> : boost::noncopyable {
+class ScopedRAII<scoped_raii_detail::Na> {
 private:
+    ScopedRAII(const ScopedRAII&) = delete;
+    ScopedRAII& operator=(const ScopedRAII&) = delete;
+
     std::function<void()> dtor;
-    friend class DismissableRAII;
 
 public:
     template <typename Ctor, typename Dtor>

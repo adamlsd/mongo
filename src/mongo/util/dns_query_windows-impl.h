@@ -190,8 +190,8 @@ public:
     private:
         friend DNSResponse;
 
-        explicit iterator(std::shared_ptr<DNS_RECORDA> initialRecord)
-            : _record(std::move(initialRecord)) {}
+        explicit iterator(std::string service, std::shared_ptr<DNS_RECORDA> initialRecord)
+            : _service(std::move(service)), _record(std::move(initialRecord)) {}
 
         void _advance() {
             this->_record = {this->_record, this->_record->pNext};
@@ -207,16 +207,17 @@ public:
         }
 
         std::shared_ptr<DNS_RECORDA> _record;
+		std::string _service;
         ResourceRecord _storage;
         bool _ready = false;
     };
 
     iterator begin() const {
-        return iterator{this->_results};
+        return iterator{this->_service, this->_results};
     }
 
     iterator end() const {
-        return iterator{nullptr};
+        return iterator{this->_service, nullptr};
     }
 
     std::size_t size() const {

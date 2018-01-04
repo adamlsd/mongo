@@ -116,6 +116,14 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
+    target= 'op_observer_registry_test',
+    source= 'op_observer_registry_test.cpp',
+    LIBDEPS=[
+        'common',
+    ],
+)
+
+env.CppUnitTest(
     target= 'op_observer_impl_test',
     source= 'op_observer_impl_test.cpp',
     LIBDEPS=[
@@ -414,7 +422,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/storage/mmap_v1/mmap_v1_options',
-        'commands/test_commands_enabled',
         'repl/repl_settings',
         'server_options',
         'storage/storage_options',
@@ -609,9 +616,9 @@ env.Library(
         "op_observer_impl.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        'repl/serveronly',
+        'repl/serveronly_repl',
         'views/views_mongod',
+        '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
     ],
 )
@@ -821,7 +828,7 @@ env.Library(
         "write_ops",
         "ops/write_ops_parsers",
         "pipeline/aggregation",
-        "pipeline/serveronly",
+        "pipeline/serveronly_pipeline",
         "prefetch",
         "query/query",
         "repair_database",
@@ -834,18 +841,18 @@ env.Library(
         "repl/repl_settings",
         "repl/rs_rollback",
         "repl/rslog",
-        "repl/serveronly",
+        "repl/serveronly_repl",
         "repl/storage_interface",
         "repl/sync_tail",
         "repl/topology_coordinator",
         "rw_concern_d",
         "s/collection_metadata",
-        "s/commands",
+        "s/commands_db_s",
         "s/sharding",
         "service_context_d",
         "startup_warnings_mongod",
         "stats/counters",
-        "stats/serveronly",
+        "stats/serveronly_stats",
         "stats/top",
         "storage/devnull/storage_devnull",
         "storage/ephemeral_for_test/storage_ephemeral_for_test",
@@ -1432,27 +1439,15 @@ env.CppUnitTest(
 )
 
 env.Library(
-    target= 'op_observer_noop',
-    source= [
-        'op_observer_noop.cpp',
-    ],
-    LIBDEPS= [
-        '$BUILD_DIR/mongo/db/repl/optime',
-        '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
-        '$BUILD_DIR/mongo/db/catalog/database_holder',
-    ],
-)
-
-env.Library(
     target= 'service_context_d_test_fixture',
     source= [
         'service_context_d_test_fixture.cpp',
     ],
     LIBDEPS= [
-        'op_observer_noop',
         '$BUILD_DIR/mongo/db/serveronly',
         '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/unittest/unittest',
+        'service_context_d',
     ],
 )
 

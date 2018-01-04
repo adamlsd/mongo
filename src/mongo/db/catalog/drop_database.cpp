@@ -43,10 +43,14 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/write_concern_options.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+MONGO_FP_DECLARE(dropDatabaseHangAfterLastCollectionDrop);
+
 namespace {
 
 // This is used to wait for the collection drops to replicate to a majority of the replica set.
@@ -67,6 +71,14 @@ Status _finishDropDatabase(OperationContext* opCtx, const std::string& dbName, D
     dropPendingGuard.Dismiss();
 
     log() << "dropDatabase " << dbName << " - finished";
+
+    if (MONGO_FAIL_POINT(dropDatabaseHangAfterLastCollectionDrop)) {
+        log() << "dropDatabase - fail point dropDatabaseHangAfterLastCollectionDrop enabled. "
+                 "Blocking until fail point is disabled. ";
+        while (MONGO_FAIL_POINT(dropDatabaseHangAfterLastCollectionDrop)) {
+            mongo::sleepsecs(1);
+        }
+    }
 
     WriteUnitOfWork wunit(opCtx);
     getGlobalServiceContext()->getOpObserver()->onDropDatabase(opCtx, dbName);
@@ -123,6 +135,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
         // on Database.
         auto dropPendingGuard = MakeGuard([&db, opCtx] { db->setDropPending(opCtx, false); });
 
+        std::vector<NamespaceString> collectionsToDrop;
         for (auto collection : *db) {
             const auto& nss = collection->ns();
             if (nss.isDropPendingNamespace() && replCoord->isReplEnabled() &&
@@ -135,11 +148,17 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
             if (replCoord->isOplogDisabledFor(opCtx, nss) || nss.isSystemDotIndexes()) {
                 continue;
             }
+            collectionsToDrop.push_back(nss);
+        }
+        numCollectionsToDrop = collectionsToDrop.size();
+
+        log() << "dropDatabase " << dbName << " - dropping " << numCollectionsToDrop
+              << " collections";
+        for (auto nss : collectionsToDrop) {
             log() << "dropDatabase " << dbName << " - dropping collection: " << nss;
             WriteUnitOfWork wunit(opCtx);
             fassertStatusOK(40476, db->dropCollectionEvenIfSystem(opCtx, nss));
             wunit.commit();
-            numCollectionsToDrop++;
         }
         dropPendingGuard.Dismiss();
 
@@ -221,6 +240,19 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
 
     return writeConflictRetry(opCtx, "dropDatabase_database", dbName, [&] {
         Lock::GlobalWrite lk(opCtx);
+        AutoGetDb autoDB(opCtx, dbName, MODE_X);
+        auto db = autoDB.getDb();
+        if (!db) {
+            return Status(ErrorCodes::NamespaceNotFound,
+                          str::stream() << "Could not drop database " << dbName
+                                        << " because it does not exist after dropping "
+                                        << numCollectionsToDrop
+                                        << " collection(s).");
+        }
+
+        // If we fail to complete the database drop, we should reset the drop-pending state on
+        // Database.
+        auto dropPendingGuard = MakeGuard([&db, opCtx] { db->setDropPending(opCtx, false); });
 
         bool userInitiatedWritesAndNotPrimary =
             opCtx->writesAreReplicated() && !replCoord->canAcceptWritesForDatabase(opCtx, dbName);
@@ -235,16 +267,8 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
                                         << " pending collection drop(s).");
         }
 
-        AutoGetDb autoDB(opCtx, dbName, MODE_X);
-        if (auto db = autoDB.getDb()) {
-            return _finishDropDatabase(opCtx, dbName, db);
-        }
-
-        return Status(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "Could not drop database " << dbName
-                                    << " because it does not exist after dropping "
-                                    << numCollectionsToDrop
-                                    << " collection(s).");
+        dropPendingGuard.Dismiss();
+        return _finishDropDatabase(opCtx, dbName, db);
     });
 }
 

@@ -74,6 +74,10 @@ Status renameCollectionCommon(OperationContext* opCtx,
                               OptionalCollectionUUID targetUUID,
                               repl::OpTime renameOpTimeFromApplyOps,
                               const RenameCollectionOptions& options) {
+    auto uuidString = targetUUID ? targetUUID->toString() : "no UUID";
+    log() << "renameCollection: renaming collection " << source << " to " << target << " ("
+          << uuidString << ")";
+
     // A valid 'renameOpTimeFromApplyOps' is not allowed when writes are replicated.
     if (!renameOpTimeFromApplyOps.isNull() && opCtx->writesAreReplicated()) {
         return Status(
@@ -404,6 +408,13 @@ Status renameCollection(OperationContext* opCtx,
                         const NamespaceString& source,
                         const NamespaceString& target,
                         const RenameCollectionOptions& options) {
+    if (source.isDropPendingNamespace()) {
+        return Status(ErrorCodes::NamespaceNotFound,
+                      str::stream() << "renameCollection() cannot accept a source "
+                                       "collection that is in a drop-pending state: "
+                                    << source.toString());
+    }
+
     OptionalCollectionUUID noTargetUUID;
     return renameCollectionCommon(opCtx, source, target, noTargetUUID, {}, options);
 }
@@ -431,6 +442,16 @@ Status renameCollectionForApplyOps(OperationContext* opCtx,
     // If the UUID we're targeting already exists, rename from there no matter what.
     if (!uiNss.isEmpty()) {
         sourceNss = uiNss;
+    }
+
+    if (sourceNss.isDropPendingNamespace()) {
+        return Status(ErrorCodes::NamespaceNotFound,
+                      str::stream() << "renameCollectionForApplyOps() cannot accept a source "
+                                       "collection that is in a drop-pending state: "
+                                    << sourceNss.toString()
+                                    << " (UUID: "
+                                    << ui.toString(false)
+                                    << ")");
     }
 
     OptionalCollectionUUID targetUUID;

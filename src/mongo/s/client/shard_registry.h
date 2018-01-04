@@ -45,7 +45,6 @@
 namespace mongo {
 
 class BSONObjBuilder;
-struct HostAndPort;
 class NamespaceString;
 class OperationContext;
 class ServiceContext;

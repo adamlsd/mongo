@@ -34,7 +34,7 @@
 #include <unordered_set>
 #endif
 
-#include "stdx/functional.h"
+#include "mongo/stdx/functional.h"
 
 namespace mongo {
 namespace stdx {
@@ -47,26 +47,36 @@ using ::boost::unordered_multiset;  // NOLINT
 using ::std::unordered_set;       // NOLINT
 using ::std::unordered_multiset;  // NOLINT
 #endif
+
+template< typename ... Args >
+struct set_selector
+{
+	using type= unordered_set< Args... >;
+};
+
+template< typename ... Args >
+struct multiset_selector
+{
+	using type= unordered_multiset< Args... >;
+};
 }  // namespace set_detail
 
 template <typename Key,
-          typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = typename map_detail::unordered_set<Key, Value, Hash>::key_equal,
+          typename KeyEqual = typename set_detail::unordered_set<Key, Hash>::key_equal,
           typename Allocator =
-              typename map_detail::unordered_set<Key, Value, Hash, KeyEqual>::allocator,
+              typename set_detail::unordered_set<Key, Hash, KeyEqual>::allocator_type,
           typename... Args>
-using unordered_set = set_detail::unordered_set<Key, Value, Hash, KeyEqual, Allocator, Args...>;
+using unordered_set = typename set_detail::set_selector<Key, Hash, KeyEqual, Allocator, Args...>::type;
 
 template <typename Key,
-          typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = typename map_detail::unordered_multiset<Key, Value, Hash>::key_equal,
+          typename KeyEqual = typename set_detail::unordered_multiset<Key, Hash>::key_equal,
           typename Allocator =
-              typename map_detail::unordered_multiset<Key, Value, Hash, KeyEqual>::allocator,
+              typename set_detail::unordered_multiset<Key, Hash, KeyEqual>::allocator,
           typename... Args>
 using unordered_multiset =
-    set_detail::unordered_multiset<Key, Value, Hash, KeyEqual, Allocator, Args...>;
+    typename set_detail::multiset_selector<Key, Hash, KeyEqual, Allocator, Args...>::type;
 
 }  // namespace stdx
 }  // namespace mongo

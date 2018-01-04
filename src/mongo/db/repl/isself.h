@@ -32,9 +32,9 @@
 #include <vector>
 
 #include "mongo/bson/oid.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
-struct HostAndPort;
 class ServiceContext;
 
 namespace repl {

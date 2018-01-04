@@ -32,9 +32,9 @@
 #include <memory>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
-struct HostAndPort;
 namespace executor {
 
 class AsyncStreamInterface;

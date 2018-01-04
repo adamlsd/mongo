@@ -40,7 +40,6 @@
 namespace mongo {
 
 class BSONObj;
-struct HostAndPort;
 
 namespace repl {
 

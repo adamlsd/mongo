@@ -48,7 +48,6 @@ class OldThreadPool;
 class OperationContext;
 class ServiceContext;
 class Status;
-struct HostAndPort;
 template <typename T>
 class StatusWith;
 

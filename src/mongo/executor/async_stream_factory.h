@@ -31,6 +31,7 @@
 #include <memory>
 
 #include "mongo/executor/async_stream_factory_interface.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 namespace executor {

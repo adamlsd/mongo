@@ -36,7 +36,6 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/string_data.h"
-#include "mongo/platform/hash_namespace.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -165,14 +164,14 @@ private:
 }  // namespace mongo
 
 // Define hash function for RoleNames so they can be keys in stdx::unordered_map
-MONGO_HASH_NAMESPACE_START
+namespace std {
 template <>
 struct hash<mongo::RoleName> {
     size_t operator()(const mongo::RoleName& rname) const {
         return hash<std::string>()(rname.getFullName());
     }
 };
-MONGO_HASH_NAMESPACE_END
+}  // namespace std
 
 namespace mongo {
 

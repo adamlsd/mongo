@@ -30,12 +30,13 @@
 
 #include <boost/optional.hpp>
 
+#include "mongo/util/net/hostandport.h"
+
 namespace mongo {
 
 class Status;
 template <typename T>
 class StatusWith;
-struct HostAndPort;
 
 namespace executor {
 

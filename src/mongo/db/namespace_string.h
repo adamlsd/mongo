@@ -36,7 +36,7 @@
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/platform/hash_namespace.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
@@ -469,7 +469,7 @@ int nsDBHash(const std::string& ns);
 
 #include "mongo/db/namespace_string-inl.h"
 
-MONGO_HASH_NAMESPACE_START
+namespace std {
 template <>
 struct hash<mongo::NamespaceString> {
     size_t operator()(const mongo::NamespaceString& nss) const {
@@ -477,4 +477,4 @@ struct hash<mongo::NamespaceString> {
         return hasher(nss);
     }
 };
-MONGO_HASH_NAMESPACE_END
+}  // namespace std

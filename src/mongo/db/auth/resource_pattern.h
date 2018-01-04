@@ -33,7 +33,7 @@
 
 #include "mongo/base/string_data.h"
 #include "mongo/db/namespace_string.h"
-#include "mongo/platform/hash_namespace.h"
+#include "mongo/stdx/functional.h"
 
 namespace mongo {
 
@@ -174,7 +174,7 @@ public:
 
     inline size_t hash() const {
         // TODO: Choose a better hash function.
-        return MONGO_HASH_NAMESPACE::hash<std::string>()(_ns.ns()) ^ _matchType;
+        return stdx::hash<std::string>()(_ns.ns()) ^ _matchType;
     }
 
     bool operator==(const ResourcePattern& other) const {
@@ -207,11 +207,11 @@ std::ostream& operator<<(std::ostream& os, const ResourcePattern& pattern);
 
 }  // namespace mongo
 
-MONGO_HASH_NAMESPACE_START
+namespace std {
 template <>
 struct hash<mongo::ResourcePattern> {
     size_t operator()(const mongo::ResourcePattern& resource) const {
         return resource.hash();
     }
 };
-MONGO_HASH_NAMESPACE_END
+}  // namespace std

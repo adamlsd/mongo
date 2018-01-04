@@ -34,7 +34,7 @@
 #include <unordered_map>
 #endif
 
-#include "stdx/functional.h"
+#include "mongo/stdx/functional.h"
 
 namespace mongo {
 namespace stdx {
@@ -47,6 +47,18 @@ using ::boost::unordered_multimap;  // NOLINT
 using ::std::unordered_map;       // NOLINT
 using ::std::unordered_multimap;  // NOLINT
 #endif
+
+template< typename ... Args >
+struct map_selector
+{
+	using type= unordered_map< Args... >;
+};
+
+template< typename ... Args >
+struct multimap_selector
+{
+	using type= unordered_multimap< Args... >;
+};
 }  // namespace map_detail
 
 template <typename Key,
@@ -54,19 +66,19 @@ template <typename Key,
           typename Hash = stdx::hash<Key>,
           typename KeyEqual = typename map_detail::unordered_map<Key, Value, Hash>::key_equal,
           typename Allocator =
-              typename map_detail::unordered_map<Key, Value, Hash, KeyEqual>::allocator,
+              typename map_detail::unordered_map<Key, Value, Hash, KeyEqual>::allocator_type,
           typename... Args>
-using unordered_map = map_detail::unordered_map<Key, Value, Hash, KeyEqual, Allocator, Args...>;
+using unordered_map = typename map_detail::map_selector<Key, Value, Hash, KeyEqual, Allocator, Args...>::type;
 
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
           typename KeyEqual = typename map_detail::unordered_multimap<Key, Value, Hash>::key_equal,
           typename Allocator =
-              typename map_detail::unordered_multimap<Key, Value, Hash, KeyEqual>::allocator,
+              typename map_detail::unordered_multimap<Key, Value, Hash, KeyEqual>::allocator_type,
           typename... Args>
 using unordered_multimap =
-    map_detail::unordered_multimap<Key, Value, Hash, KeyEqual, Allocator, Args...>;
+    typename map_detail::multimap_selector<Key, Value, Hash, KeyEqual, Allocator, Args...>::type;
 
 }  // namespace stdx
 }  // namespace mongo

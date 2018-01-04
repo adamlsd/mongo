@@ -39,7 +39,6 @@ class BSONObj;
 class ClusterCursorManager;
 template <typename T>
 class StatusWith;
-struct HostAndPort;
 
 namespace executor {
 class TaskExecutor;

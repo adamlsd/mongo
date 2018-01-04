@@ -32,7 +32,6 @@ namespace mongo {
 
 class BSONObj;
 class BSONObjBuilder;
-struct HostAndPort;
 class OperationContext;
 class Status;
 class StringData;

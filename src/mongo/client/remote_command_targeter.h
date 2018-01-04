@@ -37,7 +37,6 @@ namespace mongo {
 class ConnectionString;
 class OperationContext;
 struct ReadPreferenceSetting;
-struct HostAndPort;
 template <typename T>
 class StatusWith;
 

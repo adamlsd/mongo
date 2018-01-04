@@ -35,7 +35,7 @@
 #include "mongo/base/static_assert.h"
 #include "mongo/base/string_data.h"
 #include "mongo/config.h"
-#include "mongo/platform/hash_namespace.h"
+#include "mongo/stdx/functional.h"
 
 namespace mongo {
 
@@ -437,11 +437,11 @@ const char* lockRequestStatusName(LockRequest::Status status);
 }  // namespace mongo
 
 
-MONGO_HASH_NAMESPACE_START
+namespace std {
 template <>
 struct hash<mongo::ResourceId> {
     size_t operator()(const mongo::ResourceId& resource) const {
         return resource;
     }
 };
-MONGO_HASH_NAMESPACE_END
+}  // namespace std

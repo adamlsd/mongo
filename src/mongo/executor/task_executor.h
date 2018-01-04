@@ -38,7 +38,7 @@
 #include "mongo/base/string_data.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
-#include "mongo/platform/hash_namespace.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/util/time_support.h"
 
@@ -436,11 +436,11 @@ struct TaskExecutor::RemoteCommandCallbackArgs {
 }  // namespace mongo
 
 // Provide a specialization for hash<CallbackHandle> so it can easily be stored in unordered_set.
-MONGO_HASH_NAMESPACE_START
+namespace std {
 template <>
 struct hash<::mongo::executor::TaskExecutor::CallbackHandle> {
     size_t operator()(const ::mongo::executor::TaskExecutor::CallbackHandle& x) const {
         return x.hash();
     }
 };
-MONGO_HASH_NAMESPACE_END
+}  // namespace std

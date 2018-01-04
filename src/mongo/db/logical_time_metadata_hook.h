@@ -32,12 +32,12 @@
 
 #include "mongo/rpc/metadata/metadata_hook.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 
 class BSONObj;
 class BSONObjBuilder;
-struct HostAndPort;
 class OperationContext;
 class ServiceContext;
 class Status;

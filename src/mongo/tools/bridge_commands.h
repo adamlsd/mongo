@@ -31,11 +31,11 @@
 #include "mongo/stdx/mutex.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/net/hostandport.h"
 
 namespace mongo {
 
 class BSONObj;
-struct HostAndPort;
 class Status;
 template <typename T>
 class StatusWith;

@@ -33,7 +33,7 @@
 #include <boost/optional.hpp>
 
 #include "mongo/bson/util/builder.h"
-#include "mongo/platform/hash_namespace.h"
+#include "mongo/stdx/functional.h"
 #include "mongo/util/net/sockaddr.h"
 
 namespace mongo {
@@ -157,11 +157,11 @@ StringBuilderImpl<Allocator>& operator<<(StringBuilderImpl<Allocator>& os, const
 
 }  // namespace mongo
 
-MONGO_HASH_NAMESPACE_START
+namespace std {
 
 template <>
 struct hash<mongo::HostAndPort> {
     size_t operator()(const mongo::HostAndPort& host) const;
 };
 
-MONGO_HASH_NAMESPACE_END
+}  // namespace std

@@ -64,11 +64,8 @@ struct multimap_selector
 template <typename Key,
           typename Value,
           typename Hash = stdx::hash<Key>,
-          typename KeyEqual = typename map_detail::unordered_map<Key, Value, Hash>::key_equal,
-          typename Allocator =
-              typename map_detail::unordered_map<Key, Value, Hash, KeyEqual>::allocator_type,
           typename... Args>
-using unordered_map = typename map_detail::map_selector<Key, Value, Hash, KeyEqual, Allocator, Args...>::type;
+using unordered_map = typename map_detail::map_selector<Key, Value, Hash, Args...>::type;
 
 template <typename Key,
           typename Value,

@@ -463,6 +463,11 @@ add_option('git-decider',
     type="choice",
 )
 
+add_option('android-toolchain-path',
+    default=None,
+    help="Android NDK standalone toolchain path. Required when using --variables-files=etc/scons/android_ndk.vars",
+)
+
 try:
     with open("version.json", "r") as version_fp:
         version_data = json.load(version_fp)
@@ -666,6 +671,10 @@ env_vars.Add('MAXLINELENGTH',
 env_vars.Add('MONGO_BUILDINFO_ENVIRONMENT_DATA',
     help='Sets the info returned from the buildInfo command and --version command-line flag',
     default=mongo_generators.default_buildinfo_environment_data())
+
+# Exposed to be able to cross compile Android/*nix from Windows without ending up with the .exe suffix.
+env_vars.Add('PROGSUFFIX',
+    help='Sets the suffix for built executable files')
 
 env_vars.Add('MONGO_DIST_SRC_PREFIX',
     help='Sets the prefix for files in the source distribution archive',

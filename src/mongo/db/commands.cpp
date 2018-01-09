@@ -96,12 +96,37 @@ BSONObj Command::appendPassthroughFields(const BSONObj& cmdObjWithPassthroughFie
 }
 
 BSONObj Command::appendMajorityWriteConcern(const BSONObj& cmdObj) {
+
+    WriteConcernOptions newWC = kMajorityWriteConcern;
+
     if (cmdObj.hasField(kWriteConcernField)) {
-        return cmdObj;
+        auto wc = cmdObj.getField(kWriteConcernField);
+        // The command has a writeConcern field and it's majority, so we can
+        // return it as-is.
+        if (wc["w"].ok() && wc["w"].str() == "majority") {
+            return cmdObj;
+        }
+
+        if (wc["wtimeout"].ok()) {
+            // They set a timeout, but aren't using majority WC. We want to use their
+            // timeout along with majority WC.
+            newWC = WriteConcernOptions(WriteConcernOptions::kMajority,
+                                        WriteConcernOptions::SyncMode::UNSET,
+                                        wc["wtimeout"].Number());
+        }
     }
+
+    // Append all original fields except the writeConcern field to the new command.
     BSONObjBuilder cmdObjWithWriteConcern;
-    cmdObjWithWriteConcern.appendElementsUnique(cmdObj);
-    cmdObjWithWriteConcern.append(kWriteConcernField, kMajorityWriteConcern.toBSON());
+    for (const auto& elem : cmdObj) {
+        const auto name = elem.fieldNameStringData();
+        if (name != "writeConcern" && !cmdObjWithWriteConcern.hasField(name)) {
+            cmdObjWithWriteConcern.append(elem);
+        }
+    }
+
+    // Finally, add the new write concern.
+    cmdObjWithWriteConcern.append(kWriteConcernField, newWC.toBSON());
     return cmdObjWithWriteConcern.obj();
 }
 
@@ -337,6 +362,25 @@ static Status _checkAuthorizationImpl(Command* c,
     return Status::OK();
 }
 
+namespace {
+// A facade presenting CommandDefinition as an audit::CommandInterface.
+class CommandAuditHook : public audit::CommandInterface {
+public:
+    explicit CommandAuditHook(Command* command) : _command(command) {}
+
+    void redactForLogging(mutablebson::Document* cmdObj) const final {
+        _command->redactForLogging(cmdObj);
+    }
+
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const final {
+        return _command->parseNs(dbname, cmdObj);
+    }
+
+private:
+    Command* _command;
+};
+}  // namespace
+
 Status Command::checkAuthorization(Command* c,
                                    OperationContext* opCtx,
                                    const OpMsgRequest& request) {
@@ -344,7 +388,8 @@ Status Command::checkAuthorization(Command* c,
     if (!status.isOK()) {
         log(LogComponent::kAccessControl) << status;
     }
-    audit::logCommandAuthzCheck(opCtx->getClient(), request, c, status.code());
+    CommandAuditHook hook(c);
+    audit::logCommandAuthzCheck(opCtx->getClient(), request, &hook, status.code());
     return status;
 }
 
@@ -355,8 +400,9 @@ bool Command::publicRun(OperationContext* opCtx,
         return enhancedRun(opCtx, request, result);
     } catch (const DBException& e) {
         if (e.code() == ErrorCodes::Unauthorized) {
+            CommandAuditHook hook(this);
             audit::logCommandAuthzCheck(
-                opCtx->getClient(), request, this, ErrorCodes::Unauthorized);
+                opCtx->getClient(), request, &hook, ErrorCodes::Unauthorized);
         }
         throw;
     }

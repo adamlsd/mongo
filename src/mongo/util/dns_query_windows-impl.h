@@ -146,7 +146,8 @@ void freeDnsRecord(PDNS_RECORDA record) {
  */
 class DNSResponse {
 public:
-    explicit DNSResponse(std::string service, PDNS_RECORDA initialResults) : _service(std::move(service)), _results(initialResults, freeDnsRecord) {}
+    explicit DNSResponse(std::string service, PDNS_RECORDA initialResults)
+        : _service(std::move(service)), _results(initialResults, freeDnsRecord) {}
 
     class iterator : public std::iterator<std::forward_iterator_tag, ResourceRecord> {
     public:
@@ -207,7 +208,7 @@ public:
         }
 
         std::shared_ptr<DNS_RECORDA> _record;
-		std::string _service;
+        std::string _service;
         ResourceRecord _storage;
         bool _ready = false;
     };
@@ -225,7 +226,7 @@ public:
     }
 
 private:
-	std::string _service;
+    std::string _service;
     std::shared_ptr<std::remove_pointer<PDNS_RECORDA>::type> _results;
 };
 

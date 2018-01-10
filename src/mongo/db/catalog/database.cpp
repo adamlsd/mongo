@@ -65,25 +65,14 @@ void Database::registerDropDatabaseImpl(stdx::function<decltype(dropDatabase)> i
     dropDatabaseImpl = std::move(impl);
 }
 
+MONGO_DEFINE_SHIM( userCreateNS );
+
 namespace {
-stdx::function<decltype(userCreateNS)> userCreateNSImpl;
 stdx::function<decltype(dropAllDatabasesExceptLocal)> dropAllDatabasesExceptLocalImpl;
 }  // namespace
+
+
 }  // namespace mongo
-
-auto mongo::userCreateNS(OperationContext* const opCtx,
-                         Database* const db,
-                         const StringData ns,
-                         const BSONObj options,
-                         const CollectionOptions::ParseKind parseKind,
-                         const bool createDefaultIndexes,
-                         const BSONObj& idIndex) -> Status {
-    return userCreateNSImpl(opCtx, db, ns, options, parseKind, createDefaultIndexes, idIndex);
-}
-
-void mongo::registerUserCreateNSImpl(stdx::function<decltype(userCreateNS)> impl) {
-    userCreateNSImpl = std::move(impl);
-}
 
 void mongo::dropAllDatabasesExceptLocal(OperationContext* const opCtx) {
     return dropAllDatabasesExceptLocalImpl(opCtx);

@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 
+#include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/catalog/collection.h"
@@ -413,19 +414,11 @@ void registerDropAllDatabasesExceptLocalImpl(
  * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
  * 'idIndex' is empty, creates the default _id index.
  */
-Status userCreateNS(OperationContext* opCtx,
+MONGO_DECLARE_SHIM( Status, userCreateNS, OperationContext* opCtx,
                     Database* db,
                     StringData ns,
                     BSONObj options,
                     CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
                     bool createDefaultIndexes = true,
-                    const BSONObj& idIndex = BSONObj());
-
-/**
- * Registers an implementation of `userCreateNS` for use by library clients.
- * This is necessary to allow `catalog/database` to be a vtable edge.
- * @param impl Implementation of `userCreateNS` to install.
- * @note This call is not thread safe.
- */
-void registerUserCreateNSImpl(stdx::function<decltype(userCreateNS)> impl);
+                    const BSONObj& idIndex = BSONObj() );
 }  // namespace mongo

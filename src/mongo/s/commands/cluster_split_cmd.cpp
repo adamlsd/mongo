@@ -86,7 +86,7 @@ BSONObj selectMedianKey(OperationContext* opCtx,
 
 class SplitCollectionCmd : public ErrmsgCommandDeprecated {
 public:
-    SplitCollectionCmd() : ErrmsgCommandDeprecated("split", "split") {}
+    SplitCollectionCmd() : ErrmsgCommandDeprecated("split") {}
 
     bool slaveOk() const override {
         return true;
@@ -196,7 +196,7 @@ public:
             BSONObj shardKey =
                 uassertStatusOK(cm->getShardKeyPattern().extractShardKeyFromQuery(opCtx, find));
             if (shardKey.isEmpty()) {
-                errmsg = stream() << "no shard key found in chunk query " << find;
+                errmsg = str::stream() << "no shard key found in chunk query " << find;
                 return false;
             }
 

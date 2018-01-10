@@ -57,6 +57,7 @@
 #include "mongo/db/catalog/health_log.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
@@ -88,6 +89,7 @@
 #include "mongo/db/logical_time_validator.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/db/op_observer_impl.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repair_database.h"
@@ -688,7 +690,10 @@ ExitCode _initAndListen(int listenPort) {
     auto serviceContext = checked_cast<ServiceContextMongoD*>(getGlobalServiceContext());
 
     serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
-    serviceContext->setOpObserver(stdx::make_unique<OpObserverImpl>());
+    auto opObserverRegistry = stdx::make_unique<OpObserverRegistry>();
+    opObserverRegistry->addObserver(stdx::make_unique<OpObserverImpl>());
+    opObserverRegistry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
+    serviceContext->setOpObserver(std::move(opObserverRegistry));
 
     DBDirectClientFactory::get(serviceContext).registerImplementation([](OperationContext* opCtx) {
         return std::unique_ptr<DBClientBase>(new DBDirectClient(opCtx));
@@ -748,10 +753,7 @@ ExitCode _initAndListen(int listenPort) {
     if (serverGlobalParams.parsedOpts.hasField("storage")) {
         BSONElement storageElement = serverGlobalParams.parsedOpts.getField("storage");
         invariant(storageElement.isABSONObj());
-        BSONObj storageParamsObj = storageElement.Obj();
-        BSONObjIterator i = storageParamsObj.begin();
-        while (i.more()) {
-            BSONElement e = i.next();
+        for (auto&& e : storageElement.Obj()) {
             // Ignore if field name under "storage" matches current storage engine.
             if (storageGlobalParams.engine == e.fieldName()) {
                 continue;
@@ -1361,6 +1363,8 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
         severe(LogComponent::kControl) << "Failed global initialization: " << status;
         quickExit(EXIT_FAILURE);
     }
+
+    ErrorExtraInfo::invariantHaveAllParsers();
 
     startupConfigActions(std::vector<std::string>(argv, argv + argc));
     cmdline_utils::censorArgvArray(argc, argv);

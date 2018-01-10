@@ -40,6 +40,7 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/op_observer.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/write_concern_options.h"
@@ -199,41 +200,29 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
         // the global lock.
         Lock::TempRelease release(opCtx->lockState());
 
-        if (numCollectionsToDrop > 0U) {
-            auto status =
-                replCoord->awaitReplicationOfLastOpForClient(opCtx, kDropDatabaseWriteConcern)
-                    .status;
-            if (!status.isOK()) {
-                return Status(status.code(),
-                              str::stream() << "dropDatabase " << dbName << " failed waiting for "
-                                            << numCollectionsToDrop
-                                            << " collection drops to replicate: "
-                                            << status.reason());
+        auto awaitOpTime = [&]() {
+            if (numCollectionsToDrop > 0U) {
+                const auto& clientInfo = repl::ReplClientInfo::forClient(opCtx->getClient());
+                return clientInfo.getLastOp();
             }
-
-            log() << "dropDatabase " << dbName << " - successfully dropped " << numCollectionsToDrop
-                  << " collections. dropping database";
-        } else {
             invariant(!latestDropPendingOpTime.isNull());
-            auto status =
-                replCoord
-                    ->awaitReplication(opCtx, latestDropPendingOpTime, kDropDatabaseWriteConcern)
-                    .status;
-            if (!status.isOK()) {
-                return Status(
-                    status.code(),
-                    str::stream()
-                        << "dropDatabase "
-                        << dbName
-                        << " failed waiting for pending collection drops (most recent drop optime: "
-                        << latestDropPendingOpTime.toString()
-                        << ") to replicate: "
-                        << status.reason());
-            }
+            return latestDropPendingOpTime;
+        }();
 
-            log() << "dropDatabase " << dbName
-                  << " - pending collection drops completed. dropping database";
+        auto result = replCoord->awaitReplication(opCtx, awaitOpTime, kDropDatabaseWriteConcern);
+        const auto& status = result.status;
+        if (!status.isOK()) {
+            return status.withContext(
+                str::stream() << "dropDatabase " << dbName << " failed waiting for "
+                              << numCollectionsToDrop
+                              << " collection drops (most recent drop optime: "
+                              << awaitOpTime.toString()
+                              << ") to replicate.");
         }
+
+        log() << "dropDatabase " << dbName << " - successfully dropped " << numCollectionsToDrop
+              << " collections (most recent drop optime: " << awaitOpTime << ") after "
+              << result.duration << ". dropping database";
     }
 
     dropPendingGuardWhileAwaitingReplication.Dismiss();

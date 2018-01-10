@@ -941,24 +941,19 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
                       << " attempts due to namespace conflicts with existing collections.");
 }
 
-namespace {
-MONGO_INITIALIZER(InitializeDropDatabaseImpl)(InitializerContext* const) {
-    Database::registerDropDatabaseImpl(DatabaseImpl::dropDatabase);
-    return Status::OK();
+MONGO_REGISTER_STATIC_SHIM(Database, dropDatabase)(OperationContext* opCtx, Database* db)->void {
+    return DatabaseImpl::dropDatabase(opCtx, db);
 }
 
-MONGO_INITIALIZER(InitializeDropAllDatabasesExceptLocalImpl)(InitializerContext* const) {
-    registerDropAllDatabasesExceptLocalImpl(dropAllDatabasesExceptLocalImpl);
-    return Status::OK();
-}
-}  // namespace
-MONGO_REGISTER_SHIM( userCreateNS ) (OperationContext* opCtx,
-                             Database* db,
-                             StringData ns,
-                             BSONObj options,
-                             CollectionOptions::ParseKind parseKind,
-                             bool createDefaultIndexes,
-                             const BSONObj& idIndex) -> Status {
+MONGO_REGISTER_SHIM(userCreateNS)
+(OperationContext* opCtx,
+ Database* db,
+ StringData ns,
+ BSONObj options,
+ CollectionOptions::ParseKind parseKind,
+ bool createDefaultIndexes,
+ const BSONObj& idIndex)
+    ->Status {
     invariant(db);
 
     LOG(1) << "create collection " << ns << ' ' << options;
@@ -1060,9 +1055,8 @@ MONGO_REGISTER_SHIM( userCreateNS ) (OperationContext* opCtx,
 
     return Status::OK();
 }
-}  // namespace mongo
 
-void mongo::dropAllDatabasesExceptLocalImpl(OperationContext* opCtx) {
+MONGO_REGISTER_SHIM(dropAllDatabasesExceptLocal)(OperationContext* opCtx)->void {
     Lock::GlobalWrite lk(opCtx);
 
     vector<string> n;
@@ -1091,4 +1085,4 @@ void mongo::dropAllDatabasesExceptLocalImpl(OperationContext* opCtx) {
         }
     }
 }
-
+}  // namespace mongo

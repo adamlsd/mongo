@@ -53,38 +53,9 @@ auto Database::makeImpl(Database* const this_,
 
 void Database::TUHook::hook() noexcept {}
 
-namespace {
-stdx::function<decltype(Database::dropDatabase)> dropDatabaseImpl;
-}
+MONGO_DEFINE_STATIC_SHIM(Database, dropDatabase);
 
-void Database::dropDatabase(OperationContext* const opCtx, Database* const db) {
-    return dropDatabaseImpl(opCtx, db);
-}
+MONGO_DEFINE_SHIM(userCreateNS);
 
-void Database::registerDropDatabaseImpl(stdx::function<decltype(dropDatabase)> impl) {
-    dropDatabaseImpl = std::move(impl);
-}
-
-MONGO_DEFINE_SHIM( userCreateNS );
-
-namespace {
-stdx::function<decltype(dropAllDatabasesExceptLocal)> dropAllDatabasesExceptLocalImpl;
-}  // namespace
-
-
+MONGO_DEFINE_SHIM(dropAllDatabasesExceptLocal);
 }  // namespace mongo
-
-void mongo::dropAllDatabasesExceptLocal(OperationContext* const opCtx) {
-    return dropAllDatabasesExceptLocalImpl(opCtx);
-}
-
-/**
- * Registers an implementation of `dropAllDatabaseExceptLocal` for use by library clients.
- * This is necessary to allow `catalog/database` to be a vtable edge.
- * @param impl Implementation of `dropAllDatabaseExceptLocal` to install.
- * @note This call is not thread safe.
- */
-void mongo::registerDropAllDatabasesExceptLocalImpl(
-    stdx::function<decltype(dropAllDatabasesExceptLocal)> impl) {
-    dropAllDatabasesExceptLocalImpl = std::move(impl);
-}

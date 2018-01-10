@@ -336,17 +336,7 @@ public:
      *
      * Must be called with the specified database locked in X mode.
      */
-    static void dropDatabase(OperationContext* opCtx, Database* db);
-
-    /**
-     * Registers an implementation of `Database::dropDatabase` for use by library clients.
-     * This is necessary to allow `catalog/database` to be a vtable edge.
-     * @param impl Implementation of `dropDatabase` to install.
-     * @note This call is not thread safe.
-     */
-    static void registerDropDatabaseImpl(stdx::function<decltype(dropDatabase)> impl);
-
-    // static Status validateDBName( StringData dbname );
+    MONGO_DECLARE_STATIC_SHIM(void, dropDatabase, OperationContext* opCtx, Database* db);
 
     inline const NamespaceString& getSystemIndexesName() const {
         return this->_impl().getSystemIndexesName();
@@ -397,16 +387,7 @@ private:
     std::unique_ptr<Impl> _pimpl;
 };
 
-void dropAllDatabasesExceptLocal(OperationContext* opCtx);
-
-/**
- * Registers an implementation of `dropAllDatabaseExceptLocal` for use by library clients.
- * This is necessary to allow `catalog/database` to be a vtable edge.
- * @param impl Implementation of `dropAllDatabaseExceptLocal` to install.
- * @note This call is not thread safe.
- */
-void registerDropAllDatabasesExceptLocalImpl(
-    stdx::function<decltype(dropAllDatabasesExceptLocal)> impl);
+MONGO_DECLARE_SHIM(void, dropAllDatabasesExceptLocal, OperationContext* opCtx);
 
 /**
  * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
@@ -414,11 +395,13 @@ void registerDropAllDatabasesExceptLocalImpl(
  * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
  * 'idIndex' is empty, creates the default _id index.
  */
-MONGO_DECLARE_SHIM( Status, userCreateNS, OperationContext* opCtx,
-                    Database* db,
-                    StringData ns,
-                    BSONObj options,
-                    CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
-                    bool createDefaultIndexes = true,
-                    const BSONObj& idIndex = BSONObj() );
+MONGO_DECLARE_SHIM(Status,
+                   userCreateNS,
+                   OperationContext* opCtx,
+                   Database* db,
+                   StringData ns,
+                   BSONObj options,
+                   CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
+                   bool createDefaultIndexes = true,
+                   const BSONObj& idIndex = BSONObj());
 }  // namespace mongo

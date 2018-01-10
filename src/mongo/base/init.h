@@ -147,41 +147,6 @@
  */
 #define _MONGO_INITIALIZER_FUNCTION_NAME(NAME) _mongoInitializerFunction_##NAME
 
-namespace evil {
-template <typename F>
-struct arg_tuple;
-
-template <typename Rv, typename... Args>
-struct arg_tuple<Rv(Args...)> {
-    using type = std::tuple<Args...>;
-};
-
-template <typename T>
-struct auto_ref {
-    using type = std::reference_wrapper<T>;
-};
-
-template <typename T>
-struct auto_ref<T&> {
-    using type = std::reference_wrapper<T>;
-};
-
-template <typename Tuple>
-struct arg_tuple_refs;
-template <typename... Args>
-struct arg_tuple_refs<std::tuple<Args...>> {
-    using type = std::tuple<typename auto_ref<Args>::type...>;
-};
-
-template <typename F>
-struct rv_of;
-template <typename Rv, typename... Args>
-struct rv_of<Rv(Args...)> {
-    using type = Rv;
-};
-}
-
-
 /**
  * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RV`, with any
  * arguments.  Declare such constructs in a C++ header.
@@ -199,8 +164,10 @@ struct rv_of<Rv(Args...)> {
     public:                                                                                      \
         static RV hook_check(__VA_ARGS__);                                                       \
         using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                              \
+        using return_type = RV                                                                   \
                                                                                                  \
-        static RV hook(hook_arg_type arg);                                                       \
+            static RV                                                                            \
+            hook(hook_arg_type arg);                                                             \
                                                                                                  \
         static void registerImpl(SHIM_NAME##_impl* p);                                           \
     };                                                                                           \
@@ -219,20 +186,19 @@ struct rv_of<Rv(Args...)> {
  * arguments.  This shim definition macro should go in the associated C++ file to the header
  * where a SHIM was defined.
  */
-#define MONGO_DEFINE_SHIM(SHIM_NAME)                                              \
-    namespace {                                                                   \
-    SHIM_NAME##_impl* impl;                                                       \
-    }                                                                             \
-                                                                                  \
-    SHIM_NAME##_base::SHIM_NAME##_base() {}                                       \
-                                                                                  \
-    void SHIM_NAME##_impl::registerImpl(SHIM_NAME##_impl* p) {                    \
-        impl = p;                                                                 \
-    }                                                                             \
-                                                                                  \
-    ::evil::rv_of<decltype(SHIM_NAME##_impl::hook)>::type SHIM_NAME##_impl::hook( \
-        hook_arg_type caller) {                                                   \
-        return caller(impl);                                                      \
+#define MONGO_DEFINE_SHIM(SHIM_NAME)                                            \
+    namespace {                                                                 \
+    SHIM_NAME##_impl* impl;                                                     \
+    }                                                                           \
+                                                                                \
+    SHIM_NAME##_base::SHIM_NAME##_base() {}                                     \
+                                                                                \
+    void SHIM_NAME##_impl::registerImpl(SHIM_NAME##_impl* p) {                  \
+        impl = p;                                                               \
+    }                                                                           \
+                                                                                \
+    SHIM_NAME##_impl::return_typeSHIM_NAME##_impl::hook(hook_arg_type caller) { \
+        return caller(impl);                                                    \
     }
 
 

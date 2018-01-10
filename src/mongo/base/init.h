@@ -147,41 +147,38 @@
  */
 #define _MONGO_INITIALIZER_FUNCTION_NAME(NAME) _mongoInitializerFunction_##NAME
 
-namespace evil
-{
-	template< typename F > struct arg_tuple;
+namespace evil {
+template <typename F>
+struct arg_tuple;
 
-	template< typename Rv, typename ... Args >
-	struct arg_tuple< Rv ( Args ... ) >
-	{
-		using type= std::tuple< Args... >;
-	};
+template <typename Rv, typename... Args>
+struct arg_tuple<Rv(Args...)> {
+    using type = std::tuple<Args...>;
+};
 
-	template< typename T >
-	struct auto_ref
-	{
-		using type= std::reference_wrapper< T >;
-	};
+template <typename T>
+struct auto_ref {
+    using type = std::reference_wrapper<T>;
+};
 
-	template< typename T >
-	struct auto_ref< T & >
-	{
-		using type= std::reference_wrapper< T >;
-	};
+template <typename T>
+struct auto_ref<T&> {
+    using type = std::reference_wrapper<T>;
+};
 
-	template< typename Tuple > struct arg_tuple_refs;
-	template< typename ... Args >
-	struct arg_tuple_refs< std::tuple< Args... > >
-	{
-		using type= std::tuple< typename auto_ref< Args >::type ... >;
-	};
+template <typename Tuple>
+struct arg_tuple_refs;
+template <typename... Args>
+struct arg_tuple_refs<std::tuple<Args...>> {
+    using type = std::tuple<typename auto_ref<Args>::type...>;
+};
 
-	template< typename F > struct rv_of;
-	template< typename Rv, typename ... Args >
-	struct rv_of< Rv ( Args ... ) >
-	{
-		using type= Rv;
-	};
+template <typename F>
+struct rv_of;
+template <typename Rv, typename... Args>
+struct rv_of<Rv(Args...)> {
+    using type = Rv;
+};
 }
 
 
@@ -189,35 +186,32 @@ namespace evil
  * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RV`, with any
  * arguments.  Declare such constructs in a C++ header.
  */
-#define MONGO_DECLARE_SHIM( RV, SHIM_NAME, ... ) \
-/* Begin */ \
-struct SHIM_NAME ## _base \
-{ \
-	SHIM_NAME ## _base(); \
-	static void tuHook(); \
-}; \
- \
-struct SHIM_NAME ## _impl : SHIM_NAME ## _base \
-{ \
-	public: \
-		virtual RV operator() ( __VA_ARGS__ )= 0; \
- \
-	public: \
-		static RV hook_check( __VA_ARGS__ ); \
-		using evil_tuple_type= ::evil::arg_tuple< decltype( SHIM_NAME ##_impl::hook_check ) >::type; \
-		using evil_refs_type= ::evil::arg_tuple_refs< evil_tuple_type >::type; \
-		static RV hook( evil_tuple_type ); \
- \
-		static void registerImpl( SHIM_NAME ## _impl *p ); \
-}; \
- \
-template< typename ... Args > \
-RV SHIM_NAME( Args ... args ) \
-{ \
-	if( 0 ) SHIM_NAME ## _base::tuHook(); /* a TU Hook to know provider is needed. */ \
-	return SHIM_NAME ##_impl::hook( { std::ref( args )... } ); \
-} \
-/* End */
+#define MONGO_DECLARE_SHIM(RV, SHIM_NAME, ...)                                                   \
+    struct SHIM_NAME##_base {                                                                    \
+        SHIM_NAME##_base();                                                                      \
+        static void tuHook();                                                                    \
+    };                                                                                           \
+                                                                                                 \
+    struct SHIM_NAME##_impl : SHIM_NAME##_base {                                                 \
+    public:                                                                                      \
+        virtual RV operator()(__VA_ARGS__) = 0;                                                  \
+                                                                                                 \
+    public:                                                                                      \
+        static RV hook_check(__VA_ARGS__);                                                       \
+        using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                              \
+                                                                                                 \
+        static RV hook(hook_arg_type arg);                                                       \
+                                                                                                 \
+        static void registerImpl(SHIM_NAME##_impl* p);                                           \
+    };                                                                                           \
+                                                                                                 \
+    template <typename... Args>                                                                  \
+    RV SHIM_NAME(Args... args) {                                                                 \
+        if (kDebugBuild) {                                                                       \
+            SHIM_NAME##_base::tuHook(); /* a TU Hook to know provider is needed. */              \
+        }                                                                                        \
+        return SHIM_NAME##_impl::hook([&](SHIM_NAME##_impl* impl) { return (*impl)(args...); }); \
+    }
 
 
 /**
@@ -225,28 +219,21 @@ RV SHIM_NAME( Args ... args ) \
  * arguments.  This shim definition macro should go in the associated C++ file to the header
  * where a SHIM was defined.
  */
-#define MONGO_DEFINE_SHIM( SHIM_NAME ) \
-/* Begin */ \
-namespace \
-{ \
-	SHIM_NAME ## _impl *impl; \
-} \
-\
-SHIM_NAME ## _base::SHIM_NAME ## _base() {}\
-\
-void \
-SHIM_NAME ## _impl::registerImpl( SHIM_NAME ## _impl *p ) \
-{ \
-	impl= p; \
-} \
- \
-::evil::rv_of< decltype( SHIM_NAME ## _impl::hook ) >::type \
-SHIM_NAME ## _impl::hook( SHIM_NAME ##_impl::evil_refs_type args ) \
-{ \
-	return stdx::apply( std::mem_fn( &SHIM_NAME ##_impl::operator() ), \
-			std::tuple_cat( std::make_tuple( impl ), args ) ); \
-} \
-/* End */
+#define MONGO_DEFINE_SHIM(SHIM_NAME)                                              \
+    namespace {                                                                   \
+    SHIM_NAME##_impl* impl;                                                       \
+    }                                                                             \
+                                                                                  \
+    SHIM_NAME##_base::SHIM_NAME##_base() {}                                       \
+                                                                                  \
+    void SHIM_NAME##_impl::registerImpl(SHIM_NAME##_impl* p) {                    \
+        impl = p;                                                                 \
+    }                                                                             \
+                                                                                  \
+    ::evil::rv_of<decltype(SHIM_NAME##_impl::hook)>::type SHIM_NAME##_impl::hook( \
+        hook_arg_type caller) {                                                   \
+        return caller(impl);                                                      \
+    }
 
 
 /**
@@ -254,69 +241,25 @@ SHIM_NAME ## _impl::hook( SHIM_NAME ##_impl::evil_refs_type args ) \
  * supplied parameters for correctness.  This shim definition macro should go in the associated C++
  * file to the header where a SHIM was defined.
  */
-#define MONGO_REGISTER_SHIM( SHIM_NAME ) \
-/* Begin */ \
-void SHIM_NAME ## _base :: tuHook() {} /* verifies that someone linked a single instance in, */ \
-/* since multiple registered shim implementations would conflict on this symbol. */ \
-namespace \
-{ \
-	class SHIM_NAME ## _specialization : public SHIM_NAME ## _impl \
-	{ \
-		public: \
-			decltype( SHIM_NAME ## _impl::hook_check ) operator() override; \
-	}; \
- \
-	MONGO_INITIALIZER( Register ## SHIM_NAME )(InitializerContext *const ) \
-	try \
-	{ \
-		SHIM_NAME ## _impl::registerImpl( new SHIM_NAME ## _specialization ); \
-		return Status::OK(); \
-	} \
-	catch( ... ) \
-	{ \
-		return exceptionToStatus(); \
-	} \
-} \
-auto \
-SHIM_NAME ## _specialization::operator() \
-/* After this point someone just writes the signature's arguments. */ \
-/* and return value (using arrow notation).  Then they write the body. */ \
-/* End */ \
-
-
-/* Alternative implementation: */
-
-#if 0
-#define MONGO_DECLARE_SHIM( RV, SHIM_NAME, ... ) \
-	RV SHIM_NAME ## _checker( __VA_ARGS__ ); \
-	template< typename Rv, typename ... Args > \
-	struct arg_tuple \
-	{ \
-		using type= std::tuple< Args... >; \
-	}; \
-	RV SHIM_NAME ## _actual( arg_tuple< decltype( SHIM_NAME ## _checker ) >::type ); \
-	\
-	template< typename ... Args >\
-	RV SHIM_NAME( Args ... &&args )\
-	{\
-		return SHIM_NAME ## _actual( std::make_tuple( std::forward< Args >( args )... ) );\
-	}\
-	void register ## SHIM_NAME( std::function< decltype( SHIM_NAME ## _checker ) > );
-
-#define MONGO_DEFINE_SHIM( SHIM_NAME ) \
-	namespace \
-	{ \
-		std::function< decltype( SHIM_NAME # _checker ) > SHIM_NAME ## _impl; \
-	} \
-	\
-	RV SHIM_NAME ##_actual( arg_tuple< decltype( SHIM_NAME ## _checker )>::type args ) \
-	{ \
-		return std::apply( SHIM_NAME ## _impl, args ); \
-	} \
-	void register ## SHIM_NAME( std::function< decltype( SHIM_NAME ## _checker ) > newImpl ) \
-	{ \
-		SHIM_NAME ## _impl= std::move( newImpl ); \
-	}
-
-#define MONGO_REGISTER_SHIM( SHIM_NAME )
-#endif
+#define MONGO_REGISTER_SHIM(SHIM_NAME)                                                            \
+    /* verifies that someone linked a single instance in, since multiple registered shim          \
+     * implementations would conflict on this symbol. */                                          \
+    void SHIM_NAME##_base::tuHook() {}                                                            \
+                                                                                                  \
+    namespace {                                                                                   \
+    class SHIM_NAME##_specialization : public SHIM_NAME##_impl {                                  \
+    public:                                                                                       \
+        decltype(SHIM_NAME##_impl::hook_check) operator() override;                               \
+    };                                                                                            \
+                                                                                                  \
+    MONGO_INITIALIZER(Register##SHIM_NAME)(InitializerContext * const) try {                      \
+        SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization);                           \
+        return Status::OK();                                                                      \
+    } catch (...) {                                                                               \
+        return exceptionToStatus();                                                               \
+    }                                                                                             \
+    }                                                                                             \
+                                                                                                  \
+    auto SHIM_NAME##_specialization::operator() /* After this point someone just writes the       \
+                                                   signature's arguments. and return value (using \
+                                                   arrow notation).  Then they write the body. */

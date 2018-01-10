@@ -36,20 +36,7 @@
 namespace mongo {
 Database::Impl::~Impl() = default;
 
-namespace {
-stdx::function<Database::factory_function_type> factory;
-}  // namespace
-
-void Database::registerFactory(decltype(factory) newFactory) {
-    factory = std::move(newFactory);
-}
-
-auto Database::makeImpl(Database* const this_,
-                        OperationContext* const opCtx,
-                        const StringData name,
-                        DatabaseCatalogEntry* const dbEntry) -> std::unique_ptr<Impl> {
-    return factory(this_, opCtx, name, dbEntry);
-}
+MONGO_DEFINE_STATIC_SHIM(Database,makeImpl);
 
 void Database::TUHook::hook() noexcept {}
 

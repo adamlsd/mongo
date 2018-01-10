@@ -147,6 +147,24 @@
  */
 #define _MONGO_INITIALIZER_FUNCTION_NAME(NAME) _mongoInitializerFunction_##NAME
 
+namespace mongo {
+template <typename T>
+struct PrivateCall {
+private:
+    friend T;
+    PrivateCall() {}
+};
+
+template <typename T>
+using PrivateTo = const PrivateCall<T>&;
+}
+
+#ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
+#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) SHIM_NAME##_base::tuHook()
+#else
+#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) (void)0
+#endif
+
 /**
  * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RV`, with any
  * arguments.  Declare such constructs in a C++ header.
@@ -173,9 +191,7 @@
                                                                                                  \
     template <typename... Args>                                                                  \
     RV SHIM_NAME(Args... args) {                                                                 \
-        if (kCheckShimCalls && kDebugBuild) {                                                    \
-            SHIM_NAME##_base::tuHook(); /* a TU Hook to know provider is needed. */              \
-        }                                                                                        \
+        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */          \
         return SHIM_NAME##_impl::hook([&](SHIM_NAME##_impl* impl) { return (*impl)(args...); }); \
     }
 
@@ -201,9 +217,7 @@
                                                                                                  \
     template <typename... Args>                                                                  \
     static RV SHIM_NAME(Args... args) {                                                          \
-        if (kCheckShimCalls && kDebugBuild) {                                                    \
-            SHIM_NAME##_base::tuHook(); /* a TU Hook to know provider is needed. */              \
-        }                                                                                        \
+        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */          \
         return SHIM_NAME##_impl::hook([&](SHIM_NAME##_impl* impl) { return (*impl)(args...); }); \
     }
 

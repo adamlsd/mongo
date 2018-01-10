@@ -39,12 +39,6 @@ const bool kDebugBuild = true;
 const bool kDebugBuild = false;
 #endif
 
-#if defined(MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES)
-const bool kCheckShimCalls = true;
-#else
-const bool kCheckShimCalls = false;
-#endif
-
 #define MONGO_DEV if (kDebugBuild)
 #define DEV MONGO_DEV
 

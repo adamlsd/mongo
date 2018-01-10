@@ -79,14 +79,13 @@
 
 namespace mongo {
 namespace {
-MONGO_INITIALIZER(InitializeDatabaseFactory)(InitializerContext* const) {
-    Database::registerFactory([](Database* const this_,
-                                 OperationContext* const opCtx,
-                                 const StringData name,
-                                 DatabaseCatalogEntry* const dbEntry) {
-        return stdx::make_unique<DatabaseImpl>(this_, opCtx, name, dbEntry);
-    });
-    return Status::OK();
+MONGO_REGISTER_STATIC_SHIM(Database, makeImpl)
+(Database* const this_,
+ OperationContext* const opCtx,
+ const StringData name,
+ DatabaseCatalogEntry* const dbEntry,
+ PrivateTo<Database>) {
+    return stdx::make_unique<DatabaseImpl>(this_, opCtx, name, dbEntry);
 }
 MONGO_FP_DECLARE(hangBeforeLoggingCreateCollection);
 }  // namespace

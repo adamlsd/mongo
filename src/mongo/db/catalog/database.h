@@ -46,6 +46,7 @@
 #include "mongo/util/string_map.h"
 
 namespace mongo {
+
 /**
  * Represents a logical database containing Collections.
  *
@@ -124,16 +125,14 @@ public:
         virtual const CollectionMap& collections() const = 0;
     };
 
-private:
-    static std::unique_ptr<Impl> makeImpl(Database* _this,
-                                          OperationContext* opCtx,
-                                          StringData name,
-                                          DatabaseCatalogEntry* dbEntry);
-
 public:
-    using factory_function_type = decltype(makeImpl);
-
-    static void registerFactory(stdx::function<factory_function_type> factory);
+    MONGO_DECLARE_STATIC_SHIM(Impl*,
+                              makeImpl,
+                              Database* this_,
+                              OperationContext* opCtx,
+                              StringData name,
+                              DatabaseCatalogEntry*,
+                              PrivateTo<Database>);
 
     /**
      * Iterating over a Database yields Collection* pointers.
@@ -183,7 +182,7 @@ public:
     explicit inline Database(OperationContext* const opCtx,
                              const StringData name,
                              DatabaseCatalogEntry* const dbEntry)
-        : _pimpl(makeImpl(this, opCtx, name, dbEntry)) {
+        : _pimpl(makeImpl(this, opCtx, name, dbEntry, PrivateCall<Database>{})) {
         this->_impl().init(opCtx);
     }
 

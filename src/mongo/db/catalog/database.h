@@ -126,7 +126,7 @@ public:
     };
 
 public:
-    MONGO_DECLARE_STATIC_SHIM(Impl*,
+    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
                               makeImpl,
                               Database* this_,
                               OperationContext* opCtx,

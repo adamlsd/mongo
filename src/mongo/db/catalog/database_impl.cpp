@@ -78,15 +78,16 @@
 #include "mongo/util/log.h"
 
 namespace mongo {
-namespace {
 MONGO_REGISTER_STATIC_SHIM(Database, makeImpl)
 (Database* const this_,
  OperationContext* const opCtx,
  const StringData name,
  DatabaseCatalogEntry* const dbEntry,
- PrivateTo<Database>) {
+ PrivateTo<Database>)
+    ->std::unique_ptr<Database::Impl> {
     return stdx::make_unique<DatabaseImpl>(this_, opCtx, name, dbEntry);
 }
+namespace {
 MONGO_FP_DECLARE(hangBeforeLoggingCreateCollection);
 }  // namespace
 

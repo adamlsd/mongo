@@ -254,7 +254,7 @@ void construction() {
     }
 
     // Test move construction.
-    { mongo::clonable_ptr<Clonable>{ mongo::clonable_ptr<Clonable>{}}; }
+    { mongo::clonable_ptr<Clonable>{mongo::clonable_ptr<Clonable>{}}; }
 
     // Test copy construction.
     {
@@ -276,7 +276,7 @@ void construction() {
     }
 
     // Test unique pointer construction
-    { mongo::clonable_ptr<Clonable>{ std::make_unique<Clonable>()}; }
+    { mongo::clonable_ptr<Clonable>{std::make_unique<Clonable>()}; }
 
     // Test unique pointer construction (conversion)
     {

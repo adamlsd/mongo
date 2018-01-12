@@ -71,13 +71,9 @@ private:
     std::unique_ptr<WiredTigerKVEngine> _engine;
 };
 
-std::unique_ptr<KVHarnessHelper> makeHelper() {
+MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, makeHelper)
+()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<WiredTigerKVHarnessHelper>();
-}
-
-MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {
-    KVHarnessHelper::registerFactory(makeHelper);
-    return Status::OK();
 }
 
 }  // namespace

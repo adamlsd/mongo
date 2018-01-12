@@ -48,9 +48,6 @@ namespace {
 using std::unique_ptr;
 using std::string;
 
-stdx::function<std::unique_ptr<KVHarnessHelper>()> basicFactory =
-    []() -> std::unique_ptr<KVHarnessHelper> { fassertFailed(40355); };
-
 class MyOperationContext : public OperationContextNoop {
 public:
     MyOperationContext(KVEngine* engine) : OperationContextNoop(engine->newRecoveryUnit()) {}
@@ -488,12 +485,6 @@ TEST(KVCatalogTest, RestartForPrefixes) {
 
 }  // namespace
 
-std::unique_ptr<KVHarnessHelper> KVHarnessHelper::create() {
-    return basicFactory();
-};
-
-void KVHarnessHelper::registerFactory(stdx::function<std::unique_ptr<KVHarnessHelper>()> factory) {
-    basicFactory = std::move(factory);
-};
+MONGO_DEFINE_STATIC_SHIM(KVHarnessHelper, create);
 
 }  // namespace mongo

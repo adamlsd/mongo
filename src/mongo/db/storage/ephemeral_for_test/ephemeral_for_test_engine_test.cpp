@@ -1,5 +1,3 @@
-// ephemeral_for_test_engine_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -55,13 +53,8 @@ private:
     std::unique_ptr<EphemeralForTestEngine> _engine;
 };
 
-std::unique_ptr<KVHarnessHelper> makeHelper() {
+MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<EphemeralForTestKVHarnessHelper>();
-}
-
-MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {
-    KVHarnessHelper::registerFactory(makeHelper);
-    return Status::OK();
 }
 
 }  // namespace

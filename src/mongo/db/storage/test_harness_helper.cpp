@@ -34,18 +34,6 @@
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
-namespace {
-stdx::function<std::unique_ptr<HarnessHelper>()> basicHarnessFactory;
-}  // namespace
+MONGO_DEFINE_SHIM(newHarnessHelper);
+HarnessHelper::~HarnessHelper() = default;
 }  // namespace mongo
-
-
-mongo::HarnessHelper::~HarnessHelper() = default;
-
-void mongo::registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessHelper>()> factory) {
-    basicHarnessFactory = std::move(factory);
-}
-
-auto mongo::newHarnessHelper() -> std::unique_ptr<HarnessHelper> {
-    return basicHarnessFactory();
-}

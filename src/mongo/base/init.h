@@ -169,56 +169,58 @@ using PrivateTo = const PrivateCall<T>&;
  * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RV`, with any
  * arguments.  Declare such constructs in a C++ header.
  */
-#define MONGO_DECLARE_SHIM(RV, SHIM_NAME, ...)                                                   \
-    struct SHIM_NAME##_base {                                                                    \
-        SHIM_NAME##_base();                                                                      \
-        static void tuHook();                                                                    \
-    };                                                                                           \
-                                                                                                 \
-    struct SHIM_NAME##_impl : SHIM_NAME##_base {                                                 \
-    public:                                                                                      \
-        virtual RV operator()(__VA_ARGS__) = 0;                                                  \
-                                                                                                 \
-    public:                                                                                      \
-        static RV hook_check(__VA_ARGS__);                                                       \
-        using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                              \
-        using return_type = RV;                                                                  \
-                                                                                                 \
-        static RV hook(hook_arg_type arg);                                                       \
-                                                                                                 \
-        static void registerImpl(SHIM_NAME##_impl* p);                                           \
-    };                                                                                           \
-                                                                                                 \
-    template <typename... Args>                                                                  \
-    RV SHIM_NAME(Args... args) {                                                                 \
-        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */          \
-        return SHIM_NAME##_impl::hook([&](SHIM_NAME##_impl* impl) { return (*impl)(args...); }); \
+#define MONGO_DECLARE_SHIM(RV, SHIM_NAME, ...)                                          \
+    struct SHIM_NAME##_base {                                                           \
+        SHIM_NAME##_base();                                                             \
+        static void tuHook();                                                           \
+    };                                                                                  \
+                                                                                        \
+    struct SHIM_NAME##_impl : SHIM_NAME##_base {                                        \
+    public:                                                                             \
+        virtual RV operator()(__VA_ARGS__) = 0;                                         \
+                                                                                        \
+    public:                                                                             \
+        static RV hook_check(__VA_ARGS__);                                              \
+        using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                     \
+        using return_type = RV;                                                         \
+                                                                                        \
+        static RV hook(hook_arg_type arg);                                              \
+                                                                                        \
+        static void registerImpl(SHIM_NAME##_impl* p);                                  \
+    };                                                                                  \
+                                                                                        \
+    template <typename... Args>                                                         \
+    RV SHIM_NAME(Args... args) {                                                        \
+        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */ \
+        return SHIM_NAME##_impl::hook(                                                  \
+            [&](SHIM_NAME##_impl* impl) -> RV { return (*impl)(args...); });            \
     }
 
-#define MONGO_DECLARE_STATIC_SHIM(RV, SHIM_NAME, ...)                                            \
-    struct SHIM_NAME##_base {                                                                    \
-        SHIM_NAME##_base();                                                                      \
-        static void tuHook();                                                                    \
-    };                                                                                           \
-                                                                                                 \
-    struct SHIM_NAME##_impl : SHIM_NAME##_base {                                                 \
-    public:                                                                                      \
-        virtual RV operator()(__VA_ARGS__) = 0;                                                  \
-                                                                                                 \
-    public:                                                                                      \
-        static RV hook_check(__VA_ARGS__);                                                       \
-        using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                              \
-        using return_type = RV;                                                                  \
-                                                                                                 \
-        static RV hook(hook_arg_type arg);                                                       \
-                                                                                                 \
-        static void registerImpl(SHIM_NAME##_impl* p);                                           \
-    };                                                                                           \
-                                                                                                 \
-    template <typename... Args>                                                                  \
-    static RV SHIM_NAME(Args... args) {                                                          \
-        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */          \
-        return SHIM_NAME##_impl::hook([&](SHIM_NAME##_impl* impl) { return (*impl)(args...); }); \
+#define MONGO_DECLARE_STATIC_SHIM(RV, SHIM_NAME, ...)                                   \
+    struct SHIM_NAME##_base {                                                           \
+        SHIM_NAME##_base();                                                             \
+        static void tuHook();                                                           \
+    };                                                                                  \
+                                                                                        \
+    struct SHIM_NAME##_impl : SHIM_NAME##_base {                                        \
+    public:                                                                             \
+        virtual RV operator()(__VA_ARGS__) = 0;                                         \
+                                                                                        \
+    public:                                                                             \
+        static RV hook_check(__VA_ARGS__);                                              \
+        using hook_arg_type = std::function<RV(SHIM_NAME##_impl*)>;                     \
+        using return_type = RV;                                                         \
+                                                                                        \
+        static RV hook(hook_arg_type arg);                                              \
+                                                                                        \
+        static void registerImpl(SHIM_NAME##_impl* p);                                  \
+    };                                                                                  \
+                                                                                        \
+    template <typename... Args>                                                         \
+    static RV SHIM_NAME(Args... args) {                                                 \
+        MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME); /* a TU Hook to know provider is needed. */ \
+        return SHIM_NAME##_impl::hook(                                                  \
+            [&](SHIM_NAME##_impl* impl) -> RV { return (*impl)(args...); });            \
     }
 
 
@@ -247,20 +249,26 @@ using PrivateTo = const PrivateCall<T>&;
  * type `RV`, with any arguments.  This shim definition macro should go in the associated C++ file
  * to the header where a SHIM was defined.
  */
-#define MONGO_DEFINE_STATIC_SHIM(CLASS_NAME, SHIM_NAME)                                \
+#define MONGO_DEFINE_STATIC_SHIM(CLASS_NAME, SHIM_NAME) \
+    MONGO_DEFINE_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, __LINE__)
+
+#define MONGO_DEFINE_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, LN)                       \
+    MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)
+
+#define MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)                       \
     namespace {                                                                        \
-    CLASS_NAME::SHIM_NAME##_impl* impl_for_##CLASS_NAME##_##SHIM_NAME;                 \
+    CLASS_NAME::SHIM_NAME##_impl* impl_for_##SHIM_NAME##LN;                            \
     }                                                                                  \
                                                                                        \
     CLASS_NAME::SHIM_NAME##_base::SHIM_NAME##_base() {}                                \
                                                                                        \
     void CLASS_NAME::SHIM_NAME##_impl::registerImpl(CLASS_NAME::SHIM_NAME##_impl* p) { \
-        impl_for_##CLASS_NAME##_##SHIM_NAME = p;                                       \
+        impl_for_##SHIM_NAME##LN = p;                                                  \
     }                                                                                  \
                                                                                        \
     CLASS_NAME::SHIM_NAME##_impl::return_type CLASS_NAME::SHIM_NAME##_impl::hook(      \
         hook_arg_type caller) {                                                        \
-        return caller(impl_for_##CLASS_NAME##_##SHIM_NAME);                            \
+        return caller(impl_for_##SHIM_NAME##LN);                                       \
     }
 
 

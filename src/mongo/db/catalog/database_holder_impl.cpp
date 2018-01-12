@@ -50,20 +50,14 @@
 namespace mongo {
 namespace {
 
-DatabaseHolder& dbHolderImpl() {
+MONGO_REGISTER_SHIM(dbHolder)
+()->DatabaseHolder& {
     static DatabaseHolder _dbHolder;
     return _dbHolder;
 }
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(InitializeDbHolderimpl, ("InitializeDatabaseHolderFactory"))
-(InitializerContext* const) {
-    registerDbHolderImpl(dbHolderImpl);
-    return Status::OK();
-}
-
-MONGO_INITIALIZER(InitializeDatabaseHolderFactory)(InitializerContext* const) {
-    DatabaseHolder::registerFactory([] { return stdx::make_unique<DatabaseHolderImpl>(); });
-    return Status::OK();
+MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)()->std::unique_ptr<Impl> {
+    return stdx::make_unique<DatabaseHolderImpl>();
 }
 
 }  // namespace

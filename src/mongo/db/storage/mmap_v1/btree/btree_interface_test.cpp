@@ -1,5 +1,3 @@
-// btree_interface_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -71,7 +69,7 @@ private:
     Ordering _order;
 };
 
-std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+MONGO_REGISTER_SHIM(newharnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<MyHarnessHelper>();
 }
 

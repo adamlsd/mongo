@@ -59,13 +59,8 @@ private:
     Ordering _order;
 };
 
-std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<EphemeralForBtreeImplTestHarnessHelper>();
-}
-
-MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
-    mongo::registerHarnessHelperFactory(makeHarnessHelper);
-    return Status::OK();
 }
 }  // namespace
 }  // namespace mongo

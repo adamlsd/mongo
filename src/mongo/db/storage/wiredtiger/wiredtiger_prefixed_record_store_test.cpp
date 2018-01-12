@@ -187,13 +187,8 @@ private:
     std::unique_ptr<WiredTigerKVEngine> _engine;
 };
 
-std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<PrefixedWiredTigerHarnessHelper>();
-}
-
-MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
-    mongo::registerHarnessHelperFactory(makeHarnessHelper);
-    return Status::OK();
 }
 
 TEST(WiredTigerRecordStoreTest, PrefixedTableScan) {

@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "mongo/base/clonable_ptr.h"
+#include "mongo/base/init.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/multikey_paths.h"
 #include "mongo/db/jsobj.h"
@@ -77,20 +78,21 @@ public:
             virtual IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) = 0;
         };
 
-    private:
-        static std::unique_ptr<Impl> makeImpl(OperationContext* opCtx,
-                                              const IndexCatalog* cat,
-                                              bool includeUnfinishedIndexes);
+        MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
+                                  makeImpl,
+                                  OperationContext* opCtx,
+                                  const IndexCatalog* cat,
+                                  bool includeUnfinishedIndexes,
+                                  PrivateTo<IndexIterator>);
 
+    private:
         explicit inline IndexIterator(OperationContext* const opCtx,
                                       const IndexCatalog* const cat,
                                       const bool includeUnfinishedIndexes)
-            : _pimpl(makeImpl(opCtx, cat, includeUnfinishedIndexes)) {}
+            : _pimpl(makeImpl(opCtx, cat, includeUnfinishedIndexes, PrivateCall<IndexIterator>{})) {
+        }
 
     public:
-        using factory_function_type = stdx::function<decltype(makeImpl)>;
-        static void registerFactory(factory_function_type factory);
-
         inline ~IndexIterator() = default;
 
         inline IndexIterator(const IndexIterator& copy) = default;
@@ -257,19 +259,18 @@ public:
         friend IndexCatalog;
     };
 
-private:
-    static std::unique_ptr<Impl> makeImpl(IndexCatalog* this_,
-                                          Collection* collection,
-                                          int maxNumIndexesAllowed);
-
 public:
-    using factory_function_type = stdx::function<decltype(makeImpl)>;
-    static void registerFactory(factory_function_type factory);
+    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
+                              makeImpl,
+                              IndexCatalog* this_,
+                              Collection* collection,
+                              int maxNumIndexesAllowed,
+                              PrivateTo<IndexCatalog>);
 
     inline ~IndexCatalog() = default;
 
     explicit inline IndexCatalog(Collection* const collection, const int maxNumIndexesAllowed)
-        : _pimpl(makeImpl(this, collection, maxNumIndexesAllowed)) {}
+        : _pimpl(makeImpl(this, collection, maxNumIndexesAllowed, PrivateCall<IndexCatalog>{})) {}
 
     inline IndexCatalog(IndexCatalog&&) = delete;
     inline IndexCatalog& operator=(IndexCatalog&&) = delete;
@@ -541,18 +542,17 @@ public:
 
     // public static helpers
 
-    static BSONObj fixIndexKey(const BSONObj& key);
-    static void registerFixIndexKeyImpl(stdx::function<decltype(fixIndexKey)> impl);
+    MONGO_DECLARE_STATIC_SHIM(BSONObj, fixIndexKey, const BSONObj& key);
 
     /**
      * Fills out 'options' in order to indicate whether to allow dups or relax
      * index constraints, as needed by replication.
      */
-    static void prepareInsertDeleteOptions(OperationContext* opCtx,
-                                           const IndexDescriptor* desc,
-                                           InsertDeleteOptions* options);
-    static void registerPrepareInsertDeleteOptionsImpl(
-        stdx::function<decltype(prepareInsertDeleteOptions)> impl);
+    MONGO_DECLARE_STATIC_SHIM(void,
+                              prepareInsertDeleteOptions,
+                              OperationContext* opCtx,
+                              const IndexDescriptor* desc,
+                              InsertDeleteOptions* options);
 
 private:
     inline const Collection* _getCollection() const {

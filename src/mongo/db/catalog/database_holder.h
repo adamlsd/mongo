@@ -150,5 +150,5 @@ private:
     std::unique_ptr<Impl> _pimpl;
 };
 
-MONGO_DECLARE_STATIC_SHIM(DatabaseHolder&, dbHolder);
+MONGO_DECLARE_SHIM(DatabaseHolder&, dbHolder);
 }  // namespace mongo

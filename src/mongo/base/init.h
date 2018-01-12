@@ -252,10 +252,10 @@ using PrivateTo = const PrivateCall<T>&;
 #define MONGO_DEFINE_STATIC_SHIM(CLASS_NAME, SHIM_NAME) \
     MONGO_DEFINE_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, __LINE__)
 
-#define MONGO_DEFINE_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, LN)                       \
+#define MONGO_DEFINE_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, LN) \
     MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)
 
-#define MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)                       \
+#define MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)                      \
     namespace {                                                                        \
     CLASS_NAME::SHIM_NAME##_impl* impl_for_##SHIM_NAME##LN;                            \
     }                                                                                  \
@@ -277,48 +277,56 @@ using PrivateTo = const PrivateCall<T>&;
  * supplied parameters for correctness.  This shim definition macro should go in the associated C++
  * file to the header where a SHIM was defined.
  */
-#define MONGO_REGISTER_SHIM(SHIM_NAME)                                                            \
+#define MONGO_REGISTER_SHIM(SHIM_NAME) MONGO_REGISTER_SHIM_IMPL(SHIM_NAME, __LINE__)
+
+#define MONGO_REGISTER_SHIM_IMPL(SHIM_NAME, LN) MONGO_REGISTER_SHIM_IMPL2(SHIM_NAME, LN)
+
+#define MONGO_REGISTER_SHIM_IMPL2(SHIM_NAME, LN)                                                  \
     /* verifies that someone linked a single instance in, since multiple registered shim          \
      * implementations would conflict on this symbol. */                                          \
     void SHIM_NAME##_base::tuHook() {}                                                            \
                                                                                                   \
     namespace {                                                                                   \
-    class SHIM_NAME##_specialization : public SHIM_NAME##_impl {                                  \
+    class SHIM_NAME##_specialization_##LN : public SHIM_NAME##_impl {                             \
     public:                                                                                       \
         decltype(SHIM_NAME##_impl::hook_check) operator() override;                               \
     };                                                                                            \
                                                                                                   \
-    MONGO_INITIALIZER(Register##SHIM_NAME)(InitializerContext * const) try {                      \
-        SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization);                           \
+    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
+        SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization_##LN);                      \
         return Status::OK();                                                                      \
     } catch (...) {                                                                               \
         return exceptionToStatus();                                                               \
     }                                                                                             \
     }                                                                                             \
                                                                                                   \
-    auto SHIM_NAME##_specialization::operator() /* After this point someone just writes the       \
+    auto SHIM_NAME##_specialization_##LN::operator() /* After this point someone just writes the  \
                                                    signature's arguments. and return value (using \
                                                    arrow notation).  Then they write the body. */
 
-#define MONGO_REGISTER_STATIC_SHIM(CLASS_NAME, SHIM_NAME)                                         \
+#define MONGO_REGISTER_STATIC_SHIM(CLASS_NAME, SHIM_NAME) \
+    MONGO_REGISTER_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, __LINE__)
+#define MONGO_REGISTER_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, LN) \
+    MONGO_REGISTER_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)
+#define MONGO_REGISTER_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)                               \
     /* verifies that someone linked a single instance in, since multiple registered shim          \
      * implementations would conflict on this symbol. */                                          \
     void CLASS_NAME::SHIM_NAME##_base::tuHook() {}                                                \
                                                                                                   \
     namespace {                                                                                   \
-    class SHIM_NAME##_specialization : public CLASS_NAME::SHIM_NAME##_impl {                      \
+    class SHIM_NAME##_specialization_##LN : public CLASS_NAME::SHIM_NAME##_impl {                 \
     public:                                                                                       \
         decltype(CLASS_NAME::SHIM_NAME##_impl::hook_check) operator() override;                   \
     };                                                                                            \
                                                                                                   \
-    MONGO_INITIALIZER(Register##SHIM_NAME)(InitializerContext * const) try {                      \
-        CLASS_NAME::SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization);               \
+    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
+        CLASS_NAME::SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization_##LN);          \
         return Status::OK();                                                                      \
     } catch (...) {                                                                               \
         return exceptionToStatus();                                                               \
     }                                                                                             \
     }                                                                                             \
                                                                                                   \
-    auto SHIM_NAME##_specialization::operator() /* After this point someone just writes the       \
+    auto SHIM_NAME##_specialization_##LN::operator() /* After this point someone just writes the  \
                                                    signature's arguments. and return value (using \
                                                    arrow notation).  Then they write the body. */

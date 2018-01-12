@@ -48,7 +48,6 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-namespace {
 
 MONGO_REGISTER_SHIM(dbHolder)
 ()->DatabaseHolder& {
@@ -56,11 +55,9 @@ MONGO_REGISTER_SHIM(dbHolder)
     return _dbHolder;
 }
 
-MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)()->std::unique_ptr<Impl> {
+MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)()->std::unique_ptr<DatabaseHolder::Impl> {
     return stdx::make_unique<DatabaseHolderImpl>();
 }
-
-}  // namespace
 
 using std::set;
 using std::size_t;

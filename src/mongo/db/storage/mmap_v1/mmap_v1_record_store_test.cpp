@@ -92,9 +92,9 @@ public:
 private:
     DummyExtentManager _em;
 };
+}  // namespace
 
 MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<MyHarnessHelper>();
 }
-}  // namespace
 }  // namespace mongo

@@ -58,9 +58,9 @@ private:
     std::shared_ptr<void> _data;  // used by EphemeralForTestBtreeImpl
     Ordering _order;
 };
+}  // namespace
 
 MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<EphemeralForBtreeImplTestHarnessHelper>();
 }
-}  // namespace
 }  // namespace mongo

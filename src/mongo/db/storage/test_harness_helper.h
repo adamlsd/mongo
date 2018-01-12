@@ -32,6 +32,7 @@
 #include <initializer_list>
 #include <memory>
 
+#include "mongo/base/init.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/record_id.h"

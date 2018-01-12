@@ -68,14 +68,10 @@ private:
     SavedCursorRegistry _cursorRegistry;
     Ordering _order;
 };
+}  // namespace
 
-MONGO_REGISTER_SHIM(newharnessHelper)()->std::unique_ptr<HarnessHelper> {
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<MyHarnessHelper>();
 }
 
-MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
-    mongo::registerHarnessHelperFactory(makeHarnessHelper);
-    return Status::OK();
-}
-}  // namespace
 }  // namespace mongo

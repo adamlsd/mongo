@@ -70,11 +70,11 @@ private:
     unittest::TempDir _dbpath;
     std::unique_ptr<WiredTigerKVEngine> _engine;
 };
+}  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, makeHelper)
+MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)
 ()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<WiredTigerKVHarnessHelper>();
 }
 
-}  // namespace
 }  // namespace mongo

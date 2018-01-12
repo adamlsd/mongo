@@ -52,10 +52,10 @@ public:
 private:
     std::unique_ptr<EphemeralForTestEngine> _engine;
 };
+}  // namespace
 
 MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<EphemeralForTestKVHarnessHelper>();
 }
 
-}  // namespace
 }  // namespace mongo

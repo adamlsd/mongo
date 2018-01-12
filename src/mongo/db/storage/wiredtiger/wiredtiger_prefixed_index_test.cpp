@@ -101,9 +101,9 @@ private:
     WiredTigerSessionCache* _sessionCache;
     WiredTigerOplogManager _oplogManager;
 };
+}  // namespace
 
 MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<MyHarnessHelper>();
 }
-}  // namespace
 }  // namespace mongo

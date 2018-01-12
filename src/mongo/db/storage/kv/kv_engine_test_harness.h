@@ -32,6 +32,7 @@
 
 #include <memory>
 
+#include "mongo/base/init.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/stdx/functional.h"
 

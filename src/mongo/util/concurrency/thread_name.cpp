@@ -55,7 +55,8 @@
 
 namespace mongo {
 
-using std::string;
+using std::begin;
+using std::end;
 
 namespace {
 
@@ -115,25 +116,25 @@ using for_debuggers::threadName;
 
 void setThreadName(StringData name) {
     invariant(mongoInitializersHaveRun);
-    threadNameStorage = name;
-    threadName = threadNameStorage;
+    threadNameStorage= std::string( begin( threadNameStorage ), end( threadNameStorage ) );
+    threadName= threadNameStorage;
 
 #if defined(_WIN32)
     // Naming should not be expensive compared to thread creation and connection set up, but if
     // testing shows otherwise we should make this depend on DEBUG again.
     setWindowsThreadName(GetCurrentThreadId(), threadName.c_str());
 #elif defined(__APPLE__)
-#if !TARGET_OS_IOS && !TARGET_OS_TV
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.
-    MONGO_STATIC_ASSERT(MAXTHREADNAMESIZE >= kMaxThreadNameSize + 1);
-    int error = pthread_setname_np(threadName.rawData());
+    std::string pThreadName= threadName;
+    if (pThreadName.size() > MAXTHREADNAMESIZE) {
+        pThreadName.resize(MAXTHREADNAMESIZE - 4);
+        pThreadName+= "...";
+    }
+    int error = pthread_setname_np(pThreadName.rawData());
     if (error) {
         log() << "Ignoring error from setting thread name: " << errnoWithDescription(error);
     }
-#else
-// Do not set thread name in the OS at all on iOS or TV-OS
-#endif
 #elif defined(__linux__) && defined(MONGO_CONFIG_HAVE_PTHREAD_SETNAME_NP)
     // Do not set thread name on the main() thread. Setting the name on main thread breaks
     // pgrep/pkill since these programs base this name on /proc/*/status which displays the thread

@@ -32,7 +32,6 @@
 
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
 
-#include <set>
 #include <vector>
 
 #include "mongo/base/status_with.h"
@@ -257,6 +256,7 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
     }
 
     MigrateInfoVector candidateChunks;
+    std::set<ShardId> usedShards;
 
     for (const auto& coll : collections) {
         if (coll.getDropped()) {
@@ -270,8 +270,8 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
             continue;
         }
 
-        auto candidatesStatus =
-            _getMigrateCandidatesForCollection(opCtx, nss, shardStats, aggressiveBalanceHint);
+        auto candidatesStatus = _getMigrateCandidatesForCollection(
+            opCtx, nss, shardStats, aggressiveBalanceHint, &usedShards);
         if (candidatesStatus == ErrorCodes::NamespaceNotFound) {
             // Namespace got dropped before we managed to get to it, so just skip it
             continue;
@@ -300,8 +300,8 @@ BalancerChunkSelectionPolicyImpl::selectSpecificChunkToMove(OperationContext* op
     const auto& shardStats = shardStatsStatus.getValue();
 
     auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
-                                                                                     chunk.getNS());
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
+            opCtx, NamespaceString(chunk.getNS()));
     if (!routingInfoStatus.isOK()) {
         return routingInfoStatus.getStatus();
     }
@@ -329,8 +329,8 @@ Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCt
     auto shardStats = std::move(shardStatsStatus.getValue());
 
     auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
-                                                                                     chunk.getNS());
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
+            opCtx, NamespaceString(chunk.getNS()));
     if (!routingInfoStatus.isOK()) {
         return routingInfoStatus.getStatus();
     }
@@ -385,8 +385,7 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
     for (const auto& tagRangeEntry : distribution.tagRanges()) {
         const auto& tagRange = tagRangeEntry.second;
 
-        shared_ptr<Chunk> chunkAtZoneMin =
-            cm->findIntersectingChunkWithSimpleCollation(tagRange.min);
+        const auto chunkAtZoneMin = cm->findIntersectingChunkWithSimpleCollation(tagRange.min);
         invariant(chunkAtZoneMin->getMax().woCompare(tagRange.min) > 0);
 
         if (chunkAtZoneMin->getMin().woCompare(tagRange.min)) {
@@ -397,8 +396,7 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::_getSplitCandidate
         if (!tagRange.max.woCompare(shardKeyPattern.globalMax()))
             continue;
 
-        shared_ptr<Chunk> chunkAtZoneMax =
-            cm->findIntersectingChunkWithSimpleCollation(tagRange.max);
+        const auto chunkAtZoneMax = cm->findIntersectingChunkWithSimpleCollation(tagRange.max);
 
         // We need to check that both the chunk's minKey does not match the zone's max and also that
         // the max is not equal, which would only happen in the case of the zone ending in MaxKey.
@@ -415,7 +413,8 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
     OperationContext* opCtx,
     const NamespaceString& nss,
     const ShardStatisticsVector& shardStats,
-    bool aggressiveBalanceHint) {
+    bool aggressiveBalanceHint,
+    std::set<ShardId>* usedShards) {
     auto routingInfoStatus =
         Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx, nss);
     if (!routingInfoStatus.isOK()) {
@@ -436,8 +435,7 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
     for (const auto& tagRangeEntry : distribution.tagRanges()) {
         const auto& tagRange = tagRangeEntry.second;
 
-        shared_ptr<Chunk> chunkAtZoneMin =
-            cm->findIntersectingChunkWithSimpleCollation(tagRange.min);
+        const auto chunkAtZoneMin = cm->findIntersectingChunkWithSimpleCollation(tagRange.min);
 
         if (chunkAtZoneMin->getMin().woCompare(tagRange.min)) {
             return {ErrorCodes::IllegalOperation,
@@ -455,8 +453,7 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
         if (!tagRange.max.woCompare(shardKeyPattern.globalMax()))
             continue;
 
-        shared_ptr<Chunk> chunkAtZoneMax =
-            cm->findIntersectingChunkWithSimpleCollation(tagRange.max);
+        const auto chunkAtZoneMax = cm->findIntersectingChunkWithSimpleCollation(tagRange.max);
 
         // We need to check that both the chunk's minKey does not match the zone's max and also that
         // the max is not equal, which would only happen in the case of the zone ending in MaxKey.
@@ -474,7 +471,7 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::_getMigrateCandi
         }
     }
 
-    return BalancerPolicy::balance(shardStats, distribution, aggressiveBalanceHint);
+    return BalancerPolicy::balance(shardStats, distribution, aggressiveBalanceHint, usedShards);
 }
 
 }  // namespace mongo

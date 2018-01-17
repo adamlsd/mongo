@@ -162,7 +162,7 @@ using PrivateTo = const PrivateCall<T>&;
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
 #define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) SHIM_NAME##_base::tuHook()
 #else
-#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) (void)0
+#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) []{}()
 #endif
 
 /**
@@ -231,7 +231,7 @@ using PrivateTo = const PrivateCall<T>&;
  */
 #define MONGO_DEFINE_SHIM(SHIM_NAME)                                             \
     namespace {                                                                  \
-    SHIM_NAME##_impl* impl_for_##SHIM_NAME;                                      \
+    SHIM_NAME##_impl* impl_for_##SHIM_NAME = nullptr;                            \
     }                                                                            \
                                                                                  \
     SHIM_NAME##_base::SHIM_NAME##_base() {}                                      \
@@ -257,7 +257,7 @@ using PrivateTo = const PrivateCall<T>&;
 
 #define MONGO_DEFINE_STATIC_SHIM_IMPL2(CLASS_NAME, SHIM_NAME, LN)                      \
     namespace {                                                                        \
-    CLASS_NAME::SHIM_NAME##_impl* impl_for_##SHIM_NAME##LN;                            \
+    CLASS_NAME::SHIM_NAME##_impl* impl_for_##SHIM_NAME##LN = nullptr;                  \
     }                                                                                  \
                                                                                        \
     CLASS_NAME::SHIM_NAME##_base::SHIM_NAME##_base() {}                                \

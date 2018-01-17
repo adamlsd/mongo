@@ -102,7 +102,7 @@ public:
         grid.shardRegistry()->getAllShardIds(&shardIds);
         shardIds.emplace_back(ShardRegistry::kConfigServerShardId);
 
-        auto filteredCmd = filterCommandRequestForPassthrough(cmdObj);
+        auto filteredCmd = CommandHelpers::filterCommandRequestForPassthrough(cmdObj);
 
         for (const ShardId& shardId : shardIds) {
             const auto shardStatus = grid.shardRegistry()->getShard(opCtx, shardId);
@@ -111,12 +111,12 @@ public:
             }
             const auto s = shardStatus.getValue();
 
-            auto response = uassertStatusOK(s->runCommandWithFixedRetryAttempts(
-                opCtx,
-                ReadPreferenceSetting{ReadPreference::PrimaryPreferred},
-                "admin",
-                filteredCmd,
-                Shard::RetryPolicy::kIdempotent));
+            auto response = uassertStatusOK(
+                s->runCommandWithFixedRetryAttempts(opCtx,
+                                                    ReadPreferenceSetting::get(opCtx),
+                                                    "admin",
+                                                    filteredCmd,
+                                                    Shard::RetryPolicy::kIdempotent));
             uassertStatusOK(response.commandStatus);
             BSONObj x = std::move(response.response);
 

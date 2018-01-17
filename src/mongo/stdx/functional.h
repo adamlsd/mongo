@@ -35,11 +35,9 @@
 namespace mongo {
 namespace stdx {
 
-using ::std::bind;                             // NOLINT
-using ::std::cref;                             // NOLINT
-using ::std::function;                         // NOLINT
-using ::std::ref;                              // NOLINT
-namespace placeholders = ::std::placeholders;  // NOLINT
+using ::std::cref;      // NOLINT
+using ::std::function;  // NOLINT
+using ::std::ref;       // NOLINT
 
 template<typename Fn, typename... Args>
 constexpr decltype(auto) invoke(Fn&& f, Args&&... args)

@@ -301,7 +301,7 @@ bool appendRawResponses(OperationContext* opCtx,
             // Convert the error status back into the form of a command result and append it as the
             // raw response.
             BSONObjBuilder statusObjBob;
-            Command::appendCommandStatus(statusObjBob, sendStatus);
+            CommandHelpers::appendCommandStatus(statusObjBob, sendStatus);
             subobj.append(shardConnStr, statusObjBob.obj());
 
             errors.push_back(std::make_pair(shardConnStr, sendStatus));
@@ -313,7 +313,7 @@ bool appendRawResponses(OperationContext* opCtx,
         auto& resObj = shardResponse.swResponse.getValue().data;
 
         // Append the shard's raw response.
-        subobj.append(shardConnStr, Command::filterCommandReplyForPassthrough(resObj));
+        subobj.append(shardConnStr, CommandHelpers::filterCommandReplyForPassthrough(resObj));
 
         auto commandStatus = getStatusFromCommandResult(resObj);
         if (!commandStatus.isOK()) {
@@ -409,25 +409,7 @@ bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::stri
         return true;
     }
 
-    return Command::appendCommandStatus(result, status);
-}
-
-std::vector<NamespaceString> getAllShardedCollectionsForDb(OperationContext* opCtx,
-                                                           StringData dbName) {
-    const auto dbNameStr = dbName.toString();
-
-    const std::vector<CollectionType> collectionsOnConfig = uassertStatusOK(
-        Grid::get(opCtx)->catalogClient()->getCollections(opCtx, &dbNameStr, nullptr));
-
-    std::vector<NamespaceString> collectionsToReturn;
-    for (const auto& coll : collectionsOnConfig) {
-        if (coll.getDropped())
-            continue;
-
-        collectionsToReturn.push_back(coll.getNs());
-    }
-
-    return collectionsToReturn;
+    return CommandHelpers::appendCommandStatus(result, status);
 }
 
 CachedCollectionRoutingInfo getShardedCollection(OperationContext* opCtx,
@@ -450,13 +432,13 @@ StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, Stri
         auto configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
         auto createDbStatus =
-            uassertStatusOK(
-                configShard->runCommandWithFixedRetryAttempts(
-                    opCtx,
-                    ReadPreferenceSetting(ReadPreference::PrimaryOnly),
-                    "admin",
-                    Command::appendMajorityWriteConcern(configCreateDatabaseRequest.toBSON()),
-                    Shard::RetryPolicy::kIdempotent))
+            uassertStatusOK(configShard->runCommandWithFixedRetryAttempts(
+                                opCtx,
+                                ReadPreferenceSetting(ReadPreference::PrimaryOnly),
+                                "admin",
+                                CommandHelpers::appendMajorityWriteConcern(
+                                    configCreateDatabaseRequest.toBSON()),
+                                Shard::RetryPolicy::kIdempotent))
                 .commandStatus;
 
         if (createDbStatus.isOK() || createDbStatus == ErrorCodes::NamespaceExists) {

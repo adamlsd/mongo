@@ -389,13 +389,13 @@ public:
         HandshakeArgs handshake;
         Status status = handshake.initialize(cmdObj);
         if (!status.isOK()) {
-            return appendCommandStatus(result, status);
+            return CommandHelpers::appendCommandStatus(result, status);
         }
 
         ReplClientInfo::forClient(opCtx->getClient()).setRemoteID(handshake.getRid());
 
         status = getGlobalReplicationCoordinator()->processHandshake(opCtx, handshake);
-        return appendCommandStatus(result, status);
+        return CommandHelpers::appendCommandStatus(result, status);
     }
 
 } handshakeCmd;
@@ -674,7 +674,8 @@ void ReplSource::applyOperation(OperationContext* opCtx, Database* db, const BSO
             // sync source.
             SyncTail sync(nullptr, SyncTail::MultiSyncApplyFunc());
             sync.setHostname(hostName);
-            sync.fetchAndInsertMissingDocument(opCtx, op);
+            OplogEntry oplogEntry(op);
+            sync.fetchAndInsertMissingDocument(opCtx, oplogEntry);
         }
     } catch (AssertionException& e) {
         log() << "sync: caught user assertion " << redact(e) << " while applying op: " << redact(op)

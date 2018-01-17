@@ -41,6 +41,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
@@ -109,7 +110,7 @@ public:
              BSONObjBuilder& result) override {
 
         if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::IllegalOperation,
                        "_configsvrMovePrimary can only be run on config servers"));
@@ -126,7 +127,7 @@ public:
 
         if (dbname == NamespaceString::kAdminDb || dbname == NamespaceString::kConfigDb ||
             dbname == NamespaceString::kLocalDb) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 {ErrorCodes::InvalidOptions,
                  str::stream() << "Can't move primary for " << dbname << " database"});
@@ -139,6 +140,7 @@ public:
 
         auto const catalogClient = Grid::get(opCtx)->catalogClient();
         auto const catalogCache = Grid::get(opCtx)->catalogCache();
+        auto const catalogManager = ShardingCatalogManager::get(opCtx);
         auto const shardRegistry = Grid::get(opCtx)->shardRegistry();
 
         // Remove the backwards compatible lock after 3.6 ships.
@@ -157,7 +159,7 @@ public:
         const std::string to = movePrimaryRequest.getTo().toString();
 
         if (to.empty()) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 {ErrorCodes::InvalidOptions,
                  str::stream() << "you have to specify where you want to move it"});
@@ -193,7 +195,7 @@ public:
         log() << "Moving " << dbname << " primary from: " << fromShard->toString()
               << " to: " << toShard->toString();
 
-        const auto shardedColls = getAllShardedCollectionsForDb(opCtx, dbname);
+        const auto shardedColls = catalogManager->getAllShardedCollectionsForDb(opCtx, dbname);
 
         // Record start in changelog
         uassertStatusOK(catalogClient->logChange(
@@ -229,7 +231,7 @@ public:
 
             if (!worked) {
                 log() << "clone failed" << redact(cloneRes);
-                return appendCommandStatus(
+                return CommandHelpers::appendCommandStatus(
                     result, {ErrorCodes::OperationFailed, str::stream() << "clone failed"});
             }
 

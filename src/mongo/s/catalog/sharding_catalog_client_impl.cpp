@@ -378,7 +378,10 @@ StatusWith<repl::OpTimeWith<CollectionType>> ShardingCatalogClientImpl::getColle
 }
 
 StatusWith<std::vector<CollectionType>> ShardingCatalogClientImpl::getCollections(
-    OperationContext* opCtx, const std::string* dbName, OpTime* opTime) {
+    OperationContext* opCtx,
+    const std::string* dbName,
+    OpTime* opTime,
+    repl::ReadConcernLevel readConcernLevel) {
     BSONObjBuilder b;
     if (dbName) {
         invariant(!dbName->empty());
@@ -388,7 +391,7 @@ StatusWith<std::vector<CollectionType>> ShardingCatalogClientImpl::getCollection
 
     auto findStatus = _exhaustiveFindOnConfig(opCtx,
                                               kConfigReadSelector,
-                                              repl::ReadConcernLevel::kMajorityReadConcern,
+                                              readConcernLevel,
                                               NamespaceString(CollectionType::ConfigNS),
                                               b.obj(),
                                               BSONObj(),
@@ -422,8 +425,7 @@ StatusWith<std::vector<CollectionType>> ShardingCatalogClientImpl::getCollection
 }
 
 Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
-                                                 const NamespaceString& ns,
-                                                 repl::ReadConcernLevel readConcernLevel) {
+                                                 const NamespaceString& ns) {
     logChange(opCtx,
               "dropCollection.start",
               ns.ns(),
@@ -431,7 +433,7 @@ Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
               ShardingCatalogClientImpl::kMajorityWriteConcern)
         .ignore();
 
-    auto shardsStatus = getAllShards(opCtx, readConcernLevel);
+    auto shardsStatus = getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
     if (!shardsStatus.isOK()) {
         return shardsStatus.getStatus();
     }
@@ -830,12 +832,12 @@ bool ShardingCatalogClientImpl::runUserManagementWriteCommand(OperationContext* 
         if (initialCmdHadWriteConcern) {
             Status status = writeConcern.parse(writeConcernElement.Obj());
             if (!status.isOK()) {
-                return Command::appendCommandStatus(*result, status);
+                return CommandHelpers::appendCommandStatus(*result, status);
             }
 
             if (!(writeConcern.wNumNodes == 1 ||
                   writeConcern.wMode == WriteConcernOptions::kMajority)) {
-                return Command::appendCommandStatus(
+                return CommandHelpers::appendCommandStatus(
                     *result,
                     {ErrorCodes::InvalidOptions,
                      str::stream() << "Invalid replication write concern. User management write "
@@ -874,16 +876,16 @@ bool ShardingCatalogClientImpl::runUserManagementWriteCommand(OperationContext* 
             Shard::RetryPolicy::kNotIdempotent);
 
     if (!response.isOK()) {
-        return Command::appendCommandStatus(*result, response.getStatus());
+        return CommandHelpers::appendCommandStatus(*result, response.getStatus());
     }
     if (!response.getValue().commandStatus.isOK()) {
-        return Command::appendCommandStatus(*result, response.getValue().commandStatus);
+        return CommandHelpers::appendCommandStatus(*result, response.getValue().commandStatus);
     }
     if (!response.getValue().writeConcernStatus.isOK()) {
-        return Command::appendCommandStatus(*result, response.getValue().writeConcernStatus);
+        return CommandHelpers::appendCommandStatus(*result, response.getValue().writeConcernStatus);
     }
 
-    Command::filterCommandReplyForPassthrough(response.getValue().response, result);
+    CommandHelpers::filterCommandReplyForPassthrough(response.getValue().response, result);
     return true;
 }
 
@@ -903,7 +905,7 @@ bool ShardingCatalogClientImpl::runReadCommandForTest(OperationContext* opCtx,
         return resultStatus.getValue().commandStatus.isOK();
     }
 
-    return Command::appendCommandStatus(*result, resultStatus.getStatus());
+    return CommandHelpers::appendCommandStatus(*result, resultStatus.getStatus());
 }
 
 bool ShardingCatalogClientImpl::runUserManagementReadCommand(OperationContext* opCtx,
@@ -919,11 +921,11 @@ bool ShardingCatalogClientImpl::runUserManagementReadCommand(OperationContext* o
             Shard::kDefaultConfigCommandTimeout,
             Shard::RetryPolicy::kIdempotent);
     if (resultStatus.isOK()) {
-        Command::filterCommandReplyForPassthrough(resultStatus.getValue().response, result);
+        CommandHelpers::filterCommandReplyForPassthrough(resultStatus.getValue().response, result);
         return resultStatus.getValue().commandStatus.isOK();
     }
 
-    return Command::appendCommandStatus(*result, resultStatus.getStatus());
+    return CommandHelpers::appendCommandStatus(*result, resultStatus.getStatus());
 }
 
 Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCtx,
@@ -936,9 +938,9 @@ Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCt
     invariant(serverGlobalParams.clusterRole == ClusterRole::ConfigServer ||
               (readConcern == repl::ReadConcernLevel::kMajorityReadConcern &&
                writeConcern.wMode == WriteConcernOptions::kMajority));
-    BSONObj cmd = BSON("applyOps" << updateOps << "preCondition" << preCondition
-                                  << WriteConcernOptions::kWriteConcernField
-                                  << writeConcern.toBSON());
+    BSONObj cmd = BSON("doTxn" << updateOps << "preCondition" << preCondition
+                               << WriteConcernOptions::kWriteConcernField
+                               << writeConcern.toBSON());
 
     auto response =
         Grid::get(opCtx)->shardRegistry()->getConfigShard()->runCommandWithFixedRetryAttempts(
@@ -976,7 +978,7 @@ Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCt
                   << causedBy(redact(status));
 
         // Look for the chunk in this shard whose version got bumped. We assume that if that
-        // mod made it to the config server, then applyOps was successful.
+        // mod made it to the config server, then transaction was successful.
         BSONObjBuilder query;
         lastChunkVersion.addToBSON(query, ChunkType::lastmod());
         query.append(ChunkType::ns(), nss);

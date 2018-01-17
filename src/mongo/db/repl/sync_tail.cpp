@@ -272,13 +272,13 @@ void ApplyBatchFinalizerForJournal::_run() {
     }
 }
 
-NamespaceString parseUUIDOrNs(OperationContext* opCtx, const BSONObj& o) {
-    auto statusWithUUID = UUID::parse(o.getField("ui"));
-    if (!statusWithUUID.isOK()) {
-        return NamespaceString(o.getStringField("ns"));
+NamespaceString parseUUIDOrNs(OperationContext* opCtx, const OplogEntry& oplogEntry) {
+    auto optionalUuid = oplogEntry.getUuid();
+    if (!optionalUuid) {
+        return oplogEntry.getNamespace();
     }
 
-    const auto& uuid = statusWithUUID.getValue();
+    const auto& uuid = optionalUuid.get();
     auto& catalog = UUIDCatalog::get(opCtx);
     auto nss = catalog.lookupNSSByUUID(uuid);
     uassert(ErrorCodes::NamespaceNotFound,
@@ -424,20 +424,20 @@ Status SyncTail::syncApply(OperationContext* opCtx,
 namespace {
 
 // The pool threads call this to prefetch each op
-void prefetchOp(const BSONObj& op) {
+void prefetchOp(const OplogEntry& oplogEntry) {
     initializePrefetchThread();
 
-    const char* ns = op.getStringField("ns");
-    if (ns && (ns[0] != '\0')) {
+    const auto& nss = oplogEntry.getNamespace();
+    if (!nss.isEmpty()) {
         try {
             // one possible tweak here would be to stay in the read lock for this database
             // for multiple prefetches if they are for the same database.
             const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
             OperationContext& opCtx = *opCtxPtr;
-            AutoGetCollectionForReadCommand ctx(&opCtx, NamespaceString(ns));
+            AutoGetCollectionForReadCommand ctx(&opCtx, nss);
             Database* db = ctx.getDb();
             if (db) {
-                prefetchPagesForReplicatedOp(&opCtx, db, op);
+                prefetchPagesForReplicatedOp(&opCtx, db, oplogEntry);
             }
         } catch (const DBException& e) {
             LOG(2) << "ignoring exception in prefetchOp(): " << redact(e) << endl;
@@ -452,7 +452,7 @@ void prefetchOp(const BSONObj& op) {
 void prefetchOps(const MultiApplier::Operations& ops, OldThreadPool* prefetcherPool) {
     invariant(prefetcherPool);
     for (auto&& op : ops) {
-        prefetcherPool->schedule([&] { prefetchOp(op.raw); });
+        prefetcherPool->schedule([&] { prefetchOp(op); });
     }
     prefetcherPool->join();
 }
@@ -928,10 +928,8 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
         }
 
         // Extract some info from ops that we'll need after releasing the batch below.
-        const auto firstOpTimeInBatch =
-            fassertStatusOK(40299, OpTime::parseFromOplogEntry(ops.front().raw));
-        const auto lastOpTimeInBatch =
-            fassertStatusOK(28773, OpTime::parseFromOplogEntry(ops.back().raw));
+        const auto firstOpTimeInBatch = ops.front().getOpTime();
+        const auto lastOpTimeInBatch = ops.back().getOpTime();
 
         // Make sure the oplog doesn't go back in time or repeat an entry.
         if (firstOpTimeInBatch <= replCoord->getMyLastAppliedOpTime()) {
@@ -1029,7 +1027,7 @@ bool SyncTail::tryPopAndWaitForMore(OperationContext* opCtx,
     int curVersion = entry.getVersion();
     if (curVersion != OplogEntry::kOplogVersion) {
         severe() << "expected oplog version " << OplogEntry::kOplogVersion << " but found version "
-                 << curVersion << " in oplog entry: " << redact(entry.raw);
+                 << curVersion << " in oplog entry: " << redact(entry.toBSON());
         fassertFailedNoTrace(18820);
     }
 
@@ -1079,7 +1077,7 @@ OldThreadPool* SyncTail::getWriterPool() {
     return _writerPool.get();
 }
 
-BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const BSONObj& o) {
+BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplogEntry) {
     OplogReader missingObjReader;  // why are we using OplogReader to run a non-oplog query?
 
     if (MONGO_FAIL_POINT(initialSyncHangBeforeGettingMissingDocument)) {
@@ -1110,26 +1108,25 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const BSONObj& o) {
         }
 
         // get _id from oplog entry to create query to fetch document.
-        const BSONElement opElem = o.getField("op");
-        const bool isUpdate = !opElem.eoo() && opElem.str() == "u";
-        const BSONElement idElem = o.getObjectField(isUpdate ? "o2" : "o")["_id"];
+        const auto idElem = oplogEntry.getIdElement();
 
         if (idElem.eoo()) {
-            severe() << "cannot fetch missing document without _id field: " << redact(o);
+            severe() << "cannot fetch missing document without _id field: "
+                     << redact(oplogEntry.toBSON());
             fassertFailedNoTrace(28742);
         }
 
         BSONObj query = BSONObjBuilder().append(idElem).obj();
         BSONObj missingObj;
-        const char* ns = o.getStringField("ns");
+        auto nss = oplogEntry.getNamespace();
         try {
-            if (o.getField("ui").eoo()) {
-                missingObj = missingObjReader.findOne(ns, query);
+            auto uuid = oplogEntry.getUuid();
+            if (!uuid) {
+                missingObj = missingObjReader.findOne(nss.ns().c_str(), query);
             } else {
-                auto uuid = uassertStatusOK(UUID::parse(o.getField("ui")));
-                auto dbname = nsToDatabaseSubstring(ns);
+                auto dbname = nss.db();
                 // If a UUID exists for the command object, find the document by UUID.
-                missingObj = missingObjReader.findOneByUUID(dbname.toString(), uuid, query);
+                missingObj = missingObjReader.findOneByUUID(dbname.toString(), *uuid, query);
             }
         } catch (const SocketException&) {
             warning() << "network problem detected while fetching a missing document from the "
@@ -1148,11 +1145,12 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const BSONObj& o) {
                 str::stream() << "Can no longer connect to initial sync source: " << _hostname);
 }
 
-bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx, const BSONObj& o) {
+bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx,
+                                             const OplogEntry& oplogEntry) {
     // Note that using the local UUID/NamespaceString mapping is sufficient for checking
     // whether the collection is capped on the remote because convertToCapped creates a
     // new collection with a different UUID.
-    const NamespaceString nss(parseUUIDOrNs(opCtx, o));
+    const NamespaceString nss(parseUUIDOrNs(opCtx, oplogEntry));
 
     {
         // If the document is in a capped collection then it's okay for it to be missing.
@@ -1164,14 +1162,17 @@ bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx, const BSON
         }
     }
 
-    log() << "Fetching missing document: " << redact(o);
-    BSONObj missingObj = getMissingDoc(opCtx, o);
+    log() << "Fetching missing document: " << redact(oplogEntry.toBSON());
+    BSONObj missingObj = getMissingDoc(opCtx, oplogEntry);
 
     if (missingObj.isEmpty()) {
+        BSONObj object2;
+        if (auto optionalObject2 = oplogEntry.getObject2()) {
+            object2 = *optionalObject2;
+        }
         log() << "Missing document not found on source; presumably deleted later in oplog. o first "
                  "field: "
-              << o.getObjectField("o").firstElementFieldName()
-              << ", o2: " << redact(o.getObjectField("o2"));
+              << redact(oplogEntry.getObject()) << ", o2: " << redact(object2);
 
         return false;
     }
@@ -1184,7 +1185,8 @@ bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx, const BSON
         WriteUnitOfWork wunit(opCtx);
 
         Collection* coll = nullptr;
-        if (o.getField("ui").eoo()) {
+        auto uuid = oplogEntry.getUuid();
+        if (!uuid) {
             if (!db) {
                 return false;
             }
@@ -1192,9 +1194,8 @@ bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx, const BSON
         } else {
             // If the oplog entry has a UUID, use it to find the collection in which to insert the
             // missing document.
-            auto uuid = uassertStatusOK(UUID::parse(o.getField("ui")));
             auto& catalog = UUIDCatalog::get(opCtx);
-            coll = catalog.lookupCollectionByUUID(uuid);
+            coll = catalog.lookupCollectionByUUID(*uuid);
             if (!coll) {
                 // TODO(SERVER-30819) insert this UUID into the missing UUIDs set.
                 return false;
@@ -1391,13 +1392,13 @@ Status multiSyncApply_noAbort(OperationContext* opCtx,
             const Status status = syncApply(opCtx, entry->raw, oplogApplicationMode);
 
             if (!status.isOK()) {
-                severe() << "Error applying operation (" << redact(entry->raw)
+                severe() << "Error applying operation (" << redact(entry->toBSON())
                          << "): " << causedBy(redact(status));
                 return status;
             }
         } catch (const DBException& e) {
             severe() << "writer worker caught exception: " << redact(e)
-                     << " on: " << redact(entry->raw);
+                     << " on: " << redact(entry->toBSON());
             return e.toStatus();
         }
     }
@@ -1443,13 +1444,13 @@ Status multiInitialSyncApply_noAbort(OperationContext* opCtx,
                 // sync source.
                 if (s != ErrorCodes::UpdateOperationFailed) {
                     error() << "Error applying operation: " << redact(s) << " ("
-                            << redact(entry.raw) << ")";
+                            << redact(entry.toBSON()) << ")";
                     return s;
                 }
 
                 // We might need to fetch the missing docs from the sync source.
                 fetchCount->fetchAndAdd(1);
-                st->fetchAndInsertMissingDocument(opCtx, entry.raw);
+                st->fetchAndInsertMissingDocument(opCtx, entry);
             }
         } catch (const DBException& e) {
             // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
@@ -1459,7 +1460,7 @@ Status multiInitialSyncApply_noAbort(OperationContext* opCtx,
             }
 
             severe() << "writer worker caught exception: " << causedBy(redact(e))
-                     << " on: " << redact(entry.raw);
+                     << " on: " << redact(entry.toBSON());
             return e.toStatus();
         }
     }

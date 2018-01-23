@@ -85,13 +85,7 @@ Status SessionsCollectionSharded::refreshSessions(OperationContext* opCtx,
         BatchWriteExecStats stats;
 
         ClusterWriter::write(opCtx, request, &stats, &response);
-        if (response.getOk()) {
-            return Status::OK();
-        }
-
-        auto error = response.isErrCodeSet() ? ErrorCodes::Error(response.getErrCode())
-                                             : ErrorCodes::UnknownError;
-        return Status(error, response.getErrMessage());
+        return response.toStatus();
     };
 
     return doRefresh(kSessionsNamespaceString, sessions, send);
@@ -107,14 +101,7 @@ Status SessionsCollectionSharded::removeRecords(OperationContext* opCtx,
         BatchWriteExecStats stats;
 
         ClusterWriter::write(opCtx, request, &stats, &response);
-
-        if (response.getOk()) {
-            return Status::OK();
-        }
-
-        auto error = response.isErrCodeSet() ? ErrorCodes::Error(response.getErrCode())
-                                             : ErrorCodes::UnknownError;
-        return Status(error, response.getErrMessage());
+        return response.toStatus();
     };
 
     return doRemove(kSessionsNamespaceString, sessions, send);
@@ -144,12 +131,12 @@ StatusWith<LogicalSessionIdSet> SessionsCollectionSharded::findRemovedSessions(
         // Do the work to generate the first batch of results. This blocks waiting to get responses
         // from the shard(s).
         std::vector<BSONObj> batch;
-        BSONObj viewDefinition;
-        auto cursorId = ClusterFind::runQuery(
-            opCtx, *cq.getValue(), ReadPreferenceSetting::get(opCtx), &batch, &viewDefinition);
-
-        if (!cursorId.isOK()) {
-            return cursorId.getStatus();
+        CursorId cursorId;
+        try {
+            cursorId = ClusterFind::runQuery(
+                opCtx, *cq.getValue(), ReadPreferenceSetting::get(opCtx), &batch);
+        } catch (const DBException& ex) {
+            return ex.toStatus();
         }
 
         BSONObjBuilder result;
@@ -157,7 +144,7 @@ StatusWith<LogicalSessionIdSet> SessionsCollectionSharded::findRemovedSessions(
         for (const auto& obj : batch) {
             firstBatch.append(obj);
         }
-        firstBatch.done(cursorId.getValue(), nss.ns());
+        firstBatch.done(cursorId, nss.ns());
 
         return result.obj();
     };

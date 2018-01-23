@@ -575,7 +575,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
         Lock::DBLock lk(opCtx, _nss.db(), MODE_X);
 
         OldClientWriteContext ctx(opCtx, _nss.ns());
-        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, _nss)) {
+        if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, _nss)) {
             setStateFailWarn(str::stream() << "Not primary during migration: " << _nss.ns()
                                            << ": checking if collection exists");
             return;
@@ -756,7 +756,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
 
                 if (writeConcern.shouldWaitForOtherNodes()) {
                     repl::ReplicationCoordinator::StatusAndDuration replStatus =
-                        repl::getGlobalReplicationCoordinator()->awaitReplication(
+                        repl::ReplicationCoordinator::get(opCtx)->awaitReplication(
                             opCtx,
                             repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp(),
                             writeConcern);
@@ -1071,10 +1071,9 @@ CollectionShardingState::CleanupNotification MigrationDestinationManager::_noteP
     // Start clearing any leftovers that would be in the new chunk
     auto notification = css->beginReceive(range);
     if (notification.ready() && !notification.waitStatus(opCtx).isOK()) {
-        return Status{notification.waitStatus(opCtx).code(),
-                      str::stream() << "Collection " << nss.ns() << " range " << range.toString()
-                                    << " migration aborted: "
-                                    << notification.waitStatus(opCtx).reason()};
+        return notification.waitStatus(opCtx).withContext(
+            str::stream() << "Collection " << nss.ns() << " range " << range.toString()
+                          << " migration aborted");
     }
     return notification;
 }

@@ -187,8 +187,7 @@ Status CollectionOptions::parse(const BSONObj& options, ParseKind kind) {
                 if (option.fieldNameStringData() == "storageEngine") {
                     Status status = checkStorageEngineOptions(option);
                     if (!status.isOK()) {
-                        return {status.code(),
-                                str::stream() << "In indexOptionDefaults: " << status.reason()};
+                        return status.withContext("Error in indexOptionDefaults");
                     }
                 } else {
                     // Return an error on first unrecognized field.
@@ -241,7 +240,7 @@ Status CollectionOptions::parse(const BSONObj& options, ParseKind kind) {
             }
 
             pipeline = e.Obj().getOwned();
-        } else if (!createdOn24OrEarlier && !Command::isGenericArgument(fieldName)) {
+        } else if (!createdOn24OrEarlier && !CommandHelpers::isGenericArgument(fieldName)) {
             return Status(ErrorCodes::InvalidOptions,
                           str::stream() << "The field '" << fieldName
                                         << "' is not a valid collection option. Options: "

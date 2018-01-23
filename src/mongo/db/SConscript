@@ -423,6 +423,7 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/storage/mmap_v1/mmap_v1_options',
         'repl/repl_settings',
+        'repl/replica_set_messages',
         'server_options',
         'storage/storage_options',
     ],
@@ -508,7 +509,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/wire_version',
         '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/rpc/rpc',
-        '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
         'audit',
         'auth/authcore',
         'commands/server_status_core',
@@ -1332,7 +1332,6 @@ env.Library(
         'logical_clock',
         'keys_collection_document',
         'logical_time',
-        'server_options',
         '$BUILD_DIR/mongo/s/client/rs_local_client',
     ],
 )
@@ -1346,7 +1345,6 @@ env.Library(
         'logical_clock',
         'keys_collection_document',
         'logical_time',
-        'server_options',
         '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client',
     ],
 )
@@ -1362,7 +1360,6 @@ env.Library(
         'logical_clock',
         'keys_collection_document',
         'logical_time',
-        'server_options',
         'keys_collection_client_sharded',
     ],
 )
@@ -1624,11 +1621,13 @@ env.Library(
         'ops/insert.cpp',
         'ops/update.cpp',
         'ops/write_ops_retryability.cpp',
+        'retryable_writes_stats.cpp',
         'session.cpp',
         'session_catalog.cpp',
         'transaction_history_iterator.cpp',
         env.Idlc('ops/single_write_result.idl')[0],
         env.Idlc('session_txn_record.idl')[0],
+        env.Idlc('transactions_stats.idl')[0],
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',

@@ -44,6 +44,7 @@
 #include "mongo/db/commands/feature_compatibility_version_command_parser.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
@@ -89,7 +90,7 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
 
     BSONForEach(e, cmdObj) {
         const auto fieldName = e.fieldNameStringData();
-        if (Command::isGenericArgument(fieldName)) {
+        if (CommandHelpers::isGenericArgument(fieldName)) {
             continue;  // Don't add to oplog builder.
         } else if (fieldName == "collMod") {
             // no-op
@@ -310,7 +311,7 @@ Status _collModInternal(OperationContext* opCtx,
     OldClientContext ctx(opCtx, nss.ns());
 
     bool userInitiatedWritesAndNotPrimary = opCtx->writesAreReplicated() &&
-        !repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, nss);
+        !repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, nss);
 
     if (userInitiatedWritesAndNotPrimary) {
         return Status(ErrorCodes::NotMaster,
@@ -378,6 +379,9 @@ Status _collModInternal(OperationContext* opCtx,
             // Notify the index catalog that the definition of this index changed.
             cmr.idx = coll->getIndexCatalog()->refreshEntry(opCtx, cmr.idx);
             result->appendAs(newExpireSecs, "expireAfterSeconds_new");
+            opCtx->recoveryUnit()->onRollback([ opCtx, idx = cmr.idx, coll ]() {
+                coll->getIndexCatalog()->refreshEntry(opCtx, idx);
+            });
         }
 
         // Save previous TTL index expiration.
@@ -386,17 +390,13 @@ Status _collModInternal(OperationContext* opCtx,
                                  cmr.idx->indexName()};
     }
 
-    // Validator
+    // The Validator, ValidationAction and ValidationLevel are already parsed and must be OK.
     if (!cmr.collValidator.eoo())
-        coll->setValidator(opCtx, cmr.collValidator.Obj()).transitional_ignore();
-
-    // ValidationAction
+        invariantOK(coll->setValidator(opCtx, cmr.collValidator.Obj()));
     if (!cmr.collValidationAction.empty())
-        coll->setValidationAction(opCtx, cmr.collValidationAction).transitional_ignore();
-
-    // ValidationLevel
+        invariantOK(coll->setValidationAction(opCtx, cmr.collValidationAction));
     if (!cmr.collValidationLevel.empty())
-        coll->setValidationLevel(opCtx, cmr.collValidationLevel).transitional_ignore();
+        invariantOK(coll->setValidationLevel(opCtx, cmr.collValidationLevel));
 
     // UsePowerof2Sizes
     if (!cmr.usePowerOf2Sizes.eoo())
@@ -431,6 +431,7 @@ Status _collModInternal(OperationContext* opCtx,
                                         << nss.ns());
         }
         coll->refreshUUID(opCtx);
+        opCtx->recoveryUnit()->onRollback([coll, opCtx]() { coll->refreshUUID(opCtx); });
     }
 
     // Only observe non-view collMods, as view operations are observed as operations on the
@@ -639,14 +640,17 @@ void updateUUIDSchemaVersion(OperationContext* opCtx, bool upgrade) {
         _updateDatabaseUUIDSchemaVersion(opCtx, dbName, dbToCollToUUID[dbName], upgrade);
     }
 
+    const auto& clientInfo = repl::ReplClientInfo::forClient(opCtx->getClient());
+    auto awaitOpTime = clientInfo.getLastOp();
+
     std::string upgradeStr = upgrade ? "upgrade" : "downgrade";
     log() << "Finished updating UUID schema version for " << upgradeStr
-          << ", waiting for all UUIDs to be committed.";
+          << ", waiting for all UUIDs to be committed at optime " << awaitOpTime << ".";
 
     const WriteConcernOptions writeConcern(WriteConcernOptions::kMajority,
                                            WriteConcernOptions::SyncMode::UNSET,
                                            /*timeout*/ INT_MAX);
-    repl::getGlobalReplicationCoordinator()->awaitReplicationOfLastOpForClient(opCtx, writeConcern);
+    repl::ReplicationCoordinator::get(opCtx)->awaitReplication(opCtx, awaitOpTime, writeConcern);
 }
 
 Status updateUUIDSchemaVersionNonReplicated(OperationContext* opCtx, bool upgrade) {

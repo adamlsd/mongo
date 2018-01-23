@@ -58,8 +58,10 @@ static inline bool
 __cursor_page_pinned(WT_CURSOR_BTREE *cbt)
 {
 	WT_CURSOR *cursor;
+	WT_SESSION_IMPL *session;
 
 	cursor = &cbt->iface;
+	session = (WT_SESSION_IMPL *)cursor->session;
 
 	/*
 	 * Check the page active flag, asserting the page reference with any
@@ -84,6 +86,14 @@ __cursor_page_pinned(WT_CURSOR_BTREE *cbt)
 	 * release pages grown too large).
 	 */
 	if (cbt->ref->page->read_gen == WT_READGEN_OLDEST)
+		return (false);
+
+	/*
+	 * If we are doing an update, we need a page with history.  Release the
+	 * page so we get it again with history if required.
+	 */
+	if (F_ISSET(&session->txn, WT_TXN_UPDATE) &&
+	    cbt->ref->state != WT_REF_MEM)
 		return (false);
 
 	return (true);
@@ -1057,13 +1067,6 @@ err:	if (ret == WT_RESTART) {
 		goto retry;
 	}
 
-	/*
-	 * If the cursor is configured to overwrite and the record is not found,
-	 * that is exactly what we want, return success.
-	 */
-	if (F_ISSET(cursor, WT_CURSTD_OVERWRITE) && ret == WT_NOTFOUND)
-		ret = 0;
-
 done:	if (ret == 0) {
 		F_CLR(cursor, WT_CURSTD_VALUE_SET);
 		switch (positioned) {
@@ -1094,6 +1097,19 @@ done:	if (ret == 0) {
 	if (ret != 0) {
 		WT_TRET(__cursor_reset(cbt));
 		__cursor_state_restore(cursor, &state);
+
+		/*
+		 * If the cursor is configured to overwrite and the record isn't
+		 * found, that is exactly what we want, return success. Note we
+		 * set clear the return value after everything else, the clause
+		 * above dealing with the cursor position is only correct if we
+		 * were successful. If search failed after positioned is set to
+		 * SEARCH_POSITION, we cannot return a key. The only action to
+		 * take is to set the cursor to its original key, which we just
+		 * did.
+		 */
+		if (F_ISSET(cursor, WT_CURSTD_OVERWRITE) && ret == WT_NOTFOUND)
+			ret = 0;
 	}
 
 	return (ret);

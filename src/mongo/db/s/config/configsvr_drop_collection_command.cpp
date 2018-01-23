@@ -36,6 +36,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
@@ -87,7 +88,7 @@ public:
     }
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
-        return parseNsFullyQualified(dbname, cmdObj);
+        return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
     }
 
     bool run(OperationContext* opCtx,
@@ -96,7 +97,7 @@ public:
              BSONObjBuilder& result) override {
 
         if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::IllegalOperation,
                        "_configsvrDropCollection can only be run on config servers"));
@@ -151,7 +152,7 @@ public:
                 opCtx, dbStatus.getValue().value.getPrimary(), nss, &result);
         } else {
             uassertStatusOK(collStatus);
-            uassertStatusOK(catalogClient->dropCollection(opCtx, nss));
+            uassertStatusOK(ShardingCatalogManager::get(opCtx)->dropCollection(opCtx, nss));
         }
 
         return true;
@@ -192,12 +193,6 @@ private:
             nss.db().toString(),
             dropCommandBSON,
             Shard::RetryPolicy::kIdempotent));
-
-        // Special-case SendStaleVersion errors
-        if (cmdDropResult.commandStatus == ErrorCodes::StaleConfig) {
-            throw StaleConfigException(str::stream() << "Stale config while dropping collection",
-                                       cmdDropResult.response);
-        }
 
         // If the collection doesn't exist, consider the drop a success.
         if (cmdDropResult.commandStatus == ErrorCodes::NamespaceNotFound) {

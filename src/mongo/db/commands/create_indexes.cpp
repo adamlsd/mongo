@@ -129,7 +129,7 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
 
             hasIndexesField = true;
         } else if (kCommandName == cmdElemFieldName ||
-                   Command::isGenericArgument(cmdElemFieldName)) {
+                   CommandHelpers::isGenericArgument(cmdElemFieldName)) {
             continue;
         } else {
             return {ErrorCodes::BadValue,
@@ -236,11 +236,11 @@ public:
                            const BSONObj& cmdObj,
                            string& errmsg,
                            BSONObjBuilder& result) {
-        const NamespaceString ns(parseNsCollectionRequired(dbname, cmdObj));
+        const NamespaceString ns(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
 
         Status status = userAllowedWriteNS(ns);
         if (!status.isOK())
-            return appendCommandStatus(result, status);
+            return CommandHelpers::appendCommandStatus(result, status);
 
         // Disallow users from creating new indexes on config.transactions since the sessions
         // code was optimized to not update indexes.
@@ -251,15 +251,15 @@ public:
         auto specsWithStatus =
             parseAndValidateIndexSpecs(opCtx, ns, cmdObj, serverGlobalParams.featureCompatibility);
         if (!specsWithStatus.isOK()) {
-            return appendCommandStatus(result, specsWithStatus.getStatus());
+            return CommandHelpers::appendCommandStatus(result, specsWithStatus.getStatus());
         }
         auto specs = std::move(specsWithStatus.getValue());
 
         // now we know we have to create index(es)
         // Note: createIndexes command does not currently respect shard versioning.
         Lock::DBLock dbLock(opCtx, ns.db(), MODE_X);
-        if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
-            return appendCommandStatus(
+        if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::NotMaster,
                        str::stream() << "Not primary while creating indexes in " << ns.ns()));
@@ -276,7 +276,8 @@ public:
         } else {
             if (db->getViewCatalog()->lookup(opCtx, ns.ns())) {
                 errmsg = "Cannot create indexes on a view";
-                return appendCommandStatus(result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
+                return CommandHelpers::appendCommandStatus(
+                    result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
             }
 
             writeConflictRetry(opCtx, kCommandName, ns.ns(), [&] {
@@ -291,7 +292,7 @@ public:
         auto indexSpecsWithDefaults =
             resolveCollectionDefaultProperties(opCtx, collection, std::move(specs));
         if (!indexSpecsWithDefaults.isOK()) {
-            return appendCommandStatus(result, indexSpecsWithDefaults.getStatus());
+            return CommandHelpers::appendCommandStatus(result, indexSpecsWithDefaults.getStatus());
         }
         specs = std::move(indexSpecsWithDefaults.getValue());
 
@@ -321,7 +322,7 @@ public:
                 status = checkUniqueIndexConstraints(opCtx, ns.ns(), spec["key"].Obj());
 
                 if (!status.isOK()) {
-                    return appendCommandStatus(result, status);
+                    return CommandHelpers::appendCommandStatus(result, status);
                 }
             }
         }
@@ -336,8 +337,8 @@ public:
         if (indexer.getBuildInBackground()) {
             opCtx->recoveryUnit()->abandonSnapshot();
             dbLock.relockWithMode(MODE_IX);
-            if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
-                return appendCommandStatus(
+            if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
+                return CommandHelpers::appendCommandStatus(
                     result,
                     Status(ErrorCodes::NotMaster,
                            str::stream() << "Not primary while creating background indexes in "
@@ -358,8 +359,8 @@ public:
                     // that day, to avoid data corruption due to lack of index cleanup.
                     opCtx->recoveryUnit()->abandonSnapshot();
                     dbLock.relockWithMode(MODE_X);
-                    if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns)) {
-                        return appendCommandStatus(
+                    if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
+                        return CommandHelpers::appendCommandStatus(
                             result,
                             Status(ErrorCodes::NotMaster,
                                    str::stream()
@@ -380,7 +381,7 @@ public:
             dbLock.relockWithMode(MODE_X);
             uassert(ErrorCodes::NotMaster,
                     str::stream() << "Not primary while completing index build in " << dbname,
-                    repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx, ns));
+                    repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns));
 
             Database* db = dbHolder().get(opCtx, ns.db());
             uassert(28551, "database dropped during index build", db);

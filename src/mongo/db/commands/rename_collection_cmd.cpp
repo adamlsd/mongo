@@ -110,7 +110,7 @@ public:
                 str::stream() << "Invalid target namespace: " << target.ns(),
                 target.isValid());
 
-        if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
+        if ((repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone)) {
             if (source.isOplog()) {
                 errmsg = "can't rename live oplog while replicating";
@@ -145,16 +145,18 @@ public:
         }
 
         if (source.isAdminDotSystemDotVersion()) {
-            appendCommandStatus(result,
-                                Status(ErrorCodes::IllegalOperation,
-                                       "renaming admin.system.version is not allowed"));
+            CommandHelpers::appendCommandStatus(
+                result,
+                Status(ErrorCodes::IllegalOperation,
+                       "renaming admin.system.version is not allowed"));
             return false;
         }
 
         RenameCollectionOptions options;
         options.dropTarget = cmdObj["dropTarget"].trueValue();
         options.stayTemp = cmdObj["stayTemp"].trueValue();
-        return appendCommandStatus(result, renameCollection(opCtx, source, target, options));
+        return CommandHelpers::appendCommandStatus(
+            result, renameCollection(opCtx, source, target, options));
     }
 
 } cmdrenamecollection;

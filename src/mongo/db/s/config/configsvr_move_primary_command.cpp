@@ -110,7 +110,7 @@ public:
              BSONObjBuilder& result) override {
 
         if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::IllegalOperation,
                        "_configsvrMovePrimary can only be run on config servers"));
@@ -127,7 +127,7 @@ public:
 
         if (dbname == NamespaceString::kAdminDb || dbname == NamespaceString::kConfigDb ||
             dbname == NamespaceString::kLocalDb) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 {ErrorCodes::InvalidOptions,
                  str::stream() << "Can't move primary for " << dbname << " database"});
@@ -159,7 +159,7 @@ public:
         const std::string to = movePrimaryRequest.getTo().toString();
 
         if (to.empty()) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 {ErrorCodes::InvalidOptions,
                  str::stream() << "you have to specify where you want to move it"});
@@ -170,12 +170,12 @@ public:
         const auto toShard = [&]() {
             auto toShardStatus = shardRegistry->getShard(opCtx, to);
             if (!toShardStatus.isOK()) {
-                const std::string msg(
+                log() << "Could not move database '" << dbname << "' to shard '" << to
+                      << causedBy(toShardStatus.getStatus());
+                uassertStatusOKWithContext(
+                    toShardStatus.getStatus(),
                     str::stream() << "Could not move database '" << dbname << "' to shard '" << to
-                                  << "' due to "
-                                  << toShardStatus.getStatus().reason());
-                log() << msg;
-                uasserted(toShardStatus.getStatus().code(), msg);
+                                  << "'");
             }
 
             return toShardStatus.getValue();
@@ -231,7 +231,7 @@ public:
 
             if (!worked) {
                 log() << "clone failed" << redact(cloneRes);
-                return appendCommandStatus(
+                return CommandHelpers::appendCommandStatus(
                     result, {ErrorCodes::OperationFailed, str::stream() << "clone failed"});
             }
 

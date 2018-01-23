@@ -371,7 +371,7 @@ void State::dropTempCollections() {
                 WriteUnitOfWork wunit(_opCtx);
                 uassert(ErrorCodes::PrimarySteppedDown,
                         "no longer primary",
-                        repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(
+                        repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(
                             _opCtx, _config.tempNamespace));
                 db->dropCollection(_opCtx, _config.tempNamespace.ns()).transitional_ignore();
                 wunit.commit();
@@ -498,8 +498,8 @@ void State::prepTempCollection() {
         WriteUnitOfWork wuow(_opCtx);
         uassert(ErrorCodes::PrimarySteppedDown,
                 "no longer primary",
-                repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(_opCtx,
-                                                                            _config.tempNamespace));
+                repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(
+                    _opCtx, _config.tempNamespace));
         Collection* tempColl = tempCtx.getCollection();
         invariant(!tempColl);
 
@@ -756,7 +756,7 @@ void State::insert(const NamespaceString& nss, const BSONObj& o) {
         WriteUnitOfWork wuow(_opCtx);
         uassert(ErrorCodes::PrimarySteppedDown,
                 "no longer primary",
-                repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(_opCtx, nss));
+                repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(_opCtx, nss));
         Collection* coll = getCollectionOrUassert(_opCtx, ctx.db(), nss);
 
         BSONObjBuilder b;
@@ -1395,7 +1395,7 @@ public:
         auto client = opCtx->getClient();
 
         if (client->isInDirectClient()) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::IllegalOperation, "Cannot run mapReduce command from eval()"));
         }
@@ -1422,7 +1422,7 @@ public:
         BSONObjBuilder timingBuilder;
         State state(opCtx, config);
         if (!state.sourceExists()) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::NamespaceNotFound,
                        str::stream() << "namespace does not exist: " << config.nss.ns()));
@@ -1433,13 +1433,15 @@ public:
             state.prepTempCollection();
             ON_BLOCK_EXIT_OBJ(state, &State::dropTempCollections);
 
-            int progressTotal = 0;
+            int64_t progressTotal = 0;
             bool showTotal = true;
             if (state.config().filter.isEmpty()) {
                 const bool holdingGlobalLock = false;
                 const auto count = _collectionCount(opCtx, config.nss, holdingGlobalLock);
                 progressTotal =
-                    (config.limit && (unsigned)config.limit < count) ? config.limit : count;
+                    (config.limit && static_cast<unsigned long long>(config.limit) < count)
+                    ? config.limit
+                    : count;
             } else {
                 showTotal = false;
                 // Set an arbitrary total > 0 so the meter will be activated.
@@ -1452,9 +1454,6 @@ public:
             lk.unlock();
             progress.showTotal(showTotal);
             ProgressMeterHolder pm(progress);
-
-            // See cast on next line to 32 bit unsigned
-            wassert(config.limit < 0x4000000);
 
             long long mapTime = 0;
             long long reduceTime = 0;
@@ -1470,8 +1469,8 @@ public:
                 if (state.isOnDisk()) {
                     // this means that it will be doing a write operation, make sure it is safe to
                     // do so.
-                    if (!repl::getGlobalReplicationCoordinator()->canAcceptWritesFor(opCtx,
-                                                                                     config.nss)) {
+                    if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx,
+                                                                                      config.nss)) {
                         uasserted(ErrorCodes::NotMaster, "not master");
                         return false;
                     }
@@ -1565,7 +1564,7 @@ public:
 
                         auto restoreStatus = exec->restoreState();
                         if (!restoreStatus.isOK()) {
-                            return appendCommandStatus(result, restoreStatus);
+                            return CommandHelpers::appendCommandStatus(result, restoreStatus);
                         }
 
                         reduceTime += t.micros();
@@ -1580,7 +1579,7 @@ public:
                 }
 
                 if (PlanExecutor::DEAD == execState || PlanExecutor::FAILURE == execState) {
-                    return appendCommandStatus(
+                    return CommandHelpers::appendCommandStatus(
                         result,
                         Status(ErrorCodes::OperationFailed,
                                str::stream() << "Executor error during mapReduce command: "
@@ -1661,7 +1660,7 @@ public:
             }
         } catch (StaleConfigException& e) {
             log() << "mr detected stale config, should retry" << redact(e);
-            throw e;
+            throw;
         }
         // TODO:  The error handling code for queries is v. fragile,
         // *requires* rethrow AssertionExceptions - should probably fix.
@@ -1712,7 +1711,7 @@ public:
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::CommandNotSupported,
                        str::stream() << "Can not execute mapReduce with output database " << dbname
@@ -1791,7 +1790,8 @@ public:
             auto outRoutingInfoStatus = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(
                 opCtx, config.outputOptions.finalNamespace);
             if (!outRoutingInfoStatus.isOK()) {
-                return appendCommandStatus(result, outRoutingInfoStatus.getStatus());
+                return CommandHelpers::appendCommandStatus(result,
+                                                           outRoutingInfoStatus.getStatus());
             }
 
             if (auto cm = outRoutingInfoStatus.getValue().cm()) {

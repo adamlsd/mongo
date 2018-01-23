@@ -157,6 +157,7 @@ functions:
           source ./venv/bin/activate
           infrastructure_provisioning.py
           mongodb_setup.py
+          workload_setup.py
 
   "run test":
     - command: shell.exec
@@ -545,8 +546,9 @@ tasks:
     - func: "prepare environment"
       vars:
         storageEngine: "wiredTiger"
+        # Unfortunately the dash/underscore style is different for mongodb_setup and test_control
         test: "secondary_performance"
-        setup: "replica-2node"
+        setup: "secondary-performance"
     - func: "deploy cluster"
     - func: "run test"
     - func: "make test log artifact"
@@ -560,8 +562,9 @@ tasks:
     - func: "prepare environment"
       vars:
         storageEngine: "mmapv1"
+        # Unfortunately the dash/underscore style is different for mongodb_setup and test_control
         test: "secondary_performance"
-        setup: "replica-2node"
+        setup: "secondary-performance"
     - func: "deploy cluster"
     - func: "run test"
     - func: "make test log artifact"

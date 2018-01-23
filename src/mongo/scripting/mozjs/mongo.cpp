@@ -594,13 +594,7 @@ void MongoBase::Functions::copyDatabaseWithSCRAM::call(JSContext* cx, JS::CallAr
         BSONObj command = commandBuilder.obj();
 
         bool ok = conn->runCommand("admin", command, inputObj);
-
-        ErrorCodes::Error code = ErrorCodes::Error(inputObj[saslCommandCodeFieldName].numberInt());
-
-        if (!ok || code != ErrorCodes::OK) {
-            if (code == ErrorCodes::OK)
-                code = ErrorCodes::UnknownError;
-
+        if (!ok) {
             ValueReader(cx, args.rval()).fromBSON(inputObj, nullptr, true);
             return;
         }
@@ -705,8 +699,9 @@ void MongoExternalInfo::construct(JSContext* cx, JS::CallArgs args) {
     auto statusWithHost = MongoURI::parse(host);
     auto cs = uassertStatusOK(statusWithHost);
 
+    boost::optional<std::string> appname = cs.getAppName();
     std::string errmsg;
-    std::unique_ptr<DBClientBase> conn(cs.connect("MongoDB Shell", errmsg));
+    std::unique_ptr<DBClientBase> conn(cs.connect(appname.value_or("MongoDB Shell"), errmsg));
 
     if (!conn.get()) {
         uasserted(ErrorCodes::InternalError, errmsg);

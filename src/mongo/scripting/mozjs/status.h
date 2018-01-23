@@ -28,29 +28,41 @@
 
 #pragma once
 
-#include "mongo/s/query/router_exec_stage.h"
+#include "mongo/scripting/mozjs/wraptype.h"
 
 namespace mongo {
+namespace mozjs {
 
 /**
- * This is a special type of RouterExecStage that is used to iterate remote cursors that were
- * created internally and do not represent a client cursor, such as those used in a $lookup.
+ * The "MongoStatus" Javascript object.
  *
- * The purpose of this class is to provide ownership over a ClusterClientCursorParams struct without
- * creating a ClusterClientCursor, which would show up in the server stats for this mongos.
+ * This type wraps the "Status" type in the server, allowing for lossless throwing of mongodb native
+ * exceptions through javascript.  It can be created (albeit without sidecar) from javascript.
+ * These are also created automatically when exceptions are thrown from native c++ functions.
+ *
+ * They are somewhat special, in that the prototype for each MongoStatus object is actually an Error
+ * object specific to that status object.  This allows Error-like behavior such as useful stack
+ * traces, and instanceOf Error.
  */
-class RouterStageInternalCursor final : public RouterExecStage {
-public:
-    RouterStageInternalCursor(OperationContext* opCtx,
-                              std::unique_ptr<ClusterClientCursorParams>&& params,
-                              std::unique_ptr<RouterExecStage> child)
-        : RouterExecStage(opCtx, std::move(child)), _params(std::move(params)) {}
+struct MongoStatusInfo : public BaseInfo {
+    static void construct(JSContext* cx, JS::CallArgs args);
+    static void finalize(JSFreeOp* fop, JSObject* obj);
 
-    StatusWith<ClusterQueryResult> next(ExecContext execContext) {
-        return getChildStage()->next(execContext);
-    }
+    struct Functions {
+        MONGO_DECLARE_JS_FUNCTION(code);
+        MONGO_DECLARE_JS_FUNCTION(reason);
+    };
 
-private:
-    std::unique_ptr<ClusterClientCursorParams> _params;
+    static void postInstall(JSContext* cx, JS::HandleObject global, JS::HandleObject proto);
+
+    static const char* const className;
+    static const char* const inheritFrom;
+    static const unsigned classFlags = JSCLASS_HAS_PRIVATE;
+
+    static Status toStatus(JSContext* cx, JS::HandleObject object);
+    static Status toStatus(JSContext* cx, JS::HandleValue value);
+    static void fromStatus(JSContext* cx, Status status, JS::MutableHandleValue value);
 };
+
+}  // namespace mozjs
 }  // namespace mongo

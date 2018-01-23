@@ -91,7 +91,7 @@ public:
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
         if (serverGlobalParams.clusterRole != ClusterRole::ConfigServer) {
-            return appendCommandStatus(
+            return CommandHelpers::appendCommandStatus(
                 result,
                 Status(ErrorCodes::IllegalOperation,
                        "_configsvrDropDatabase can only be run on config servers"));
@@ -146,7 +146,7 @@ public:
         for (const auto& nss : catalogManager->getAllShardedCollectionsForDb(opCtx, dbname)) {
             auto collDistLock = uassertStatusOK(catalogClient->getDistLockManager()->lock(
                 opCtx, nss.ns(), "dropCollection", DistLockManager::kDefaultLockTimeout));
-            uassertStatusOK(catalogClient->dropCollection(opCtx, nss));
+            uassertStatusOK(catalogManager->dropCollection(opCtx, nss));
         }
 
         // Drop the database from the primary shard first.
@@ -168,12 +168,8 @@ public:
                                                  DatabaseType::ConfigNS,
                                                  BSON(DatabaseType::name(dbname)),
                                                  ShardingCatalogClient::kMajorityWriteConcern);
-        if (!status.isOK()) {
-            uassertStatusOK({status.code(),
-                             str::stream() << "Could not remove database '" << dbname
-                                           << "' from metadata due to "
-                                           << status.reason()});
-        }
+        uassertStatusOKWithContext(
+            status, str::stream() << "Could not remove database '" << dbname << "' from metadata");
 
         catalogClient
             ->logChange(opCtx,

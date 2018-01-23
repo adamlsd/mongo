@@ -65,9 +65,11 @@ public:
         return true;
     }
 
-    bool supportsNonLocalReadConcern(const std::string& dbName,
-                                     const BSONObj& cmdObj) const override {
-        return !AggregationRequest::parseNs(dbName, cmdObj).isCollectionlessAggregateNS();
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const override {
+        return level == repl::ReadConcernLevel::kLocalReadConcern ||
+            !AggregationRequest::parseNs(dbName, cmdObj).isCollectionlessAggregateNS();
     }
 
     ReadWriteType getReadWriteType() const {
@@ -88,12 +90,13 @@ public:
         const auto aggregationRequest =
             uassertStatusOK(AggregationRequest::parseFromBSON(dbname, cmdObj, boost::none));
 
-        return appendCommandStatus(result,
-                                   runAggregate(opCtx,
-                                                aggregationRequest.getNamespaceString(),
-                                                aggregationRequest,
-                                                cmdObj,
-                                                result));
+        return CommandHelpers::appendCommandStatus(
+            result,
+            runAggregate(opCtx,
+                         aggregationRequest.getNamespaceString(),
+                         aggregationRequest,
+                         cmdObj,
+                         result));
     }
 
     Status explain(OperationContext* opCtx,

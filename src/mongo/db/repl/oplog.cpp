@@ -82,7 +82,6 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/repl/timestamp_block.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
@@ -219,8 +218,8 @@ private:
 
 }  // namespace
 
-void setOplogCollectionName() {
-    switch (getGlobalReplicationCoordinator()->getReplicationMode()) {
+void setOplogCollectionName(ServiceContext* service) {
+    switch (ReplicationCoordinator::get(service)->getReplicationMode()) {
         case ReplicationCoordinator::modeReplSet:
             _oplogCollectionName = NamespaceString::kRsOplogNamespace.ns();
             break;
@@ -1616,7 +1615,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
             case ErrorCodes::BackgroundOperationInProgressForNamespace: {
                 Lock::TempRelease release(opCtx->lockState());
 
-                Command* cmd = Command::findCommand(o.firstElement().fieldName());
+                Command* cmd = CommandHelpers::findCommand(o.firstElement().fieldName());
                 invariant(cmd);
                 BackgroundOperation::awaitNoBgOpInProgForNs(cmd->parseNs(nss.db().toString(), o));
                 opCtx->recoveryUnit()->abandonSnapshot();

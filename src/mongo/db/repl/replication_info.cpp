@@ -51,7 +51,6 @@
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/wire_version.h"
@@ -70,7 +69,7 @@ using std::stringstream;
 namespace repl {
 
 void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int level) {
-    ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
+    ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->getSettings().usingReplSets()) {
         IsMasterResponse isMasterResponse;
         replCoord->fillIsMasterForReplSet(&isMasterResponse);
@@ -88,7 +87,7 @@ void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int 
         result.append("info", s);
     } else {
         result.appendBool("ismaster",
-                          getGlobalReplicationCoordinator()->isMasterForReportingPurposes());
+                          ReplicationCoordinator::get(opCtx)->isMasterForReportingPurposes());
     }
 
     if (level) {
@@ -127,7 +126,7 @@ void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int 
             }
 
             if (level > 1) {
-                wassert(!opCtx->lockState()->isLocked());
+                invariant(!opCtx->lockState()->isLocked());
                 // note: there is no so-style timeout on this connection; perhaps we should have
                 // one.
                 ScopedDbConnection conn(s["host"].valuestr());
@@ -163,7 +162,7 @@ public:
     }
 
     BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
-        if (!getGlobalReplicationCoordinator()->isReplEnabled()) {
+        if (!ReplicationCoordinator::get(opCtx)->isReplEnabled()) {
             return BSONObj();
         }
 
@@ -190,7 +189,7 @@ public:
     }
 
     BSONObj generateSection(OperationContext* opCtx, const BSONElement& configElement) const {
-        ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
+        ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
         if (!replCoord->isReplEnabled()) {
             return BSONObj();
         }
@@ -261,7 +260,7 @@ public:
         BSONElement element = cmdObj[kMetadataDocumentName];
         if (!element.eoo()) {
             if (seenIsMaster) {
-                return Command::appendCommandStatus(
+                return CommandHelpers::appendCommandStatus(
                     result,
                     Status(ErrorCodes::ClientMetadataCannotBeMutated,
                            "The client metadata document may only be sent in the first isMaster"));
@@ -270,7 +269,8 @@ public:
             auto swParseClientMetadata = ClientMetadata::parse(element);
 
             if (!swParseClientMetadata.getStatus().isOK()) {
-                return Command::appendCommandStatus(result, swParseClientMetadata.getStatus());
+                return CommandHelpers::appendCommandStatus(result,
+                                                           swParseClientMetadata.getStatus());
             }
 
             invariant(swParseClientMetadata.getValue());
@@ -362,10 +362,7 @@ public:
         result.appendNumber("maxMessageSizeBytes", MaxMessageSizeBytes);
         result.appendNumber("maxWriteBatchSize", write_ops::kMaxWriteBatchSize);
         result.appendDate("localTime", jsTime());
-        if (serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
-        }
+        result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
 
         if (internalClientElement) {
             result.append("minWireVersion",

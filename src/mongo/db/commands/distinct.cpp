@@ -87,7 +87,9 @@ public:
         return false;
     }
 
-    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
         return true;
     }
 
@@ -116,7 +118,7 @@ public:
                            const BSONObj& cmdObj,
                            ExplainOptions::Verbosity verbosity,
                            BSONObjBuilder* out) const {
-        const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
+        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
 
         const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
         auto parsedDistinct = ParsedDistinct::parse(opCtx, nss, cmdObj, extensionsCallback, true);
@@ -159,12 +161,12 @@ public:
              const string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) {
-        const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
+        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
 
         const ExtensionsCallbackReal extensionsCallback(opCtx, &nss);
         auto parsedDistinct = ParsedDistinct::parse(opCtx, nss, cmdObj, extensionsCallback, false);
         if (!parsedDistinct.isOK()) {
-            return appendCommandStatus(result, parsedDistinct.getStatus());
+            return CommandHelpers::appendCommandStatus(result, parsedDistinct.getStatus());
         }
 
         AutoGetCollectionOrViewForReadCommand ctx(opCtx, nss);
@@ -175,29 +177,19 @@ public:
 
             auto viewAggregation = parsedDistinct.getValue().asAggregationCommand();
             if (!viewAggregation.isOK()) {
-                return appendCommandStatus(result, viewAggregation.getStatus());
+                return CommandHelpers::appendCommandStatus(result, viewAggregation.getStatus());
             }
 
-            BSONObj aggResult = Command::runCommandDirectly(
+            BSONObj aggResult = CommandHelpers::runCommandDirectly(
                 opCtx, OpMsgRequest::fromDBAndBody(dbname, std::move(viewAggregation.getValue())));
-
-            if (ResolvedView::isResolvedViewErrorResponse(aggResult)) {
-                result.appendElements(aggResult);
-                return false;
-            }
-
-            ViewResponseFormatter formatter(aggResult);
-            Status formatStatus = formatter.appendAsDistinctResponse(&result);
-            if (!formatStatus.isOK()) {
-                return appendCommandStatus(result, formatStatus);
-            }
+            uassertStatusOK(ViewResponseFormatter(aggResult).appendAsDistinctResponse(&result));
             return true;
         }
 
         auto executor = getExecutorDistinct(
             opCtx, collection, nss.ns(), &parsedDistinct.getValue(), PlanExecutor::YIELD_AUTO);
         if (!executor.isOK()) {
-            return appendCommandStatus(result, executor.getStatus());
+            return CommandHelpers::appendCommandStatus(result, executor.getStatus());
         }
 
         {
@@ -249,11 +241,11 @@ public:
                   << redact(PlanExecutor::statestr(state))
                   << ", stats: " << redact(Explain::getWinningPlanStats(executor.getValue().get()));
 
-            return appendCommandStatus(result,
-                                       Status(ErrorCodes::OperationFailed,
-                                              str::stream()
-                                                  << "Executor error during distinct command: "
-                                                  << WorkingSetCommon::toStatusString(obj)));
+            return CommandHelpers::appendCommandStatus(
+                result,
+                Status(ErrorCodes::OperationFailed,
+                       str::stream() << "Executor error during distinct command: "
+                                     << WorkingSetCommon::toStatusString(obj)));
         }
 
 

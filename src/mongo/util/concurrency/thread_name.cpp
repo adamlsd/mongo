@@ -116,8 +116,8 @@ using for_debuggers::threadName;
 
 void setThreadName(StringData name) {
     invariant(mongoInitializersHaveRun);
-    threadNameStorage= std::string( begin( threadNameStorage ), end( threadNameStorage ) );
-    threadName= threadNameStorage;
+    threadNameStorage = std::string(begin(threadNameStorage), end(threadNameStorage));
+    threadName = threadNameStorage;
 
 #if defined(_WIN32)
     // Naming should not be expensive compared to thread creation and connection set up, but if
@@ -126,10 +126,10 @@ void setThreadName(StringData name) {
 #elif defined(__APPLE__)
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.
-    std::string pThreadName= threadName;
+    std::string pThreadName = threadName;
     if (pThreadName.size() > MAXTHREADNAMESIZE) {
         pThreadName.resize(MAXTHREADNAMESIZE - 4);
-        pThreadName+= "...";
+        pThreadName += "...";
     }
     int error = pthread_setname_np(pThreadName.rawData());
     if (error) {

@@ -122,7 +122,7 @@ void setThreadName(StringData name) {
 #if defined(_WIN32)
     // Naming should not be expensive compared to thread creation and connection set up, but if
     // testing shows otherwise we should make this depend on DEBUG again.
-    setWindowsThreadName(GetCurrentThreadId(), threadName.c_str());
+    setWindowsThreadName(GetCurrentThreadId(), threadNameStorage.c_str());
 #elif defined(__APPLE__)
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.

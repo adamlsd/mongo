@@ -55,9 +55,6 @@
 
 namespace mongo {
 
-using std::begin;
-using std::end;
-
 namespace {
 
 #ifdef _WIN32
@@ -116,7 +113,7 @@ using for_debuggers::threadName;
 
 void setThreadName(StringData name) {
     invariant(mongoInitializersHaveRun);
-    threadNameStorage = std::string(begin(name), end(name));
+    threadNameStorage = name.toString();
     threadName = threadNameStorage;
 
 #if defined(_WIN32)
@@ -126,12 +123,12 @@ void setThreadName(StringData name) {
 #elif defined(__APPLE__)
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.
-    std::string pThreadName = threadName;
-    if (pThreadName.size() > MAXTHREADNAMESIZE) {
-        pThreadName.resize(MAXTHREADNAMESIZE - 4);
-        pThreadName += "...";
+    std::string threadNameCopy = threadName;
+    if (threadNameCopy.size() > MAXTHREADNAMESIZE) {
+        threadNameCopy.resize(MAXTHREADNAMESIZE - 4);
+        threadNameCopy += "...";
     }
-    int error = pthread_setname_np(pThreadName.rawData());
+    int error = pthread_setname_np(threadNameCopy.c_str());
     if (error) {
         log() << "Ignoring error from setting thread name: " << errnoWithDescription(error);
     }

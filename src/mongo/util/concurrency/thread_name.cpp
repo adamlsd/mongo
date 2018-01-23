@@ -116,7 +116,7 @@ using for_debuggers::threadName;
 
 void setThreadName(StringData name) {
     invariant(mongoInitializersHaveRun);
-    threadNameStorage = std::string(begin(threadNameStorage), end(threadNameStorage));
+    threadNameStorage = std::string(begin(name), end(name));
     threadName = threadNameStorage;
 
 #if defined(_WIN32)

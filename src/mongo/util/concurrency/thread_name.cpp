@@ -123,7 +123,7 @@ void setThreadName(StringData name) {
 #elif defined(__APPLE__)
     // Maximum thread name length on OS X is MAXTHREADNAMESIZE (64 characters). This assumes
     // OS X 10.6 or later.
-    std::string threadNameCopy = threadName;
+    std::string threadNameCopy = threadNameStorage;
     if (threadNameCopy.size() > MAXTHREADNAMESIZE) {
         threadNameCopy.resize(MAXTHREADNAMESIZE - 4);
         threadNameCopy += "...";

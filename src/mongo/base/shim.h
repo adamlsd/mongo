@@ -38,12 +38,12 @@ private:
 
 template <typename T>
 using PrivateTo = const PrivateCall<T>&;
-}//namespace mongo
+}  // namespace mongo
 
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
 #define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) SHIM_NAME##_base::tuHook()
 #else
-#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) []{}()
+#define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) [] {}()
 #endif
 
 /**

@@ -221,6 +221,31 @@ public:
     virtual void onEmptyCapped(OperationContext* opCtx,
                                const NamespaceString& collectionName,
                                OptionalCollectionUUID uuid) = 0;
-};
 
+    struct Times {
+        std::vector<repl::OpTime> reservedOpTimes;
+
+        static Times* get(OperationContext*);
+    };
+
+protected:
+    class ReservedTimes {
+    private:
+        ReservedTimes(const ReservedTimes&) = delete;
+        ReservedTimes& operator=(const ReservedTimes&) = delete;
+
+        Times* const times;
+
+    public:
+        explicit ReservedTimes(OperationContext* const opCtx) : times(Times::get(opCtx)) {}
+
+        ~ReservedTimes() {
+            this->times->reservedOpTimes.clear();
+        }
+
+        Times* get() const {
+            return this->times;
+        }
+    };
+};
 }  // namespace mongo

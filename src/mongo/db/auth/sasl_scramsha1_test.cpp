@@ -32,6 +32,8 @@
 #include "mongo/client/scram_sha1_client_cache.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
+#include "mongo/db/auth/authorization_session_impl.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
 #include "mongo/db/auth/native_sasl_authentication_session.h"
@@ -43,6 +45,7 @@
 #include "mongo/util/password_digest.h"
 
 namespace mongo {
+namespace {
 
 BSONObj generateSCRAMUserDocument(StringData username, StringData password) {
     const size_t scramIterationCount = 10000;
@@ -217,9 +220,10 @@ protected:
         auto uniqueAuthzManagerExternalStateMock =
             stdx::make_unique<AuthzManagerExternalStateMock>();
         authzManagerExternalState = uniqueAuthzManagerExternalStateMock.get();
-        authzManager =
-            stdx::make_unique<AuthorizationManager>(std::move(uniqueAuthzManagerExternalStateMock));
-        authzSession = stdx::make_unique<AuthorizationSession>(
+        authzManager = stdx::make_unique<AuthorizationManagerImpl>(
+            std::move(uniqueAuthzManagerExternalStateMock),
+            AuthorizationManagerImpl::TestingMock{});
+        authzSession = stdx::make_unique<AuthorizationSessionImpl>(
             stdx::make_unique<AuthzSessionExternalStateMock>(authzManager.get()));
 
         saslServerSession = stdx::make_unique<NativeSaslAuthenticationSession>(authzSession.get());
@@ -558,4 +562,5 @@ TEST(SCRAMSHA1Cache, testSetAndReset) {
     ASSERT_TRUE(newSecret->storedKey == cachedSecret->storedKey);
 }
 
+}  // namespace
 }  // namespace mongo

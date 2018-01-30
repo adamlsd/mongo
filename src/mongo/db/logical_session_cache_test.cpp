@@ -28,15 +28,16 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/logical_session_cache_impl.h"
+
+#include "mongo/bson/oid.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
-
-#include "mongo/bson/oid.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/logical_session_cache.h"
-#include "mongo/db/logical_session_cache_impl.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/logical_session_id_helpers.h"
 #include "mongo/db/operation_context_noop.h"
@@ -72,8 +73,8 @@ public:
     void setUp() override {
         auto localManagerState = stdx::make_unique<AuthzManagerExternalStateMock>();
         localManagerState.get()->setAuthzVersion(AuthorizationManager::schemaVersion28SCRAM);
-        auto uniqueAuthzManager =
-            stdx::make_unique<AuthorizationManager>(std::move(localManagerState));
+        auto uniqueAuthzManager = stdx::make_unique<AuthorizationManagerImpl>(
+            std::move(localManagerState), AuthorizationManagerImpl::TestingMock{});
         AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
 
         auto client = serviceContext.makeClient("testClient");

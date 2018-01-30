@@ -39,6 +39,7 @@
 #include "mongo/client/sasl_client_authenticate.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
@@ -75,8 +76,8 @@ MONGO_INITIALIZER(NativeSaslServerCore)(InitializerContext* context) {
 // PostSaslCommands is reversely dependent on CyrusSaslCommands having been run
 MONGO_INITIALIZER_WITH_PREREQUISITES(PostSaslCommands, ("NativeSaslServerCore"))
 (InitializerContext*) {
-    AuthorizationManager authzManager(stdx::make_unique<AuthzManagerExternalStateMock>());
-    std::unique_ptr<AuthorizationSession> authzSession = authzManager.makeAuthorizationSession();
+    auto authzManager= AuthorizationManager::create(); 
+    std::unique_ptr<AuthorizationSession> authzSession = authzManager->makeAuthorizationSession();
 
     for (size_t i = 0; i < saslGlobalParams.authenticationMechanisms.size(); ++i) {
         const std::string& mechanism = saslGlobalParams.authenticationMechanisms[i];

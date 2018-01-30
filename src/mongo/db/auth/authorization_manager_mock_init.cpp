@@ -40,16 +40,10 @@
 // TODO: Remove this file once all unused inclusion of auth has been removed.
 
 namespace mongo {
-namespace {
 
-std::unique_ptr<AuthzManagerExternalState> createAuthzManagerExternalStateMock() {
+MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
+()->std::unique_ptr<AuthzManagerExternalState> {
     return stdx::make_unique<AuthzManagerExternalStateMock>();
 }
 
-MONGO_INITIALIZER(CreateAuthorizationExternalStateFactory)(InitializerContext* context) {
-    AuthzManagerExternalState::create = &createAuthzManagerExternalStateMock;
-    return Status::OK();
-}
-
-}  // namespace
 }  // namespace mongo

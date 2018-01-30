@@ -1,5 +1,5 @@
 /**
-*    Copyright (C) 2018 10gen Inc.
+*    Copyright (C) 2012 10gen Inc.
 *
 *    This program is free software: you can redistribute it and/or  modify
 *    it under the terms of the GNU Affero General Public License, version 3,
@@ -28,10 +28,13 @@
 
 #pragma once
 
+#include "authorization_session.h"
+
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
@@ -47,7 +50,7 @@ namespace mongo {
 namespace auth {
 
 struct CreateOrUpdateRoleArgs;
-}  // namespace auth
+}
 class Client;
 
 /**
@@ -64,287 +67,263 @@ class Client;
  * every operation looks at one consistent view of each user for every auth check required over
  * the lifetime of the operation.
  */
-class AuthorizationSession {
-    AuthorizationSession(const AuthorizationSession&) = delete;
-    AuthorizationSession& operator=(const AuthorizationSession&) = delete;
-
+class AuthorizationSessionImpl : public AuthorizationSession {
 public:
-    AuthorizationSession()= default;
-
-    /**
-     * Provides a way to swap out impersonate data for the duration of the ScopedImpersonate's
-     * lifetime.
-     */
-    class ScopedImpersonate {
-    public:
-        ScopedImpersonate(AuthorizationSession* authSession,
-                          std::vector<UserName>* users,
-                          std::vector<RoleName>* roles)
-            : _authSession(*authSession), _users(*users), _roles(*roles) {
-            swap();
-        }
-
-        ~ScopedImpersonate() {
-            this->swap();
-        }
-
-    private:
-        void swap();
-
-        AuthorizationSession& _authSession;
-        std::vector<UserName>& _users;
-        std::vector<RoleName>& _roles;
-    };
-
-    friend class ScopedImpersonate;
-
-    /**
-     * Gets the AuthorizationSession associated with the given "client", or nullptr.
-     *
-     * The "client" object continues to own the returned AuthorizationSession.
-     */
-    static AuthorizationSession* get(Client* client);
-
-    /**
-     * Gets the AuthorizationSession associated with the given "client", or nullptr.
-     *
-     * The "client" object continues to own the returned AuthorizationSession.
-     */
-    static AuthorizationSession* get(Client& client);
-
-    /**
-     * Returns false if AuthorizationSession::get(client) would return nullptr.
-     */
-    static bool exists(Client* client);
-
-    /**
-     * Sets the AuthorizationSession associated with "client" to "session".
-     *
-     * "session" must not be NULL, and it is only legal to call this function once
-     * on each instance of "client".
-     */
-    static void set(Client* client, std::unique_ptr<AuthorizationSession> session);
-
     // Takes ownership of the externalState.
-    virtual ~AuthorizationSession() = 0;
+    explicit AuthorizationSessionImpl(std::unique_ptr<AuthzSessionExternalState> externalState);
 
-    virtual AuthorizationManager& getAuthorizationManager() = 0;
+    ~AuthorizationSessionImpl() override;
+
+    AuthorizationManager& getAuthorizationManager() override;
 
     // Should be called at the beginning of every new request.  This performs the checks
     // necessary to determine if localhost connections should be given full access.
     // TODO: try to eliminate the need for this call.
-    virtual void startRequest(OperationContext* opCtx) = 0;
+    void startRequest(OperationContext* opCtx) override;
 
     /**
      * Adds the User identified by "UserName" to the authorization session, acquiring privileges
      * for it in the process.
      */
-    virtual Status addAndAuthorizeUser(OperationContext* opCtx, const UserName& userName) = 0;
+    Status addAndAuthorizeUser(OperationContext* opCtx, const UserName& userName) override;
 
     // Returns the authenticated user with the given name.  Returns NULL
     // if no such user is found.
     // The user remains in the _authenticatedUsers set for this AuthorizationSession,
     // and ownership of the user stays with the AuthorizationManager
-    virtual User* lookupUser(const UserName& name) = 0;
+    User* lookupUser(const UserName& name) override;
 
     // Returns the single user on this auth session. If no user is authenticated, or if
     // multiple users are authenticated, this method will throw an exception.
-    virtual User* getSingleUser() = 0;
+    User* getSingleUser() override;
 
     // Gets an iterator over the names of all authenticated users stored in this manager.
-    virtual UserNameIterator getAuthenticatedUserNames() = 0;
+    UserNameIterator getAuthenticatedUserNames() override;
 
     // Gets an iterator over the roles of all authenticated users stored in this manager.
-    virtual RoleNameIterator getAuthenticatedRoleNames() = 0;
+    RoleNameIterator getAuthenticatedRoleNames() override;
 
     // Returns a std::string representing all logged-in users on the current session.
     // WARNING: this std::string will contain NUL bytes so don't call c_str()!
-    virtual std::string getAuthenticatedUserNamesToken() = 0;
+    std::string getAuthenticatedUserNamesToken() override;
 
     // Removes any authenticated principals whose authorization credentials came from the given
     // database, and revokes any privileges that were granted via that principal.
-    virtual void logoutDatabase(const std::string& dbname) = 0;
+    void logoutDatabase(const std::string& dbname) override;
 
     // Adds the internalSecurity user to the set of authenticated users.
     // Used to grant internal threads full access.
-    virtual void grantInternalAuthorization() = 0;
+    void grantInternalAuthorization() override;
 
     // Generates a vector of default privileges that are granted to any user,
     // regardless of which roles that user does or does not possess.
     // If localhost exception is active, the permissions include the ability to create
     // the first user and the ability to run the commands needed to bootstrap the system
     // into a state where the first user can be created.
-    virtual PrivilegeVector getDefaultPrivileges() = 0;
+    PrivilegeVector getDefaultPrivileges() override;
 
     // Checks if this connection has the privileges necessary to perform a find operation
     // on the supplied namespace identifier.
-    virtual Status checkAuthForFind(const NamespaceString& ns, bool hasTerm) = 0;
+    Status checkAuthForFind(const NamespaceString& ns, bool hasTerm) override;
 
     // Checks if this connection has the privileges necessary to perform a getMore operation on
     // the identified cursor, supposing that cursor is associated with the supplied namespace
     // identifier.
-    virtual Status checkAuthForGetMore(const NamespaceString& ns,
-                                       long long cursorID,
-                                       bool hasTerm) = 0;
+    Status checkAuthForGetMore(const NamespaceString& ns,
+                               long long cursorID,
+                               bool hasTerm) override;
 
     // Checks if this connection has the privileges necessary to perform the given update on the
     // given namespace.
-    virtual Status checkAuthForUpdate(OperationContext* opCtx,
-                                      const NamespaceString& ns,
-                                      const BSONObj& query,
-                                      const BSONObj& update,
-                                      bool upsert) = 0;
+    Status checkAuthForUpdate(OperationContext* opCtx,
+                              const NamespaceString& ns,
+                              const BSONObj& query,
+                              const BSONObj& update,
+                              bool upsert) override;
 
     // Checks if this connection has the privileges necessary to insert the given document
     // to the given namespace.  Correctly interprets inserts to system.indexes and performs
     // the proper auth checks for index building.
-    virtual Status checkAuthForInsert(OperationContext* opCtx,
-                                      const NamespaceString& ns,
-                                      const BSONObj& document) = 0;
+    Status checkAuthForInsert(OperationContext* opCtx,
+                              const NamespaceString& ns,
+                              const BSONObj& document) override;
 
     // Checks if this connection has the privileges necessary to perform a delete on the given
     // namespace.
-    virtual Status checkAuthForDelete(OperationContext* opCtx,
-                                      const NamespaceString& ns,
-                                      const BSONObj& query) = 0;
+    Status checkAuthForDelete(OperationContext* opCtx,
+                              const NamespaceString& ns,
+                              const BSONObj& query) override;
 
     // Checks if this connection has the privileges necessary to perform a killCursor on
     // the identified cursor, supposing that cursor is associated with the supplied namespace
     // identifier.
-    virtual Status checkAuthForKillCursors(const NamespaceString& cursorNss,
-                                           UserNameIterator cursorOwner) = 0;
+    Status checkAuthForKillCursors(const NamespaceString& cursorNss,
+                                   UserNameIterator cursorOwner) override;
 
     // Checks if this connection has the privileges necessary to run the aggregation pipeline
     // specified in 'cmdObj' on the namespace 'ns' either directly on mongoD or via mongoS.
-    virtual Status checkAuthForAggregate(const NamespaceString& ns,
-                                         const BSONObj& cmdObj,
-                                         bool isMongos) = 0;
+    Status checkAuthForAggregate(const NamespaceString& ns,
+                                 const BSONObj& cmdObj,
+                                 bool isMongos) override;
 
     // Checks if this connection has the privileges necessary to create 'ns' with the options
     // supplied in 'cmdObj' either directly on mongoD or via mongoS.
-    virtual Status checkAuthForCreate(const NamespaceString& ns,
-                                      const BSONObj& cmdObj,
-                                      bool isMongos) = 0;
+    Status checkAuthForCreate(const NamespaceString& ns,
+                              const BSONObj& cmdObj,
+                              bool isMongos) override;
 
     // Checks if this connection has the privileges necessary to modify 'ns' with the options
     // supplied in 'cmdObj' either directly on mongoD or via mongoS.
-    virtual Status checkAuthForCollMod(const NamespaceString& ns,
-                                       const BSONObj& cmdObj,
-                                       bool isMongos) = 0;
+    Status checkAuthForCollMod(const NamespaceString& ns,
+                               const BSONObj& cmdObj,
+                               bool isMongos) override;
 
     // Checks if this connection has the privileges necessary to grant the given privilege
     // to a role.
-    virtual Status checkAuthorizedToGrantPrivilege(const Privilege& privilege) = 0;
+    Status checkAuthorizedToGrantPrivilege(const Privilege& privilege) override;
 
     // Checks if this connection has the privileges necessary to revoke the given privilege
     // from a role.
-    virtual Status checkAuthorizedToRevokePrivilege(const Privilege& privilege) = 0;
+    Status checkAuthorizedToRevokePrivilege(const Privilege& privilege) override;
 
     // Checks if this connection is using the localhost bypass
-    virtual bool isUsingLocalhostBypass() = 0;
+    bool isUsingLocalhostBypass() override;
 
     // Checks if this connection has the privileges necessary to parse a namespace from a
     // given BSONElement.
-    virtual bool isAuthorizedToParseNamespaceElement(const BSONElement& elem) = 0;
+    bool isAuthorizedToParseNamespaceElement(const BSONElement& elem) override;
 
     // Checks if this connection has the privileges necessary to create a new role
-    virtual bool isAuthorizedToCreateRole(const auth::CreateOrUpdateRoleArgs& args) = 0;
+    bool isAuthorizedToCreateRole(const auth::CreateOrUpdateRoleArgs& args) override;
 
     // Utility function for isAuthorizedForActionsOnResource(
     //         ResourcePattern::forDatabaseName(role.getDB()), ActionType::grantAnyRole)
-    virtual bool isAuthorizedToGrantRole(const RoleName& role) = 0;
+    bool isAuthorizedToGrantRole(const RoleName& role) override;
 
     // Utility function for isAuthorizedForActionsOnResource(
     //         ResourcePattern::forDatabaseName(role.getDB()), ActionType::grantAnyRole)
-    virtual bool isAuthorizedToRevokeRole(const RoleName& role) = 0;
+    bool isAuthorizedToRevokeRole(const RoleName& role) override;
 
     // Utility function for isAuthorizedToChangeOwnPasswordAsUser and
     // isAuthorizedToChangeOwnCustomDataAsUser
-    virtual bool isAuthorizedToChangeAsUser(const UserName& userName, ActionType actionType) = 0;
+    bool isAuthorizedToChangeAsUser(const UserName& userName, ActionType actionType) override;
 
     // Returns true if the current session is authenticated as the given user and that user
     // is allowed to change his/her own password
-    virtual bool isAuthorizedToChangeOwnPasswordAsUser(const UserName& userName) = 0;
+    bool isAuthorizedToChangeOwnPasswordAsUser(const UserName& userName) override;
 
     // Returns true if the current session is authorized to list the collections in the given
     // database.
-    virtual bool isAuthorizedToListCollections(StringData dbname) = 0;
+    bool isAuthorizedToListCollections(StringData dbname) override;
 
     // Returns true if the current session is authenticated as the given user and that user
     // is allowed to change his/her own customData.
-    virtual bool isAuthorizedToChangeOwnCustomDataAsUser(const UserName& userName) = 0;
+    bool isAuthorizedToChangeOwnCustomDataAsUser(const UserName& userName) override;
 
     // Returns true if any of the authenticated users on this session have the given role.
     // NOTE: this does not refresh any of the users even if they are marked as invalid.
-    virtual bool isAuthenticatedAsUserWithRole(const RoleName& roleName) = 0;
+    bool isAuthenticatedAsUserWithRole(const RoleName& roleName) override;
 
     // Returns true if this session is authorized for the given Privilege.
     //
     // Contains all the authorization logic including handling things like the localhost
     // exception.
-    virtual bool isAuthorizedForPrivilege(const Privilege& privilege) = 0;
+    bool isAuthorizedForPrivilege(const Privilege& privilege) override;
 
     // Like isAuthorizedForPrivilege, above, except returns true if the session is authorized
     // for all of the listed privileges.
-    virtual bool isAuthorizedForPrivileges(const std::vector<Privilege>& privileges) = 0;
+    bool isAuthorizedForPrivileges(const std::vector<Privilege>& privileges) override;
 
     // Utility function for isAuthorizedForPrivilege(Privilege(resource, action)).
-    virtual bool isAuthorizedForActionsOnResource(const ResourcePattern& resource,
-                                                  ActionType action) = 0;
+    bool isAuthorizedForActionsOnResource(const ResourcePattern& resource,
+                                          ActionType action) override;
 
     // Utility function for isAuthorizedForPrivilege(Privilege(resource, actions)).
-    virtual bool isAuthorizedForActionsOnResource(const ResourcePattern& resource,
-                                                  const ActionSet& actions) = 0;
+    bool isAuthorizedForActionsOnResource(const ResourcePattern& resource,
+                                          const ActionSet& actions) override;
 
     // Utility function for
     // isAuthorizedForActionsOnResource(ResourcePattern::forExactNamespace(ns), action).
-    virtual bool isAuthorizedForActionsOnNamespace(const NamespaceString& ns,
-                                                   ActionType action) = 0;
+    bool isAuthorizedForActionsOnNamespace(const NamespaceString& ns, ActionType action) override;
 
     // Utility function for
     // isAuthorizedForActionsOnResource(ResourcePattern::forExactNamespace(ns), actions).
-    virtual bool isAuthorizedForActionsOnNamespace(const NamespaceString& ns,
-                                                   const ActionSet& actions) = 0;
+    bool isAuthorizedForActionsOnNamespace(const NamespaceString& ns,
+                                           const ActionSet& actions) override;
 
     // Replaces the data for users that a system user is impersonating with new data.
     // The auditing system adds these users and their roles to each audit record in the log.
-    virtual void setImpersonatedUserData(std::vector<UserName> usernames,
-                                         std::vector<RoleName> roles) = 0;
+    void setImpersonatedUserData(std::vector<UserName> usernames,
+                                 std::vector<RoleName> roles) override;
 
     // Gets an iterator over the names of all users that the system user is impersonating.
-    virtual UserNameIterator getImpersonatedUserNames() = 0;
+    UserNameIterator getImpersonatedUserNames() override;
 
     // Gets an iterator over the roles of all users that the system user is impersonating.
-    virtual RoleNameIterator getImpersonatedRoleNames() = 0;
+    RoleNameIterator getImpersonatedRoleNames() override;
 
     // Clears the data for impersonated users.
-    virtual void clearImpersonatedUserData() = 0;
+    void clearImpersonatedUserData() override;
 
     // Returns true if the session and 'opClient's AuthorizationSession share an
     // authenticated user. If either object has impersonated users,
     // those users will be considered as 'authenticated' for the purpose of this check.
     //
     // The existence of 'opClient' must be guaranteed through locks taken by the caller.
-    virtual bool isCoauthorizedWithClient(Client* opClient) = 0;
+    bool isCoauthorizedWithClient(Client* opClient) override;
 
     // Returns true if the session and 'userNameIter' share an authenticated user, or if both have
     // no authenticated users. Impersonated users are not considered as 'authenticated' for the
     // purpose of this check. This always returns true if auth is not enabled.
-    virtual bool isCoauthorizedWith(UserNameIterator userNameIter) = 0;
+    bool isCoauthorizedWith(UserNameIterator userNameIter) override;
 
     // Tells whether impersonation is active or not.  This state is set when
     // setImpersonatedUserData is called and cleared when clearImpersonatedUserData is
     // called.
-    virtual bool isImpersonating() const = 0;
+    bool isImpersonating() const override;
 
 protected:
-    virtual std::tuple<std::vector<UserName>*, std::vector<RoleName>*> _getImpersonations() = 0;
+    // Builds a vector of all roles held by users who are authenticated on this connection. The
+    // vector is stored in _authenticatedRoleNames. This function is called when users are
+    // logged in or logged out, as well as when the user cache is determined to be out of date.
+    void _buildAuthenticatedRolesVector();
+
+    // All Users who have been authenticated on this connection.
+    UserSet _authenticatedUsers;
+
+    // The roles of the authenticated users. This vector is generated when the authenticated
+    // users set is changed.
+    std::vector<RoleName> _authenticatedRoleNames;
+
+private:
+    // If any users authenticated on this session are marked as invalid this updates them with
+    // up-to-date information. May require a read lock on the "admin" db to read the user data.
+    void _refreshUserInfoAsNeeded(OperationContext* opCtx);
+
+
+    // Checks if this connection is authorized for the given Privilege, ignoring whether or not
+    // we should even be doing authorization checks in general.  Note: this may acquire a read
+    // lock on the admin database (to update out-of-date user privilege information).
+    bool _isAuthorizedForPrivilege(const Privilege& privilege);
+
+    virtual std::tuple<std::vector<UserName>*, std::vector<RoleName>*> _getImpersonations()
+        override {
+        return std::make_tuple(&_impersonatedUserNames, &_impersonatedRoleNames);
+    }
+
+    std::unique_ptr<AuthzSessionExternalState> _externalState;
+
+    // A vector of impersonated UserNames and a vector of those users' RoleNames.
+    // These are used in the auditing system. They are not used for authz checks.
+    std::vector<UserName> _impersonatedUserNames;
+    std::vector<RoleName> _impersonatedRoleNames;
+    bool _impersonationFlag;
 };
 
 // Returns a status encoding whether the current session in the specified `opCtx` has privilege to
 // access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`, when the
 // session is accessible.  Returns a `mongo::Status` with information regarding the nature of
 // session inaccessibility when the session is not accessible.
-Status checkCursorSessionPrivilege(OperationContext* const opCtx,
-                                   const boost::optional<LogicalSessionId> cursorSessionId);
+//Status checkCursorSessionPrivilege(OperationContext* const opCtx,
+ //                                  const boost::optional<LogicalSessionId> cursorSessionId);
 }  // namespace mongo

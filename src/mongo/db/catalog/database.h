@@ -31,6 +31,7 @@
 #include <memory>
 #include <string>
 
+#include "mongo/base/shim.h"
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/bson/bsonobj.h"

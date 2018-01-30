@@ -13,6 +13,7 @@
 #include "mongo/client/sasl_client_session.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
@@ -40,7 +41,7 @@ public:
     void testWrongServerMechanism();
 
     AuthzManagerExternalStateMock* authManagerExternalState;
-    AuthorizationManager authManager;
+    AuthorizationManagerImpl authManager;
     std::unique_ptr<AuthorizationSession> authSession;
     std::string mechanism;
     std::unique_ptr<SaslClientSession> client;
@@ -60,7 +61,8 @@ const std::string mockHostName = "host.mockery.com";
 
 SaslConversation::SaslConversation(std::string mech)
     : authManagerExternalState(new AuthzManagerExternalStateMock),
-      authManager(std::unique_ptr<AuthzManagerExternalState>(authManagerExternalState)),
+      authManager(std::unique_ptr<AuthzManagerExternalState>(authManagerExternalState),
+                  AuthorizationManagerImpl::TestingMock{}),
       authSession(authManager.makeAuthorizationSession()),
       mechanism(mech) {
     OperationContextNoop opCtx;

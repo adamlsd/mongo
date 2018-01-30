@@ -53,7 +53,9 @@ env.Library(
     target='authcore',
     source=[
         'authorization_manager.cpp',
+        'authorization_manager_impl.cpp',
         'authorization_session.cpp',
+        'authorization_session_impl.cpp',
         'auth_decorations.cpp',
         'authz_manager_external_state.cpp',
         'authz_manager_external_state_local.cpp',
@@ -176,7 +178,6 @@ env.Library('saslauth',
              'sasl_server_conversation.cpp'],
              LIBDEPS=[
                 'authcore',
-                'authmocks', # Wat?
                 'sasl_options',
                 '$BUILD_DIR/mongo/base/secure_allocator',
                 '$BUILD_DIR/mongo/crypto/scramauth',
@@ -300,6 +301,7 @@ env.CppUnitTest(
     ],
     LIBDEPS_PRIVATE=[
         'saslauth',
+        'authmocks',
         '$BUILD_DIR/mongo/client/sasl_client',
     ],
 )

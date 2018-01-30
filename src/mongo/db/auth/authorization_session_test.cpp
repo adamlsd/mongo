@@ -35,6 +35,7 @@
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
@@ -107,7 +108,8 @@ public:
         managerState = localManagerState.get();
         managerState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
         auto uniqueAuthzManager =
-            stdx::make_unique<AuthorizationManager>(std::move(localManagerState));
+            stdx::make_unique<AuthorizationManagerImpl>(std::move(localManagerState),
+AuthorizationManagerImpl::TestingMock{});
         authzManager = uniqueAuthzManager.get();
         AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
         auto localSessionState = stdx::make_unique<AuthzSessionExternalStateMock>(authzManager);

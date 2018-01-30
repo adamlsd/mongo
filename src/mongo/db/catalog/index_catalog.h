@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "mongo/base/clonable_ptr.h"
-#include "mongo/base/init.h"
+#include "mongo/base/shim.h"
 #include "mongo/db/catalog/index_catalog_entry.h"
 #include "mongo/db/index/multikey_paths.h"
 #include "mongo/db/jsobj.h"

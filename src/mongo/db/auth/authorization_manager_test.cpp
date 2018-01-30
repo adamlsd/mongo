@@ -36,6 +36,7 @@
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
@@ -174,7 +175,8 @@ public:
         auto localExternalState = stdx::make_unique<AuthzManagerExternalStateMock>();
         externalState = localExternalState.get();
         externalState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
-        authzManager = stdx::make_unique<AuthorizationManager>(std::move(localExternalState));
+        authzManager = stdx::make_unique<AuthorizationManagerImpl>(
+            std::move(localExternalState), AuthorizationManagerImpl::TestingMock{});
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);
 
@@ -365,7 +367,8 @@ public:
             stdx::make_unique<AuthzManagerExternalStateMockWithExplicitUserPrivileges>();
         externalState = localExternalState.get();
         externalState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
-        authzManager = stdx::make_unique<AuthorizationManager>(std::move(localExternalState));
+        authzManager = stdx::make_unique<AuthorizationManagerImpl>(
+            std::move(localExternalState), AuthorizationManagerImpl::TestingMock{});
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);
     }

@@ -35,18 +35,10 @@
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
-using std::unique_ptr;
 
-namespace {
-
-unique_ptr<AuthzManagerExternalState> createAuthzManagerExternalStateMongod() {
-    return stdx::make_unique<AuthzManagerExternalStateMongod>();
+MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
+()->std::unique_ptr<AuthzManagerExternalState> {
+    return std::make_unique<AuthzManagerExternalStateMongod>();
 }
 
-MONGO_INITIALIZER(CreateAuthorizationExternalStateFactory)(InitializerContext* context) {
-    AuthzManagerExternalState::create = &createAuthzManagerExternalStateMongod;
-    return Status::OK();
-}
-
-}  // namespace
 }  // namespace mongo

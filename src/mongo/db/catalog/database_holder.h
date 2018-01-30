@@ -31,7 +31,7 @@
 #include <set>
 #include <string>
 
-#include "mongo/base/init.h"
+#include "mongo/base/shim.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/stdx/functional.h"

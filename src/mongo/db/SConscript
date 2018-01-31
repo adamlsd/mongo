@@ -515,7 +515,6 @@ env.Library(
         'commands/server_status_core',
         'commands/test_commands_enabled',
         'service_context',
-        '$BUILD_DIR/mongo/util/uuid',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
     ],
 )
@@ -944,7 +943,6 @@ env.Library(
         "s/collection_metadata",
         "s/commands_db_s",
         "s/sharding",
-        "service_context_d",
         "startup_warnings_mongod",
         "stats/counters",
         "stats/serveronly_stats",
@@ -966,6 +964,20 @@ env.Library(
 )
 
 env.Library(
+    target="repair_database_and_check_version",
+    source=[
+        "repair_database_and_check_version.cpp",
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/catalog/catalog_helpers',
+        'dbdirectclient',
+        'dbhelpers',
+        'repair_database',
+        'repl/drop_pending_collection_reaper',
+    ],
+)
+
+env.Library(
     target='logical_session_id',
     source=[
         'logical_session_id.cpp',
@@ -977,7 +989,6 @@ env.Library(
         '$BUILD_DIR/mongo/crypto/sha256_block',
         '$BUILD_DIR/mongo/crypto/sha_block_${MONGO_CRYPTO}',
         '$BUILD_DIR/mongo/idl/idl_parser',
-        '$BUILD_DIR/mongo/util/uuid',
         'server_parameters',
     ],
 )
@@ -1681,8 +1692,9 @@ env.CppUnitTest(
         'transaction_history_iterator_test.cpp',
     ],
     LIBDEPS=[
-        'query_exec',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
-
+        'query_exec',
+        'service_context_d',
+        'write_ops',
     ],
 )

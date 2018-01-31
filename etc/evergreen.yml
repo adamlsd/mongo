@@ -1388,9 +1388,9 @@ functions:
           else
              variant=ubuntu1604
           fi
-          # Download latest version of curator
-          latest_curator_hash=$(git ls-remote https://github.com/mongodb/curator.git | grep HEAD | cut -f1)
-          curator_url="https://s3.amazonaws.com/boxes.10gen.com/build/curator/curator-dist-$variant-$latest_curator_hash.tar.gz"
+          # Download stable version of curator
+          curator_hash=117d1a65256ff78b6d15ab79a1c7088443b936d0
+          curator_url="https://s3.amazonaws.com/boxes.10gen.com/build/curator/curator-dist-$variant-$curator_hash.tar.gz"
           cmds="curl -s $curator_url | tar -xzv"
           if [ "Windows_NT" = "$OS" ]; then
             # Since curator runs as SYSTEM user, ensure the output files can be accessed.
@@ -2850,6 +2850,17 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=aggregation_facet_unwind_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: aggregation_one_shard_sharded_collections
+  depends_on:
+  - name: aggregation
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=aggregation_one_shard_sharded_collections --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -4522,6 +4533,7 @@ buildvariants:
     - rhel62-large
   - name: aggregation
   - name: aggregation_auth
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: auth
@@ -4640,6 +4652,7 @@ buildvariants:
   - name: aggregation
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: auth
@@ -5605,6 +5618,7 @@ buildvariants:
     - windows-64-vs2015-large
   - name: aggregation
   - name: aggregation_facet_unwind_passthrough
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: auth
@@ -5926,6 +5940,7 @@ buildvariants:
     distros:
     - windows-64-vs2015-large
   - name: aggregation
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: auth
@@ -6065,6 +6080,7 @@ buildvariants:
   - name: compile
   - name: compile_all
   - name: aggregation
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: auth
@@ -6308,6 +6324,7 @@ buildvariants:
   - name: aggregation_ese
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit
@@ -6492,6 +6509,7 @@ buildvariants:
   - name: aggregation
   - name: aggregation_ese
   - name: aggregation_auth
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit
@@ -8162,6 +8180,7 @@ buildvariants:
     - rhel62-large
   - name: aggregation
   - name: aggregation_auth
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit
@@ -8664,6 +8683,7 @@ buildvariants:
   - name: aggregation_ese
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit
@@ -8816,6 +8836,7 @@ buildvariants:
   - name: rollback_fuzzer
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
+  - name: aggregation_one_shard_sharded_collections
   - name: aggregation_read_concern_majority_passthrough
   - name: aggregation_sharded_collections_passthrough
   - name: audit

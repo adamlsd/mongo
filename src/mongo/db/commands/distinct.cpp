@@ -87,7 +87,9 @@ public:
         return false;
     }
 
-    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
         return true;
     }
 
@@ -107,8 +109,8 @@ public:
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    virtual void help(stringstream& help) const {
-        help << "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
+    std::string help() const override {
+        return "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
     }
 
     virtual Status explain(OperationContext* opCtx,
@@ -180,17 +182,7 @@ public:
 
             BSONObj aggResult = CommandHelpers::runCommandDirectly(
                 opCtx, OpMsgRequest::fromDBAndBody(dbname, std::move(viewAggregation.getValue())));
-
-            if (ResolvedView::isResolvedViewErrorResponse(aggResult)) {
-                result.appendElements(aggResult);
-                return false;
-            }
-
-            ViewResponseFormatter formatter(aggResult);
-            Status formatStatus = formatter.appendAsDistinctResponse(&result);
-            if (!formatStatus.isOK()) {
-                return CommandHelpers::appendCommandStatus(result, formatStatus);
-            }
+            uassertStatusOK(ViewResponseFormatter(aggResult).appendAsDistinctResponse(&result));
             return true;
         }
 

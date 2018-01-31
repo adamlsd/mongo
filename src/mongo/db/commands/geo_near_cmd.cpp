@@ -80,7 +80,9 @@ public:
     bool slaveOverrideOk() const {
         return true;
     }
-    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
         return true;
     }
 
@@ -92,8 +94,8 @@ public:
         return FindCommon::kInitReplyBufferSize;
     }
 
-    void help(stringstream& h) const {
-        h << "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
+    std::string help() const override {
+        return "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
     }
 
     virtual void addRequiredPrivileges(const std::string& dbname,

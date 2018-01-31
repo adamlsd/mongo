@@ -85,12 +85,14 @@ public:
         return false;
     }
 
-    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "query for documents";
+    std::string help() const override {
+        return "query for documents";
     }
 
     LogicalOp getLogicalOp() const override {

@@ -73,8 +73,8 @@ public:
                                        const BSONObj& cmdObj) {
         return rename_collection::checkAuthForRenameCollectionCommand(client, dbname, cmdObj);
     }
-    virtual void help(stringstream& help) const {
-        help << " example: { renameCollection: foo.a, to: bar.b }";
+    std::string help() const override {
+        return " example: { renameCollection: foo.a, to: bar.b }";
     }
 
     static void dropCollection(OperationContext* opCtx, Database* db, StringData collName) {
@@ -110,7 +110,7 @@ public:
                 str::stream() << "Invalid target namespace: " << target.ns(),
                 target.isValid());
 
-        if ((repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
+        if ((repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() !=
              repl::ReplicationCoordinator::modeNone)) {
             if (source.isOplog()) {
                 errmsg = "can't rename live oplog while replicating";

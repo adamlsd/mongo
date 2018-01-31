@@ -1167,18 +1167,34 @@ Status ReplicationCoordinatorImpl::_validateReadConcern(OperationContext* opCtx,
                 "Waiting for replication not allowed while holding a lock"};
     }
 
-    if (readConcern.getArgsClusterTime() &&
+    if (readConcern.getArgsAfterClusterTime() &&
         readConcern.getLevel() != ReadConcernLevel::kMajorityReadConcern &&
-        readConcern.getLevel() != ReadConcernLevel::kLocalReadConcern) {
+        readConcern.getLevel() != ReadConcernLevel::kLocalReadConcern &&
+        readConcern.getLevel() != ReadConcernLevel::kSnapshotReadConcern) {
+        return {
+            ErrorCodes::BadValue,
+            "Only readConcern level 'majority', 'local', or 'snapshot' is allowed when specifying "
+            "afterClusterTime"};
+    }
+
+    if (readConcern.getArgsAtClusterTime() &&
+        readConcern.getLevel() != ReadConcernLevel::kSnapshotReadConcern) {
         return {ErrorCodes::BadValue,
-                "Only readConcern level 'majority' or 'local' is allowed when specifying "
-                "afterClusterTime"};
+                "readConcern level 'snapshot' is required when specifying atClusterTime"};
     }
 
     if (readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern &&
         !_externalState->isReadCommittedSupportedByStorageEngine(opCtx)) {
         return {ErrorCodes::ReadConcernMajorityNotEnabled,
-                "Majority read concern requested, but it is not supported by the storage engine."};
+                str::stream() << "Storage engine does not support read concern: "
+                              << readConcern.toString()};
+    }
+
+    if (readConcern.getLevel() == ReadConcernLevel::kSnapshotReadConcern &&
+        !_externalState->isReadConcernSnapshotSupportedByStorageEngine(opCtx)) {
+        return {ErrorCodes::InvalidOptions,
+                str::stream() << "Storage engine does not support read concern: "
+                              << readConcern.toString()};
     }
 
     return Status::OK();
@@ -1192,7 +1208,7 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
     }
 
     // nothing to wait for
-    if (!readConcern.getArgsClusterTime() && !readConcern.getArgsOpTime()) {
+    if (!readConcern.getArgsAfterClusterTime() && !readConcern.getArgsOpTime()) {
         return Status::OK();
     }
 
@@ -1210,7 +1226,7 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForReadUntil(OperationContext*
                 "node needs to be a replica set member to use read concern"};
     }
 
-    if (readConcern.getArgsClusterTime()) {
+    if (readConcern.getArgsAfterClusterTime()) {
         return _waitUntilClusterTimeForRead(opCtx, readConcern, deadline);
     } else {
         return _waitUntilOpTimeForReadDeprecated(opCtx, readConcern);
@@ -1296,7 +1312,7 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
 Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext* opCtx,
                                                                 const ReadConcernArgs& readConcern,
                                                                 boost::optional<Date_t> deadline) {
-    auto clusterTime = *readConcern.getArgsClusterTime();
+    auto clusterTime = *readConcern.getArgsAfterClusterTime();
     invariant(clusterTime != LogicalTime::kUninitialized);
 
     // convert clusterTime to opTime so it can be used by the _opTimeWaiterList for wait on
@@ -1370,7 +1386,7 @@ Status ReplicationCoordinatorImpl::_setLastOptime_inlock(const UpdatePositionArg
 }
 
 bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
-    const OpTime& opTime, Timestamp minSnapshot, const WriteConcernOptions& writeConcern) {
+    const OpTime& opTime, const WriteConcernOptions& writeConcern) {
     // The syncMode cannot be unset.
     invariant(writeConcern.syncMode != WriteConcernOptions::SyncMode::UNSET);
     Status status = _checkIfWriteConcernCanBeSatisfied_inlock(writeConcern);
@@ -1394,8 +1410,7 @@ bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
             }
 
             // Wait for the "current" snapshot to advance to/past the opTime.
-            const auto haveSnapshot = (_currentCommittedSnapshot >= opTime &&
-                                       _currentCommittedSnapshot->getTimestamp() >= minSnapshot);
+            const auto haveSnapshot = _currentCommittedSnapshot >= opTime;
             if (!haveSnapshot) {
                 LOG(1) << "Required snapshot optime: " << opTime << " is not yet part of the "
                        << "current 'committed' snapshot: " << *_currentCommittedSnapshot;
@@ -1423,19 +1438,7 @@ ReplicationCoordinator::StatusAndDuration ReplicationCoordinatorImpl::awaitRepli
     Timer timer;
     WriteConcernOptions fixedWriteConcern = populateUnsetWriteConcernOptionsSyncMode(writeConcern);
     stdx::unique_lock<stdx::mutex> lock(_mutex);
-    auto status = _awaitReplication_inlock(&lock, opCtx, opTime, Timestamp(), fixedWriteConcern);
-    return {std::move(status), duration_cast<Milliseconds>(timer.elapsed())};
-}
-
-ReplicationCoordinator::StatusAndDuration
-ReplicationCoordinatorImpl::awaitReplicationOfLastOpForClient(
-    OperationContext* opCtx, const WriteConcernOptions& writeConcern) {
-    Timer timer;
-    WriteConcernOptions fixedWriteConcern = populateUnsetWriteConcernOptionsSyncMode(writeConcern);
-    stdx::unique_lock<stdx::mutex> lock(_mutex);
-    const auto& clientInfo = ReplClientInfo::forClient(opCtx->getClient());
-    auto status = _awaitReplication_inlock(
-        &lock, opCtx, clientInfo.getLastOp(), clientInfo.getLastSnapshot(), fixedWriteConcern);
+    auto status = _awaitReplication_inlock(&lock, opCtx, opTime, fixedWriteConcern);
     return {std::move(status), duration_cast<Milliseconds>(timer.elapsed())};
 }
 
@@ -1443,7 +1446,6 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     stdx::unique_lock<stdx::mutex>* lock,
     OperationContext* opCtx,
     const OpTime& opTime,
-    Timestamp minSnapshot,
     const WriteConcernOptions& writeConcern) {
 
     // We should never wait for replication if we are holding any locks, because this can
@@ -1464,7 +1466,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
         return Status::OK();
     }
 
-    if (opTime.isNull() && minSnapshot == Timestamp()) {
+    if (opTime.isNull()) {
         // If waiting for the empty optime, always say it's been replicated.
         return Status::OK();
     }
@@ -1525,7 +1527,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
     stdx::condition_variable condVar;
     ThreadWaiter waiter(opTime, &writeConcern, &condVar);
     WaiterGuard guard(&_replicationWaiterList, &waiter);
-    while (!_doneWaitingForReplication_inlock(opTime, minSnapshot, writeConcern)) {
+    while (!_doneWaitingForReplication_inlock(opTime, writeConcern)) {
 
         if (_inShutdown) {
             return {ErrorCodes::ShutdownInProgress, "Replication is being shut down"};
@@ -1543,7 +1545,7 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
                 _topCoord->fillMemberData(&progress);
                 log() << "Replication for failed WC: " << writeConcern.toBSON()
                       << ", waitInfo: " << waiter << ", opID: " << opCtx->getOpID()
-                      << ", minSnapshot: " << minSnapshot << ", progress: " << progress.done();
+                      << ", progress: " << progress.done();
             }
             return {ErrorCodes::WriteConcernFailed, "waiting for replication timed out"};
         }
@@ -2821,8 +2823,7 @@ ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(OperationContext* opCtx,
 
 void ReplicationCoordinatorImpl::_wakeReadyWaiters_inlock() {
     _replicationWaiterList.signalAndRemoveIf_inlock([this](Waiter* waiter) {
-        return _doneWaitingForReplication_inlock(
-            waiter->opTime, Timestamp(), *waiter->writeConcern);
+        return _doneWaitingForReplication_inlock(waiter->opTime, *waiter->writeConcern);
     });
 }
 
@@ -3357,7 +3358,7 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
     return EventHandle();
 }
 
-Timestamp ReplicationCoordinatorImpl::reserveSnapshotName(OperationContext* opCtx) {
+Timestamp ReplicationCoordinatorImpl::getMinimumVisibleSnapshot(OperationContext* opCtx) {
     Timestamp reservedName;
     if (getReplicationMode() == Mode::modeReplSet) {
         invariant(opCtx->lockState()->isLocked());
@@ -3373,8 +3374,6 @@ Timestamp ReplicationCoordinatorImpl::reserveSnapshotName(OperationContext* opCt
         // All snapshots are the same for a standalone node.
         reservedName = Timestamp();
     }
-    // This was just in case the snapshot name was different from the lastOp in the client.
-    ReplClientInfo::forClient(opCtx->getClient()).setLastSnapshot(reservedName);
     return reservedName;
 }
 

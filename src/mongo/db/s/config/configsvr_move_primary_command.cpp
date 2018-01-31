@@ -80,9 +80,9 @@ public:
         return true;
     }
 
-    virtual void help(std::stringstream& help) const override {
-        help << "Internal command, which is exported by the sharding config server. Do not call "
-                "directly. Reassigns the primary shard of a database.";
+    std::string help() const override {
+        return "Internal command, which is exported by the sharding config server. Do not call "
+               "directly. Reassigns the primary shard of a database.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -170,12 +170,12 @@ public:
         const auto toShard = [&]() {
             auto toShardStatus = shardRegistry->getShard(opCtx, to);
             if (!toShardStatus.isOK()) {
-                const std::string msg(
+                log() << "Could not move database '" << dbname << "' to shard '" << to
+                      << causedBy(toShardStatus.getStatus());
+                uassertStatusOKWithContext(
+                    toShardStatus.getStatus(),
                     str::stream() << "Could not move database '" << dbname << "' to shard '" << to
-                                  << "' due to "
-                                  << toShardStatus.getStatus().reason());
-                log() << msg;
-                uasserted(toShardStatus.getStatus().code(), msg);
+                                  << "'");
             }
 
             return toShardStatus.getValue();

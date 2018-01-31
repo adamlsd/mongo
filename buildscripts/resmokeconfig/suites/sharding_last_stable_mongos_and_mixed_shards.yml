@@ -25,7 +25,9 @@ selector:
   - jstests/sharding/geo_near_sort.js
   - jstests/sharding/basic_drop_coll.js
   - jstests/sharding/commands_that_write_accept_wc_configRS.js
+  - jstests/sharding/clone_metadata_only.js
   # Enable when 3.6 becomes last-stable.
+  - jstests/sharding/coll_epoch_test1.js
   - jstests/sharding/configsvr_metadata_commands_require_majority_write_concern.js
   - jstests/sharding/views.js
   - jstests/sharding/view_rewrite.js
@@ -77,7 +79,6 @@ selector:
   - jstests/sharding/safe_secondary_reads_single_migration_suspend_range_deletion.js
   - jstests/sharding/safe_secondary_reads_single_migration_waitForDelete.js
   - jstests/sharding/secondary_shard_version_protocol_with_causal_consistency.js
-  - jstests/sharding/secondary_shard_version_protocol_with_fcv.js
   - jstests/sharding/secondary_shard_versioning.js
   - jstests/sharding/session_info_in_oplog.js
   - jstests/sharding/sessions_collection_auto_healing.js
@@ -85,7 +86,6 @@ selector:
   - jstests/sharding/time_zone_info_mongos.js
   - jstests/sharding/uuid_propagated_to_config_server_on_shardCollection.js
   - jstests/sharding/uuid_propagated_to_recipient_shard_on_recvChunkStart.js
-  - jstests/sharding/uuid_propagated_to_shards_on_setFCV_3_6.js
   - jstests/sharding/write_transactions_during_migration.js
   - jstests/sharding/json_schema.js
   - jstests/sharding/current_op_no_shards.js

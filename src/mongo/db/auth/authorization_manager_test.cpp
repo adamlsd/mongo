@@ -180,7 +180,7 @@ public:
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);
 
-        credentials = BSON("SCRAM-SHA-1" << scram::generateCredentials(
+        credentials = BSON("SCRAM-SHA-1" << scram::SHA1Secrets::generateCredentials(
                                "password", saslGlobalParams.scramIterationCount.load()));
     }
 

@@ -61,8 +61,8 @@ public:
         return Status::OK();
     }
 
-    virtual void help(std::stringstream& h) const {
-        h << "Creates a new named snapshot";
+    std::string help() const override {
+        return "Creates a new named snapshot";
     }
 
     bool run(OperationContext* opCtx,
@@ -80,7 +80,8 @@ public:
 
         auto status = snapshotManager->prepareForCreateSnapshot(opCtx);
         if (status.isOK()) {
-            const auto name = repl::ReplicationCoordinator::get(opCtx)->reserveSnapshotName(opCtx);
+            const auto name =
+                repl::ReplicationCoordinator::get(opCtx)->getMinimumVisibleSnapshot(opCtx);
             result.append("name", static_cast<long long>(name.asULL()));
         }
         return CommandHelpers::appendCommandStatus(result, status);
@@ -108,8 +109,8 @@ public:
         return Status::OK();
     }
 
-    virtual void help(std::stringstream& h) const {
-        h << "Sets the snapshot for {readConcern: {level: 'majority'}}";
+    std::string help() const override {
+        return "Sets the snapshot for {readConcern: {level: 'majority'}}";
     }
 
     bool run(OperationContext* opCtx,

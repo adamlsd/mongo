@@ -29,8 +29,6 @@
 #pragma once
 
 #include <functional>
-#include <type_traits>
-#include <utility>
 
 namespace mongo {
 namespace stdx {
@@ -38,29 +36,6 @@ namespace stdx {
 using ::std::cref;      // NOLINT
 using ::std::function;  // NOLINT
 using ::std::ref;       // NOLINT
-
-template<typename Fn, typename... Args>
-constexpr decltype(auto) invoke(Fn&& f, Args&&... args)
-    noexcept(noexcept(std::bind(std::forward<Fn>(f), std::forward<Args>(args)...)()))
-{
-    return std::bind(std::forward<Fn>(f), std::forward<Args>(args)...)();
-}
-
-namespace apply_detail {
-template <class F, class Tuple, std::size_t... I>
-constexpr decltype(auto) apply_impl(F&& f, Tuple&& t, std::index_sequence<I...>)
-{
-    return invoke(std::forward<F>(f), std::get<I>(std::forward<Tuple>(t))...);
-}
-}  // namespace detail
- 
-template <class F, class Tuple>
-constexpr decltype(auto) apply(F&& f, Tuple&& t)
-{
-    return apply_detail::apply_impl(
-        std::forward<F>(f), std::forward<Tuple>(t),
-        std::make_index_sequence<std::tuple_size<typename std::remove_reference<Tuple>::type>::value>{});
-}
 
 }  // namespace stdx
 }  // namespace mongo

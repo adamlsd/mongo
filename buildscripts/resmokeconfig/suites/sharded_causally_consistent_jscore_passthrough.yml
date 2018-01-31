@@ -201,6 +201,7 @@ executor:
          load("jstests/libs/override_methods/implicitly_shard_accessed_collections.js");
       readMode: commands
   hooks:
+  - class: CheckReplDBHash
   - class: ValidateCollections
   - class: CleanEveryN
     n: 20
@@ -232,6 +233,7 @@ executor:
     shard_options:
       voting_secondaries: true
     configsvr_options:
+      num_nodes: 3
       voting_secondaries: true
     enable_sharding:
     - test

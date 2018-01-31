@@ -74,15 +74,15 @@ public:
         actions.addAction(ActionType::compact);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
-    virtual void help(stringstream& help) const {
-        help << "compact collection\n"
-                "warning: this operation locks the database and is slow. you can cancel with "
-                "killOp()\n"
-                "{ compact : <collection_name>, [force:<bool>], [validate:<bool>],\n"
-                "  [paddingFactor:<num>], [paddingBytes:<num>] }\n"
-                "  force - allows to run on a replica set primary\n"
-                "  validate - check records are noncorrupt before adding to newly compacting "
-                "extents. slower but safer (defaults to true in this version)\n";
+    std::string help() const override {
+        return "compact collection\n"
+               "warning: this operation locks the database and is slow. you can cancel with "
+               "killOp()\n"
+               "{ compact : <collection_name>, [force:<bool>], [validate:<bool>],\n"
+               "  [paddingFactor:<num>], [paddingBytes:<num>] }\n"
+               "  force - allows to run on a replica set primary\n"
+               "  validate - check records are noncorrupt before adding to newly compacting "
+               "extents. slower but safer (defaults to true in this version)\n";
     }
     CompactCmd() : ErrmsgCommandDeprecated("compact") {}
 
@@ -93,7 +93,7 @@ public:
                            BSONObjBuilder& result) {
         NamespaceString nss = CommandHelpers::parseNsCollectionRequired(db, cmdObj);
 
-        repl::ReplicationCoordinator* replCoord = repl::getGlobalReplicationCoordinator();
+        repl::ReplicationCoordinator* replCoord = repl::ReplicationCoordinator::get(opCtx);
         if (replCoord->getMemberState().primary() && !cmdObj["force"].trueValue()) {
             errmsg =
                 "will not run compact on an active replica set primary as this is a slow blocking "

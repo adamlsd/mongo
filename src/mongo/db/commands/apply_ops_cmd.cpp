@@ -210,9 +210,9 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
-                "res : ... } ] }";
+    std::string help() const override {
+        return "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
+               "res : ... } ] }";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
@@ -269,11 +269,8 @@ public:
             // NoSuchKey means the user did not supply a mode.
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(status.code(),
-                       str::stream() << "Could not parse out "
-                                     << ApplyOps::kOplogApplicationModeFieldName
-                                     << ": "
-                                     << status.reason()));
+                status.withContext(str::stream() << "Could not parse out "
+                                                 << ApplyOps::kOplogApplicationModeFieldName));
         }
 
         auto applyOpsStatus = CommandHelpers::appendCommandStatus(

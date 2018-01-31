@@ -79,7 +79,9 @@ private:
         return true;
     }
 
-    bool supportsNonLocalReadConcern(const std::string& dbName, const BSONObj& cmdObj) const final {
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
         return true;
     }
 
@@ -91,8 +93,8 @@ private:
         return FindCommon::kInitReplyBufferSize;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "http://dochub.mongodb.org/core/aggregation";
+    std::string help() const override {
+        return "http://dochub.mongodb.org/core/aggregation";
     }
 
     virtual Status checkAuthForCommand(Client* client,

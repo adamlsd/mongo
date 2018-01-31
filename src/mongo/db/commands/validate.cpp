@@ -71,12 +71,12 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& h) const {
-        h << "Validate contents of a namespace by scanning its data structures for correctness.  "
-             "Slow.\n"
-             "Add full:true option to do a more thorough check\n"
-             "Add scandata:false to skip the scan of the collection data without skipping scans "
-             "of any indexes";
+    std::string help() const override {
+        return "Validate contents of a namespace by scanning its data structures for correctness.  "
+               "Slow.\n"
+               "Add full:true option to do a more thorough check\n"
+               "Add scandata:false to skip the scan of the collection data without skipping scans "
+               "of any indexes";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -210,7 +210,7 @@ public:
             ServerGlobalParams::FeatureCompatibility::Version version =
                 serverGlobalParams.featureCompatibility.getVersion();
 
-            if (version == ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+            if (version >= ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
                 // All collections must have a UUID.
                 if (!opts.uuid) {
                     results.errors.push_back(str::stream() << "UUID missing on collection "

@@ -53,18 +53,12 @@ public:
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    void help(std::stringstream& help) const override {
-        help << "end a set of logical sessions";
+    std::string help() const override {
+        return "end a set of logical sessions";
     }
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
                                  const BSONObj& cmdObj) override {
-
-        if (serverGlobalParams.featureCompatibility.getVersion() !=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            return SessionsCommandFCV34Status(getName());
-        }
-
         // It is always ok to run this command, as long as you are authenticated
         // as some user, if auth is enabled.
         AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
@@ -81,13 +75,6 @@ public:
                      const std::string& db,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) override {
-
-        if (serverGlobalParams.featureCompatibility.getVersion() !=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            return CommandHelpers::appendCommandStatus(result,
-                                                       SessionsCommandFCV34Status(getName()));
-        }
-
         auto lsCache = LogicalSessionCache::get(opCtx);
 
         auto cmd = EndSessionsCmdFromClient::parse("EndSessionsCmdFromClient"_sd, cmdObj);

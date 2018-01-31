@@ -36,6 +36,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/s/catalog/dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
@@ -71,9 +72,9 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "Internal command, which is exported by the sharding config server. Do not call "
-                "directly. Drops a collection from a database.";
+    std::string help() const override {
+        return "Internal command, which is exported by the sharding config server. Do not call "
+               "directly. Drops a collection from a database.";
     }
 
     Status checkAuthForCommand(Client* client,
@@ -151,7 +152,7 @@ public:
                 opCtx, dbStatus.getValue().value.getPrimary(), nss, &result);
         } else {
             uassertStatusOK(collStatus);
-            uassertStatusOK(catalogClient->dropCollection(opCtx, nss));
+            uassertStatusOK(ShardingCatalogManager::get(opCtx)->dropCollection(opCtx, nss));
         }
 
         return true;
@@ -192,12 +193,6 @@ private:
             nss.db().toString(),
             dropCommandBSON,
             Shard::RetryPolicy::kIdempotent));
-
-        // Special-case SendStaleVersion errors
-        if (cmdDropResult.commandStatus == ErrorCodes::StaleConfig) {
-            throw StaleConfigException(str::stream() << "Stale config while dropping collection",
-                                       cmdDropResult.response);
-        }
 
         // If the collection doesn't exist, consider the drop a success.
         if (cmdDropResult.commandStatus == ErrorCodes::NamespaceNotFound) {

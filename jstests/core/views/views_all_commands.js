@@ -78,7 +78,6 @@
         _configsvrRemoveShard: {skip: isAnInternalCommand},
         _configsvrRemoveShardFromZone: {skip: isAnInternalCommand},
         _configsvrShardCollection: {skip: isAnInternalCommand},
-        _configsvrSetFeatureCompatibilityVersion: {skip: isAnInternalCommand},
         _configsvrUpdateZoneKeyRange: {skip: isAnInternalCommand},
         _flushRoutingTableCacheUpdates: {skip: isUnrelated},
         _getNextSessionMods: {skip: isAnInternalCommand},
@@ -223,7 +222,6 @@
             expectFailure: true
         },
         flushRouterConfig: {skip: isUnrelated},
-        forceerror: {skip: isUnrelated},
         fsync: {skip: isUnrelated},
         fsyncUnlock: {skip: isUnrelated},
         geoNear: {
@@ -310,14 +308,19 @@
             },
             command: function(conn) {
                 // First get and check a partial result for an aggregate command.
-                let aggCmd = {aggregate: "view", pipeline: [], cursor: {batchSize: 2}};
+                let aggCmd = {
+                    aggregate: "view",
+                    pipeline: [{$sort: {_id: 1}}],
+                    cursor: {batchSize: 2}
+                };
                 let res = conn.runCommand(aggCmd);
                 assert.commandWorked(res, aggCmd);
                 let cursor = res.cursor;
                 assert.eq(
                     cursor.ns, "test.view", "expected view namespace in cursor: " + tojson(cursor));
                 let expectedFirstBatch = [{_id: 1}, {_id: 2}];
-                assert.eq(cursor.firstBatch, expectedFirstBatch, "find returned wrong firstBatch");
+                assert.eq(
+                    cursor.firstBatch, expectedFirstBatch, "aggregate returned wrong firstBatch");
 
                 // Then check correct execution of the killCursors command.
                 let killCursorsCmd = {killCursors: "view", cursors: [cursor.id]};

@@ -87,6 +87,12 @@ namespace {
 // Used to obtain mutex that guards modifications to persistent authorization data
 const auto getAuthzDataMutex = ServiceContext::declareDecoration<stdx::mutex>();
 
+Status useDefaultCode(const Status& status, ErrorCodes::Error defaultCode) {
+    if (status.code() != ErrorCodes::UnknownError)
+        return status;
+    return Status(defaultCode, status.reason());
+}
+
 BSONArray roleSetToBSONArray(const unordered_set<RoleName>& roles) {
     BSONArrayBuilder rolesArrayBuilder;
     for (unordered_set<RoleName>::const_iterator it = roles.begin(); it != roles.end(); ++it) {
@@ -613,8 +619,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Adds a user to the system" << endl;
+    std::string help() const override {
+        return "Adds a user to the system";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -692,7 +698,7 @@ public:
             credentialsBuilder.append("external", true);
         } else {
             // Add SCRAM credentials.
-            BSONObj scramCred = scram::generateCredentials(
+            BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
                 args.hashedPassword, saslGlobalParams.scramIterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
         }
@@ -760,8 +766,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Used to update a user, for example to change its password" << endl;
+    std::string help() const override {
+        return "Used to update a user, for example to change its password";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -802,7 +808,7 @@ public:
             BSONObjBuilder credentialsBuilder(updateSetBuilder.subobjStart("credentials"));
 
             // Add SCRAM credentials.
-            BSONObj scramCred = scram::generateCredentials(
+            BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
                 args.hashedPassword, saslGlobalParams.scramIterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
 
@@ -894,8 +900,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops a single user." << endl;
+    std::string help() const override {
+        return "Drops a single user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -961,8 +967,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops all users for a single database." << endl;
+    std::string help() const override {
+        return "Drops all users for a single database.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1017,8 +1023,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants roles to a user." << endl;
+    std::string help() const override {
+        return "Grants roles to a user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1089,8 +1095,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes roles from a user." << endl;
+    std::string help() const override {
+        return "Revokes roles from a user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1165,8 +1171,8 @@ public:
 
     CmdUsersInfo() : BasicCommand("usersInfo") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Returns information about users." << endl;
+    std::string help() const override {
+        return "Returns information about users.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1287,8 +1293,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Adds a role to the system" << endl;
+    std::string help() const override {
+        return "Adds a role to the system";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1408,8 +1414,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Used to update a role" << endl;
+    std::string help() const override {
+        return "Used to update a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1525,8 +1531,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants privileges to a role" << endl;
+    std::string help() const override {
+        return "Grants privileges to a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1635,8 +1641,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes privileges from a role" << endl;
+    std::string help() const override {
+        return "Revokes privileges from a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1747,8 +1753,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants roles to another role." << endl;
+    std::string help() const override {
+        return "Grants roles to another role.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1836,8 +1842,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes roles from another role." << endl;
+    std::string help() const override {
+        return "Revokes roles from another role.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1920,12 +1926,11 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops a single role.  Before deleting the role completely it must remove it "
-              "from any users or roles that reference it.  If any errors occur in the middle "
-              "of that process it's possible to be left in a state where the role has been "
-              "removed from some user/roles but otherwise still exists."
-           << endl;
+    std::string help() const override {
+        return "Drops a single role.  Before deleting the role completely it must remove it "
+               "from any users or roles that reference it.  If any errors occur in the middle "
+               "of that process it's possible to be left in a state where the role has been "
+               "removed from some user/roles but otherwise still exists.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1986,15 +1991,11 @@ public:
         // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
         authzManager->invalidateUserCache();
         if (!status.isOK()) {
-            ErrorCodes::Error code = status.code() == ErrorCodes::UnknownError
-                ? ErrorCodes::UserModificationFailed
-                : status.code();
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(code,
-                       str::stream() << "Failed to remove role " << roleName.getFullName()
-                                     << " from all users: "
-                                     << status.reason()));
+                useDefaultCode(status, ErrorCodes::UserModificationFailed)
+                    .withContext(str::stream() << "Failed to remove role " << roleName.getFullName()
+                                               << " from all users"));
         }
 
         // Remove this role from all other roles
@@ -2015,15 +2016,12 @@ public:
         // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
         authzManager->invalidateUserCache();
         if (!status.isOK()) {
-            ErrorCodes::Error code = status.code() == ErrorCodes::UnknownError
-                ? ErrorCodes::RoleModificationFailed
-                : status.code();
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(code,
-                       str::stream() << "Removed role " << roleName.getFullName()
-                                     << " from all users but failed to remove from all roles: "
-                                     << status.reason()));
+                useDefaultCode(status, ErrorCodes::RoleModificationFailed)
+                    .withContext(
+                        str::stream() << "Removed role " << roleName.getFullName()
+                                      << " from all users but failed to remove from all roles"));
         }
 
         audit::logDropRole(Client::getCurrent(), roleName);
@@ -2039,11 +2037,10 @@ public:
         if (!status.isOK()) {
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(status.code(),
-                       str::stream() << "Removed role " << roleName.getFullName()
-                                     << " from all users and roles but failed to actually delete"
-                                        " the role itself: "
-                                     << status.reason()));
+                status.withContext(
+                    str::stream() << "Removed role " << roleName.getFullName()
+                                  << " from all users and roles but failed to actually delete"
+                                     " the role itself"));
         }
 
         dassert(nMatched == 0 || nMatched == 1);
@@ -2071,13 +2068,12 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops all roles from the given database.  Before deleting the roles completely "
-              "it must remove them from any users or other roles that reference them.  If any "
-              "errors occur in the middle of that process it's possible to be left in a state "
-              "where the roles have been removed from some user/roles but otherwise still "
-              "exist."
-           << endl;
+    std::string help() const override {
+        return "Drops all roles from the given database.  Before deleting the roles completely "
+               "it must remove them from any users or other roles that reference them.  If any "
+               "errors occur in the middle of that process it's possible to be left in a state "
+               "where the roles have been removed from some user/roles but otherwise still "
+               "exist.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2118,15 +2114,11 @@ public:
         // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
         authzManager->invalidateUserCache();
         if (!status.isOK()) {
-            ErrorCodes::Error code = status.code() == ErrorCodes::UnknownError
-                ? ErrorCodes::UserModificationFailed
-                : status.code();
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(code,
-                       str::stream() << "Failed to remove roles from \"" << dbname
-                                     << "\" db from all users: "
-                                     << status.reason()));
+                useDefaultCode(status, ErrorCodes::UserModificationFailed)
+                    .withContext(str::stream() << "Failed to remove roles from \"" << dbname
+                                               << "\" db from all users"));
         }
 
         // Remove these roles from all other roles
@@ -2144,15 +2136,11 @@ public:
         // Must invalidate even on bad status - what if the write succeeded but the GLE failed?
         authzManager->invalidateUserCache();
         if (!status.isOK()) {
-            ErrorCodes::Error code = status.code() == ErrorCodes::UnknownError
-                ? ErrorCodes::RoleModificationFailed
-                : status.code();
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(code,
-                       str::stream() << "Failed to remove roles from \"" << dbname
-                                     << "\" db from all roles: "
-                                     << status.reason()));
+                useDefaultCode(status, ErrorCodes::RoleModificationFailed)
+                    .withContext(str::stream() << "Failed to remove roles from \"" << dbname
+                                               << "\" db from all roles"));
         }
 
         audit::logDropAllRolesFromDatabase(Client::getCurrent(), dbname);
@@ -2164,12 +2152,11 @@ public:
         if (!status.isOK()) {
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(status.code(),
-                       str::stream() << "Removed roles from \"" << dbname
-                                     << "\" db "
-                                        " from all users and roles but failed to actually delete"
-                                        " those roles themselves: "
-                                     << status.reason()));
+                status.withContext(
+                    str::stream() << "Removed roles from \"" << dbname
+                                  << "\" db "
+                                     " from all users and roles but failed to actually delete"
+                                     " those roles themselves"));
         }
 
         result.append("n", nMatched);
@@ -2218,8 +2205,8 @@ public:
 
     CmdRolesInfo() : BasicCommand("rolesInfo") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Returns information about roles." << endl;
+    std::string help() const override {
+        return "Returns information about roles.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2307,8 +2294,8 @@ public:
 
     CmdInvalidateUserCache() : BasicCommand("invalidateUserCache") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Invalidates the in-memory cache of user information" << endl;
+    std::string help() const override {
+        return "Invalidates the in-memory cache of user information";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2344,8 +2331,8 @@ public:
 
     CmdGetCacheGeneration() : BasicCommand("_getUserCacheGeneration") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "internal" << endl;
+    std::string help() const override {
+        return "internal";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2391,8 +2378,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Internal command used by mongorestore for updating user/role data" << endl;
+    std::string help() const override {
+        return "Internal command used by mongorestore for updating user/role data";
     }
 
     virtual Status checkAuthForCommand(Client* client,

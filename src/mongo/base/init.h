@@ -40,8 +40,6 @@
 
 #pragma once
 
-#include <tuple>
-
 #include "mongo/base/global_initializer.h"
 #include "mongo/base/global_initializer_registerer.h"
 #include "mongo/base/initializer.h"
@@ -49,7 +47,6 @@
 #include "mongo/base/initializer_function.h"
 #include "mongo/base/make_string_vector.h"
 #include "mongo/base/status.h"
-#include "mongo/stdx/functional.h"
 
 /**
  * Convenience parameter representing an empty set of prerequisites for an initializer function.

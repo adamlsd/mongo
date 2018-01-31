@@ -28,7 +28,10 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/base/init.h"
+
 
 namespace mongo {
 template <typename T>

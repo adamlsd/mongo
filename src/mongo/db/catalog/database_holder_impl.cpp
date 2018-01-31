@@ -42,6 +42,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/oplog.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/util/log.h"
@@ -175,6 +176,15 @@ Database* DatabaseHolderImpl::openDb(OperationContext* opCtx, StringData ns, boo
     return it->second;
 }
 
+namespace {
+void evictDatabaseFromUUIDCatalog(OperationContext* opCtx, Database* db) {
+    UUIDCatalog::get(opCtx).onCloseDatabase(db);
+    for (auto&& coll : *db) {
+        NamespaceUUIDCache::get(opCtx).evictNamespace(coll->ns());
+    }
+}
+}  // namespace
+
 void DatabaseHolderImpl::close(OperationContext* opCtx, StringData ns, const std::string& reason) {
     invariant(opCtx->lockState()->isW());
 
@@ -188,10 +198,8 @@ void DatabaseHolderImpl::close(OperationContext* opCtx, StringData ns, const std
     }
 
     auto db = it->second;
-    UUIDCatalog::get(opCtx).onCloseDatabase(db);
-    for (auto&& coll : *db) {
-        NamespaceUUIDCache::get(opCtx).evictNamespace(coll->ns());
-    }
+    repl::oplogCheckCloseDatabase(opCtx, db);
+    evictDatabaseFromUUIDCatalog(opCtx, db);
 
     db->close(opCtx, reason);
     delete db;
@@ -233,6 +241,8 @@ bool DatabaseHolderImpl::closeAll(OperationContext* opCtx,
         }
 
         Database* db = _dbs[name];
+        repl::oplogCheckCloseDatabase(opCtx, db);
+        evictDatabaseFromUUIDCatalog(opCtx, db);
         db->close(opCtx, reason);
         delete db;
 

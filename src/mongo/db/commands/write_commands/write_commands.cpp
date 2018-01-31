@@ -198,8 +198,8 @@ class WriteCommand : public Command {
 public:
     explicit WriteCommand(StringData name) : Command(name) {}
 
-    bool slaveOk() const final {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const final {
+        return AllowedOnSecondary::kNever;
     }
 
     bool shouldAffectCommandCounter() const final {
@@ -246,8 +246,8 @@ public:
         redactTooLongLog(cmdObj, "documents");
     }
 
-    void help(std::stringstream& help) const final {
-        help << "insert documents";
+    std::string help() const final {
+        return "insert documents";
     }
 
     Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) final {
@@ -277,8 +277,8 @@ public:
         redactTooLongLog(cmdObj, "updates");
     }
 
-    void help(std::stringstream& help) const final {
-        help << "update documents";
+    std::string help() const final {
+        return "update documents";
     }
 
     Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) final {
@@ -344,8 +344,8 @@ public:
         redactTooLongLog(cmdObj, "deletes");
     }
 
-    void help(std::stringstream& help) const final {
-        help << "delete documents";
+    std::string help() const final {
+        return "delete documents";
     }
 
     Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) final {

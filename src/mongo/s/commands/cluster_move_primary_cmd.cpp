@@ -57,8 +57,8 @@ class MoveDatabasePrimaryCommand : public BasicCommand {
 public:
     MoveDatabasePrimaryCommand() : BasicCommand("movePrimary", "moveprimary") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -69,8 +69,8 @@ public:
         return true;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << " example: { moveprimary : 'foo' , to : 'localhost:9999' }";
+    std::string help() const override {
+        return " example: { moveprimary : 'foo' , to : 'localhost:9999' }";
     }
 
     virtual Status checkAuthForCommand(Client* client,

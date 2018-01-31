@@ -123,13 +123,12 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
-    bool slaveOverrideOk() const {
-        return false;
+    std::string help() const override {
+        return {};
     }
-    void help(std::stringstream& h) const {}
 
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

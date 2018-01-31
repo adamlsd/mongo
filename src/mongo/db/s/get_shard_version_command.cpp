@@ -50,16 +50,16 @@ class GetShardVersion : public BasicCommand {
 public:
     GetShardVersion() : BasicCommand("getShardVersion") {}
 
-    void help(std::stringstream& help) const override {
-        help << " example: { getShardVersion : 'alleyinsider.foo'  } ";
+    std::string help() const override {
+        return " example: { getShardVersion : 'alleyinsider.foo'  } ";
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

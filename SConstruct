@@ -306,6 +306,11 @@ add_option('use-system-valgrind',
     nargs=0,
 )
 
+add_option('use-system-google-benchmark',
+    help='use system version of Google benchmark library',
+    nargs=0,
+)
+
 add_option('use-system-zlib',
     help='use system version of zlib library',
     nargs=0,
@@ -557,6 +562,7 @@ def variable_tools_converter(val):
         'idl_tool',
         "jsheader",
         "mergelib",
+        "mongo_benchmark",
         "mongo_integrationtest",
         "mongo_unittest",
         "textfile",
@@ -901,6 +907,8 @@ envDict = dict(BUILD_ROOT=buildDir,
                UNITTEST_LIST='$BUILD_ROOT/unittests.txt',
                INTEGRATION_TEST_ALIAS='integration_tests',
                INTEGRATION_TEST_LIST='$BUILD_ROOT/integration_tests.txt',
+               BENCHMARK_ALIAS='benchmarks',
+               BENCHMARK_LIST='$BUILD_ROOT/benchmarks.txt',
                CONFIGUREDIR='$BUILD_ROOT/scons/$VARIANT_DIR/sconf_temp',
                CONFIGURELOG='$BUILD_ROOT/scons/config.log',
                INSTALL_DIR=installDir,
@@ -1758,9 +1766,11 @@ mongo_modules = moduleconfig.discover_modules('src/mongo/db/modules', get_option
 env['MONGO_MODULES'] = [m.name for m in mongo_modules]
 
 # --- check system ---
-
+ssl_provider = None
+ 
 def doConfigure(myenv):
     global wiredtiger
+    global ssl_provider
 
     # Check that the compilers work.
     #
@@ -2844,10 +2854,11 @@ def doConfigure(myenv):
 
     ssl_provider = get_option("ssl-provider")
     if ssl_provider == 'auto':
-        if conf.env.TargetOSIs('windows', 'darwin', 'macOS'):
-            ssl_provider = 'native'
-        else:
-            ssl_provider = 'openssl'
+        # TODO: When native platforms are implemented, make them the default
+        # if conf.env.TargetOSIs('windows', 'darwin', 'macOS'):
+        #     ssl_provider = 'native'
+        # else:
+        ssl_provider = 'openssl'
 
     if ssl_provider == 'native':
         if conf.env.TargetOSIs('windows'):
@@ -2873,7 +2884,8 @@ def doConfigure(myenv):
         # Either crypto engine is native,
         # or it's OpenSSL and has been checked to be working.
         conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL")
-
+    else:
+        ssl_provider = "none"
 
     if use_system_version_of_library("pcre"):
         conf.FindSysLibDep("pcre", ["pcre"])
@@ -3226,6 +3238,7 @@ Export("debugBuild optBuild")
 Export("wiredtiger")
 Export("mmapv1")
 Export("endian")
+Export("ssl_provider")
 
 def injectMongoIncludePaths(thisEnv):
     thisEnv.AppendUnique(CPPPATH=['$BUILD_DIR'])

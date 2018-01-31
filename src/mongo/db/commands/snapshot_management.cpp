@@ -44,8 +44,8 @@ class CmdMakeSnapshot final : public BasicCommand {
 public:
     CmdMakeSnapshot() : BasicCommand("makeSnapshot") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -61,8 +61,8 @@ public:
         return Status::OK();
     }
 
-    virtual void help(std::stringstream& h) const {
-        h << "Creates a new named snapshot";
+    std::string help() const override {
+        return "Creates a new named snapshot";
     }
 
     bool run(OperationContext* opCtx,
@@ -92,8 +92,8 @@ class CmdSetCommittedSnapshot final : public BasicCommand {
 public:
     CmdSetCommittedSnapshot() : BasicCommand("setCommittedSnapshot") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -109,8 +109,8 @@ public:
         return Status::OK();
     }
 
-    virtual void help(std::stringstream& h) const {
-        h << "Sets the snapshot for {readConcern: {level: 'majority'}}";
+    std::string help() const override {
+        return "Sets the snapshot for {readConcern: {level: 'majority'}}";
     }
 
     bool run(OperationContext* opCtx,

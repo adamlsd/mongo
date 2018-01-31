@@ -63,13 +63,12 @@ public:
         return false;
     }
 
-    virtual bool slaveOk() const {
-        // ok on --slave setups
-        return repl::getGlobalReplicationCoordinator()->getSettings().isSlave();
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        if (repl::getGlobalReplicationCoordinator()->getSettings().isSlave()) {
+            // ok on --slave setups
+            return Command::AllowedOnSecondary::kAlways;
+        }
+        return Command::AllowedOnSecondary::kOptIn;
     }
 
     virtual bool maintenanceOk() const {
@@ -90,8 +89,8 @@ public:
         return ReadWriteType::kRead;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "count objects in collection";
+    std::string help() const override {
+        return "count objects in collection";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,

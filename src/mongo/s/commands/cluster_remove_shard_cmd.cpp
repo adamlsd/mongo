@@ -45,12 +45,12 @@ class RemoveShardCmd : public BasicCommand {
 public:
     RemoveShardCmd() : BasicCommand("removeShard", "removeshard") {}
 
-    void help(std::stringstream& help) const override {
-        help << "remove a shard from the system.";
+    std::string help() const override {
+        return "remove a shard from the system.";
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

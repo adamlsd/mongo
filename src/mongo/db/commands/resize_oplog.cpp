@@ -54,8 +54,8 @@ class CmdReplSetResizeOplog : public BasicCommand {
 public:
     CmdReplSetResizeOplog() : BasicCommand("replSetResizeOplog") {}
 
-    virtual bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const final {
@@ -66,8 +66,8 @@ public:
         return false;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "resize oplog size in MB";
+    std::string help() const override {
+        return "resize oplog size in MB";
     }
 
     Status checkAuthForCommand(Client* client,

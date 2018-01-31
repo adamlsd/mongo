@@ -70,11 +70,9 @@ public:
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override;
 
-    virtual bool slaveOk() const;
+    AllowedOnSecondary secondaryAllowed() const override;
 
-    virtual bool slaveOverrideOk() const;
-
-    virtual void help(std::stringstream& ss) const;
+    std::string help() const override;
 
     /**
      * One action type defined for index filter commands:

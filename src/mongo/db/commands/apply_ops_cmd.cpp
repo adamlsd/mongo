@@ -202,17 +202,17 @@ class ApplyOpsCmd : public BasicCommand {
 public:
     ApplyOpsCmd() : BasicCommand("applyOps") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
-                "res : ... } ] }";
+    std::string help() const override {
+        return "internal (sharding)\n{ applyOps : [ ] , preCondition : [ { ns : ... , q : ... , "
+               "res : ... } ] }";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,

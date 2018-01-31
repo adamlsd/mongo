@@ -56,12 +56,8 @@ class ListDatabasesCmd : public BasicCommand {
 public:
     ListDatabasesCmd() : BasicCommand("listDatabases", "listdatabases") {}
 
-    bool slaveOk() const final {
-        return true;
-    }
-
-    bool slaveOverrideOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const final {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const final {
@@ -73,8 +69,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const final {
-        help << "list databases in a cluster";
+    std::string help() const override {
+        return "list databases in a cluster";
     }
 
     /* listDatabases is always authorized,

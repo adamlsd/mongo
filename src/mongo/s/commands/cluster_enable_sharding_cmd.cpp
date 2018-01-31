@@ -52,8 +52,8 @@ class EnableShardingCmd : public ErrmsgCommandDeprecated {
 public:
     EnableShardingCmd() : ErrmsgCommandDeprecated("enableSharding", "enablesharding") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -64,10 +64,10 @@ public:
         return true;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "Enable sharding for a database. "
-             << "(Use 'shardcollection' command afterwards.)\n"
-             << "  { enablesharding : \"<dbname>\" }\n";
+    std::string help() const override {
+        return "Enable sharding for a database. "
+               "(Use 'shardcollection' command afterwards.)\n"
+               "  { enablesharding : \"<dbname>\" }\n";
     }
 
     virtual Status checkAuthForCommand(Client* client,

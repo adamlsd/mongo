@@ -57,21 +57,21 @@ public:
     FlushRoutingTableCacheUpdates()
         : BasicCommand("_flushRoutingTableCacheUpdates", "forceRoutingTableRefresh") {}
 
-    void help(std::stringstream& help) const override {
-        help << "Internal command which waits for any pending routing table cache updates for a "
-                "particular namespace to be written locally. The operationTime returned in the "
-                "response metadata is guaranteed to be at least as late as the last routing table "
-                "cache update to the local disk. Takes a 'forceRemoteRefresh' option to make this "
-                "node refresh its cache from the config server before waiting for the last refresh "
-                "to be persisted.";
+    std::string help() const override {
+        return "Internal command which waits for any pending routing table cache updates for a "
+               "particular namespace to be written locally. The operationTime returned in the "
+               "response metadata is guaranteed to be at least as late as the last routing table "
+               "cache update to the local disk. Takes a 'forceRemoteRefresh' option to make this "
+               "node refresh its cache from the config server before waiting for the last refresh "
+               "to be persisted.";
     }
 
     bool adminOnly() const override {
         return true;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {

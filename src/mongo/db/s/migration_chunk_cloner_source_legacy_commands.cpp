@@ -75,7 +75,7 @@ public:
         auto css = CollectionShardingState::get(opCtx, *nss);
         uassert(ErrorCodes::IllegalOperation,
                 str::stream() << "No active migrations were found for collection " << nss->ns(),
-                css && css->getMigrationSourceManager());
+                css->getMigrationSourceManager());
 
         // It is now safe to access the cloner
         _chunkCloner = dynamic_cast<MigrationChunkClonerSourceLegacy*>(
@@ -117,16 +117,16 @@ class InitialCloneCommand : public BasicCommand {
 public:
     InitialCloneCommand() : BasicCommand("_migrateClone") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -179,16 +179,16 @@ class TransferModsCommand : public BasicCommand {
 public:
     TransferModsCommand() : BasicCommand("_transferMods") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -228,16 +228,16 @@ class MigrateSessionCommand : public BasicCommand {
 public:
     MigrateSessionCommand() : BasicCommand("_getNextSessionMods") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {

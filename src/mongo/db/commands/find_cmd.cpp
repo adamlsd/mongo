@@ -69,12 +69,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool slaveOverrideOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     bool maintenanceOk() const override {
@@ -91,8 +87,8 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "query for documents";
+    std::string help() const override {
+        return "query for documents";
     }
 
     LogicalOp getLogicalOp() const override {

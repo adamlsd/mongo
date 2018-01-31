@@ -48,21 +48,17 @@ class PipelineCommand : public BasicCommand {
 public:
     PipelineCommand() : BasicCommand("aggregate") {}
 
-    void help(std::stringstream& help) const override {
-        help << "Runs the aggregation command. See http://dochub.mongodb.org/core/aggregation for "
-                "more details.";
+    std::string help() const override {
+        return "Runs the aggregation command. See http://dochub.mongodb.org/core/aggregation for "
+               "more details.";
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return Pipeline::aggSupportsWriteConcern(cmd);
     }
 
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool slaveOverrideOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     bool supportsReadConcern(const std::string& dbName,

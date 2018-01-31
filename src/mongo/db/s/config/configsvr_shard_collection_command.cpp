@@ -56,7 +56,7 @@
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/config_server_client.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/migration_secondary_throttle_options.h"
+#include "mongo/s/request_types/migration_secondary_throttle_options.h"
 #include "mongo/s/request_types/shard_collection_gen.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/util/log.h"
@@ -706,8 +706,8 @@ public:
         return Status::OK();
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -718,10 +718,10 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "Internal command, which is exported by the sharding config server. Do not call "
-             << "directly. Shards a collection. Requires key. Optional unique. Sharding must "
-                "already be enabled for the database";
+    std::string help() const override {
+        return "Internal command, which is exported by the sharding config server. Do not call "
+               "directly. Shards a collection. Requires key. Optional unique. Sharding must "
+               "already be enabled for the database";
     }
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {

@@ -69,8 +69,8 @@ class AddShardToZoneCmd : public BasicCommand {
 public:
     AddShardToZoneCmd() : BasicCommand("addShardToZone", "addshardtozone") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -81,8 +81,8 @@ public:
         return false;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "adds a shard to zone";
+    std::string help() const override {
+        return "adds a shard to zone";
     }
 
     Status checkAuthForCommand(Client* client,

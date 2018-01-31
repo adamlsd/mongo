@@ -49,12 +49,8 @@ using std::stringstream;
  */
 class CmdLockInfo : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return true;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -65,8 +61,8 @@ public:
         return false;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "show all lock info on the server";
+    std::string help() const override {
+        return "show all lock info on the server";
     }
 
     Status checkAuthForCommand(Client* client,

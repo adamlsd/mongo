@@ -42,16 +42,16 @@ class ListShardsCmd : public BasicCommand {
 public:
     ListShardsCmd() : BasicCommand("listShards", "listshards") {}
 
-    void help(std::stringstream& help) const override {
-        help << "list all shards of the system";
+    std::string help() const override {
+        return "list all shards of the system";
     }
 
     bool adminOnly() const override {
         return true;
     }
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {

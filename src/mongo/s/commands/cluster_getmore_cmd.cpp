@@ -55,8 +55,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const final {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool maintenanceOk() const final {
@@ -74,8 +74,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const final {
-        help << "retrieve more documents for a cursor id";
+    std::string help() const final {
+        return "retrieve more documents for a cursor id";
     }
 
     Status checkAuthForCommand(Client* client,

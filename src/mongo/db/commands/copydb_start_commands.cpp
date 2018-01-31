@@ -78,10 +78,9 @@ public:
         return true;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
-
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -94,9 +93,9 @@ public:
         return Status::OK();
     }
 
-    virtual void help(stringstream& help) const {
-        help << "Initialize a SASL auth session for subsequent copy db request "
-                "from secure server\n";
+    std::string help() const override {
+        return "Initialize a SASL auth session for subsequent copy db request "
+               "from secure server\n";
     }
 
     virtual bool errmsgRun(OperationContext* opCtx,

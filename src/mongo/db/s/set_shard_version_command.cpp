@@ -62,16 +62,16 @@ class SetShardVersion : public ErrmsgCommandDeprecated {
 public:
     SetShardVersion() : ErrmsgCommandDeprecated("setShardVersion") {}
 
-    void help(std::stringstream& help) const override {
-        help << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
     bool adminOnly() const override {
         return true;
     }
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {

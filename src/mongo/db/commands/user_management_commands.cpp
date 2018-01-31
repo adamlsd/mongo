@@ -611,16 +611,16 @@ class CmdCreateUser : public BasicCommand {
 public:
     CmdCreateUser() : BasicCommand("createUser") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Adds a user to the system" << endl;
+    std::string help() const override {
+        return "Adds a user to the system";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -698,7 +698,7 @@ public:
             credentialsBuilder.append("external", true);
         } else {
             // Add SCRAM credentials.
-            BSONObj scramCred = scram::generateCredentials(
+            BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
                 args.hashedPassword, saslGlobalParams.scramIterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
         }
@@ -758,16 +758,16 @@ class CmdUpdateUser : public BasicCommand {
 public:
     CmdUpdateUser() : BasicCommand("updateUser") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Used to update a user, for example to change its password" << endl;
+    std::string help() const override {
+        return "Used to update a user, for example to change its password";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -808,7 +808,7 @@ public:
             BSONObjBuilder credentialsBuilder(updateSetBuilder.subobjStart("credentials"));
 
             // Add SCRAM credentials.
-            BSONObj scramCred = scram::generateCredentials(
+            BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
                 args.hashedPassword, saslGlobalParams.scramIterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
 
@@ -892,16 +892,16 @@ class CmdDropUser : public BasicCommand {
 public:
     CmdDropUser() : BasicCommand("dropUser") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops a single user." << endl;
+    std::string help() const override {
+        return "Drops a single user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -959,16 +959,16 @@ class CmdDropAllUsersFromDatabase : public BasicCommand {
 public:
     CmdDropAllUsersFromDatabase() : BasicCommand("dropAllUsersFromDatabase") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops all users for a single database." << endl;
+    std::string help() const override {
+        return "Drops all users for a single database.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1015,16 +1015,16 @@ class CmdGrantRolesToUser : public BasicCommand {
 public:
     CmdGrantRolesToUser() : BasicCommand("grantRolesToUser") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants roles to a user." << endl;
+    std::string help() const override {
+        return "Grants roles to a user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1087,16 +1087,16 @@ class CmdRevokeRolesFromUser : public BasicCommand {
 public:
     CmdRevokeRolesFromUser() : BasicCommand("revokeRolesFromUser") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes roles from a user." << endl;
+    std::string help() const override {
+        return "Revokes roles from a user.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1157,12 +1157,8 @@ public:
 
 class CmdUsersInfo : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -1171,8 +1167,8 @@ public:
 
     CmdUsersInfo() : BasicCommand("usersInfo") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Returns information about users." << endl;
+    std::string help() const override {
+        return "Returns information about users.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1285,16 +1281,16 @@ class CmdCreateRole : public BasicCommand {
 public:
     CmdCreateRole() : BasicCommand("createRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Adds a role to the system" << endl;
+    std::string help() const override {
+        return "Adds a role to the system";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1406,16 +1402,16 @@ class CmdUpdateRole : public BasicCommand {
 public:
     CmdUpdateRole() : BasicCommand("updateRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Used to update a role" << endl;
+    std::string help() const override {
+        return "Used to update a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1523,16 +1519,16 @@ class CmdGrantPrivilegesToRole : public BasicCommand {
 public:
     CmdGrantPrivilegesToRole() : BasicCommand("grantPrivilegesToRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants privileges to a role" << endl;
+    std::string help() const override {
+        return "Grants privileges to a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1633,16 +1629,16 @@ class CmdRevokePrivilegesFromRole : public BasicCommand {
 public:
     CmdRevokePrivilegesFromRole() : BasicCommand("revokePrivilegesFromRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes privileges from a role" << endl;
+    std::string help() const override {
+        return "Revokes privileges from a role";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1745,16 +1741,16 @@ class CmdGrantRolesToRole : public BasicCommand {
 public:
     CmdGrantRolesToRole() : BasicCommand("grantRolesToRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Grants roles to another role." << endl;
+    std::string help() const override {
+        return "Grants roles to another role.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1834,16 +1830,16 @@ class CmdRevokeRolesFromRole : public BasicCommand {
 public:
     CmdRevokeRolesFromRole() : BasicCommand("revokeRolesFromRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Revokes roles from another role." << endl;
+    std::string help() const override {
+        return "Revokes roles from another role.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -1918,20 +1914,19 @@ class CmdDropRole : public BasicCommand {
 public:
     CmdDropRole() : BasicCommand("dropRole") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops a single role.  Before deleting the role completely it must remove it "
-              "from any users or roles that reference it.  If any errors occur in the middle "
-              "of that process it's possible to be left in a state where the role has been "
-              "removed from some user/roles but otherwise still exists."
-           << endl;
+    std::string help() const override {
+        return "Drops a single role.  Before deleting the role completely it must remove it "
+               "from any users or roles that reference it.  If any errors occur in the middle "
+               "of that process it's possible to be left in a state where the role has been "
+               "removed from some user/roles but otherwise still exists.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2061,21 +2056,20 @@ class CmdDropAllRolesFromDatabase : public BasicCommand {
 public:
     CmdDropAllRolesFromDatabase() : BasicCommand("dropAllRolesFromDatabase") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Drops all roles from the given database.  Before deleting the roles completely "
-              "it must remove them from any users or other roles that reference them.  If any "
-              "errors occur in the middle of that process it's possible to be left in a state "
-              "where the roles have been removed from some user/roles but otherwise still "
-              "exist."
-           << endl;
+    std::string help() const override {
+        return "Drops all roles from the given database.  Before deleting the roles completely "
+               "it must remove them from any users or other roles that reference them.  If any "
+               "errors occur in the middle of that process it's possible to be left in a state "
+               "where the roles have been removed from some user/roles but otherwise still "
+               "exist.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2193,12 +2187,8 @@ public:
 
 class CmdRolesInfo : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -2207,8 +2197,8 @@ public:
 
     CmdRolesInfo() : BasicCommand("rolesInfo") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Returns information about roles." << endl;
+    std::string help() const override {
+        return "Returns information about roles.";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2282,8 +2272,8 @@ public:
 
 class CmdInvalidateUserCache : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -2296,8 +2286,8 @@ public:
 
     CmdInvalidateUserCache() : BasicCommand("invalidateUserCache") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "Invalidates the in-memory cache of user information" << endl;
+    std::string help() const override {
+        return "Invalidates the in-memory cache of user information";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2319,8 +2309,8 @@ public:
 
 class CmdGetCacheGeneration : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -2333,8 +2323,8 @@ public:
 
     CmdGetCacheGeneration() : BasicCommand("_getUserCacheGeneration") {}
 
-    virtual void help(stringstream& ss) const {
-        ss << "internal" << endl;
+    std::string help() const override {
+        return "internal";
     }
 
     virtual Status checkAuthForCommand(Client* client,
@@ -2368,8 +2358,8 @@ class CmdMergeAuthzCollections : public BasicCommand {
 public:
     CmdMergeAuthzCollections() : BasicCommand("_mergeAuthzCollections") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -2380,8 +2370,8 @@ public:
         return true;
     }
 
-    virtual void help(stringstream& ss) const {
-        ss << "Internal command used by mongorestore for updating user/role data" << endl;
+    std::string help() const override {
+        return "Internal command used by mongorestore for updating user/role data";
     }
 
     virtual Status checkAuthForCommand(Client* client,

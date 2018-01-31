@@ -66,14 +66,14 @@ using std::vector;
 /* "dropIndexes" is now the preferred form - "deleteIndexes" deprecated */
 class CmdDropIndexes : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-    virtual void help(stringstream& help) const {
-        help << "drop indexes for a collection";
+    std::string help() const override {
+        return "drop indexes for a collection";
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
@@ -96,14 +96,14 @@ public:
 
 class CmdReIndex : public ErrmsgCommandDeprecated {
 public:
-    virtual bool slaveOk() const {
-        return true;
-    }  // can reindex on a secondary
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;  // can reindex on a secondary
+    }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual void help(stringstream& help) const {
-        help << "re-index a collection";
+    std::string help() const override {
+        return "re-index a collection";
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

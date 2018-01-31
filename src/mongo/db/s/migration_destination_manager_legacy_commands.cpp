@@ -45,7 +45,7 @@
 #include "mongo/db/s/chunk_move_write_concern_options.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/s/chunk_version.h"
-#include "mongo/s/migration_secondary_throttle_options.h"
+#include "mongo/s/request_types/migration_secondary_throttle_options.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 
@@ -59,12 +59,12 @@ class RecvChunkStartCommand : public ErrmsgCommandDeprecated {
 public:
     RecvChunkStartCommand() : ErrmsgCommandDeprecated("_recvChunkStart") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -159,12 +159,12 @@ class RecvChunkStatusCommand : public BasicCommand {
 public:
     RecvChunkStatusCommand() : BasicCommand("_recvChunkStatus") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -197,12 +197,12 @@ class RecvChunkCommitCommand : public BasicCommand {
 public:
     RecvChunkCommitCommand() : BasicCommand("_recvChunkCommit") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -243,12 +243,12 @@ class RecvChunkAbortCommand : public BasicCommand {
 public:
     RecvChunkAbortCommand() : BasicCommand("_recvChunkAbort") {}
 
-    void help(std::stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {

@@ -131,17 +131,17 @@ class DoTxnCmd : public BasicCommand {
 public:
     DoTxnCmd() : BasicCommand("doTxn") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "internal (sharding)\n{ doTxn : [ ] , preCondition : [ { ns : ... , q : ... , "
-                "res : ... } ] }";
+    std::string help() const override {
+        return "internal (sharding)\n{ doTxn : [ ] , preCondition : [ { ns : ... , q : ... , "
+               "res : ... } ] }";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,

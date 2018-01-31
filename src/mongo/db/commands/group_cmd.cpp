@@ -71,12 +71,8 @@ private:
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     bool supportsReadConcern(const std::string& dbName,
@@ -93,8 +89,8 @@ private:
         return FindCommon::kInitReplyBufferSize;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "http://dochub.mongodb.org/core/aggregation";
+    std::string help() const override {
+        return "http://dochub.mongodb.org/core/aggregation";
     }
 
     virtual Status checkAuthForCommand(Client* client,

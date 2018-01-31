@@ -420,7 +420,10 @@ OpTime logOp(OperationContext* opCtx,
     // For commands, the test below is on the command ns and therefore does not check for
     // specific namespaces such as system.profile. This is the caller's responsibility.
     if (replCoord->isOplogDisabledFor(opCtx, nss)) {
-        invariant(statementId == kUninitializedStmtId);
+        uassert(ErrorCodes::IllegalOperation,
+                str::stream() << "retryable writes is not supported for unreplicated ns: "
+                              << nss.ns(),
+                statementId == kUninitializedStmtId);
         return {};
     }
 
@@ -464,7 +467,10 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
 
     auto replCoord = ReplicationCoordinator::get(opCtx);
     if (replCoord->isOplogDisabledFor(opCtx, nss)) {
-        invariant(begin->stmtId == kUninitializedStmtId);
+        uassert(ErrorCodes::IllegalOperation,
+                str::stream() << "retryable writes is not supported for unreplicated ns: "
+                              << nss.ns(),
+                begin->stmtId == kUninitializedStmtId);
         return {};
     }
 
@@ -890,10 +896,9 @@ std::map<std::string, ApplyOpMetadata> opsMap = {
          BSONObj& cmd,
          const OpTime& opTime,
          OplogApplication::Mode mode) -> Status {
-          BSONObjBuilder resultWeDontCareAbout;
-          return applyOps(opCtx, nsToDatabase(ns), cmd, mode, &resultWeDontCareAbout);
-      },
-      {ErrorCodes::UnknownError}}},
+         BSONObjBuilder resultWeDontCareAbout;
+         return applyOps(opCtx, nsToDatabase(ns), cmd, mode, &resultWeDontCareAbout);
+     }}},
     {"convertToCapped",
      {[](OperationContext* opCtx,
          const char* ns,
@@ -1073,7 +1078,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
     // During upgrade from 3.4 to 3.6, the feature compatibility version cannot change during
     // initial sync because we cannot do some operations with UUIDs and others without.
     if ((mode == OplogApplication::Mode::kInitialSync) &&
-        requestNss == FeatureCompatibilityVersion::kCollection) {
+        requestNss.ns() == FeatureCompatibilityVersion::kCollection) {
         std::string oID;
         auto status = bsonExtractStringField(o, "_id", &oID);
         if (status.isOK() && oID == FeatureCompatibilityVersion::kParameterName) {
@@ -1526,7 +1531,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
     if ((mode == OplogApplication::Mode::kInitialSync) &&
         (std::find(whitelistedOps.begin(), whitelistedOps.end(), o.firstElementFieldName()) ==
          whitelistedOps.end()) &&
-        parseNs(nss.ns(), o) == FeatureCompatibilityVersion::kCollection) {
+        parseNs(nss.ns(), o).ns() == FeatureCompatibilityVersion::kCollection) {
         return Status(ErrorCodes::OplogOperationUnsupported,
                       str::stream() << "Applying command to feature compatibility version "
                                        "collection not supported in initial sync: "
@@ -1680,6 +1685,12 @@ void acquireOplogCollectionForLogging(OperationContext* opCtx) {
         _localOplogCollection = autoColl.getCollection();
         fassert(13347, _localOplogCollection);
     }
+}
+
+void establishOplogCollectionForLogging(OperationContext* opCtx, Collection* oplog) {
+    invariant(opCtx->lockState()->isW());
+    invariant(oplog);
+    _localOplogCollection = oplog;
 }
 
 void signalOplogWaiters() {

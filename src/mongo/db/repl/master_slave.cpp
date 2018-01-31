@@ -361,15 +361,15 @@ void ReplSource::forceResyncDead(OperationContext* opCtx, const char* requester)
 
 class HandshakeCmd : public BasicCommand {
 public:
-    void help(stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
     HandshakeCmd() : BasicCommand("handshake") {}
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return false;

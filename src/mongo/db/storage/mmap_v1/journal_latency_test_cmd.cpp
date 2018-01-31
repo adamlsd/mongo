@@ -68,8 +68,8 @@ class JournalLatencyTestCmd : public BasicCommand {
 public:
     JournalLatencyTestCmd() : BasicCommand("journalLatencyTest") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -77,8 +77,8 @@ public:
     virtual bool adminOnly() const {
         return true;
     }
-    virtual void help(stringstream& h) const {
-        h << "test how long to write and fsync to a test file in the journal/ directory";
+    std::string help() const override {
+        return "test how long to write and fsync to a test file in the journal/ directory";
     }
     // No auth needed because it only works when enabled via command line.
     virtual void addRequiredPrivileges(const std::string& dbname,

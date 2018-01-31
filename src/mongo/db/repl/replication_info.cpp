@@ -216,13 +216,13 @@ public:
     bool requiresAuth() const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
-    virtual void help(stringstream& help) const {
-        help << "Check if this server is primary for a replica pair/set; also if it is --master or "
-                "--slave in simple master/slave setups.\n";
-        help << "{ isMaster : 1 }";
+    std::string help() const override {
+        return "Check if this server is primary for a replica pair/set; also if it is --master or "
+               "--slave in simple master/slave setups.\n"
+               "{ isMaster : 1 }";
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;

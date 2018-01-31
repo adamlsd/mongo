@@ -121,6 +121,8 @@ public:
 
     virtual bool supportsRecoverToStableTimestamp() const override;
 
+    virtual Status recoverToStableTimestamp() override;
+
     bool supportsReadConcernSnapshot() const final;
 
     virtual void replicationBatchIsComplete() const override;
@@ -151,7 +153,24 @@ public:
     StatusWith<std::vector<StorageEngine::CollectionIndexNamePair>> reconcileCatalogAndIdents(
         OperationContext* opCtx) override;
 
+    void loadCatalog(OperationContext* opCtx) final;
+
+    void closeCatalog(OperationContext* opCtx) final;
+
 private:
+    using CollIter = std::list<std::string>::iterator;
+
+    Status _dropCollectionsNoTimestamp(OperationContext* opCtx,
+                                       KVDatabaseCatalogEntryBase* dbce,
+                                       CollIter begin,
+                                       CollIter end);
+
+    Status _dropCollectionsWithTimestamp(OperationContext* opCtx,
+                                         KVDatabaseCatalogEntryBase* dbce,
+                                         std::list<std::string>& toDrop,
+                                         CollIter begin,
+                                         CollIter end);
+
     class RemoveDBChange;
 
     stdx::function<KVDatabaseCatalogEntryFactory> _databaseCatalogEntryFactory;
@@ -163,6 +182,7 @@ private:
 
     const bool _supportsDocLocking;
     const bool _supportsDBLocking;
+    Timestamp _initialDataTimestamp = Timestamp::kAllowUnstableCheckpointsSentinel;
 
     std::unique_ptr<RecordStore> _catalogRecordStore;
     std::unique_ptr<KVCatalog> _catalog;

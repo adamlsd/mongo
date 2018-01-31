@@ -89,8 +89,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool maintenanceOk() const override {
@@ -112,8 +112,8 @@ public:
         return ReadWriteType::kRead;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "retrieve more results from an existing cursor";
+    std::string help() const override {
+        return "retrieve more results from an existing cursor";
     }
 
     LogicalOp getLogicalOp() const override {

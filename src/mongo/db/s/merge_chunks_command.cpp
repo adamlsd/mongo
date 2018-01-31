@@ -60,7 +60,7 @@ bool checkMetadataForSuccess(OperationContext* opCtx,
                              const BSONObj& maxKey) {
     const auto metadataAfterMerge = [&] {
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
-        return CollectionShardingState::get(opCtx, nss.ns())->getMetadata();
+        return CollectionShardingState::get(opCtx, nss)->getMetadata();
     }();
 
     uassert(ErrorCodes::StaleEpoch,
@@ -115,7 +115,7 @@ Status mergeChunks(OperationContext* opCtx,
 
     const auto metadata = [&] {
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
-        return CollectionShardingState::get(opCtx, nss.ns())->getMetadata();
+        return CollectionShardingState::get(opCtx, nss)->getMetadata();
     }();
 
     if (!metadata) {
@@ -309,10 +309,10 @@ class MergeChunksCommand : public ErrmsgCommandDeprecated {
 public:
     MergeChunksCommand() : ErrmsgCommandDeprecated("mergeChunks") {}
 
-    void help(std::stringstream& h) const override {
-        h << "Merge Chunks command\n"
-          << "usage: { mergeChunks : <ns>, bounds : [ <min key>, <max key> ],"
-          << " (opt) epoch : <epoch> }";
+    std::string help() const override {
+        return "Merge Chunks command\n"
+               "usage: { mergeChunks : <ns>, bounds : [ <min key>, <max key> ],"
+               " (opt) epoch : <epoch> }";
     }
 
     Status checkAuthForCommand(Client* client,
@@ -333,8 +333,8 @@ public:
         return true;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {

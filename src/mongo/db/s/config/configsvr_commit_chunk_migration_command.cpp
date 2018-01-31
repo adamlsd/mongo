@@ -87,12 +87,12 @@ class ConfigSvrCommitChunkMigrationCommand : public BasicCommand {
 public:
     ConfigSvrCommitChunkMigrationCommand() : BasicCommand("_configsvrCommitChunkMigration") {}
 
-    void help(std::stringstream& help) const override {
-        help << "should not be calling this directly";
+    std::string help() const override {
+        return "should not be calling this directly";
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

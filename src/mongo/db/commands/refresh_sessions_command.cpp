@@ -46,8 +46,8 @@ class RefreshSessionsCommand final : public BasicCommand {
 public:
     RefreshSessionsCommand() : BasicCommand("refreshSessions") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool adminOnly() const override {
         return false;
@@ -55,8 +55,8 @@ public:
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    void help(std::stringstream& help) const override {
-        help << "renew a set of logical sessions";
+    std::string help() const override {
+        return "renew a set of logical sessions";
     }
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,

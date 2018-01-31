@@ -45,8 +45,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool maintenanceOk() const final {
@@ -57,8 +57,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const final {
-        help << "kill a list of cursor ids";
+    std::string help() const final {
+        return "kill a list of cursor ids";
     }
 
     bool shouldAffectCommandCounter() const final {

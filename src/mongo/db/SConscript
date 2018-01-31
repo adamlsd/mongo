@@ -513,11 +513,25 @@ env.Library(
         'auth/authcore',
         'commands/server_status_core',
         'commands/test_commands_enabled',
+        'command_can_run_here',
         'service_context',
-        '$BUILD_DIR/mongo/util/uuid',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
     ],
 )
+
+env.Library(
+    target='command_can_run_here',
+    source=[
+        'command_can_run_here.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/client/read_preference',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        'service_context',
+    ],
+)
+
 
 env.CppUnitTest(
     target="commands_test",
@@ -598,6 +612,7 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/transport/service_entry_point',
         'auth/authmongod',
+        'command_can_run_here',
         'commands/dcommands_fsync',
         'concurrency/lock_manager',
         'curop',
@@ -646,7 +661,9 @@ env.Library(
         'repl/isself',
         'write_ops',
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/catalog/collection_options',
         '$BUILD_DIR/mongo/db/catalog/index_create',
+        '$BUILD_DIR/mongo/db/commands/list_collections_filter',
     ],
 )
 
@@ -709,7 +726,6 @@ env.Library(
         "concurrency/write_conflict_exception",
         "curop",
         "repl/read_concern_args",
-        "repl/repl_coordinator_impl",
         "repl/repl_coordinator_interface",
         "stats/timer_stats",
         "storage/storage_options",
@@ -874,7 +890,6 @@ env.Library(
         "$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_impl",
         "$BUILD_DIR/mongo/s/client/sharding_connection_hook",
         "$BUILD_DIR/mongo/s/coreshard",
-        "$BUILD_DIR/mongo/s/shard_id",
         "$BUILD_DIR/mongo/scripting/scripting_server",
         "$BUILD_DIR/mongo/util/clock_sources",
         "$BUILD_DIR/mongo/util/elapsed_tracker",
@@ -931,7 +946,6 @@ env.Library(
         "s/collection_metadata",
         "s/commands_db_s",
         "s/sharding",
-        "service_context_d",
         "startup_warnings_mongod",
         "stats/counters",
         "stats/serveronly_stats",
@@ -953,6 +967,20 @@ env.Library(
 )
 
 env.Library(
+    target="repair_database_and_check_version",
+    source=[
+        "repair_database_and_check_version.cpp",
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/catalog/catalog_helpers',
+        'dbdirectclient',
+        'dbhelpers',
+        'repair_database',
+        'repl/drop_pending_collection_reaper',
+    ],
+)
+
+env.Library(
     target='logical_session_id',
     source=[
         'logical_session_id.cpp',
@@ -964,7 +992,6 @@ env.Library(
         '$BUILD_DIR/mongo/crypto/sha256_block',
         '$BUILD_DIR/mongo/crypto/sha_block_${MONGO_CRYPTO}',
         '$BUILD_DIR/mongo/idl/idl_parser',
-        '$BUILD_DIR/mongo/util/uuid',
         'server_parameters',
     ],
 )
@@ -1141,7 +1168,6 @@ env.Library(
         '$BUILD_DIR/mongo/s/client/sharding_client',
         '$BUILD_DIR/mongo/s/commands/shared_cluster_commands',
         '$BUILD_DIR/mongo/s/coreshard',
-        '$BUILD_DIR/mongo/s/sharding_request_types',
         'dbdirectclient',
         'sessions_collection',
         'sessions_collection_sharded',
@@ -1333,6 +1359,7 @@ env.Library(
         'keys_collection_document',
         'logical_time',
         '$BUILD_DIR/mongo/s/client/rs_local_client',
+        '$BUILD_DIR/mongo/s/client/shard_interface',
     ],
 )
 
@@ -1353,8 +1380,8 @@ env.Library(
     target='keys_collection_manager',
     source=[
         'keys_collection_manager.cpp',
-        'keys_collection_cache_reader.cpp',
-        'keys_collection_cache_reader_and_updater.cpp',
+        'keys_collection_cache.cpp',
+        'key_generator.cpp',
     ],
     LIBDEPS=[
         'logical_clock',
@@ -1483,9 +1510,9 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='keys_collection_cache_reader_test',
+    target='keys_collection_cache_test',
     source=[
-        'keys_collection_cache_reader_test.cpp',
+        'keys_collection_cache_test.cpp',
     ],
     LIBDEPS=[
         'keys_collection_manager',
@@ -1495,9 +1522,9 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='keys_collection_cache_reader_and_updater_test',
+    target='key_generator_update_test',
     source=[
-        'keys_collection_cache_reader_and_updater_test.cpp',
+        'key_generator_update_test.cpp',
     ],
     LIBDEPS=[
         'keys_collection_manager',
@@ -1644,7 +1671,7 @@ env.Library(
         'query_exec',
         'query/command_request_response',
         'repl/oplog_entry',
-        'repl/repl_coordinator_impl',
+        'repl/repl_coordinator_interface',
         'service_context',
         'update/update_driver',
     ],
@@ -1668,8 +1695,9 @@ env.CppUnitTest(
         'transaction_history_iterator_test.cpp',
     ],
     LIBDEPS=[
-        'query_exec',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
-
+        'query_exec',
+        'service_context_d',
+        'write_ops',
     ],
 )

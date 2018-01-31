@@ -47,12 +47,12 @@ public:
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "lists the set of shards known to this instance";
+    std::string help() const override {
+        return "lists the set of shards known to this instance";
     }
 
     virtual bool adminOnly() const {

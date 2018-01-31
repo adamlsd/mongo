@@ -45,8 +45,8 @@ class RefreshLogicalSessionCacheNowCommand final : public BasicCommand {
 public:
     RefreshLogicalSessionCacheNowCommand() : BasicCommand("refreshLogicalSessionCacheNow") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const override {
@@ -57,8 +57,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "force the logical session cache to refresh. Test command only.";
+    std::string help() const override {
+        return "force the logical session cache to refresh. Test command only.";
     }
 
     // No auth needed because it only works when enabled via command line.

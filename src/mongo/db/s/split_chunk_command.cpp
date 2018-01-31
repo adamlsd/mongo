@@ -57,19 +57,19 @@ class SplitChunkCommand : public ErrmsgCommandDeprecated {
 public:
     SplitChunkCommand() : ErrmsgCommandDeprecated("splitChunk") {}
 
-    void help(std::stringstream& help) const override {
-        help << "internal command usage only\n"
-                "example:\n"
-                " { splitChunk:\"db.foo\" , keyPattern: {a:1} , min : {a:100} , max: {a:200} { "
-                "splitKeys : [ {a:150} , ... ]}";
+    std::string help() const override {
+        return "internal command usage only\n"
+               "example:\n"
+               " { splitChunk:\"db.foo\" , keyPattern: {a:1} , min : {a:100} , max: {a:200} { "
+               "splitKeys : [ {a:150} , ... ]}";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

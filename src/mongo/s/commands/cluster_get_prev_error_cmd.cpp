@@ -47,12 +47,12 @@ public:
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "get previous error (since last reseterror command)";
+    std::string help() const override {
+        return "get previous error (since last reseterror command)";
     }
 
     virtual void addRequiredPrivileges(const std::string& dbname,

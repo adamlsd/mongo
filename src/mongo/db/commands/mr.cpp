@@ -1351,23 +1351,22 @@ class MapReduceCommand : public ErrmsgCommandDeprecated {
 public:
     MapReduceCommand() : ErrmsgCommandDeprecated("mapReduce", "mapreduce") {}
 
-    virtual bool slaveOk() const {
-        return repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
-            repl::ReplicationCoordinator::modeReplSet;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        if (repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
+            repl::ReplicationCoordinator::modeReplSet) {
+            return AllowedOnSecondary::kAlways;
+        }
+        return AllowedOnSecondary::kOptIn;
     }
 
     std::size_t reserveBytesForReply() const override {
         return FindCommon::kInitReplyBufferSize;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "Run a map/reduce operation on the server.\n";
-        help << "Note this is used for aggregation, not querying, in MongoDB.\n";
-        help << "http://dochub.mongodb.org/core/mapreduce";
+    std::string help() const override {
+        return "Run a map/reduce operation on the server.\n"
+               "Note this is used for aggregation, not querying, in MongoDB.\n"
+               "http://dochub.mongodb.org/core/mapreduce";
     }
 
 
@@ -1685,17 +1684,19 @@ public:
  */
 class MapReduceFinishCommand : public BasicCommand {
 public:
-    void help(stringstream& h) const {
-        h << "internal";
+    std::string help() const override {
+        return "internal";
     }
     MapReduceFinishCommand() : BasicCommand("mapreduce.shardedfinish") {}
-    virtual bool slaveOk() const {
-        return repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
-            repl::ReplicationCoordinator::modeReplSet;
+
+    AllowedOnSecondary secondaryAllowed() const override {
+        if (repl::getGlobalReplicationCoordinator()->getReplicationMode() !=
+            repl::ReplicationCoordinator::modeReplSet) {
+            return AllowedOnSecondary::kAlways;
+        }
+        return AllowedOnSecondary::kOptIn;
     }
-    virtual bool slaveOverrideOk() const {
-        return true;
-    }
+
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }

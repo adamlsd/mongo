@@ -221,6 +221,13 @@ public:
     }
 
     /**
+     * Returns whether a namespace is replicated, based only on its string value. One notable
+     * omission is that map reduce `tmp.mr` collections may or may not be replicated. Callers must
+     * decide how to handle that case separately.
+     */
+    bool isReplicated() const;
+
+    /**
      * Returns true if cursors for this namespace are registered with the global cursor manager.
      */
     bool isGloballyManagedNamespace() const {
@@ -284,27 +291,6 @@ public:
      */
     bool isValid() const {
         return validDBName(db(), DollarInDbNameBehavior::Allow) && !coll().empty();
-    }
-
-    bool operator==(const std::string& nsIn) const {
-        return nsIn == _ns;
-    }
-    bool operator==(StringData nsIn) const {
-        return nsIn == _ns;
-    }
-    bool operator==(const NamespaceString& nsIn) const {
-        return nsIn._ns == _ns;
-    }
-
-    bool operator!=(const std::string& nsIn) const {
-        return nsIn != _ns;
-    }
-    bool operator!=(const NamespaceString& nsIn) const {
-        return nsIn._ns != _ns;
-    }
-
-    bool operator<(const NamespaceString& rhs) const {
-        return _ns < rhs._ns;
     }
 
     /** ( foo.bar ).getSisterNS( "blah" ) == foo.blah
@@ -392,6 +378,26 @@ public:
      * @return if the input is a valid collection name
      */
     static bool validCollectionName(StringData coll);
+
+    // Relops among `NamespaceString`.
+    friend bool operator==(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() == b.ns();
+    }
+    friend bool operator!=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() != b.ns();
+    }
+    friend bool operator<(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() < b.ns();
+    }
+    friend bool operator>(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() > b.ns();
+    }
+    friend bool operator<=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() <= b.ns();
+    }
+    friend bool operator>=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() >= b.ns();
+    }
 
 private:
     std::string _ns;

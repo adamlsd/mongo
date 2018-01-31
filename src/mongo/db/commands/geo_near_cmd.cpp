@@ -74,11 +74,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    bool slaveOk() const {
-        return true;
-    }
-    bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool supportsReadConcern(const std::string& dbName,
                              const BSONObj& cmdObj,
@@ -94,8 +91,8 @@ public:
         return FindCommon::kInitReplyBufferSize;
     }
 
-    void help(stringstream& h) const {
-        h << "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
+    std::string help() const override {
+        return "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
     }
 
     virtual void addRequiredPrivileges(const std::string& dbname,

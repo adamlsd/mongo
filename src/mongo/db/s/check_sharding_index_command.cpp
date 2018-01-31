@@ -59,16 +59,16 @@ class CheckShardingIndex : public ErrmsgCommandDeprecated {
 public:
     CheckShardingIndex() : ErrmsgCommandDeprecated("checkShardingIndex") {}
 
-    virtual void help(std::stringstream& help) const {
-        help << "Internal command.\n";
+    std::string help() const override {
+        return "Internal command.\n";
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual void addRequiredPrivileges(const std::string& dbname,

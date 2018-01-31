@@ -75,12 +75,8 @@ class DistinctCommand : public BasicCommand {
 public:
     DistinctCommand() : BasicCommand("distinct") {}
 
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -109,8 +105,8 @@ public:
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    virtual void help(stringstream& help) const {
-        help << "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
+    std::string help() const override {
+        return "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
     }
 
     virtual Status explain(OperationContext* opCtx,

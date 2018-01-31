@@ -197,11 +197,8 @@ BSONObj buildCollectionBson(OperationContext* opCtx,
 
 class CmdListCollections : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return false;
-    }
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
     virtual bool adminOnly() const {
         return false;
@@ -210,8 +207,8 @@ public:
         return false;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "list collections for this db";
+    std::string help() const override {
+        return "list collections for this db";
     }
 
     virtual Status checkAuthForCommand(Client* client,

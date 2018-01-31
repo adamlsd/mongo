@@ -66,10 +66,9 @@ class MulticastCmd : public BasicCommand {
 public:
     MulticastCmd() : BasicCommand("multicast") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
-
     bool adminOnly() const override {
         return true;
     }
@@ -79,8 +78,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "multicasts a command to hosts in a system";
+    std::string help() const override {
+        return "multicasts a command to hosts in a system";
     }
 
     // no privs because it's a test command

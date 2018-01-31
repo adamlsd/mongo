@@ -57,11 +57,8 @@ intmax_t dbSize(const string& database);
 
 class CmdListDatabases : public BasicCommand {
 public:
-    bool slaveOk() const final {
-        return false;
-    }
-    bool slaveOverrideOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const final {
+        return AllowedOnSecondary::kOptIn;
     }
     bool adminOnly() const final {
         return true;
@@ -69,9 +66,9 @@ public:
     bool supportsWriteConcern(const BSONObj& cmd) const final {
         return false;
     }
-    void help(stringstream& help) const final {
-        help << "{ listDatabases:1, [filter: <filterObject>] [, nameOnly: true ] }\n"
-                "list databases on this server";
+    std::string help() const final {
+        return "{ listDatabases:1, [filter: <filterObject>] [, nameOnly: true ] }\n"
+               "list databases on this server";
     }
 
     /* listDatabases is always authorized,

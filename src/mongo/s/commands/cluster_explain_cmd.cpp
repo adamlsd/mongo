@@ -61,12 +61,8 @@ public:
     /**
      * Running an explain on a secondary requires explicitly setting slaveOk.
      */
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     virtual bool maintenanceOk() const {
@@ -77,8 +73,8 @@ public:
         return false;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "explain database reads and writes";
+    std::string help() const override {
+        return "explain database reads and writes";
     }
 
     /**

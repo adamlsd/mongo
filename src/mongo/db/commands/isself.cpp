@@ -42,14 +42,14 @@ using std::stringstream;
 class IsSelfCommand : public BasicCommand {
 public:
     IsSelfCommand() : BasicCommand("_isSelf") {}
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual void help(stringstream& help) const {
-        help << "{ _isSelf : 1 } INTERNAL ONLY";
+    std::string help() const override {
+        return "{ _isSelf : 1 } INTERNAL ONLY";
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

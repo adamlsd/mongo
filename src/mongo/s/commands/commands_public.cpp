@@ -151,8 +151,8 @@ class PublicGridCommand : public BasicCommand {
 protected:
     PublicGridCommand(const char* n, const char* oldname = NULL) : BasicCommand(n, oldname) {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -247,8 +247,8 @@ class DropIndexesCmd : public ErrmsgCommandDeprecated {
 public:
     DropIndexesCmd() : ErrmsgCommandDeprecated("dropIndexes", "deleteIndexes") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -291,8 +291,8 @@ class CreateIndexesCmd : public ErrmsgCommandDeprecated {
 public:
     CreateIndexesCmd() : ErrmsgCommandDeprecated("createIndexes") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -340,8 +340,8 @@ class ReIndexCmd : public ErrmsgCommandDeprecated {
 public:
     ReIndexCmd() : ErrmsgCommandDeprecated("reIndex") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -384,8 +384,8 @@ class CollectionModCmd : public ErrmsgCommandDeprecated {
 public:
     CollectionModCmd() : ErrmsgCommandDeprecated("collMod") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -1065,8 +1065,8 @@ class DistinctCmd : public PublicGridCommand {
 public:
     DistinctCmd() : PublicGridCommand("distinct") {}
 
-    void help(stringstream& help) const override {
-        help << "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
+    std::string help() const override {
+        return "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
     }
 
     void addRequiredPrivileges(const std::string& dbname,
@@ -1278,8 +1278,8 @@ class FileMD5Cmd : public PublicGridCommand {
 public:
     FileMD5Cmd() : PublicGridCommand("filemd5") {}
 
-    void help(stringstream& help) const override {
-        help << " example: { filemd5 : ObjectId(aaaaaaa) , root : \"fs\" }";
+    std::string help() const override {
+        return " example: { filemd5 : ObjectId(aaaaaaa) , root : \"fs\" }";
     }
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
@@ -1441,8 +1441,8 @@ class Geo2dFindNearCmd : public PublicGridCommand {
 public:
     Geo2dFindNearCmd() : PublicGridCommand("geoNear") {}
 
-    void help(stringstream& h) const override {
-        h << "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
+    std::string help() const override {
+        return "http://dochub.mongodb.org/core/geo#GeospatialIndexing-geoNearCommand";
     }
 
     void addRequiredPrivileges(const std::string& dbname,

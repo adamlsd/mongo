@@ -31,7 +31,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/master_slave.h"  // replSettings
 #include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/db/repl/replication_coordinator_impl.h"
 
 namespace mongo {
 
@@ -50,8 +49,8 @@ constexpr StringData kWaitFieldName = "wait"_sd;
 // operator requested resynchronization of replication (on a slave or secondary). {resync: 1}
 class CmdResync : public ErrmsgCommandDeprecated {
 public:
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return true;
@@ -67,8 +66,8 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    void help(stringstream& h) const {
-        h << "resync (from scratch) a stale slave or replica set secondary node.\n";
+    std::string help() const override {
+        return "resync (from scratch) a stale slave or replica set secondary node.\n";
     }
 
     CmdResync() : ErrmsgCommandDeprecated(kResyncFieldName) {}

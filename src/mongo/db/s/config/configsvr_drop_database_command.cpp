@@ -54,8 +54,8 @@ class ConfigSvrDropDatabaseCommand : public BasicCommand {
 public:
     ConfigSvrDropDatabaseCommand() : BasicCommand("_configsvrDropDatabase") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -66,9 +66,9 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "Internal command, which is exported by the sharding config server. Do not call "
-                "directly. Drops a database.";
+    std::string help() const override {
+        return "Internal command, which is exported by the sharding config server. Do not call "
+               "directly. Drops a database.";
     }
 
     Status checkAuthForCommand(Client* client,

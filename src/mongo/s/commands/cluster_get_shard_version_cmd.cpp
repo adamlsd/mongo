@@ -47,8 +47,8 @@ class GetShardVersion : public BasicCommand {
 public:
     GetShardVersion() : BasicCommand("getShardVersion", "getshardversion") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const override {
@@ -59,8 +59,8 @@ public:
         return false;
     }
 
-    void help(std::stringstream& help) const override {
-        help << " example: { getShardVersion : 'alleyinsider.foo'  } ";
+    std::string help() const override {
+        return " example: { getShardVersion : 'alleyinsider.foo'  } ";
     }
 
     Status checkAuthForCommand(Client* client,

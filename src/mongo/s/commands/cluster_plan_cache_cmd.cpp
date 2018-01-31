@@ -54,20 +54,16 @@ class ClusterPlanCacheCmd : public BasicCommand {
 public:
     virtual ~ClusterPlanCacheCmd() {}
 
-    bool slaveOk() const {
-        return false;
-    }
-
-    bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    void help(stringstream& ss) const {
-        ss << _helpText;
+    std::string help() const override {
+        return _helpText;
     }
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {

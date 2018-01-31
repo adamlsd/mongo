@@ -44,8 +44,8 @@ class EndSessionsCommand final : public BasicCommand {
 public:
     EndSessionsCommand() : BasicCommand("endSessions") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool adminOnly() const override {
         return false;
@@ -53,8 +53,8 @@ public:
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    void help(std::stringstream& help) const override {
-        help << "end a set of logical sessions";
+    std::string help() const override {
+        return "end a set of logical sessions";
     }
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,

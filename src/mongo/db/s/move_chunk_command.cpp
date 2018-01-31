@@ -43,8 +43,8 @@
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/migration_secondary_throttle_options.h"
-#include "mongo/s/move_chunk_request.h"
+#include "mongo/s/request_types/migration_secondary_throttle_options.h"
+#include "mongo/s/request_types/move_chunk_request.h"
 #include "mongo/util/concurrency/notification.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -76,12 +76,12 @@ class MoveChunkCommand : public BasicCommand {
 public:
     MoveChunkCommand() : BasicCommand("moveChunk") {}
 
-    void help(std::stringstream& help) const override {
-        help << "should not be calling this directly";
+    std::string help() const override {
+        return "should not be calling this directly";
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

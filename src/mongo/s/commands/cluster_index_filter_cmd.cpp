@@ -61,21 +61,16 @@ public:
 
     virtual ~ClusterIndexFilterCmd() {}
 
-    bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kOptIn;
     }
-
-    bool slaveOverrideOk() const {
-        return true;
-    }
-
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    void help(stringstream& ss) const {
-        ss << _helpText;
+    std::string help() const override {
+        return _helpText;
     }
 
     Status checkAuthForCommand(Client* client, const std::string& dbname, const BSONObj& cmdObj) {

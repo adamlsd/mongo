@@ -60,8 +60,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
@@ -71,8 +71,8 @@ public:
         return false;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "reset error state (used with getpreverror)";
+    std::string help() const override {
+        return "reset error state (used with getpreverror)";
     }
     CmdResetError() : BasicCommand("resetError", "reseterror") {}
     bool run(OperationContext* opCtx,
@@ -90,8 +90,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
@@ -101,15 +101,15 @@ public:
         return false;
     }
 
-    virtual void help(stringstream& help) const {
-        help << "return error status of the last operation on this connection\n"
-             << "options:\n"
-             << "  { fsync:true } - fsync before returning, or wait for journal commit if running "
-                "with --journal\n"
-             << "  { j:true } - wait for journal commit if running with --journal\n"
-             << "  { w:n } - await replication to n servers (including self) before returning\n"
-             << "  { w:'majority' } - await replication to majority of set\n"
-             << "  { wtimeout:m} - timeout for w in m milliseconds";
+    std::string help() const override {
+        return "return error status of the last operation on this connection\n"
+               "options:\n"
+               "  { fsync:true } - fsync before returning, or wait for journal commit if running "
+               "with --journal\n"
+               "  { j:true } - wait for journal commit if running with --journal\n"
+               "  { w:n } - await replication to n servers (including self) before returning\n"
+               "  { w:'majority' } - await replication to majority of set\n"
+               "  { wtimeout:m} - timeout for w in m milliseconds";
     }
 
     bool errmsgRun(OperationContext* opCtx,
@@ -310,11 +310,11 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual void help(stringstream& help) const {
-        help << "check for errors since last reseterror commandcal";
+    std::string help() const override {
+        return "check for errors since last reseterror commandcal";
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool requiresAuth() const override {
         return false;

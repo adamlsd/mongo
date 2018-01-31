@@ -45,13 +45,13 @@ class ConfigSvrBalancerControlCommand : public BasicCommand {
 public:
     ConfigSvrBalancerControlCommand(StringData name) : BasicCommand(name) {}
 
-    void help(std::stringstream& help) const override {
-        help << "Internal command, which is exported by the sharding config server. Do not call "
-                "directly. Controls the balancer state.";
+    std::string help() const override {
+        return "Internal command, which is exported by the sharding config server. Do not call "
+               "directly. Controls the balancer state.";
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {

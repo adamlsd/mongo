@@ -63,10 +63,9 @@ class CmdCloneCollection : public ErrmsgCommandDeprecated {
 public:
     CmdCloneCollection() : ErrmsgCommandDeprecated("cloneCollection") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
-
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
@@ -95,12 +94,12 @@ public:
         return Status::OK();
     }
 
-    virtual void help(stringstream& help) const {
-        help << "{ cloneCollection: <collection>, from: <host> [,query: <query_filter>] "
-                "[,copyIndexes:<bool>] }"
-                "\nCopies a collection from one server to another. Do not use on a single server "
-                "as the destination "
-                "is placed at the same db.collection (namespace) as the source.\n";
+    std::string help() const override {
+        return "{ cloneCollection: <collection>, from: <host> [,query: <query_filter>] "
+               "[,copyIndexes:<bool>] }"
+               "\nCopies a collection from one server to another. Do not use on a single server "
+               "as the destination "
+               "is placed at the same db.collection (namespace) as the source.\n";
     }
 
     virtual bool errmsgRun(OperationContext* opCtx,

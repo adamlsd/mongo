@@ -72,8 +72,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-    virtual void help(stringstream& help) const {
-        help << "drop indexes for a collection";
+    std::string help() const override {
+        return "drop indexes for a collection";
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
@@ -102,8 +102,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual void help(stringstream& help) const {
-        help << "re-index a collection";
+    std::string help() const override {
+        return "re-index a collection";
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
@@ -218,7 +218,7 @@ public:
         // tries to read in the intermediate state where all indexes are newer than the current
         // snapshot so are unable to be used.
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-        auto snapshotName = replCoord->reserveSnapshotName(opCtx);
+        auto snapshotName = replCoord->getMinimumVisibleSnapshot(opCtx);
         collection->setMinimumVisibleSnapshot(snapshotName);
 
         result.append("nIndexes", static_cast<int>(indexInfoObjs.getValue().size()));

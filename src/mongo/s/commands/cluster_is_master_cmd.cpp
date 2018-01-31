@@ -33,7 +33,6 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/write_ops.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/rpc/metadata/client_metadata.h"
@@ -58,8 +57,8 @@ public:
         return true;
     }
 
-    void help(std::stringstream& help) const override {
-        help << "test if this is master half of a replica pair";
+    std::string help() const override {
+        return "test if this is master half of a replica pair";
     }
 
     void addRequiredPrivileges(const std::string& dbname,
@@ -113,10 +112,7 @@ public:
         result.appendNumber("maxMessageSizeBytes", MaxMessageSizeBytes);
         result.appendNumber("maxWriteBatchSize", write_ops::kMaxWriteBatchSize);
         result.appendDate("localTime", jsTime());
-        if (serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
-        }
+        result.append("logicalSessionTimeoutMinutes", localLogicalSessionTimeoutMinutes);
 
         // Mongos tries to keep exactly the same version range of the server for which
         // it is compiled.

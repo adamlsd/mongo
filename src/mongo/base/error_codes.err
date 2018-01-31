@@ -167,7 +167,7 @@ error_code("ViewDepthLimitExceeded", 165)
 error_code("CommandNotSupportedOnView", 166)
 error_code("OptionNotSupportedOnView", 167)
 error_code("InvalidPipelineOperator", 168)
-error_code("CommandOnShardedViewNotSupportedOnMongod", 169)
+error_code("CommandOnShardedViewNotSupportedOnMongod", 169, extra='ResolvedView')
 error_code("TooManyMatchingDocuments", 170)
 error_code("CannotIndexParallelArrays", 171)
 error_code("TransportSessionClosed", 172)
@@ -254,7 +254,7 @@ error_code("BackgroundOperationInProgressForNamespace", 12587);
 error_code("NotMasterOrSecondary", 13436);
 error_code("NotMasterNoSlaveOk", 13435);
 error_code("ShardKeyTooBig", 13334);
-error_code("StaleConfig", 13388);
+error_code("StaleConfig", 13388, extra="StaleConfigInfo");
 error_code("DatabaseDifferCase", 13297);
 error_code("OBSOLETE_PrepareConfigsFailed", 13104);
 

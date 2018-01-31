@@ -57,9 +57,7 @@ const uint64_t kTooManySplitPoints = 4;
 
 void toBatchError(const Status& status, BatchedCommandResponse* response) {
     response->clear();
-    response->setErrCode(status.code());
-    response->setErrMessage(status.reason());
-    response->setOk(false);
+    response->setStatus(status);
     dassert(response->isValid(NULL));
 }
 
@@ -195,24 +193,22 @@ void ClusterWriter::write(OperationContext* opCtx,
 
             Status targetInitStatus = targeter.init(opCtx);
             if (!targetInitStatus.isOK()) {
-                toBatchError({targetInitStatus.code(),
-                              str::stream() << "unable to initialize targeter for"
-                                            << (request.isInsertIndexRequest() ? " index" : "")
-                                            << " write op for collection "
-                                            << request.getTargetingNS().ns()
-                                            << causedBy(targetInitStatus)},
+                toBatchError(targetInitStatus.withContext(
+                                 str::stream() << "unable to initialize targeter for"
+                                               << (request.isInsertIndexRequest() ? " index" : "")
+                                               << " write op for collection "
+                                               << request.getTargetingNS().ns()),
                              response);
                 return;
             }
 
             auto swEndpoints = targeter.targetCollection();
             if (!swEndpoints.isOK()) {
-                toBatchError({swEndpoints.getStatus().code(),
-                              str::stream() << "unable to target"
-                                            << (request.isInsertIndexRequest() ? " index" : "")
-                                            << " write op for collection "
-                                            << request.getTargetingNS().ns()
-                                            << causedBy(swEndpoints.getStatus())},
+                toBatchError(swEndpoints.getStatus().withContext(
+                                 str::stream() << "unable to target"
+                                               << (request.isInsertIndexRequest() ? " index" : "")
+                                               << " write op for collection "
+                                               << request.getTargetingNS().ns()),
                              response);
                 return;
             }

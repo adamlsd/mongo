@@ -60,10 +60,14 @@ void appendWriteConcernErrorToCmdResponse(const ShardId& shardId,
     std::string errMsg;
     auto wcErrorObj = wcErrorElem.Obj();
     if (!wcError.parseBSON(wcErrorObj, &errMsg)) {
-        wcError.setErrMessage("Failed to parse writeConcernError: " + wcErrorObj.toString() +
-                              ", Received error: " + errMsg);
+        wcError.clear();
+        wcError.setStatus({ErrorCodes::FailedToParse,
+                           "Failed to parse writeConcernError: " + wcErrorObj.toString() +
+                               ", Received error: " + errMsg});
     }
-    wcError.setErrMessage(wcError.getErrMessage() + " at " + shardId.toString());
+    auto status = wcError.toStatus();
+    wcError.setStatus(
+        status.withReason(str::stream() << status.reason() << " at " << shardId.toString()));
     responseBuilder.append("writeConcernError", wcError.toBSON());
 }
 
@@ -109,13 +113,12 @@ std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShard
 /**
  * Throws StaleConfigException if any remote returns a stale shardVersion error.
  */
-StatusWith<std::vector<AsyncRequestsSender::Response>> gatherResponses(
+std::vector<AsyncRequestsSender::Response> gatherResponses(
     OperationContext* opCtx,
     const std::string& dbName,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
-    const std::vector<AsyncRequestsSender::Request>& requests,
-    BSONObj* viewDefinition) {
+    const std::vector<AsyncRequestsSender::Request>& requests) {
 
     // Send the requests.
     AsyncRequestsSender ars(opCtx,
@@ -142,38 +145,20 @@ StatusWith<std::vector<AsyncRequestsSender::Response>> gatherResponses(
 
             // Failing to establish a consistent shardVersion means no results should be examined.
             if (ErrorCodes::isStaleShardingError(status.code())) {
-                throw StaleConfigException(str::stream() << "got stale shardVersion response "
-                                                         << responseObj
-                                                         << " from shard "
-                                                         << response.shardId
-                                                         << " at host "
-                                                         << response.shardHostAndPort->toString(),
-                                           responseObj);
+                uassertStatusOK(status.withContext(str::stream()
+                                                   << "got stale shardVersion response from shard "
+                                                   << response.shardId
+                                                   << " at host "
+                                                   << response.shardHostAndPort->toString()));
             }
 
             // In the case a read is performed against a view, the server can return an error
             // indicating that the underlying collection may be sharded. When this occurs the return
             // message will include an expanded view definition and collection namespace. We pass
-            // the definition back to the caller by storing it in the 'viewDefinition' parameter.
-            // This allows the caller to rewrite the request as an aggregation and retry it.
+            // the definition back to the caller by throwing the error. This allows the caller to
+            // rewrite the request as an aggregation and retry it.
             if (ErrorCodes::CommandOnShardedViewNotSupportedOnMongod == status) {
-                if (!responseObj.hasField("resolvedView")) {
-                    return {ErrorCodes::InternalError,
-                            str::stream() << "Missing field 'resolvedView' in document: "
-                                          << responseObj};
-                }
-
-                auto resolvedViewObj = responseObj.getObjectField("resolvedView");
-                if (resolvedViewObj.isEmpty()) {
-                    return {ErrorCodes::InternalError,
-                            str::stream() << "Field 'resolvedView' must be an object: "
-                                          << responseObj};
-                }
-
-                if (viewDefinition) {
-                    *viewDefinition = BSON("resolvedView" << resolvedViewObj.getOwned());
-                }
-                return status;
+                uassertStatusOK(status);
             }
         }
         responses.push_back(std::move(response));
@@ -189,7 +174,7 @@ BSONObj appendShardVersion(BSONObj cmdObj, ChunkVersion version) {
     return cmdWithVersionBob.obj();
 }
 
-StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherUnversionedTargetAllShards(
+std::vector<AsyncRequestsSender::Response> scatterGatherUnversionedTargetAllShards(
     OperationContext* opCtx,
     const std::string& dbName,
     boost::optional<NamespaceString> nss,
@@ -202,11 +187,10 @@ StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherUnversionedT
 
     auto requests = buildUnversionedRequestsForAllShards(opCtx, cmdObj);
 
-    return gatherResponses(
-        opCtx, dbName, readPref, retryPolicy, requests, nullptr /* viewDefinition */);
+    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
 }
 
-StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherVersionedTargetByRoutingTable(
+std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRoutingTable(
     OperationContext* opCtx,
     const std::string& dbName,
     const NamespaceString& nss,
@@ -214,24 +198,19 @@ StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherVersionedTar
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
     const BSONObj& query,
-    const BSONObj& collation,
-    BSONObj* viewDefinition) {
+    const BSONObj& collation) {
     // The database in the full namespace must match the dbName.
     invariant(nss.db() == dbName);
 
-    auto swRoutingInfo = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss);
-    if (!swRoutingInfo.isOK()) {
-        return swRoutingInfo.getStatus();
-    }
-    auto routingInfo = swRoutingInfo.getValue();
-
+    auto routingInfo =
+        uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
     auto requests =
         buildVersionedRequestsForTargetedShards(opCtx, routingInfo, cmdObj, query, collation);
 
-    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests, viewDefinition);
+    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
 }
 
-StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherOnlyVersionIfUnsharded(
+std::vector<AsyncRequestsSender::Response> scatterGatherOnlyVersionIfUnsharded(
     OperationContext* opCtx,
     const std::string& dbName,
     const NamespaceString& nss,
@@ -241,11 +220,8 @@ StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherOnlyVersionI
     // The database in the full namespace must match the dbName.
     invariant(nss.db() == dbName);
 
-    auto swRoutingInfo = Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss);
-    if (!swRoutingInfo.isOK()) {
-        return swRoutingInfo.getStatus();
-    }
-    auto routingInfo = swRoutingInfo.getValue();
+    auto routingInfo =
+        uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
 
     std::vector<AsyncRequestsSender::Request> requests;
     if (routingInfo.cm()) {
@@ -261,8 +237,7 @@ StatusWith<std::vector<AsyncRequestsSender::Response>> scatterGatherOnlyVersionI
             opCtx, routingInfo, cmdObj, BSONObj(), BSONObj());
     }
 
-    return gatherResponses(
-        opCtx, dbName, readPref, retryPolicy, requests, nullptr /* viewDefinition */);
+    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
 }
 
 bool appendRawResponses(OperationContext* opCtx,
@@ -363,6 +338,12 @@ bool appendRawResponses(OperationContext* opCtx,
         if (commonErrCode > 0) {
             output->append("code", commonErrCode);
             output->append("codeName", ErrorCodes::errorString(ErrorCodes::Error(commonErrCode)));
+            if (errors.size() == 1) {
+                // Only propagate extra info if there was a single error object.
+                if (auto extraInfo = errors.begin()->second.extraInfo()) {
+                    extraInfo->serialize(output);
+                }
+            }
         }
         return false;
     }
@@ -452,9 +433,7 @@ StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, Stri
         return dbStatus;
     }
 
-    return {dbStatus.getStatus().code(),
-            str::stream() << "Database " << dbName << " not found due to "
-                          << dbStatus.getStatus().reason()};
+    return dbStatus.getStatus().withContext(str::stream() << "Database " << dbName << " not found");
 }
 
 }  // namespace mongo

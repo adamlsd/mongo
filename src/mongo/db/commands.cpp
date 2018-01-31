@@ -53,6 +53,7 @@
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/invariant.h"
 #include "mongo/util/log.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 
@@ -85,8 +86,7 @@ BSONObj CommandHelpers::runCommandDirectly(OperationContext* opCtx, const OpMsgR
         bool ok = command->publicRun(opCtx, request, out);
         appendCommandStatus(out, ok);
     } catch (const StaleConfigException&) {
-        // These exceptions are intended to be handled at a higher level and cannot losslessly
-        // round-trip through Status.
+        // These exceptions are intended to be handled at a higher level.
         throw;
     } catch (const DBException& ex) {
         out.resetToEmpty();
@@ -187,8 +187,7 @@ void CommandHelpers::appendCommandWCStatus(BSONObjBuilder& result,
                                            const WriteConcernResult& wcResult) {
     if (!awaitReplicationStatus.isOK() && !result.hasField("writeConcernError")) {
         WriteConcernErrorDetail wcError;
-        wcError.setErrCode(awaitReplicationStatus.code());
-        wcError.setErrMessage(awaitReplicationStatus.reason());
+        wcError.setStatus(awaitReplicationStatus);
         if (wcResult.wTimedOut) {
             wcError.setErrInfo(BSON("wtimeout" << true));
         }
@@ -343,10 +342,6 @@ Command::Command(StringData name, StringData oldName)
     globalCommandRegistry()->registerCommand(this, name, oldName);
 }
 
-void Command::help(std::stringstream& help) const {
-    help << "no help defined";
-}
-
 Status Command::explain(OperationContext* opCtx,
                         const std::string& dbname,
                         const BSONObj& cmdObj,
@@ -468,12 +463,9 @@ bool Command::publicRun(OperationContext* opCtx,
 void Command::generateHelpResponse(OperationContext* opCtx,
                                    rpc::ReplyBuilderInterface* replyBuilder,
                                    const Command& command) {
-    std::stringstream ss;
     BSONObjBuilder helpBuilder;
-    ss << "help for: " << command.getName() << " ";
-    command.help(ss);
-    helpBuilder.append("help", ss.str());
-
+    helpBuilder.append("help",
+                       str::stream() << "help for: " << command.getName() << " " << command.help());
     replyBuilder->setCommandReply(helpBuilder.obj());
     replyBuilder->setMetadata(rpc::makeEmptyMetadata());
 }

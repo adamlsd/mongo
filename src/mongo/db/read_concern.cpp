@@ -233,18 +233,22 @@ Status waitForReadConcern(OperationContext* opCtx,
         }
     }
 
-    auto afterClusterTime = readConcernArgs.getArgsClusterTime();
+    if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
+        if (replCoord->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) {
+            return {ErrorCodes::NotAReplicaSet,
+                    "node needs to be a replica set member to use readConcern: snapshot"};
+        }
+
+        if (!replCoord->isV1ElectionProtocol()) {
+            return {ErrorCodes::IncompatibleElectionProtocol,
+                    "Replica sets running protocol version 0 do not support readConcern: snapshot"};
+        }
+    }
+
+    auto afterClusterTime = readConcernArgs.getArgsAfterClusterTime();
     if (afterClusterTime) {
         if (!allowAfterClusterTime) {
             return {ErrorCodes::InvalidOptions, "afterClusterTime is not allowed for this command"};
-        }
-
-        if ((serverGlobalParams.featureCompatibility.getVersion() !=
-             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) &&
-            ShardingState::get(opCtx)->enabled()) {
-            return {ErrorCodes::InvalidOptions,
-                    "readConcern afterClusterTime is not available in featureCompatibilityVersion "
-                    "3.4 in a sharded cluster"};
         }
 
         auto currentTime = LogicalClock::get(opCtx)->getClusterTime();
@@ -252,11 +256,6 @@ Status waitForReadConcern(OperationContext* opCtx,
             return {ErrorCodes::InvalidOptions,
                     "readConcern afterClusterTime must not be greater than clusterTime value"};
         }
-    }
-
-    auto pointInTime = readConcernArgs.getArgsPointInTime();
-    if (pointInTime) {
-        fassertStatusOK(39345, opCtx->recoveryUnit()->selectSnapshot(pointInTime->asTimestamp()));
     }
 
     if (!readConcernArgs.isEmpty()) {
@@ -274,6 +273,11 @@ Status waitForReadConcern(OperationContext* opCtx,
                 return status;
             }
         }
+    }
+
+    auto pointInTime = readConcernArgs.getArgsAtClusterTime();
+    if (pointInTime) {
+        fassertStatusOK(39345, opCtx->recoveryUnit()->selectSnapshot(pointInTime->asTimestamp()));
     }
 
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kMajorityReadConcern &&

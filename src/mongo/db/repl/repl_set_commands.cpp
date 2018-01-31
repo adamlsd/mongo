@@ -86,8 +86,8 @@ public:
 // Testing only, enabled via command-line.
 class CmdReplSetTest : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "Just for tests.\n";
+    std::string help() const override {
+        return "Just for tests.\n";
     }
     // No auth needed because it only works when enabled via command line.
     virtual Status checkAuthForCommand(Client* client,
@@ -167,7 +167,7 @@ public:
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -183,10 +183,10 @@ public:
 
 class CmdReplSetGetStatus : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "Report status of a replica set from the POV of this server\n";
-        help << "{ replSetGetStatus : 1 }";
-        help << "\nhttp://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "Report status of a replica set from the POV of this server\n"
+               "{ replSetGetStatus : 1 }\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     CmdReplSetGetStatus() : ReplSetCommand("replSetGetStatus") {}
     virtual bool run(OperationContext* opCtx,
@@ -196,7 +196,7 @@ public:
         if (cmdObj["forShell"].trueValue())
             LastError::get(opCtx->getClient()).disable();
 
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -211,7 +211,8 @@ public:
         if (includeInitialSync) {
             responseStyle = ReplicationCoordinator::ReplSetGetStatusResponseStyle::kInitialSync;
         }
-        status = getGlobalReplicationCoordinator()->processReplSetGetStatus(&result, responseStyle);
+        status =
+            ReplicationCoordinator::get(opCtx)->processReplSetGetStatus(&result, responseStyle);
         return CommandHelpers::appendCommandStatus(result, status);
     }
 
@@ -223,21 +224,21 @@ private:
 
 class CmdReplSetGetConfig : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "Returns the current replica set configuration";
-        help << "{ replSetGetConfig : 1 }";
-        help << "\nhttp://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "Returns the current replica set configuration"
+               "{ replSetGetConfig : 1 }\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     CmdReplSetGetConfig() : ReplSetCommand("replSetGetConfig") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
-        getGlobalReplicationCoordinator()->processReplSetGetConfig(&result);
+        ReplicationCoordinator::get(opCtx)->processReplSetGetConfig(&result);
         return true;
     }
 
@@ -341,9 +342,9 @@ void parseReplSetSeedList(ReplicationCoordinatorExternalState* externalState,
 class CmdReplSetInitiate : public ReplSetCommand {
 public:
     CmdReplSetInitiate() : ReplSetCommand("replSetInitiate") {}
-    virtual void help(stringstream& h) const {
-        h << "Initiate/christen a replica set.";
-        h << "\nhttp://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "Initiate/christen a replica set.\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     virtual bool run(OperationContext* opCtx,
                      const string&,
@@ -403,7 +404,7 @@ public:
         }
 
         Status status =
-            getGlobalReplicationCoordinator()->processReplSetInitiate(opCtx, configObj, &result);
+            ReplicationCoordinator::get(opCtx)->processReplSetInitiate(opCtx, configObj, &result);
         return CommandHelpers::appendCommandStatus(result, status);
     }
 
@@ -415,17 +416,17 @@ private:
 
 class CmdReplSetReconfig : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "Adjust configuration of a replica set\n";
-        help << "{ replSetReconfig : config_object }";
-        help << "\nhttp://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "Adjust configuration of a replica set\n"
+               "{ replSetReconfig : config_object }\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     CmdReplSetReconfig() : ReplSetCommand("replSetReconfig") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK()) {
             return CommandHelpers::appendCommandStatus(result, status);
         }
@@ -439,7 +440,7 @@ public:
         parsedArgs.newConfigObj = cmdObj["replSetReconfig"].Obj();
         parsedArgs.force = cmdObj.hasField("force") && cmdObj["force"].trueValue();
         status =
-            getGlobalReplicationCoordinator()->processReplSetReconfig(opCtx, parsedArgs, &result);
+            ReplicationCoordinator::get(opCtx)->processReplSetReconfig(opCtx, parsedArgs, &result);
 
         Lock::GlobalWrite globalWrite(opCtx);
 
@@ -467,28 +468,28 @@ private:
 
 class CmdReplSetFreeze : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "{ replSetFreeze : <seconds> }";
-        help << "'freeze' state of member to the extent we can do that.  What this really means is "
-                "that\n";
-        help << "this node will not attempt to become primary until the time period specified "
-                "expires.\n";
-        help << "You can call again with {replSetFreeze:0} to unfreeze sooner.\n";
-        help << "A process restart unfreezes the member also.\n";
-        help << "\nhttp://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "{ replSetFreeze : <seconds> }\n"
+               "'freeze' state of member to the extent we can do that.  What this really means is "
+               "that\n"
+               "this node will not attempt to become primary until the time period specified "
+               "expires.\n"
+               "You can call again with {replSetFreeze:0} to unfreeze sooner.\n"
+               "A process restart unfreezes the member also.\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     CmdReplSetFreeze() : ReplSetCommand("replSetFreeze") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
         int secs = (int)cmdObj.firstElement().numberInt();
         return CommandHelpers::appendCommandStatus(
-            result, getGlobalReplicationCoordinator()->processReplSetFreeze(secs, &result));
+            result, ReplicationCoordinator::get(opCtx)->processReplSetFreeze(secs, &result));
     }
 
 private:
@@ -499,20 +500,20 @@ private:
 
 class CmdReplSetStepDown : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "{ replSetStepDown : <seconds> }\n";
-        help << "Step down as primary.  Will not try to reelect self for the specified time period "
-                "(1 minute if no numeric secs value specified, or secs is 0).\n";
-        help << "(If another member with same priority takes over in the meantime, it will stay "
-                "primary.)\n";
-        help << "http://dochub.mongodb.org/core/replicasetcommands";
+    std::string help() const override {
+        return "{ replSetStepDown : <seconds> }\n"
+               "Step down as primary.  Will not try to reelect self for the specified time period "
+               "(1 minute if no numeric secs value specified, or secs is 0).\n"
+               "(If another member with same priority takes over in the meantime, it will stay "
+               "primary.)\n"
+               "http://dochub.mongodb.org/core/replicasetcommands";
     }
     CmdReplSetStepDown() : ReplSetCommand("replSetStepDown") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -554,7 +555,7 @@ public:
 
         log() << "Attempting to step down in response to replSetStepDown command";
 
-        status = getGlobalReplicationCoordinator()->stepDown(
+        status = ReplicationCoordinator::get(opCtx)->stepDown(
             opCtx, force, Seconds(secondaryCatchUpPeriodSecs), Seconds(stepDownForSecs));
         return CommandHelpers::appendCommandStatus(result, status);
     }
@@ -567,22 +568,22 @@ private:
 
 class CmdReplSetMaintenance : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "{ replSetMaintenance : bool }\n";
-        help << "Enable or disable maintenance mode.";
+    std::string help() const override {
+        return "{ replSetMaintenance : bool }\n"
+               "Enable or disable maintenance mode.";
     }
     CmdReplSetMaintenance() : ReplSetCommand("replSetMaintenance") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
         return CommandHelpers::appendCommandStatus(
             result,
-            getGlobalReplicationCoordinator()->setMaintenanceMode(
+            ReplicationCoordinator::get(opCtx)->setMaintenanceMode(
                 cmdObj["replSetMaintenance"].trueValue()));
     }
 
@@ -594,17 +595,17 @@ private:
 
 class CmdReplSetSyncFrom : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "{ replSetSyncFrom : \"host:port\" }\n";
-        help << "Change who this member is syncing from. Note: This will interrupt and restart an "
-                "in-progress initial sync.";
+    std::string help() const override {
+        return "{ replSetSyncFrom : \"host:port\" }\n"
+               "Change who this member is syncing from. Note: This will interrupt and restart an "
+               "in-progress initial sync.";
     }
     CmdReplSetSyncFrom() : ReplSetCommand("replSetSyncFrom") {}
     virtual bool run(OperationContext* opCtx,
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -615,7 +616,7 @@ public:
 
         return CommandHelpers::appendCommandStatus(
             result,
-            getGlobalReplicationCoordinator()->processReplSetSyncFrom(
+            ReplicationCoordinator::get(opCtx)->processReplSetSyncFrom(
                 opCtx, targetHostAndPort, &result));
     }
 
@@ -727,7 +728,7 @@ public:
         Status status = Status(ErrorCodes::InternalError, "status not set in heartbeat code");
         /* we don't call ReplSetCommand::check() here because heartbeat
            checks many things that are pre-initialization. */
-        if (!getGlobalReplicationCoordinator()->getSettings().usingReplSets()) {
+        if (!ReplicationCoordinator::get(opCtx)->getSettings().usingReplSets()) {
             status = Status(ErrorCodes::NoReplicationEnabled, "not running with --replSet");
             return CommandHelpers::appendCommandStatus(result, status);
         }
@@ -739,7 +740,7 @@ public:
             status = args.initialize(cmdObj);
             if (status.isOK()) {
                 ReplSetHeartbeatResponse response;
-                status = getGlobalReplicationCoordinator()->processHeartbeatV1(args, &response);
+                status = ReplicationCoordinator::get(opCtx)->processHeartbeatV1(args, &response);
                 if (status.isOK())
                     response.addToBSON(&result, true);
 
@@ -764,7 +765,7 @@ public:
         }
 
         ReplSetHeartbeatResponse response;
-        status = getGlobalReplicationCoordinator()->processHeartbeat(args, &response);
+        status = ReplicationCoordinator::get(opCtx)->processHeartbeat(args, &response);
         if (status.isOK())
             response.addToBSON(&result, false);
 
@@ -785,7 +786,7 @@ public:
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -802,7 +803,7 @@ public:
         parsedArgs.cfgver = cfgverElement.safeNumberLong();
         parsedArgs.opTime = Timestamp(cmdObj["opTime"].Date());
 
-        status = getGlobalReplicationCoordinator()->processReplSetFresh(parsedArgs, &result);
+        status = ReplicationCoordinator::get(opCtx)->processReplSetFresh(parsedArgs, &result);
         return CommandHelpers::appendCommandStatus(result, status);
     }
 } cmdReplSetFresh;
@@ -819,7 +820,7 @@ private:
         DEV log() << "received elect msg " << cmdObj.toString();
         else LOG(2) << "received elect msg " << cmdObj.toString();
 
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
@@ -835,7 +836,7 @@ private:
         parsedArgs.cfgver = cfgverElement.safeNumberLong();
         parsedArgs.round = cmdObj["round"].OID();
 
-        status = getGlobalReplicationCoordinator()->processReplSetElect(parsedArgs, &result);
+        status = ReplicationCoordinator::get(opCtx)->processReplSetElect(parsedArgs, &result);
         return CommandHelpers::appendCommandStatus(result, status);
     }
 } cmdReplSetElect;
@@ -848,13 +849,13 @@ public:
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
 
         log() << "Received replSetStepUp request";
 
-        status = getGlobalReplicationCoordinator()->stepUpIfEligible();
+        status = ReplicationCoordinator::get(opCtx)->stepUpIfEligible();
 
         if (!status.isOK()) {
             log() << "replSetStepUp request failed" << causedBy(status);
@@ -871,10 +872,10 @@ private:
 
 class CmdReplSetAbortPrimaryCatchUp : public ReplSetCommand {
 public:
-    virtual void help(stringstream& help) const {
-        help << "{ CmdReplSetAbortPrimaryCatchUp : 1 }\n";
-        help << "Abort primary catch-up mode; immediately finish the transition to primary "
-                "without fetching any further unreplicated writes from any other online nodes";
+    std::string help() const override {
+        return "{ CmdReplSetAbortPrimaryCatchUp : 1 }\n"
+               "Abort primary catch-up mode; immediately finish the transition to primary "
+               "without fetching any further unreplicated writes from any other online nodes";
     }
 
     CmdReplSetAbortPrimaryCatchUp() : ReplSetCommand("replSetAbortPrimaryCatchUp") {}
@@ -883,12 +884,12 @@ public:
                      const string&,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) override {
-        Status status = getGlobalReplicationCoordinator()->checkReplEnabledForCommand(&result);
+        Status status = ReplicationCoordinator::get(opCtx)->checkReplEnabledForCommand(&result);
         if (!status.isOK())
             return CommandHelpers::appendCommandStatus(result, status);
         log() << "Received replSetAbortPrimaryCatchUp request";
 
-        status = getGlobalReplicationCoordinator()->abortCatchupIfNeeded();
+        status = ReplicationCoordinator::get(opCtx)->abortCatchupIfNeeded();
         if (!status.isOK()) {
             log() << "replSetAbortPrimaryCatchUp request failed" << causedBy(status);
         }

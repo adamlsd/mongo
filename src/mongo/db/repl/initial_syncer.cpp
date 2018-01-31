@@ -671,8 +671,8 @@ void InitialSyncer::_fcvFetcherCallback(const StatusWith<Fetcher::QueryResponse>
     }
 
     auto version = fCVParseSW.getValue();
-    if (version != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34 &&
-        version != ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+    if (version > ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34 &&
+        version < ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
         onCompletionGuard->setResultAndCancelRemainingWork_inlock(
             lock,
             Status(ErrorCodes::IncompatibleServerVersion,
@@ -1366,9 +1366,7 @@ Status InitialSyncer::_scheduleWorkAndSaveHandle_inlock(
     }
     auto result = _exec->scheduleWork(work);
     if (!result.isOK()) {
-        return Status(result.getStatus().code(),
-                      str::stream() << "failed to schedule work " << name << ": "
-                                    << result.getStatus().reason());
+        return result.getStatus().withContext(str::stream() << "failed to schedule work " << name);
     }
     *handle = result.getValue();
     return Status::OK();
@@ -1388,10 +1386,8 @@ Status InitialSyncer::_scheduleWorkAtAndSaveHandle_inlock(
     }
     auto result = _exec->scheduleWorkAt(when, work);
     if (!result.isOK()) {
-        return Status(
-            result.getStatus().code(),
-            str::stream() << "failed to schedule work " << name << " at " << when.toString() << ": "
-                          << result.getStatus().reason());
+        return result.getStatus().withContext(
+            str::stream() << "failed to schedule work " << name << " at " << when.toString());
     }
     *handle = result.getValue();
     return Status::OK();

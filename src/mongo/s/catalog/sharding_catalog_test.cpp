@@ -53,6 +53,7 @@
 #include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/chunk_version.h"
 #include "mongo/s/client/shard_registry.h"
+#include "mongo/s/versioning.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/future.h"
 #include "mongo/util/log.h"
@@ -161,6 +162,7 @@ TEST_F(ShardingCatalogClientTest, GetDatabaseExisting) {
     expectedDb.setName("bigdata");
     expectedDb.setPrimary(ShardId("shard0000"));
     expectedDb.setSharded(true);
+    expectedDb.setVersion(Versioning::newDatabaseVersion());
 
     const OpTime newOpTime(Timestamp(7, 6), 5);
 
@@ -208,6 +210,7 @@ TEST_F(ShardingCatalogClientTest, GetDatabaseStaleSecondaryRetrySuccess) {
     expectedDb.setName("bigdata");
     expectedDb.setPrimary(ShardId("shard0000"));
     expectedDb.setSharded(true);
+    expectedDb.setVersion(Versioning::newDatabaseVersion());
 
     auto future = launchAsync([this, &expectedDb] {
         return assertGet(
@@ -1096,6 +1099,7 @@ TEST_F(ShardingCatalogClientTest, UpdateDatabase) {
     dbt.setName("test");
     dbt.setPrimary(ShardId("shard0000"));
     dbt.setSharded(true);
+    dbt.setVersion(Versioning::newDatabaseVersion());
 
     auto future = launchAsync([this, dbt] {
         auto status = catalogClient()->updateDatabase(operationContext(), dbt.getName(), dbt);
@@ -1122,7 +1126,7 @@ TEST_F(ShardingCatalogClientTest, UpdateDatabase) {
         ASSERT_BSONOBJ_EQ(update.getU(), dbt.toBSON());
 
         BatchedCommandResponse response;
-        response.setOk(true);
+        response.setStatus(Status::OK());
         response.setNModified(1);
 
         return response.toBSON();
@@ -1150,9 +1154,7 @@ TEST_F(ShardingCatalogClientTest, UpdateDatabaseExceededTimeLimit) {
         ASSERT_EQUALS(host1, request.target);
 
         BatchedCommandResponse response;
-        response.setOk(false);
-        response.setErrCode(ErrorCodes::ExceededTimeLimit);
-        response.setErrMessage("operation timed out");
+        response.setStatus({ErrorCodes::ExceededTimeLimit, "operation timed out"});
 
         return response.toBSON();
     });

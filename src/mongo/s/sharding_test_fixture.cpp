@@ -64,7 +64,7 @@
 #include "mongo/s/config_server_catalog_cache_loader.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
-#include "mongo/s/set_shard_version_request.h"
+#include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
@@ -347,7 +347,7 @@ void ShardingTestFixture::expectInserts(const NamespaceString& nss,
         }
 
         BatchedCommandResponse response;
-        response.setOk(true);
+        response.setStatus(Status::OK());
 
         return response.toBSON();
     });
@@ -421,7 +421,7 @@ void ShardingTestFixture::expectConfigCollectionInsert(const HostAndPort& config
         generatedOID.init(oidPiece);
 
         BatchedCommandResponse response;
-        response.setOk(true);
+        response.setStatus(Status::OK());
 
         return response.toBSON();
     });
@@ -463,7 +463,7 @@ void ShardingTestFixture::expectUpdateCollection(const HostAndPort& expectedHost
         ASSERT_BSONOBJ_EQ(coll.toBSON(), update.getU());
 
         BatchedCommandResponse response;
-        response.setOk(true);
+        response.setStatus(Status::OK());
         response.setNModified(1);
 
         return response.toBSON();

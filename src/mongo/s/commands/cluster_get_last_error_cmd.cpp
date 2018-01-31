@@ -156,7 +156,7 @@ Status enforceLegacyWriteConcern(OperationContext* opCtx,
         wcResponse.shardHost = response.shardHostAndPort->toString();
         wcResponse.gleResponse = gleResponse;
         if (errors.wcError.get()) {
-            wcResponse.errToReport = errors.wcError->getErrMessage();
+            wcResponse.errToReport = errors.wcError->toString();
         }
 
         legacyWCResponses->push_back(wcResponse);
@@ -179,9 +179,11 @@ Status enforceLegacyWriteConcern(OperationContext* opCtx,
         }
     }
 
-    return Status(failedStatuses.size() == 1u ? failedStatuses.front().code()
-                                              : ErrorCodes::MultipleErrorsOccurred,
-                  builder.str());
+    if (failedStatuses.size() == 1u) {
+        return failedStatuses.front();
+    } else {
+        return Status(ErrorCodes::MultipleErrorsOccurred, builder.str());
+    }
 }
 
 
@@ -197,8 +199,8 @@ public:
         return true;
     }
 
-    virtual void help(std::stringstream& help) const {
-        help << "check for an error on the last command executed";
+    std::string help() const override {
+        return "check for an error on the last command executed";
     }
 
     virtual void addRequiredPrivileges(const std::string& dbname,

@@ -48,7 +48,7 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/move_chunk_request.h"
+#include "mongo/s/request_types/move_chunk_request.h"
 #include "mongo/util/log.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/scopeguard.h"
@@ -497,11 +497,9 @@ void MigrationManager::_schedule(WithLock lock,
                 DistLockManager::kSingleLockAttemptTimeout);
 
         if (!statusWithDistLockHandle.isOK()) {
-            migration.completionNotification->set(
-                Status(statusWithDistLockHandle.getStatus().code(),
-                       stream() << "Could not acquire collection lock for " << nss.ns()
-                                << " to migrate chunks, due to "
-                                << statusWithDistLockHandle.getStatus().reason()));
+            migration.completionNotification->set(statusWithDistLockHandle.getStatus().withContext(
+                stream() << "Could not acquire collection lock for " << nss.ns()
+                         << " to migrate chunks"));
             return;
         }
 

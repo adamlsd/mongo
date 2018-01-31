@@ -31,7 +31,6 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/master_slave.h"  // replSettings
 #include "mongo/db/repl/replication_coordinator_global.h"
-#include "mongo/db/repl/replication_coordinator_impl.h"
 
 namespace mongo {
 
@@ -67,8 +66,8 @@ public:
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
     }
 
-    void help(stringstream& h) const {
-        h << "resync (from scratch) a stale slave or replica set secondary node.\n";
+    std::string help() const override {
+        return "resync (from scratch) a stale slave or replica set secondary node.\n";
     }
 
     CmdResync() : ErrmsgCommandDeprecated(kResyncFieldName) {}
@@ -80,8 +79,8 @@ public:
         bool waitForResync = !cmdObj.hasField(kWaitFieldName) || cmdObj[kWaitFieldName].trueValue();
 
         // Replica set resync.
-        ReplicationCoordinator* replCoord = getGlobalReplicationCoordinator();
-        if (getGlobalReplicationCoordinator()->getSettings().usingReplSets()) {
+        ReplicationCoordinator* replCoord = ReplicationCoordinator::get(opCtx);
+        if (replCoord->getSettings().usingReplSets()) {
             // Resync is disabled in production on replica sets until it stabilizes (SERVER-27081).
             if (!Command::testCommandsEnabled) {
                 return CommandHelpers::appendCommandStatus(
@@ -107,10 +106,8 @@ public:
                 if (!status.isOK()) {
                     return CommandHelpers::appendCommandStatus(
                         result,
-                        Status(status.code(),
-                               str::stream()
-                                   << "Failed to transition to STARTUP2 state to perform resync: "
-                                   << status.reason()));
+                        status.withContext(
+                            "Failed to transition to STARTUP2 state to perform resync"));
                 }
             }
             uassertStatusOKWithLocation(replCoord->resyncData(opCtx, waitForResync), "resync", 0);

@@ -68,7 +68,7 @@
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/set_shard_version_request.h"
+#include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/shard_key_pattern.h"
 #include "mongo/s/shard_util.h"
 #include "mongo/s/write_ops/batched_command_request.h"
@@ -110,9 +110,7 @@ const NamespaceString kSettingsNamespace("config", "settings");
 
 void toBatchError(const Status& status, BatchedCommandResponse* response) {
     response->clear();
-    response->setErrCode(status.code());
-    response->setErrMessage(status.reason());
-    response->setOk(false);
+    response->setStatus(status);
 }
 
 }  // namespace
@@ -157,13 +155,7 @@ Status ShardingCatalogClientImpl::updateShardingCatalogEntryForCollection(
                                         coll.toBSON(),
                                         upsert,
                                         ShardingCatalogClient::kMajorityWriteConcern);
-    if (!status.isOK()) {
-        return {status.getStatus().code(),
-                str::stream() << "Collection metadata write failed due to "
-                              << status.getStatus().reason()};
-    }
-
-    return Status::OK();
+    return status.getStatus().withContext(str::stream() << "Collection metadata write failed");
 }
 
 Status ShardingCatalogClientImpl::updateDatabase(OperationContext* opCtx,
@@ -177,13 +169,7 @@ Status ShardingCatalogClientImpl::updateDatabase(OperationContext* opCtx,
                                        db.toBSON(),
                                        true,
                                        ShardingCatalogClient::kMajorityWriteConcern);
-    if (!status.isOK()) {
-        return {status.getStatus().code(),
-                str::stream() << "Database metadata write failed due to "
-                              << status.getStatus().reason()};
-    }
-
-    return Status::OK();
+    return status.getStatus().withContext(str::stream() << "Database metadata write failed");
 }
 
 Status ShardingCatalogClientImpl::logAction(OperationContext* opCtx,
@@ -298,10 +284,8 @@ StatusWith<repl::OpTimeWith<DatabaseType>> ShardingCatalogClientImpl::getDatabas
         result = _fetchDatabaseMetadata(
             opCtx, dbName, ReadPreferenceSetting{ReadPreference::PrimaryOnly}, readConcernLevel);
         if (!result.isOK() && (result != ErrorCodes::NamespaceNotFound)) {
-            return {result.getStatus().code(),
-                    str::stream() << "Could not confirm non-existence of database " << dbName
-                                  << " due to "
-                                  << result.getStatus().reason()};
+            return result.getStatus().withContext(
+                str::stream() << "Could not confirm non-existence of database " << dbName);
         }
     }
 
@@ -424,183 +408,6 @@ StatusWith<std::vector<CollectionType>> ShardingCatalogClientImpl::getCollection
     return collections;
 }
 
-Status ShardingCatalogClientImpl::dropCollection(OperationContext* opCtx,
-                                                 const NamespaceString& ns) {
-    logChange(opCtx,
-              "dropCollection.start",
-              ns.ns(),
-              BSONObj(),
-              ShardingCatalogClientImpl::kMajorityWriteConcern)
-        .ignore();
-
-    auto shardsStatus = getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
-    if (!shardsStatus.isOK()) {
-        return shardsStatus.getStatus();
-    }
-    vector<ShardType> allShards = std::move(shardsStatus.getValue().value);
-
-    LOG(1) << "dropCollection " << ns << " started";
-
-    const auto dropCommandBSON = [opCtx, &ns] {
-        BSONObjBuilder builder;
-        builder.append("drop", ns.coll());
-
-        if (!opCtx->getWriteConcern().usedDefault) {
-            builder.append(WriteConcernOptions::kWriteConcernField,
-                           opCtx->getWriteConcern().toBSON());
-        }
-
-        return builder.obj();
-    }();
-
-    std::map<std::string, BSONObj> errors;
-    auto* const shardRegistry = Grid::get(opCtx)->shardRegistry();
-
-    for (const auto& shardEntry : allShards) {
-        auto swShard = shardRegistry->getShard(opCtx, shardEntry.getName());
-        if (!swShard.isOK()) {
-            return swShard.getStatus();
-        }
-
-        const auto& shard = swShard.getValue();
-
-        auto swDropResult = shard->runCommandWithFixedRetryAttempts(
-            opCtx,
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-            ns.db().toString(),
-            dropCommandBSON,
-            Shard::RetryPolicy::kIdempotent);
-
-        if (!swDropResult.isOK()) {
-            return {swDropResult.getStatus().code(),
-                    str::stream() << swDropResult.getStatus().reason() << " at "
-                                  << shardEntry.getName()};
-        }
-
-        auto& dropResult = swDropResult.getValue();
-
-        auto dropStatus = std::move(dropResult.commandStatus);
-        auto wcStatus = std::move(dropResult.writeConcernStatus);
-        if (!dropStatus.isOK() || !wcStatus.isOK()) {
-            if (dropStatus.code() == ErrorCodes::NamespaceNotFound && wcStatus.isOK()) {
-                // Generally getting NamespaceNotFound is okay to ignore as it simply means that
-                // the collection has already been dropped or doesn't exist on this shard.
-                // If, however, we get NamespaceNotFound but also have a write concern error then we
-                // can't confirm whether the fact that the namespace doesn't exist is actually
-                // committed.  Thus we must still fail on NamespaceNotFound if there is also a write
-                // concern error. This can happen if we call drop, it succeeds but with a write
-                // concern error, then we retry the drop.
-                continue;
-            }
-
-            errors.emplace(shardEntry.getHost(), std::move(dropResult.response));
-        }
-    }
-
-    if (!errors.empty()) {
-        StringBuilder sb;
-        sb << "Dropping collection failed on the following hosts: ";
-
-        for (auto it = errors.cbegin(); it != errors.cend(); ++it) {
-            if (it != errors.cbegin()) {
-                sb << ", ";
-            }
-
-            sb << it->first << ": " << it->second;
-        }
-
-        return {ErrorCodes::OperationFailed, sb.str()};
-    }
-
-    LOG(1) << "dropCollection " << ns << " shard data deleted";
-
-    // Remove chunk data
-    Status result = removeConfigDocuments(opCtx,
-                                          ChunkType::ConfigNS,
-                                          BSON(ChunkType::ns(ns.ns())),
-                                          ShardingCatalogClient::kMajorityWriteConcern);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << ns << " chunk data deleted";
-
-    // Mark the collection as dropped
-    CollectionType coll;
-    coll.setNs(ns);
-    coll.setDropped(true);
-    coll.setEpoch(ChunkVersion::DROPPED().epoch());
-    coll.setUpdatedAt(Grid::get(opCtx)->getNetwork()->now());
-
-    const bool upsert = false;
-    result = updateShardingCatalogEntryForCollection(opCtx, ns.ns(), coll, upsert);
-    if (!result.isOK()) {
-        return result;
-    }
-
-    LOG(1) << "dropCollection " << ns << " collection marked as dropped";
-
-    for (const auto& shardEntry : allShards) {
-        auto swShard = shardRegistry->getShard(opCtx, shardEntry.getName());
-        if (!swShard.isOK()) {
-            return swShard.getStatus();
-        }
-
-        const auto& shard = swShard.getValue();
-
-        SetShardVersionRequest ssv = SetShardVersionRequest::makeForVersioningNoPersist(
-            shardRegistry->getConfigServerConnectionString(),
-            shardEntry.getName(),
-            fassertStatusOK(28781, ConnectionString::parse(shardEntry.getHost())),
-            ns,
-            ChunkVersion::DROPPED(),
-            true);
-
-        auto ssvResult = shard->runCommandWithFixedRetryAttempts(
-            opCtx,
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-            "admin",
-            ssv.toBSON(),
-            Shard::RetryPolicy::kIdempotent);
-
-        if (!ssvResult.isOK()) {
-            return ssvResult.getStatus();
-        }
-
-        auto ssvStatus = std::move(ssvResult.getValue().commandStatus);
-        if (!ssvStatus.isOK()) {
-            return ssvStatus;
-        }
-
-        auto unsetShardingStatus = shard->runCommandWithFixedRetryAttempts(
-            opCtx,
-            ReadPreferenceSetting{ReadPreference::PrimaryOnly},
-            "admin",
-            BSON("unsetSharding" << 1),
-            Shard::RetryPolicy::kIdempotent);
-
-        if (!unsetShardingStatus.isOK()) {
-            return unsetShardingStatus.getStatus();
-        }
-
-        auto unsetShardingResult = std::move(unsetShardingStatus.getValue().commandStatus);
-        if (!unsetShardingResult.isOK()) {
-            return unsetShardingResult;
-        }
-    }
-
-    LOG(1) << "dropCollection " << ns << " completed";
-
-    logChange(opCtx,
-              "dropCollection",
-              ns.ns(),
-              BSONObj(),
-              ShardingCatalogClientImpl::kMajorityWriteConcern)
-        .ignore();
-
-    return Status::OK();
-}
-
 StatusWith<BSONObj> ShardingCatalogClientImpl::getGlobalSettings(OperationContext* opCtx,
                                                                  StringData key) {
     auto findStatus = _exhaustiveFindOnConfig(opCtx,
@@ -656,18 +463,14 @@ StatusWith<VersionType> ShardingCatalogClientImpl::getConfigVersion(
     BSONObj versionDoc = queryResults.front();
     auto versionTypeResult = VersionType::fromBSON(versionDoc);
     if (!versionTypeResult.isOK()) {
-        return {versionTypeResult.getStatus().code(),
-                str::stream() << "Unable to parse config.version document " << versionDoc
-                              << " due to "
-                              << versionTypeResult.getStatus().reason()};
+        return versionTypeResult.getStatus().withContext(
+            str::stream() << "Unable to parse config.version document " << versionDoc);
     }
 
     auto validationStatus = versionTypeResult.getValue().validate();
     if (!validationStatus.isOK()) {
-        return Status(validationStatus.code(),
-                      str::stream() << "Unable to validate config.version document " << versionDoc
-                                    << " due to "
-                                    << validationStatus.reason());
+        return Status(validationStatus.withContext(
+            str::stream() << "Unable to validate config.version document " << versionDoc));
     }
 
     return versionTypeResult.getValue();
@@ -720,9 +523,7 @@ StatusWith<std::vector<ChunkType>> ShardingCatalogClientImpl::getChunks(
                                               sort,
                                               longLimit);
     if (!findStatus.isOK()) {
-        return {findStatus.getStatus().code(),
-                str::stream() << "Failed to load chunks due to "
-                              << findStatus.getStatus().reason()};
+        return findStatus.getStatus().withContext("Failed to load chunks");
     }
 
     const auto& chunkDocsOpTimePair = findStatus.getValue();
@@ -731,10 +532,8 @@ StatusWith<std::vector<ChunkType>> ShardingCatalogClientImpl::getChunks(
     for (const BSONObj& obj : chunkDocsOpTimePair.value) {
         auto chunkRes = ChunkType::fromConfigBSON(obj);
         if (!chunkRes.isOK()) {
-            return {chunkRes.getStatus().code(),
-                    stream() << "Failed to parse chunk with id " << obj[ChunkType::name()]
-                             << " due to "
-                             << chunkRes.getStatus().reason()};
+            return chunkRes.getStatus().withContext(stream() << "Failed to parse chunk with id "
+                                                             << obj[ChunkType::name()]);
         }
 
         chunks.push_back(chunkRes.getValue());
@@ -757,8 +556,7 @@ StatusWith<std::vector<TagsType>> ShardingCatalogClientImpl::getTagsForCollectio
                                               BSON(TagsType::min() << 1),
                                               boost::none);  // no limit
     if (!findStatus.isOK()) {
-        return {findStatus.getStatus().code(),
-                str::stream() << "Failed to load tags due to " << findStatus.getStatus().reason()};
+        return findStatus.getStatus().withContext("Failed to load tags");
     }
 
     const auto& tagDocsOpTimePair = findStatus.getValue();
@@ -767,10 +565,8 @@ StatusWith<std::vector<TagsType>> ShardingCatalogClientImpl::getTagsForCollectio
     for (const BSONObj& obj : tagDocsOpTimePair.value) {
         auto tagRes = TagsType::fromBSON(obj);
         if (!tagRes.isOK()) {
-            return {tagRes.getStatus().code(),
-                    str::stream() << "Failed to parse tag with id " << obj[TagsType::tag()]
-                                  << " due to "
-                                  << tagRes.getStatus().toString()};
+            return tagRes.getStatus().withContext(str::stream() << "Failed to parse tag with id "
+                                                                << obj[TagsType::tag()]);
         }
 
         tags.push_back(tagRes.getValue());
@@ -796,16 +592,14 @@ StatusWith<repl::OpTimeWith<std::vector<ShardType>>> ShardingCatalogClientImpl::
     for (const BSONObj& doc : findStatus.getValue().value) {
         auto shardRes = ShardType::fromBSON(doc);
         if (!shardRes.isOK()) {
-            return {shardRes.getStatus().code(),
-                    stream() << "Failed to parse shard document " << doc << " due to "
-                             << shardRes.getStatus().reason()};
+            return shardRes.getStatus().withContext(stream() << "Failed to parse shard document "
+                                                             << doc);
         }
 
         Status validateStatus = shardRes.getValue().validate();
         if (!validateStatus.isOK()) {
-            return {validateStatus.code(),
-                    stream() << "Failed to validate shard document " << doc << " due to "
-                             << validateStatus.reason()};
+            return validateStatus.withContext(stream() << "Failed to validate shard document "
+                                                       << doc);
         }
 
         shards.push_back(shardRes.getValue());

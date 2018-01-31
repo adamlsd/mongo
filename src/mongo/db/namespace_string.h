@@ -221,6 +221,13 @@ public:
     }
 
     /**
+     * Returns whether a namespace is replicated, based only on its string value. One notable
+     * omission is that map reduce `tmp.mr` collections may or may not be replicated. Callers must
+     * decide how to handle that case separately.
+     */
+    bool isReplicated() const;
+
+    /**
      * Returns true if cursors for this namespace are registered with the global cursor manager.
      */
     bool isGloballyManagedNamespace() const {
@@ -286,27 +293,6 @@ public:
         return validDBName(db(), DollarInDbNameBehavior::Allow) && !coll().empty();
     }
 
-    bool operator==(const std::string& nsIn) const {
-        return nsIn == _ns;
-    }
-    bool operator==(StringData nsIn) const {
-        return nsIn == _ns;
-    }
-    bool operator==(const NamespaceString& nsIn) const {
-        return nsIn._ns == _ns;
-    }
-
-    bool operator!=(const std::string& nsIn) const {
-        return nsIn != _ns;
-    }
-    bool operator!=(const NamespaceString& nsIn) const {
-        return nsIn._ns != _ns;
-    }
-
-    bool operator<(const NamespaceString& rhs) const {
-        return _ns < rhs._ns;
-    }
-
     /** ( foo.bar ).getSisterNS( "blah" ) == foo.blah
      */
     std::string getSisterNS(StringData local) const;
@@ -316,11 +302,6 @@ public:
 
     // @return {db(), "$cmd"}
     NamespaceString getCommandNS() const;
-
-    /**
-     * Function to escape most non-alpha characters from file names
-     */
-    static std::string escapeDbName(const StringData dbname);
 
     /**
      * @return true if ns is 'normal'.  A "$" is used for namespaces holding index data,
@@ -398,6 +379,26 @@ public:
      */
     static bool validCollectionName(StringData coll);
 
+    // Relops among `NamespaceString`.
+    friend bool operator==(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() == b.ns();
+    }
+    friend bool operator!=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() != b.ns();
+    }
+    friend bool operator<(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() < b.ns();
+    }
+    friend bool operator>(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() > b.ns();
+    }
+    friend bool operator<=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() <= b.ns();
+    }
+    friend bool operator>=(const NamespaceString& a, const NamespaceString& b) {
+        return a.ns() >= b.ns();
+    }
+
 private:
     std::string _ns;
     size_t _dotIndex;
@@ -465,9 +466,147 @@ inline bool nsIsDbOnly(StringData ns) {
  */
 int nsDBHash(const std::string& ns);
 
-}  // namespace mongo
+inline StringData NamespaceString::db() const {
+    return _dotIndex == std::string::npos ? StringData() : StringData(_ns.c_str(), _dotIndex);
+}
 
-#include "mongo/db/namespace_string-inl.h"
+inline StringData NamespaceString::coll() const {
+    return _dotIndex == std::string::npos ? StringData() : StringData(_ns.c_str() + _dotIndex + 1,
+                                                                      _ns.size() - 1 - _dotIndex);
+}
+
+inline bool NamespaceString::normal(StringData ns) {
+    return !virtualized(ns);
+}
+
+inline bool NamespaceString::oplog(StringData ns) {
+    return ns.startsWith("local.oplog.");
+}
+
+inline bool NamespaceString::special(StringData ns) {
+    return !normal(ns) || ns.substr(ns.find('.')).startsWith(".system.");
+}
+
+inline bool NamespaceString::virtualized(StringData ns) {
+    return ns.find('$') != std::string::npos && ns != "local.oplog.$main";
+}
+
+inline bool NamespaceString::validDBName(StringData db, DollarInDbNameBehavior behavior) {
+    if (db.size() == 0 || db.size() >= 64)
+        return false;
+
+    for (StringData::const_iterator iter = db.begin(), end = db.end(); iter != end; ++iter) {
+        switch (*iter) {
+            case '\0':
+            case '/':
+            case '\\':
+            case '.':
+            case ' ':
+            case '"':
+                return false;
+            case '$':
+                if (behavior == DollarInDbNameBehavior::Disallow)
+                    return false;
+                continue;
+#ifdef _WIN32
+            // We prohibit all FAT32-disallowed characters on Windows
+            case '*':
+            case '<':
+            case '>':
+            case ':':
+            case '|':
+            case '?':
+                return false;
+#endif
+            default:
+                continue;
+        }
+    }
+    return true;
+}
+
+inline bool NamespaceString::validCollectionComponent(StringData ns) {
+    size_t idx = ns.find('.');
+    if (idx == std::string::npos)
+        return false;
+
+    return validCollectionName(ns.substr(idx + 1)) || oplog(ns);
+}
+
+inline bool NamespaceString::validCollectionName(StringData coll) {
+    if (coll.empty())
+        return false;
+
+    if (coll[0] == '.')
+        return false;
+
+    for (StringData::const_iterator iter = coll.begin(), end = coll.end(); iter != end; ++iter) {
+        switch (*iter) {
+            case '\0':
+            case '$':
+                return false;
+            default:
+                continue;
+        }
+    }
+
+    return true;
+}
+
+inline NamespaceString::NamespaceString() : _ns(), _dotIndex(std::string::npos) {}
+inline NamespaceString::NamespaceString(StringData nsIn) {
+    _ns = nsIn.toString();  // copy to our buffer
+    _dotIndex = _ns.find('.');
+    uassert(ErrorCodes::InvalidNamespace,
+            "namespaces cannot have embedded null characters",
+            _ns.find('\0') == std::string::npos);
+}
+
+inline NamespaceString::NamespaceString(StringData dbName, StringData collectionName)
+    : _ns(dbName.size() + collectionName.size() + 1, '\0') {
+    uassert(ErrorCodes::InvalidNamespace,
+            "'.' is an invalid character in a database name",
+            dbName.find('.') == std::string::npos);
+    uassert(ErrorCodes::InvalidNamespace,
+            "Collection names cannot start with '.'",
+            collectionName.empty() || collectionName[0] != '.');
+    std::string::iterator it = std::copy(dbName.begin(), dbName.end(), _ns.begin());
+    *it = '.';
+    ++it;
+    it = std::copy(collectionName.begin(), collectionName.end(), it);
+    _dotIndex = dbName.size();
+    dassert(it == _ns.end());
+    dassert(_ns[_dotIndex] == '.');
+    uassert(ErrorCodes::InvalidNamespace,
+            "namespaces cannot have embedded null characters",
+            _ns.find('\0') == std::string::npos);
+}
+
+inline int nsDBHash(const std::string& ns) {
+    int hash = 7;
+    for (size_t i = 0; i < ns.size(); i++) {
+        if (ns[i] == '.')
+            break;
+        hash += 11 * (ns[i]);
+        hash *= 3;
+    }
+    return hash;
+}
+
+inline std::string NamespaceString::getSisterNS(StringData local) const {
+    verify(local.size() && local[0] != '.');
+    return db().toString() + "." + local.toString();
+}
+
+inline std::string NamespaceString::getSystemIndexesCollection() const {
+    return db().toString() + ".system.indexes";
+}
+
+inline NamespaceString NamespaceString::getCommandNS() const {
+    return {db(), "$cmd"};
+}
+
+}  // namespace mongo
 
 MONGO_HASH_NAMESPACE_START
 template <>

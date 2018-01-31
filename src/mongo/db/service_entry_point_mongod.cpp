@@ -63,7 +63,6 @@
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/db/stats/top.h"
@@ -122,9 +121,7 @@ void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                   << " ntoreturn:" << queryMessage.ntoreturn;
     }
 
-    const StaleConfigException* scex = (exception->code() == ErrorCodes::StaleConfig)
-        ? checked_cast<const StaleConfigException*>(exception)
-        : NULL;
+    auto scex = exception->extraInfo<StaleConfigInfo>();
 
     BSONObjBuilder err;
     err.append("$err", exception->reason());
@@ -174,19 +171,7 @@ void _generateErrorResponse(OperationContext* opCtx,
     // We could have thrown an exception after setting fields in the builder,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
-
-    // We need to include some extra information for StaleConfig.
-    if (exception.code() == ErrorCodes::StaleConfig) {
-        const StaleConfigException& scex = checked_cast<const StaleConfigException&>(exception);
-        replyBuilder->setCommandReply(scex.toStatus(),
-                                      BSON("ns" << scex.getns() << "vReceived"
-                                                << BSONArray(scex.getVersionReceived().toBSON())
-                                                << "vWanted"
-                                                << BSONArray(scex.getVersionWanted().toBSON())));
-    } else {
-        replyBuilder->setCommandReply(exception.toStatus());
-    }
-
+    replyBuilder->setCommandReply(exception.toStatus());
     replyBuilder->setMetadata(replyMetadata);
 }
 
@@ -200,22 +185,8 @@ void _generateErrorResponse(OperationContext* opCtx,
     // We could have thrown an exception after setting fields in the builder,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
-
-    // We need to include some extra information for StaleConfig.
-    if (exception.code() == ErrorCodes::StaleConfig) {
-        const StaleConfigException& scex = checked_cast<const StaleConfigException&>(exception);
-        replyBuilder->setCommandReply(scex.toStatus(),
-                                      BSON("ns" << scex.getns() << "vReceived"
-                                                << BSONArray(scex.getVersionReceived().toBSON())
-                                                << "vWanted"
-                                                << BSONArray(scex.getVersionWanted().toBSON())
-                                                << "operationTime"
-                                                << operationTime.asTimestamp()));
-    } else {
-        replyBuilder->setCommandReply(exception.toStatus(),
-                                      BSON("operationTime" << operationTime.asTimestamp()));
-    }
-
+    replyBuilder->setCommandReply(exception.toStatus(),
+                                  BSON("operationTime" << operationTime.asTimestamp()));
     replyBuilder->setMetadata(replyMetadata);
 }
 
@@ -260,20 +231,17 @@ void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadat
         replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
 
     if (isReplSet) {
-        if (serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
-                // No need to sign cluster times for internal clients.
-                SignedLogicalTime currentTime(
-                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
-                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                logicalTimeMetadata.writeToMetadata(metadataBob);
-            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
-                auto currentTime =
-                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                logicalTimeMetadata.writeToMetadata(metadataBob);
-            }
+        if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+            // No need to sign cluster times for internal clients.
+            SignedLogicalTime currentTime(
+                LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+            logicalTimeMetadata.writeToMetadata(metadataBob);
+        } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+            auto currentTime =
+                validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+            logicalTimeMetadata.writeToMetadata(metadataBob);
         }
     }
 }
@@ -299,20 +267,17 @@ void appendReplyMetadata(OperationContext* opCtx,
                 .writeToMetadata(metadataBob)
                 .transitional_ignore();
         }
-        if (serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
-                // No need to sign cluster times for internal clients.
-                SignedLogicalTime currentTime(
-                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
-                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                logicalTimeMetadata.writeToMetadata(metadataBob);
-            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
-                auto currentTime =
-                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-                logicalTimeMetadata.writeToMetadata(metadataBob);
-            }
+        if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+            // No need to sign cluster times for internal clients.
+            SignedLogicalTime currentTime(
+                LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+            logicalTimeMetadata.writeToMetadata(metadataBob);
+        } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+            auto currentTime =
+                validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+            logicalTimeMetadata.writeToMetadata(metadataBob);
         }
     }
 
@@ -324,22 +289,23 @@ void appendReplyMetadata(OperationContext* opCtx,
 }
 
 /**
- * Given the specified command and whether it supports read concern, returns an effective read
- * concern which should be used.
+ * Given the specified command, returns an effective read concern which should be used or an error
+ * if the read concern is not valid for the command.
  */
-StatusWith<repl::ReadConcernArgs> _extractReadConcern(const BSONObj& cmdObj,
-                                                      bool supportsNonLocalReadConcern) {
+StatusWith<repl::ReadConcernArgs> _extractReadConcern(const Command* command,
+                                                      const std::string& dbName,
+                                                      const BSONObj& cmdObj) {
     repl::ReadConcernArgs readConcernArgs;
 
-    auto readConcernParseStatus = readConcernArgs.initialize(cmdObj, Command::testCommandsEnabled);
+    auto readConcernParseStatus = readConcernArgs.initialize(cmdObj);
     if (!readConcernParseStatus.isOK()) {
         return readConcernParseStatus;
     }
 
-    if (!supportsNonLocalReadConcern &&
-        readConcernArgs.getLevel() != repl::ReadConcernLevel::kLocalReadConcern) {
+    if (!command->supportsReadConcern(dbName, cmdObj, readConcernArgs.getLevel())) {
         return {ErrorCodes::InvalidOptions,
-                str::stream() << "Command does not support non local read concern"};
+                str::stream() << "Command does not support read concern "
+                              << readConcernArgs.toString()};
     }
 
     return readConcernArgs;
@@ -511,10 +477,8 @@ bool runCommandImpl(OperationContext* opCtx,
 
     // When a linearizable read command is passed in, check to make sure we're reading
     // from the primary.
-    if (command->supportsNonLocalReadConcern(db, cmd) &&
-        (repl::ReadConcernArgs::get(opCtx).getLevel() ==
-         repl::ReadConcernLevel::kLinearizableReadConcern) &&
-        (request.getCommandName() != "getMore")) {
+    if (repl::ReadConcernArgs::get(opCtx).getLevel() ==
+        repl::ReadConcernLevel::kLinearizableReadConcern) {
 
         auto linearizableReadStatus = waitForLinearizableReadConcern(opCtx);
 
@@ -537,9 +501,7 @@ bool runCommandImpl(OperationContext* opCtx,
 
     // An uninitialized operation time means the cluster time is not propagated, so the operation
     // time should not be attached to the response.
-    if (operationTime != LogicalTime::kUninitialized &&
-        (serverGlobalParams.featureCompatibility.getVersion() ==
-         ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)) {
+    if (operationTime != LogicalTime::kUninitialized) {
         operationTime.appendAsOperationTime(&inPlaceReplyBob);
     }
 
@@ -714,17 +676,14 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        readConcernArgs = uassertStatusOK(_extractReadConcern(
-            request.body, command->supportsNonLocalReadConcern(dbname, request.body)));
+        readConcernArgs = uassertStatusOK(_extractReadConcern(command, dbname, request.body));
 
         auto& oss = OperationShardingState::get(opCtx);
 
         if (!opCtx->getClient()->isInDirectClient() &&
             readConcernArgs.getLevel() != repl::ReadConcernLevel::kAvailableReadConcern &&
             (iAmPrimary ||
-             ((serverGlobalParams.featureCompatibility.getVersion() ==
-               ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) &&
-              (readConcernArgs.hasLevel() || readConcernArgs.getArgsClusterTime())))) {
+             (readConcernArgs.hasLevel() || readConcernArgs.getArgsAfterClusterTime()))) {
             oss.initializeShardVersion(NamespaceString(command->parseNs(dbname, request.body)),
                                        shardVersionFieldIdx);
 
@@ -763,10 +722,7 @@ void execCommandDatabase(OperationContext* opCtx,
         }
     } catch (const DBException& e) {
         // If we got a stale config, wait in case the operation is stuck in a critical section
-        if (e.code() == ErrorCodes::StaleConfig) {
-            auto sce = dynamic_cast<const StaleConfigException*>(&e);
-            invariant(sce);  // do not upcasts from DBException created by uassert variants.
-
+        if (auto sce = e.extraInfo<StaleConfigInfo>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
                 ShardingState::get(opCtx)
                     ->onStaleShardVersion(
@@ -781,8 +737,7 @@ void execCommandDatabase(OperationContext* opCtx,
         // Note: the read concern may not have been successfully or yet placed on the opCtx, so
         // parsing it separately here.
         const std::string db = request.getDatabase().toString();
-        auto readConcernArgsStatus = _extractReadConcern(
-            request.body, command->supportsNonLocalReadConcern(db, request.body));
+        auto readConcernArgsStatus = _extractReadConcern(command, db, request.body);
         auto operationTime = readConcernArgsStatus.isOK()
             ? computeOperationTime(
                   opCtx, startOperationTime, readConcernArgsStatus.getValue().getLevel())
@@ -790,9 +745,7 @@ void execCommandDatabase(OperationContext* opCtx,
 
         // An uninitialized operation time means the cluster time is not propagated, so the
         // operation time should not be attached to the error response.
-        if (operationTime != LogicalTime::kUninitialized &&
-            (serverGlobalParams.featureCompatibility.getVersion() ==
-             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36)) {
+        if (operationTime != LogicalTime::kUninitialized) {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
                    << "with arguments '" << command->getRedactedCopyForLogging(request.body)
@@ -926,11 +879,13 @@ DbResponse receivedQuery(OperationContext* opCtx,
         dbResponse.exhaustNS = runQuery(opCtx, q, nss, dbResponse.response);
     } catch (const AssertionException& e) {
         // If we got a stale config, wait in case the operation is stuck in a critical section
-        if (!opCtx->getClient()->isInDirectClient() && e.code() == ErrorCodes::StaleConfig) {
-            auto& sce = static_cast<const StaleConfigException&>(e);
-            ShardingState::get(opCtx)
-                ->onStaleShardVersion(opCtx, NamespaceString(sce.getns()), sce.getVersionReceived())
-                .transitional_ignore();
+        if (auto sce = e.extraInfo<StaleConfigInfo>()) {
+            if (!opCtx->getClient()->isInDirectClient()) {
+                ShardingState::get(opCtx)
+                    ->onStaleShardVersion(
+                        opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
+                    .transitional_ignore();
+            }
         }
 
         dbResponse.response.reset();

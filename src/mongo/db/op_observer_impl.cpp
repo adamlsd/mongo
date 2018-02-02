@@ -618,20 +618,19 @@ repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
     const auto cmdNss = collectionName.getCommandNS();
     const auto cmdObj = BSON("drop" << collectionName.coll());
 
-    repl::OpTime dropOpTime;
     if (!collectionName.isSystemDotProfile()) {
         // Do not replicate system.profile modifications.
-        dropOpTime = repl::logOp(opCtx,
-                                 "c",
-                                 cmdNss,
-                                 uuid,
-                                 cmdObj,
-                                 nullptr,
-                                 false,
-                                 getWallClockTimeForOpLog(opCtx),
-                                 {},
-                                 kUninitializedStmtId,
-                                 {});
+        repl::logOp(opCtx,
+                    "c",
+                    cmdNss,
+                    uuid,
+                    cmdObj,
+                    nullptr,
+                    false,
+                    getWallClockTimeForOpLog(opCtx),
+                    {},
+                    kUninitializedStmtId,
+                    {});
     }
 
     if (collectionName.coll() == DurableViewCatalog::viewsCollectionName()) {
@@ -651,7 +650,7 @@ repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
     // Evict namespace entry from the namespace/uuid cache if it exists.
     NamespaceUUIDCache::get(opCtx).evictNamespace(collectionName);
 
-    return dropOpTime;
+    return {};
 }
 
 void OpObserverImpl::onDropIndex(OperationContext* opCtx,
@@ -678,7 +677,7 @@ void OpObserverImpl::onDropIndex(OperationContext* opCtx,
         ->logOp(opCtx, "c", cmdNss, cmdObj, &indexInfo);
 }
 
-repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* opCtx,
+repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* const opCtx,
                                                 const NamespaceString& fromCollection,
                                                 const NamespaceString& toCollection,
                                                 OptionalCollectionUUID uuid,
@@ -699,17 +698,17 @@ repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* opCtx,
 
     const auto cmdObj = builder.done();
 
-    const auto renameOpTime = repl::logOp(opCtx,
-                                          "c",
-                                          cmdNss,
-                                          uuid,
-                                          cmdObj,
-                                          nullptr,
-                                          false,
-                                          getWallClockTimeForOpLog(opCtx),
-                                          {},
-                                          kUninitializedStmtId,
-                                          {});
+    repl::logOp(opCtx,
+                "c",
+                cmdNss,
+                uuid,
+                cmdObj,
+                nullptr,
+                false,
+                getWallClockTimeForOpLog(opCtx),
+                {},
+                kUninitializedStmtId,
+                {});
 
     if (fromCollection.isSystemDotViews())
         DurableViewCatalog::onExternalChange(opCtx, fromCollection);
@@ -726,7 +725,7 @@ repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* opCtx,
     opCtx->recoveryUnit()->onRollback(
         [&cache, toCollection]() { cache.evictNamespace(toCollection); });
 
-    return renameOpTime;
+    return {};
 }
 
 void OpObserverImpl::onApplyOps(OperationContext* opCtx,

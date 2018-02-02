@@ -223,7 +223,7 @@ public:
                                OptionalCollectionUUID uuid) = 0;
 
     struct Times {
-        std::vector<repl::OpTime> reservedOpTimes;
+        std::vector<std::pair<repl::OpTime, Date_t>> reservedOpTimes;
 
         static Times* get(OperationContext*);
     };

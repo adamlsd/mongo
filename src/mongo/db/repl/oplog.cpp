@@ -1,5 +1,3 @@
-// @file oplog.cpp
-
 /**
 *    Copyright (C) 2008-2014 MongoDB Inc.
 *
@@ -405,17 +403,18 @@ void _logOpsInner(OperationContext* opCtx,
     });
 }
 
-OpTime logOp(OperationContext* opCtx,
-             const char* opstr,
-             const NamespaceString& nss,
-             OptionalCollectionUUID uuid,
-             const BSONObj& obj,
-             const BSONObj* o2,
-             bool fromMigrate,
-             Date_t wallClockTime,
-             const OperationSessionInfo& sessionInfo,
-             StmtId statementId,
-             const OplogLink& oplogLink) {
+namespace {
+OpTime logOpImpl(OperationContext* const opCtx,
+                 const char* opstr,
+                 const NamespaceString& nss,
+                 OptionalCollectionUUID uuid,
+                 const BSONObj& obj,
+                 const BSONObj* o2,
+                 bool fromMigrate,
+                 Date_t wallClockTime,
+                 const OperationSessionInfo& sessionInfo,
+                 StmtId statementId,
+                 const OplogLink& oplogLink) {
     auto replCoord = ReplicationCoordinator::get(opCtx);
     // For commands, the test below is on the command ns and therefore does not check for
     // specific namespaces such as system.profile. This is the caller's responsibility.
@@ -453,6 +452,35 @@ OpTime logOp(OperationContext* opCtx,
     _logOpsInner(opCtx, nss, &basePtr, &timestamp, 1, oplog, slot.opTime);
     wuow.commit();
     return slot.opTime;
+}
+}  // namespace
+
+OpTime logOpImpl(OperationContext* const opCtx,
+                 const char* const opstr,
+                 const NamespaceString& nss,
+                 const OptionalCollectionUUID uuid,
+                 const BSONObj& obj,
+                 const BSONObj* o2,
+                 const bool fromMigrate,
+                 const Date_t wallClockTime,
+                 const OperationSessionInfo& sessionInfo,
+                 StmtId statementId,
+                 const OplogLink& oplogLink) {
+    auto& times = *OpObserver::Times::get(opCtx)->reservedOpTimes;
+    const auto opTime = logOpImpl(opCtx,
+                                  opstr,
+                                  nss,
+                                  uuid,
+                                  obj,
+                                  o2,
+                                  fromMigrate,
+                                  wallClockTime,
+                                  sessionInfo,
+                                  statementId,
+                                  oplogLink);
+    times.emplace_back(opTime, wallClockTime);
+
+    return opTime;
 }
 
 std::vector<OpTime> logInsertOps(OperationContext* opCtx,

@@ -143,14 +143,11 @@ public:
                                   const NamespaceString& collectionName,
                                   const OptionalCollectionUUID uuid) override {
         ReservedTimes times{opCtx};
-        const auto& reservedTimes = times.get()->reservedOpTimes;
-
-        for (auto&& observer : this->_observers) {
-            const auto time = observer->onDropCollection(opCtx, collectionName, uuid);
+        for (auto& observer : this->_observers) {
+            auto time = observer->onDropCollection(opCtx, collectionName, uuid);
             invariant(time.isNull());
         }
-
-        return getOpTime(reservedTimes);
+        return getOpTime(times.get()->reservedOpTimes);
     }
 
     void onDropIndex(OperationContext* const opCtx,
@@ -171,14 +168,13 @@ public:
                                     OptionalCollectionUUID dropTargetUUID,
                                     bool stayTemp) override {
         ReservedTimes times{opCtx};
-        const auto& reservedTimes = times.get()->reservedOpTimes;
-        for (auto&& observer : this->_observers) {
+        for (auto& observer : this->_observers) {
             const auto time = observer->onRenameCollection(
                 opCtx, fromCollection, toCollection, uuid, dropTarget, dropTargetUUID, stayTemp);
             invariant(time.isNull());
         }
 
-        return getOpTime(reservedTimes);
+        return getOpTime(times.get()->reservedOpTimes);
     }
 
     void onApplyOps(OperationContext* const opCtx,
@@ -198,23 +194,13 @@ public:
     }
 
 private:
-    static repl::OpTime getOpTime(const std::vector<repl::OpTime>& times) {
-        if (times.empty())
+    static repl::OpTime getOpTime(const std::vector<std::pair<repl::OpTime, Date_t>>& times) {
+        if (times.empty()) {
             return repl::OpTime{};
-        invariant(times.size() == 1);
-        return times.front();
-    }
-
-    repl::OpTime _forEachObserver(stdx::function<repl::OpTime(OpObserver&)> f) {
-        repl::OpTime opTime;
-        for (auto& observer : _observers) {
-            repl::OpTime newTime = f(*observer);
-            if (!newTime.isNull() && newTime != opTime) {
-                invariant(opTime.isNull());
-                opTime = newTime;
-            }
         }
-        return opTime;
+        invariant(times.size() == 1);
+        using std::get;
+        return get<0>(times.front());
     }
 
     std::vector<std::unique_ptr<OpObserver>> _observers;

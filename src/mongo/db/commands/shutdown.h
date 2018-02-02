@@ -45,11 +45,11 @@ public:
     virtual bool adminOnly() const {
         return true;
     }
-    virtual bool localHostOnlyIfNoAuth() {
+    bool localHostOnlyIfNoAuth() const override {
         return true;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,

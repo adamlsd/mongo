@@ -30,12 +30,15 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/base/checked_cast.h"
 #include "mongo/client/embedded/service_entry_point_embedded.h"
+
+#include "mongo/base/checked_cast.h"
+#include "mongo/bson/mutable/document.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/impersonation_session.h"
 #include "mongo/db/client.h"
+#include "mongo/db/command_can_run_here.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/fsync.h"
 #include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
@@ -105,11 +108,19 @@ const StringMap<int> cmdWhitelist = {{"delete", 1},
                                      {"refreshLogicalSessionCacheNow", 1},
                                      {"update", 1}};
 
+BSONObj getRedactedCopyForLogging(const Command* command, const BSONObj& cmdObj) {
+    mutablebson::Document cmdToLog(cmdObj, mutablebson::Document::kInPlaceDisabled);
+    command->redactForLogging(&cmdToLog);
+    BSONObjBuilder bob;
+    cmdToLog.writeTo(&bob);
+    return bob.obj();
+}
+
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
                                       CurOp* curop,
                                       Message* response) {
-    curop->debug().exceptionInfo = exception->toStatus();
+    curop->debug().errInfo = exception->toStatus();
 
     log(LogComponent::kQuery) << "assertion " << exception->toString() << " ns:" << queryMessage.ns
                               << " query:" << (queryMessage.query.valid(BSONVersion::kLatest)
@@ -158,7 +169,7 @@ void generateLegacyQueryErrorResponse(const AssertionException* exception,
 
 void registerError(OperationContext* opCtx, const DBException& exception) {
     LastError::get(opCtx->getClient()).setLastError(exception.code(), exception.reason());
-    CurOp::get(opCtx)->debug().exceptionInfo = exception.toStatus();
+    CurOp::get(opCtx)->debug().errInfo = exception.toStatus();
 }
 
 void generateErrorResponse(OperationContext* opCtx,
@@ -559,18 +570,13 @@ void execCommandDatabase(OperationContext* opCtx,
 
         if (!opCtx->getClient()->isInDirectClient() &&
             !MONGO_FAIL_POINT(skipCheckingForNotMasterInCommandDispatch)) {
-
-            bool commandCanRunOnSecondary = command->slaveOk();
-
-            bool commandIsOverriddenToRunOnSecondary =
-                command->slaveOverrideOk() && ReadPreferenceSetting::get(opCtx).canRunOnSecondary();
-
-            bool iAmStandalone = !opCtx->writesAreReplicated();
-            bool canRunHere = iAmPrimary || commandCanRunOnSecondary ||
-                commandIsOverriddenToRunOnSecondary || iAmStandalone;
-
-            // This logic is clearer if we don't have to invert it.
-            if (!canRunHere && command->slaveOverrideOk()) {
+            auto allowed = command->secondaryAllowed();
+            bool alwaysAllowed = allowed == Command::AllowedOnSecondary::kAlways;
+            bool couldHaveOptedIn = allowed == Command::AllowedOnSecondary::kOptIn;
+            bool optedIn =
+                couldHaveOptedIn && ReadPreferenceSetting::get(opCtx).canRunOnSecondary();
+            bool canRunHere = commandCanRunHere(opCtx, dbname, command);
+            if (!canRunHere && couldHaveOptedIn) {
                 uasserted(ErrorCodes::NotMasterNoSlaveOk, "not master and slaveOk=false");
             }
 
@@ -594,7 +600,7 @@ void execCommandDatabase(OperationContext* opCtx,
                 // Check ticket SERVER-21432, slaveOk commands are allowed in drain mode
                 uassert(ErrorCodes::NotMasterOrSecondary,
                         "node is in drain mode",
-                        commandIsOverriddenToRunOnSecondary || commandCanRunOnSecondary);
+                        optedIn || alwaysAllowed);
             }
         }
 
@@ -698,14 +704,14 @@ void execCommandDatabase(OperationContext* opCtx,
         if (operationTime != LogicalTime::kUninitialized) {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
-                   << "with arguments '" << command->getRedactedCopyForLogging(request.body)
+                   << "with arguments '" << getRedactedCopyForLogging(command, request.body)
                    << "' and operationTime '" << operationTime.toString() << "': " << e.toString();
 
             generateErrorResponse(opCtx, replyBuilder, e, metadataBob.obj(), operationTime);
         } else {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
-                   << "with arguments '" << command->getRedactedCopyForLogging(request.body)
+                   << "with arguments '" << getRedactedCopyForLogging(command, request.body)
                    << "': " << e.toString();
 
             generateErrorResponse(opCtx, replyBuilder, e, metadataBob.obj());
@@ -771,7 +777,7 @@ DbResponse runCommands(OperationContext* opCtx, const Message& message) {
             }
 
             LOG(2) << "run command " << request.getDatabase() << ".$cmd" << ' '
-                   << c->getRedactedCopyForLogging(request.body);
+                   << getRedactedCopyForLogging(c, request.body);
 
             {
                 // Try to set this as early as possible, as soon as we have figured out the command.
@@ -977,7 +983,7 @@ DbResponse receivedGetMore(OperationContext* opCtx,
         err.append("code", e.code());
         BSONObj errObj = err.obj();
 
-        curop.debug().exceptionInfo = e.toStatus();
+        curop.debug().errInfo = e.toStatus();
 
         dbresponse = replyToQuery(errObj, ResultFlag_ErrSet);
         curop.debug().responseLength = dbresponse.response.header().dataLen();
@@ -1089,7 +1095,7 @@ DbResponse ServiceEntryPointEmbedded::handleRequest(OperationContext* opCtx, con
             LastError::get(c).setLastError(ue.code(), ue.reason());
             LOG(3) << " Caught Assertion in " << networkOpToString(op) << ", continuing "
                    << redact(ue);
-            debug.exceptionInfo = ue.toStatus();
+            debug.errInfo = ue.toStatus();
         }
     }
     currentOp.ensureStarted();

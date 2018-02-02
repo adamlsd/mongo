@@ -198,8 +198,8 @@ class WriteCommand : public Command {
 public:
     explicit WriteCommand(StringData name) : Command(name) {}
 
-    bool slaveOk() const final {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const final {
+        return AllowedOnSecondary::kNever;
     }
 
     bool shouldAffectCommandCounter() const final {
@@ -242,7 +242,7 @@ class CmdInsert final : public WriteCommand {
 public:
     CmdInsert() : WriteCommand("insert") {}
 
-    void redactForLogging(mutablebson::Document* cmdObj) final {
+    void redactForLogging(mutablebson::Document* cmdObj) const final {
         redactTooLongLog(cmdObj, "documents");
     }
 
@@ -273,7 +273,7 @@ class CmdUpdate final : public WriteCommand {
 public:
     CmdUpdate() : WriteCommand("update") {}
 
-    void redactForLogging(mutablebson::Document* cmdObj) final {
+    void redactForLogging(mutablebson::Document* cmdObj) const final {
         redactTooLongLog(cmdObj, "updates");
     }
 
@@ -340,7 +340,7 @@ class CmdDelete final : public WriteCommand {
 public:
     CmdDelete() : WriteCommand("delete") {}
 
-    void redactForLogging(mutablebson::Document* cmdObj) final {
+    void redactForLogging(mutablebson::Document* cmdObj) const final {
         redactTooLongLog(cmdObj, "deletes");
     }
 

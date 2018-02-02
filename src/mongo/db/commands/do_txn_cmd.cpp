@@ -131,8 +131,8 @@ class DoTxnCmd : public BasicCommand {
 public:
     DoTxnCmd() : BasicCommand("doTxn") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -155,6 +155,10 @@ public:
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
+        uassert(ErrorCodes::CommandNotSupported,
+                "This storage engine does not support transactions.",
+                !opCtx->getServiceContext()->getGlobalStorageEngine()->isMmapV1());
+
         validateDoTxnCommand(cmdObj);
 
         boost::optional<DisableDocumentValidation> maybeDisableValidation;

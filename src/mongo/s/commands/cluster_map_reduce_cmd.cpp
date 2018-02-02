@@ -151,8 +151,8 @@ class MRCmd : public ErrmsgCommandDeprecated {
 public:
     MRCmd() : ErrmsgCommandDeprecated("mapReduce", "mapreduce") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const override {
@@ -476,7 +476,7 @@ public:
             } else {
                 // Collection is already sharded; read the collection's UUID from the config server.
                 const auto coll =
-                    uassertStatusOK(catalogClient->getCollection(opCtx, outputCollNss.ns())).value;
+                    uassertStatusOK(catalogClient->getCollection(opCtx, outputCollNss)).value;
                 shardedOutputCollUUID = coll.getUUID();
             }
 

@@ -39,7 +39,6 @@
 #include "mongo/db/lasterror.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
@@ -258,7 +257,7 @@ void updateChunkWriteStatsAndSplitIfNeeded(OperationContext* opCtx,
         return;
     }
 
-    const NamespaceString nss(manager->getns());
+    const NamespaceString& nss = manager->getns();
 
     if (!manager->_autoSplitThrottle._splitTickets.tryAcquire()) {
         LOG(1) << "won't auto split because not enough tickets: " << nss;
@@ -390,7 +389,7 @@ void updateChunkWriteStatsAndSplitIfNeeded(OperationContext* opCtx,
             suggestedMigrateChunk->getMin());
 
         ChunkType chunkToMove;
-        chunkToMove.setNS(nss.ns());
+        chunkToMove.setNS(nss);
         chunkToMove.setShard(suggestedChunk->getShardId());
         chunkToMove.setMin(suggestedChunk->getMin());
         chunkToMove.setMax(suggestedChunk->getMax());

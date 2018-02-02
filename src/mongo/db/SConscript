@@ -452,6 +452,7 @@ env.Library(
     target='service_context',
     source=[
         'client.cpp',
+        'multi_key_path_tracker.cpp',
         'operation_context.cpp',
         'service_context.cpp',
         'service_context_noop.cpp',
@@ -514,10 +515,25 @@ env.Library(
         'auth/authcore',
         'commands/server_status_core',
         'commands/test_commands_enabled',
+        'command_can_run_here',
         'service_context',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
     ],
 )
+
+env.Library(
+    target='command_can_run_here',
+    source=[
+        'command_can_run_here.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/client/read_preference',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        'service_context',
+    ],
+)
+
 
 env.CppUnitTest(
     target="commands_test",
@@ -598,6 +614,7 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/transport/service_entry_point',
         'auth/authmongod',
+        'command_can_run_here',
         'commands/dcommands_fsync',
         'concurrency/lock_manager',
         'curop',
@@ -630,8 +647,9 @@ env.Library(
         "op_observer_impl.cpp",
     ],
     LIBDEPS=[
-        'repl/serveronly_repl',
+        'catalog/collection_options',
         'op_observer',
+        'repl/oplog',
         'views/views_mongod',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
@@ -1377,8 +1395,8 @@ env.Library(
     target='keys_collection_manager',
     source=[
         'keys_collection_manager.cpp',
-        'keys_collection_cache_reader.cpp',
-        'keys_collection_cache_reader_and_updater.cpp',
+        'keys_collection_cache.cpp',
+        'key_generator.cpp',
     ],
     LIBDEPS=[
         'logical_clock',
@@ -1507,9 +1525,9 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='keys_collection_cache_reader_test',
+    target='keys_collection_cache_test',
     source=[
-        'keys_collection_cache_reader_test.cpp',
+        'keys_collection_cache_test.cpp',
     ],
     LIBDEPS=[
         'keys_collection_manager',
@@ -1519,9 +1537,9 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='keys_collection_cache_reader_and_updater_test',
+    target='key_generator_update_test',
     source=[
-        'keys_collection_cache_reader_and_updater_test.cpp',
+        'key_generator_update_test.cpp',
     ],
     LIBDEPS=[
         'keys_collection_manager',

@@ -41,6 +41,7 @@
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/query/explain.h"
+#include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/rpc/reply_builder_interface.h"
 #include "mongo/stdx/functional.h"
@@ -49,14 +50,12 @@
 
 namespace mongo {
 
+class Command;
 class OperationContext;
-class Timer;
 
 namespace mutablebson {
 class Document;
 }  // namespace mutablebson
-
-class Command;
 
 // Various helpers unrelated to any single command or to the command registry.
 // Would be a namespace, but want to keep it closed rather than open.
@@ -64,15 +63,14 @@ class Command;
 struct CommandHelpers {
     // The type of the first field in 'cmdObj' must be mongo::String. The first field is
     // interpreted as a collection name.
-    static std::string parseNsFullyQualified(const std::string& dbname, const BSONObj& cmdObj);
+    static std::string parseNsFullyQualified(StringData dbname, const BSONObj& cmdObj);
 
     // The type of the first field in 'cmdObj' must be mongo::String or Symbol.
     // The first field is interpreted as a collection name.
-    static NamespaceString parseNsCollectionRequired(const std::string& dbname,
-                                                     const BSONObj& cmdObj);
+    static NamespaceString parseNsCollectionRequired(StringData dbname, const BSONObj& cmdObj);
 
     static NamespaceString parseNsOrUUID(OperationContext* opCtx,
-                                         const std::string& dbname,
+                                         StringData dbname,
                                          const BSONObj& cmdObj);
 
     static Command* findCommand(StringData name);
@@ -188,6 +186,7 @@ struct CommandHelpers {
 class Command {
 public:
     using CommandMap = StringMap<Command*>;
+    enum class AllowedOnSecondary { kAlways, kNever, kOptIn };
 
     /**
      * Constructs a new command and causes it to be registered with the global commands list. It is
@@ -243,7 +242,6 @@ public:
      */
     virtual bool supportsWriteConcern(const BSONObj& cmd) const = 0;
 
-
     /**
      * Return true if only the admin ns has privileges to run this command.
      */
@@ -258,21 +256,11 @@ public:
      *
      * When localHostOnlyIfNoAuth() is true, adminOnly() must also be true.
      */
-    virtual bool localHostOnlyIfNoAuth() {
+    virtual bool localHostOnlyIfNoAuth() const {
         return false;
     }
 
-    /* Return true if slaves are allowed to execute the command
-    */
-    virtual bool slaveOk() const = 0;
-
-    /**
-     * Return true if the client force a command to be run on a slave by
-     * turning on the 'slaveOk' option in the command query.
-     */
-    virtual bool slaveOverrideOk() const {
-        return false;
-    }
+    virtual AllowedOnSecondary secondaryAllowed() const = 0;
 
     /**
      * Override and return fales if the command opcounters should not be incremented on
@@ -324,13 +312,7 @@ public:
      *
      * The default implementation does nothing.
      */
-    virtual void redactForLogging(mutablebson::Document* cmdObj);
-
-    /**
-     * Returns a copy of "cmdObj" in a form suitable for writing to logs.
-     * Uses redactForLogging() to transform "cmdObj".
-     */
-    virtual BSONObj getRedactedCopyForLogging(const BSONObj& cmdObj);
+    virtual void redactForLogging(mutablebson::Document* cmdObj) const {}
 
     /**
      * Return true if a replica set secondary should go into "recovering"

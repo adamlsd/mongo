@@ -357,6 +357,7 @@
         replSetUpdatePosition: {skip: "does not return user data"},
         replSetResizeOplog: {skip: "does not return user data"},
         resetError: {skip: "does not return user data"},
+        restartCatalog: {skip: "internal-only command"},
         resync: {skip: "primary only"},
         revokePrivilegesFromRole: {skip: "primary only"},
         revokeRolesFromRole: {skip: "primary only"},
@@ -496,7 +497,7 @@
                     "command.shardVersion": {"$exists": false},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": 'available'},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });
@@ -506,7 +507,7 @@
                     "command.shardVersion": {"$exists": false},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });
@@ -523,7 +524,7 @@
                     "command.shardVersion": {"$exists": false},
                     "command.$readPreference": {$exists: false},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$exists": false},
+                    "errCode": {"$exists": false},
                 },
                                       commandProfile)
             });
@@ -537,7 +538,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "available"},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });
@@ -547,7 +548,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"$exists": false},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });
@@ -560,7 +561,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": ErrorCodes.StaleConfig
+                    "errCode": ErrorCodes.StaleConfig
                 },
                                       commandProfile)
             });
@@ -574,7 +575,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": ErrorCodes.StaleConfig
+                    "errCode": ErrorCodes.StaleConfig
                 },
                                       commandProfile)
             });
@@ -587,7 +588,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });

@@ -53,7 +53,6 @@
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
@@ -151,8 +150,8 @@ class PublicGridCommand : public BasicCommand {
 protected:
     PublicGridCommand(const char* n, const char* oldname = NULL) : BasicCommand(n, oldname) {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -247,8 +246,8 @@ class DropIndexesCmd : public ErrmsgCommandDeprecated {
 public:
     DropIndexesCmd() : ErrmsgCommandDeprecated("dropIndexes", "deleteIndexes") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -291,8 +290,8 @@ class CreateIndexesCmd : public ErrmsgCommandDeprecated {
 public:
     CreateIndexesCmd() : ErrmsgCommandDeprecated("createIndexes") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -340,8 +339,8 @@ class ReIndexCmd : public ErrmsgCommandDeprecated {
 public:
     ReIndexCmd() : ErrmsgCommandDeprecated("reIndex") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -384,8 +383,8 @@ class CollectionModCmd : public ErrmsgCommandDeprecated {
 public:
     CollectionModCmd() : ErrmsgCommandDeprecated("collMod") {}
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -458,7 +457,7 @@ public:
         Strategy::commandOp(opCtx,
                             dbName,
                             CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                            cm->getns(),
+                            cm->getns().ns(),
                             query,
                             CollationSpec::kSimpleSpec,
                             &results);

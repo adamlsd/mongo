@@ -1085,7 +1085,8 @@ Status applyOperation_inlock(OperationContext* opCtx,
                 collection);
         requestNss = collection->ns();
         dassert(opCtx->lockState()->isCollectionLockedForMode(
-            requestNss.ns(), supportsDocLocking() ? MODE_IX : MODE_X));
+                    requestNss.ns(), supportsDocLocking() ? MODE_IX : MODE_X),
+                requestNss.ns());
     } else {
         uassert(ErrorCodes::InvalidNamespace,
                 "'ns' must be of type String",
@@ -1096,11 +1097,12 @@ Status applyOperation_inlock(OperationContext* opCtx,
             if (supportsDocLocking()) {
                 // WiredTiger, and others requires MODE_IX since the applier threads driving
                 // this allow writes to the same collection on any thread.
-                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_IX));
+                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_IX),
+                        requestNss.ns());
             } else {
                 // mmapV1 ensures that all operations to the same collection are executed from
                 // the same worker thread, so it takes an exclusive lock (MODE_X)
-                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X));
+                dassert(opCtx->lockState()->isCollectionLockedForMode(ns, MODE_X), requestNss.ns());
             }
         }
         collection = db->getCollection(opCtx, requestNss);
@@ -1716,6 +1718,12 @@ void acquireOplogCollectionForLogging(OperationContext* opCtx) {
         _localOplogCollection = autoColl.getCollection();
         fassert(13347, _localOplogCollection);
     }
+}
+
+void establishOplogCollectionForLogging(OperationContext* opCtx, Collection* oplog) {
+    invariant(opCtx->lockState()->isW());
+    invariant(oplog);
+    _localOplogCollection = oplog;
 }
 
 void signalOplogWaiters() {

@@ -28,6 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/auth/sasl_mechanism_advertiser.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/logical_session_id.h"
@@ -53,8 +54,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     std::string help() const override {
@@ -65,6 +66,10 @@ public:
                                const BSONObj& cmdObj,
                                std::vector<Privilege>* out) override {
         // No auth required
+    }
+
+    bool requiresAuth() const override {
+        return false;
     }
 
     bool run(OperationContext* opCtx,
@@ -127,6 +132,8 @@ public:
 
         MessageCompressorManager::forSession(opCtx->getClient()->session())
             .serverNegotiate(cmdObj, &result);
+
+        SASLMechanismAdvertiser::advertise(opCtx, cmdObj, &result);
 
         return true;
     }

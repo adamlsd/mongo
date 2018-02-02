@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "mongo/client/connpool.h"
+#include "mongo/db/auth/sasl_mechanism_advertiser.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/db_raii.h"
@@ -216,8 +217,8 @@ public:
     bool requiresAuth() const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
     std::string help() const override {
         return "Check if this server is primary for a replica pair/set; also if it is --master or "
@@ -388,6 +389,8 @@ public:
             MessageCompressorManager::forSession(opCtx->getClient()->session())
                 .serverNegotiate(cmdObj, &result);
         }
+
+        SASLMechanismAdvertiser::advertise(opCtx, cmdObj, &result);
 
         return true;
     }

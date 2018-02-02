@@ -55,10 +55,9 @@ class MoveChunkCmd : public ErrmsgCommandDeprecated {
 public:
     MoveChunkCmd() : ErrmsgCommandDeprecated("moveChunk", "movechunk") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
-
     bool adminOnly() const override {
         return true;
     }
@@ -183,7 +182,7 @@ public:
             uassertStatusOK(MigrationSecondaryThrottleOptions::createFromCommand(cmdObj));
 
         ChunkType chunkType;
-        chunkType.setNS(nss.ns());
+        chunkType.setNS(nss);
         chunkType.setMin(chunk->getMin());
         chunkType.setMax(chunk->getMax());
         chunkType.setShard(chunk->getShardId());

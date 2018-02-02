@@ -44,7 +44,6 @@
 #include "mongo/db/query/collation/collator_factory_mock.h"
 #include "mongo/db/query/query_request.h"
 #include "mongo/db/repl/read_concern_args.h"
-#include "mongo/db/s/sharding_task_executor.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -66,6 +65,7 @@
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/sharding_egress_metadata_hook_for_mongos.h"
+#include "mongo/s/sharding_task_executor.h"
 #include "mongo/s/write_ops/batched_command_response.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/transport/mock_session.h"
@@ -302,13 +302,13 @@ void ShardingTestFixture::setupShards(const std::vector<ShardType>& shards) {
 void ShardingTestFixture::expectGetShards(const std::vector<ShardType>& shards) {
     onFindCommand([this, &shards](const RemoteCommandRequest& request) {
         const NamespaceString nss(request.dbname, request.cmdObj.firstElement().String());
-        ASSERT_EQ(nss.toString(), ShardType::ConfigNS);
+        ASSERT_EQ(nss, ShardType::ConfigNS);
 
         auto queryResult = QueryRequest::makeFromFindCommand(nss, request.cmdObj, false);
         ASSERT_OK(queryResult.getStatus());
 
         const auto& query = queryResult.getValue();
-        ASSERT_EQ(query->nss().ns(), ShardType::ConfigNS);
+        ASSERT_EQ(query->nss(), ShardType::ConfigNS);
 
         ASSERT_BSONOBJ_EQ(query->getFilter(), BSONObj());
         ASSERT_BSONOBJ_EQ(query->getSort(), BSONObj());
@@ -334,7 +334,7 @@ void ShardingTestFixture::expectInserts(const NamespaceString& nss,
 
         const auto opMsgRequest = OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
         const auto insertOp = InsertOp::parse(opMsgRequest);
-        ASSERT_EQUALS(nss.ns(), insertOp.getNamespace().ns());
+        ASSERT_EQUALS(nss, insertOp.getNamespace());
 
         const auto& inserted = insertOp.getDocuments();
         ASSERT_EQUALS(expected.size(), inserted.size());
@@ -451,7 +451,7 @@ void ShardingTestFixture::expectUpdateCollection(const HostAndPort& expectedHost
 
         const auto opMsgRequest = OpMsgRequest::fromDBAndBody(request.dbname, request.cmdObj);
         const auto updateOp = UpdateOp::parse(opMsgRequest);
-        ASSERT_EQUALS(CollectionType::ConfigNS, updateOp.getNamespace().ns());
+        ASSERT_EQUALS(CollectionType::ConfigNS, updateOp.getNamespace());
 
         const auto& updates = updateOp.getUpdates();
         ASSERT_EQUALS(1U, updates.size());
@@ -485,7 +485,7 @@ void ShardingTestFixture::expectSetShardVersion(const HostAndPort& expectedHost,
         ASSERT(!ssv.isInit());
         ASSERT(ssv.isAuthoritative());
         ASSERT_EQ(expectedShard.getHost(), ssv.getShardConnectionString().toString());
-        ASSERT_EQ(expectedNs.toString(), ssv.getNS().ns());
+        ASSERT_EQ(expectedNs, ssv.getNS());
         ASSERT_EQ(expectedChunkVersion.toString(), ssv.getNSVersion().toString());
 
         return BSON("ok" << true);

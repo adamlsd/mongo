@@ -28,10 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include <vector>
-
 #include "mongo/db/commands.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_shard.h"
 #include "mongo/s/grid.h"
 
@@ -50,8 +47,8 @@ public:
         return true;
     }
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed() const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -83,7 +80,7 @@ public:
         return true;
     }
 
-} listShards;
+} listShardsCmd;
 
 }  // namespace
 }  // namespace mongo

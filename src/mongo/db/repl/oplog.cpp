@@ -454,19 +454,20 @@ OpTime logOpImpl(OperationContext* const opCtx,
     return slot.opTime;
 }
 }  // namespace
+}  // namespace repl
 
-OpTime logOpImpl(OperationContext* const opCtx,
-                 const char* const opstr,
-                 const NamespaceString& nss,
-                 const OptionalCollectionUUID uuid,
-                 const BSONObj& obj,
-                 const BSONObj* o2,
-                 const bool fromMigrate,
-                 const Date_t wallClockTime,
-                 const OperationSessionInfo& sessionInfo,
-                 StmtId statementId,
-                 const OplogLink& oplogLink) {
-    auto& times = *OpObserver::Times::get(opCtx)->reservedOpTimes;
+repl::OpTime repl::logOp(OperationContext* const opCtx,
+                         const char* const opstr,
+                         const NamespaceString& nss,
+                         const OptionalCollectionUUID uuid,
+                         const BSONObj& obj,
+                         const BSONObj* o2,
+                         const bool fromMigrate,
+                         const Date_t wallClockTime,
+                         const OperationSessionInfo& sessionInfo,
+                         StmtId statementId,
+                         const OplogLink& oplogLink) {
+    auto& times = OpObserver::Times::get(opCtx)->reservedOpTimes;
     const auto opTime = logOpImpl(opCtx,
                                   opstr,
                                   nss,
@@ -482,6 +483,8 @@ OpTime logOpImpl(OperationContext* const opCtx,
 
     return opTime;
 }
+
+namespace repl {
 
 std::vector<OpTime> logInsertOps(OperationContext* opCtx,
                                  const NamespaceString& nss,

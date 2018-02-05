@@ -95,8 +95,7 @@ BSONObj CommandHelpers::runCommandDirectly(OperationContext* opCtx, const OpMsgR
     return out.obj();
 }
 
-std::string CommandHelpers::parseNsFullyQualified(const std::string& dbname,
-                                                  const BSONObj& cmdObj) {
+std::string CommandHelpers::parseNsFullyQualified(StringData dbname, const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     uassert(ErrorCodes::BadValue,
             str::stream() << "collection name has invalid type " << typeName(first.type()),
@@ -108,7 +107,7 @@ std::string CommandHelpers::parseNsFullyQualified(const std::string& dbname,
     return nss.ns();
 }
 
-NamespaceString CommandHelpers::parseNsCollectionRequired(const std::string& dbname,
+NamespaceString CommandHelpers::parseNsCollectionRequired(StringData dbname,
                                                           const BSONObj& cmdObj) {
     // Accepts both BSON String and Symbol for collection name per SERVER-16260
     // TODO(kangas) remove Symbol support in MongoDB 3.0 after Ruby driver audit
@@ -124,7 +123,7 @@ NamespaceString CommandHelpers::parseNsCollectionRequired(const std::string& dbn
 }
 
 NamespaceString CommandHelpers::parseNsOrUUID(OperationContext* opCtx,
-                                              const std::string& dbname,
+                                              StringData dbname,
                                               const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
@@ -369,17 +368,6 @@ Status BasicCommand::checkAuthForCommand(Client* client,
     if (AuthorizationSession::get(client)->isAuthorizedForPrivileges(privileges))
         return Status::OK();
     return Status(ErrorCodes::Unauthorized, "unauthorized");
-}
-
-void Command::redactForLogging(mutablebson::Document* cmdObj) {}
-
-BSONObj Command::getRedactedCopyForLogging(const BSONObj& cmdObj) {
-    namespace mmb = mutablebson;
-    mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
-    redactForLogging(&cmdToLog);
-    BSONObjBuilder bob;
-    cmdToLog.writeTo(&bob);
-    return bob.obj();
 }
 
 static Status _checkAuthorizationImpl(Command* c,

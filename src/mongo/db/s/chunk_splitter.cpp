@@ -42,7 +42,6 @@
 #include "mongo/db/s/split_chunk.h"
 #include "mongo/db/s/split_vector.h"
 #include "mongo/s/balancer_configuration.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/chunk_manager.h"
@@ -117,7 +116,7 @@ void moveChunk(OperationContext* opCtx, const NamespaceString& nss, const BSONOb
     const auto suggestedChunk = routingInfo.cm()->findIntersectingChunkWithSimpleCollation(minKey);
 
     ChunkType chunkToMove;
-    chunkToMove.setNS(nss.ns());
+    chunkToMove.setNS(nss);
     chunkToMove.setShard(suggestedChunk->getShardId());
     chunkToMove.setMin(suggestedChunk->getMin());
     chunkToMove.setMax(suggestedChunk->getMax());
@@ -201,7 +200,7 @@ bool isAutoBalanceEnabled(OperationContext* opCtx,
     if (!balancerConfig->shouldBalanceForAutoSplit())
         return false;
 
-    auto collStatus = Grid::get(opCtx)->catalogClient()->getCollection(opCtx, nss.ns());
+    auto collStatus = Grid::get(opCtx)->catalogClient()->getCollection(opCtx, nss);
     if (!collStatus.isOK()) {
         log() << "Auto-split for " << nss << " failed to load collection metadata"
               << causedBy(redact(collStatus.getStatus()));

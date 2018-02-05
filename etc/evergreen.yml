@@ -351,7 +351,7 @@ functions:
           sleep 60
         done
 
-  "setup credentials" : &setup_credentials
+  "set up credentials" : &set_up_credentials
     command: shell.exec
     params:
       working_dir: src
@@ -364,6 +364,53 @@ functions:
         build_num=${builder_num}
         build_phase='${task_name}_${execution}'
         END_OF_CREDS
+
+  "set up remote credentials": &set_up_remote_credentials
+    command: shell.exec
+    params:
+      silent: true
+      script: |
+        set -o errexit
+
+        # Since the macros 'private_key_remote' and 'private_key_file' are not always defined
+        # we default to /dev/null to avoid syntax errors of an empty expansion.
+        if [ ! -z "${private_key_remote}" ] && [ ! -z "${private_key_file}" ] ; then
+          mkdir -p ~/.ssh
+          echo -n "${private_key_remote}" > ${private_key_file|/dev/null}
+          chmod 0600 ${private_key_file|/dev/null}
+        fi
+
+        if [ ! -d ~.aws ]; then
+          mkdir -p ~/.aws
+        fi
+
+        # If ${aws_profile_remote} is not specified then the config & credentials are
+        # stored in the 'default' profile.
+        aws_profile="${aws_profile_remote|default}"
+
+        # The profile in the config file is specified as [profile <profile>], except
+        # for [default], see http://boto3.readthedocs.io/en/latest/guide/configuration.html
+        if [ $aws_profile = "default" ] ; then
+          aws_profile_config="[default]"
+        else
+          aws_profile_config="[profile $aws_profile]"
+        fi
+        cat <<EOF >> ~/.aws/config
+        $aws_profile_config
+        region = us-east-1
+        EOF
+
+        # The profile in the credentials file is specified as [<profile>].
+        cat <<EOF >> ~/.aws/credentials
+        [$aws_profile]
+        aws_access_key_id = ${aws_key_remote}
+        aws_secret_access_key = ${aws_secret_remote}
+        EOF
+
+        cat <<EOF > ~/.boto
+        [Boto]
+        https_validate_certificates = False
+        EOF
 
   "upload debugsymbols" : &upload_debugsymbols
     command: s3.put
@@ -492,7 +539,7 @@ functions:
   - *extract_binaries
   - *check_binary_version
   - *get_buildnumber
-  - *setup_credentials
+  - *set_up_credentials
   - *run_diskstats
   - *monitor_process_threads
   - *collect_system_resource_info
@@ -514,6 +561,16 @@ functions:
           virtualenv --python "$python_loc" --system-site-packages "${workdir}/venv"
 
   "run tests" :
+    - command: expansions.update
+      params:
+        updates:
+        - key: aws_key_remote
+          value: ${mongodatafiles_aws_key}
+        - key: aws_profile_remote
+          value: mongodata_aws
+        - key: aws_secret_remote
+          value: ${mongodatafiles_aws_secret}
+    - *set_up_remote_credentials
     - command: shell.exec
       type: test
       params:
@@ -526,6 +583,13 @@ functions:
 
           # activate the virtualenv if it has been set up
           ${activate_virtualenv}
+
+          # Set the TMPDIR environment variable to be a directory in the task's working
+          # directory so that temporary files created by processes spawned by resmoke.py get
+          # cleaned up after the task completes. This also ensures the spawned processes
+          # aren't impacted by limited space in the mount point for the /tmp directory.
+          export TMPDIR="${workdir}/tmp"
+          mkdir -p $TMPDIR
 
           if [ -f /proc/self/coredump_filter ]; then
             # Set the shell process (and its children processes) to dump ELF headers (bit 4),
@@ -607,6 +671,7 @@ functions:
           # this list of expansions.
           set +o errexit
           PATH="$path_value"                              \
+              AWS_PROFILE=${aws_profile_remote}           \
               ${gcov_environment}                         \
               ${rlp_environment}                          \
               ${lang_environment}                         \
@@ -1066,38 +1131,6 @@ functions:
           kill_process "$process"
         done
 
-  "set up remote credentials":
-    command: shell.exec
-    params:
-      silent: true
-      script: |
-        set -o errexit
-
-        # Since the macros 'private_key_remote' and 'private_key_file' are not always defined
-        # we default to /dev/null to avoid syntax errors of an empty expansion.
-        if [ ! -z "${private_key_remote}" ] && [ ! -z "${private_key_file}" ] ; then
-          mkdir -p ~/.ssh
-          echo -n "${private_key_remote}" > ${private_key_file|/dev/null}
-          chmod 0600 ${private_key_file|/dev/null}
-        fi
-
-        mkdir -p ~/.aws
-        cat <<EOF > ~/.aws/config
-        [default]
-        region = us-east-1
-        EOF
-
-        cat <<EOF > ~/.aws/credentials
-        [default]
-        aws_access_key_id = ${aws_key_remote}
-        aws_secret_access_key = ${aws_secret_remote}
-        EOF
-
-        cat <<EOF > ~/.boto
-        [Boto]
-        https_validate_certificates = False
-        EOF
-
   "run kitchen":
     command: shell.exec
     type: test
@@ -1106,13 +1139,6 @@ functions:
       working_dir: src/buildscripts/package_test
       script: |
         set -o errexit
-
-        # Override the aws credentials with the kitchen specific credentials
-        cat <<EOF > ~/.aws/credentials
-        [default]
-        aws_access_key_id = ${kitchen_aws_key}
-        aws_secret_access_key = ${kitchen_aws_secret}
-        EOF
 
         export KITCHEN_ARTIFACTS_URL="https://s3.amazonaws.com/mciuploads/${project}/${build_variant}/${revision}/artifacts/${build_id}.tgz"
         export KITCHEN_SECURITY_GROUP="${kitchen_security_group}"
@@ -1356,7 +1382,7 @@ functions:
         working_dir: src
         script: |
           set -o errexit
-          # Setup virtualenv on remote.
+          # Set up virtualenv on remote.
           cmds="python_loc=\$(which \${python|/opt/mongodbtoolchain/v2/bin/python2})"
           cmds="$cmds; if [ \"Windows_NT\" = \"$OS\" ]; then python_loc=\$(cygpath -w \$python_loc); fi"
           cmds="$cmds; virtualenv --python \$python_loc --system-site-packages ${virtualenv_dir|venv}"
@@ -1382,7 +1408,7 @@ functions:
         script: |
           set -o errexit
           ${set_sudo}
-          # Setup curator to collect system & process stats on remote.
+          # Set up curator to collect system & process stats on remote.
           if [ "Windows_NT" = "$OS" ]; then
              variant=windows-64
           else
@@ -1661,6 +1687,11 @@ post:
   - command: attach.results
     params:
       file_location: src/report.json
+  - command: attach.artifacts
+    params:
+      ignore_artifacts_for_spawn: false
+      files:
+        - src/archive.json
 
   - func: "set EC2 address"
   - func: "copy EC2 artifacts"
@@ -2209,7 +2240,7 @@ tasks:
     - command: manifest.load
     - *git_get_project
     - func: "get buildnumber"
-    - func: "setup credentials"
+    - func: "set up credentials"
     - func: "build new tools" # noop if ${newtools} is not "true"
     - func: "build rocksdb" # noop if ${build_rocksdb} is not "true"
     - func: "use WiredTiger develop" # noop if ${use_wt_develop} is not "true"
@@ -2353,7 +2384,7 @@ tasks:
     - command: manifest.load
     - *git_get_project
     - func: "get buildnumber"
-    - func: "setup credentials"
+    - func: "set up credentials"
     - func: "build new tools" # noop if ${newtools} is not "true"
     - func: "build rocksdb" # noop if ${build_rocksdb} is not "true"
     - func: "use WiredTiger develop" # noop if ${use_wt_develop} is not "true"
@@ -4457,7 +4488,7 @@ tasks:
       script: |
         set -o errexit
 
-        # Setup the git ssh private key
+        # Set up the git ssh private key
         mkdir -p ~/.ssh
         echo -n "${testlifecycle_ssh_key}" > ~/.ssh/test_lifecycle.pem
         chmod 0600 ~/.ssh/test_lifecycle.pem
@@ -8301,7 +8332,7 @@ buildvariants:
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     rlp_environment: MONGOD_UNITTEST_RLP_LANGUAGE_TEST_BTROOT=/opt/basis
-    test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32675
+    test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32869,SERVER-32993,SERVER-32997
     compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     use_scons_cache: true
@@ -8336,6 +8367,7 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsonSchema
   - name: aggregation_fuzzer
+  - name: jstestfuzz
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: parallel
@@ -8360,7 +8392,7 @@ buildvariants:
     push_arch: x86_64-enterprise
     gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10
     tooltags: "-tags 'ssl sasl'"
-    test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32710,SERVER-32675
+    test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32869,SERVER-32993,SERVER-32997
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     num_jobs_available: 1
@@ -8389,6 +8421,7 @@ buildvariants:
   - name: jsCore_op_query
   - name: jsonSchema
   - name: aggregation_fuzzer
+  - name: jstestfuzz
   - name: noPassthrough
   - name: noPassthroughWithMongod
   - name: parallel

@@ -699,7 +699,7 @@ public:
         } else {
             // Add SCRAM credentials.
             BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
-                args.hashedPassword, saslGlobalParams.scramIterationCount.load());
+                args.hashedPassword, saslGlobalParams.scramSHA1IterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
         }
         credentialsBuilder.done();
@@ -748,7 +748,7 @@ public:
         return CommandHelpers::appendCommandStatus(result, status);
     }
 
-    virtual void redactForLogging(mutablebson::Document* cmdObj) {
+    void redactForLogging(mutablebson::Document* cmdObj) const override {
         auth::redactPasswordData(cmdObj->root());
     }
 
@@ -809,7 +809,7 @@ public:
 
             // Add SCRAM credentials.
             BSONObj scramCred = scram::SHA1Secrets::generateCredentials(
-                args.hashedPassword, saslGlobalParams.scramIterationCount.load());
+                args.hashedPassword, saslGlobalParams.scramSHA1IterationCount.load());
             credentialsBuilder.append("SCRAM-SHA-1", scramCred);
 
             credentialsBuilder.done();
@@ -882,7 +882,7 @@ public:
         return CommandHelpers::appendCommandStatus(result, status);
     }
 
-    virtual void redactForLogging(mutablebson::Document* cmdObj) {
+    void redactForLogging(mutablebson::Document* cmdObj) const override {
         auth::redactPasswordData(cmdObj->root());
     }
 

@@ -29,7 +29,6 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
-#include "mongo/platform/bits.h"
 
 #include "mongo/db/repl/sync_tail.h"
 
@@ -54,6 +53,7 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/logical_session_id.h"
+#include "mongo/db/multi_key_path_tracker.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/prefetch.h"
 #include "mongo/db/query/query_knobs.h"
@@ -91,17 +91,10 @@ AtomicInt32 SyncTail::replBatchLimitOperations{50 * 1000};
 namespace {
 
 /**
- * This variable determines the number of writer threads SyncTail will have. It has a default value,
- * which varies based on architecture and can be overridden using the "replWriterThreadCount" server
- * parameter.
+ * This variable determines the number of writer threads SyncTail will have. It can be overridden
+ * using the "replWriterThreadCount" server parameter.
  */
-#if defined(MONGO_PLATFORM_64)
 int replWriterThreadCount = 16;
-#elif defined(MONGO_PLATFORM_32)
-int replWriterThreadCount = 2;
-#else
-#error need to include something that defines MONGO_PLATFORM_XX
-#endif
 
 class ExportedWriterThreadCountParameter
     : public ExportedServerParameter<int, ServerParameterType::kStartupOnly> {
@@ -625,15 +618,10 @@ private:
  * ops - This only modifies the isForCappedCollection field on each op. It does not alter the ops
  *      vector in any other way.
  * writerVectors - Set of operations for each worker thread to apply.
- * latestSessionRecords - Populated map of the "latest" transaction table records for each logical
- *      session id present in the given operations. Each record represents the final state of the
- *      transaction table entry for that session id after the operations are applied.
  */
-void fillWriterVectorsAndLatestSessionRecords(
-    OperationContext* opCtx,
-    MultiApplier::Operations* ops,
-    std::vector<MultiApplier::OperationPtrs>* writerVectors,
-    SessionRecordMap* latestSessionRecords) {
+void fillWriterVectors(OperationContext* opCtx,
+                       MultiApplier::Operations* ops,
+                       std::vector<MultiApplier::OperationPtrs>* writerVectors) {
     const auto serviceContext = opCtx->getServiceContext();
     const auto storageEngine = serviceContext->getGlobalStorageEngine();
 
@@ -669,6 +657,23 @@ void fillWriterVectorsAndLatestSessionRecords(
             }
         }
 
+        auto& writer = (*writerVectors)[hash % numWriters];
+        if (writer.empty()) {
+            writer.reserve(8);  // Skip a few growth rounds
+        }
+        writer.push_back(&op);
+    }
+}
+
+/**
+ * Returns a map of the "latest" transaction table records for each logical session id present in
+ * the given operations. Each record represents the final state of the transaction table entry for
+ * that session id after the operations are applied.
+ */
+SessionRecordMap getLatestSessionRecords(const MultiApplier::Operations& ops) {
+    SessionRecordMap latestSessionRecords;
+
+    for (auto&& op : ops) {
         const auto& sessionInfo = op.getOperationSessionInfo();
         if (sessionInfo.getTxnNumber()) {
             const auto& lsid = *sessionInfo.getSessionId();
@@ -680,24 +685,23 @@ void fillWriterVectorsAndLatestSessionRecords(
             invariant(op.getWallClockTime());
             record.setLastWriteDate(*op.getWallClockTime());
 
-            auto it = latestSessionRecords->find(lsid);
-            if (it == latestSessionRecords->end()) {
-                latestSessionRecords->emplace(lsid, std::move(record));
+            auto it = latestSessionRecords.find(lsid);
+            if (it == latestSessionRecords.end()) {
+                latestSessionRecords.emplace(lsid, std::move(record));
             } else if (isSessionTxnRecordLaterThan(record, it->second)) {
-                (*latestSessionRecords)[lsid] = std::move(record);
+                latestSessionRecords[lsid] = std::move(record);
             }
         }
-
-        auto& writer = (*writerVectors)[hash % numWriters];
-        if (writer.empty()) {
-            writer.reserve(8);  // Skip a few growth rounds
-        }
-        writer.push_back(&op);
     }
+
+    return latestSessionRecords;
 }
 
 }  // namespace
 
+OpTime SyncTail::multiApply_forTest(OperationContext* opCtx, MultiApplier::Operations ops) {
+    return multiApply(opCtx, ops);
+}
 /**
  * Applies a batch of oplog entries by writing the oplog entries to the local oplog and then using
  * a set of threads to apply the operations. If the batch application is successful, returns the
@@ -713,8 +717,26 @@ OpTime SyncTail::multiApply(OperationContext* opCtx, MultiApplier::Operations op
         // _applyFunc() will throw or abort on error, so we return OK here.
         return Status::OK();
     };
-    return fassertStatusOK(
+    Timestamp firstTimeInBatch = ops.front().getTimestamp();
+
+    OpTime finalOpTime = fassertStatusOK(
         34437, repl::multiApply(opCtx, _writerPool.get(), std::move(ops), applyOperation));
+
+    invariant(!MultikeyPathTracker::get(opCtx).isTrackingMultikeyPathInfo());
+    // Set any indexes to multikey that this batch ignored.
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    for (MultikeyPathInfo info : _multikeyPathInfo) {
+        // We timestamp every multikey write with the first timestamp in the batch. It is always
+        // safe to set an index as multikey too early, just not too late. We conservatively pick
+        // the first timestamp in the batch since we do not have enough information to find out
+        // the timestamp of the first write that set the given multikey path.
+        fassertStatusOK(50686,
+                        StorageInterface::get(opCtx)->setIndexIsMultikey(
+                            opCtx, info.nss, info.indexName, info.multikeyPaths, firstTimeInBatch));
+    }
+    _multikeyPathInfo.clear();
+
+    return finalOpTime;
 }
 
 namespace {
@@ -1217,8 +1239,16 @@ bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx,
     });
 }
 
+void SyncTail::addMultikeyPathInfo(std::vector<MultikeyPathInfo> infoList) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    _multikeyPathInfo.reserve(_multikeyPathInfo.size() + infoList.size());
+    for (MultikeyPathInfo info : infoList) {
+        _multikeyPathInfo.emplace_back(info);
+    }
+}
+
 // This free function is used by the writer threads to apply each op
-void multiSyncApply(MultiApplier::OperationPtrs* ops, SyncTail*) {
+void multiSyncApply(MultiApplier::OperationPtrs* ops, SyncTail* st) {
     initializeWriterThread();
     auto opCtx = cc().makeOperationContext();
     auto syncApply = [](
@@ -1226,7 +1256,14 @@ void multiSyncApply(MultiApplier::OperationPtrs* ops, SyncTail*) {
         return SyncTail::syncApply(opCtx, op, oplogApplicationMode);
     };
 
+    ON_BLOCK_EXIT(
+        [&opCtx] { MultikeyPathTracker::get(opCtx.get()).stopTrackingMultikeyPathInfo(); });
+    MultikeyPathTracker::get(opCtx.get()).startTrackingMultikeyPathInfo();
     fassertNoTrace(16359, multiSyncApply_noAbort(opCtx.get(), ops, syncApply));
+
+    if (!MultikeyPathTracker::get(opCtx.get()).getMultikeyPathInfo().empty()) {
+        st->addMultikeyPathInfo(MultikeyPathTracker::get(opCtx.get()).getMultikeyPathInfo());
+    }
 }
 
 Status multiSyncApply_noAbort(OperationContext* opCtx,
@@ -1406,14 +1443,6 @@ Status multiSyncApply_noAbort(OperationContext* opCtx,
     return Status::OK();
 }
 
-// This free function is used by the initial sync writer threads to apply each op
-void multiInitialSyncApply_abortOnFailure(MultiApplier::OperationPtrs* ops, SyncTail* st) {
-    initializeWriterThread();
-    auto opCtx = cc().makeOperationContext();
-    AtomicUInt32 fetchCount(0);
-    fassertNoTrace(15915, multiInitialSyncApply_noAbort(opCtx.get(), ops, st, &fetchCount));
-}
-
 Status multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
                              SyncTail* st,
                              AtomicUInt32* fetchCount) {
@@ -1428,43 +1457,59 @@ Status multiInitialSyncApply_noAbort(OperationContext* opCtx,
                                      AtomicUInt32* fetchCount) {
     UnreplicatedWritesBlock uwb(opCtx);
     DisableDocumentValidation validationDisabler(opCtx);
+    {  // Ensure that the MultikeyPathTracker stops tracking paths.
+        ON_BLOCK_EXIT([opCtx] { MultikeyPathTracker::get(opCtx).stopTrackingMultikeyPathInfo(); });
+        MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
 
-    // allow us to get through the magic barrier
-    opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
+        // allow us to get through the magic barrier
+        opCtx->lockState()->setShouldConflictWithSecondaryBatchApplication(false);
 
-    for (auto it = ops->begin(); it != ops->end(); ++it) {
-        auto& entry = **it;
-        try {
-            const Status s =
-                SyncTail::syncApply(opCtx, entry.raw, OplogApplication::Mode::kInitialSync);
-            if (!s.isOK()) {
-                // In initial sync, update operations can cause documents to be missed during
-                // collection cloning. As a result, it is possible that a document that we need to
-                // update is not present locally. In that case we fetch the document from the
-                // sync source.
-                if (s != ErrorCodes::UpdateOperationFailed) {
-                    error() << "Error applying operation: " << redact(s) << " ("
-                            << redact(entry.toBSON()) << ")";
-                    return s;
+        for (auto it = ops->begin(); it != ops->end(); ++it) {
+            auto& entry = **it;
+            try {
+                const Status s =
+                    SyncTail::syncApply(opCtx, entry.raw, OplogApplication::Mode::kInitialSync);
+                if (!s.isOK()) {
+                    // In initial sync, update operations can cause documents to be missed during
+                    // collection cloning. As a result, it is possible that a document that we need
+                    // to update is not present locally. In that case we fetch the document from the
+                    // sync source.
+                    if (s != ErrorCodes::UpdateOperationFailed) {
+                        error() << "Error applying operation: " << redact(s) << " ("
+                                << redact(entry.toBSON()) << ")";
+                        return s;
+                    }
+
+                    // We might need to fetch the missing docs from the sync source.
+                    fetchCount->fetchAndAdd(1);
+                    st->fetchAndInsertMissingDocument(opCtx, entry);
+                }
+            } catch (const DBException& e) {
+                // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
+                // dropped before initial sync ends anyways and we should ignore it.
+                if (e.code() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType()) {
+                    continue;
                 }
 
-                // We might need to fetch the missing docs from the sync source.
-                fetchCount->fetchAndAdd(1);
-                st->fetchAndInsertMissingDocument(opCtx, entry);
+                severe() << "writer worker caught exception: " << causedBy(redact(e))
+                         << " on: " << redact(entry.toBSON());
+                return e.toStatus();
             }
-        } catch (const DBException& e) {
-            // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
-            // dropped before initial sync ends anyways and we should ignore it.
-            if (e.code() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType()) {
-                continue;
-            }
-
-            severe() << "writer worker caught exception: " << causedBy(redact(e))
-                     << " on: " << redact(entry.toBSON());
-            return e.toStatus();
         }
     }
 
+    invariant(!MultikeyPathTracker::get(opCtx).isTrackingMultikeyPathInfo());
+    // Set any indexes to multikey that this batch ignored.
+    Timestamp firstTimeInBatch = ops->front()->getTimestamp();
+    for (MultikeyPathInfo info : MultikeyPathTracker::get(opCtx).getMultikeyPathInfo()) {
+        // We timestamp every multikey write with the first timestamp in the batch. It is always
+        // safe to set an index as multikey too early, just not too late. We conservatively pick
+        // the first timestamp in the batch since we do not have enough information to find out
+        // the timestamp of the first write that set the given multikey path.
+        fassertStatusOK(50685,
+                        StorageInterface::get(opCtx)->setIndexIsMultikey(
+                            opCtx, info.nss, info.indexName, info.multikeyPaths, firstTimeInBatch));
+    }
     return Status::OK();
 }
 
@@ -1519,9 +1564,7 @@ StatusWith<OpTime> multiApply(OperationContext* opCtx,
         scheduleWritesToOplog(opCtx, workerPool, ops);
 
         std::vector<MultiApplier::OperationPtrs> writerVectors(workerPool->getNumThreads());
-        SessionRecordMap latestSessionRecords;
-        fillWriterVectorsAndLatestSessionRecords(
-            opCtx, &ops, &writerVectors, &latestSessionRecords);
+        fillWriterVectors(opCtx, &ops, &writerVectors);
 
         // Wait for writes to finish before applying ops.
         workerPool->join();
@@ -1534,6 +1577,7 @@ StatusWith<OpTime> multiApply(OperationContext* opCtx,
         workerPool->join();
 
         // Update the transaction table to point to the latest oplog entries for each session id.
+        const auto latestSessionRecords = getLatestSessionRecords(ops);
         scheduleTxnTableUpdates(opCtx, workerPool, latestSessionRecords);
         workerPool->join();
 

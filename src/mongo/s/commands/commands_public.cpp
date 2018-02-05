@@ -53,7 +53,6 @@
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
@@ -458,7 +457,7 @@ public:
         Strategy::commandOp(opCtx,
                             dbName,
                             CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                            cm->getns(),
+                            cm->getns().ns(),
                             query,
                             CollationSpec::kSimpleSpec,
                             &results);

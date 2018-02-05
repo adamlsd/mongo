@@ -34,6 +34,7 @@
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/initializer.h"
+#include "mongo/client/embedded/replication_coordinator_embedded.h"
 #include "mongo/client/embedded/service_context_embedded.h"
 #include "mongo/client/embedded/service_entry_point_embedded.h"
 #include "mongo/config.h"
@@ -50,7 +51,6 @@
 #include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repair_database_and_check_version.h"
-#include "mongo/db/repl/replication_coordinator_impl.h"
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/session_killer.h"
@@ -59,10 +59,8 @@
 #include "mongo/db/ttl.h"
 #include "mongo/logger/log_component.h"
 #include "mongo/scripting/dbdirectclient_factory.h"
-#include "mongo/scripting/engine.h"
 #include "mongo/util/background.h"
 #include "mongo/util/exit.h"
-#include "mongo/util/fast_clock_source_factory.h"
 #include "mongo/util/log.h"
 #include "mongo/util/periodic_runner_factory.h"
 #include "mongo/util/quick_exit.h"
@@ -103,17 +101,8 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
 (InitializerContext* context) {
     auto serviceContext = getGlobalServiceContext();
     repl::StorageInterface::set(serviceContext, stdx::make_unique<repl::StorageInterfaceImpl>());
-    auto storageInterface = repl::StorageInterface::get(serviceContext);
 
-    auto replCoord = stdx::make_unique<repl::ReplicationCoordinatorImpl>(
-        serviceContext,
-        getGlobalReplSettings(),
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        storageInterface,
-        static_cast<int64_t>(curTimeMillis64()));
+    auto replCoord = stdx::make_unique<ReplicationCoordinatorEmbedded>(serviceContext);
     repl::ReplicationCoordinator::set(serviceContext, std::move(replCoord));
     repl::setOplogCollectionName(serviceContext);
     return Status::OK();
@@ -158,11 +147,6 @@ void shutdown() {
         serviceContext->shutdownGlobalStorageEngineCleanly();
     }
 
-    // We drop the scope cache because leak sanitizer can't see across the
-    // thread we use for proxying MozJS requests. Dropping the cache cleans up
-    // the memory and makes leak sanitizer happy.
-    ScriptEngine::dropScopeCache();
-
     log(LogComponent::kControl) << "now exiting";
 }
 
@@ -185,7 +169,6 @@ int initialize(int argc, char* argv[], char** envp) {
 
     auto serviceContext = checked_cast<ServiceContextMongoEmbedded*>(getGlobalServiceContext());
 
-    serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
     auto opObserverRegistry = stdx::make_unique<OpObserverRegistry>();
     opObserverRegistry->addObserver(stdx::make_unique<OpObserverImpl>());
     opObserverRegistry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
@@ -263,10 +246,6 @@ int initialize(int argc, char* argv[], char** envp) {
 
     if (!storageGlobalParams.readOnly) {
         boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
-    }
-
-    if (mongodGlobalParams.scriptingEnabled) {
-        ScriptEngine::setup();
     }
 
     auto startupOpCtx = serviceContext->makeOperationContext(&cc());

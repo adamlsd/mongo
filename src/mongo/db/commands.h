@@ -79,8 +79,10 @@ struct CommandHelpers {
     static void appendCommandStatus(BSONObjBuilder& result,
                                     bool ok,
                                     const std::string& errmsg = {});
+
     // @return s.isOK()
     static bool appendCommandStatus(BSONObjBuilder& result, const Status& status);
+
     /**
      * Helper for setting a writeConcernError field in the command result object if
      * a writeConcern error occurs.
@@ -95,15 +97,18 @@ struct CommandHelpers {
     static void appendCommandWCStatus(BSONObjBuilder& result,
                                       const Status& awaitReplicationStatus,
                                       const WriteConcernResult& wcResult = WriteConcernResult());
+
     /**
      * Appends passthrough fields from a cmdObj to a given request.
      */
     static BSONObj appendPassthroughFields(const BSONObj& cmdObjWithPassthroughFields,
                                            const BSONObj& request);
+
     /**
      * Returns a copy of 'cmdObj' with a majority writeConcern appended.
      */
     static BSONObj appendMajorityWriteConcern(const BSONObj& cmdObj);
+
     /**
      * Returns true if the provided argument is one that is handled by the command processing layer
      * and should generally be ignored by individual command implementations. In particular,
@@ -155,7 +160,8 @@ struct CommandHelpers {
      * what they send to the shards.
      */
     static BSONObj filterCommandRequestForPassthrough(const BSONObj& cmdObj);
-    static void filterCommandReplyForPassthrough(const BSONObj& reply, BSONObjBuilder* output);
+    static void filterCommandRequestForPassthrough(BSONObjIterator* cmdIter,
+                                                   BSONObjBuilder* requestBuilder);
 
     /**
      * Rewrites reply into a format safe to blindly forward from shards to clients.
@@ -164,6 +170,7 @@ struct CommandHelpers {
      * what they return from the shards.
      */
     static BSONObj filterCommandReplyForPassthrough(const BSONObj& reply);
+    static void filterCommandReplyForPassthrough(const BSONObj& reply, BSONObjBuilder* output);
 
     /**
      * Returns true if this a request for the 'help' information associated with the command.
@@ -305,7 +312,8 @@ public:
      * Checks if the client associated with the given OperationContext is authorized to run this
      * command.
      */
-    virtual Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) = 0;
+    virtual Status checkAuthForRequest(OperationContext* opCtx,
+                                       const OpMsgRequest& request) const = 0;
 
     /**
      * Redacts "cmdObj" in-place to a form suitable for writing to logs.
@@ -497,7 +505,7 @@ public:
      */
     virtual Status checkAuthForOperation(OperationContext* opCtx,
                                          const std::string& dbname,
-                                         const BSONObj& cmdObj);
+                                         const BSONObj& cmdObj) const;
 
 private:
     //
@@ -512,7 +520,7 @@ private:
      */
     virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
-                                       const BSONObj& cmdObj);
+                                       const BSONObj& cmdObj) const;
 
     /**
      * Appends to "*out" the privileges required to run this command on database "dbname" with
@@ -521,7 +529,7 @@ private:
      */
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         // The default implementation of addRequiredPrivileges should never be hit.
         fassertFailed(16940);
     }
@@ -540,9 +548,9 @@ private:
     /**
      * Calls checkAuthForOperation.
      */
-    Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) final;
+    Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) const final;
 
-    void uassertNoDocumentSequences(const OpMsgRequest& request);
+    void uassertNoDocumentSequences(const OpMsgRequest& request) const;
 };
 
 /**

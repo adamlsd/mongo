@@ -39,10 +39,10 @@
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
@@ -233,10 +233,6 @@ TEST_F(ShardCollectionTest, withInitialChunks) {
 
     ASSERT_OK(setupShards(vector<ShardType>{shard0, shard1, shard2}));
 
-    DatabaseType db;
-    db.setName("db1");
-    db.setPrimary(shard0.getName());
-    db.setSharded(true);
     setupDatabase(kNamespace.db().toString(), shard0.getName(), true);
 
     ShardKeyPattern keyPattern(BSON("_id" << 1));

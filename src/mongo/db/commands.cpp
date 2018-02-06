@@ -264,11 +264,19 @@ bool CommandHelpers::isUserManagementCommand(const std::string& name) {
 }
 
 BSONObj CommandHelpers::filterCommandRequestForPassthrough(const BSONObj& cmdObj) {
+    BSONObjIterator cmdIter(cmdObj);
     BSONObjBuilder bob;
-    for (auto elem : cmdObj) {
+    filterCommandRequestForPassthrough(&cmdIter, &bob);
+    return bob.obj();
+}
+
+void CommandHelpers::filterCommandRequestForPassthrough(BSONObjIterator* cmdIter,
+                                                        BSONObjBuilder* requestBuilder) {
+    while (cmdIter->more()) {
+        auto elem = cmdIter->next();
         const auto name = elem.fieldNameStringData();
         if (name == "$readPreference") {
-            BSONObjBuilder(bob.subobjStart("$queryOptions")).append(elem);
+            BSONObjBuilder(requestBuilder->subobjStart("$queryOptions")).append(elem);
         } else if (!isGenericArgument(name) ||  //
                    name == "$queryOptions" ||   //
                    name == "maxTimeMS" ||       //
@@ -278,10 +286,9 @@ BSONObj CommandHelpers::filterCommandRequestForPassthrough(const BSONObj& cmdObj
                    name == "txnNumber") {
             // This is the whitelist of generic arguments that commands can be trusted to blindly
             // forward to the shards.
-            bob.append(elem);
+            requestBuilder->append(elem);
         }
     }
-    return bob.obj();
 }
 
 void CommandHelpers::filterCommandReplyForPassthrough(const BSONObj& cmdObj,
@@ -349,20 +356,21 @@ Status Command::explain(OperationContext* opCtx,
     return {ErrorCodes::IllegalOperation, str::stream() << "Cannot explain cmd: " << getName()};
 }
 
-Status BasicCommand::checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) {
+Status BasicCommand::checkAuthForRequest(OperationContext* opCtx,
+                                         const OpMsgRequest& request) const {
     uassertNoDocumentSequences(request);
     return checkAuthForOperation(opCtx, request.getDatabase().toString(), request.body);
 }
 
 Status BasicCommand::checkAuthForOperation(OperationContext* opCtx,
                                            const std::string& dbname,
-                                           const BSONObj& cmdObj) {
+                                           const BSONObj& cmdObj) const {
     return checkAuthForCommand(opCtx->getClient(), dbname, cmdObj);
 }
 
 Status BasicCommand::checkAuthForCommand(Client* client,
                                          const std::string& dbname,
-                                         const BSONObj& cmdObj) {
+                                         const BSONObj& cmdObj) const {
     std::vector<Privilege> privileges;
     this->addRequiredPrivileges(dbname, cmdObj, &privileges);
     if (AuthorizationSession::get(client)->isAuthorizedForPrivileges(privileges))
@@ -458,7 +466,7 @@ void Command::generateHelpResponse(OperationContext* opCtx,
     replyBuilder->setMetadata(rpc::makeEmptyMetadata());
 }
 
-void BasicCommand::uassertNoDocumentSequences(const OpMsgRequest& request) {
+void BasicCommand::uassertNoDocumentSequences(const OpMsgRequest& request) const {
     uassert(40472,
             str::stream() << "The " << getName() << " command does not support document sequences.",
             request.sequences.empty());

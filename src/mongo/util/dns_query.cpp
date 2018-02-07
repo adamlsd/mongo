@@ -75,11 +75,12 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
 
     std::vector<std::string> rv;
 
-    for (const auto& entry : response)
+    for (const auto& entry : response) {
         try {
             rv.push_back(entry.addressEntry());
         } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
         }
+    }
 
     return rv;
 }
@@ -91,11 +92,12 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
 
     std::vector<SRVHostEntry> rv;
 
-    for (const auto& entry : response)
+    for (const auto& entry : response) {
         try {
             rv.push_back(entry.srvHostEntry());
         } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
         }
+    }
 
     return rv;
 }
@@ -107,7 +109,7 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
 
     std::vector<std::string> rv;
 
-    for (auto& entry : response)
+    for (auto& entry : response) {
         try {
             auto txtEntry = entry.txtEntry();
             rv.insert(end(rv),
@@ -115,6 +117,7 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
                       std::make_move_iterator(end(txtEntry)));
         } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
         }
+    }
 
     return rv;
 }

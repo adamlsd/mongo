@@ -124,7 +124,7 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
 
 std::vector<std::string> dns::getTXTRecords(const std::string& service) try {
     return lookupTXTRecords(service);
-} catch (const ExceptionFor<ErrorCodes::DNSHostNotFound>& ex) {
+} catch (const ExceptionFor<ErrorCodes::DNSHostNotFound>&) {
     return {};
 }
 }  // namespace mongo

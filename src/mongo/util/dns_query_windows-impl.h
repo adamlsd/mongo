@@ -81,7 +81,7 @@ public:
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
                 << "\": expected TXT record, found something else";
-            uasserted(ErrorCodes::DNSProtocolError, oss.str());
+            uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 
         std::vector<std::string> rv;
@@ -100,7 +100,7 @@ public:
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
                 << "\": expected A record, found something else";
-            uasserted(ErrorCodes::DNSProtocolError, oss.str());
+            uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 
         std::string rv;
@@ -124,7 +124,7 @@ public:
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
                 << "\": expected SRV record, found something else";
-            uasserted(ErrorCodes::DNSProtocolError, oss.str());
+            uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 
         const auto& data = this->_record->Data.SRV;

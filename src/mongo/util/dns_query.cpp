@@ -74,9 +74,12 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
     }
 
     std::vector<std::string> rv;
-    std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
-        return entry.addressEntry();
-    });
+
+    for (const auto& entry : response)
+        try {
+            rv.push_back(entry.addressEntry());
+        } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+        }
 
     return rv;
 }
@@ -88,9 +91,12 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
 
     std::vector<SRVHostEntry> rv;
 
-    std::transform(begin(response), end(response), back_inserter(rv), [](const auto& entry) {
-        return entry.srvHostEntry();
-    });
+    for (const auto& entry : response)
+        try {
+            rv.push_back(entry.srvHostEntry());
+        } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+        }
+
     return rv;
 }
 
@@ -101,21 +107,21 @@ std::vector<std::string> dns::lookupTXTRecords(const std::string& service) {
 
     std::vector<std::string> rv;
 
-    for (auto& entry : response) {
-        auto txtEntry = entry.txtEntry();
-        rv.insert(end(rv),
-                  std::make_move_iterator(begin(txtEntry)),
-                  std::make_move_iterator(end(txtEntry)));
-    }
+    for (auto& entry : response)
+        try {
+            auto txtEntry = entry.txtEntry();
+            rv.insert(end(rv),
+                      std::make_move_iterator(begin(txtEntry)),
+                      std::make_move_iterator(end(txtEntry)));
+        } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+        }
+
     return rv;
 }
 
 std::vector<std::string> dns::getTXTRecords(const std::string& service) try {
     return lookupTXTRecords(service);
-} catch (const DBException& ex) {
-    if (ex.code() == ErrorCodes::DNSHostNotFound) {
-        return {};
-    }
-    throw;
+} catch (const ExceptionFor<ErrorCodes::DNSHostNotFound>& ex) {
+    return {};
 }
 }  // namespace mongo

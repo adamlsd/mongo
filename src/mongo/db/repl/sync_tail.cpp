@@ -29,7 +29,6 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kReplication
 
 #include "mongo/platform/basic.h"
-#include "mongo/platform/bits.h"
 
 #include "mongo/db/repl/sync_tail.h"
 
@@ -92,17 +91,10 @@ AtomicInt32 SyncTail::replBatchLimitOperations{50 * 1000};
 namespace {
 
 /**
- * This variable determines the number of writer threads SyncTail will have. It has a default value,
- * which varies based on architecture and can be overridden using the "replWriterThreadCount" server
- * parameter.
+ * This variable determines the number of writer threads SyncTail will have. It can be overridden
+ * using the "replWriterThreadCount" server parameter.
  */
-#if defined(MONGO_PLATFORM_64)
 int replWriterThreadCount = 16;
-#elif defined(MONGO_PLATFORM_32)
-int replWriterThreadCount = 2;
-#else
-#error need to include something that defines MONGO_PLATFORM_XX
-#endif
 
 class ExportedWriterThreadCountParameter
     : public ExportedServerParameter<int, ServerParameterType::kStartupOnly> {
@@ -368,24 +360,33 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                 // it must have been in the same database or it would have gotten a new UUID.
                 // Need to throw instead of returning a status for it to be properly ignored.
                 actualNss = UUIDCatalog::get(opCtx).lookupNSSByUUID(statusWithUUID.getValue());
-                uassert(ErrorCodes::NamespaceNotFound,
-                        str::stream() << "Failed to apply operation due to missing collection ("
-                                      << statusWithUUID.getValue()
-                                      << "): "
-                                      << redact(op.toString()),
-                        !actualNss.isEmpty());
+                if (actualNss.isEmpty()) {
+                    if (opType[0] == 'd') {
+                        return Status::OK();
+                    }
+                    uasserted(ErrorCodes::NamespaceNotFound,
+                              str::stream()
+                                  << "Failed to apply operation due to missing collection ("
+                                  << statusWithUUID.getValue()
+                                  << "): "
+                                  << redact(op.toString()));
+                }
                 dassert(actualNss.db() == nss.db());
             }
             Lock::CollectionLock collLock(opCtx->lockState(), actualNss.ns(), MODE_IX);
 
             // Need to throw instead of returning a status for it to be properly ignored.
             Database* db = dbHolder().get(opCtx, actualNss.db());
-            uassert(ErrorCodes::NamespaceNotFound,
-                    str::stream() << "Failed to apply operation due to missing database ("
-                                  << actualNss.db()
-                                  << "): "
-                                  << redact(op.toString()),
-                    db);
+            if (!db) {
+                if (opType[0] == 'd') {
+                    return Status::OK();
+                }
+                uasserted(ErrorCodes::NamespaceNotFound,
+                          str::stream() << "Failed to apply operation due to missing database ("
+                                        << actualNss.db()
+                                        << "): "
+                                        << redact(op.toString()));
+            }
 
             OldClientContext ctx(opCtx, actualNss.ns(), db, /*justCreated*/ false);
             return applyOp(ctx.db());

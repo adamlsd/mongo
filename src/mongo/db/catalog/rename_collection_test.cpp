@@ -173,10 +173,11 @@ repl::OpTime OpObserverMock::onRenameCollection(OperationContext* opCtx,
                                                 OptionalCollectionUUID dropTargetUUID,
                                                 bool stayTemp) {
     _logOp(opCtx, fromCollection, "rename");
+    OpObserver::Times::get(opCtx)->reservedOpTimes.push_back({renameOpTime, {}});
     OpObserverNoop::onRenameCollection(
         opCtx, fromCollection, toCollection, uuid, dropTarget, dropTargetUUID, stayTemp);
     onRenameCollectionCalled = true;
-    return renameOpTime;
+    return {};
 }
 
 void OpObserverMock::_logOp(OperationContext* opCtx,

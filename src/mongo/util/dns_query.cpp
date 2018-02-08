@@ -68,11 +68,6 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
     DNSQueryState dnsQuery;
     auto response = dnsQuery.lookup(service, DNSQueryClass::kInternet, DNSQueryType::kAddress);
 
-    if (response.size() == 0) {
-        uasserted(ErrorCodes::DNSProtocolError,
-                  "Looking up " + service + " A record yielded no results.");
-    }
-
     std::vector<std::string> rv;
 
     for (const auto& entry : response) {
@@ -80,6 +75,11 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
             rv.push_back(entry.addressEntry());
         } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
         }
+    }
+
+    if (rv.size() == 0) {
+        uasserted(ErrorCodes::DNSProtocolError,
+                  "Looking up " + service + " A record yielded no results.");
     }
 
     return rv;
@@ -97,6 +97,11 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
             rv.push_back(entry.srvHostEntry());
         } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
         }
+    }
+
+    if (rv.size() == 0) {
+        uasserted(ErrorCodes::DNSProtocolError,
+                  "Looking up " + service + " A record yielded no results.");
     }
 
     return rv;

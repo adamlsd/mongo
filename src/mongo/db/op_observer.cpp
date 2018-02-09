@@ -29,15 +29,12 @@
 #include "mongo/db/op_observer.h"
 
 #include "mongo/db/operation_context.h"
-namespace mongo
-{
+namespace mongo {
 
-	const auto getOpObserverTimes = OperationContext::declareDecoration< OpObserver::Times >();
+const auto getOpObserverTimes = OperationContext::declareDecoration<OpObserver::Times>();
 
-	auto
-	OpObserver::Times::get( OperationContext *const opCtx ) -> Times *
-	{
-		return &getOpObserverTimes( opCtx );
-	}
+auto OpObserver::Times::get(OperationContext* const opCtx) -> Times* {
+    return &getOpObserverTimes(opCtx);
+}
 
-}//namespace mongo
+}  // namespace mongo

@@ -43,6 +43,8 @@
 
 #include <boost/noncopyable.hpp>
 
+#include "mongo/bson/util/builder.h"
+
 // It is safe to include the implementation "headers" in an anonymous namespace, as the code is
 // meant to live in a single TU -- this one.  Include one of these headers last.
 #define MONGO_UTIL_DNS_QUERY_PLATFORM_INCLUDE_WHITELIST
@@ -78,9 +80,9 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
     }
 
     if (rv.empty()) {
-        std::ostringstream oss;
+        StringBuilder oss;
         oss << "Looking up " << service << " A record yielded";
-        if (response.empty()) {
+        if (response.size() == 0) {
             oss << "no results.";
         } else {
             oss << "no A records but " << response.size() << " other records";
@@ -106,9 +108,9 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
     }
 
     if (rv.empty()) {
-        std::ostringstream oss;
+        StringBuilder oss;
         oss << "Looking up " << service << " SRV record yielded";
-        if (response.empty()) {
+        if (response.size() == 0) {
             oss << "no results.";
         } else {
             oss << "no SRV records but " << response.size() << " other records";

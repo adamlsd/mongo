@@ -563,8 +563,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
 
         // Log oplog entry for collection drop and proceed to complete rest of two phase drop
         // process.
-        opObserver->onDropCollection(opCtx, fullns, uuid);
-        dropOpTime = std::get<0>(OpObserver::Times::get(opCtx)->reservedOpTimes.front());
+        dropOpTime = opObserver->onDropCollection(opCtx, fullns, uuid);
 
         // Drop collection immediately if OpObserver did not write entry to oplog.
         // After writing the oplog entry, all errors are fatal. See getNextOpTime() comments in

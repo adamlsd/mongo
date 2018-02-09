@@ -80,7 +80,8 @@ public:
         if (this->_record->wType != DNS_TYPE_TEXT) {
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
-                << "\": expected TXT record, found something else";
+                << "\": expected TXT record, found a record of type " << this->_record->wType
+                << " instead";
             uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 
@@ -99,7 +100,8 @@ public:
         if (this->_record->wType != DNS_TYPE_A) {
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
-                << "\": expected A record, found something else";
+                << "\": expected A record, found a record of type " << this->_record->wType
+                << " instead";
             uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 
@@ -123,7 +125,8 @@ public:
         if (this->_record->wType != DNS_TYPE_SRV) {
             std::ostringstream oss;
             oss << "Incorrect record format for \"" << this->_service
-                << "\": expected SRV record, found something else";
+                << "\": expected SRV record, found a record of type " << this->_record->wType
+                << " instead";
             uasserted(ErrorCodes::DNSRecordTypeMismatch, oss.str());
         }
 

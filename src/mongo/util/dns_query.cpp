@@ -77,9 +77,15 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
         }
     }
 
-    if (rv.size() == 0) {
-        uasserted(ErrorCodes::DNSProtocolError,
-                  "Looking up " + service + " A record yielded no results.");
+    if (rv.empty()) {
+        std::ostringstream oss;
+        oss << "Looking up " << service << " A record yielded";
+        if (response.empty()) {
+            oss << "no results.";
+        } else {
+            oss << "no A records but " << response.size() << " other records";
+        }
+        uasserted(ErrorCodes::DNSProtocolError, oss.str());
     }
 
     return rv;
@@ -99,9 +105,15 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
         }
     }
 
-    if (rv.size() == 0) {
-        uasserted(ErrorCodes::DNSProtocolError,
-                  "Looking up " + service + " A record yielded no results.");
+    if (rv.empty()) {
+        std::ostringstream oss;
+        oss << "Looking up " << service << " SRV record yielded";
+        if (response.empty()) {
+            oss << "no results.";
+        } else {
+            oss << "no SRV records but " << response.size() << " other records";
+        }
+        uasserted(ErrorCodes::DNSProtocolError, oss.str());
     }
 
     return rv;

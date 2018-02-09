@@ -81,7 +81,7 @@ std::vector<std::string> dns::lookupARecords(const std::string& service) {
 
     if (rv.empty()) {
         StringBuilder oss;
-        oss << "Looking up " << service << " A record yielded";
+        oss << "Looking up " << service << " A record yielded ";
         if (response.size() == 0) {
             oss << "no results.";
         } else {
@@ -109,7 +109,7 @@ std::vector<dns::SRVHostEntry> dns::lookupSRVRecords(const std::string& service)
 
     if (rv.empty()) {
         StringBuilder oss;
-        oss << "Looking up " << service << " SRV record yielded";
+        oss << "Looking up " << service << " SRV record yielded ";
         if (response.size() == 0) {
             oss << "no results.";
         } else {

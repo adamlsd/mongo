@@ -121,6 +121,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'common',
         'op_observer',
+        'service_context',
     ],
 )
 

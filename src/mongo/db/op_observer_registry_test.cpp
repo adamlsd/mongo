@@ -26,8 +26,9 @@
  *    it in the license file.
  */
 
-#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/op_observer_noop.h"
+#include "mongo/db/op_observer_registry.h"
+#include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
@@ -106,67 +107,75 @@ struct OpObserverRegistryTest : public unittest::Test {
 };
 
 TEST_F(OpObserverRegistryTest, NoObservers) {
+    OperationContextNoop opCtx;
     // Check that it's OK to call observer methods with no observers registered.
-    registry.onDropDatabase(nullptr, "test");
+    registry.onDropDatabase(&opCtx, "test");
 }
 
 TEST_F(OpObserverRegistryTest, TwoObservers) {
+    OperationContextNoop opCtx;
     ASSERT_EQUALS(testObservers, 2);
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
-    registry.onDropDatabase(nullptr, "test");
+    registry.onDropDatabase(&opCtx, "test");
     ASSERT_EQUALS(observer1->drops, 1);
     ASSERT_EQUALS(observer2->drops, 1);
 }
 
 TEST_F(OpObserverRegistryTest, ThrowingObserver1) {
+    OperationContextNoop opCtx;
     unique1 = stdx::make_unique<ThrowingObserver>();
     observer1 = unique1.get();
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
-    ASSERT_THROWS(registry.onDropDatabase(nullptr, "test"), AssertionException);
+    ASSERT_THROWS(registry.onDropDatabase(&opCtx, "test"), AssertionException);
     ASSERT_EQUALS(observer1->drops, 1);
     ASSERT_EQUALS(observer2->drops, 0);
 }
 
 TEST_F(OpObserverRegistryTest, ThrowingObserver2) {
+    OperationContextNoop opCtx;
     unique2 = stdx::make_unique<ThrowingObserver>();
     observer2 = unique1.get();
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
-    ASSERT_THROWS(registry.onDropDatabase(nullptr, "test"), AssertionException);
+    ASSERT_THROWS(registry.onDropDatabase(&opCtx, "test"), AssertionException);
     ASSERT_EQUALS(observer1->drops, 1);
     ASSERT_EQUALS(observer2->drops, 1);
 }
 
 TEST_F(OpObserverRegistryTest, OnDropCollectionObserverResultReturnsRightTime) {
+    OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
-    auto op = [&]() -> repl::OpTime { return registry.onDropCollection(nullptr, testNss, {}); };
+    auto op = [&]() -> repl::OpTime { return registry.onDropCollection(&opCtx, testNss, {}); };
     checkConsistentOpTime(op);
 }
 
 TEST_F(OpObserverRegistryTest, OnRenameCollectionObserverResultReturnsRightTime) {
+    OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
     auto op = [&]() -> repl::OpTime {
-        return registry.onRenameCollection(nullptr, testNss, testNss, {}, false, {}, false);
+        return registry.onRenameCollection(&opCtx, testNss, testNss, {}, false, {}, false);
     };
     checkConsistentOpTime(op);
 }
 
 DEATH_TEST_F(OpObserverRegistryTest, OnDropCollectionReturnsInconsistentTime, "invariant") {
+    OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
-    auto op = [&]() -> repl::OpTime { return registry.onDropCollection(nullptr, testNss, {}); };
+    auto op = [&]() -> repl::OpTime { return registry.onDropCollection(&opCtx, testNss, {}); };
     checkInconsistentOpTime(op);
 }
 
 DEATH_TEST_F(OpObserverRegistryTest, OnRenameCollectionReturnsInconsistentTime, "invariant") {
+    OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
     registry.addObserver(std::move(unique2));
     auto op = [&]() -> repl::OpTime {
-        return registry.onRenameCollection(nullptr, testNss, testNss, {}, false, {}, false);
+        return registry.onRenameCollection(&opCtx, testNss, testNss, {}, false, {}, false);
     };
     checkInconsistentOpTime(op);
 }

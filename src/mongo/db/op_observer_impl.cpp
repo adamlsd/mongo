@@ -54,6 +54,9 @@
 
 namespace mongo {
 namespace {
+using std::begin;
+using std::end;
+using std::back_inserter;
 
 MONGO_FP_DECLARE(failCollectionUpdates);
 
@@ -334,22 +337,30 @@ void OpObserverImpl::onCreateIndex(OperationContext* opCtx,
 void OpObserverImpl::onInserts(OperationContext* opCtx,
                                const NamespaceString& nss,
                                OptionalCollectionUUID uuid,
-                               std::vector<InsertStatement>::const_iterator begin,
-                               std::vector<InsertStatement>::const_iterator end,
+                               std::vector<InsertStatement>::const_iterator first,
+                               std::vector<InsertStatement>::const_iterator last,
                                bool fromMigrate) {
     Session* const session = opCtx->getTxnNumber() ? OperationContextSession::get(opCtx) : nullptr;
 
     const auto lastWriteDate = getWallClockTimeForOpLog(opCtx);
 
     const auto opTimeList =
-        repl::logInsertOps(opCtx, nss, uuid, session, begin, end, fromMigrate, lastWriteDate);
+        repl::logInsertOps(opCtx, nss, uuid, session, first, last, fromMigrate, lastWriteDate);
+
+    auto& times = OpObserver::Times::get(opCtx)->reservedOpTimes;
+    std::transform(begin(opTimeList),
+                   end(opTimeList),
+                   back_inserter(times),
+                   [lastWriteDate](const repl::OpTime& opTime) {
+                       return std::make_tuple(opTime, lastWriteDate);
+                   });
 
     auto css = (nss == NamespaceString::kSessionTransactionsTableNamespace || fromMigrate)
         ? nullptr
         : CollectionShardingState::get(opCtx, nss);
 
     size_t index = 0;
-    for (auto it = begin; it != end; it++, index++) {
+    for (auto it = first; it != last; it++, index++) {
         AuthorizationManager::get(opCtx->getServiceContext())
             ->logOp(opCtx, "i", nss, it->doc, nullptr);
         if (css) {
@@ -364,17 +375,17 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
     } else if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, nss);
     } else if (nss.ns() == FeatureCompatibilityVersion::kCollection) {
-        for (auto it = begin; it != end; it++) {
+        for (auto it = first; it != last; it++) {
             FeatureCompatibilityVersion::onInsertOrUpdate(opCtx, it->doc);
         }
     } else if (nss == NamespaceString::kSessionTransactionsTableNamespace && !lastOpTime.isNull()) {
-        for (auto it = begin; it != end; it++) {
+        for (auto it = first; it != last; it++) {
             SessionCatalog::get(opCtx)->invalidateSessions(opCtx, it->doc);
         }
     }
 
     std::vector<StmtId> stmtIdsWritten;
-    std::transform(begin, end, std::back_inserter(stmtIdsWritten), [](const InsertStatement& stmt) {
+    std::transform(first, last, std::back_inserter(stmtIdsWritten), [](const InsertStatement& stmt) {
         return stmt.stmtId;
     });
 

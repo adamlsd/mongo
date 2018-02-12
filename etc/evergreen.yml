@@ -3557,6 +3557,17 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: write_concern_majority_passthrough
+  depends_on:
+  - name: jsCore
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=write_concern_majority_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: replica_sets
   commands:
   - func: "do setup"
@@ -4622,6 +4633,7 @@ buildvariants:
   - name: sharding_jscore_passthrough_wire_ops
   - name: sharding_last_stable_mongos_and_mixed_shards
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
 
 - name: linux-64-repeated-execution
@@ -4738,6 +4750,7 @@ buildvariants:
   - name: sharding_jscore_passthrough_wire_ops
   - name: slow1
   - name: tool
+  - name: write_concern_majority_passthrough
 
 - <<: *linux-64-debug-template
   name: linux-64-debug-wtdevelop
@@ -4746,7 +4759,7 @@ buildvariants:
   modules:
   - wtdevelop
   expansions:
-    use_wt_develop: true 
+    use_wt_develop: true
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
     compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     use_scons_cache: true
@@ -5443,6 +5456,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - ubuntu1604-test
@@ -5734,6 +5748,9 @@ buildvariants:
     distros:
     - windows-64-vs2015-large
   - name: tool
+  - name: write_concern_majority_passthrough
+    distros:
+    - windows-64-vs2015-large
 
 - &enterprise-windows-64-2k8-template
   name: enterprise-windows-64-2k8
@@ -5863,6 +5880,8 @@ buildvariants:
     distros:
     - windows-64-vs2015-large
   - name: jsCore
+  - name: replica_sets
+  - name: sharding
 
 - name: enterprise-windows-64-2k8-inmem
   display_name: Enterprise Windows 2008R2 (inMemory)
@@ -6045,6 +6064,7 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - rhel70-small
@@ -6175,6 +6195,7 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - rhel70-small
@@ -6500,6 +6521,9 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
+    distros:
+    - rhel62-large
   - name: package
     distros:
     - ubuntu1604-packer
@@ -6622,6 +6646,7 @@ buildvariants:
   - name: sslSpecial
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
 
 - name: enterprise-rhel-70-64-bit
   display_name: "* Enterprise RHEL 7.0"
@@ -6981,6 +7006,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - rhel70-small
@@ -7087,6 +7113,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - rhel70-small
@@ -7187,6 +7214,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - rhel70
@@ -7564,6 +7592,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - suse12-test
@@ -7801,6 +7830,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
   - name: push
     distros:
     - suse11-test
@@ -8176,6 +8206,92 @@ buildvariants:
     - ubuntu1604-packer
   - name: push
 
+- name: debian92
+  display_name: SSL Debian 9.2
+  run_on:
+  - debian92-test
+  batchtime: 1440 # 1 day
+  expansions:
+    gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
+    tooltags: "-tags ssl"
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: x86_64-debian92
+    compile_flags: --ssl MONGO_DISTMOD=debian92 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    multiversion_platform_arch: "debian92"
+    multiversion_edition: "targeted"
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: x86_64
+    packager_distro: debian92
+    repo_edition: org
+    use_scons_cache: true
+    build_mongoreplay: true
+  tasks:
+  - name: compile
+    distros:
+    - debian92-build
+  - name: compile_all
+    distros:
+    - debian92-build
+  - name: aggregation
+  - name: aggregation_auth
+  - name: auth
+  - name: dbtest
+  - name: disk_wiredtiger
+  - name: failpoints
+  - name: failpoints_auth
+  - name: gle_auth
+  - name: gle_auth_write_cmd
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_compatibility
+  - name: aggregation_fuzzer
+  - name: jstestfuzz
+  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_concurrent_replication
+  - name: jstestfuzz_concurrent_sharded
+  - name: jstestfuzz_replication
+  - name: jstestfuzz_sharded
+  - name: mongosTest
+  - name: multiversion
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: bulk_gle_passthrough
+  - name: parallel
+  - name: parallel_compatibility
+  - name: concurrency
+  - name: concurrency_replication
+  - name: concurrency_sharded
+  - name: concurrency_simultaneous
+  - name: replica_sets
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: master_slave
+  - name: master_slave_auth
+  - name: master_slave_jscore_passthrough
+  - name: sharding
+  - name: sharding_auth
+  - name: sharding_last_stable_mongos_and_mixed_shards
+  - name: slow1
+  - name: serial_run
+  - name: sharded_collections_jscore_passthrough
+  - name: sharding_jscore_passthrough
+  - name: sharding_jscore_op_query_passthrough
+  - name: sharding_jscore_passthrough_wire_ops
+  - name: ssl
+  - name: sslSpecial
+  - name: tool
+  - name: package
+    distros:
+    - ubuntu1604-packer
+  - name: push
 
 ################################
 # storage engine buildvariants #
@@ -8299,6 +8415,7 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
 
 - name: enterprise-rhel-62-64-bit-mobile
   display_name: Enterprise RHEL 6.2 (mobile)
@@ -8570,6 +8687,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
 
 - name: enterprise-rhel-72-s390x-inmem
   display_name: Enterprise RHEL 7.2 s390x (inMemory) DEBUG
@@ -8659,6 +8777,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
 
 - name: ubuntu1404-rocksdb
   display_name: Ubuntu 14.04 (RocksDB)
@@ -8804,6 +8923,7 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
 
 - name: ubuntu1604-asan
   display_name: ~ ASAN SSL Ubuntu 16.04
@@ -8959,6 +9079,7 @@ buildvariants:
   - name: tool
   - name: update_fuzzer
   - name: update_fuzzer_replication
+  - name: write_concern_majority_passthrough
 
 - name: ubuntu1604-debug-aubsan-lite
   display_name: "! {A,UB}SAN Enterprise SSL Ubuntu 16.04 DEBUG"
@@ -9085,6 +9206,7 @@ buildvariants:
   - name: ssl
   - name: sslSpecial
   - name: tool
+  - name: write_concern_majority_passthrough
 
 - name: enterprise-ubuntu-dynamic-1604-64-bit
   display_name: "* Shared Library Enterprise Ubuntu 16.04"

@@ -52,7 +52,10 @@ class AutoGetDb {
     MONGO_DISALLOW_COPYING(AutoGetDb);
 
 public:
-    AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode);
+    AutoGetDb(OperationContext* opCtx,
+              StringData dbName,
+              LockMode mode,
+              Date_t deadline = Date_t::max());
 
     // TODO (SERVER-32367): Do not use this constructor, it is for internal purposes only
     AutoGetDb(OperationContext* opCtx, StringData dbName, Lock::DBLock dbLock);
@@ -88,20 +91,23 @@ public:
                       const NamespaceStringOrUUID& nsOrUUID,
                       LockMode modeDB,
                       LockMode modeColl,
-                      ViewMode viewMode = kViewsForbidden);
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max());
 
     AutoGetCollection(OperationContext* opCtx,
                       const NamespaceStringOrUUID& nsOrUUID,
                       LockMode modeAll,
-                      ViewMode viewMode = kViewsForbidden)
-        : AutoGetCollection(opCtx, nsOrUUID, modeAll, modeAll, viewMode) {}
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max())
+        : AutoGetCollection(opCtx, nsOrUUID, modeAll, modeAll, viewMode, deadline) {}
 
     // TODO (SERVER-32367): Do not use this constructor, it is for internal purposes only
     AutoGetCollection(OperationContext* opCtx,
                       const NamespaceStringOrUUID& nsOrUUID,
                       Lock::DBLock dbLock,
                       LockMode modeColl,
-                      ViewMode viewMode);
+                      ViewMode viewMode,
+                      Date_t deadline = Date_t::max());
 
     /**
      * Returns nullptr if the database didn't exist.
@@ -161,7 +167,10 @@ class AutoGetOrCreateDb {
     MONGO_DISALLOW_COPYING(AutoGetOrCreateDb);
 
 public:
-    AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode);
+    AutoGetOrCreateDb(OperationContext* opCtx,
+                      StringData ns,
+                      LockMode mode,
+                      Date_t deadline = Date_t::max());
 
     Database* getDb() const {
         return _db;

@@ -39,31 +39,57 @@ namespace {
 
 MONGO_FP_DECLARE(setAutoGetCollectionWait);
 
+void uassertLockTimeout(std::string resourceName,
+                        LockMode lockMode,
+                        Date_t deadline,
+                        bool isLocked) {
+    uassert(ErrorCodes::LockTimeout,
+            str::stream() << "Failed to acquire " << modeName(lockMode) << " lock for "
+                          << resourceName
+                          << " since deadline "
+                          << dateToISOStringLocal(deadline)
+                          << " has passed.",
+            isLocked);
+}
+
 }  // namespace
 
-AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode)
-    : _dbLock(opCtx, dbName, mode), _db(dbHolder().get(opCtx, dbName)) {}
+AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode, Date_t deadline)
+    : _dbLock(opCtx, dbName, mode, deadline), _db(dbHolder().get(opCtx, dbName)) {
+    uassertLockTimeout("database " + dbName, mode, deadline, _dbLock.isLocked());
+}
 
 AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, Lock::DBLock dbLock)
-    : _dbLock(std::move(dbLock)), _db(dbHolder().get(opCtx, dbName)) {}
+    : _dbLock(std::move(dbLock)), _db(dbHolder().get(opCtx, dbName)) {
+    uassert(ErrorCodes::LockTimeout,
+            str::stream() << "Failed to acquire lock for '" << dbName << "'.",
+            _dbLock.isLocked());
+}
 
 AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
                                      const NamespaceStringOrUUID& nsOrUUID,
                                      LockMode modeDB,
                                      LockMode modeColl,
-                                     ViewMode viewMode)
-    : AutoGetCollection(
-          opCtx, nsOrUUID, Lock::DBLock(opCtx, nsOrUUID.db(), modeDB), modeColl, viewMode) {}
+                                     ViewMode viewMode,
+                                     Date_t deadline)
+    : AutoGetCollection(opCtx,
+                        nsOrUUID,
+                        Lock::DBLock(opCtx, nsOrUUID.db(), modeDB, deadline),
+                        modeColl,
+                        viewMode,
+                        deadline) {}
 
 AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
                                      const NamespaceStringOrUUID& nsOrUUID,
                                      Lock::DBLock dbLock,
                                      LockMode modeColl,
-                                     ViewMode viewMode)
+                                     ViewMode viewMode,
+                                     Date_t deadline)
     : _autoDb(opCtx, nsOrUUID.db(), std::move(dbLock)),
       _nsAndLock([&]() -> NamespaceAndCollectionLock {
           if (nsOrUUID.nss()) {
-              return {Lock::CollectionLock(opCtx->lockState(), nsOrUUID.nss()->ns(), modeColl),
+              return {Lock::CollectionLock(
+                          opCtx->lockState(), nsOrUUID.nss()->ns(), modeColl, deadline),
                       *nsOrUUID.nss()};
           } else {
               UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
@@ -75,8 +101,9 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
                       str::stream() << "Unable to resolve " << nsOrUUID.toString(),
                       resolvedNss.isValid());
 
-              return {Lock::CollectionLock(opCtx->lockState(), resolvedNss.ns(), modeColl),
-                      std::move(resolvedNss)};
+              return {
+                  Lock::CollectionLock(opCtx->lockState(), resolvedNss.ns(), modeColl, deadline),
+                  std::move(resolvedNss)};
           }
       }()) {
     // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
@@ -84,6 +111,9 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
         const BSONObj& data = customWait.getData();
         sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
     }
+
+    uassertLockTimeout(
+        "collection " + nsOrUUID.toString(), modeColl, deadline, _nsAndLock.lock.isLocked());
 
     Database* const db = _autoDb.getDb();
 
@@ -105,10 +135,15 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
             !_view || viewMode == kViewsPermitted);
 }
 
-AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode)
-    : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {
+AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx,
+                                     StringData dbName,
+                                     LockMode mode,
+                                     Date_t deadline)
+    : _dbLock(opCtx, dbName, mode, deadline), _db(dbHolder().get(opCtx, dbName)) {
     invariant(mode == MODE_IX || mode == MODE_X);
     _justCreated = false;
+
+    uassertLockTimeout("database " + dbName, mode, deadline, _dbLock.isLocked());
 
     // If the database didn't exist, relock in MODE_X
     if (_db == NULL) {
@@ -116,7 +151,7 @@ AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, Loc
             _dbLock.relockWithMode(MODE_X);
         }
 
-        _db = dbHolder().openDb(opCtx, ns);
+        _db = dbHolder().openDb(opCtx, dbName);
         _justCreated = true;
     }
 }

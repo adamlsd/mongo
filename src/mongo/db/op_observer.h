@@ -222,6 +222,11 @@ public:
                                const NamespaceString& collectionName,
                                OptionalCollectionUUID uuid) = 0;
 
+    /**
+     * This struct is a decoration for `OperationContext` which contains collected `repl::OpTime`
+     * and `Date_t` timestamps of various critical stages of an operation performed by an OpObserver
+     * chain.
+     */
     struct Times {
         std::vector<std::pair<repl::OpTime, Date_t>> reservedOpTimes;
 
@@ -229,6 +234,11 @@ public:
     };
 
 protected:
+    /**
+     * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
+     * operation context.  Upon destruction the list of times in the decoration on the operation
+     * context is cleared.
+     */
     class ReservedTimes {
     private:
         ReservedTimes(const ReservedTimes&) = delete;

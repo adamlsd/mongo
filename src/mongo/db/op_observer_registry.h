@@ -193,6 +193,16 @@ public:
             o->onEmptyCapped(opCtx, collectionName, uuid);
     }
 
+    void onTransactionCommit(OperationContext* opCtx) override {
+        for (auto& o : _observers)
+            o->onTransactionCommit(opCtx);
+    }
+
+    void onTransactionAbort(OperationContext* opCtx) override {
+        for (auto& o : _observers)
+            o->onTransactionAbort(opCtx);
+    }
+
 private:
     static repl::OpTime _getOpTimeToReturn(
         const std::vector<std::pair<repl::OpTime, Date_t>>& times) {

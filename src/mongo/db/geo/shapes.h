@@ -311,14 +311,14 @@ struct MultiPointWithCRS {
 struct MultiLineWithCRS {
     MultiLineWithCRS() : crs(UNSET) {}
 
-    OwnedPointerVector<S2Polyline> lines;
+    std::vector<std::unique_ptr<S2Polyline>> lines;
     CRS crs;
 };
 
 struct MultiPolygonWithCRS {
     MultiPolygonWithCRS() : crs(UNSET) {}
 
-    OwnedPointerVector<S2Polygon> polygons;
+    std::vector<std::unique_ptr<S2Polygon>> polygons;
     CRS crs;
 };
 
@@ -327,15 +327,15 @@ struct GeometryCollection {
 
     // The amount of indirection here is painful but we can't operator= unique_ptr or
     // OwnedPointerVector.
-    OwnedPointerVector<LineWithCRS> lines;
-    OwnedPointerVector<PolygonWithCRS> polygons;
-    OwnedPointerVector<MultiPointWithCRS> multiPoints;
-    OwnedPointerVector<MultiLineWithCRS> multiLines;
-    OwnedPointerVector<MultiPolygonWithCRS> multiPolygons;
+    std::vector<std::unique_ptr<LineWithCRS>> lines;
+    std::vector<std::unique_ptr<PolygonWithCRS>> polygons;
+    std::vector<std::unique_ptr<MultiPointWithCRS>> multiPoints;
+    std::vector<std::unique_ptr<MultiLineWithCRS>> multiLines;
+    std::vector<std::unique_ptr<MultiPolygonWithCRS>> multiPolygons;
 
-    bool supportsContains() {
+    bool supportsContains() const {
         // Only polygons (and multiPolygons) support containment.
-        return (polygons.vector().size() > 0 || multiPolygons.vector().size() > 0);
+        return (polygons.size() > 0 || multiPolygons.size() > 0);
     }
 };
 

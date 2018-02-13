@@ -562,13 +562,13 @@ Status GeoParser::parseMultiLine(const BSONObj& obj, bool skipValidation, MultiL
         return BAD_VALUE("MultiLineString coordinates must be an array");
 
     out->lines.clear();
-    vector<S2Polyline*>& lines = out->lines.mutableVector();
+    auto& lines = out->lines;
 
     BSONObjIterator it(coordElt.Obj());
 
     // Iterate array
     while (it.more()) {
-        lines.push_back(new S2Polyline());
+        lines.push_back(std::make_unique< S2Polyline>());
         status = parseGeoJSONLineCoordinates(it.next(), skipValidation, lines.back());
         if (!status.isOK())
             return status;

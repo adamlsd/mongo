@@ -326,8 +326,8 @@ public:
     const uint64_t _id;
 };
 
-MemoryMappedFile::Flushable* MemoryMappedFile::prepareFlush() {
-    return new PosixFlushable(this, viewForFlushing(), fd, len);
+std::unique_ptr<MongoFile::Flushable> MemoryMappedFile::prepareFlush() {
+    return std::make_unique<PosixFlushable>(this, viewForFlushing(), fd, len);
 }
 
 }  // namespace mongo

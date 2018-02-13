@@ -481,7 +481,8 @@ void MemoryMappedFile::flush(bool sync) {
     }
 }
 
-MemoryMappedFile::Flushable* MemoryMappedFile::prepareFlush() {
-    return new WindowsFlushable(this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);
+std::unique_ptr<MongoFile::Flushable> MemoryMappedFile::prepareFlush() {
+    return std::make_unique<WindowsFlushable>(
+        this, viewForFlushing(), fd, _uniqueId, filename(), _flushMutex);
 }
 }  // namespace mongo

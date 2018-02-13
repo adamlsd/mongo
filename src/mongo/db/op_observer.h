@@ -230,7 +230,7 @@ public:
     struct Times {
         std::vector<std::pair<repl::OpTime, Date_t>> reservedOpTimes;
 
-        static Times* get(OperationContext*);
+        static Times& get(OperationContext*);
     };
 
 protected:
@@ -240,22 +240,24 @@ protected:
      * context is cleared.
      */
     class ReservedTimes {
-    private:
         ReservedTimes(const ReservedTimes&) = delete;
         ReservedTimes& operator=(const ReservedTimes&) = delete;
 
-        Times* const times;
-
     public:
-        explicit ReservedTimes(OperationContext* const opCtx) : times(Times::get(opCtx)) {}
+        explicit ReservedTimes(OperationContext* const opCtx) : _times(&Times::get(opCtx)) {
+            invariant(this->_times->reservedOpTimes.empty());
+        }
 
         ~ReservedTimes() {
-            this->times->reservedOpTimes.clear();
+            this->_times->reservedOpTimes.clear();
         }
 
         Times* get() const {
-            return this->times;
+            return this->_times;
         }
+
+    private:
+        Times* const _times;
     };
 };
 }  // namespace mongo

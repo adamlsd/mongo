@@ -76,7 +76,7 @@ repl::OpTime logOperation(OperationContext* opCtx,
                           const OperationSessionInfo& sessionInfo,
                           StmtId stmtId,
                           const repl::OplogLink& oplogLink) {
-    auto& times = OpObserver::Times::get(opCtx)->reservedOpTimes;
+    auto& times = OpObserver::Times::get(opCtx).reservedOpTimes;
     auto opTime = repl::logOp(opCtx,
                               opstr,
                               ns,
@@ -347,7 +347,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
     const auto opTimeList =
         repl::logInsertOps(opCtx, nss, uuid, session, first, last, fromMigrate, lastWriteDate);
 
-    auto& times = OpObserver::Times::get(opCtx)->reservedOpTimes;
+    auto& times = OpObserver::Times::get(opCtx).reservedOpTimes;
     std::transform(begin(opTimeList),
                    end(opTimeList),
                    back_inserter(times),

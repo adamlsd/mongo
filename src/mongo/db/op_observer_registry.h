@@ -147,7 +147,7 @@ public:
             auto time = observer->onDropCollection(opCtx, collectionName, uuid);
             invariant(time.isNull());
         }
-        return getOpTime(times.get()->reservedOpTimes);
+        return _getOpTimeToReturn(times.get()->reservedOpTimes);
     }
 
     void onDropIndex(OperationContext* const opCtx,
@@ -174,7 +174,7 @@ public:
             invariant(time.isNull());
         }
 
-        return getOpTime(times.get()->reservedOpTimes);
+        return _getOpTimeToReturn(times.get()->reservedOpTimes);
     }
 
     void onApplyOps(OperationContext* const opCtx,
@@ -194,7 +194,8 @@ public:
     }
 
 private:
-    static repl::OpTime getOpTime(const std::vector<std::pair<repl::OpTime, Date_t>>& times) {
+    static repl::OpTime _getOpTimeToReturn(
+        const std::vector<std::pair<repl::OpTime, Date_t>>& times) {
         if (times.empty()) {
             return repl::OpTime{};
         }

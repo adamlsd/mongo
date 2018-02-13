@@ -33,8 +33,8 @@ namespace mongo {
 
 const auto getOpObserverTimes = OperationContext::declareDecoration<OpObserver::Times>();
 
-auto OpObserver::Times::get(OperationContext* const opCtx) -> Times* {
-    return &getOpObserverTimes(opCtx);
+auto OpObserver::Times::get(OperationContext* const opCtx) -> Times& {
+    return getOpObserverTimes(opCtx);
 }
 
 }  // namespace mongo

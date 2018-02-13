@@ -148,7 +148,7 @@ TEST_F(OpObserverRegistryTest, ThrowingObserver2) {
 TEST_F(OpObserverRegistryTest, OnDropCollectionObserverResultReturnsRightTime) {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::move(unique2));
+    registry.addObserver(std::make_unique<OpObserverNoop>());
     auto op = [&]() -> repl::OpTime { return registry.onDropCollection(&opCtx, testNss, {}); };
     checkConsistentOpTime(op);
 }
@@ -156,7 +156,7 @@ TEST_F(OpObserverRegistryTest, OnDropCollectionObserverResultReturnsRightTime) {
 TEST_F(OpObserverRegistryTest, OnRenameCollectionObserverResultReturnsRightTime) {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::move(unique2));
+    registry.addObserver(std::make_unique<OpObserverNoop>());
     auto op = [&]() -> repl::OpTime {
         return registry.onRenameCollection(&opCtx, testNss, testNss, {}, false, {}, false);
     };

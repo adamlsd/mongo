@@ -162,7 +162,7 @@ repl::OpTime OpObserverMock::onDropCollection(OperationContext* opCtx,
                                               const NamespaceString& collectionName,
                                               OptionalCollectionUUID uuid) {
     _logOp(opCtx, collectionName, "drop");
-    OpObserver::Times::get(opCtx)->reservedOpTimes.push_back(
+    OpObserver::Times::get(opCtx).reservedOpTimes.push_back(
         {OpObserverNoop::onDropCollection(opCtx, collectionName, uuid), {}});
     return {};
 }
@@ -175,7 +175,7 @@ repl::OpTime OpObserverMock::onRenameCollection(OperationContext* opCtx,
                                                 OptionalCollectionUUID dropTargetUUID,
                                                 bool stayTemp) {
     _logOp(opCtx, fromCollection, "rename");
-    OpObserver::Times::get(opCtx)->reservedOpTimes.push_back({renameOpTime, {}});
+    OpObserver::Times::get(opCtx).reservedOpTimes.push_back({renameOpTime, {}});
     OpObserverNoop::onRenameCollection(
         opCtx, fromCollection, toCollection, uuid, dropTarget, dropTargetUUID, stayTemp);
     onRenameCollectionCalled = true;

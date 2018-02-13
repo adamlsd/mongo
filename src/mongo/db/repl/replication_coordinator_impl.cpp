@@ -466,14 +466,14 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
     }
 
     // Check that we have a local Rollback ID. If we do not have one, create one.
-    auto rbid = _replicationProcess->getRollbackID(opCtx);
-    if (!rbid.isOK()) {
-        if (rbid.getStatus() == ErrorCodes::NamespaceNotFound) {
+    auto status = _replicationProcess->refreshRollbackID(opCtx);
+    if (!status.isOK()) {
+        if (status == ErrorCodes::NamespaceNotFound) {
             log() << "Did not find local Rollback ID document at startup. Creating one.";
             auto initializingStatus = _replicationProcess->initializeRollbackID(opCtx);
             fassertStatusOK(40424, initializingStatus);
         } else {
-            severe() << "Error loading local Rollback ID document at startup; " << rbid.getStatus();
+            severe() << "Error loading local Rollback ID document at startup; " << status;
             fassertFailedNoTrace(40428);
         }
     }
@@ -485,7 +485,7 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
         return true;
     }
     ReplSetConfig localConfig;
-    Status status = localConfig.initialize(cfg.getValue());
+    status = localConfig.initialize(cfg.getValue());
     if (!status.isOK()) {
         error() << "Locally stored replica set configuration does not parse; See "
                    "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config "
@@ -3367,8 +3367,10 @@ Timestamp ReplicationCoordinatorImpl::getMinimumVisibleSnapshot(OperationContext
     Timestamp reservedName;
     if (getReplicationMode() == Mode::modeReplSet) {
         invariant(opCtx->lockState()->isLocked());
-        if (getMemberState().primary()) {
-            // Use the current optime on the node, for primary nodes.
+        if (getMemberState().primary() || opCtx->recoveryUnit()->getCommitTimestamp().isNull()) {
+            // Use the current optime on the node, for primary nodes. Additionally, completion of
+            // background index builds on secondaries will not have a `commit time` and must also
+            // use the current optime.
             reservedName = LogicalClock::get(getServiceContext())->getClusterTime().asTimestamp();
         } else {
             // This function is only called when applying command operations on secondaries.

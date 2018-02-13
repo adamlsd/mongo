@@ -53,7 +53,7 @@ struct TestObserver : public OpObserverNoop {
                                   const NamespaceString& collectionName,
                                   OptionalCollectionUUID uuid) {
         drops++;
-        OpObserver::Times::get(opCtx)->reservedOpTimes.push_back({opTime, {}});
+        OpObserver::Times::get(opCtx).reservedOpTimes.push_back({opTime, {}});
         return {};
     }
     repl::OpTime onRenameCollection(OperationContext* opCtx,
@@ -166,7 +166,7 @@ TEST_F(OpObserverRegistryTest, OnRenameCollectionObserverResultReturnsRightTime)
 DEATH_TEST_F(OpObserverRegistryTest, OnDropCollectionReturnsInconsistentTime, "invariant") {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::move(unique2));
+    registry.addObserver(std::make_unique<OpObserverNoop>());
     auto op = [&]() -> repl::OpTime { return registry.onDropCollection(&opCtx, testNss, {}); };
     checkInconsistentOpTime(op);
 }
@@ -174,7 +174,7 @@ DEATH_TEST_F(OpObserverRegistryTest, OnDropCollectionReturnsInconsistentTime, "i
 DEATH_TEST_F(OpObserverRegistryTest, OnRenameCollectionReturnsInconsistentTime, "invariant") {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::move(unique2));
+    registry.addObserver(std::make_unique<OpObserverNoop>());
     auto op = [&]() -> repl::OpTime {
         return registry.onRenameCollection(&opCtx, testNss, testNss, {}, false, {}, false);
     };

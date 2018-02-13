@@ -204,14 +204,12 @@ public:
     }
 
 private:
-    static repl::OpTime _getOpTimeToReturn(
-        const std::vector<std::pair<repl::OpTime, Date_t>>& times) {
+    static repl::OpTime _getOpTimeToReturn(const std::vector<repl::OpTime>& times) {
         if (times.empty()) {
             return repl::OpTime{};
         }
         invariant(times.size() == 1);
-        using std::get;
-        return get<0>(times.front());
+        return times.front();
     }
 
     std::vector<std::unique_ptr<OpObserver>> _observers;

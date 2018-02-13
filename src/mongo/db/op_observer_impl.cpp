@@ -56,7 +56,6 @@ namespace mongo {
 namespace {
 using std::begin;
 using std::end;
-using std::back_inserter;
 
 MONGO_FP_DECLARE(failCollectionUpdates);
 
@@ -88,7 +87,7 @@ repl::OpTime logOperation(OperationContext* opCtx,
                               sessionInfo,
                               stmtId,
                               oplogLink);
-    times.emplace_back(opTime, wallClockTime);
+    times.push_back(opTime);
     return opTime;
 }
 
@@ -348,12 +347,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         repl::logInsertOps(opCtx, nss, uuid, session, first, last, fromMigrate, lastWriteDate);
 
     auto& times = OpObserver::Times::get(opCtx).reservedOpTimes;
-    std::transform(begin(opTimeList),
-                   end(opTimeList),
-                   back_inserter(times),
-                   [lastWriteDate](const repl::OpTime& opTime) {
-                       return std::make_tuple(opTime, lastWriteDate);
-                   });
+    times.insert(end(times), begin(opTimeList), end(opTimeList));
 
     auto css = (nss == NamespaceString::kSessionTransactionsTableNamespace || fromMigrate)
         ? nullptr
@@ -385,9 +379,10 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
     }
 
     std::vector<StmtId> stmtIdsWritten;
-    std::transform(first, last, std::back_inserter(stmtIdsWritten), [](const InsertStatement& stmt) {
-        return stmt.stmtId;
-    });
+    std::transform(first,
+                   last,
+                   std::back_inserter(stmtIdsWritten),
+                   [](const InsertStatement& stmt) { return stmt.stmtId; });
 
     onWriteOpCompleted(opCtx, nss, session, stmtIdsWritten, lastOpTime, lastWriteDate);
 }

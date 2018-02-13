@@ -190,7 +190,7 @@ TEST_F(OpObserverTest, OnDropCollectionReturnsDropOpTime) {
         AutoGetDb autoDb(opCtx.get(), nss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
         opObserver.onDropCollection(opCtx.get(), nss, uuid);
-        dropOpTime = std::get<0>(OpObserver::Times::get(opCtx.get()).reservedOpTimes.front());
+        dropOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
 
@@ -226,7 +226,7 @@ TEST_F(OpObserverTest, OnRenameCollectionReturnsRenameOpTime) {
         WriteUnitOfWork wunit(opCtx.get());
         opObserver.onRenameCollection(
             opCtx.get(), sourceNss, targetNss, {}, dropTarget, {}, stayTemp);
-        renameOpTime = std::get<0>(OpObserver::Times::get(opCtx.get()).reservedOpTimes.front());
+        renameOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
 

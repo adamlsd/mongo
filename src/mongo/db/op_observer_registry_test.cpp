@@ -53,7 +53,7 @@ struct TestObserver : public OpObserverNoop {
                                   const NamespaceString& collectionName,
                                   OptionalCollectionUUID uuid) {
         drops++;
-        OpObserver::Times::get(opCtx).reservedOpTimes.push_back({opTime, {}});
+        OpObserver::Times::get(opCtx).reservedOpTimes.push_back(opTime);
         return {};
     }
     repl::OpTime onRenameCollection(OperationContext* opCtx,

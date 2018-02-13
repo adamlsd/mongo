@@ -239,7 +239,7 @@ public:
      * chain.
      */
     struct Times {
-        std::vector<std::pair<repl::OpTime, Date_t>> reservedOpTimes;
+        std::vector<repl::OpTime> reservedOpTimes;
 
         static Times& get(OperationContext*);
     };

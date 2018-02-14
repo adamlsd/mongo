@@ -1,5 +1,5 @@
-/**
- *    Copyright (C) 2016 MongoDB Inc.
+/*
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -28,38 +28,18 @@
 
 #pragma once
 
-#include "mongo/base/disallow_copying.h"
-#include "mongo/transport/session_id.h"
-#include "mongo/util/net/message.h"
-#include "mongo/util/time_support.h"
+#include "mongo/db/repl/repl_settings.h"
 
 namespace mongo {
-namespace transport {
+struct MongodGlobalParams {
+    bool scriptingEnabled = true;  // Use "security.javascriptEnabled" to set this variable. Or use
+                                   // --noscripting which will set it to false.
 
-/**
- * Interface representing implementations of Ticket.
- *
- * Ticket implementations are specific to a TransportLayer implementation.
- */
-class TicketImpl {
-    MONGO_DISALLOW_COPYING(TicketImpl);
-
-public:
-    virtual ~TicketImpl() = default;
-
-    /**
-     * Return this ticket's session id.
-     */
-    virtual SessionId sessionId() const = 0;
-
-    /**
-     * Return this ticket's expiration date.
-     */
-    virtual Date_t expiration() const = 0;
-
-protected:
-    TicketImpl() = default;
+    boost::optional<std::vector<std::string>> whitelistedClusterNetwork;
 };
 
-}  // namespace transport
+extern MongodGlobalParams mongodGlobalParams;
+
+void setGlobalReplSettings(const repl::ReplSettings& settings);
+const repl::ReplSettings& getGlobalReplSettings();
 }  // namespace mongo

@@ -1,5 +1,5 @@
-/**
- *    Copyright (C) 2016 MongoDB Inc.
+/*
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,58 +26,45 @@
  *    it in the license file.
  */
 
-#pragma once
+#include "mongo/client/embedded/embedded_options.h"
 
-#include "mongo/base/disallow_copying.h"
-#include "mongo/transport/session.h"
-#include "mongo/transport/ticket_impl.h"
-#include "mongo/util/time_support.h"
+#include "mongo/util/options_parser/startup_option_init.h"
+#include "mongo/util/options_parser/startup_options.h"
 
 namespace mongo {
+namespace embedded {
 
-class Message;
+MONGO_GENERAL_STARTUP_OPTIONS_REGISTER(EmbeddedOptions)(InitializerContext* context) {
+    return addOptions(&optionenvironment::startupOptions);
+}
 
-namespace transport {
-
-/**
- * A mock ticket class for our test suite.
- */
-class MockTicket : public TicketImpl {
-    MONGO_DISALLOW_COPYING(MockTicket);
-
-public:
-    // Source constructor
-    MockTicket(const SessionHandle& session,
-               Message* message,
-               Date_t expiration = Ticket::kNoExpirationDate)
-        : _session(session), _id(session->id()), _message(message), _expiration(expiration) {}
-
-    // Sink constructor
-    MockTicket(const SessionHandle& session, Date_t expiration = Ticket::kNoExpirationDate)
-        : _session(session), _id(session->id()), _expiration(expiration) {}
-
-    SessionId sessionId() const override {
-        return _id;
+MONGO_INITIALIZER_GENERAL(EmbeddedOptions,
+                          ("BeginStartupOptionValidation", "AllFailPointsRegistered"),
+                          ("EndStartupOptionValidation"))
+(InitializerContext* context) {
+    // Run validation, but tell the Environment that we don't want it to be set as "valid",
+    // since we may be making it invalid in the canonicalization process.
+    Status ret = optionenvironment::startupOptionsParsed.validate(false);
+    if (!ret.isOK()) {
+        return ret;
     }
-
-    Date_t expiration() const override {
-        return _expiration;
+    ret = canonicalizeOptions(&optionenvironment::startupOptionsParsed);
+    if (!ret.isOK()) {
+        return ret;
     }
-
-    boost::optional<Message*> message() const {
-        return _message;
+    ret = optionenvironment::startupOptionsParsed.validate();
+    if (!ret.isOK()) {
+        return ret;
     }
+    return Status::OK();
+}
 
-    SessionHandle session() const {
-        return _session.lock();
-    }
+MONGO_INITIALIZER_GENERAL(EmbeddedOptions_Store,
+                          ("BeginStartupOptionStorage"),
+                          ("EndStartupOptionStorage"))
+(InitializerContext* context) {
+    return storeOptions(optionenvironment::startupOptionsParsed);
+}
 
-private:
-    std::weak_ptr<Session> _session;
-    Session::Id _id;
-    boost::optional<Message*> _message;
-    Date_t _expiration;
-};
-
-}  // namespace transport
+}  // namespace embedded
 }  // namespace mongo

@@ -56,7 +56,7 @@ public:
         return "internal";
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -156,7 +156,7 @@ public:
         return "internal";
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -180,7 +180,8 @@ public:
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
-        MigrationDestinationManager::get(opCtx)->report(result);
+        bool waitForSteadyOrDone = cmdObj["waitForSteadyOrDone"].boolean();
+        MigrationDestinationManager::get(opCtx)->report(result, opCtx, waitForSteadyOrDone);
         return true;
     }
 
@@ -194,7 +195,7 @@ public:
         return "internal";
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -222,7 +223,7 @@ public:
         auto const sessionId = uassertStatusOK(MigrationSessionId::extractFromBSON(cmdObj));
         auto const mdm = MigrationDestinationManager::get(opCtx);
         Status const status = mdm->startCommit(sessionId);
-        mdm->report(result);
+        mdm->report(result, opCtx, false);
         if (!status.isOK()) {
             log() << status.reason();
             return CommandHelpers::appendCommandStatus(result, status);
@@ -240,7 +241,7 @@ public:
         return "internal";
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -270,14 +271,14 @@ public:
 
         if (migrationSessionIdStatus.isOK()) {
             Status const status = mdm->abort(migrationSessionIdStatus.getValue());
-            mdm->report(result);
+            mdm->report(result, opCtx, false);
             if (!status.isOK()) {
                 log() << status.reason();
                 return CommandHelpers::appendCommandStatus(result, status);
             }
         } else if (migrationSessionIdStatus == ErrorCodes::NoSuchKey) {
             mdm->abortWithoutSessionIdCheck();
-            mdm->report(result);
+            mdm->report(result, opCtx, false);
         }
 
         uassertStatusOK(migrationSessionIdStatus.getStatus());

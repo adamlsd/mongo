@@ -1,5 +1,5 @@
-/**
- *    Copyright (C) 2016 MongoDB Inc.
+/*
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -28,64 +28,23 @@
 
 #pragma once
 
-#include <vector>
-
-#include "mongo/base/disallow_copying.h"
-#include "mongo/stdx/mutex.h"
-#include "mongo/stdx/thread.h"
-#include "mongo/transport/service_entry_point.h"
-#include "mongo/transport/session.h"
-#include "mongo/util/net/message.h"
+#include "mongo/base/status.h"
+#include "mongo/util/options_parser/environment.h"
+#include "mongo/util/options_parser/option_section.h"
 
 namespace mongo {
+namespace embedded {
 
-namespace transport {
+Status addOptions(optionenvironment::OptionSection* options);
 
-class TransportLayer;
+/**
+ * Canonicalize options for the given environment.
+ *
+ * For example, the options "dur", "nodur", "journal", "nojournal", and
+ * "storage.journaling.enabled" should all be merged into "storage.journaling.enabled".
+ */
+Status canonicalizeOptions(optionenvironment::Environment* params);
 
-}  // namespace transport
-
-class ServiceEntryPointMock : public ServiceEntryPoint {
-    MONGO_DISALLOW_COPYING(ServiceEntryPointMock);
-
-public:
-    ServiceEntryPointMock(transport::TransportLayer* tl);
-
-    virtual ~ServiceEntryPointMock();
-
-    /**
-     * This method will spawn a thread that will do the following:
-     *
-     * - call tl->sourceMessage()
-     * - call tl->wait()
-     * - call tl->sinkMessage() with { ok : 1 }
-     * - call tl->wait()
-     *
-     * ...repeat until wait() returns an error.
-     */
-    void startSession(transport::SessionHandle session) override;
-
-    void endAllSessions(transport::Session::TagMask tags) override;
-
-    bool shutdown(Milliseconds timeout) override {
-        return true;
-    }
-
-    Stats sessionStats() const override;
-
-    size_t numOpenSessions() const override;
-
-    DbResponse handleRequest(OperationContext* opCtx, const Message& request) override;
-
-private:
-    void run(transport::SessionHandle session);
-
-    transport::TransportLayer* _tl;
-
-    stdx::mutex _shutdownLock;
-    bool _inShutdown;
-
-    std::vector<stdx::thread> _threads;
-};
-
+Status storeOptions(const optionenvironment::Environment& params);
+}  // namespace embedded
 }  // namespace mongo

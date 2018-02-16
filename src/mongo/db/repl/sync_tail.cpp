@@ -284,9 +284,9 @@ NamespaceString parseUUIDOrNs(OperationContext* opCtx, const OplogEntry& oplogEn
 
 NamespaceStringOrUUID getNsOrUUID(const NamespaceString& nss, const BSONObj& op) {
     if (auto ui = op["ui"]) {
-        return {nss.db(), uassertStatusOK(UUID::parse(ui))};
+        return uassertStatusOK(UUID::parse(ui));
     }
-    return {nss};
+    return nss;
 }
 
 }  // namespace
@@ -364,7 +364,7 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                 uassert(ErrorCodes::NamespaceNotFound,
                         str::stream() << "missing database (" << nss.db() << ")",
                         db);
-                OldClientContext ctx(opCtx, autoColl.getNss().ns(), db, /*justCreated*/ false);
+                OldClientContext ctx(opCtx, autoColl.getNss().ns(), db);
                 return applyOp(ctx.db());
             } catch (ExceptionFor<ErrorCodes::NamespaceNotFound>& ex) {
                 // Delete operations on non-existent namespaces can be treated as successful for
@@ -946,15 +946,16 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
         // Extract some info from ops that we'll need after releasing the batch below.
         const auto firstOpTimeInBatch = ops.front().getOpTime();
         const auto lastOpTimeInBatch = ops.back().getOpTime();
+        const auto lastAppliedOpTimeAtStartOfBatch = replCoord->getMyLastAppliedOpTime();
 
         // Make sure the oplog doesn't go back in time or repeat an entry.
-        if (firstOpTimeInBatch <= replCoord->getMyLastAppliedOpTime()) {
+        if (firstOpTimeInBatch <= lastAppliedOpTimeAtStartOfBatch) {
             fassert(34361,
                     Status(ErrorCodes::OplogOutOfOrder,
                            str::stream() << "Attempted to apply an oplog entry ("
                                          << firstOpTimeInBatch.toString()
                                          << ") which is not greater than our last applied OpTime ("
-                                         << replCoord->getMyLastAppliedOpTime().toString()
+                                         << lastAppliedOpTimeAtStartOfBatch.toString()
                                          << ")."));
         }
 
@@ -983,7 +984,16 @@ void SyncTail::oplogApplication(ReplicationCoordinator* replCoord) {
         // 2. Persist our "applied through" optime to disk.
         consistencyMarkers->setAppliedThrough(&opCtx, lastOpTimeInBatch);
 
-        // 3. Finalize this batch. We are at a consistent optime if our current optime is >= the
+        // 3. Ensure that the last applied op time hasn't changed since the start of this batch.
+        const auto lastAppliedOpTimeAtEndOfBatch = replCoord->getMyLastAppliedOpTime();
+        invariant(lastAppliedOpTimeAtStartOfBatch == lastAppliedOpTimeAtEndOfBatch,
+                  str::stream() << "the last known applied OpTime has changed from "
+                                << lastAppliedOpTimeAtStartOfBatch.toString()
+                                << " to "
+                                << lastAppliedOpTimeAtEndOfBatch.toString()
+                                << " in the middle of batch application");
+
+        // 4. Finalize this batch. We are at a consistent optime if our current optime is >= the
         // current 'minValid' optime.
         auto consistency = (lastOpTimeInBatch >= minValid)
             ? ReplicationCoordinator::DataConsistency::Consistent

@@ -294,6 +294,29 @@ void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
         opCtx, txnNumber, std::move(stmtIdsWritten), lastStmtIdWriteOpTime);
 }
 
+bool Session::onMigrateBeginOnPrimary(OperationContext* opCtx, TxnNumber txnNumber, StmtId stmtId) {
+    beginTxn(opCtx, txnNumber);
+
+    try {
+        if (checkStatementExecuted(opCtx, txnNumber, stmtId)) {
+            return false;
+        }
+    } catch (const DBException& ex) {
+        // If the transaction chain was truncated on the recipient shard, then we
+        // are most likely copying from a session that hasn't been touched on the
+        // recipient shard for a very long time but could be recent on the donor.
+        // We continue copying regardless to get the entire transaction from the donor.
+        if (ex.code() != ErrorCodes::IncompleteTransactionHistory) {
+            throw;
+        }
+        if (stmtId == kIncompleteHistoryStmtId) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void Session::onMigrateCompletedOnPrimary(OperationContext* opCtx,
                                           TxnNumber txnNumber,
                                           std::vector<StmtId> stmtIdsWritten,
@@ -551,8 +574,7 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
 
         const auto closeConnectionElem = data["closeConnection"];
         if (closeConnectionElem.eoo() || closeConnectionElem.Bool()) {
-            auto transportSession = opCtx->getClient()->session();
-            transportSession->getTransportLayer()->end(transportSession);
+            opCtx->getClient()->session()->end();
         }
 
         const auto failBeforeCommitExceptionElem = data["failBeforeCommitExceptionCode"];

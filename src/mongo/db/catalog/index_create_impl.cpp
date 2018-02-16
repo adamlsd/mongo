@@ -94,10 +94,6 @@ bool requiresGhostCommitTimestamp(OperationContext* opCtx, NamespaceString nss) 
 
 }  // namespace
 
-using std::unique_ptr;
-using std::string;
-using std::endl;
-
 MONGO_FP_DECLARE(crashAfterStartingIndexBuild);
 MONGO_FP_DECLARE(hangAfterStartingIndexBuild);
 MONGO_FP_DECLARE(hangAfterStartingIndexBuildUnlocked);
@@ -228,9 +224,9 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
     WriteUnitOfWork wunit(_opCtx);
 
     invariant(_indexes.empty());
-    _opCtx->recoveryUnit()->registerChange(new CleanupIndexesVectorOnRollback(this));
+    _opCtx->recoveryUnit()->registerChange(std::make_unique<CleanupIndexesVectorOnRollback>(this));
 
-    const string& ns = _collection->ns().ns();
+    const std::string& ns = _collection->ns().ns();
 
     const auto idxCat = _collection->getIndexCatalog();
     invariant(idxCat);
@@ -242,7 +238,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
     for (size_t i = 0; i < indexSpecs.size(); i++) {
         BSONObj info = indexSpecs[i];
 
-        string pluginName = IndexNames::findPluginName(info["key"].Obj());
+        std::string pluginName = IndexNames::findPluginName(info["key"].Obj());
         if (pluginName.size()) {
             Status s = _collection->getIndexCatalog()->_upgradeDatabaseMinorVersionIfNeeded(
                 _opCtx, pluginName);
@@ -528,7 +524,7 @@ void MultiIndexBlockImpl::commit() {
                             LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
     }
 
-    _opCtx->recoveryUnit()->registerChange(new SetNeedToCleanupOnRollback(this));
+    _opCtx->recoveryUnit()->registerChange(std::make_unique<SetNeedToCleanupOnRollback>(this));
     _needToCleanup = false;
 }
 

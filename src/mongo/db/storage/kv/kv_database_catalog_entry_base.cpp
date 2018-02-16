@@ -230,7 +230,8 @@ Status KVDatabaseCatalogEntryBase::createCollection(OperationContext* opCtx,
         }
     }
 
-    opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, ns, ident, true));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<AddCollectionChange>(opCtx, this, ns, ident, true));
 
     auto rs = _engine->getEngine()->getGroupedRecordStore(opCtx, ns, ident, options, prefix);
     invariant(rs);
@@ -314,12 +315,12 @@ Status KVDatabaseCatalogEntryBase::renameCollection(OperationContext* opCtx,
 
     const CollectionMap::iterator itFrom = _collections.find(fromNS.toString());
     invariant(itFrom != _collections.end());
-    opCtx->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(opCtx, this, fromNS, identFrom, itFrom->second, false));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<RemoveCollectionChange>(
+        opCtx, this, fromNS, identFrom, itFrom->second, false));
     _collections.erase(itFrom);
 
     opCtx->recoveryUnit()->registerChange(
-        new AddCollectionChange(opCtx, this, toNS, identTo, false));
+        std::make_unique<AddCollectionChange>(opCtx, this, toNS, identTo, false));
 
     auto rs =
         _engine->getEngine()->getGroupedRecordStore(opCtx, toNS, identTo, md.options, md.prefix);
@@ -362,7 +363,7 @@ Status KVDatabaseCatalogEntryBase::dropCollection(OperationContext* opCtx, Strin
     // This will lazily delete the KVCollectionCatalogEntry and notify the storageEngine to
     // drop the collection only on WUOW::commit().
     opCtx->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(opCtx, this, ns, ident, it->second, true));
+        std::make_unique<RemoveCollectionChange>(opCtx, this, ns, ident, it->second, true));
 
     _collections.erase(ns.toString());
 

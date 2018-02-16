@@ -393,11 +393,11 @@ void MigrationChunkClonerSourceLegacy::onInsertOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'i', opTime, {}));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'i', opTime, repl::OpTime{}));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'i', {}, {}));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'i', repl::OpTime{}, repl::OpTime{}));
     }
 }
 
@@ -419,11 +419,11 @@ void MigrationChunkClonerSourceLegacy::onUpdateOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'u', opTime, prePostImageOpTime));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'u', opTime, prePostImageOpTime));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'u', {}, {}));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'u', repl::OpTime{}, repl::OpTime{}));
     }
 }
 
@@ -441,11 +441,11 @@ void MigrationChunkClonerSourceLegacy::onDeleteOp(OperationContext* opCtx,
     }
 
     if (opCtx->getTxnNumber()) {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'd', opTime, preImageOpTime));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'd', opTime, preImageOpTime));
     } else {
-        opCtx->recoveryUnit()->registerChange(
-            new LogOpForShardingHandler(this, idElement.wrap(), 'd', {}, {}));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<LogOpForShardingHandler>(
+            this, idElement.wrap(), 'd', repl::OpTime{}, repl::OpTime{}));
     }
 }
 

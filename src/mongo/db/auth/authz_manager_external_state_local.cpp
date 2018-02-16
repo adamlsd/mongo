@@ -45,8 +45,6 @@
 
 namespace mongo {
 
-using std::vector;
-
 Status AuthzManagerExternalStateLocal::initialize(OperationContext* opCtx) {
     Status status = _initializeRoleGraph(opCtx);
     if (!status.isOK()) {
@@ -441,7 +439,7 @@ Status AuthzManagerExternalStateLocal::getRoleDescriptionsForDB(
     PrivilegeFormat showPrivileges,
     AuthenticationRestrictionsFormat showRestrictions,
     bool showBuiltinRoles,
-    vector<BSONObj>* result) {
+    std::vector<BSONObj>* result) {
     if (showPrivileges == PrivilegeFormat::kShowAsUserFragment) {
         return Status(ErrorCodes::IllegalOperation,
                       "Cannot get user fragment for all roles in a database");
@@ -590,7 +588,7 @@ void AuthzManagerExternalStateLocal::logOp(OperationContext* opCtx,
     if (nss == AuthorizationManager::rolesCollectionNamespace ||
         nss == AuthorizationManager::adminCommandNamespace) {
         opCtx->recoveryUnit()->registerChange(
-            new AuthzManagerLogOpHandler(opCtx, this, op, nss, o, o2));
+            std::make_unique<AuthzManagerLogOpHandler>(opCtx, this, op, nss, o, o2));
     }
 }
 

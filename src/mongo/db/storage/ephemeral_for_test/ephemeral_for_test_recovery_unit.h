@@ -1,5 +1,3 @@
-// ephemeral_for_test_recovery_unit.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -38,11 +36,9 @@
 
 namespace mongo {
 
-class SortedDataInterface;
-
 class EphemeralForTestRecoveryUnit : public RecoveryUnit {
 public:
-    EphemeralForTestRecoveryUnit(stdx::function<void()> cb = nullptr)
+    EphemeralForTestRecoveryUnit(std::function<void()> cb = nullptr)
         : _waitUntilDurableCallback(cb) {}
 
     void beginUnitOfWork(OperationContext* opCtx) final{};
@@ -56,21 +52,21 @@ public:
         return true;
     }
 
-    virtual void abandonSnapshot() {}
+    void abandonSnapshot() override {}
 
     Status setReadFromMajorityCommittedSnapshot() final;
 
-    virtual void registerChange(Change* change) {
-        _changes.push_back(ChangePtr(change));
+    void registerChange(std::unique_ptr<Change> change) override {
+        _changes.push_back(std::move(change));
     }
 
-    virtual void* writingPtr(void* data, size_t len) {
+    void* writingPtr(void* data, size_t len) override {
         MONGO_UNREACHABLE;
     }
 
-    virtual void setRollbackWritesDisabled() {}
+    void setRollbackWritesDisabled() override {}
 
-    virtual SnapshotId getSnapshotId() const {
+    SnapshotId getSnapshotId() const override {
         return SnapshotId();
     }
 
@@ -79,7 +75,7 @@ private:
     typedef std::vector<ChangePtr> Changes;
 
     Changes _changes;
-    stdx::function<void()> _waitUntilDurableCallback;
+    std::function<void()> _waitUntilDurableCallback;
 };
 
 }  // namespace mongo

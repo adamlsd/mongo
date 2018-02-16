@@ -636,7 +636,8 @@ void DatabaseImpl::_clearCollectionCache(OperationContext* opCtx,
         return;
 
     // Takes ownership of the collection
-    opCtx->recoveryUnit()->registerChange(new RemoveCollectionChange(this, it->second));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<RemoveCollectionChange>(this, it->second));
 
     it->second->getCursorManager()->invalidateAll(opCtx, collectionGoingAway, reason);
     _collections.erase(it);
@@ -699,7 +700,7 @@ Status DatabaseImpl::renameCollection(OperationContext* opCtx,
     }
 
     Status s = _dbEntry->renameCollection(opCtx, fromNS, toNS, stayTemp);
-    opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, toNS));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<AddCollectionChange>(opCtx, this, toNS));
     _collections[toNS] = _getOrCreateCollectionInstance(opCtx, toNSS);
 
     return s;
@@ -812,7 +813,7 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     massertStatusOK(
         _dbEntry->createCollection(opCtx, ns, optionsWithUUID, true /*allocateDefaultSpace*/));
 
-    opCtx->recoveryUnit()->registerChange(new AddCollectionChange(opCtx, this, ns));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<AddCollectionChange>(opCtx, this, ns));
     Collection* collection = _getOrCreateCollectionInstance(opCtx, nss);
     invariant(collection);
     _collections[ns] = collection;

@@ -1,5 +1,3 @@
-// wiredtiger_record_store.h
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -488,4 +486,4 @@ MONGO_FP_FORWARD_DECLARE(WTWriteConflictExceptionForReads);
 // will not be considered durable until deactivated. It is unspecified whether writes that commit
 // before activation will become visible while active.
 MONGO_FP_FORWARD_DECLARE(WTPausePrimaryOplogDurabilityLoop);
-}
+}  // namespace mongo

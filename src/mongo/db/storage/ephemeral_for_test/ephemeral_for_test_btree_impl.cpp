@@ -1,5 +1,3 @@
-// ephemeral_for_test_btree_impl.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -41,11 +39,6 @@
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
-
-using std::shared_ptr;
-using std::string;
-using std::vector;
-
 namespace {
 
 const int TempKeyMaxSize = 1024;  // this goes away with SERVER-3372
@@ -154,7 +147,7 @@ public:
         invariant(!hasFieldNames(key));
 
         if (key.objsize() >= TempKeyMaxSize) {
-            string msg = mongoutils::str::stream()
+            std::string msg = mongoutils::str::stream()
                 << "EphemeralForTestBtree::insert: key too large to index, failing " << ' '
                 << key.objsize() << ' ' << key;
             return Status(ErrorCodes::KeyTooLong, msg);
@@ -167,7 +160,8 @@ public:
         IndexKeyEntry entry(key.getOwned(), loc);
         if (_data->insert(entry).second) {
             _currentKeySize += key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, true));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, true));
         }
         return Status::OK();
     }
@@ -184,7 +178,8 @@ public:
         invariant(numDeleted <= 1);
         if (numDeleted == 1) {
             _currentKeySize -= key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, false));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, false));
         }
     }
 

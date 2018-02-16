@@ -46,7 +46,6 @@
 
 namespace mongo {
 
-using std::unique_ptr;
 using std::dec;
 using std::endl;
 using std::hex;
@@ -118,7 +117,7 @@ public:
 
 template <class BtreeLayout>
 Status BtreeLogic<BtreeLayout>::Builder::addKey(const BSONObj& keyObj, const DiskLoc& loc) {
-    unique_ptr<KeyDataOwnedType> key(new KeyDataOwnedType(keyObj));
+    auto key = std::make_unique<KeyDataOwnedType>(keyObj);
 
     if (key->dataSize() > BtreeLayout::KeyMax) {
         string msg = str::stream() << "Btree::insert: key too large to index, failing "
@@ -146,7 +145,8 @@ Status BtreeLogic<BtreeLayout>::Builder::addKey(const BSONObj& keyObj, const Dis
     BucketType* rightLeaf = _getModifiableBucket(_rightLeafLoc);
     if (!_logic->pushBack(rightLeaf, loc, *key, DiskLoc())) {
         // bucket was full, so split and try with the new node.
-        _opCtx->recoveryUnit()->registerChange(new SetRightLeafLocChange(this, _rightLeafLoc));
+        _opCtx->recoveryUnit()->registerChange(
+            std::make_unique<SetRightLeafLocChange>(this, _rightLeafLoc));
         _rightLeafLoc = newBucket(rightLeaf, _rightLeafLoc);
         rightLeaf = _getModifiableBucket(_rightLeafLoc);
         invariant(_logic->pushBack(rightLeaf, loc, *key, DiskLoc()));

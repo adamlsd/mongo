@@ -1,5 +1,3 @@
-// wiredtiger_recovery_unit.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -149,9 +147,9 @@ bool WiredTigerRecoveryUnit::waitUntilDurable() {
     return true;
 }
 
-void WiredTigerRecoveryUnit::registerChange(Change* change) {
+void WiredTigerRecoveryUnit::registerChange(std::unique_ptr<Change> change) {
     invariant(_inUnitOfWork);
-    _changes.push_back(std::unique_ptr<Change>{change});
+    _changes.push_back(std::move(change));
 }
 
 void WiredTigerRecoveryUnit::assertInActiveTxn() const {
@@ -369,4 +367,4 @@ WiredTigerCursor::~WiredTigerCursor() {
 void WiredTigerCursor::reset() {
     invariantWTOK(_cursor->reset(_cursor));
 }
-}
+}  // namespace mongo

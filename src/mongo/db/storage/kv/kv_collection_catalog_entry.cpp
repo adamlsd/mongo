@@ -1,5 +1,3 @@
-// kv_collection_catalog_entry.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -39,9 +37,6 @@
 #include "mongo/db/storage/kv/kv_engine.h"
 
 namespace mongo {
-
-using std::string;
-
 namespace {
 
 bool indexTypeSupportsPathLevelMultikeyTracking(StringData accessMethod) {
@@ -167,13 +162,13 @@ Status KVCollectionCatalogEntry::removeIndex(OperationContext* opCtx, StringData
     if (md.findIndexOffset(indexName) < 0)
         return Status::OK();  // never had the index so nothing to do.
 
-    const string ident = _catalog->getIndexIdent(opCtx, ns().ns(), indexName);
+    const std::string ident = _catalog->getIndexIdent(opCtx, ns().ns(), indexName);
 
     md.eraseIndex(indexName);
     _catalog->putMetaData(opCtx, ns().toString(), md);
 
     // Lazily remove to isolate underlying engine from rollback.
-    opCtx->recoveryUnit()->registerChange(new RemoveIndexChange(opCtx, this, ident));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<RemoveIndexChange>(opCtx, this, ident));
     return Status::OK();
 }
 
@@ -203,11 +198,11 @@ Status KVCollectionCatalogEntry::prepareForIndexBuild(OperationContext* opCtx,
     md.indexes.push_back(imd);
     _catalog->putMetaData(opCtx, ns().toString(), md);
 
-    string ident = _catalog->getIndexIdent(opCtx, ns().ns(), spec->indexName());
+    std::string ident = _catalog->getIndexIdent(opCtx, ns().ns(), spec->indexName());
 
     const Status status = _engine->createGroupedSortedDataInterface(opCtx, ident, spec, prefix);
     if (status.isOK()) {
-        opCtx->recoveryUnit()->registerChange(new AddIndexChange(opCtx, this, ident));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<AddIndexChange>(opCtx, this, ident));
     }
 
     return status;
@@ -305,4 +300,4 @@ BSONCollectionCatalogEntry::MetaData KVCollectionCatalogEntry::_getMetaData(
     OperationContext* opCtx) const {
     return _catalog->getMetaData(opCtx, ns().toString());
 }
-}
+}  // namespace mongo

@@ -42,13 +42,9 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
-
-using std::string;
-using std::vector;
-
 namespace {
 const std::string catalogInfo = "_mdb_catalog";
-}
+}  // namespace
 
 class KVStorageEngine::RemoveDBChange : public RecoveryUnit::Change {
 public:
@@ -122,7 +118,7 @@ void KVStorageEngine::loadCatalog(OperationContext* opCtx) {
     for (size_t i = 0; i < collections.size(); i++) {
         std::string coll = collections[i];
         NamespaceString nss(coll);
-        string dbName = nss.db().toString();
+        std::string dbName = nss.db().toString();
 
         // No rollback since this is only for committed dbs.
         KVDatabaseCatalogEntryBase*& db = _dbs[dbName];
@@ -460,7 +456,8 @@ Status KVStorageEngine::_dropCollectionsWithTimestamp(OperationContext* opCtx,
 
     {
         stdx::lock_guard<stdx::mutex> lk(_dbsLock);
-        opCtx->recoveryUnit()->registerChange(new RemoveDBChange(this, dbce->name(), dbce));
+        opCtx->recoveryUnit()->registerChange(
+            std::make_unique<RemoveDBChange>(this, dbce->name(), dbce));
         _dbs.erase(dbce->name());
     }
 

@@ -1,5 +1,3 @@
-// heap_record_store_btree.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -189,22 +187,21 @@ public:
     void commitUnitOfWork() final;
     void abortUnitOfWork() final;
 
-    virtual bool waitUntilDurable() {
+    bool waitUntilDurable() override {
         return true;
     }
 
-    virtual void abandonSnapshot() {}
+    void abandonSnapshot() override {}
 
-    virtual void registerChange(Change* change) {
+    void registerChange(std::unique_ptr<Change> change) override {
         change->commit();
-        delete change;
     }
 
-    virtual void* writingPtr(void* data, size_t len);
+    void* writingPtr(void* data, size_t len) override;
 
-    virtual void setRollbackWritesDisabled() {}
+    void setRollbackWritesDisabled() override {}
 
-    virtual SnapshotId getSnapshotId() const {
+    SnapshotId getSnapshotId() const override {
         return SnapshotId();
     }
 

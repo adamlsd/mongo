@@ -194,7 +194,7 @@ public:
 };
 
 void Scope::storedFuncMod(OperationContext* opCtx) {
-    opCtx->recoveryUnit()->registerChange(new StoredFuncModLogOpHandler());
+    opCtx->recoveryUnit()->registerChange(std::make_unique<StoredFuncModLogOpHandler>());
 }
 
 void Scope::validateObjectIdString(const string& str) {
@@ -549,8 +549,7 @@ unique_ptr<Scope> ScriptEngine::getPooledScope(OperationContext* opCtx,
         s->registerOperation(opCtx);
     }
 
-    unique_ptr<Scope> p;
-    p.reset(new PooledScope(fullPoolName, s));
+    auto p = std::make_unique<PooledScope>(fullPoolName, s);
     p->setLocalDB(db);
     p->loadStored(opCtx, true);
     return p;

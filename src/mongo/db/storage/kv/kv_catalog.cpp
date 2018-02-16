@@ -1,5 +1,3 @@
-// kv_catalog.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -131,7 +129,6 @@ std::string escapeDbName(StringData dbname) {
 
 }  // namespace
 
-using std::unique_ptr;
 using std::string;
 
 class KVCatalog::AddIdentChange : public RecoveryUnit::Change {
@@ -405,7 +402,7 @@ Status KVCatalog::newCollection(OperationContext* opCtx,
         return Status(ErrorCodes::NamespaceExists, "collection already exists");
     }
 
-    opCtx->recoveryUnit()->registerChange(new AddIdentChange(this, ns));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<AddIdentChange>(this, ns));
 
     BSONObj obj;
     {
@@ -551,8 +548,9 @@ Status KVCatalog::renameCollection(OperationContext* opCtx,
     const NSToIdentMap::iterator fromIt = _idents.find(fromNS.toString());
     invariant(fromIt != _idents.end());
 
-    opCtx->recoveryUnit()->registerChange(new RemoveIdentChange(this, fromNS, fromIt->second));
-    opCtx->recoveryUnit()->registerChange(new AddIdentChange(this, toNS));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<RemoveIdentChange>(this, fromNS, fromIt->second));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<AddIdentChange>(this, toNS));
 
     _idents.erase(fromIt);
     _idents[toNS.toString()] = Entry(old["ident"].String(), loc);
@@ -568,7 +566,8 @@ Status KVCatalog::dropCollection(OperationContext* opCtx, StringData ns) {
         return Status(ErrorCodes::NamespaceNotFound, "collection not found");
     }
 
-    opCtx->recoveryUnit()->registerChange(new RemoveIdentChange(this, ns, it->second));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<RemoveIdentChange>(this, ns, it->second));
 
     LOG(1) << "deleting metadata for " << ns << " @ " << it->second.storedLoc;
     _rs->deleteRecord(opCtx, it->second.storedLoc);
@@ -626,4 +625,4 @@ bool KVCatalog::isUserDataIdent(StringData ident) const {
         ident.find("collection-") != std::string::npos ||
         ident.find("collection/") != std::string::npos;
 }
-}
+}  // namespace mongo

@@ -435,9 +435,9 @@ public:
     public:
         MockRecoveryUnit(size_t* registeredChanges) : _registeredChanges(registeredChanges) {}
 
-        virtual void registerChange(Change* change) final {
+        void registerChange(std::unique_ptr<Change> change) final {
             // RecoveryUnitNoop takes ownership of the Change
-            RecoveryUnitNoop::registerChange(change);
+            RecoveryUnitNoop::registerChange(std::move(change));
             ++(*_registeredChanges);
         }
 
@@ -445,7 +445,7 @@ public:
         size_t* _registeredChanges;
     };
 
-    virtual void setUp() override {
+    void setUp() override {
         opCtx.setRecoveryUnit(recoveryUnit, OperationContext::kNotInUnitOfWork);
         AuthorizationManagerTest::setUp();
     }

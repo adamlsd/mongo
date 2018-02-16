@@ -67,7 +67,7 @@ public:
 
     bool waitUntilDurable() override;
 
-    void registerChange(Change* change) override;
+    void registerChange(std::unique_ptr<Change> change) override;
 
     void abandonSnapshot() override;
     void prepareSnapshot() override;
@@ -201,4 +201,4 @@ private:
     WiredTigerSession* _session;
     WT_CURSOR* _cursor;  // owned, but pulled
 };
-}
+}  // namespace mongo

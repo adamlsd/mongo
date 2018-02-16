@@ -50,18 +50,18 @@ public:
     void commitUnitOfWork() final;
     void abortUnitOfWork() final;
 
-    virtual bool waitUntilDurable();
+    bool waitUntilDurable() override;
 
-    virtual void abandonSnapshot();
+    void abandonSnapshot() override;
 
     //  The recovery unit takes ownership of change.
-    virtual void registerChange(Change* change);
+    void registerChange(std::unique_ptr<Change> change) override;
 
-    virtual void* writingPtr(void* addr, size_t len);
+    void* writingPtr(void* addr, size_t len) override;
 
-    virtual void setRollbackWritesDisabled();
+    void setRollbackWritesDisabled() override;
 
-    virtual SnapshotId getSnapshotId() const {
+    SnapshotId getSnapshotId() const override {
         return SnapshotId();
     }
 
@@ -99,7 +99,7 @@ private:
     void resetChanges();
 
     // Changes are ordered from oldest to newest.
-    typedef OwnedPointerVector<Change> Changes;
+    typedef std::vector<std::unique_ptr<Change>> Changes;
     Changes _changes;
 
 

@@ -73,7 +73,7 @@ namespace {
 MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
     IndexCatalog::registerFactory([](
         IndexCatalog* const this_, Collection* const collection, const int maxNumIndexesAllowed) {
-        return stdx::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
+        return std::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
     });
     return Status::OK();
 }
@@ -82,7 +82,7 @@ MONGO_INITIALIZER(InitializeIndexCatalogIndexIteratorFactory)(InitializerContext
     IndexCatalog::IndexIterator::registerFactory([](OperationContext* const opCtx,
                                                     const IndexCatalog* const cat,
                                                     const bool includeUnfinishedIndexes) {
-        return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
+        return std::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
             opCtx, cat, includeUnfinishedIndexes);
     });
     return Status::OK();
@@ -145,7 +145,7 @@ Status IndexCatalogImpl::init(OperationContext* opCtx) {
         }
 
         BSONObj keyPattern = spec.getObjectField("key");
-        auto descriptor = stdx::make_unique<IndexDescriptor>(
+        auto descriptor = std::make_unique<IndexDescriptor>(
             _collection, _getAccessMethodName(opCtx, keyPattern), spec);
         const bool initFromDisk = true;
         IndexCatalogEntry* entry =
@@ -175,11 +175,11 @@ IndexCatalogEntry* IndexCatalogImpl::_setupInMemoryStructures(
     }
 
     auto* const descriptorPtr = descriptor.get();
-    auto entry = stdx::make_unique<IndexCatalogEntry>(opCtx,
-                                                      _collection->ns().ns(),
-                                                      _collection->getCatalogEntry(),
-                                                      std::move(descriptor),
-                                                      _collection->infoCache());
+    auto entry = std::make_unique<IndexCatalogEntry>(opCtx,
+                                                     _collection->ns().ns(),
+                                                     _collection->getCatalogEntry(),
+                                                     std::move(descriptor),
+                                                     _collection->infoCache());
     std::unique_ptr<IndexAccessMethod> accessMethod(
         _collection->dbce()->getIndex(opCtx, _collection->getCatalogEntry(), entry.get()));
     entry->init(std::move(accessMethod));
@@ -397,7 +397,7 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
 
     // need this first for names, etc...
     BSONObj keyPattern = _spec.getObjectField("key");
-    auto descriptor = stdx::make_unique<IndexDescriptor>(
+    auto descriptor = std::make_unique<IndexDescriptor>(
         _collection, IndexNames::findPluginName(keyPattern), _spec);
 
     _indexName = descriptor->indexName();
@@ -1025,7 +1025,7 @@ Status IndexCatalogImpl::_dropIndex(OperationContext* opCtx, IndexCatalogEntry* 
 
     invariant(_entries.release(entry->descriptor()) == entry);
     opCtx->recoveryUnit()->registerChange(
-        new IndexRemoveChange(opCtx, _collection, &_entries, entry));
+        std::make_unique<IndexRemoveChange>(opCtx, _collection, &_entries, entry));
     _collection->infoCache()->droppedIndex(opCtx, indexName);
     entry = nullptr;
     _deleteIndexFromDisk(opCtx, indexName, indexNamespace);
@@ -1298,14 +1298,14 @@ const IndexDescriptor* IndexCatalogImpl::refreshEntry(OperationContext* opCtx,
     // invalid and should not be dereferenced.
     IndexCatalogEntry* oldEntry = _entries.release(oldDesc);
     opCtx->recoveryUnit()->registerChange(
-        new IndexRemoveChange(opCtx, _collection, &_entries, oldEntry));
+        std::make_unique<IndexRemoveChange>(opCtx, _collection, &_entries, oldEntry));
 
     // Ask the CollectionCatalogEntry for the new index spec.
     BSONObj spec = _collection->getCatalogEntry()->getIndexSpec(opCtx, indexName).getOwned();
     BSONObj keyPattern = spec.getObjectField("key");
 
     // Re-register this index in the index catalog with the new spec.
-    auto newDesc = stdx::make_unique<IndexDescriptor>(
+    auto newDesc = std::make_unique<IndexDescriptor>(
         _collection, _getAccessMethodName(opCtx, keyPattern), spec);
     const bool initFromDisk = false;
     const IndexCatalogEntry* newEntry =

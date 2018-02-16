@@ -354,7 +354,8 @@ void CollectionShardingState::onInsertOp(OperationContext* opCtx,
                         uassertStatusOK(ShardIdentityType::fromBSON(insertedDoc));
                     uassertStatusOK(shardIdentityDoc.validate());
                     opCtx->recoveryUnit()->registerChange(
-                        new ShardIdentityLogOpHandler(opCtx, std::move(shardIdentityDoc)));
+                        std::make_unique<ShardIdentityLogOpHandler>(opCtx,
+                                                                    std::move(shardIdentityDoc)));
                 }
             }
         }
@@ -509,7 +510,7 @@ void CollectionShardingState::_onConfigCollectionsUpdateOp(OperationContext* opC
 
         if (setField.hasField(ShardCollectionType::lastRefreshedCollectionVersion.name())) {
             opCtx->recoveryUnit()->registerChange(
-                new CollectionVersionLogOpHandler(opCtx, updatedNss));
+                std::make_unique<CollectionVersionLogOpHandler>(opCtx, updatedNss));
         }
 
         if (setField.hasField(ShardCollectionType::enterCriticalSectionCounter.name())) {
@@ -540,7 +541,8 @@ void CollectionShardingState::_onConfigDeleteInvalidateCachedMetadataAndNotify(
     // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit().
     AutoGetCollection autoColl(opCtx, deletedNss, MODE_IX);
 
-    opCtx->recoveryUnit()->registerChange(new CollectionVersionLogOpHandler(opCtx, deletedNss));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<CollectionVersionLogOpHandler>(opCtx, deletedNss));
 }
 
 bool CollectionShardingState::_checkShardVersionOk(OperationContext* opCtx,

@@ -1,5 +1,3 @@
-// ephemeral_for_test_engine.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -113,4 +111,4 @@ std::vector<std::string> EphemeralForTestEngine::getAllIdents(OperationContext* 
     }
     return all;
 }
-}
+}  // namespace mongo

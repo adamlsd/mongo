@@ -720,7 +720,7 @@ Status PlanCache::add(const CanonicalQuery& query,
                       "candidate ordering entries in decision must match solutions");
     }
 
-    PlanCacheEntry* entry = new PlanCacheEntry(solns, why);
+    auto entry = std::make_unique<PlanCacheEntry>(solns, why);
     const QueryRequest& qr = query.getQueryRequest();
     entry->query = qr.getFilter().getOwned();
     entry->sort = qr.getSort().getOwned();
@@ -742,9 +742,9 @@ Status PlanCache::add(const CanonicalQuery& query,
     entry->projection = projBuilder.obj();
 
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
-    std::unique_ptr<PlanCacheEntry> evictedEntry = _cache.add(computeKey(query), entry);
+    std::unique_ptr<PlanCacheEntry> evictedEntry = _cache.add(computeKey(query), std::move(entry));
 
-    if (NULL != evictedEntry.get()) {
+    if (evictedEntry) {
         LOG(1) << _ns << ": plan cache maximum size exceeded - "
                << "removed least recently used entry " << redact(evictedEntry->toString());
     }
@@ -757,11 +757,11 @@ Status PlanCache::get(const CanonicalQuery& query, CachedSolution** crOut) const
     verify(crOut);
 
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
-    PlanCacheEntry* entry;
-    Status cacheStatus = _cache.get(key, &entry);
+    auto cacheStatus = _cache.get(key);
     if (!cacheStatus.isOK()) {
-        return cacheStatus;
+        return cacheStatus.getStatus();
     }
+    PlanCacheEntry* const entry = cacheStatus.getValue();
     invariant(entry);
 
     *crOut = new CachedSolution(key, *entry);
@@ -777,11 +777,11 @@ Status PlanCache::feedback(const CanonicalQuery& cq, PlanCacheEntryFeedback* fee
     PlanCacheKey ck = computeKey(cq);
 
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
-    PlanCacheEntry* entry;
-    Status cacheStatus = _cache.get(ck, &entry);
+    auto cacheStatus = _cache.get(ck);
     if (!cacheStatus.isOK()) {
-        return cacheStatus;
+        return cacheStatus.getStatus();
     }
+    PlanCacheEntry* const entry = cacheStatus.getValue();
     invariant(entry);
 
     // We store up to a constant number of feedback entries.
@@ -815,11 +815,11 @@ Status PlanCache::getEntry(const CanonicalQuery& query, PlanCacheEntry** entryOu
     verify(entryOut);
 
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
-    PlanCacheEntry* entry;
-    Status cacheStatus = _cache.get(key, &entry);
+    auto cacheStatus = _cache.get(key);
     if (!cacheStatus.isOK()) {
-        return cacheStatus;
+        return cacheStatus.getStatus();
     }
+    PlanCacheEntry* const entry = cacheStatus.getValue();
     invariant(entry);
 
     *entryOut = entry->clone();
@@ -830,9 +830,8 @@ Status PlanCache::getEntry(const CanonicalQuery& query, PlanCacheEntry** entryOu
 std::vector<PlanCacheEntry*> PlanCache::getAllEntries() const {
     stdx::lock_guard<stdx::mutex> cacheLock(_cacheMutex);
     std::vector<PlanCacheEntry*> entries;
-    typedef std::list<std::pair<PlanCacheKey, PlanCacheEntry*>>::const_iterator ConstIterator;
-    for (ConstIterator i = _cache.begin(); i != _cache.end(); i++) {
-        PlanCacheEntry* entry = i->second;
+    for (auto& cacheEntry : _cache) {
+        PlanCacheEntry* entry = cacheEntry.second.get();
         entries.push_back(entry->clone());
     }
 

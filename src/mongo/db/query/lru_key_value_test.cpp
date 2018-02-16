@@ -40,17 +40,16 @@ namespace {
 //
 
 void assertInKVStore(LRUKeyValue<int, int>& cache, int key, int value) {
-    int* cachedValue = NULL;
     ASSERT_TRUE(cache.hasKey(key));
-    Status s = cache.get(key, &cachedValue);
+    auto s = cache.get(key);
     ASSERT_OK(s);
+    int* const cachedValue = s.getValue();
     ASSERT_EQUALS(*cachedValue, value);
 }
 
 void assertNotInKVStore(LRUKeyValue<int, int>& cache, int key) {
-    int* cachedValue = NULL;
     ASSERT_FALSE(cache.hasKey(key));
-    Status s = cache.get(key, &cachedValue);
+    auto s = cache.get(key);
     ASSERT_NOT_OK(s);
 }
 
@@ -59,7 +58,7 @@ void assertNotInKVStore(LRUKeyValue<int, int>& cache, int key) {
  */
 TEST(LRUKeyValueTest, BasicAddGet) {
     LRUKeyValue<int, int> cache(100);
-    cache.add(1, new int(2));
+    cache.add(1, std::make_unique<int>(2));
     assertInKVStore(cache, 1, 2);
 }
 
@@ -69,7 +68,7 @@ TEST(LRUKeyValueTest, BasicAddGet) {
  */
 TEST(LRUKeyValueTest, SizeZeroCache) {
     LRUKeyValue<int, int> cache(0);
-    cache.add(1, new int(2));
+    cache.add(1, std::make_unique<int>(2));
     assertNotInKVStore(cache, 1);
 }
 
@@ -79,11 +78,11 @@ TEST(LRUKeyValueTest, SizeZeroCache) {
  */
 TEST(LRUKeyValueTest, SizeOneCache) {
     LRUKeyValue<int, int> cache(1);
-    cache.add(0, new int(0));
+    cache.add(0, std::make_unique<int>(0));
     assertInKVStore(cache, 0, 0);
 
     // Second entry should immediately evict the first.
-    cache.add(1, new int(1));
+    cache.add(1, std::make_unique<int>(1));
     assertNotInKVStore(cache, 0);
     assertInKVStore(cache, 1, 1);
 }
@@ -97,7 +96,7 @@ TEST(LRUKeyValueTest, EvictionTest) {
     int maxSize = 10;
     LRUKeyValue<int, int> cache(maxSize);
     for (int i = 0; i < maxSize; ++i) {
-        std::unique_ptr<int> evicted = cache.add(i, new int(i));
+        std::unique_ptr<int> evicted = cache.add(i, std::make_unique<int>(i));
         ASSERT(NULL == evicted.get());
     }
     ASSERT_EQUALS(cache.size(), (size_t)maxSize);
@@ -112,7 +111,7 @@ TEST(LRUKeyValueTest, EvictionTest) {
     }
 
     // Adding another entry causes an eviction.
-    std::unique_ptr<int> evicted = cache.add(maxSize + 1, new int(maxSize + 1));
+    std::unique_ptr<int> evicted = cache.add(maxSize + 1, std::make_unique<int>(maxSize + 1));
     ASSERT_EQUALS(cache.size(), (size_t)maxSize);
     ASSERT(NULL != evicted.get());
     ASSERT_EQUALS(*evicted, evictKey);
@@ -137,7 +136,7 @@ TEST(LRUKeyValueTest, PromotionTest) {
     int maxSize = 10;
     LRUKeyValue<int, int> cache(maxSize);
     for (int i = 0; i < maxSize; ++i) {
-        std::unique_ptr<int> evicted = cache.add(i, new int(i));
+        std::unique_ptr<int> evicted = cache.add(i, std::make_unique<int>(i));
         ASSERT(NULL == evicted.get());
     }
     ASSERT_EQUALS(cache.size(), (size_t)maxSize);
@@ -148,7 +147,7 @@ TEST(LRUKeyValueTest, PromotionTest) {
 
     // Evict all but one of the original entries.
     for (int i = maxSize; i < (maxSize + maxSize - 1); ++i) {
-        std::unique_ptr<int> evicted = cache.add(i, new int(i));
+        std::unique_ptr<int> evicted = cache.add(i, std::make_unique<int>(i));
         ASSERT(NULL != evicted.get());
     }
     ASSERT_EQUALS(cache.size(), (size_t)maxSize);
@@ -169,9 +168,9 @@ TEST(LRUKeyValueTest, PromotionTest) {
  */
 TEST(LRUKeyValueTest, ReplaceKeyTest) {
     LRUKeyValue<int, int> cache(10);
-    cache.add(4, new int(4));
+    cache.add(4, std::make_unique<int>(4));
     assertInKVStore(cache, 4, 4);
-    cache.add(4, new int(5));
+    cache.add(4, std::make_unique<int>(5));
     assertInKVStore(cache, 4, 5);
 }
 
@@ -180,11 +179,10 @@ TEST(LRUKeyValueTest, ReplaceKeyTest) {
  */
 TEST(LRUKeyValueTest, IterationTest) {
     LRUKeyValue<int, int> cache(2);
-    cache.add(1, new int(1));
-    cache.add(2, new int(2));
+    cache.add(1, std::make_unique<int>(1));
+    cache.add(2, std::make_unique<int>(2));
 
-    typedef std::list<std::pair<int, int*>>::const_iterator CacheIterator;
-    CacheIterator i = cache.begin();
+    auto i = cache.begin();
     ASSERT_EQUALS(i->first, 2);
     ASSERT_EQUALS(*i->second, 2);
     ++i;

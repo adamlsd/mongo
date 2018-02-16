@@ -1,5 +1,3 @@
-// matchable.h
-
 /**
  *    Copyright (C) 2013 10gen Inc.
  *
@@ -149,4 +147,4 @@ private:
     mutable BSONElementIterator _iterator;
     mutable bool _iteratorUsed;
 };
-}
+}  // namespace mongo

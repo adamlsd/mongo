@@ -28,10 +28,12 @@
 
 #pragma once
 
+#include <cstddef>
 #include <list>
 #include <memory>
 
 #include "mongo/base/status.h"
+#include "mongo/base/status_with.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 
@@ -54,18 +56,17 @@ namespace mongo {
  * pointers are owned by the kv-store.
  *
  * TODO: We could move this into the util/ directory and do any cleanup necessary to make it
- * fully general.
+ * fully general.  (Check this against `util/lru_cache.h` for functionality and see if this file can
+ * be removed.)
  */
 template <class K, class V>
 class LRUKeyValue {
 public:
-    LRUKeyValue(size_t maxSize) : _maxSize(maxSize), _currentSize(0){};
+    explicit LRUKeyValue(size_t maxSize) : _maxSize(maxSize), _currentSize(0){};
 
-    ~LRUKeyValue() {
-        clear();
-    }
+    ~LRUKeyValue() = default;
 
-    typedef std::pair<K, V*> KVListEntry;
+    typedef std::pair<K, std::unique_ptr<V>> KVListEntry;
 
     typedef std::list<KVListEntry> KVList;
     typedef typename KVList::iterator KVListIt;
@@ -89,25 +90,24 @@ public:
      * If an entry is evicted, it will be returned in
      * an unique_ptr for the caller to use before disposing.
      */
-    std::unique_ptr<V> add(const K& key, V* entry) {
+    std::unique_ptr<V> add(const K& key, std::unique_ptr<V> entry) {
         // If the key already exists, delete it first.
         KVMapConstIt i = _kvMap.find(key);
         if (i != _kvMap.end()) {
             KVListIt found = i->second;
-            delete found->second;
             _kvMap.erase(i);
             _kvList.erase(found);
             _currentSize--;
         }
 
-        _kvList.push_front(std::make_pair(key, entry));
+        _kvList.push_front(std::make_pair(key, std::move(entry)));
         _kvMap[key] = _kvList.begin();
         _currentSize++;
 
         // If the store has grown beyond its allowed size,
         // evict the least recently used entry.
         if (_currentSize > _maxSize) {
-            V* evictedEntry = _kvList.back().second;
+            auto evictedEntry = std::move(_kvList.back().second);
             invariant(evictedEntry);
 
             _kvMap.erase(_kvList.back().first);
@@ -118,9 +118,9 @@ public:
             // Pass ownership of evicted entry to caller.
             // If caller chooses to ignore this unique_ptr,
             // the evicted entry will be deleted automatically.
-            return std::unique_ptr<V>(evictedEntry);
+            return evictedEntry;
         }
-        return std::unique_ptr<V>();
+        return {};
     }
 
     /**
@@ -134,23 +134,22 @@ public:
      * As a side effect, the retrieved entry is promoted
      * to the most recently used.
      */
-    Status get(const K& key, V** entryOut) const {
+    StatusWith<V*> get(const K& key) const {
         KVMapConstIt i = _kvMap.find(key);
         if (i == _kvMap.end()) {
             return Status(ErrorCodes::NoSuchKey, "no such key in LRU key-value store");
         }
         KVListIt found = i->second;
-        V* foundEntry = found->second;
+        std::unique_ptr<V> foundEntry = std::move(found->second);
 
         // Promote the kv-store entry to the front of the list.
         // It is now the most recently used.
         _kvMap.erase(i);
         _kvList.erase(found);
-        _kvList.push_front(std::make_pair(key, foundEntry));
+        _kvList.push_front(std::make_pair(key, std::move(foundEntry)));
         _kvMap[key] = _kvList.begin();
 
-        *entryOut = foundEntry;
-        return Status::OK();
+        return _kvList.front().second.get();
     }
 
     /**
@@ -162,7 +161,6 @@ public:
             return Status(ErrorCodes::NoSuchKey, "no such key in LRU key-value store");
         }
         KVListIt found = i->second;
-        delete found->second;
         _kvMap.erase(i);
         _kvList.erase(found);
         _currentSize--;
@@ -173,9 +171,6 @@ public:
      * Deletes all entries in the kv-store.
      */
     void clear() {
-        for (KVListIt i = _kvList.begin(); i != _kvList.end(); i++) {
-            delete i->second;
-        }
         _kvList.clear();
         _kvMap.clear();
         _currentSize = 0;

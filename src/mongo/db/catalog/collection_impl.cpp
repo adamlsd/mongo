@@ -86,7 +86,7 @@ MONGO_INITIALIZER(InitializeCollectionFactory)(InitializerContext* const) {
            CollectionCatalogEntry* const details,
            RecordStore* const recordStore,
            DatabaseCatalogEntry* const dbce) -> std::unique_ptr<Collection::Impl> {
-            return stdx::make_unique<CollectionImpl>(
+            return std::make_unique<CollectionImpl>(
                 _this, opCtx, fullNS, uuid, details, recordStore, dbce);
         });
     return Status::OK();
@@ -166,7 +166,7 @@ CollectionImpl::CollectionImpl(Collection* _this_init,
       _validationLevel(uassertStatusOK(
           parseValidationLevel(_details->getCollectionOptions(opCtx).validationLevel))),
       _cursorManager(_ns),
-      _cappedNotifier(_recordStore->isCapped() ? stdx::make_unique<CappedInsertNotifier>()
+      _cappedNotifier(_recordStore->isCapped() ? std::make_unique<CappedInsertNotifier>()
                                                : nullptr),
       _this(_this_init) {}
 
@@ -632,7 +632,7 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
     // At the end of this step, we will have a map of UpdateTickets, one per index, which
     // represent the index updates needed to be done, based on the changes between oldDoc and
     // newDoc.
-    OwnedPointerMap<IndexDescriptor*, UpdateTicket> updateTickets;
+    std::map<IndexDescriptor*, std::unique_ptr<UpdateTicket>> updateTickets;
     if (indexesAffected) {
         IndexCatalog::IndexIterator ii = _indexCatalog.getIndexIterator(opCtx, true);
         while (ii.more()) {
@@ -642,14 +642,15 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
 
             InsertDeleteOptions options;
             IndexCatalog::prepareInsertDeleteOptions(opCtx, descriptor, &options);
-            UpdateTicket* updateTicket = new UpdateTicket();
-            updateTickets.mutableMap()[descriptor] = updateTicket;
+            auto updateTicket = std::make_unique<UpdateTicket>();
+            auto ticketPtr = updateTicket.get();
+            updateTickets[descriptor] = std::move(updateTicket);
             uassertStatusOK(iam->validateUpdate(opCtx,
                                                 oldDoc.value(),
                                                 newDoc,
                                                 oldLocation,
                                                 options,
-                                                updateTicket,
+                                                ticketPtr,
                                                 entry->getFilterExpression()));
         }
     }
@@ -674,8 +675,8 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
 
             int64_t keysInserted;
             int64_t keysDeleted;
-            uassertStatusOK(iam->update(
-                opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted));
+            uassertStatusOK(
+                iam->update(opCtx, *updateTickets[descriptor], &keysInserted, &keysDeleted));
             if (opDebug) {
                 opDebug->keysInserted += keysInserted;
                 opDebug->keysDeleted += keysDeleted;
@@ -1175,7 +1176,7 @@ void _reportValidationResults(OperationContext* opCtx,
 
     std::unique_ptr<BSONObjBuilder> indexDetails;
     if (level == kValidateFull) {
-        indexDetails = stdx::make_unique<BSONObjBuilder>();
+        indexDetails = std::make_unique<BSONObjBuilder>();
     }
 
     // Report index validation results.

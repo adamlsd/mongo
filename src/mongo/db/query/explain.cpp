@@ -30,7 +30,9 @@
 
 #include "mongo/db/query/explain.h"
 
-#include "mongo/base/owned_pointer_vector.h"
+#include <memory>
+#include <vector>
+
 #include "mongo/bson/util/builder.h"
 #include "mongo/db/exec/cached_plan.h"
 #include "mongo/db/exec/count_scan.h"

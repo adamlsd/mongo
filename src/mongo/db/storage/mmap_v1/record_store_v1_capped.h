@@ -28,7 +28,9 @@
 
 #pragma once
 
-#include "mongo/base/owned_pointer_vector.h"
+#include <memory>
+#include <vector>
+
 #include "mongo/db/storage/capped_callback.h"
 #include "mongo/db/storage/mmap_v1/diskloc.h"
 #include "mongo/db/storage/mmap_v1/extent_manager.h"
@@ -124,4 +126,4 @@ private:
 
     friend class CappedRecordStoreV1Iterator;
 };
-}//namespace mongo
+}  // namespace mongo

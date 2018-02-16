@@ -28,7 +28,9 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/base/owned_pointer_vector.h"
+#include <memory>
+#include <vector>
+
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/mock_ns_targeter.h"
@@ -55,8 +57,8 @@ write_ops::DeleteOpEntry buildDelete(const BSONObj& query, bool multi) {
 }
 
 struct EndpointComp {
-    bool operator()(const std::unique_ptr<TargetedWrite> &writeA,
-                    const std::unique_ptr<TargetedWrite> &writeB) const {
+    bool operator()(const std::unique_ptr<TargetedWrite>& writeA,
+                    const std::unique_ptr<TargetedWrite>& writeB) const {
         return writeA->endpoint.shardName.compare(writeB->endpoint.shardName) < 0;
     }
 };

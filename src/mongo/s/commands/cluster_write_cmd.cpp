@@ -30,8 +30,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include <memory>
+#include <vector>
+
 #include "mongo/base/error_codes.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/write_commands/write_commands_common.h"

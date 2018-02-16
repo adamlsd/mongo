@@ -28,8 +28,9 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/exec/collection_scan.h"
 #include "mongo/db/exec/plan_stage.h"

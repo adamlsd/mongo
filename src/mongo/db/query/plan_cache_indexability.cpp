@@ -30,8 +30,10 @@
 
 #include "mongo/db/query/plan_cache_indexability.h"
 
+#include <memory>
+#include <vector>
+
 #include "mongo/base/init.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/matcher/expression_internal_expr_eq.h"
@@ -40,7 +42,6 @@
 #include "mongo/db/query/collation/collator_interface.h"
 #include "mongo/db/query/index_entry.h"
 #include "mongo/stdx/memory.h"
-#include <memory>
 
 namespace mongo {
 

@@ -1,5 +1,3 @@
-// record_store.h
-
 /**
 *    Copyright (C) 2013 10gen Inc.
 *
@@ -32,7 +30,9 @@
 
 #include <boost/optional.hpp>
 
-#include "mongo/base/owned_pointer_vector.h"
+#include <memory>
+#include <vector>
+
 #include "mongo/bson/mutable/damage_vector.h"
 #include "mongo/db/exec/collection_scan_common.h"
 #include "mongo/db/record_id.h"
@@ -687,4 +687,4 @@ public:
                             const RecordData& recordData,
                             size_t* dataSize) = 0;
 };
-}
+}  // namespace mongo

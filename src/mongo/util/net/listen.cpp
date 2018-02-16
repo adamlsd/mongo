@@ -1,5 +1,3 @@
-// listen.cpp
-
 /*    Copyright 2009 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -37,7 +35,6 @@
 #include <memory>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/config.h"
 #include "mongo/db/server_options.h"
@@ -85,7 +82,6 @@ namespace {
 const auto getListener = ServiceContext::declareDecoration<Listener*>();
 }  // namespace
 
-using std::shared_ptr;
 using std::string;
 using std::vector;
 
@@ -681,4 +677,4 @@ void ListeningSockets::closeAll() {
     }
     delete paths;
 }
-}
+}  // namespace mongo

@@ -32,7 +32,9 @@
 
 #include "mongo/s/chunk_manager.h"
 
-#include "mongo/base/owned_pointer_vector.h"
+#include <memory>
+#include <vector>
+
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/query/collation/collation_index_key.h"
@@ -599,14 +601,13 @@ std::shared_ptr<ChunkManager> ChunkManager::makeUpdated(
         return shared_from_this();
     }
 
-    return std::shared_ptr<ChunkManager>(
-        new ChunkManager(_nss,
-                         _uuid,
-                         KeyPattern(getShardKeyPattern().getKeyPattern()),
-                         CollatorInterface::cloneCollator(getDefaultCollator()),
-                         isUnique(),
-                         std::move(chunkMap),
-                         collectionVersion));
+    return std::make_shared<ChunkManager>(_nss,
+                                          _uuid,
+                                          KeyPattern(getShardKeyPattern().getKeyPattern()),
+                                          CollatorInterface::cloneCollator(getDefaultCollator()),
+                                          isUnique(),
+                                          std::move(chunkMap),
+                                          collectionVersion);
 }
 
 }  // namespace mongo

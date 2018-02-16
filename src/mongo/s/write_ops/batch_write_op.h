@@ -29,11 +29,11 @@
 #pragma once
 
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/rpc/write_concern_error_detail.h"

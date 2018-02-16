@@ -34,8 +34,9 @@
 
 #include <algorithm>
 #include <math.h>
+#include <memory>
+#include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"

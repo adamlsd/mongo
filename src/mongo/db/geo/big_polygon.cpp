@@ -29,19 +29,16 @@
 #include "mongo/db/geo/big_polygon.h"
 
 #include <map>
+#include <memory>
+#include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 
-using std::unique_ptr;
-using std::vector;
-
-
-BigSimplePolygon::BigSimplePolygon() {}
+BigSimplePolygon::BigSimplePolygon() = default;
 
 // Caller should ensure loop is valid.
 BigSimplePolygon::BigSimplePolygon(S2Loop* loop)
@@ -164,7 +161,7 @@ const S2Polygon& BigSimplePolygon::GetPolygonBorder() const {
     if (_borderPoly)
         return *_borderPoly;
 
-    unique_ptr<S2Loop> cloned(_loop->Clone());
+    std::unique_ptr<S2Loop> cloned(_loop->Clone());
 
     // Any loop in polygon should be than a hemisphere (2*Pi).
     cloned->Normalize();
@@ -179,7 +176,7 @@ const S2Polyline& BigSimplePolygon::GetLineBorder() const {
     if (_borderLine)
         return *_borderLine;
 
-    vector<S2Point> points;
+    std::vector<S2Point> points;
     int numVertices = _loop->num_vertices();
     for (int i = 0; i <= numVertices; ++i) {
         // vertex() maps "numVertices" to 0 internally, so we don't have to deal with

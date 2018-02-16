@@ -44,6 +44,7 @@
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/db/update_index_data.h"
 #include "mongo/unittest/unittest.h"
+#include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
 
 namespace mongo {
 namespace {
@@ -475,47 +476,47 @@ TEST_F(CreateFromQuery, ImmutableFieldsOp) {
 
 TEST_F(CreateFromQuery, ShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1}}, b:2}");
-    OwnedPointerVector<FieldRef> immutablePathsVector;
-    immutablePathsVector.push_back(new FieldRef("a"));
-    immutablePathsVector.push_back(new FieldRef("_id"));
+    std::vector<std::unique_ptr<FieldRef>> immutablePathsVector;
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("a"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("_id"));
     FieldRefSet immutablePaths;
-    immutablePaths.fillFrom(immutablePathsVector.vector());
+    immutablePaths.fillFrom(transitional_tools_do_not_use::unspool_vector(immutablePathsVector));
     ASSERT_OK(driverRepl().populateDocumentWithQueryFields(opCtx(), query, immutablePaths, doc()));
     assertSameFields(fromjson("{a:1}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NestedShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1},'b.c':2},d:2}");
-    OwnedPointerVector<FieldRef> immutablePathsVector;
-    immutablePathsVector.push_back(new FieldRef("a"));
-    immutablePathsVector.push_back(new FieldRef("b.c"));
-    immutablePathsVector.push_back(new FieldRef("_id"));
+    std::vector<std::unique_ptr<FieldRef>> immutablePathsVector;
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("a"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("b.c"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("_id"));
     FieldRefSet immutablePaths;
-    immutablePaths.fillFrom(immutablePathsVector.vector());
+    immutablePaths.fillFrom(transitional_tools_do_not_use::unspool_vector(immutablePathsVector));
     ASSERT_OK(driverRepl().populateDocumentWithQueryFields(opCtx(), query, immutablePaths, doc()));
     assertSameFields(fromjson("{a:1,b:{c:2}}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NestedShardKeyOp) {
     BSONObj query = fromjson("{a:{$eq:1},'b.c':2,d:{$all:[3]}},e:2}");
-    OwnedPointerVector<FieldRef> immutablePathsVector;
-    immutablePathsVector.push_back(new FieldRef("a"));
-    immutablePathsVector.push_back(new FieldRef("b.c"));
-    immutablePathsVector.push_back(new FieldRef("_id"));
+    std::vector<std::unique_ptr<FieldRef>> immutablePathsVector;
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("a"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("b.c"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("_id"));
     FieldRefSet immutablePaths;
-    immutablePaths.fillFrom(immutablePathsVector.vector());
+    immutablePaths.fillFrom(transitional_tools_do_not_use::unspool_vector(immutablePathsVector));
     ASSERT_OK(driverOps().populateDocumentWithQueryFields(opCtx(), query, immutablePaths, doc()));
     assertSameFields(fromjson("{a:1,b:{c:2},d:3}"), doc().getObject());
 }
 
 TEST_F(CreateFromQuery, NotFullShardKeyRepl) {
     BSONObj query = fromjson("{a:{$eq:1}, 'b.c':2}, d:2}");
-    OwnedPointerVector<FieldRef> immutablePathsVector;
-    immutablePathsVector.push_back(new FieldRef("a"));
-    immutablePathsVector.push_back(new FieldRef("b"));
-    immutablePathsVector.push_back(new FieldRef("_id"));
+    std::vector<std::unique_ptr<FieldRef>> immutablePathsVector;
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("a"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("b"));
+    immutablePathsVector.push_back(std::make_unique<FieldRef>("_id"));
     FieldRefSet immutablePaths;
-    immutablePaths.fillFrom(immutablePathsVector.vector());
+    immutablePaths.fillFrom(transitional_tools_do_not_use::unspool_vector(immutablePathsVector));
     ASSERT_NOT_OK(
         driverRepl().populateDocumentWithQueryFields(opCtx(), query, immutablePaths, doc()));
 }

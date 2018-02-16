@@ -1,5 +1,3 @@
-// record_store_v1_test_help.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -47,8 +45,6 @@
 
 namespace mongo {
 
-using std::numeric_limits;
-
 DummyRecordStoreV1MetaData::DummyRecordStoreV1MetaData(bool capped, int userFlags) {
     _dataSize = 0;
     _numRecords = 0;
@@ -56,7 +52,7 @@ DummyRecordStoreV1MetaData::DummyRecordStoreV1MetaData(bool capped, int userFlag
     _userFlags = userFlags;
     _lastExtentSize = 0;
     _paddingFactor = 1;
-    _maxCappedDocs = numeric_limits<long long>::max();
+    _maxCappedDocs = std::numeric_limits<long long>::max();
     _capFirstNewRecord.setInvalid();
     if (_capped) {
         // copied from NamespaceDetails::NamespaceDetails()
@@ -292,9 +288,9 @@ int DummyExtentManager::maxSize() const {
     return 1024 * 1024 * 64;
 }
 
-DummyExtentManager::CacheHint* DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
-                                                             const HintType& hint) {
-    return new CacheHint();
+std::unique_ptr<ExtentManager::CacheHint> DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
+                                                                        const HintType& hint) {
+    return std::make_unique<CacheHint>();
 }
 
 DataFileVersion DummyExtentManager::getFileFormat(OperationContext* opCtx) const {
@@ -666,4 +662,4 @@ void assertStateV1RS(OperationContext* opCtx,
         throw;
     }
 }
-}
+}  // namespace mongo

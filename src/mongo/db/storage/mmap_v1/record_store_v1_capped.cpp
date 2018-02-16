@@ -1,5 +1,3 @@
-// record_store_v1_capped.cpp
-
 /**
  *    Copyright (C) 2013 10gen Inc.
  *
@@ -64,7 +62,6 @@
 namespace mongo {
 
 using std::dec;
-using std::endl;
 using std::hex;
 using std::vector;
 
@@ -86,7 +83,7 @@ CappedRecordStoreV1::CappedRecordStoreV1(OperationContext* opCtx,
     cappedCheckMigrate(opCtx);
 }
 
-CappedRecordStoreV1::~CappedRecordStoreV1() {}
+CappedRecordStoreV1::~CappedRecordStoreV1() = default;
 
 StatusWith<DiskLoc> CappedRecordStoreV1::allocRecord(OperationContext* opCtx,
                                                      int lenToAlloc,
@@ -693,4 +690,4 @@ DiskLoc CappedRecordStoreV1::lastRecord(OperationContext* opCtx, const DiskLoc& 
     }
     return DiskLoc();
 }
-}
+}  // namespace mongo

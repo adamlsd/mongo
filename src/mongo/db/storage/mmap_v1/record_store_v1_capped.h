@@ -1,5 +1,3 @@
-// record_store_v1_capped.h
-
 /**
 *    Copyright (C) 2013 10gen Inc.
 *
@@ -122,8 +120,8 @@ private:
 
     CappedCallback* _cappedCallback;
 
-    OwnedPointerVector<ExtentManager::CacheHint> _extentAdvice;
+    std::vector<std::unique_ptr<ExtentManager::CacheHint>> _extentAdvice;
 
     friend class CappedRecordStoreV1Iterator;
 };
-}
+}//namespace mongo

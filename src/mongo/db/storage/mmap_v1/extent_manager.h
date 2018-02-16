@@ -1,5 +1,3 @@
-// extent_manager.h
-
 /**
 *    Copyright (C) 2013 10gen Inc.
 *
@@ -186,7 +184,8 @@ public:
      * Tell the system that for this extent, it will have this kind of disk access.
      * Caller takes owernship of CacheHint
      */
-    virtual CacheHint* cacheHint(const DiskLoc& extentLoc, const HintType& hint) = 0;
+    virtual std::unique_ptr<CacheHint> cacheHint(const DiskLoc& extentLoc,
+                                                 const HintType& hint) = 0;
 
     virtual DataFileVersion getFileFormat(OperationContext* opCtx) const = 0;
     virtual void setFileFormat(OperationContext* opCtx, DataFileVersion newVersion) = 0;

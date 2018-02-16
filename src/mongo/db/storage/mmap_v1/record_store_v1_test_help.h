@@ -1,5 +1,3 @@
-// record_store_v1_test_help.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -135,7 +133,7 @@ public:
 
     virtual MmapV1RecordHeader* recordForV1(const DiskLoc& loc) const;
 
-    virtual std::unique_ptr<RecordFetcher> recordNeedsFetch(const DiskLoc& loc) const final;
+    std::unique_ptr<RecordFetcher> recordNeedsFetch(const DiskLoc& loc) const final;
 
     virtual Extent* extentForV1(const DiskLoc& loc) const;
 
@@ -145,7 +143,8 @@ public:
 
     virtual int maxSize() const;
 
-    virtual CacheHint* cacheHint(const DiskLoc& extentLoc, const HintType& hint);
+    std::unique_ptr<ExtentManager::CacheHint> cacheHint(const DiskLoc& extentLoc,
+                                                        const HintType& hint) override;
 
     DataFileVersion getFileFormat(OperationContext* opCtx) const final;
 

@@ -1,5 +1,3 @@
-// mmap_v1_extent_manager.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -57,10 +55,7 @@
 namespace mongo {
 
 using std::unique_ptr;
-using std::endl;
-using std::max;
 using std::string;
-using std::stringstream;
 
 // Turn on this failpoint to force the system to yield for a fetch. Setting to "alwaysOn"
 // will cause yields for fetching to occur on every 'kNeedsFetchFailFreq'th call to
@@ -129,7 +124,7 @@ std::unique_ptr<ExtentManager> MmapV1ExtentManager::Factory::create(StringData d
 }
 
 boost::filesystem::path MmapV1ExtentManager::_fileName(int n) const {
-    stringstream ss;
+    std::stringstream ss;
     ss << _dbname << '.' << n;
     boost::filesystem::path fullName(_path);
     if (_directoryPerDB)
@@ -437,7 +432,7 @@ DiskLoc MmapV1ExtentManager::_allocFromFreeList(OperationContext* opCtx,
     }
     if (high <= 0) {
         // overflowed
-        high = max(approxSize, maxSize());
+        high = std::max(approxSize, maxSize());
     }
     if (high <= minSize()) {
         // the minimum extent size is 4097
@@ -481,7 +476,7 @@ DiskLoc MmapV1ExtentManager::_allocFromFreeList(OperationContext* opCtx,
             ++n;
         }
         if (t.seconds() >= 10) {
-            log() << "warning: slow scan in allocFromFreeList (in write lock)" << endl;
+            log() << "warning: slow scan in allocFromFreeList (in write lock)" << std::endl;
         }
     }
 
@@ -632,11 +627,12 @@ private:
 };
 }
 
-ExtentManager::CacheHint* MmapV1ExtentManager::cacheHint(const DiskLoc& extentLoc,
-                                                         const ExtentManager::HintType& hint) {
+std::unique_ptr<ExtentManager::CacheHint> MmapV1ExtentManager::cacheHint(
+    const DiskLoc& extentLoc, const ExtentManager::HintType& hint) {
     invariant(hint == Sequential);
     Extent* e = getExtent(extentLoc);
-    return new CacheHintMadvise(reinterpret_cast<void*>(e), e->length, MAdvise::Sequential);
+    return std::make_unique<CacheHintMadvise>(
+        reinterpret_cast<void*>(e), e->length, MAdvise::Sequential);
 }
 
 MmapV1ExtentManager::FilesArray::~FilesArray() {
@@ -676,4 +672,4 @@ void MmapV1ExtentManager::setFileFormat(OperationContext* opCtx, DataFileVersion
 
     *opCtx->recoveryUnit()->writing(&df->getHeader()->version) = newVersion;
 }
-}
+}//namespace mongo

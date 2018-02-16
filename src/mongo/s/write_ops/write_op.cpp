@@ -52,7 +52,7 @@ const WriteErrorDetail& WriteOp::getOpError() const {
 
 Status WriteOp::targetWrites(OperationContext* opCtx,
                              const NSTargeter& targeter,
-                             std::vector<TargetedWrite*>* targetedWrites) {
+                             std::vector<std::unique_ptr<TargetedWrite>>* const targetedWrites) {
     const bool isIndexInsert = _itemRef.getRequest()->isInsertIndexRequest();
 
     auto swEndpoints = [&]() -> StatusWith<std::vector<ShardEndpoint>> {
@@ -102,9 +102,9 @@ Status WriteOp::targetWrites(OperationContext* opCtx,
             endpoint.shardVersion = ChunkVersion::IGNORED();
         }
 
-        targetedWrites->push_back(new TargetedWrite(std::move(endpoint), ref));
+        targetedWrites->push_back(std::make_unique<TargetedWrite>(std::move(endpoint), ref));
 
-        _childOps.back().pendingWrite = targetedWrites->back();
+        _childOps.back().pendingWrite = targetedWrites->back().get();
         _childOps.back().state = WriteOpState_Pending;
     }
 
@@ -176,7 +176,7 @@ void WriteOp::_updateOpState() {
         invariant(childErrors.size() == 1u);
         _state = WriteOpState_Ready;
     } else if (!childErrors.empty()) {
-        _error.reset(new WriteErrorDetail);
+        _error = std::make_unique<WriteErrorDetail>();
         combineOpErrors(childErrors, _error.get());
         _state = WriteOpState_Error;
     } else {
@@ -192,9 +192,9 @@ void WriteOp::cancelWrites(const WriteErrorDetail* why) {
 
     for (auto& childOp : _childOps) {
         if (childOp.state == WriteOpState_Pending) {
-            childOp.endpoint.reset(new ShardEndpoint(childOp.pendingWrite->endpoint));
+            childOp.endpoint = std::make_unique<ShardEndpoint>(childOp.pendingWrite->endpoint);
             if (why) {
-                childOp.error.reset(new WriteErrorDetail);
+                childOp.error = std::make_unique<WriteErrorDetail>();
                 why->cloneTo(childOp.error.get());
             }
 
@@ -211,7 +211,7 @@ void WriteOp::noteWriteComplete(const TargetedWrite& targetedWrite) {
     auto& childOp = _childOps[ref.second];
 
     childOp.pendingWrite = NULL;
-    childOp.endpoint.reset(new ShardEndpoint(targetedWrite.endpoint));
+    childOp.endpoint = std::make_unique<ShardEndpoint>(targetedWrite.endpoint);
     childOp.state = WriteOpState_Completed;
     _updateOpState();
 }
@@ -221,8 +221,8 @@ void WriteOp::noteWriteError(const TargetedWrite& targetedWrite, const WriteErro
     auto& childOp = _childOps[ref.second];
 
     childOp.pendingWrite = NULL;
-    childOp.endpoint.reset(new ShardEndpoint(targetedWrite.endpoint));
-    childOp.error.reset(new WriteErrorDetail);
+    childOp.endpoint = std::make_unique<ShardEndpoint>(targetedWrite.endpoint);
+    childOp.error = std::make_unique<WriteErrorDetail>();
     error.cloneTo(childOp.error.get());
     dassert(ref.first == _itemRef.getItemIndex());
     childOp.error->setIndex(_itemRef.getItemIndex());
@@ -232,7 +232,7 @@ void WriteOp::noteWriteError(const TargetedWrite& targetedWrite, const WriteErro
 
 void WriteOp::setOpError(const WriteErrorDetail& error) {
     dassert(_state == WriteOpState_Ready);
-    _error.reset(new WriteErrorDetail);
+    _error = std::make_unique<WriteErrorDetail>();
     error.cloneTo(_error.get());
     _error->setIndex(_itemRef.getItemIndex());
     _state = WriteOpState_Error;

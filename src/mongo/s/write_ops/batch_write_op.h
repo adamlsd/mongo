@@ -245,8 +245,8 @@ public:
         return _endpoint;
     }
 
-    const std::vector<TargetedWrite*>& getWrites() const {
-        return _writes.vector();
+    const std::vector<std::unique_ptr<TargetedWrite>>& getWrites() const {
+        return _writes;
     }
 
     size_t getNumOps() const {
@@ -260,8 +260,8 @@ public:
     /**
      * TargetedWrite is owned here once given to the TargetedWriteBatch.
      */
-    void addWrite(TargetedWrite* targetedWrite, int estWriteSize) {
-        _writes.mutableVector().push_back(targetedWrite);
+    void addWrite(std::unique_ptr<TargetedWrite> targetedWrite, int estWriteSize) {
+        _writes.push_back(std::move(targetedWrite));
         _estimatedSizeBytes += estWriteSize;
     }
 
@@ -271,7 +271,7 @@ private:
 
     // Where the responses go
     // TargetedWrite*s are owned by the TargetedWriteBatch
-    OwnedPointerVector<TargetedWrite> _writes;
+    std::vector<std::unique_ptr<TargetedWrite>> _writes;
 
     // Conservatvely estimated size of the batch, for ensuring it doesn't grow past the maximum BSON
     // size

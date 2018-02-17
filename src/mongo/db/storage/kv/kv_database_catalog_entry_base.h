@@ -94,7 +94,7 @@ protected:
     class AddCollectionChange;
     class RemoveCollectionChange;
 
-    typedef std::map<std::string, KVCollectionCatalogEntry*> CollectionMap;
+    typedef std::map<std::string, std::unique_ptr<KVCollectionCatalogEntry>> CollectionMap;
 
 
     KVStorageEngine* const _engine;  // not owned here

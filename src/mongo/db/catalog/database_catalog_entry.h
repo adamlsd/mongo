@@ -1,5 +1,3 @@
-// database_catalog_entry.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -115,4 +113,4 @@ public:
 private:
     std::string _name;
 };
-}
+}  // namespace mongo

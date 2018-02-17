@@ -58,18 +58,14 @@ public:
           _ident(ident.toString()),
           _dropOnRollback(dropOnRollback) {}
 
-    virtual void commit() {}
-    virtual void rollback() {
+    void commit() override {}
+    void rollback() override {
         if (_dropOnRollback) {
             // Intentionally ignoring failure
             _dce->_engine->getEngine()->dropIdent(_opCtx, _ident).transitional_ignore();
         }
 
-        const CollectionMap::iterator it = _dce->_collections.find(_collection);
-        if (it != _dce->_collections.end()) {
-            delete it->second;
-            _dce->_collections.erase(it);
-        }
+        _dce->_collections.erase(_collection);
     }
 
     OperationContext* const _opCtx;
@@ -85,17 +81,21 @@ public:
                            KVDatabaseCatalogEntryBase* dce,
                            StringData collection,
                            StringData ident,
-                           KVCollectionCatalogEntry* entry,
+                           std::unique_ptr<KVCollectionCatalogEntry> entry,
                            bool dropOnCommit)
         : _opCtx(opCtx),
           _dce(dce),
           _collection(collection.toString()),
           _ident(ident.toString()),
-          _entry(entry),
+          _entry(std::move(entry)),
           _dropOnCommit(dropOnCommit) {}
 
-    virtual void commit() {
-        delete _entry;
+    ~RemoveCollectionChange() {
+        assert(!_entry);
+    }
+
+    void commit() override {
+        _entry = nullptr;
 
         // Intentionally ignoring failure here. Since we've removed the metadata pointing to the
         // collection, we should never see it again anyway.
@@ -103,27 +103,22 @@ public:
             _dce->_engine->getEngine()->dropIdent(_opCtx, _ident).transitional_ignore();
     }
 
-    virtual void rollback() {
-        _dce->_collections[_collection] = _entry;
+    void rollback() override {
+        _dce->_collections[_collection] = std::move(_entry);
     }
 
     OperationContext* const _opCtx;
     KVDatabaseCatalogEntryBase* const _dce;
     const std::string _collection;
     const std::string _ident;
-    KVCollectionCatalogEntry* const _entry;
+    std::unique_ptr<KVCollectionCatalogEntry> _entry;
     const bool _dropOnCommit;
 };
 
 KVDatabaseCatalogEntryBase::KVDatabaseCatalogEntryBase(StringData db, KVStorageEngine* engine)
     : DatabaseCatalogEntry(db), _engine(engine) {}
 
-KVDatabaseCatalogEntryBase::~KVDatabaseCatalogEntryBase() {
-    for (CollectionMap::const_iterator it = _collections.begin(); it != _collections.end(); ++it) {
-        delete it->second;
-    }
-    _collections.clear();
-}
+KVDatabaseCatalogEntryBase::~KVDatabaseCatalogEntryBase() = default;
 
 bool KVDatabaseCatalogEntryBase::exists() const {
     return !isEmpty();
@@ -141,7 +136,7 @@ int64_t KVDatabaseCatalogEntryBase::sizeOnDisk(OperationContext* opCtx) const {
     int64_t size = 0;
 
     for (CollectionMap::const_iterator it = _collections.begin(); it != _collections.end(); ++it) {
-        const KVCollectionCatalogEntry* coll = it->second;
+        const KVCollectionCatalogEntry* coll = it->second.get();
         if (!coll)
             continue;
         size += coll->getRecordStore()->storageSize(opCtx);
@@ -180,7 +175,7 @@ CollectionCatalogEntry* KVDatabaseCatalogEntryBase::getCollectionCatalogEntry(St
         return NULL;
     }
 
-    return it->second;
+    return it->second.get();
 }
 
 RecordStore* KVDatabaseCatalogEntryBase::getRecordStore(StringData ns) const {
@@ -235,7 +230,7 @@ Status KVDatabaseCatalogEntryBase::createCollection(OperationContext* opCtx,
     auto rs = _engine->getEngine()->getGroupedRecordStore(opCtx, ns, ident, options, prefix);
     invariant(rs);
 
-    _collections[ns.toString()] = new KVCollectionCatalogEntry(
+    _collections[ns.toString()] = std::make_unique<KVCollectionCatalogEntry>(
         _engine->getEngine(), _engine->getCatalog(), ns, ident, std::move(rs));
 
     return Status::OK();
@@ -260,7 +255,7 @@ void KVDatabaseCatalogEntryBase::initCollection(OperationContext* opCtx,
     }
 
     // No change registration since this is only for committed collections
-    _collections[ns] = new KVCollectionCatalogEntry(
+    _collections[ns] = std::make_unique<KVCollectionCatalogEntry>(
         _engine->getEngine(), _engine->getCatalog(), ns, ident, std::move(rs));
 }
 
@@ -268,8 +263,8 @@ void KVDatabaseCatalogEntryBase::reinitCollectionAfterRepair(OperationContext* o
                                                              const std::string& ns) {
     // Get rid of the old entry.
     CollectionMap::iterator it = _collections.find(ns);
-    invariant(it != _collections.end());
-    delete it->second;
+    auto numRemoved = _collections.erase(ns);
+    invariant(numRemoved > 0);
     _collections.erase(it);
 
     // Now reopen fully initialized.
@@ -314,8 +309,8 @@ Status KVDatabaseCatalogEntryBase::renameCollection(OperationContext* opCtx,
 
     const CollectionMap::iterator itFrom = _collections.find(fromNS.toString());
     invariant(itFrom != _collections.end());
-    opCtx->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(opCtx, this, fromNS, identFrom, itFrom->second, false));
+    opCtx->recoveryUnit()->registerChange(new RemoveCollectionChange(
+        opCtx, this, fromNS, identFrom, std::move(itFrom->second), false));
     _collections.erase(itFrom);
 
     opCtx->recoveryUnit()->registerChange(
@@ -324,7 +319,7 @@ Status KVDatabaseCatalogEntryBase::renameCollection(OperationContext* opCtx,
     auto rs =
         _engine->getEngine()->getGroupedRecordStore(opCtx, toNS, identTo, md.options, md.prefix);
 
-    _collections[toNS.toString()] = new KVCollectionCatalogEntry(
+    _collections[toNS.toString()] = std::make_unique<KVCollectionCatalogEntry>(
         _engine->getEngine(), _engine->getCatalog(), toNS, identTo, std::move(rs));
 
     return Status::OK();
@@ -333,12 +328,12 @@ Status KVDatabaseCatalogEntryBase::renameCollection(OperationContext* opCtx,
 Status KVDatabaseCatalogEntryBase::dropCollection(OperationContext* opCtx, StringData ns) {
     invariant(opCtx->lockState()->isDbLockedForMode(name(), MODE_X));
 
-    CollectionMap::const_iterator it = _collections.find(ns.toString());
+    CollectionMap::iterator it = _collections.find(ns.toString());
     if (it == _collections.end()) {
         return Status(ErrorCodes::NamespaceNotFound, "cannnot find collection to drop");
     }
 
-    KVCollectionCatalogEntry* const entry = it->second;
+    auto& entry = it->second;
 
     invariant(entry->getTotalIndexCount(opCtx) == entry->getCompletedIndexCount(opCtx));
 
@@ -362,9 +357,9 @@ Status KVDatabaseCatalogEntryBase::dropCollection(OperationContext* opCtx, Strin
     // This will lazily delete the KVCollectionCatalogEntry and notify the storageEngine to
     // drop the collection only on WUOW::commit().
     opCtx->recoveryUnit()->registerChange(
-        new RemoveCollectionChange(opCtx, this, ns, ident, it->second, true));
+        new RemoveCollectionChange(opCtx, this, ns, ident, std::move(entry), true));
 
-    _collections.erase(ns.toString());
+    _collections.erase(it);
 
     return Status::OK();
 }

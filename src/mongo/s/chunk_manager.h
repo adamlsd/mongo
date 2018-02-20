@@ -60,6 +60,12 @@ using ShardVersionMap = std::map<ShardId, ChunkVersion>;
 class ChunkManager : public std::enable_shared_from_this<ChunkManager> {
     MONGO_DISALLOW_COPYING(ChunkManager);
 
+    struct PrivateCall {
+    private:
+        friend ChunkManager;
+        explicit PrivateCall() = default;
+    };
+
 public:
     class ConstChunkIterator {
     public:
@@ -103,6 +109,16 @@ public:
         ConstChunkIterator _begin;
         ConstChunkIterator _end;
     };
+
+    ChunkManager(NamespaceString nss,
+                 boost::optional<UUID> uuid,
+                 KeyPattern shardKeyPattern,
+                 std::unique_ptr<CollatorInterface> defaultCollator,
+                 bool unique,
+                 ChunkMap chunkMap,
+                 ChunkVersion collectionVersion,
+                 PrivateCall);
+
 
     /**
      * Makes an instance with a routing table for collection "nss", sharded on
@@ -301,14 +317,6 @@ private:
     static ChunkMapViews _constructChunkMapViews(const OID& epoch,
                                                  const ChunkMap& chunkMap,
                                                  Ordering shardKeyOrdering);
-
-    ChunkManager(NamespaceString nss,
-                 boost::optional<UUID> uuid,
-                 KeyPattern shardKeyPattern,
-                 std::unique_ptr<CollatorInterface> defaultCollator,
-                 bool unique,
-                 ChunkMap chunkMap,
-                 ChunkVersion collectionVersion);
 
     std::string _extractKeyString(const BSONObj& shardKeyValue) const;
 

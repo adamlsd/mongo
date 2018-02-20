@@ -76,7 +76,8 @@ ChunkManager::ChunkManager(NamespaceString nss,
                            std::unique_ptr<CollatorInterface> defaultCollator,
                            bool unique,
                            ChunkMap chunkMap,
-                           ChunkVersion collectionVersion)
+                           ChunkVersion collectionVersion,
+                           PrivateCall)
     : _sequenceNumber(nextCMSequenceNumber.addAndFetch(1)),
       _nss(std::move(nss)),
       _uuid(uuid),
@@ -548,7 +549,7 @@ std::shared_ptr<ChunkManager> ChunkManager::makeNew(
                         std::move(defaultCollator),
                         std::move(unique),
                         {},
-                        {0, 0, epoch})
+                        {0, 0, epoch},PrivateCall{})
         .makeUpdated(chunks);
 }
 
@@ -607,7 +608,8 @@ std::shared_ptr<ChunkManager> ChunkManager::makeUpdated(
                                           CollatorInterface::cloneCollator(getDefaultCollator()),
                                           isUnique(),
                                           std::move(chunkMap),
-                                          collectionVersion);
+                                          collectionVersion,
+                                          PrivateCall{});
 }
 
 }  // namespace mongo

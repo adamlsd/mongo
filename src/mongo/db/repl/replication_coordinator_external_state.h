@@ -297,18 +297,16 @@ public:
                                           MultiApplier::ApplyOperationFn applyOperation) = 0;
 
     /**
-     * Used by multiApply() to writes operations to database during steady state replication.
-     */
-    virtual Status multiSyncApply(MultiApplier::OperationPtrs* ops) = 0;
-
-    /**
      * Used by multiApply() to writes operations to database during initial sync. `fetchCount` is a
      * pointer to a counter that is incremented every time we fetch a missing document.
+     * `workerMultikeyPathInfo` is a pointer to a list of objects tracking which indexes to set as
+     * multikey at the end of the batch.
      *
      */
     virtual Status multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
                                          const HostAndPort& source,
-                                         AtomicUInt32* fetchCount) = 0;
+                                         AtomicUInt32* fetchCount,
+                                         WorkerMultikeyPathInfo* workerMultikeyPathInfo) = 0;
 
     /**
      * This function creates an oplog buffer of the type specified at server startup.

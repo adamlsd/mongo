@@ -1061,6 +1061,7 @@ os_macros = {
     # the above declarations since we will never target them with anything other than XCode 8.
     "macOS": "defined(__APPLE__) && (TARGET_OS_OSX || (TARGET_OS_MAC && !TARGET_OS_IPHONE))",
     "linux": "defined(__linux__)",
+    "android": "defined(__ANDROID__)",
 }
 
 def CheckForOS(context, which_os):
@@ -1180,8 +1181,10 @@ env['TARGET_OS_FAMILY'] = 'posix' if env.TargetOSIs('posix') else env.GetTargetO
 # options for some strange reason in SCons. Instead, we store this
 # option as a new variable in the environment.
 if get_option('allocator') == "auto":
+    # using an allocator besides system on android would require either fixing or disabling
+    # gperftools on android
     if env.TargetOSIs('windows') or \
-       env.TargetOSIs('linux'):
+       env.TargetOSIs('linux') and not env.TargetOSIs('android'):
         env['MONGO_ALLOCATOR'] = "tcmalloc"
     else:
         env['MONGO_ALLOCATOR'] = "system"
@@ -1450,7 +1453,9 @@ else:
     env.AppendUnique( CPPDEFINES=[ 'NDEBUG' ] )
 
 if env.TargetOSIs('linux'):
-    env.Append( LIBS=['m',"resolv"] )
+    env.Append( LIBS=["m"] )
+    if not env.TargetOSIs('android'):
+        env.Append( LIBS=["resolv"] )
 
 elif env.TargetOSIs('solaris'):
      env.Append( LIBS=["socket","resolv","lgrp"] )
@@ -1629,6 +1634,7 @@ elif env.TargetOSIs('windows'):
             'version.lib',
             'winmm.lib',
             'ws2_32.lib',
+            'secur32.lib',
         ],
     )
 
@@ -2862,8 +2868,12 @@ def doConfigure(myenv):
 
     if ssl_provider == 'native':
         if conf.env.TargetOSIs('windows'):
-            # TODO: Implement native crypto for windows
-            ssl_provider = 'openssl'
+            ssl_provider = 'windows'
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_WINDOWS")
+
+            # TODO: Implement native crypto for windows, for now use tom
+            conf.env.Append( MONGO_CRYPTO=["tom"] )
+
         elif conf.env.TargetOSIs('darwin', 'macOS'):
             conf.env.Append( MONGO_CRYPTO=["apple"] )
             if has_option("ssl"):
@@ -2875,6 +2885,8 @@ def doConfigure(myenv):
         if has_option("ssl"):
             checkOpenSSL(conf)
             # Working OpenSSL available, use it.
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_OPENSSL")
+
             conf.env.Append( MONGO_CRYPTO=["openssl"] )
         else:
             # If we don't need an SSL build, we can get by with TomCrypt.

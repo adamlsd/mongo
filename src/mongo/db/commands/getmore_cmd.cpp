@@ -120,7 +120,7 @@ public:
         return false;
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
 
@@ -415,8 +415,9 @@ public:
             exec->detachFromOperationContext();
 
             cursor->setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
-
             cursor->incPos(numResults);
+
+            opCtx->setStashedCursor();
         } else {
             curOp->debug().cursorExhausted = true;
         }

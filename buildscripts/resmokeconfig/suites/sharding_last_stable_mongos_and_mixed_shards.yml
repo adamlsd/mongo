@@ -27,6 +27,7 @@ selector:
   - jstests/sharding/basic_drop_coll.js
   - jstests/sharding/commands_that_write_accept_wc_configRS.js
   - jstests/sharding/clone_metadata_only.js
+  - jstests/sharding/kill_pinned_cursor.js
   - jstests/sharding/movechunk_commit_changelog_stats.js
   # Enable when 3.6 becomes last-stable.
   - jstests/sharding/coll_epoch_test1.js
@@ -116,10 +117,14 @@ selector:
   # New failpoint in v3.6 shard mongod.
   - jstests/sharding/cleanup_orphaned_cmd_prereload.js
   - jstests/sharding/pending_chunk.js
+  # New failpoint in v4.0 mongos.
+  - jstests/sharding/crash_mongos_against_upgraded_cluster.js
   # New waitForClusterTime
   - jstests/sharding/auth_slaveok_routing.js
   # This test should not be run with a mixed cluster environment.
   - jstests/sharding/nonreplicated_uuids_on_shardservers.js
+  # Requires the ability to interrupt a pinned cursor, introduced in v4.0.
+  - jstests/sharding/kill_pinned_cursor.js
 
 executor:
   config:

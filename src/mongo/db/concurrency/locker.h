@@ -90,6 +90,11 @@ public:
     virtual stdx::thread::id getThreadId() const = 0;
 
     /**
+     * Indicate that shared locks should participate in two-phase locking for this Locker instance.
+     */
+    virtual void setSharedLocksShouldTwoPhaseLock(bool sharedLocksShouldTwoPhaseLock) = 0;
+
+    /**
      * This should be the first method invoked for a particular Locker object. It acquires the
      * Global lock in the specified mode and effectively indicates the mode of the operation.
      * This is what the lock modes on the global lock mean:
@@ -329,11 +334,25 @@ public:
         return _shouldConflictWithSecondaryBatchApplication;
     }
 
+    /**
+     * If set to false, this opts out of the ticket mechanism. This should be used sparingly
+     * for special purpose threads, such as FTDC.
+     */
+    void setShouldAcquireTicket(bool newValue) {
+        invariant(!isLocked());
+        _shouldAcquireTicket = newValue;
+    }
+    bool shouldAcquireTicket() const {
+        return _shouldAcquireTicket;
+    }
+
+
 protected:
     Locker() {}
 
 private:
     bool _shouldConflictWithSecondaryBatchApplication = true;
+    bool _shouldAcquireTicket = true;
 };
 
 }  // namespace mongo

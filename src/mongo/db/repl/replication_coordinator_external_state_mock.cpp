@@ -250,12 +250,11 @@ StatusWith<OpTime> ReplicationCoordinatorExternalStateMock::multiApply(
     return {ErrorCodes::InternalError, "Method not implemented"};
 }
 
-Status ReplicationCoordinatorExternalStateMock::multiSyncApply(MultiApplier::OperationPtrs* ops) {
-    return Status::OK();
-}
-
 Status ReplicationCoordinatorExternalStateMock::multiInitialSyncApply(
-    MultiApplier::OperationPtrs* ops, const HostAndPort& source, AtomicUInt32* fetchCount) {
+    MultiApplier::OperationPtrs* ops,
+    const HostAndPort& source,
+    AtomicUInt32* fetchCount,
+    WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
     return Status::OK();
 }
 

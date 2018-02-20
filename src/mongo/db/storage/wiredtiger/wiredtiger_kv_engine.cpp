@@ -54,8 +54,8 @@
 #include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
+#include "mongo/db/global_settings.h"
 #include "mongo/db/index/index_descriptor.h"
-#include "mongo/db/mongod_options.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -222,7 +222,22 @@ public:
     }
 
     void setStableTimestamp(Timestamp stableTimestamp) {
-        _stableTimestamp.store(stableTimestamp.asULL());
+        const auto prevStable = std::uint64_t(_stableTimestamp.swap(stableTimestamp.asULL()));
+        if (_firstStableCheckpointTaken) {
+            // Early return to avoid the following `_initialDataTimestamp.load` call.
+            return;
+        }
+
+        const auto initialData = std::uint64_t(_initialDataTimestamp.load());
+        if (prevStable < initialData && stableTimestamp.asULL() >= initialData) {
+            _firstStableCheckpointTaken = true;
+
+            log() << "Triggering the first stable checkpoint. Initial Data: "
+                  << Timestamp(initialData) << " PrevStable: " << Timestamp(prevStable)
+                  << " CurrStable: " << stableTimestamp;
+            stdx::unique_lock<stdx::mutex> lock(_mutex);
+            _condvar.notify_one();
+        }
     }
 
     void setInitialDataTimestamp(Timestamp initialDataTimestamp) {
@@ -252,6 +267,7 @@ private:
     AtomicBool _shuttingDown{false};
     AtomicWord<std::uint64_t> _stableTimestamp;
     AtomicWord<std::uint64_t> _initialDataTimestamp;
+    bool _firstStableCheckpointTaken = false;
 };
 
 namespace {

@@ -1,5 +1,3 @@
-// expression_tree.cpp
-
 /**
  *    Copyright (C) 2013 10gen Inc.
  *
@@ -38,9 +36,6 @@
 namespace mongo {
 
 ListOfMatchExpression::~ListOfMatchExpression() {
-    for (unsigned i = 0; i < _expressions.size(); i++) {
-        delete _expressions[i];
-    }
     _expressions.clear();
 }
 

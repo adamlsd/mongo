@@ -1,5 +1,3 @@
-// expression_tree.h
-
 /**
  *    Copyright (C) 2013 10gen Inc.
  *
@@ -62,23 +60,21 @@ public:
     }
 
     virtual MatchExpression* getChild(size_t i) const {
-        return _expressions[i];
+        return _expressions[i].get();
     }
 
     /*
      * Replaces the ith child with nullptr, and releases ownership of the child.
      */
     virtual std::unique_ptr<MatchExpression> releaseChild(size_t i) {
-        auto child = std::unique_ptr<MatchExpression>(_expressions[i]);
-        _expressions[i] = nullptr;
-        return child;
+        return std::move(_expressions[i]);
     }
 
     /*
      * Removes the ith child, and releases ownership of the child.
      */
     virtual std::unique_ptr<MatchExpression> removeChild(size_t i) {
-        auto child = std::unique_ptr<MatchExpression>(_expressions[i]);
+        std::unique_ptr<MatchExpression> child = std::move(_expressions[i]);
         _expressions.erase(_expressions.begin() + i);
         return child;
     }
@@ -101,7 +97,7 @@ protected:
 private:
     ExpressionOptimizerFunc getOptimizer() const final;
 
-    std::vector<MatchExpression*> _expressions;
+    std::vector<std::unique_ptr<MatchExpression>> _expressions;
 };
 
 class AndMatchExpression : public ListOfMatchExpression {
@@ -245,4 +241,4 @@ private:
 
     std::unique_ptr<MatchExpression> _exp;
 };
-}
+}  // namespace mongo

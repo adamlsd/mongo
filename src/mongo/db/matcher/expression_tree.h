@@ -79,7 +79,7 @@ public:
         return child;
     }
 
-    virtual std::vector<MatchExpression*>* getChildVector() {
+    std::vector<MatchExpression*>* sortChildVector() override{
         return &_expressions;
     }
 

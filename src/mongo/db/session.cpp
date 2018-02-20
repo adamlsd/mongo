@@ -33,6 +33,7 @@
 #include "mongo/db/session.h"
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -294,6 +295,29 @@ void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
         opCtx, txnNumber, std::move(stmtIdsWritten), lastStmtIdWriteOpTime);
 }
 
+bool Session::onMigrateBeginOnPrimary(OperationContext* opCtx, TxnNumber txnNumber, StmtId stmtId) {
+    beginTxn(opCtx, txnNumber);
+
+    try {
+        if (checkStatementExecuted(opCtx, txnNumber, stmtId)) {
+            return false;
+        }
+    } catch (const DBException& ex) {
+        // If the transaction chain was truncated on the recipient shard, then we
+        // are most likely copying from a session that hasn't been touched on the
+        // recipient shard for a very long time but could be recent on the donor.
+        // We continue copying regardless to get the entire transaction from the donor.
+        if (ex.code() != ErrorCodes::IncompleteTransactionHistory) {
+            throw;
+        }
+        if (stmtId == kIncompleteHistoryStmtId) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void Session::onMigrateCompletedOnPrimary(OperationContext* opCtx,
                                           TxnNumber txnNumber,
                                           std::vector<StmtId> stmtIdsWritten,
@@ -407,6 +431,73 @@ void Session::_beginTxn(WithLock wl, TxnNumber txnNumber) {
     _activeTxnNumber = txnNumber;
     _activeTxnCommittedStatements.clear();
     _hasIncompleteHistory = false;
+    _isSnapshotTxn = false;
+}
+
+void Session::stashTransactionResources(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    if (!_isSnapshotTxn) {
+        return;
+    }
+
+    if (!opCtx->hasStashedCursor()) {
+        if (opCtx->getWriteUnitOfWork()) {
+            opCtx->setWriteUnitOfWork(nullptr);
+        }
+        return;
+    }
+
+    if (*opCtx->getTxnNumber() != _activeTxnNumber) {
+        uasserted(ErrorCodes::TransactionAborted,
+                  str::stream() << "Transaction aborted. Active txnNumber is now "
+                                << _activeTxnNumber);
+    }
+
+    opCtx->getWriteUnitOfWork()->release();
+    opCtx->setWriteUnitOfWork(nullptr);
+
+    _stashedLocker = opCtx->releaseLockState();
+    _stashedRecoveryUnit.reset(opCtx->releaseRecoveryUnit());
+
+    opCtx->setLockState(stdx::make_unique<DefaultLockerImpl>());
+    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+                           OperationContext::kNotInUnitOfWork);
+}
+
+void Session::unstashTransactionResources(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    if (opCtx->getTxnNumber() < _activeTxnNumber) {
+        _releaseStashedTransactionResources(lg, opCtx);
+        uasserted(ErrorCodes::TransactionAborted,
+                  str::stream() << "Transaction aborted. Active txnNumber is now "
+                                << _activeTxnNumber);
+        return;
+    }
+
+    if (_stashedLocker) {
+        invariant(_stashedRecoveryUnit);
+        opCtx->releaseLockState();
+        opCtx->setLockState(std::move(_stashedLocker));
+        opCtx->setRecoveryUnit(_stashedRecoveryUnit.release(),
+                               OperationContext::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
+    } else {
+        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
+            opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
+            _isSnapshotTxn = true;
+        }
+    }
+}
+
+void Session::_releaseStashedTransactionResources(WithLock wl, OperationContext* opCtx) {
+    if (opCtx->getWriteUnitOfWork()) {
+        opCtx->setWriteUnitOfWork(nullptr);
+    }
+
+    _stashedRecoveryUnit.reset(nullptr);
+    _stashedLocker.reset(nullptr);
+    _isSnapshotTxn = false;
 }
 
 void Session::_checkValid(WithLock) const {

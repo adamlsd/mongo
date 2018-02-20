@@ -185,6 +185,17 @@ var authCommandsLib = {
 
     tests: [
         {
+          testname: "abortTxn",
+          command: {abortTransaction: 1},
+          skipSharded: true,
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: roles_all,
+              },
+          ]
+        },
+        {
           testname: "addShard",
           command: {addShard: "x"},
           skipStandalone: true,
@@ -235,14 +246,7 @@ var authCommandsLib = {
         {
           testname: "applyOps_precondition",
           command: {
-              applyOps: [{
-                  "ts": Timestamp(1473353037, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
-                  "op": "n",
-                  "ns": "",
-                  "o": {}
-              }],
+              applyOps: [{"op": "n", "ns": "", "o": {}}],
               preCondition: [{ns: firstDbName + ".x", q: {x: 5}, res: []}]
           },
           skipSharded: true,
@@ -270,9 +274,6 @@ var authCommandsLib = {
           testname: "applyOps_c_create",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051004, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "c",
                   "ns": firstDbName + ".$cmd",
                   "o": {
@@ -309,10 +310,7 @@ var authCommandsLib = {
           testname: "applyOps_c_create_UUID",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051004, 1),
-                  "h": NumberLong(0),
                   "ui": UUID("71f1d1d7-68ca-493e-a7e9-f03c94e2e960"),
-                  "v": 2,
                   "op": "c",
                   "ns": firstDbName + ".$cmd",
                   "o": {
@@ -340,10 +338,7 @@ var authCommandsLib = {
           testname: "applyOps_c_create_UUID_failure",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051004, 1),
-                  "h": NumberLong(0),
                   "ui": UUID("71f1d1d7-68ca-493e-a7e9-f03c94e2e960"),
-                  "v": 2,
                   "op": "c",
                   "ns": firstDbName + ".$cmd",
                   "o": {
@@ -370,9 +365,6 @@ var authCommandsLib = {
           testname: "applyOps_c_drop",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051004, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "c",
                   "ns": firstDbName + ".$cmd",
                   "o": {
@@ -411,9 +403,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051004, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "c",
                       "ui": state.uuid,
                       "ns": firstDbName + ".$cmd",
@@ -452,9 +441,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051004, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "c",
                       "ui": state.uuid,
                       "ns": firstDbName + ".$cmd",
@@ -490,16 +476,7 @@ var authCommandsLib = {
         },
         {
           testname: "applyOps_noop",
-          command: {
-              applyOps: [{
-                  "ts": Timestamp(1473353037, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
-                  "op": "n",
-                  "ns": "",
-                  "o": {}
-              }]
-          },
+          command: {applyOps: [{"op": "n", "ns": "", "o": {}}]},
           skipSharded: true,
           testcases: [
               {
@@ -521,9 +498,6 @@ var authCommandsLib = {
           testname: "applyOps_c_renameCollection_twoDbs",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051004, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "c",
                   "ns": firstDbName + ".$cmd",
                   "o": {
@@ -565,9 +539,6 @@ var authCommandsLib = {
           testname: "applyOps_insert",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474051453, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "i",
                   "ns": firstDbName + ".x",
                   "o": {"_id": ObjectId("57dc3d7da4fce4358afa85b8"), "data": 5}
@@ -595,9 +566,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051453, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -634,9 +602,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051453, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       // Given a nonexistent UUID. The command should fail.
@@ -677,9 +642,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051453, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -717,10 +679,7 @@ var authCommandsLib = {
               return {
                   applyOps: [
                       {
-                        "ts": Timestamp(1474051004, 1),
-                        "h": NumberLong(0),
                         "ui": UUID("71f1d1d7-68ca-493e-a7e9-f03c94e2e960"),
-                        "v": 2,
                         "op": "c",
                         "ns": firstDbName + ".$cmd",
                         "o": {
@@ -728,9 +687,6 @@ var authCommandsLib = {
                         }
                       },
                       {
-                        "ts": Timestamp(1474051453, 1),
-                        "h": NumberLong(0),
-                        "v": 2,
                         "op": "i",
                         "ns": firstDbName + ".x",
                         "ui": UUID("71f1d1d7-68ca-493e-a7e9-f03c94e2e960"),
@@ -764,9 +720,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051453, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns":
                           firstDbName + ".y",  // Specify wrong name but correct uuid. Should work.
@@ -806,9 +759,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474051453, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns":
                           firstDbName + ".y",  // Specify wrong name but correct uuid. Should work.
@@ -848,9 +798,6 @@ var authCommandsLib = {
           testname: "applyOps_upsert",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474053682, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "u",
                   "ns": firstDbName + ".x",
                   "o2": {"_id": 1},
@@ -878,9 +825,6 @@ var authCommandsLib = {
           testname: "applyOps_update",
           command: {
               applyOps: [{
-                  "ts": Timestamp(1474053682, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "u",
                   "ns": firstDbName + ".x",
                   "o2": {"_id": 1},
@@ -910,9 +854,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474053682, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "u",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -951,9 +892,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   applyOps: [{
-                      "ts": Timestamp(1474053682, 1),
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "u",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -988,16 +926,7 @@ var authCommandsLib = {
         },
         {
           testname: "applyOps_delete",
-          command: {
-              applyOps: [{
-                  "ts": Timestamp(1474056194, 1),
-                  "h": NumberLong(0),
-                  "v": 2,
-                  "op": "d",
-                  "ns": firstDbName + ".x",
-                  "o": {"_id": 1}
-              }]
-          },
+          command: {applyOps: [{"op": "d", "ns": firstDbName + ".x", "o": {"_id": 1}}]},
           skipSharded: true,
           setup: function(db) {
               db.getSisterDB(firstDbName).x.save({_id: 1, data: 1});
@@ -2148,6 +2077,17 @@ var authCommandsLib = {
           ]
         },
         {
+          testname: "commitTxn",
+          command: {commitTransaction: 1},
+          skipSharded: true,
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: roles_all,
+              },
+          ]
+        },
+        {
           testname: "compact",
           command: {compact: "foo"},
           skipSharded: true,
@@ -2973,8 +2913,6 @@ var authCommandsLib = {
           testname: "doTxn_precondition",
           command: {
               doTxn: [{
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "i",
                   "ns": firstDbName + ".x",
                   "o": {"_id": ObjectId("57dc3d7da4fce4358afa85b8"), "data": 5}
@@ -3002,8 +2940,6 @@ var authCommandsLib = {
           testname: "doTxn_insert",
           command: {
               doTxn: [{
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "i",
                   "ns": firstDbName + ".x",
                   "o": {"_id": ObjectId("57dc3d7da4fce4358afa85b8"), "data": 5}
@@ -3031,8 +2967,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -3069,8 +3003,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       // Given a nonexistent UUID. The command should fail.
@@ -3111,8 +3043,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -3149,8 +3079,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns":
                           firstDbName + ".y",  // Specify wrong name but correct uuid. Should work.
@@ -3190,8 +3118,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "i",
                       "ns":
                           firstDbName + ".y",  // Specify wrong name but correct uuid. Should work.
@@ -3231,8 +3157,6 @@ var authCommandsLib = {
           testname: "doTxn_upsert",
           command: {
               doTxn: [{
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "u",
                   "ns": firstDbName + ".x",
                   "o2": {"_id": 1},
@@ -3260,8 +3184,6 @@ var authCommandsLib = {
           testname: "doTxn_update",
           command: {
               doTxn: [{
-                  "h": NumberLong(0),
-                  "v": 2,
                   "op": "u",
                   "ns": firstDbName + ".x",
                   "o2": {"_id": 1},
@@ -3291,8 +3213,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "u",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -3331,8 +3251,6 @@ var authCommandsLib = {
           command: function(state) {
               return {
                   doTxn: [{
-                      "h": NumberLong(0),
-                      "v": 2,
                       "op": "u",
                       "ns": state.collName,
                       "ui": state.uuid,
@@ -3367,15 +3285,7 @@ var authCommandsLib = {
         },
         {
           testname: "doTxn_delete",
-          command: {
-              doTxn: [{
-                  "h": NumberLong(0),
-                  "v": 2,
-                  "op": "d",
-                  "ns": firstDbName + ".x",
-                  "o": {"_id": 1}
-              }]
-          },
+          command: {doTxn: [{"op": "d", "ns": firstDbName + ".x", "o": {"_id": 1}}]},
           skipSharded: true,
           setup: function(db) {
               db.getSisterDB(firstDbName).x.save({_id: 1, data: 1});

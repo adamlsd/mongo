@@ -54,7 +54,6 @@
 
 namespace mongo {
 
-using std::cout;
 using std::endl;
 
 Status addMongodOptions(moe::OptionSection* options) {
@@ -209,19 +208,26 @@ Status addMongodOptions(moe::OptionSection* options) {
                            "collections within a database into a shared record store.")
         .hidden();
 
+    // Only allow `noIndexBuildRetry` on standalones to quickly access data. Running with
+    // `noIndexBuildRetry` is risky in a live replica set. For example, trying to drop a
+    // collection that did not have its indexes rebuilt results in a crash.
     general_options
         .addOptionChaining("noIndexBuildRetry",
                            "noIndexBuildRetry",
                            moe::Switch,
                            "don't retry any index builds that were interrupted by shutdown")
-        .setSources(moe::SourceAllLegacy);
+        .setSources(moe::SourceAllLegacy)
+        .incompatibleWith("replication.replSet")
+        .incompatibleWith("replication.replSetName");
 
     general_options
         .addOptionChaining("storage.indexBuildRetry",
                            "",
                            moe::Bool,
                            "don't retry any index builds that were interrupted by shutdown")
-        .setSources(moe::SourceYAMLConfig);
+        .setSources(moe::SourceYAMLConfig)
+        .incompatibleWith("replication.replSet")
+        .incompatibleWith("replication.replSetName");
 
     storage_options
         .addOptionChaining("noprealloc",
@@ -1065,7 +1071,7 @@ Status storeMongodOptions(const moe::Environment& params) {
 
     if (params.count("storage.mmapv1.preallocDataFiles")) {
         mmapv1GlobalOptions.prealloc = params["storage.mmapv1.preallocDataFiles"].as<bool>();
-        cout << "note: noprealloc may hurt performance in many applications" << endl;
+        log() << "note: noprealloc may hurt performance in many applications" << endl;
     }
     if (params.count("storage.mmapv1.smallFiles")) {
         mmapv1GlobalOptions.smallfiles = params["storage.mmapv1.smallFiles"].as<bool>();

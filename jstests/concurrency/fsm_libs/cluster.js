@@ -33,7 +33,6 @@ var Cluster = function(options) {
 
     function validateClusterOptions(options) {
         var allowedKeys = [
-            'masterSlave',
             'replication.enabled',
             'replication.numNodes',
             'sameCollection',
@@ -56,9 +55,6 @@ var Cluster = function(options) {
                             'invalid option: ' + tojson(option) + '; valid options are: ' +
                                 tojson(allowedKeys));
         });
-
-        options.masterSlave = options.masterSlave || false;
-        assert.eq('boolean', typeof options.masterSlave);
 
         options.replication = options.replication || {};
         assert.eq('object', typeof options.replication);
@@ -169,20 +165,16 @@ var Cluster = function(options) {
                'Expected teardownFunctions.config to be an array');
         assert(options.teardownFunctions.config.every(f => (typeof f === 'function')),
                'Expected teardownFunctions.config to be an array of functions');
-
-        assert(!options.masterSlave || !options.replication.enabled,
-               "Both 'masterSlave' and " + "'replication.enabled' cannot be true");
-        assert(!options.masterSlave || !options.sharded.enabled,
-               "Both 'masterSlave' and 'sharded.enabled' cannot" + "be true");
     }
 
-    function makeReplSetTestConfig(numReplSetNodes) {
+    function makeReplSetTestConfig(numReplSetNodes, firstNodeOnlyVote) {
         const REPL_SET_VOTING_LIMIT = 7;
         // Workaround for SERVER-26893 to specify when numReplSetNodes > REPL_SET_VOTING_LIMIT.
+        var firstNodeNotVoting = firstNodeOnlyVote ? 1 : REPL_SET_VOTING_LIMIT;
         var rstConfig = [];
         for (var i = 0; i < numReplSetNodes; i++) {
             rstConfig[i] = {};
-            if (i >= REPL_SET_VOTING_LIMIT) {
+            if (i >= firstNodeNotVoting) {
                 rstConfig[i].rsConfig = {priority: 0, votes: 0};
             }
         }
@@ -225,7 +217,8 @@ var Cluster = function(options) {
             // TODO: allow 'options' to specify an 'rs' config
             if (options.replication.enabled) {
                 shardConfig.rs = {
-                    nodes: makeReplSetTestConfig(options.replication.numNodes),
+                    nodes: makeReplSetTestConfig(options.replication.numNodes,
+                                                 !this.shouldPerformContinuousStepdowns()),
                     // Increase the oplog size (in MB) to prevent rollover
                     // during write-heavy workloads
                     oplogSize: 1024,
@@ -243,7 +236,7 @@ var Cluster = function(options) {
 
             conn = st.s;  // mongos
 
-            this.teardown = function teardown() {
+            this.teardown = function teardown(opts) {
                 options.teardownFunctions.mongod.forEach(this.executeOnMongodNodes);
                 options.teardownFunctions.mongos.forEach(this.executeOnMongosNodes);
                 options.teardownFunctions.config.forEach(this.executeOnConfigNodes);
@@ -254,7 +247,7 @@ var Cluster = function(options) {
                 if (this.shouldPerformContinuousStepdowns()) {
                     TestData.skipCheckingUUIDsConsistentAcrossCluster = true;
                 }
-                st.stop();
+                st.stop(opts);
             };
 
             if (this.shouldPerformContinuousStepdowns()) {
@@ -295,7 +288,8 @@ var Cluster = function(options) {
             }
         } else if (options.replication.enabled) {
             var replSetConfig = {
-                nodes: makeReplSetTestConfig(options.replication.numNodes),
+                nodes: makeReplSetTestConfig(options.replication.numNodes,
+                                             !this.shouldPerformContinuousStepdowns()),
                 // Increase the oplog size (in MB) to prevent rollover during write-heavy workloads
                 oplogSize: 1024,
                 nodeOptions: {verbose: verbosityLevel}
@@ -310,31 +304,12 @@ var Cluster = function(options) {
             conn = rst.getPrimary();
             replSets = [rst];
 
-            this.teardown = function teardown() {
+            this.teardown = function teardown(opts) {
                 options.teardownFunctions.mongod.forEach(this.executeOnMongodNodes);
-
-                rst.stopSet();
+                rst.stopSet(undefined, undefined, opts);
             };
 
             this._addReplicaSetConns(rst);
-
-        } else if (options.masterSlave) {
-            var rt = new ReplTest('replTest');
-
-            var master = rt.start(true);
-            var slave = rt.start(false);
-            conn = master;
-
-            master.adminCommand({setParameter: 1, logLevel: verbosityLevel});
-            slave.adminCommand({setParameter: 1, logLevel: verbosityLevel});
-
-            this.teardown = function teardown() {
-                options.teardownFunctions.mongod.forEach(this.executeOnMongodNodes);
-
-                rt.stop();
-            };
-
-            _conns.mongod = [master, slave];
 
         } else {  // standalone server
             conn = db.getMongo();
@@ -716,8 +691,7 @@ var Cluster = function(options) {
  * and false otherwise.
  */
 Cluster.isStandalone = function isStandalone(clusterOptions) {
-    return !clusterOptions.sharded.enabled && !clusterOptions.replication.enabled &&
-        !clusterOptions.masterSlave;
+    return !clusterOptions.sharded.enabled && !clusterOptions.replication.enabled;
 };
 
 /**

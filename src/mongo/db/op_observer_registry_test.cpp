@@ -63,7 +63,8 @@ struct TestObserver : public OpObserverNoop {
                                     bool dropTarget,
                                     OptionalCollectionUUID dropTargetUUID,
                                     bool stayTemp) {
-        return opTime;
+        OpObserver::Times::get(opCtx).reservedOpTimes.push_back(opTime);
+        return {};
     }
 };
 

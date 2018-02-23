@@ -203,6 +203,12 @@ public:
             o->onTransactionAbort(opCtx);
     }
 
+    void onReplicationRollback(OperationContext* opCtx,
+                               const RollbackObserverInfo& rbInfo) override {
+        for (auto& o : _observers)
+            o->onReplicationRollback(opCtx, rbInfo);
+    }
+
 private:
     static repl::OpTime _getOpTimeToReturn(const std::vector<repl::OpTime>& times) {
         if (times.empty()) {

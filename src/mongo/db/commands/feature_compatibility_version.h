@@ -81,7 +81,7 @@ public:
                 return FeatureCompatibilityVersionCommandParser::kVersionUpgradingTo36;
             case ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34:
                 return FeatureCompatibilityVersionCommandParser::kVersionDowngradingTo34;
-            case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
+            case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36:
                 return FeatureCompatibilityVersionCommandParser::kVersion36;
             case ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo40:
                 return FeatureCompatibilityVersionCommandParser::kVersionUpgradingTo40;
@@ -150,18 +150,6 @@ public:
      * the server parameter.
      */
     static void onInsertOrUpdate(OperationContext* opCtx, const BSONObj& doc);
-
-    /**
-     * Examines the _id of a document removed from admin.system.version. If it is the
-     * featureCompatibilityVersion document, resets the server parameter to its default value
-     * on commit.
-     */
-    static void onDelete(OperationContext* opCtx, const BSONObj& doc);
-
-    /**
-     * Resets the server parameter to its default value on commit.
-     */
-    static void onDropCollection(OperationContext* opCtx);
 
     /**
      * Sets the server's outgoing and incomingInternalClient minWireVersions according to the

@@ -62,6 +62,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/operation_sharding_state.h"
+#include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_entry_point_common.h"
@@ -95,30 +96,33 @@ MONGO_FP_DECLARE(skipCheckingForNotMasterInCommandDispatch);
 namespace {
 using logger::LogComponent;
 
-// The command names for which to check out a session.
-//
-// Note: Eval should check out a session because it defaults to running under a global write lock,
-// so if it didn't, and the function it was given contains any of these whitelisted commands, they
-// would try to check out a session under a lock, which is not allowed.  Similarly,
-// refreshLogicalSessionCacheNow triggers a bulk update under a lock on the sessions collection.
-const StringMap<int> sessionCheckoutWhitelist = {{"delete", 1},
+// The command names for which to check out a session. These are commands that support retryable
+// writes, readConcern snapshot, or multi-statement transactions. We additionally check out the
+// session for commands that can take a lock and then run another whitelisted command in
+// DBDirectClient. Otherwise, the nested command would try to check out a session under a lock,
+// which is not allowed.
+const StringMap<int> sessionCheckoutWhitelist = {{"applyOps", 1},
+                                                 {"count", 1},
+                                                 {"delete", 1},
                                                  {"eval", 1},
                                                  {"$eval", 1},
+                                                 {"explain", 1},
+                                                 {"find", 1},
                                                  {"findandmodify", 1},
                                                  {"findAndModify", 1},
-                                                 {"insert", 1},
-                                                 {"refreshLogicalSessionCacheNow", 1},
-                                                 {"update", 1},
-                                                 {"find", 1},
-                                                 {"getMore", 1},
-                                                 {"count", 1},
                                                  {"geoSearch", 1},
-                                                 {"parallelCollectionScan", 1}};
+                                                 {"getMore", 1},
+                                                 {"group", 1},
+                                                 {"insert", 1},
+                                                 {"mapReduce", 1},
+                                                 {"parallelCollectionScan", 1},
+                                                 {"refreshLogicalSessionCacheNow", 1},
+                                                 {"update", 1}};
 
 // The command names for which readConcern level snapshot is allowed. The getMore command is
 // implicitly allowed to operate on a cursor which was opened under readConcern level snapshot.
 const StringMap<int> readConcernSnapshotWhitelist = {
-    {"find", 1}, {"count", 1}, {"geoSearch", 1}, {"parallelCollectionScan", 1}};
+    {"find", 1}, {"count", 1}, {"geoSearch", 1}, {"parallelCollectionScan", 1}, {"update", 1}};
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -128,7 +132,7 @@ void generateLegacyQueryErrorResponse(const AssertionException* exception,
 
     log(LogComponent::kQuery) << "assertion " << exception->toString() << " ns:" << queryMessage.ns
                               << " query:" << (queryMessage.query.valid(BSONVersion::kLatest)
-                                                   ? queryMessage.query.toString()
+                                                   ? redact(queryMessage.query)
                                                    : "query object is corrupt");
     if (queryMessage.ntoskip || queryMessage.ntoreturn) {
         log(LogComponent::kQuery) << " ntoskip:" << queryMessage.ntoskip
@@ -475,12 +479,26 @@ void execCommandDatabase(OperationContext* opCtx,
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
 
         auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
-        initializeOperationSessionInfo(
+        auto sessionOptions = initializeOperationSessionInfo(
             opCtx,
             request.body,
             command->requiresAuth(),
             replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet,
             opCtx->getServiceContext()->getGlobalStorageEngine()->supportsDocLocking());
+
+        // Session ids are forwarded in requests, so commands that require roundtrips between
+        // servers may result in a deadlock when a server tries to check out a session it is already
+        // using to service an earlier operation in the command's chain. To avoid this, only check
+        // out sessions for commands that require them.
+        const bool shouldCheckoutSession =
+            sessionCheckoutWhitelist.find(command->getName()) != sessionCheckoutWhitelist.cend();
+
+        boost::optional<bool> autocommitVal = boost::none;
+        if (sessionOptions && sessionOptions->getAutocommit()) {
+            autocommitVal = *sessionOptions->getAutocommit();
+        }
+
+        OperationContextSession sessionTxnState(opCtx, shouldCheckoutSession, autocommitVal);
 
         const auto dbname = request.getDatabase().toString();
         uassert(
@@ -526,17 +544,6 @@ void execCommandDatabase(OperationContext* opCtx,
             Command::generateHelpResponse(opCtx, replyBuilder, *command);
             return;
         }
-
-        // Session ids are forwarded in requests, so commands that require roundtrips between
-        // servers may result in a deadlock when a server tries to check out a session it is already
-        // using to service an earlier operation in the command's chain. To avoid this, only check
-        // out sessions for commands that require them (i.e. write commands).
-        // Session checkout is also prevented for commands run within DBDirectClient. If checkout is
-        // required, it is expected to be handled by the outermost command.
-        const bool shouldCheckoutSession =
-            sessionCheckoutWhitelist.find(command->getName()) != sessionCheckoutWhitelist.cend() &&
-            !opCtx->getClient()->isInDirectClient();
-        OperationContextSession sessionTxnState(opCtx, shouldCheckoutSession);
 
         ImpersonationSessionGuard guard(opCtx);
         uassertStatusOK(Command::checkAuthorization(command, opCtx, request));
@@ -678,7 +685,15 @@ void execCommandDatabase(OperationContext* opCtx,
             runCommandImpl(opCtx, command, request, replyBuilder, startOperationTime, behaviors);
 
         if (retval) {
-            sessionTxnState.stashTransactionResources();
+            if (opCtx->getWriteUnitOfWork()) {
+                if (!opCtx->hasStashedCursor()) {
+                    // If we are in an autocommit=true transaction and have no stashed cursor,
+                    // commit the transaction.
+                    opCtx->getWriteUnitOfWork()->commit();
+                } else {
+                    sessionTxnState.stashTransactionResources();
+                }
+            }
         } else {
             command->incrementCommandsFailed();
         }
@@ -686,10 +701,11 @@ void execCommandDatabase(OperationContext* opCtx,
         // If we got a stale config, wait in case the operation is stuck in a critical section
         if (auto sce = e.extraInfo<StaleConfigInfo>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
-                ShardingState::get(opCtx)
-                    ->onStaleShardVersion(
-                        opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
-                    .transitional_ignore();
+                // We already have the StaleConfig exception, so just swallow any errors due to
+                // refresh
+                onShardVersionMismatch(
+                    opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
+                    .ignore();
             }
         }
 
@@ -847,10 +863,11 @@ DbResponse receivedQuery(OperationContext* opCtx,
         // If we got a stale config, wait in case the operation is stuck in a critical section
         if (auto sce = e.extraInfo<StaleConfigInfo>()) {
             if (!opCtx->getClient()->isInDirectClient()) {
-                ShardingState::get(opCtx)
-                    ->onStaleShardVersion(
-                        opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
-                    .transitional_ignore();
+                // We already have the StaleConfig exception, so just swallow any errors due to
+                // refresh
+                onShardVersionMismatch(
+                    opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
+                    .ignore();
             }
         }
 

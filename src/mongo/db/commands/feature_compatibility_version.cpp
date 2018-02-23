@@ -166,7 +166,7 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
                                         << feature_compatibility_version::kDochubLink
                                         << ".");
         } else {
-            version = ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
+            version = ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36;
         }
     } else if (versionString == FeatureCompatibilityVersionCommandParser::kVersion40) {
         if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion40 ||
@@ -276,7 +276,6 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
 
     // We then insert the featureCompatibilityVersion document into the "admin.system.version"
     // collection. The server parameter will be updated on commit by the op observer.
-    // TODO(SERVER-32597): If storeUpgradeVersion is true, kVersion38 should be stored.
     uassertStatusOK(storageInterface->insertDocument(
         opCtx,
         nss,
@@ -284,7 +283,7 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
             BSON("_id" << FeatureCompatibilityVersion::kParameterName
                        << FeatureCompatibilityVersion::kVersionField
                        << (storeUpgradeVersion
-                               ? FeatureCompatibilityVersionCommandParser::kVersion36
+                               ? FeatureCompatibilityVersionCommandParser::kVersion40
                                : FeatureCompatibilityVersionCommandParser::kVersion36)),
             Timestamp()},
         repl::OpTime::kUninitializedTerm));  // No timestamp or term because this write is not
@@ -328,37 +327,11 @@ void FeatureCompatibilityVersion::onInsertOrUpdate(OperationContext* opCtx, cons
         // Close all incoming connections from internal clients with binary versions lower than
         // ours. It would be desirable to close all outgoing connections to servers with lower
         // binary version, but it is not currently possible.
-        if (newVersion != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
+        if (newVersion != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36) {
             opCtx->getServiceContext()->getServiceEntryPoint()->endAllSessions(
                 transport::Session::kLatestVersionInternalClientKeepOpen |
                 transport::Session::kExternalClientKeepOpen);
         }
-    });
-}
-
-void FeatureCompatibilityVersion::onDelete(OperationContext* opCtx, const BSONObj& doc) {
-    auto idElement = doc["_id"];
-    if (idElement.type() != BSONType::String ||
-        idElement.String() != FeatureCompatibilityVersion::kParameterName) {
-        return;
-    }
-
-    log() << "setting featureCompatibilityVersion to "
-          << FeatureCompatibilityVersionCommandParser::kVersion34;
-    opCtx->recoveryUnit()->onCommit([]() {
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
-        updateMinWireVersion();
-    });
-}
-
-void FeatureCompatibilityVersion::onDropCollection(OperationContext* opCtx) {
-    log() << "setting featureCompatibilityVersion to "
-          << FeatureCompatibilityVersionCommandParser::kVersion36;
-    opCtx->recoveryUnit()->onCommit([]() {
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
-        updateMinWireVersion();
     });
 }
 
@@ -372,7 +345,7 @@ void FeatureCompatibilityVersion::updateMinWireVersion() {
             spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION;
             spec.outgoing.minWireVersion = LATEST_WIRE_VERSION;
             return;
-        case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
+        case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36:
         case ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36:
         case ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34:
             spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION - 1;
@@ -471,7 +444,7 @@ public:
                     FeatureCompatibilityVersion::kTargetVersionField,
                     FeatureCompatibilityVersionCommandParser::kVersion36);
                 return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
+            case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36:
                 featureCompatibilityVersionBuilder.append(
                     FeatureCompatibilityVersion::kVersionField,
                     FeatureCompatibilityVersionCommandParser::kVersion36);

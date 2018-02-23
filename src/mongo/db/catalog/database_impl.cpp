@@ -71,6 +71,7 @@
 #include "mongo/db/system_index.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/platform/random.h"
+#include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point_service.h"
@@ -766,22 +767,19 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     invariant(!options.isView());
     NamespaceString nss(ns);
 
-    uassert(ErrorCodes::CannotImplicitlyCreateCollection,
+    uassert(CannotImplicitlyCreateCollectionInfo(nss),
             "request doesn't allow collection to be created implicitly",
             OperationShardingState::get(opCtx).allowImplicitCollectionCreation());
 
     CollectionOptions optionsWithUUID = options;
     bool generatedUUID = false;
-    if (enableCollectionUUIDs && !optionsWithUUID.uuid &&
-        serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
+    if (!optionsWithUUID.uuid) {
         auto coordinator = repl::ReplicationCoordinator::get(opCtx);
-        bool fullyUpgraded = serverGlobalParams.featureCompatibility.getVersion() >=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
         bool canGenerateUUID =
             (coordinator->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) ||
             coordinator->canAcceptWritesForDatabase(opCtx, nss.db()) || nss.isSystemDotProfile();
 
-        if (fullyUpgraded && !canGenerateUUID) {
+        if (!canGenerateUUID) {
             std::string msg = str::stream() << "Attempted to create a new collection " << nss.ns()
                                             << " without a UUID";
             severe() << msg;

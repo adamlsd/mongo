@@ -33,24 +33,6 @@
     let coll = "foo";
     let nss = db + "." + coll;
 
-    // Given a command, build its expected shape in the system profiler.
-    let buildCommandProfile = function(command) {
-        let commandProfile = {ns: nss};
-        if (command.mapReduce) {
-            // Unlike other read commands, mapReduce is rewritten to a different format when sent to
-            // shards if the input collection is sharded, because it is executed in two phases.
-            // We do not check for the 'map' and 'reduce' fields, because they are functions, and
-            // we cannot compaare functions for equality.
-            commandProfile["command.out"] = {$regex: "^tmp.mrs"};
-            commandProfile["command.shardedFirstPass"] = true;
-        } else {
-            for (let key in command) {
-                commandProfile["command." + key] = command[key];
-            }
-        }
-        return commandProfile;
-    };
-
     // Check that a test case is well-formed.
     let validateTestCase = function(test) {
         assert(test.setUp && typeof(test.setUp) === "function");
@@ -72,6 +54,7 @@
         _configsvrCommitChunkMerge: {skip: "primary only"},
         _configsvrCommitChunkMigration: {skip: "primary only"},
         _configsvrCommitChunkSplit: {skip: "primary only"},
+        _configsvrCommitMovePrimary: {skip: "primary only"},
         _configsvrDropCollection: {skip: "primary only"},
         _configsvrDropDatabase: {skip: "primary only"},
         _configsvrMoveChunk: {skip: "primary only"},
@@ -85,6 +68,7 @@
         _isSelf: {skip: "does not return user data"},
         _mergeAuthzCollections: {skip: "primary only"},
         _migrateClone: {skip: "primary only"},
+        _movePrimary: {skip: "primary only"},
         _recvChunkAbort: {skip: "primary only"},
         _recvChunkCommit: {skip: "primary only"},
         _recvChunkStart: {skip: "primary only"},
@@ -481,8 +465,8 @@
         let localReadConcernRes = staleMongos.getDB(db).runCommand(cmdPrefSecondaryConcernLocal);
         test.checkResults(localReadConcernRes);
 
-        // Build the query to identify the command in the system profiler.
-        let commandProfile = buildCommandProfile(test.command);
+        // Build the query to identify the operation in the system profiler.
+        let commandProfile = buildCommandProfile(test.command, true /* sharded */);
 
         if (test.behavior === "unshardedOnly") {
             // Check that neither the donor nor recipient shard secondaries received either request.

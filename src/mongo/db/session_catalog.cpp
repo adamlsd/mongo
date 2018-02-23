@@ -240,8 +240,11 @@ void SessionCatalog::_releaseSession(const LogicalSessionId& lsid) {
     sri->availableCondVar.notify_one();
 }
 
-OperationContextSession::OperationContextSession(OperationContext* opCtx, bool checkOutSession)
+OperationContextSession::OperationContextSession(OperationContext* opCtx,
+                                                 bool checkOutSession,
+                                                 boost::optional<bool> autocommit)
     : _opCtx(opCtx) {
+
     if (!opCtx->getLogicalSessionId()) {
         return;
     }
@@ -273,7 +276,8 @@ OperationContextSession::OperationContextSession(OperationContext* opCtx, bool c
     checkedOutSession->scopedSession->refreshFromStorageIfNeeded(opCtx);
 
     if (opCtx->getTxnNumber()) {
-        checkedOutSession->scopedSession->beginTxn(opCtx, *opCtx->getTxnNumber());
+        checkedOutSession->scopedSession->beginOrContinueTxn(
+            opCtx, *opCtx->getTxnNumber(), autocommit);
     }
 }
 
@@ -288,14 +292,11 @@ OperationContextSession::~OperationContextSession() {
 }
 
 void OperationContextSession::stashTransactionResources() {
-    if (_opCtx->getClient()->isInDirectClient()) {
-        return;
-    }
-
     if (auto& checkedOutSession = operationSessionDecoration(_opCtx)) {
-        invariant(checkedOutSession->checkOutNestingLevel == 1);
-        if (auto session = checkedOutSession->scopedSession.get()) {
-            session->stashTransactionResources(_opCtx);
+        if (checkedOutSession->checkOutNestingLevel == 1) {
+            if (auto session = checkedOutSession->scopedSession.get()) {
+                session->stashTransactionResources(_opCtx);
+            }
         }
     }
 }
@@ -305,14 +306,11 @@ void OperationContextSession::unstashTransactionResources() {
         return;
     }
 
-    if (_opCtx->getClient()->isInDirectClient()) {
-        return;
-    }
-
     if (auto& checkedOutSession = operationSessionDecoration(_opCtx)) {
-        invariant(checkedOutSession->checkOutNestingLevel == 1);
-        if (auto session = checkedOutSession->scopedSession.get()) {
-            session->unstashTransactionResources(_opCtx);
+        if (checkedOutSession->checkOutNestingLevel == 1) {
+            if (auto session = checkedOutSession->scopedSession.get()) {
+                session->unstashTransactionResources(_opCtx);
+            }
         }
     }
 }

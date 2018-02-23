@@ -531,7 +531,7 @@ functions:
         # remove this patch once SERVER-33101 is released
         patch -p1 < ../src/buildscripts/mongoc-stat.c.diff
         export ${compile_env|}
-        ./configure --prefix=$(pwd)/install --with-libbson=bundled --disable-automatic-init-and-cleanup --disable-ssl --disable-sasl --disable-examples --disable-man-pages --disable-html-docs --disable-shm-counters --disable-shared --enable-static ${cdriver_configure_flags|}
+        ./configure --prefix=$(pwd)/install --with-libbson=bundled --disable-tests --disable-automatic-init-and-cleanup --disable-ssl --disable-sasl --disable-examples --disable-man-pages --disable-html-docs --disable-shm-counters --disable-shared --enable-static ${cdriver_configure_flags|}
         make
         make install
         fi
@@ -1030,9 +1030,9 @@ functions:
         set -o errexit
 
         ${activate_virtualenv}
-        if [ ${enable_ios_sim_tests|false} = "true" ]; then
-            ${compile_env|} $python buildscripts/runiossim.py --test "build/debug/mongo/client/embedded/mongo_embedded_capi_test"
-            ${compile_env|} $python buildscripts/runiossim.py --test "build/debug/mongo/client/embedded/mongo_embedded_transport_test"
+        if [ ${enable_iostvos_sim_tests|false} = "true" ]; then
+            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/debug/mongo/client/embedded/mongo_embedded_capi_test"
+            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/debug/mongo/client/embedded/mongo_embedded_transport_test"
         fi
 
   "run android emulator tests" :
@@ -2556,7 +2556,7 @@ tasks:
         run_multiple_jobs: true
 
     # Run the iOS embedded CAPI tests in the iOS simulator
-    # noop if ${enable_ios_sim_tests} is not "true"
+    # noop if ${enable_iostvos_sim_tests} is not "true"
     - func: "run ios sim embedded tests"
 
     # Run the android embedded CAPI tests in the android emulator
@@ -3376,17 +3376,6 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: master_slave_jscore_passthrough
-  depends_on:
-  - name: jsCore
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave_jscore_passthrough --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
   name: replica_sets_jscore_passthrough
   depends_on:
   - name: jsCore
@@ -3753,26 +3742,6 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: master_slave
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
-  name: master_slave_auth
-  depends_on:
-  - name: master_slave
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave_auth --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
   name: sasl
   commands:
   - func: "do setup"
@@ -4027,7 +3996,7 @@ tasks:
       <<: *powercycle_test
       mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
 
-- name: powercycle_fcv3.4
+- name: powercycle_fcv3.6
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
   depends_on:
   - name: compile
@@ -4044,8 +4013,8 @@ tasks:
   - func: "run powercycle test"
     vars:
       <<: *powercycle_test
-      client_options: --numCrudClients=20 --numFsmClients=20 --fsmWorkloadBlacklistFiles=toggle_feature_compatibility.js
-      mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path} --fcv=3.4
+      client_options: --numCrudClients=20 --numFsmClients=20
+      mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path} --fcv=3.6
       mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
 
 - name: powercycle_replication
@@ -4769,9 +4738,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -4885,9 +4851,6 @@ buildvariants:
   - name: replica_sets_pv0
   - name: retryable_writes_jscore_passthrough
   - name: retryable_writes_jscore_stepdown_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: serial_run
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_passthrough
@@ -4953,8 +4916,6 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_sharded
   - name: mongosTest
-  - name: master_slave
-  - name: master_slave_auth
 
 - name: linux-64-lsm
   stepback: false
@@ -5004,8 +4965,6 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: slow1
   - name: serial_run
@@ -5082,9 +5041,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5187,11 +5143,8 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: powercycle
-  - name: powercycle_fcv3.4
+  - name: powercycle_fcv3.6
   - name: powercycle_replication
   - name: powercycle_replication_smalloplog
   - name: powercycle_syncdelay
@@ -5281,9 +5234,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5376,9 +5326,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -5493,9 +5440,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -5588,9 +5532,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -5668,8 +5609,6 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: replica_sets_auth
   - name: replica_sets_ese
-  - name: master_slave_auth
-  - name: master_slave
   - name: powercycle
   - name: sasl
   - name: sharding_auth
@@ -5756,9 +5695,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5830,8 +5766,6 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -6092,7 +6026,6 @@ buildvariants:
   - name: read_concern_linearizable_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharding_auth
     distros:
@@ -6173,8 +6106,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion
   - name: multiversion_auth
@@ -6184,7 +6115,7 @@ buildvariants:
   - name: parallel
   - name: parallel_compatibility
   - name: powercycle
-  - name: powercycle_fcv3.4
+  - name: powercycle_fcv3.6
   - name: powercycle_replication
   - name: powercycle_syncdelay
   - name: read_concern_linearizable_passthrough
@@ -6314,8 +6245,6 @@ buildvariants:
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
   - name: noPassthrough
@@ -6373,7 +6302,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: mongosTest
   - name: replica_sets
-  - name: master_slave
   - name: tool
 
 - name: enterprise-osx-1010
@@ -6425,7 +6353,7 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     build_cdriver: true
-    cdriver_configure_flags: --build x86_64-apple-darwin --host arm-apple-darwin CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode"  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 "  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --variables-files=etc/scons/xcode_ios.vars  CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
@@ -6439,11 +6367,13 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     build_cdriver: true
-    cdriver_configure_flags: --build x86_64-apple-darwin --host x86_64-apple-darwin16.6.0 CC="$(xcrun -f --sdk iphonesimulator clang)" CXX="$(xcrun -f --sdk iphonesimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2"  CFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2" CXXFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2" LDFLAGS="-miphoneos-version-min=10.2"
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk iphonesimulator clang)" CXX="$(xcrun -f --sdk iphonesimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 "  CFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " CXXFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " LDFLAGS="-miphoneos-version-min=10.2 "
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --variables-files=etc/scons/xcode_ios_sim.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
-    enable_ios_sim_tests: true
+    enable_iostvos_sim_tests: true
+    ios_sim_device: iPhone-7
+    ios_sim_runtime: iOS-10-3
   tasks:
   - name: compile_all
 
@@ -6453,8 +6383,10 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    build_cdriver: true
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk appletvos clang)" CXX="$(xcrun -f --sdk appletvos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64"  CFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" CXXFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" LDFLAGS="-mtvos-version-min=10.1 -arch arm64"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos.vars
+    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
   tasks:
   - name: compile_all
@@ -6465,9 +6397,14 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    build_cdriver: true
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk appletvsimulator clang)" CXX="$(xcrun -f --sdk appletvsimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1"  CFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" CXXFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" LDFLAGS="-mtvos-version-min=10.1"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos_sim.vars
+    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos_sim.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
+    enable_iostvos_sim_tests: true
+    ios_sim_device: Apple-TV-1080p
+    ios_sim_runtime: tvOS-10-2
   tasks:
   - name: compile_all
 
@@ -6593,9 +6530,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -6761,9 +6695,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -6955,9 +6886,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -7048,9 +6976,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -7146,9 +7071,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7253,9 +7175,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7354,9 +7273,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7732,9 +7648,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7826,9 +7739,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8022,9 +7932,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8110,9 +8017,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8250,9 +8154,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8354,9 +8255,6 @@ buildvariants:
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_session
   - name: jstestfuzz_sharded_causal_consistency
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -8567,9 +8465,6 @@ buildvariants:
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
   - name: rollback_fuzzer
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_op_query
@@ -8644,9 +8539,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -8734,9 +8626,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -8855,9 +8744,6 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -9014,9 +8900,6 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -9167,9 +9050,6 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_resync_static_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -9293,8 +9173,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: multiversion
   - name: multiversion_auth
@@ -9421,8 +9299,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9526,8 +9402,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9598,9 +9472,6 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod

@@ -45,7 +45,7 @@ class OperationContext;
 
 namespace repl {
 class OpTime;
-}  // repl
+}  // namespace repl
 
 /**
  * Holds document update information used in logging.

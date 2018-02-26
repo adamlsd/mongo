@@ -180,10 +180,6 @@ using std::endl;
 
 namespace {
 
-constexpr StringData upgradeLink = "http://dochub.mongodb.org/core/3.6-upgrade-fcv"_sd;
-constexpr StringData mustDowngradeErrorMsg =
-    "UPGRADE PROBLEM: The data files need to be fully upgraded to version 3.4 before attempting an upgrade to 3.6; see http://dochub.mongodb.org/core/3.6-upgrade-fcv for more details."_sd;
-
 const NamespaceString startupLogCollectionName("local.startup_log");
 const NamespaceString kSystemReplSetCollection("local.system.replset");
 
@@ -834,11 +830,9 @@ void shutdownTask() {
             opCtx = uniqueOpCtx.get();
         }
 
-        // TODO: Upgrade this check so that this block only runs when (FCV != kFullyUpgradedTo38).
-        // See SERVER-32589.
         if (serverGlobalParams.featureCompatibility.getVersion() !=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            // If we are in fCV 3.6, drop the 'checkpointTimestamp' collection so if we downgrade
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
+            // If we are in latest fCV, drop the 'checkpointTimestamp' collection so if we downgrade
             // and then upgrade again, we do not trust a stale 'checkpointTimestamp'.
             log(LogComponent::kReplication)
                 << "shutdown: removing checkpointTimestamp collection...";

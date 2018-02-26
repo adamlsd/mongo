@@ -94,8 +94,11 @@ void SyncTailTest::setUp() {
                    OplogApplication::Mode oplogApplicationMode) { return Status::OK(); };
     _incOps = [this]() { _opsApplied++; };
 
+    // Initialize the featureCompatibilityVersion server parameter. This is necessary because this
+    // test fixture does not create a featureCompatibilityVersion document from which to initialize
+    // the server parameter.
     serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
 }
 
 void SyncTailTest::tearDown() {
@@ -179,7 +182,8 @@ Status SyncTailTest::runOpsInitialSync(std::vector<OplogEntry> ops) {
         opsPtrs.push_back(&op);
     }
     AtomicUInt32 fetchCount(0);
-    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount);
+    WorkerMultikeyPathInfo pathInfo;
+    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount, &pathInfo);
 }
 
 

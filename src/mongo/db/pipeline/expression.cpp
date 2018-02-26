@@ -1279,9 +1279,7 @@ intrusive_ptr<Expression> ExpressionDateFromString::parse(
                           << typeName(expr.type()),
             expr.type() == BSONType::Object);
 
-    BSONElement dateStringElem;
-    BSONElement timeZoneElem;
-    BSONElement formatElem;
+    BSONElement dateStringElem, timeZoneElem, formatElem, onNullElem, onErrorElem;
 
     const BSONObj args = expr.embeddedObject();
     for (auto&& arg : args) {
@@ -1293,6 +1291,10 @@ intrusive_ptr<Expression> ExpressionDateFromString::parse(
             dateStringElem = arg;
         } else if (field == "timezone"_sd) {
             timeZoneElem = arg;
+        } else if (field == "onNull"_sd) {
+            onNullElem = arg;
+        } else if (field == "onError"_sd) {
+            onErrorElem = arg;
         } else {
             uasserted(40541,
                       str::stream() << "Unrecognized argument to $dateFromString: "
@@ -1306,29 +1308,45 @@ intrusive_ptr<Expression> ExpressionDateFromString::parse(
         expCtx,
         parseOperand(expCtx, dateStringElem, vps),
         timeZoneElem ? parseOperand(expCtx, timeZoneElem, vps) : nullptr,
-        formatElem ? parseOperand(expCtx, formatElem, vps) : nullptr);
+        formatElem ? parseOperand(expCtx, formatElem, vps) : nullptr,
+        onNullElem ? parseOperand(expCtx, onNullElem, vps) : nullptr,
+        onErrorElem ? parseOperand(expCtx, onErrorElem, vps) : nullptr);
 }
 
 ExpressionDateFromString::ExpressionDateFromString(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
     intrusive_ptr<Expression> dateString,
     intrusive_ptr<Expression> timeZone,
-    intrusive_ptr<Expression> format)
+    intrusive_ptr<Expression> format,
+    intrusive_ptr<Expression> onNull,
+    intrusive_ptr<Expression> onError)
     : Expression(expCtx),
       _dateString(std::move(dateString)),
       _timeZone(std::move(timeZone)),
-      _format(std::move(format)) {}
+      _format(std::move(format)),
+      _onNull(std::move(onNull)),
+      _onError(std::move(onError)) {}
 
 intrusive_ptr<Expression> ExpressionDateFromString::optimize() {
     _dateString = _dateString->optimize();
     if (_timeZone) {
         _timeZone = _timeZone->optimize();
     }
+
     if (_format) {
         _format = _format->optimize();
     }
 
-    if (ExpressionConstant::allNullOrConstant({_dateString, _timeZone, _format})) {
+    if (_onNull) {
+        _onNull = _onNull->optimize();
+    }
+
+    if (_onError) {
+        _onError = _onError->optimize();
+    }
+
+    if (ExpressionConstant::allNullOrConstant(
+            {_dateString, _timeZone, _format, _onNull, _onError})) {
         // Everything is a constant, so we can turn into a constant.
         return ExpressionConstant::create(getExpressionContext(), evaluate(Document{}));
     }
@@ -1340,48 +1358,71 @@ Value ExpressionDateFromString::serialize(bool explain) const {
         Document{{"$dateFromString",
                   Document{{"dateString", _dateString->serialize(explain)},
                            {"timezone", _timeZone ? _timeZone->serialize(explain) : Value()},
-                           {"format", _format ? _format->serialize(explain) : Value()}}}});
+                           {"format", _format ? _format->serialize(explain) : Value()},
+                           {"onNull", _onNull ? _onNull->serialize(explain) : Value()},
+                           {"onError", _onError ? _onError->serialize(explain) : Value()}}}});
 }
 
 Value ExpressionDateFromString::evaluate(const Document& root) const {
     const Value dateString = _dateString->evaluate(root);
+    Value formatValue;
 
-    auto timeZone = makeTimeZone(getExpressionContext()->timeZoneDatabase, root, _timeZone.get());
+    // Eagerly validate the format parameter, ignoring if nullish since the input string nullish
+    // behavior takes precedence.
+    if (_format) {
+        formatValue = _format->evaluate(root);
+        if (!formatValue.nullish()) {
+            uassert(40684,
+                    str::stream() << "$dateFromString requires that 'format' be a string, found: "
+                                  << typeName(formatValue.getType())
+                                  << " with value "
+                                  << formatValue.toString(),
+                    formatValue.getType() == BSONType::String);
 
-    if (!timeZone || dateString.nullish()) {
-        return Value(BSONNULL);
+            TimeZone::validateFromStringFormat(formatValue.getStringData());
+        }
     }
 
-    uassert(40543,
-            str::stream() << "$dateFromString requires that 'dateString' be a string, found: "
-                          << typeName(dateString.getType())
-                          << " with value "
-                          << dateString.toString(),
-            dateString.getType() == BSONType::String);
-    const auto& dateTimeString = dateString.getStringData();
+    // Evaluate the timezone parameter before checking for nullish input, as this will throw an
+    // exception for an invalid timezone string.
+    auto timeZone = makeTimeZone(getExpressionContext()->timeZoneDatabase, root, _timeZone.get());
 
-    if (_format) {
-        const Value format = _format->evaluate(root);
+    // Behavior for nullish input takes precedence over other nullish elements.
+    if (dateString.nullish()) {
+        return _onNull ? _onNull->evaluate(root) : Value(BSONNULL);
+    }
 
-        if (format.nullish()) {
+    try {
+        uassert(ErrorCodes::ConversionFailure,
+                str::stream() << "$dateFromString requires that 'dateString' be a string, found: "
+                              << typeName(dateString.getType())
+                              << " with value "
+                              << dateString.toString(),
+                dateString.getType() == BSONType::String);
+
+        const auto dateTimeString = dateString.getStringData();
+
+        if (!timeZone) {
             return Value(BSONNULL);
         }
 
-        uassert(40684,
-                str::stream() << "$dateFromString requires that 'format' be a string, found: "
-                              << typeName(format.getType())
-                              << " with value "
-                              << format.toString(),
-                format.getType() == BSONType::String);
-        const auto& formatString = format.getStringData();
+        if (_format) {
+            if (formatValue.nullish()) {
+                return Value(BSONNULL);
+            }
 
-        TimeZone::validateFromStringFormat(formatString);
+            return Value(getExpressionContext()->timeZoneDatabase->fromString(
+                dateTimeString, timeZone.get(), formatValue.getStringData()));
+        }
 
-        return Value(getExpressionContext()->timeZoneDatabase->fromString(
-            dateTimeString, timeZone, formatString));
+        return Value(
+            getExpressionContext()->timeZoneDatabase->fromString(dateTimeString, timeZone.get()));
+    } catch (const ExceptionFor<ErrorCodes::ConversionFailure>&) {
+        if (_onError) {
+            return _onError->evaluate(root);
+        }
+        throw;
     }
-
-    return Value(getExpressionContext()->timeZoneDatabase->fromString(dateTimeString, timeZone));
 }
 
 void ExpressionDateFromString::_doAddDependencies(DepsTracker* deps) const {
@@ -1389,8 +1430,17 @@ void ExpressionDateFromString::_doAddDependencies(DepsTracker* deps) const {
     if (_timeZone) {
         _timeZone->addDependencies(deps);
     }
+
     if (_format) {
         _format->addDependencies(deps);
+    }
+
+    if (_onNull) {
+        _onNull->addDependencies(deps);
+    }
+
+    if (_onError) {
+        _onError->addDependencies(deps);
     }
 }
 
@@ -1572,20 +1622,11 @@ intrusive_ptr<Expression> ExpressionDateToString::parse(
         }
     }
 
-    uassert(18627, "Missing 'format' parameter to $dateToString", !formatElem.eoo());
     uassert(18628, "Missing 'date' parameter to $dateToString", !dateElem.eoo());
 
-    uassert(18533,
-            "The 'format' parameter to $dateToString must be a string literal",
-            formatElem.type() == BSONType::String);
-
-    const string format = formatElem.str();
-
-    TimeZone::validateToStringFormat(format);
-
     return new ExpressionDateToString(expCtx,
-                                      format,
                                       parseOperand(expCtx, dateElem, vps),
+                                      formatElem ? parseOperand(expCtx, formatElem, vps) : nullptr,
                                       timeZoneElem ? parseOperand(expCtx, timeZoneElem, vps)
                                                    : nullptr,
                                       onNullElem ? parseOperand(expCtx, onNullElem, vps) : nullptr);
@@ -1593,12 +1634,12 @@ intrusive_ptr<Expression> ExpressionDateToString::parse(
 
 ExpressionDateToString::ExpressionDateToString(
     const boost::intrusive_ptr<ExpressionContext>& expCtx,
-    const string& format,
     intrusive_ptr<Expression> date,
+    intrusive_ptr<Expression> format,
     intrusive_ptr<Expression> timeZone,
     intrusive_ptr<Expression> onNull)
     : Expression(expCtx),
-      _format(format),
+      _format(std::move(format)),
       _date(std::move(date)),
       _timeZone(std::move(timeZone)),
       _onNull(std::move(onNull)) {}
@@ -1613,7 +1654,11 @@ intrusive_ptr<Expression> ExpressionDateToString::optimize() {
         _onNull = _onNull->optimize();
     }
 
-    if (ExpressionConstant::allNullOrConstant({_date, _timeZone, _onNull})) {
+    if (_format) {
+        _format = _format->optimize();
+    }
+
+    if (ExpressionConstant::allNullOrConstant({_date, _format, _timeZone, _onNull})) {
         // Everything is a constant, so we can turn into a constant.
         return ExpressionConstant::create(getExpressionContext(), evaluate(Document{}));
     }
@@ -1624,25 +1669,53 @@ intrusive_ptr<Expression> ExpressionDateToString::optimize() {
 Value ExpressionDateToString::serialize(bool explain) const {
     return Value(
         Document{{"$dateToString",
-                  Document{{"format", _format},
-                           {"date", _date->serialize(explain)},
+                  Document{{"date", _date->serialize(explain)},
+                           {"format", _format ? _format->serialize(explain) : Value()},
                            {"timezone", _timeZone ? _timeZone->serialize(explain) : Value()},
                            {"onNull", _onNull ? _onNull->serialize(explain) : Value()}}}});
 }
 
 Value ExpressionDateToString::evaluate(const Document& root) const {
     const Value date = _date->evaluate(root);
+    Value formatValue;
+
+    // Eagerly validate the format parameter, ignoring if nullish since the input date nullish
+    // behavior takes precedence.
+    if (_format) {
+        formatValue = _format->evaluate(root);
+        if (!formatValue.nullish()) {
+            uassert(18533,
+                    str::stream() << "$dateToString requires that 'format' be a string, found: "
+                                  << typeName(formatValue.getType())
+                                  << " with value "
+                                  << formatValue.toString(),
+                    formatValue.getType() == BSONType::String);
+
+            TimeZone::validateToStringFormat(formatValue.getStringData());
+        }
+    }
+
+    // Evaluate the timezone parameter before checking for nullish input, as this will throw an
+    // exception for an invalid timezone string.
+    auto timeZone = makeTimeZone(getExpressionContext()->timeZoneDatabase, root, _timeZone.get());
 
     if (date.nullish()) {
         return _onNull ? _onNull->evaluate(root) : Value(BSONNULL);
     }
 
-    auto timeZone = makeTimeZone(getExpressionContext()->timeZoneDatabase, root, _timeZone.get());
     if (!timeZone) {
         return Value(BSONNULL);
     }
 
-    return Value(timeZone->formatDate(_format, date.coerceToDate()));
+    if (_format) {
+        if (formatValue.nullish()) {
+            return Value(BSONNULL);
+        }
+
+        return Value(timeZone->formatDate(formatValue.getStringData(), date.coerceToDate()));
+    }
+
+    return Value(timeZone->formatDate(Value::kISOFormatString, date.coerceToDate()));
 }
 
 void ExpressionDateToString::_doAddDependencies(DepsTracker* deps) const {
@@ -1653,6 +1726,10 @@ void ExpressionDateToString::_doAddDependencies(DepsTracker* deps) const {
 
     if (_onNull) {
         _onNull->addDependencies(deps);
+    }
+
+    if (_format) {
+        _format->addDependencies(deps);
     }
 }
 
@@ -4696,10 +4773,29 @@ public:
         table[BSONType::NumberDouble][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberDouble][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberDouble][BSONType::NumberInt] = &performCastDoubleToInt;
         table[BSONType::NumberDouble][BSONType::NumberLong] = &performCastDoubleToLong;
         table[BSONType::NumberDouble][BSONType::NumberDecimal] = [](Value inputValue) {
             return Value(inputValue.coerceToDecimal());
+        };
+
+        //
+        // Conversions from String
+        //
+        table[BSONType::String][BSONType::NumberDouble] = &parseStringToNumber<double, 0>;
+        table[BSONType::String][BSONType::String] = &performIdentityConversion;
+        table[BSONType::String][BSONType::jstOID] = &parseStringToOID;
+        table[BSONType::String][BSONType::Bool] = [](Value inputValue) { return Value(true); };
+        table[BSONType::String][BSONType::NumberInt] = &parseStringToNumber<int, 10>;
+        table[BSONType::String][BSONType::NumberLong] = &parseStringToNumber<long long, 10>;
+        table[BSONType::String][BSONType::NumberDecimal] = &parseStringToNumber<Decimal128, 0>;
+
+        //
+        // Conversions from jstOID
+        //
+        table[BSONType::jstOID][BSONType::Date] = [](Value inputValue) {
+            return Value(inputValue.getOid().asDateT());
         };
 
         //
@@ -4717,6 +4813,24 @@ public:
         };
         table[BSONType::Bool][BSONType::NumberDecimal] = [](Value inputValue) {
             return inputValue.getBool() ? Value(Decimal128(1)) : Value(Decimal128(0));
+        };
+
+        //
+        // Conversions from Date
+        //
+        table[BSONType::Date][BSONType::NumberDouble] = [](Value inputValue) {
+            return Value(static_cast<double>(inputValue.getDate().toMillisSinceEpoch()));
+        };
+        table[BSONType::Date][BSONType::Bool] = [](Value inputValue) {
+            return Value(inputValue.coerceToBool());
+        };
+        table[BSONType::Date][BSONType::Date] = &performIdentityConversion;
+        table[BSONType::Date][BSONType::NumberLong] = [](Value inputValue) {
+            return Value(inputValue.getDate().toMillisSinceEpoch());
+        };
+        table[BSONType::Date][BSONType::NumberDecimal] = [](Value inputValue) {
+            return Value(
+                Decimal128(static_cast<int64_t>(inputValue.getDate().toMillisSinceEpoch())));
         };
 
         //
@@ -4745,6 +4859,7 @@ public:
         table[BSONType::NumberLong][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberLong][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberLong][BSONType::NumberInt] = &performCastLongToInt;
         table[BSONType::NumberLong][BSONType::NumberLong] = &performIdentityConversion;
         table[BSONType::NumberLong][BSONType::NumberDecimal] = [](Value inputValue) {
@@ -4758,6 +4873,7 @@ public:
         table[BSONType::NumberDecimal][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberDecimal][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberDecimal][BSONType::NumberInt] = [](Value inputValue) {
             return performCastDecimalToInt(BSONType::NumberInt, inputValue);
         };
@@ -4785,11 +4901,12 @@ private:
 
     static void validateDoubleValueIsFinite(double inputDouble) {
         uassert(ErrorCodes::ConversionFailure,
-                "Attempt to cast NaN value to integer type in $convert with no onError value",
+                "Attempt to convert NaN value to integer type in $convert with no onError value",
                 !std::isnan(inputDouble));
-        uassert(ErrorCodes::ConversionFailure,
-                "Attempt to cast infinity value to integer type in $convert with no onError value",
-                std::isfinite(inputDouble));
+        uassert(
+            ErrorCodes::ConversionFailure,
+            "Attempt to convert infinity value to integer type in $convert with no onError value",
+            std::isfinite(inputDouble));
     }
 
     static Value performCastDoubleToInt(Value inputValue) {
@@ -4827,11 +4944,12 @@ private:
         // Performing these checks up front allows us to provide more specific error messages than
         // if we just gave the same error for any 'kInvalid' conversion.
         uassert(ErrorCodes::ConversionFailure,
-                "Attempt to cast NaN value to integer type in $convert with no onError value",
+                "Attempt to convert NaN value to integer type in $convert with no onError value",
                 !inputDecimal.isNaN());
-        uassert(ErrorCodes::ConversionFailure,
-                "Attempt to cast infinity value to integer type in $convert with no onError value",
-                !inputDecimal.isInfinite());
+        uassert(
+            ErrorCodes::ConversionFailure,
+            "Attempt to convert infinity value to integer type in $convert with no onError value",
+            !inputDecimal.isInfinite());
 
         std::uint32_t signalingFlags = Decimal128::SignalingFlag::kNoFlag;
         Value result;
@@ -4871,7 +4989,8 @@ private:
                 str::stream()
                     << "Conversion would overflow target type in $convert with no onError value: "
                     << inputDecimal.toString(),
-                signalingFlags == Decimal128::SignalingFlag::kNoFlag);
+                signalingFlags == Decimal128::SignalingFlag::kNoFlag ||
+                    signalingFlags == Decimal128::SignalingFlag::kInexact);
 
         return Value(result);
     }
@@ -4886,6 +5005,63 @@ private:
                     longValue <= std::numeric_limits<int>::max());
 
         return Value(static_cast<int>(longValue));
+    }
+
+    static Value performCastNumberToDate(Value inputValue) {
+        long long millisSinceEpoch;
+
+        switch (inputValue.getType()) {
+            case BSONType::NumberLong:
+                millisSinceEpoch = inputValue.getLong();
+                break;
+            case BSONType::NumberDouble:
+                millisSinceEpoch = performCastDoubleToLong(inputValue).getLong();
+                break;
+            case BSONType::NumberDecimal:
+                millisSinceEpoch =
+                    performCastDecimalToInt(BSONType::NumberLong, inputValue).getLong();
+                break;
+            default:
+                MONGO_UNREACHABLE;
+        }
+
+        return Value(Date_t::fromMillisSinceEpoch(millisSinceEpoch));
+    }
+
+    template <class targetType, int base>
+    static Value parseStringToNumber(Value inputValue) {
+        auto stringValue = inputValue.getStringData();
+        targetType result;
+
+        // Reject any strings in hex format. This check is needed because the
+        // parseNumberFromStringWithBase call below allows an input hex string prefixed by '0x' when
+        // parsing to a double.
+        uassert(ErrorCodes::ConversionFailure,
+                str::stream() << "Illegal hexadecimal input in $convert with no onError value: "
+                              << stringValue,
+                !stringValue.startsWith("0x"));
+
+        Status parseStatus = parseNumberFromStringWithBase(stringValue, base, &result);
+        uassert(ErrorCodes::ConversionFailure,
+                str::stream() << "Failed to parse number '" << stringValue
+                              << "' in $convert with no onError value: "
+                              << parseStatus.reason(),
+                parseStatus.isOK());
+
+        return Value(result);
+    }
+
+    static Value parseStringToOID(Value inputValue) {
+        try {
+            return Value(OID::createFromString(inputValue.getStringData()));
+        } catch (const DBException& ex) {
+            // Rethrow any caught exception as a conversion failure such that 'onError' is evaluated
+            // and returned.
+            uasserted(ErrorCodes::ConversionFailure,
+                      str::stream() << "Failed to parse objectId '" << inputValue.getString()
+                                    << "' in $convert with no onError value: "
+                                    << ex.reason());
+        }
     }
 
     static Value performIdentityConversion(Value inputValue) {
@@ -4934,18 +5110,12 @@ intrusive_ptr<Expression> ExpressionConvert::parse(
 }
 
 Value ExpressionConvert::evaluate(const Document& root) const {
-    boost::optional<BSONType> targetType = _constTargetType;
-    if (!targetType) {
-        // Note: the "to" field is not lazily evaluated. We should not short circuit its execution
-        // when inputValue evaluates to nullish.
-        auto toValue = _to->evaluate(root);
-        if (!toValue.nullish()) {
-            targetType = computeTargetType(toValue);
-        } else {
-            // targetType stays as boost::none.
-        }
-    }
+    auto toValue = _to->evaluate(root);
     Value inputValue = _input->evaluate(root);
+    boost::optional<BSONType> targetType;
+    if (!toValue.nullish()) {
+        targetType = computeTargetType(toValue);
+    }
 
     if (inputValue.nullish()) {
         return _onNull ? _onNull->evaluate(root) : Value(BSONNULL);
@@ -4973,13 +5143,6 @@ boost::intrusive_ptr<Expression> ExpressionConvert::optimize() {
     }
     if (_onNull) {
         _onNull = _onNull->optimize();
-    }
-
-    // The "to" value will almost always be a constant that we can parse in advance.
-    auto constTo = dynamic_cast<ExpressionConstant*>(_to.get());
-    if (constTo && !constTo->getValue().nullish()) {
-        // Note: this may throw a user error.
-        _constTargetType = computeTargetType(constTo->getValue());
     }
 
     // Perform constant folding if possible. This does not support folding for $convert operations
@@ -5013,6 +5176,24 @@ void ExpressionConvert::_doAddDependencies(DepsTracker* deps) const {
     }
 }
 
+namespace {
+bool isTargetTypeSupported(BSONType targetType) {
+    switch (targetType) {
+        case BSONType::NumberDouble:
+        case BSONType::String:
+        case BSONType::jstOID:
+        case BSONType::Bool:
+        case BSONType::Date:
+        case BSONType::NumberInt:
+        case BSONType::NumberLong:
+        case BSONType::NumberDecimal:
+            return true;
+        default:
+            return false;
+    }
+}
+}
+
 BSONType ExpressionConvert::computeTargetType(Value targetTypeName) const {
     BSONType targetType;
     if (targetTypeName.getType() == BSONType::String) {
@@ -5039,10 +5220,7 @@ BSONType ExpressionConvert::computeTargetType(Value targetTypeName) const {
     // Make sure the type is one of the supported "to" types for $convert.
     uassert(ErrorCodes::FailedToParse,
             str::stream() << "$convert with unsupported 'to' type: " << typeName(targetType),
-            targetType == BSONType::NumberDouble || targetType == BSONType::String ||
-                targetType == BSONType::jstOID || targetType == BSONType::Bool ||
-                targetType == BSONType::Date || targetType == BSONType::NumberInt ||
-                targetType == BSONType::NumberLong || targetType == BSONType::NumberDecimal);
+            isTargetTypeSupported(targetType));
 
     return targetType;
 }

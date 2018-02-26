@@ -93,6 +93,8 @@ using std::string;
 
 namespace dps = ::mongo::dotted_path_support;
 
+const int WiredTigerKVEngine::kDefaultJournalDelayMillis = 100;
+
 class WiredTigerKVEngine::WiredTigerJournalFlusher : public BackgroundJob {
 public:
     explicit WiredTigerJournalFlusher(WiredTigerSessionCache* sessionCache)
@@ -118,7 +120,7 @@ public:
 
             int ms = storageGlobalParams.journalCommitIntervalMs.load();
             if (!ms) {
-                ms = 100;
+                ms = kDefaultJournalDelayMillis;
             }
 
             MONGO_IDLE_THREAD_BLOCK;
@@ -510,21 +512,21 @@ void WiredTigerKVEngine::cleanShutdown() {
         // There are two cases to consider where the server will shutdown before the in-memory FCV
         // state is set. One is when `EncryptionHooks::restartRequired` is true. The other is when
         // the server shuts down because it refuses to acknowledge an FCV value more than one
-        // version behind (e.g: 3.6 errors when reading 3.2).
+        // version behind (e.g: 4.0 errors when reading 3.4).
         //
         // In the first case, we ideally do not perform a file format downgrade (but it is
-        // acceptable). In the second, the server must downgrade to allow a 3.4 binary to start
+        // acceptable). In the second, the server must downgrade to allow a 3.6 binary to start
         // up. Ideally, our internal FCV value would allow for older values, even if only to
         // immediately shutdown. This would allow downstream logic, such as this method, to make
         // an informed decision.
         const bool needsDowngrade = !_readOnly &&
             serverGlobalParams.featureCompatibility.getVersion() ==
-                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34;
+                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36;
 
         invariantWTOK(_conn->close(_conn, closeConfig));
         _conn = nullptr;
 
-        // If FCV 3.4, enable WT logging on all tables.
+        // If FCV 3.6, enable WT logging on all tables.
         if (needsDowngrade) {
             // Steps for downgrading:
             //
@@ -534,8 +536,8 @@ void WiredTigerKVEngine::cleanShutdown() {
             // 2) Enable WiredTiger logging on all tables.
             //
             // 3) Reconfigure the WiredTiger to release compatibility 2.9. The WiredTiger version
-            //    shipped with MongoDB 3.4 will always refuse to start up without this reconfigure
-            //    being successful. Doing this last prevents MongoDB running in 3.4 with only some
+            //    shipped with MongoDB 3.6 will always refuse to start up without this reconfigure
+            //    being successful. Doing this last prevents MongoDB running in 3.6 with only some
             //    underlying tables being logged.
             LOG(1) << "Downgrading WiredTiger tables to release compatibility 2.9";
             WT_CONNECTION* conn;
@@ -549,7 +551,7 @@ void WiredTigerKVEngine::cleanShutdown() {
 
             WT_CURSOR* tableCursor;
             invariantWTOK(
-                session->open_cursor(session, "metadata:", nullptr, nullptr, &tableCursor));
+                session->open_cursor(session, "metadata:create", nullptr, nullptr, &tableCursor));
             while (tableCursor->next(tableCursor) == 0) {
                 const char* raw;
                 tableCursor->get_key(tableCursor, &raw);
@@ -800,8 +802,8 @@ SortedDataInterface* WiredTigerKVEngine::getGroupedSortedDataInterface(Operation
     if (desc->unique()) {
         // MongoDB 4.0 onwards new index version `kV2Unique` would be supported. By default unique
         // index would be created with index version `kV2`. New format unique index would be created
-        // only if `IndexVersion` is `kV2Unique`.
-        if (desc->version() == IndexDescriptor::IndexVersion::kV2Unique)
+        // only if `IndexVersion` is `kV2Unique` and for non _id indexes.
+        if (desc->version() == IndexDescriptor::IndexVersion::kV2Unique && !desc->isIdIndex())
             return new WiredTigerIndexUniqueV2(opCtx, _uri(ident), desc, prefix, _readOnly);
         else
             return new WiredTigerIndexUnique(opCtx, _uri(ident), desc, prefix, _readOnly);
@@ -835,6 +837,10 @@ Status WiredTigerKVEngine::dropIdent(OperationContext* opCtx, StringData ident) 
             _identToDrop.push_front(uri);
         }
         _sessionCache->closeCursorsForQueuedDrops();
+        return Status::OK();
+    }
+
+    if (ret == ENOENT) {
         return Status::OK();
     }
 
@@ -937,7 +943,7 @@ bool WiredTigerKVEngine::hasIdent(OperationContext* opCtx, StringData ident) con
 bool WiredTigerKVEngine::_hasUri(WT_SESSION* session, const std::string& uri) const {
     // can't use WiredTigerCursor since this is called from constructor.
     WT_CURSOR* c = NULL;
-    int ret = session->open_cursor(session, "metadata:", NULL, NULL, &c);
+    int ret = session->open_cursor(session, "metadata:create", NULL, NULL, &c);
     if (ret == ENOENT)
         return false;
     invariantWTOK(ret);
@@ -950,7 +956,7 @@ bool WiredTigerKVEngine::_hasUri(WT_SESSION* session, const std::string& uri) co
 std::vector<std::string> WiredTigerKVEngine::getAllIdents(OperationContext* opCtx) const {
     std::vector<std::string> all;
     int ret;
-    WiredTigerCursor cursor("metadata:", WiredTigerSession::kMetadataTableId, false, opCtx);
+    WiredTigerCursor cursor("metadata:create", WiredTigerSession::kMetadataTableId, false, opCtx);
     WT_CURSOR* c = cursor.get();
     if (!c)
         return all;

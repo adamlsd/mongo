@@ -47,21 +47,9 @@ void closeCatalog(OperationContext* opCtx) {
     invariant(opCtx->lockState()->isW());
 
     // Close all databases.
-    log() << "closeCatalog: closing all databases in dbholder";
-    BSONObjBuilder closeDbsBuilder;
-    constexpr auto force = true;
+    log() << "closeCatalog: closing all databases";
     constexpr auto reason = "closing databases for closeCatalog";
-    uassert(40687,
-            str::stream() << "failed to close all databases; result of operation: "
-                          << closeDbsBuilder.obj().jsonString(),
-            dbHolder().closeAll(opCtx, closeDbsBuilder, force, reason));
-
-    // Because we've force-closed the database, there should be no databases left open.
-    auto closeDbsResult = closeDbsBuilder.obj();
-    invariant(
-        !closeDbsResult.hasField("nNotClosed"),
-        str::stream() << "expected no databases open after a force close; result of operation: "
-                      << closeDbsResult.jsonString());
+    dbHolder().closeAll(opCtx, reason);
 
     // Close the storage engine's catalog.
     log() << "closeCatalog: closing storage engine catalog";
@@ -164,13 +152,11 @@ void openCatalog(OperationContext* opCtx) {
                                     << collName);
 
             auto uuid = collection->uuid();
-            // TODO (SERVER-32597): When the minimum featureCompatibilityVersion becomes 3.6, we
-            // can change this condition to be an invariant.
-            if (uuid) {
-                LOG(1) << "openCatalog: registering uuid " << uuid->toString() << " for collection "
-                       << collName;
-                uuidCatalog.registerUUIDCatalogEntry(*uuid, collection);
-            }
+            invariant(uuid);
+
+            LOG(1) << "openCatalog: registering uuid " << uuid->toString() << " for collection "
+                   << collName;
+            uuidCatalog.registerUUIDCatalogEntry(*uuid, collection);
 
             // If this is the oplog collection, re-establish the replication system's cached pointer
             // to the oplog.

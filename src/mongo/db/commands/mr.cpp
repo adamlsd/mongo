@@ -369,11 +369,14 @@ void State::dropTempCollections() {
             AutoGetDb autoDb(_opCtx, _config.tempNamespace.db(), MODE_X);
             if (auto db = autoDb.getDb()) {
                 WriteUnitOfWork wunit(_opCtx);
-                uassert(ErrorCodes::PrimarySteppedDown,
-                        "no longer primary",
-                        repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(
-                            _opCtx, _config.tempNamespace));
-                db->dropCollection(_opCtx, _config.tempNamespace.ns()).transitional_ignore();
+                uassert(
+                    ErrorCodes::PrimarySteppedDown,
+                    str::stream()
+                        << "no longer primary while dropping temporary collection for mapReduce: "
+                        << _config.tempNamespace.ns(),
+                    repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(
+                        _opCtx, _config.tempNamespace));
+                uassertStatusOK(db->dropCollection(_opCtx, _config.tempNamespace.ns()));
                 wunit.commit();
             }
         });
@@ -389,7 +392,7 @@ void State::dropTempCollections() {
             Lock::DBLock lk(_opCtx, _config.incLong.db(), MODE_X);
             if (Database* db = dbHolder().get(_opCtx, _config.incLong.ns())) {
                 WriteUnitOfWork wunit(_opCtx);
-                db->dropCollection(_opCtx, _config.incLong.ns()).transitional_ignore();
+                uassertStatusOK(db->dropCollection(_opCtx, _config.incLong.ns()));
                 wunit.commit();
             }
         });
@@ -420,8 +423,7 @@ void State::prepTempCollection() {
             CollectionOptions options;
             options.setNoIdIndex();
             options.temp = true;
-            if (enableCollectionUUIDs &&
-                serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
+            if (enableCollectionUUIDs) {
                 options.uuid.emplace(UUID::gen());
             }
             incColl = incCtx.db()->createCollection(_opCtx, _config.incLong.ns(), options);
@@ -496,16 +498,18 @@ void State::prepTempCollection() {
         // create temp collection and insert the indexes from temporary storage
         OldClientWriteContext tempCtx(_opCtx, _config.tempNamespace.ns());
         WriteUnitOfWork wuow(_opCtx);
-        uassert(ErrorCodes::PrimarySteppedDown,
-                "no longer primary",
-                repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(
-                    _opCtx, _config.tempNamespace));
+        uassert(
+            ErrorCodes::PrimarySteppedDown,
+            str::stream() << "no longer primary while creating temporary collection for mapReduce: "
+                          << _config.tempNamespace.ns(),
+            repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(_opCtx,
+                                                                          _config.tempNamespace));
         Collection* tempColl = tempCtx.getCollection();
         invariant(!tempColl);
 
         CollectionOptions options = finalOptions;
         options.temp = true;
-        if (enableCollectionUUIDs && serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
+        if (enableCollectionUUIDs) {
             // If a UUID for the final output collection was sent by mongos (i.e., the final output
             // collection is sharded), use the UUID mongos sent when creating the temp collection.
             // When the temp collection is renamed to the final output collection, the UUID will be
@@ -754,9 +758,13 @@ void State::insert(const NamespaceString& nss, const BSONObj& o) {
     writeConflictRetry(_opCtx, "M/R insert", nss.ns(), [this, &nss, &o] {
         OldClientWriteContext ctx(_opCtx, nss.ns());
         WriteUnitOfWork wuow(_opCtx);
-        uassert(ErrorCodes::PrimarySteppedDown,
-                "no longer primary",
-                repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(_opCtx, nss));
+        uassert(
+            ErrorCodes::PrimarySteppedDown,
+            str::stream() << "no longer primary while inserting mapReduce result into collection: "
+                          << nss.ns()
+                          << ": "
+                          << redact(o),
+            repl::ReplicationCoordinator::get(_opCtx)->canAcceptWritesFor(_opCtx, nss));
         Collection* coll = getCollectionOrUassert(_opCtx, ctx.db(), nss);
 
         BSONObjBuilder b;
@@ -831,8 +839,11 @@ State::~State() {
     if (_onDisk) {
         try {
             dropTempCollections();
-        } catch (std::exception& e) {
-            error() << "couldn't cleanup after map reduce: " << e.what();
+        } catch (...) {
+            error() << "Unable to drop temporary collection created by mapReduce: "
+                    << _config.tempNamespace << ". This collection will be removed automatically "
+                                                "the next time the server starts up. "
+                    << exceptionToStatus();
         }
     }
     if (_scope && !_scope->isKillPending() && _scope->getError().empty()) {
@@ -1419,18 +1430,17 @@ public:
 
         BSONObjBuilder countsBuilder;
         BSONObjBuilder timingBuilder;
-        State state(opCtx, config);
-        if (!state.sourceExists()) {
-            return CommandHelpers::appendCommandStatus(
-                result,
-                Status(ErrorCodes::NamespaceNotFound,
-                       str::stream() << "namespace does not exist: " << config.nss.ns()));
-        }
-
         try {
+            State state(opCtx, config);
+            if (!state.sourceExists()) {
+                return CommandHelpers::appendCommandStatus(
+                    result,
+                    Status(ErrorCodes::NamespaceNotFound,
+                           str::stream() << "namespace does not exist: " << config.nss.ns()));
+            }
+
             state.init();
             state.prepTempCollection();
-            ON_BLOCK_EXIT_OBJ(state, &State::dropTempCollections);
 
             int64_t progressTotal = 0;
             bool showTotal = true;
@@ -1743,8 +1753,7 @@ public:
 
         Config config(dbname, cmdObj.firstElement().embeddedObjectUserCheck());
 
-        if (cmdObj["finalOutputCollIsSharded"].trueValue() &&
-            serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
+        if (cmdObj["finalOutputCollIsSharded"].trueValue()) {
             uassert(ErrorCodes::InvalidOptions,
                     "This shard has feature compatibility version 3.6, so it expects mongos to "
                     "send the UUID to use for the sharded output collection. Was the mapReduce "
@@ -1783,7 +1792,6 @@ public:
         }
 
         state.prepTempCollection();
-        ON_BLOCK_EXIT_OBJ(state, &State::dropTempCollections);
 
         std::vector<std::shared_ptr<Chunk>> chunks;
 

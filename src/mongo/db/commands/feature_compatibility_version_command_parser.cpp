@@ -37,15 +37,9 @@
 #include "mongo/util/version.h"
 
 namespace mongo {
-namespace {
-constexpr StringData kVersion32 = "3.2"_sd;
-}  // namespace
 
-constexpr StringData FeatureCompatibilityVersionCommandParser::kVersion34;
 constexpr StringData FeatureCompatibilityVersionCommandParser::kVersion36;
 constexpr StringData FeatureCompatibilityVersionCommandParser::kVersion40;
-constexpr StringData FeatureCompatibilityVersionCommandParser::kVersionUpgradingTo36;
-constexpr StringData FeatureCompatibilityVersionCommandParser::kVersionDowngradingTo34;
 constexpr StringData FeatureCompatibilityVersionCommandParser::kVersionUpgradingTo40;
 constexpr StringData FeatureCompatibilityVersionCommandParser::kVersionDowngradingTo36;
 constexpr StringData FeatureCompatibilityVersionCommandParser::kVersionUnset;
@@ -90,25 +84,13 @@ StatusWith<std::string> FeatureCompatibilityVersionCommandParser::extractVersion
 
     const std::string version = versionElem.String();
 
-    if (version == kVersion32) {
-        return {ErrorCodes::BadValue,
-                str::stream() << "Invalid command argument: '" << kVersion32
-                              << "'. You must downgrade to MongoDB 3.4 to enable "
-                                 "featureCompatibilityVersion 3.2. See "
-                              << feature_compatibility_version::kDochubLink
-                              << "."};
-    }
-
     if (version != FeatureCompatibilityVersionCommandParser::kVersion40 &&
-        version != FeatureCompatibilityVersionCommandParser::kVersion36 &&
-        version != FeatureCompatibilityVersionCommandParser::kVersion34) {
+        version != FeatureCompatibilityVersionCommandParser::kVersion36) {
         return {ErrorCodes::BadValue,
                 str::stream() << "Invalid command argument. Expected '"
                               << FeatureCompatibilityVersionCommandParser::kVersion40
-                              << "', '"
-                              << FeatureCompatibilityVersionCommandParser::kVersion36
                               << "' or '"
-                              << FeatureCompatibilityVersionCommandParser::kVersion34
+                              << FeatureCompatibilityVersionCommandParser::kVersion36
                               << "', found "
                               << version
                               << " in: "

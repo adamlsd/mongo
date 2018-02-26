@@ -81,7 +81,7 @@ variables:
       MONGO_VERSION=$(git describe)
       # If this is a patch build, we add the patch version id to the version string so we know
       # this build was a patch, and which evergreen task it came from
-      if [ "${is_patch|}" = "true" ]; then
+      if [ "${is_patch}" = "true" ] && [ "${bypass_compile|false}" = "false" ]; then
         MONGO_VERSION="$MONGO_VERSION-patch-${version_id}"
       fi
 
@@ -228,7 +228,7 @@ functions:
     params:
       aws_key: ${aws_key}
       aws_secret: ${aws_secret}
-      remote_file: ${project}/${build_variant}/${revision}/binaries/mongo-${build_id}.${ext|tgz}
+      remote_file: ${mongo_binaries}
       bucket: mciuploads
       local_file: src/mongo-binaries.tgz
 
@@ -252,6 +252,13 @@ functions:
         if [ $(echo $mongo_binary | wc -w) -ne 1 ]; then
           echo "There is more than 1 extracted mongo binary: $mongo_binary"
           exit 1
+        fi
+        # For compile bypass we need to skip the binary version check since we can tag a commit
+        # after the base commit binaries were created. This would lead to a mismatch of the binaries
+        # and the version from git describe in the compile_expansions.yml.
+        if [ "${is_patch}" = "true" ] && [ "${bypass_compile|false}" = "true" ]; then
+          echo "Skipping binary version check since we are bypassing compile in this patch build."
+          exit 0
         fi
         ${activate_virtualenv}
         bin_ver=$($python -c "import yaml; print(yaml.safe_load(open('compile_expansions.yml'))['version']);" | tr -d '[ \r\n]')
@@ -426,10 +433,11 @@ functions:
   "upload debugsymbols" : &upload_debugsymbols
     command: s3.put
     params:
+      optional: true
       aws_key: ${aws_key}
       aws_secret: ${aws_secret}
       local_file: src/mongo-debugsymbols.tgz
-      remote_file: ${project}/${build_variant}/${revision}/debugsymbols/debugsymbols-${build_id}.${ext|tgz}
+      remote_file: ${mongo_debugsymbols}
       bucket: mciuploads
       permissions: public-read
       content_type: ${content_type|application/x-gzip}
@@ -439,7 +447,7 @@ functions:
     params:
       aws_key: ${aws_key}
       aws_secret: ${aws_secret}
-      remote_file: ${project}/${build_variant}/${revision}/debugsymbols/debugsymbols-${build_id}.${ext|tgz}
+      remote_file: ${mongo_debugsymbols}
       bucket: mciuploads
       local_file: src/mongo-debugsymbols.tgz
 
@@ -523,7 +531,7 @@ functions:
         # remove this patch once SERVER-33101 is released
         patch -p1 < ../src/buildscripts/mongoc-stat.c.diff
         export ${compile_env|}
-        ./configure --prefix=$(pwd)/install --with-libbson=bundled --disable-automatic-init-and-cleanup --disable-ssl --disable-sasl --disable-examples --disable-man-pages --disable-html-docs --disable-shm-counters --disable-shared --enable-static ${cdriver_configure_flags|}
+        ./configure --prefix=$(pwd)/install --with-libbson=bundled --disable-tests --disable-automatic-init-and-cleanup --disable-ssl --disable-sasl --disable-examples --disable-man-pages --disable-html-docs --disable-shm-counters --disable-shared --enable-static ${cdriver_configure_flags|}
         make
         make install
         fi
@@ -557,8 +565,57 @@ functions:
              "../../mongo-tools/$i${exe|}" --version
         done
 
+  "get modified patch files" :
+    command: shell.exec
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        # For patch builds gather the modified patch files.
+        if [ "${is_patch}" = "true" ]; then
+          # Get list of patched files
+          git diff HEAD --name-only >> patch_files.txt
+          if [ -d src/mongo/db/modules/enterprise ]; then
+            pushd src/mongo/db/modules/enterprise
+            # Update the patch_files.txt in the mongo repo.
+            git diff HEAD --name-only >> ~1/patch_files.txt
+            popd
+          fi
+        fi
+
+  "update bypass expansions" : &update_bypass_expansions
+    command: expansions.update
+    params:
+      ignore_missing_file: true
+      file: src/bypass_compile_expansions.yml
+
+  "bypass compile and fetch binaries" :
+    command: shell.exec
+    params:
+      continue_on_err: true
+      working_dir: src
+      script: |
+        set -o verbose
+        set -o errexit
+
+        # For patch builds determine if we can bypass compile.
+        if [ "${is_patch}" = "true" ]; then
+          ${activate_virtualenv}
+          $python buildscripts/bypass_compile_and_fetch_binaries.py            \
+            --project ${project}                                               \
+            --buildVariant ${build_variant}                                    \
+            --revision ${revision}                                             \
+            --patchFile patch_files.txt                                        \
+            --outFile bypass_compile_expansions.yml                            \
+            --jsonArtifact artifacts.json
+        fi
+
   "do setup" :
   - *fetch_artifacts
+  - *update_bypass_expansions
   - *fetch_binaries
   - *extract_binaries
   - *check_binary_version
@@ -685,7 +742,7 @@ functions:
             path_value="$path_value:${task_path_suffix}"
           fi
 
-          if [ "${is_patch|}" = "true" ]; then
+          if [ "${is_patch}" = "true" ]; then
             extra_args="$extra_args --tagFile=etc/test_lifecycle.yml --patchBuild"
           else
             extra_args="$extra_args --tagFile=etc/test_retrial.yml"
@@ -973,9 +1030,9 @@ functions:
         set -o errexit
 
         ${activate_virtualenv}
-        if [ ${enable_ios_sim_tests|false} = "true" ]; then
-            ${compile_env|} $python buildscripts/runiossim.py --test "build/debug/mongo/client/embedded/mongo_embedded_capi_test"
-            ${compile_env|} $python buildscripts/runiossim.py --test "build/debug/mongo/client/embedded/mongo_embedded_transport_test"
+        if [ ${enable_iostvos_sim_tests|false} = "true" ]; then
+            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/debug/mongo/client/embedded/mongo_embedded_capi_test"
+            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/debug/mongo/client/embedded/mongo_embedded_transport_test"
         fi
 
   "run android emulator tests" :
@@ -1669,9 +1726,9 @@ pre:
   - func: "set up virtualenv"
   - command: expansions.update
     params:
-       updates:
-       - key: activate_virtualenv
-         value: |
+      updates:
+      - key: activate_virtualenv
+        value: |
           # check if virtualenv is set up
           if [ -d "${workdir}/venv" ]; then
             if [ "Windows_NT" = "$OS" ]; then
@@ -1688,16 +1745,16 @@ pre:
             python=${python|/opt/mongodbtoolchain/v2/bin/python2}
           fi
           echo "python set to $(which python)"
-       - key: posix_workdir
-         value: eval 'if [ "Windows_NT" = "$OS" ]; then echo $(cygpath -u "${workdir}"); else echo ${workdir}; fi'
-       # For ssh disable the options GSSAPIAuthentication, CheckHostIP, StrictHostKeyChecking
-       # & UserKnownHostsFile, since these are local connections from one AWS instance to another.
-       - key: ssh_connection_options
-         value: -o GSSAPIAuthentication=no -o CheckHostIP=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=20
-       - key: ssh_retries
-         value: "10"
-       - key: set_sudo
-         value: |
+      - key: posix_workdir
+        value: eval 'if [ "Windows_NT" = "$OS" ]; then echo $(cygpath -u "${workdir}"); else echo ${workdir}; fi'
+      # For ssh disable the options GSSAPIAuthentication, CheckHostIP, StrictHostKeyChecking
+      # & UserKnownHostsFile, since these are local connections from one AWS instance to another.
+      - key: ssh_connection_options
+        value: -o GSSAPIAuthentication=no -o CheckHostIP=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ConnectionAttempts=20
+      - key: ssh_retries
+        value: "10"
+      - key: set_sudo
+        value: |
           set -o > /tmp/settings.log
           set +o errexit
           grep errexit /tmp/settings.log | grep on
@@ -1714,6 +1771,13 @@ pre:
           if [ $errexit_on -eq 0 ]; then
             set -o errexit
           fi
+      - key: mongo_binaries
+        value: ${project}/${build_variant}/${revision}/binaries/mongo-${build_id}.${ext|tgz}
+      - key: mongo_debugsymbols
+        value: ${project}/${build_variant}/${revision}/debugsymbols/debugsymbols-${build_id}.${ext|tgz}
+      - key: mongo_shell
+        value: ${project}/${build_variant}/${revision}/binaries/mongo-shell-${build_id}.${ext|tgz}
+
   - command: shell.exec
     params:
       system_log: true
@@ -1736,6 +1800,7 @@ post:
       file_location: src/report.json
   - command: attach.artifacts
     params:
+      optional: true
       ignore_artifacts_for_spawn: false
       files:
         - src/archive.json
@@ -2273,6 +2338,10 @@ tasks:
   commands:
     - command: manifest.load
     - *git_get_project
+    - func: "get modified patch files"
+    # NOTE: To disable the compile bypass feature, comment out the next line.
+    - func: "bypass compile and fetch binaries"
+    - func: "update bypass expansions"
     - func: "get buildnumber"
     - func: "set up credentials"
     - func: "build new tools" # noop if ${newtools} is not "true"
@@ -2290,6 +2359,9 @@ tasks:
           set -o errexit
           set -o verbose
 
+          if [ "${is_patch}" = "true" ] && [ "${bypass_compile|false}" = "true" ]; then
+            exit 0
+          fi
           rm -rf ${install_directory|/data/mongo-install-directory}
 
           ${activate_virtualenv}
@@ -2314,6 +2386,9 @@ tasks:
           set -o errexit
           set -o verbose
 
+          if [ "${is_patch}" = "true" ] && [ "${bypass_compile|false}" = "true" ]; then
+            exit 0
+          fi
           ${activate_virtualenv}
           if [ "${has_packages|}" = "true" ] ; then
             cd buildscripts
@@ -2365,25 +2440,30 @@ tasks:
           - "src/mongo/util/options_parser/test_config_files/**"
           - "library_dependency_graph.json"
           - "src/third_party/JSON-Schema-Test-Suite/tests/draft4/**"
+          - "bypass_compile_expansions.yml"
+          - "patch_files.txt"
+          - "artifacts.json"
         exclude_files:
           - "*_test.pdb"
     - func: "upload debugsymbols"
     - command: s3.put
       params:
+        optional: true
         aws_key: ${aws_key}
         aws_secret: ${aws_secret}
         local_file: src/mongodb-binaries.tgz
-        remote_file: ${project}/${build_variant}/${revision}/binaries/mongo-${build_id}.${ext|tgz}
+        remote_file: ${mongo_binaries}
         bucket: mciuploads
         permissions: public-read
         content_type: ${content_type|application/x-gzip}
         display_name: Binaries
     - command: s3.put
       params:
+        optional: true
         aws_key: ${aws_key}
         aws_secret: ${aws_secret}
         local_file: src/shell-archive/mongodb-shell.${ext|tgz}
-        remote_file: ${project}/${build_variant}/${revision}/binaries/mongo-shell-${build_id}.${ext|tgz}
+        remote_file: ${mongo_shell}
         bucket: mciuploads
         permissions: public-read
         content_type: ${content_type|application/x-gzip}
@@ -2411,6 +2491,14 @@ tasks:
         # We only need to upload the source tarball from one of the build variants
         # because it should be the same everywhere, so just use linux-64/windows-64-2k8.
         build_variants: [ linux-64, windows-64-2k8-ssl ]
+    # For patch builds that bypass compile, we upload links to pre-existing tarballs, except for the
+    # artifacts.tgz.
+    - command: attach.artifacts
+      params:
+        optional: true
+        ignore_artifacts_for_spawn: false
+        files:
+          - src/artifacts.json
 
 ## compile_all - build all scons targets including unittests ##
 - name: compile_all
@@ -2468,7 +2556,7 @@ tasks:
         run_multiple_jobs: true
 
     # Run the iOS embedded CAPI tests in the iOS simulator
-    # noop if ${enable_ios_sim_tests} is not "true"
+    # noop if ${enable_iostvos_sim_tests} is not "true"
     - func: "run ios sim embedded tests"
 
     # Run the android embedded CAPI tests in the android emulator
@@ -2508,6 +2596,7 @@ tasks:
   - command: shell.exec
     params:
       working_dir: burn_in_tests_clonedir
+      shell: bash
       script: |
         set -o errexit
         set -o verbose
@@ -3287,17 +3376,6 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: master_slave_jscore_passthrough
-  depends_on:
-  - name: jsCore
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave_jscore_passthrough --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
   name: replica_sets_jscore_passthrough
   depends_on:
   - name: jsCore
@@ -3664,26 +3742,6 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
-  name: master_slave
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
-  name: master_slave_auth
-  depends_on:
-  - name: master_slave
-  commands:
-  - func: "do setup"
-  - func: "run tests"
-    vars:
-      resmoke_args: --suites=master_slave_auth --storageEngine=wiredTiger
-      run_multiple_jobs: true
-
-- <<: *task_template
   name: sasl
   commands:
   - func: "do setup"
@@ -3938,7 +3996,7 @@ tasks:
       <<: *powercycle_test
       mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
 
-- name: powercycle_fcv3.4
+- name: powercycle_fcv3.6
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
   depends_on:
   - name: compile
@@ -3955,8 +4013,8 @@ tasks:
   - func: "run powercycle test"
     vars:
       <<: *powercycle_test
-      client_options: --numCrudClients=20 --numFsmClients=20 --fsmWorkloadBlacklistFiles=toggle_feature_compatibility.js
-      mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path} --fcv=3.4
+      client_options: --numCrudClients=20 --numFsmClients=20
+      mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path} --fcv=3.6
       mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
 
 - name: powercycle_replication
@@ -4068,7 +4126,7 @@ tasks:
       params:
         aws_key: ${aws_key}
         aws_secret: ${aws_secret}
-        remote_file: ${project}/${build_variant}/${revision}/binaries/mongo-shell-${build_id}.${ext|tgz}
+        remote_file: ${mongo_shell}
         bucket: mciuploads
         local_file: src/mongo-shell.tgz
     - command: s3.get
@@ -4546,16 +4604,19 @@ tasks:
 
         # Create the jira credentials configuration file
         cat > ~/.jira.yml <<END_OF_CREDS
-        user: "${testlifecycle_jira_user}"
-        password: "${testlifecycle_jira_password}"
         server: "https://jira.mongodb.org"
+        access_token: "${testlifecycle_jira_access_token}"
+        access_token_secret: "${testlifecycle_jira_access_token_secret}"
+        consumer_key: "${testlifecycle_jira_consumer_key}"
+        key_cert: |
+        $(echo "${testlifecycle_jira_key_certificate}" | sed  's/^/  /')
         END_OF_CREDS
 
         set -o verbose
 
         ${activate_virtualenv}
-        # Install Python jira client with pip until it is available in the toolchain
-        pip install jira==1.0.10
+        # Install Python modules to support OAuth with pip until it is available in the toolchain.
+        pip install cryptography==1.7.2 pyjwt==1.5.3
 
         # We use a small batch size to avoid hitting the load balancer timeout if the Evergreen
         # API query is not fast enough.
@@ -4680,9 +4741,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -4796,9 +4854,6 @@ buildvariants:
   - name: replica_sets_pv0
   - name: retryable_writes_jscore_passthrough
   - name: retryable_writes_jscore_stepdown_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: serial_run
   - name: session_jscore_passthrough
   - name: sharded_causally_consistent_jscore_passthrough
@@ -4864,8 +4919,6 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_sharded
   - name: mongosTest
-  - name: master_slave
-  - name: master_slave_auth
 
 - name: linux-64-lsm
   stepback: false
@@ -4915,8 +4968,6 @@ buildvariants:
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: slow1
   - name: serial_run
@@ -4993,9 +5044,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5098,11 +5146,8 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: powercycle
-  - name: powercycle_fcv3.4
+  - name: powercycle_fcv3.6
   - name: powercycle_replication
   - name: powercycle_replication_smalloplog
   - name: powercycle_syncdelay
@@ -5134,8 +5179,11 @@ buildvariants:
     push_arch: x86_64-ubuntu1604
     lang_environment: LANG=C
     compile_flags: --ssl MONGO_DISTMOD=ubuntu1604 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
-    multiversion_platform_arch: "ubuntu1604"
-    multiversion_edition: "targeted"
+    # TODO SERVER-32600: Re-enable targeted downloads after setup_multiversion_mongodb.py is
+    # guaranteed to download x86_64 binaries for this platform.
+    #
+    # multiversion_platform_arch: "ubuntu1604"
+    # multiversion_edition: "targeted"
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
     packager_script: packager.py
@@ -5189,9 +5237,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5284,9 +5329,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -5401,9 +5443,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -5432,7 +5471,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: s390x-enterprise-ubuntu1604
-    compile_flags: --ssl MONGO_DISTMOD=ubuntu1604 --release -j$(grep -c ^processor /proc/cpuinfo) CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    compile_flags: --ssl MONGO_DISTMOD=ubuntu1604 --release -j3 CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: 2
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
@@ -5496,9 +5535,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -5576,8 +5612,6 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: replica_sets_auth
   - name: replica_sets_ese
-  - name: master_slave_auth
-  - name: master_slave
   - name: powercycle
   - name: sasl
   - name: sharding_auth
@@ -5664,9 +5698,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -5738,8 +5769,6 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -6000,7 +6029,6 @@ buildvariants:
   - name: read_concern_linearizable_passthrough
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharding_auth
     distros:
@@ -6081,8 +6109,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion
   - name: multiversion_auth
@@ -6092,7 +6118,7 @@ buildvariants:
   - name: parallel
   - name: parallel_compatibility
   - name: powercycle
-  - name: powercycle_fcv3.4
+  - name: powercycle_fcv3.6
   - name: powercycle_replication
   - name: powercycle_syncdelay
   - name: read_concern_linearizable_passthrough
@@ -6222,8 +6248,6 @@ buildvariants:
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
   - name: noPassthrough
@@ -6281,7 +6305,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: mongosTest
   - name: replica_sets
-  - name: master_slave
   - name: tool
 
 - name: enterprise-osx-1010
@@ -6333,7 +6356,7 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     build_cdriver: true
-    cdriver_configure_flags: --build x86_64-apple-darwin --host arm-apple-darwin CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode"  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 -fembed-bitcode" LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 "  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --variables-files=etc/scons/xcode_ios.vars  CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
@@ -6347,11 +6370,13 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     build_cdriver: true
-    cdriver_configure_flags: --build x86_64-apple-darwin --host x86_64-apple-darwin16.6.0 CC="$(xcrun -f --sdk iphonesimulator clang)" CXX="$(xcrun -f --sdk iphonesimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2"  CFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2" CXXFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2" LDFLAGS="-miphoneos-version-min=10.2"
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk iphonesimulator clang)" CXX="$(xcrun -f --sdk iphonesimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 "  CFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " CXXFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " LDFLAGS="-miphoneos-version-min=10.2 "
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --variables-files=etc/scons/xcode_ios_sim.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
-    enable_ios_sim_tests: true
+    enable_iostvos_sim_tests: true
+    ios_sim_device: iPhone-7
+    ios_sim_runtime: iOS-10-3
   tasks:
   - name: compile_all
 
@@ -6361,8 +6386,10 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    build_cdriver: true
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk appletvos clang)" CXX="$(xcrun -f --sdk appletvos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64"  CFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" CXXFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" LDFLAGS="-mtvos-version-min=10.1 -arch arm64"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos.vars
+    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
   tasks:
   - name: compile_all
@@ -6373,9 +6400,14 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    build_cdriver: true
+    cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk appletvsimulator clang)" CXX="$(xcrun -f --sdk appletvsimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1"  CFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" CXXFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" LDFLAGS="-mtvos-version-min=10.1"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos_sim.vars
+    compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos_sim.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
+    enable_iostvos_sim_tests: true
+    ios_sim_device: Apple-TV-1080p
+    ios_sim_runtime: tvOS-10-2
   tasks:
   - name: compile_all
 
@@ -6501,9 +6533,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -6669,9 +6698,6 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -6863,9 +6889,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -6956,9 +6979,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: slow1
@@ -7054,9 +7074,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7161,9 +7178,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7262,9 +7276,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7576,7 +7587,7 @@ buildvariants:
     push_bucket: downloads.10gen.com
     push_name: linux
     push_arch: s390x-enterprise-suse12
-    compile_flags: --ssl MONGO_DISTMOD=suse12 --release -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    compile_flags: --ssl MONGO_DISTMOD=suse12 --release -j3 CCFLAGS="-march=z196 -mtune=zEC12" --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
@@ -7640,9 +7651,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -7734,9 +7742,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -7930,9 +7935,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8018,9 +8020,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8158,9 +8157,6 @@ buildvariants:
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_last_stable_mongos_and_mixed_shards
@@ -8262,9 +8258,6 @@ buildvariants:
   - name: jstestfuzz_sharded
   - name: jstestfuzz_sharded_session
   - name: jstestfuzz_sharded_causal_consistency
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -8475,9 +8468,6 @@ buildvariants:
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
   - name: rollback_fuzzer
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sharding
   - name: sharding_auth
   - name: sharding_op_query
@@ -8552,9 +8542,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -8642,9 +8629,6 @@ buildvariants:
   - name: replica_sets_auth
   - name: replica_sets_pv0
   - name: replica_sets_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -8705,8 +8689,11 @@ buildvariants:
     lang_environment: LANG=C
     san_options: LSAN_OPTIONS="suppressions=etc/lsan.suppressions:report_objects=1" ASAN_OPTIONS=detect_leaks=1:check_initialization_order=true:strict_init_order=true:abort_on_error=1:disable_coredump=0:handle_abort=0:handle_segv=0:handle_sigbus=0:handle_sigill=0:handle_sigfpe=0
     compile_flags: --variables-files=etc/scons/mongodbtoolchain_clang.vars --dbg=on --opt=on --allocator=system --sanitize=address --ssl -j$(grep -c ^processor /proc/cpuinfo) --nostrip
-    multiversion_platform_arch: "ubuntu1604"
-    multiversion_edition: "targeted"
+    # TODO SERVER-32600: Re-enable targeted downloads after setup_multiversion_mongodb.py is
+    # guaranteed to download x86_64 binaries for this platform.
+    #
+    # multiversion_platform_arch: "ubuntu1604"
+    # multiversion_edition: "targeted"
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 3)) # Avoid starting too many mongod's under ASAN build.
     build_mongoreplay: true
     hang_analyzer_dump_core: false
@@ -8760,9 +8747,6 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -8861,8 +8845,11 @@ buildvariants:
     lang_environment: LANG=C
     san_options: UBSAN_OPTIONS="print_stacktrace=1:handle_abort=0:handle_segv=0:handle_sigbus=0:handle_sigill=0:handle_sigfpe=0"
     compile_flags: --variables-files=etc/scons/mongodbtoolchain_clang.vars --dbg=on --opt=on --allocator=system --sanitize=undefined --ssl -j$(grep -c ^processor /proc/cpuinfo) --nostrip
-    multiversion_platform_arch: "ubuntu1604"
-    multiversion_edition: "targeted"
+    # TODO SERVER-32600: Re-enable targeted downloads after setup_multiversion_mongodb.py is
+    # guaranteed to download x86_64 binaries for this platform.
+    #
+    # multiversion_platform_arch: "ubuntu1604"
+    # multiversion_edition: "targeted"
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 3)) # Avoid starting too many mongod's under UBSAN build.
     build_mongoreplay: true
   tasks:
@@ -8916,9 +8903,6 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsonSchema
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -9069,9 +9053,6 @@ buildvariants:
   - name: replica_sets_initsync_static_jscore_passthrough
   - name: replica_sets_resync_static_jscore_passthrough
   - name: replica_sets_kill_secondaries_jscore_passthrough
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: sasl
   - name: sharded_collections_jscore_passthrough
   - name: sharding
@@ -9195,8 +9176,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: multiversion
   - name: multiversion_auth
@@ -9323,8 +9302,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9428,8 +9405,6 @@ buildvariants:
   - name: jstestfuzz_sharded_causal_consistency
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_session
-  - name: master_slave
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -9500,9 +9475,6 @@ buildvariants:
   - name: jstestfuzz_concurrent_sharded
   - name: jstestfuzz_replication
   - name: jstestfuzz_sharded
-  - name: master_slave
-  - name: master_slave_auth
-  - name: master_slave_jscore_passthrough
   - name: mmap
   - name: noPassthrough
   - name: noPassthroughWithMongod

@@ -20,6 +20,7 @@ selector:
   - jstests/sharding/covered_shard_key_indexes.js
   # Enable when 3.8 becomes last-stable.
   - jstests/sharding/create_database.js
+  - jstests/sharding/database_and_shard_versioning_all_commands.js
   - jstests/sharding/dump_coll_metadata.js
   - jstests/sharding/geo_near_random1.js
   - jstests/sharding/geo_near_random2.js
@@ -117,6 +118,8 @@ selector:
   # New failpoint in v3.6 shard mongod.
   - jstests/sharding/cleanup_orphaned_cmd_prereload.js
   - jstests/sharding/pending_chunk.js
+  # New failpoint in v4.0 mongos.
+  - jstests/sharding/crash_mongos_against_upgraded_cluster.js
   # New waitForClusterTime
   - jstests/sharding/auth_slaveok_routing.js
   # This test should not be run with a mixed cluster environment.

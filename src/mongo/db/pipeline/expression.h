@@ -874,11 +874,15 @@ private:
     ExpressionDateFromString(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                              boost::intrusive_ptr<Expression> dateString,
                              boost::intrusive_ptr<Expression> timeZone,
-                             boost::intrusive_ptr<Expression> format);
+                             boost::intrusive_ptr<Expression> format,
+                             boost::intrusive_ptr<Expression> onNull,
+                             boost::intrusive_ptr<Expression> onError);
 
     boost::intrusive_ptr<Expression> _dateString;
     boost::intrusive_ptr<Expression> _timeZone;
     boost::intrusive_ptr<Expression> _format;
+    boost::intrusive_ptr<Expression> _onNull;
+    boost::intrusive_ptr<Expression> _onError;
 };
 
 class ExpressionDateFromParts final : public Expression {
@@ -986,12 +990,12 @@ protected:
 
 private:
     ExpressionDateToString(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                           const std::string& format,                  // The format string.
-                           boost::intrusive_ptr<Expression> date,      // The date to format.
-                           boost::intrusive_ptr<Expression> timeZone,  // The optional timezone.
+                           boost::intrusive_ptr<Expression> format,
+                           boost::intrusive_ptr<Expression> date,
+                           boost::intrusive_ptr<Expression> timeZone,
                            boost::intrusive_ptr<Expression> onNull);
 
-    const std::string _format;
+    boost::intrusive_ptr<Expression> _format;
     boost::intrusive_ptr<Expression> _date;
     boost::intrusive_ptr<Expression> _timeZone;
     boost::intrusive_ptr<Expression> _onNull;
@@ -1948,21 +1952,21 @@ private:
 
 class ExpressionConvert final : public Expression {
 public:
-    explicit ExpressionConvert(const boost::intrusive_ptr<ExpressionContext>& expCtx)
-        : Expression(expCtx) {}
-
-    Value evaluate(const Document& root) const final;
-    boost::intrusive_ptr<Expression> optimize() final;
-    static boost::intrusive_ptr<Expression> parse(
-        const boost::intrusive_ptr<ExpressionContext>& expCtx,
-        BSONElement expr,
-        const VariablesParseState& vpsIn);
-    Value serialize(bool explain) const final;
-
     /**
      * Constant double representation of 2^63.
      */
     static const double kLongLongMaxPlusOneAsDouble;
+
+    static boost::intrusive_ptr<Expression> parse(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        BSONElement expr,
+        const VariablesParseState& vpsIn);
+
+    explicit ExpressionConvert(const boost::intrusive_ptr<ExpressionContext>& expCtx)
+        : Expression(expCtx) {}
+    Value evaluate(const Document& root) const final;
+    boost::intrusive_ptr<Expression> optimize() final;
+    Value serialize(bool explain) const final;
 
 protected:
     void _doAddDependencies(DepsTracker* deps) const final;
@@ -1975,9 +1979,5 @@ private:
     boost::intrusive_ptr<Expression> _to;
     boost::intrusive_ptr<Expression> _onError;
     boost::intrusive_ptr<Expression> _onNull;
-
-    // If the 'to' field is a constant, we evaluate it once during optimization and store the result
-    // here.
-    boost::optional<BSONType> _constTargetType;
 };
 }

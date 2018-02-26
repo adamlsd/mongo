@@ -162,11 +162,16 @@ Status _applyOps(OperationContext* opCtx,
                         << redact(opObj));
             }
 
-            // Cannot specify timestamp values in an atomic applyOps.
-            if (opObj.hasField("ts")) {
+            // Reject malformed operations in an atomic applyOps.
+            try {
+                ReplOperation::parse(IDLParserErrorContext("applyOps"), opObj);
+            } catch (...) {
                 uasserted(ErrorCodes::AtomicityFailure,
-                          "cannot apply an op with a timestamp in atomic applyOps mode; "
-                          "will retry without atomicity");
+                          str::stream()
+                              << "cannot apply a malformed operation in atomic applyOps mode: "
+                              << redact(opObj)
+                              << "; will retry without atomicity: "
+                              << exceptionToStatus().toString());
             }
 
             OldClientContext ctx(opCtx, nss.ns());
@@ -528,10 +533,9 @@ MultiApplier::Operations ApplyOps::extractOperations(const OplogEntry& applyOpsO
     auto cmdObj = applyOpsOplogEntry.getOperationToApply();
     auto operationDocs = cmdObj.firstElement().Obj();
 
-    uassert(ErrorCodes::EmptyArrayOperation,
-            str::stream() << "ApplyOps::extractOperations(): applyOps contains no operations: "
-                          << redact(applyOpsOplogEntry.toBSON()),
-            !operationDocs.isEmpty());
+    if (operationDocs.isEmpty()) {
+        return {};
+    }
 
     MultiApplier::Operations operations;
 

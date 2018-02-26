@@ -155,7 +155,7 @@ void _getNextOpTimes(OperationContext* opCtx,
     }
 
     // Allow the storage engine to start the transaction outside the critical section.
-    opCtx->recoveryUnit()->prepareSnapshot();
+    opCtx->recoveryUnit()->preallocateSnapshot();
     stdx::lock_guard<stdx::mutex> lk(newOpMutex);
 
     auto ts = LogicalClock::get(opCtx)->reserveTicks(count).asTimestamp();
@@ -1445,7 +1445,8 @@ Status applyOperation_inlock(OperationContext* opCtx,
             }
 
             if (opType[1] == 0) {
-                deleteObjects(opCtx, collection, requestNss, deleteCriteria, /*justOne*/ valueB);
+                const auto justOne = true;
+                deleteObjects(opCtx, collection, requestNss, deleteCriteria, justOne);
             } else
                 verify(opType[1] == 'b');  // "db" advertisement
             wuow.commit();

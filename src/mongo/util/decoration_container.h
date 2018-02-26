@@ -31,17 +31,18 @@
 #include <cstdint>
 #include <memory>
 
-#include "mongo/base/disallow_copying.h"
-
 namespace mongo {
 
+template <typename DecoratedType>
 class DecorationRegistry;
 
 /**
  * An container for decorations.
  */
+template <typename DecoratedType>
 class DecorationContainer {
-    MONGO_DISALLOW_COPYING(DecorationContainer);
+    DecorationContainer(const DecorationContainer&) = delete;
+    DecorationContainer& operator=(const DecorationContainer&) = delete;
 
 public:
     /**
@@ -53,8 +54,8 @@ public:
         DecorationDescriptor() = default;
 
     private:
-        friend class DecorationContainer;
-        friend class DecorationRegistry;
+        friend DecorationContainer;
+        friend DecorationRegistry<DecoratedType>;
 
         explicit DecorationDescriptor(size_t index) : _index(index) {}
 
@@ -72,8 +73,8 @@ public:
         DecorationDescriptorWithType() = default;
 
     private:
-        friend class DecorationContainer;
-        friend class DecorationRegistry;
+        friend DecorationContainer;
+        friend DecorationRegistry<DecoratedType>;
 
         explicit DecorationDescriptorWithType(DecorationDescriptor raw) : _raw(std::move(raw)) {}
 
@@ -87,8 +88,16 @@ public:
      * have any declareDecoration() calls made on it while a DecorationContainer dependent on it
      * is in scope.
      */
-    explicit DecorationContainer(const DecorationRegistry* registry, void* owner);
-    ~DecorationContainer();
+    explicit DecorationContainer(const DecorationRegistry<DecoratedType>* const registry,
+                                 DecoratedType* const owner)
+        : _registry(registry),
+          _decorationData(new unsigned char[registry->getDecorationBufferSizeBytes()]) {
+        _registry->construct(this, owner);
+    }
+
+    ~DecorationContainer() {
+        _registry->destroy(this);
+    }
 
     /**
      * Gets the decorated value for the given descriptor.
@@ -123,7 +132,7 @@ public:
     }
 
 private:
-    const DecorationRegistry* const _registry;
+    const DecorationRegistry<DecoratedType>* const _registry;
     const std::unique_ptr<unsigned char[]> _decorationData;
 };
 

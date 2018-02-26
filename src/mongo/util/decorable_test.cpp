@@ -65,8 +65,9 @@ public:
     int value;
 };
 
+class MyDecorable : public Decorable<MyDecorable> {};
+
 TEST(DecorableTest, DecorableType) {
-    class MyDecorable : public Decorable<MyDecorable> {};
     const auto dd1 = MyDecorable::declareDecoration<A>();
     const auto dd2 = MyDecorable::declareDecoration<A>();
     const auto dd3 = MyDecorable::declareDecoration<int>();
@@ -102,16 +103,16 @@ TEST(DecorableTest, DecorableType) {
 TEST(DecorableTest, SimpleDecoration) {
     numConstructedAs = 0;
     numDestructedAs = 0;
-    DecorationRegistry registry;
+    DecorationRegistry<MyDecorable> registry;
     const auto dd1 = registry.declareDecoration<A>();
     const auto dd2 = registry.declareDecoration<A>();
     const auto dd3 = registry.declareDecoration<int>();
 
     {
-        DecorationContainer decorable1(&registry, nullptr);
+        DecorationContainer<MyDecorable> decorable1(&registry, nullptr);
         ASSERT_EQ(2, numConstructedAs);
         ASSERT_EQ(0, numDestructedAs);
-        DecorationContainer decorable2(&registry, nullptr);
+        DecorationContainer<MyDecorable> decorable2(&registry, nullptr);
         ASSERT_EQ(4, numConstructedAs);
         ASSERT_EQ(0, numDestructedAs);
 
@@ -138,13 +139,13 @@ TEST(DecorableTest, ThrowingConstructor) {
     numConstructedAs = 0;
     numDestructedAs = 0;
 
-    DecorationRegistry registry;
+    DecorationRegistry<MyDecorable> registry;
     registry.declareDecoration<A>();
     registry.declareDecoration<ThrowA>();
     registry.declareDecoration<A>();
 
     try {
-        DecorationContainer d(&registry, nullptr);
+        DecorationContainer<MyDecorable> d(&registry, nullptr);
     } catch (const AssertionException& ex) {
         ASSERT_EQ(ErrorCodes::Unauthorized, ex.code());
     }
@@ -153,12 +154,12 @@ TEST(DecorableTest, ThrowingConstructor) {
 }
 
 TEST(DecorableTest, Alignment) {
-    DecorationRegistry registry;
+    DecorationRegistry<MyDecorable> registry;
     const auto firstChar = registry.declareDecoration<char>();
     const auto firstInt = registry.declareDecoration<int>();
     const auto secondChar = registry.declareDecoration<int>();
     const auto secondInt = registry.declareDecoration<int>();
-    DecorationContainer d(&registry, nullptr);
+    DecorationContainer<MyDecorable> d(&registry, nullptr);
     ASSERT_EQ(0U,
               reinterpret_cast<uintptr_t>(&d.getDecoration(firstChar)) %
                   std::alignment_of<char>::value);
@@ -172,9 +173,6 @@ TEST(DecorableTest, Alignment) {
               reinterpret_cast<uintptr_t>(&d.getDecoration(secondInt)) %
                   std::alignment_of<int>::value);
 }
-
-
-class MyDecorable : public Decorable<MyDecorable> {};
 
 class ClassWithOwnerPtr {
 public:

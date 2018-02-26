@@ -155,7 +155,7 @@ void _getNextOpTimes(OperationContext* opCtx,
     }
 
     // Allow the storage engine to start the transaction outside the critical section.
-    opCtx->recoveryUnit()->prepareSnapshot();
+    opCtx->recoveryUnit()->preallocateSnapshot();
     stdx::lock_guard<stdx::mutex> lk(newOpMutex);
 
     auto ts = LogicalClock::get(opCtx)->reserveTicks(count).asTimestamp();
@@ -393,11 +393,11 @@ void _logOpsInner(OperationContext* opCtx,
     checkOplogInsert(oplogCollection->insertDocumentsForOplog(opCtx, writers, timestamps, nDocs));
 
     // Set replCoord last optime only after we're sure the WUOW didn't abort and roll back.
-    opCtx->recoveryUnit()->onCommit([opCtx, replCoord, finalOpTime] {
+    opCtx->recoveryUnit()->onCommit([replCoord, finalOpTime] {
         // Optimes on the primary should always represent consistent database states.
         replCoord->setMyLastAppliedOpTimeForward(
             finalOpTime, ReplicationCoordinator::DataConsistency::Consistent);
-        ReplClientInfo::forClient(opCtx->getClient()).setLastOp(finalOpTime);
+        ReplClientInfo::forClient(Client::getCurrent()).setLastOp(finalOpTime);
     });
 }
 

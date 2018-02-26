@@ -4773,10 +4773,29 @@ public:
         table[BSONType::NumberDouble][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberDouble][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberDouble][BSONType::NumberInt] = &performCastDoubleToInt;
         table[BSONType::NumberDouble][BSONType::NumberLong] = &performCastDoubleToLong;
         table[BSONType::NumberDouble][BSONType::NumberDecimal] = [](Value inputValue) {
             return Value(inputValue.coerceToDecimal());
+        };
+
+        //
+        // Conversions from String
+        //
+        table[BSONType::String][BSONType::NumberDouble] = &parseStringToNumber<double, 0>;
+        table[BSONType::String][BSONType::String] = &performIdentityConversion;
+        table[BSONType::String][BSONType::jstOID] = &parseStringToOID;
+        table[BSONType::String][BSONType::Bool] = [](Value inputValue) { return Value(true); };
+        table[BSONType::String][BSONType::NumberInt] = &parseStringToNumber<int, 10>;
+        table[BSONType::String][BSONType::NumberLong] = &parseStringToNumber<long long, 10>;
+        table[BSONType::String][BSONType::NumberDecimal] = &parseStringToNumber<Decimal128, 0>;
+
+        //
+        // Conversions from jstOID
+        //
+        table[BSONType::jstOID][BSONType::Date] = [](Value inputValue) {
+            return Value(inputValue.getOid().asDateT());
         };
 
         //
@@ -4794,6 +4813,24 @@ public:
         };
         table[BSONType::Bool][BSONType::NumberDecimal] = [](Value inputValue) {
             return inputValue.getBool() ? Value(Decimal128(1)) : Value(Decimal128(0));
+        };
+
+        //
+        // Conversions from Date
+        //
+        table[BSONType::Date][BSONType::NumberDouble] = [](Value inputValue) {
+            return Value(static_cast<double>(inputValue.getDate().toMillisSinceEpoch()));
+        };
+        table[BSONType::Date][BSONType::Bool] = [](Value inputValue) {
+            return Value(inputValue.coerceToBool());
+        };
+        table[BSONType::Date][BSONType::Date] = &performIdentityConversion;
+        table[BSONType::Date][BSONType::NumberLong] = [](Value inputValue) {
+            return Value(inputValue.getDate().toMillisSinceEpoch());
+        };
+        table[BSONType::Date][BSONType::NumberDecimal] = [](Value inputValue) {
+            return Value(
+                Decimal128(static_cast<int64_t>(inputValue.getDate().toMillisSinceEpoch())));
         };
 
         //
@@ -4822,6 +4859,7 @@ public:
         table[BSONType::NumberLong][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberLong][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberLong][BSONType::NumberInt] = &performCastLongToInt;
         table[BSONType::NumberLong][BSONType::NumberLong] = &performIdentityConversion;
         table[BSONType::NumberLong][BSONType::NumberDecimal] = [](Value inputValue) {
@@ -4835,6 +4873,7 @@ public:
         table[BSONType::NumberDecimal][BSONType::Bool] = [](Value inputValue) {
             return Value(inputValue.coerceToBool());
         };
+        table[BSONType::NumberDecimal][BSONType::Date] = &performCastNumberToDate;
         table[BSONType::NumberDecimal][BSONType::NumberInt] = [](Value inputValue) {
             return performCastDecimalToInt(BSONType::NumberInt, inputValue);
         };
@@ -4966,6 +5005,63 @@ private:
                     longValue <= std::numeric_limits<int>::max());
 
         return Value(static_cast<int>(longValue));
+    }
+
+    static Value performCastNumberToDate(Value inputValue) {
+        long long millisSinceEpoch;
+
+        switch (inputValue.getType()) {
+            case BSONType::NumberLong:
+                millisSinceEpoch = inputValue.getLong();
+                break;
+            case BSONType::NumberDouble:
+                millisSinceEpoch = performCastDoubleToLong(inputValue).getLong();
+                break;
+            case BSONType::NumberDecimal:
+                millisSinceEpoch =
+                    performCastDecimalToInt(BSONType::NumberLong, inputValue).getLong();
+                break;
+            default:
+                MONGO_UNREACHABLE;
+        }
+
+        return Value(Date_t::fromMillisSinceEpoch(millisSinceEpoch));
+    }
+
+    template <class targetType, int base>
+    static Value parseStringToNumber(Value inputValue) {
+        auto stringValue = inputValue.getStringData();
+        targetType result;
+
+        // Reject any strings in hex format. This check is needed because the
+        // parseNumberFromStringWithBase call below allows an input hex string prefixed by '0x' when
+        // parsing to a double.
+        uassert(ErrorCodes::ConversionFailure,
+                str::stream() << "Illegal hexadecimal input in $convert with no onError value: "
+                              << stringValue,
+                !stringValue.startsWith("0x"));
+
+        Status parseStatus = parseNumberFromStringWithBase(stringValue, base, &result);
+        uassert(ErrorCodes::ConversionFailure,
+                str::stream() << "Failed to parse number '" << stringValue
+                              << "' in $convert with no onError value: "
+                              << parseStatus.reason(),
+                parseStatus.isOK());
+
+        return Value(result);
+    }
+
+    static Value parseStringToOID(Value inputValue) {
+        try {
+            return Value(OID::createFromString(inputValue.getStringData()));
+        } catch (const DBException& ex) {
+            // Rethrow any caught exception as a conversion failure such that 'onError' is evaluated
+            // and returned.
+            uasserted(ErrorCodes::ConversionFailure,
+                      str::stream() << "Failed to parse objectId '" << inputValue.getString()
+                                    << "' in $convert with no onError value: "
+                                    << ex.reason());
+        }
     }
 
     static Value performIdentityConversion(Value inputValue) {

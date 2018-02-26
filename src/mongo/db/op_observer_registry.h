@@ -147,7 +147,7 @@ public:
             auto time = observer->onDropCollection(opCtx, collectionName, uuid);
             invariant(time.isNull());
         }
-        return _getOpTimeToReturn(times.get()->reservedOpTimes);
+        return _getOpTimeToReturn(times.get().reservedOpTimes);
     }
 
     void onDropIndex(OperationContext* const opCtx,
@@ -174,7 +174,7 @@ public:
             invariant(time.isNull());
         }
 
-        return _getOpTimeToReturn(times.get()->reservedOpTimes);
+        return _getOpTimeToReturn(times.get().reservedOpTimes);
     }
 
     void onApplyOps(OperationContext* const opCtx,

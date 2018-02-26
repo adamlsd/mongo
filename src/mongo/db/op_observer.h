@@ -281,9 +281,9 @@ public:
      * chain.
      */
     struct Times {
-        std::vector<repl::OpTime> reservedOpTimes;
-
         static Times& get(OperationContext*);
+
+        std::vector<repl::OpTime> reservedOpTimes;
     };
 
 protected:
@@ -297,20 +297,21 @@ protected:
         ReservedTimes& operator=(const ReservedTimes&) = delete;
 
     public:
-        explicit ReservedTimes(OperationContext* const opCtx) : _times(&Times::get(opCtx)) {
-            invariant(this->_times->reservedOpTimes.empty());
-        }
-
         ~ReservedTimes() {
-            this->_times->reservedOpTimes.clear();
+            _times.reservedOpTimes.clear();
         }
 
-        Times* get() const {
-            return this->_times;
+        explicit ReservedTimes(OperationContext* const opCtx) : _times(Times::get(opCtx)) {
+            invariant(_times.reservedOpTimes.empty());
+        }
+
+
+        Times& get() const {
+            return _times;
         }
 
     private:
-        Times* const _times;
+        Times& _times;
     };
 };
 }  // namespace mongo

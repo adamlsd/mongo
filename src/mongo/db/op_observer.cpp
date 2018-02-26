@@ -30,8 +30,9 @@
 
 #include "mongo/db/operation_context.h"
 namespace mongo {
-
+namespace {
 const auto getOpObserverTimes = OperationContext::declareDecoration<OpObserver::Times>();
+}  // namespace
 
 auto OpObserver::Times::get(OperationContext* const opCtx) -> Times& {
     return getOpObserverTimes(opCtx);

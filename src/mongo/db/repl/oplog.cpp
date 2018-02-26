@@ -399,7 +399,7 @@ void _logOpsInner(OperationContext* opCtx,
     });
 }
 
-OpTime logOp(OperationContext* const opCtx,
+OpTime logOp(OperationContext* opCtx,
              const char* opstr,
              const NamespaceString& nss,
              OptionalCollectionUUID uuid,

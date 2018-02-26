@@ -56,8 +56,6 @@
 
 namespace mongo {
 namespace {
-using std::begin;
-using std::end;
 
 MONGO_FP_DECLARE(failCollectionUpdates);
 
@@ -349,6 +347,8 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         repl::logInsertOps(opCtx, nss, uuid, session, first, last, fromMigrate, lastWriteDate);
 
     auto& times = OpObserver::Times::get(opCtx).reservedOpTimes;
+    using std::begin;
+    using std::end;
     times.insert(end(times), begin(opTimeList), end(opTimeList));
 
     auto css = (nss == NamespaceString::kSessionTransactionsTableNamespace || fromMigrate)

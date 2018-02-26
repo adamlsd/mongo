@@ -90,6 +90,11 @@ public:
     virtual stdx::thread::id getThreadId() const = 0;
 
     /**
+     * Indicate that shared locks should participate in two-phase locking for this Locker instance.
+     */
+    virtual void setSharedLocksShouldTwoPhaseLock(bool sharedLocksShouldTwoPhaseLock) = 0;
+
+    /**
      * This should be the first method invoked for a particular Locker object. It acquires the
      * Global lock in the specified mode and effectively indicates the mode of the operation.
      * This is what the lock modes on the global lock mean:
@@ -116,11 +121,12 @@ public:
      * Requests the global lock to be acquired in the specified mode.
      *
      * See the comments for lockBegin/Complete for more information on the semantics.
-     * The timeout indicates how long to wait for the lock to be acquired. The lockGlobalBegin
-     * method has a timeout for use with the TicketHolder, if there is one.
+     * The deadline indicates the absolute time point when this lock acquisition will time out, if
+     * not yet granted. The lockGlobalBegin
+     * method has a deadline for use with the TicketHolder, if there is one.
      */
-    virtual LockResult lockGlobalBegin(LockMode mode, Milliseconds timeout) = 0;
-    virtual LockResult lockGlobalComplete(Milliseconds timeout) = 0;
+    virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) = 0;
+    virtual LockResult lockGlobalComplete(Date_t deadline) = 0;
 
     /**
      * This method is used only in the MMAP V1 storage engine, otherwise it is a no-op. See the
@@ -171,8 +177,8 @@ public:
      *
      * @param resId Id of the resource to be locked.
      * @param mode Mode in which the resource should be locked. Lock upgrades are allowed.
-     * @param timeout How long to wait for the lock to be granted, before
-     *              returning LOCK_TIMEOUT. This parameter defaults to an infinite timeout.
+     * @param deadline How long to wait for the lock to be granted, before
+     *              returning LOCK_TIMEOUT. This parameter defaults to an infinite deadline.
      *              If Milliseconds(0) is passed, the request will return immediately, if
      *              the request could not be granted right away.
      * @param checkDeadlock Whether to enable deadlock detection for this acquisition. This
@@ -183,7 +189,7 @@ public:
      */
     virtual LockResult lock(ResourceId resId,
                             LockMode mode,
-                            Milliseconds timeout = Milliseconds::max(),
+                            Date_t deadline = Date_t::max(),
                             bool checkDeadlock = false) = 0;
 
     /**
@@ -294,6 +300,18 @@ public:
      */
     virtual void restoreLockState(const LockSnapshot& stateToRestore) = 0;
 
+    /**
+     * Releases the ticket associated with the Locker. This allows locks to be held without
+     * contributing to reader/writer throttling.
+     */
+    virtual void releaseTicket() = 0;
+
+    /**
+     * Reacquires a ticket for the Locker. This must only be called after releaseTicket(). It
+     * restores the ticket under its previous LockMode.
+     */
+    virtual void reacquireTicket() = 0;
+
     //
     // These methods are legacy from LockerImpl and will eventually go away or be converted to
     // calls into the Locker methods
@@ -333,6 +351,7 @@ public:
      * for special purpose threads, such as FTDC.
      */
     void setShouldAcquireTicket(bool newValue) {
+        invariant(!isLocked());
         _shouldAcquireTicket = newValue;
     }
     bool shouldAcquireTicket() const {

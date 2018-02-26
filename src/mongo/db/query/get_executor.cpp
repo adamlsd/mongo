@@ -650,6 +650,11 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
     unique_ptr<CanonicalQuery> canonicalQuery,
     PlanExecutor::YieldPolicy yieldPolicy,
     size_t plannerOptions) {
+    if (canonicalQuery->getQueryRequest().getMaxScan()) {
+        RARELY log() << "Support for the maxScan option has been deprecated. Instead, use "
+                        "maxTimeMS. See http://dochub.mongodb.org/core/4.0-deprecate-maxScan.";
+    }
+
     if (NULL != collection && canonicalQuery->getQueryRequest().isOplogReplay()) {
         return getOplogStartHack(opCtx, collection, std::move(canonicalQuery), plannerOptions);
     }
@@ -657,8 +662,7 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
     if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, nss.ns())) {
         plannerOptions |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
     }
-    return getExecutor(
-        opCtx, collection, std::move(canonicalQuery), PlanExecutor::YIELD_AUTO, plannerOptions);
+    return getExecutor(opCtx, collection, std::move(canonicalQuery), yieldPolicy, plannerOptions);
 }
 
 namespace {

@@ -39,46 +39,53 @@ namespace {
 
 MONGO_FP_DECLARE(setAutoGetCollectionWait);
 
+void uassertLockTimeout(std::string resourceName,
+                        LockMode lockMode,
+                        Date_t deadline,
+                        bool isLocked) {
+    uassert(ErrorCodes::LockTimeout,
+            str::stream() << "Failed to acquire " << modeName(lockMode) << " lock for "
+                          << resourceName
+                          << " since deadline "
+                          << dateToISOStringLocal(deadline)
+                          << " has passed.",
+            isLocked);
+}
+
 }  // namespace
 
-AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode)
-    : _dbLock(opCtx, dbName, mode), _db(dbHolder().get(opCtx, dbName)) {}
-
-AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, Lock::DBLock dbLock)
-    : _dbLock(std::move(dbLock)), _db(dbHolder().get(opCtx, dbName)) {}
+AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode, Date_t deadline)
+    : _dbLock(opCtx, dbName, mode, deadline), _db([&] {
+          uassertLockTimeout(
+              str::stream() << "database " << dbName, mode, deadline, _dbLock.isLocked());
+          return dbHolder().get(opCtx, dbName);
+      }()) {}
 
 AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
                                      const NamespaceStringOrUUID& nsOrUUID,
                                      LockMode modeDB,
                                      LockMode modeColl,
-                                     ViewMode viewMode)
-    : AutoGetCollection(
-          opCtx, nsOrUUID, Lock::DBLock(opCtx, nsOrUUID.db(), modeDB), modeColl, viewMode) {}
+                                     ViewMode viewMode,
+                                     Date_t deadline)
+    :  // The UUID to NamespaceString resolution is performed outside of any locks
+      _resolvedNss(resolveNamespaceStringOrUUID(opCtx, nsOrUUID)),
+      // The database locking is performed based on the resolved NamespaceString
+      _autoDb(opCtx, _resolvedNss.db(), modeDB, deadline) {
+    // In order to account for possible collection rename happening because the resolution from UUID
+    // to NamespaceString was done outside of database lock, if UUID was specified we need to
+    // re-resolve the _resolvedNss after acquiring the database lock so it has the correct value.
+    //
+    // Holding a database lock prevents collection renames, so this guarantees a stable UUID to
+    // NamespaceString mapping.
+    if (nsOrUUID.uuid())
+        _resolvedNss = resolveNamespaceStringOrUUID(opCtx, nsOrUUID);
 
-AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
-                                     const NamespaceStringOrUUID& nsOrUUID,
-                                     Lock::DBLock dbLock,
-                                     LockMode modeColl,
-                                     ViewMode viewMode)
-    : _autoDb(opCtx, nsOrUUID.db(), std::move(dbLock)),
-      _nsAndLock([&]() -> NamespaceAndCollectionLock {
-          if (nsOrUUID.nss()) {
-              return {Lock::CollectionLock(opCtx->lockState(), nsOrUUID.nss()->ns(), modeColl),
-                      *nsOrUUID.nss()};
-          } else {
-              UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
-              auto resolvedNss = catalog.lookupNSSByUUID(nsOrUUID.dbAndUUID()->uuid);
+    _collLock.emplace(opCtx->lockState(), _resolvedNss.ns(), modeColl, deadline);
+    uassertLockTimeout(str::stream() << "collection " << nsOrUUID.toString(),
+                       modeColl,
+                       deadline,
+                       _collLock->isLocked());
 
-              // If the collection UUID cannot be resolved, we can't obtain a collection or check
-              // for vews
-              uassert(ErrorCodes::NamespaceNotFound,
-                      str::stream() << "Unable to resolve " << nsOrUUID.toString(),
-                      resolvedNss.isValid());
-
-              return {Lock::CollectionLock(opCtx->lockState(), resolvedNss.ns(), modeColl),
-                      std::move(resolvedNss)};
-          }
-      }()) {
     // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
     MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
         const BSONObj& data = customWait.getData();
@@ -86,38 +93,62 @@ AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
     }
 
     Database* const db = _autoDb.getDb();
+    invariant(!nsOrUUID.uuid() || db,
+              str::stream() << "Database for " << _resolvedNss.ns()
+                            << " disappeared after successufully resolving "
+                            << nsOrUUID.toString());
 
     // If the database doesn't exists, we can't obtain a collection or check for views
     if (!db)
         return;
 
-    _coll = db->getCollection(opCtx, _nsAndLock.nss);
+    _coll = db->getCollection(opCtx, _resolvedNss);
+    invariant(!nsOrUUID.uuid() || _coll,
+              str::stream() << "Collection for " << _resolvedNss.ns()
+                            << " disappeared after successufully resolving "
+                            << nsOrUUID.toString());
 
-    // If the collection exists, there is no need to check for views and we must keep the collection
-    // lock
-    if (_coll) {
+    // If the collection exists, there is no need to check for views
+    if (_coll)
         return;
-    }
 
-    _view = db->getViewCatalog()->lookup(opCtx, _nsAndLock.nss.ns());
+    _view = db->getViewCatalog()->lookup(opCtx, _resolvedNss.ns());
     uassert(ErrorCodes::CommandNotSupportedOnView,
-            str::stream() << "Namespace " << _nsAndLock.nss.ns() << " is a view, not a collection",
+            str::stream() << "Namespace " << _resolvedNss.ns() << " is a view, not a collection",
             !_view || viewMode == kViewsPermitted);
 }
 
-AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode)
-    : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {
+NamespaceString AutoGetCollection::resolveNamespaceStringOrUUID(OperationContext* opCtx,
+                                                                NamespaceStringOrUUID nsOrUUID) {
+    if (nsOrUUID.nss())
+        return *nsOrUUID.nss();
+
+    UUIDCatalog& uuidCatalog = UUIDCatalog::get(opCtx);
+    auto resolvedNss = uuidCatalog.lookupNSSByUUID(*nsOrUUID.uuid());
+
+    uassert(ErrorCodes::NamespaceNotFound,
+            str::stream() << "Unable to resolve " << nsOrUUID.toString(),
+            resolvedNss.isValid());
+
+    return resolvedNss;
+}
+
+AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx,
+                                     StringData dbName,
+                                     LockMode mode,
+                                     Date_t deadline) {
     invariant(mode == MODE_IX || mode == MODE_X);
-    _justCreated = false;
+
+    _autoDb.emplace(opCtx, dbName, mode, deadline);
+    _db = _autoDb->getDb();
 
     // If the database didn't exist, relock in MODE_X
-    if (_db == NULL) {
+    if (!_db) {
         if (mode != MODE_X) {
-            _dbLock.relockWithMode(MODE_X);
+            _autoDb.emplace(opCtx, dbName, MODE_X, deadline);
         }
 
-        _db = dbHolder().openDb(opCtx, ns);
-        _justCreated = true;
+        _db = dbHolder().openDb(opCtx, dbName, &_justCreated);
     }
 }
 

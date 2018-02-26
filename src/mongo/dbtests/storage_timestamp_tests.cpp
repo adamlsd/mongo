@@ -216,20 +216,11 @@ public:
 
     // Creates a dummy command operation to persuade `applyOps` to be non-atomic.
     StatusWith<BSONObj> doNonAtomicApplyOps(const std::string& dbName,
-                                            const std::list<BSONObj>& applyOpsList,
-                                            Timestamp dummyTs) {
-        BSONArrayBuilder builder;
-        builder.append(applyOpsList);
-        builder << BSON("ts" << dummyTs << "t" << 1LL << "h" << 1 << "op"
-                             << "c"
-                             << "ns"
-                             << "test.$cmd"
-                             << "o"
-                             << BSON("applyOps" << BSONArrayBuilder().obj()));
+                                            const std::list<BSONObj>& applyOpsList) {
         BSONObjBuilder result;
         Status status = applyOps(_opCtx,
                                  dbName,
-                                 BSON("applyOps" << builder.arr()),
+                                 BSON("applyOps" << applyOpsList << "allowAtomic" << false),
                                  repl::OplogApplication::Mode::kApplyOpsCmd,
                                  &result);
         if (!status.isOK()) {
@@ -344,6 +335,23 @@ public:
         }
     }
 
+    std::string getNewIndexIdent(KVCatalog* kvCatalog, std::vector<std::string>& origIdents) {
+        // Find the collection and index ident by performing a set difference on the original
+        // idents and the current idents.
+        std::vector<std::string> identsWithColl = kvCatalog->getAllIdents(_opCtx);
+        std::sort(origIdents.begin(), origIdents.end());
+        std::sort(identsWithColl.begin(), identsWithColl.end());
+        std::vector<std::string> collAndIdxIdents;
+        std::set_difference(identsWithColl.begin(),
+                            identsWithColl.end(),
+                            origIdents.begin(),
+                            origIdents.end(),
+                            std::back_inserter(collAndIdxIdents));
+
+        ASSERT(collAndIdxIdents.size() == 1);
+        return collAndIdxIdents[0];
+    }
+
     std::tuple<std::string, std::string> getNewCollectionIndexIdent(
         KVCatalog* kvCatalog, std::vector<std::string>& origIdents) {
         // Find the collection and index ident by performing a set difference on the original
@@ -375,10 +383,15 @@ public:
                                       const std::string& collIdent,
                                       const std::string& indexIdent,
                                       Timestamp timestamp) {
-        WriteUnitOfWork wuow(_opCtx);
+        auto recoveryUnit = _opCtx->recoveryUnit();
+        recoveryUnit->abandonSnapshot();
         ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(timestamp));
         auto allIdents = kvCatalog->getAllIdents(_opCtx);
-        ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) != allIdents.end());
+        if (collIdent.size() > 0) {
+            // Index build test does not pass in a collection ident.
+            ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) != allIdents.end());
+        }
+
         if (indexIdent.size() > 0) {
             // `system.profile` does not have an `_id` index.
             ASSERT(std::find(allIdents.begin(), allIdents.end(), indexIdent) != allIdents.end());
@@ -389,11 +402,17 @@ public:
                                         const std::string& collIdent,
                                         const std::string& indexIdent,
                                         Timestamp timestamp) {
-        WriteUnitOfWork wuow(_opCtx);
+        auto recoveryUnit = _opCtx->recoveryUnit();
+        recoveryUnit->abandonSnapshot();
         ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(timestamp));
         auto allIdents = kvCatalog->getAllIdents(_opCtx);
-        ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) == allIdents.end());
-        ASSERT(std::find(allIdents.begin(), allIdents.end(), indexIdent) == allIdents.end());
+        if (collIdent.size() > 0) {
+            // Index build test does not pass in a collection ident.
+            ASSERT(std::find(allIdents.begin(), allIdents.end(), collIdent) == allIdents.end());
+        }
+
+        ASSERT(std::find(allIdents.begin(), allIdents.end(), indexIdent) == allIdents.end())
+            << "Ident: " << indexIdent << " Timestamp: " << timestamp;
     }
 
     std::string dumpMultikeyPaths(const MultikeyPaths& multikeyPaths) {
@@ -634,8 +653,7 @@ public:
                                << "ui"
                                << autoColl.getCollection()->uuid().get()
                                << "o"
-                               << BSON("_id" << num))},
-                    startDeleteTime.addTicks(num).asTimestamp())
+                               << BSON("_id" << num))})
                     .getStatus());
         }
 
@@ -711,8 +729,7 @@ public:
                                << "o2"
                                << BSON("_id" << 0)
                                << "o"
-                               << updates[idx].first)},
-                    firstUpdateTime.addTicks(idx).asTimestamp())
+                               << updates[idx].first)})
                     .getStatus());
         }
 
@@ -753,10 +770,9 @@ public:
         // on the same collection with `{_id: 0}`. It's expected for this second insert to be
         // turned into an upsert. The goal document does not contain `field: 0`.
         BSONObjBuilder resultBuilder;
-        auto swResult = doNonAtomicApplyOps(
+        auto result = unittest::assertGet(doNonAtomicApplyOps(
             nss.db().toString(),
-            {BSON("ts" << insertTime.asTimestamp() << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2
-                       << "op"
+            {BSON("ts" << insertTime.asTimestamp() << "t" << 1LL << "op"
                        << "i"
                        << "ns"
                        << nss.ns()
@@ -764,25 +780,18 @@ public:
                        << autoColl.getCollection()->uuid().get()
                        << "o"
                        << BSON("_id" << 0 << "field" << 0)),
-             BSON("ts" << insertTime.addTicks(1).asTimestamp() << "t" << 1LL << "h" << 0xBEEFBEEFLL
-                       << "v"
-                       << 2
-                       << "op"
+             BSON("ts" << insertTime.addTicks(1).asTimestamp() << "t" << 1LL << "op"
                        << "i"
                        << "ns"
                        << nss.ns()
                        << "ui"
                        << autoColl.getCollection()->uuid().get()
                        << "o"
-                       << BSON("_id" << 0))},
-            insertTime.addTicks(1).asTimestamp());
-        ASSERT_OK(swResult);
+                       << BSON("_id" << 0))}));
 
-        BSONObj& result = swResult.getValue();
-        ASSERT_EQ(3, result.getIntField("applied"));
+        ASSERT_EQ(2, result.getIntField("applied"));
         ASSERT(result["results"].Array()[0].Bool());
         ASSERT(result["results"].Array()[1].Bool());
-        ASSERT(result["results"].Array()[2].Bool());
 
         // Reading at `insertTime` should show the original document, `{_id: 0, field: 0}`.
         auto recoveryUnit = _opCtx->recoveryUnit();
@@ -820,22 +829,22 @@ public:
         // Reserve a timestamp before the inserts should happen.
         const LogicalTime preInsertTimestamp = _clock->reserveTicks(1);
         auto swResult = doAtomicApplyOps(nss.db().toString(),
-                                         {BSON("v" << 2 << "op"
-                                                   << "i"
-                                                   << "ns"
-                                                   << nss.ns()
-                                                   << "ui"
-                                                   << autoColl.getCollection()->uuid().get()
-                                                   << "o"
-                                                   << BSON("_id" << 0)),
-                                          BSON("v" << 2 << "op"
-                                                   << "i"
-                                                   << "ns"
-                                                   << nss.ns()
-                                                   << "ui"
-                                                   << autoColl.getCollection()->uuid().get()
-                                                   << "o"
-                                                   << BSON("_id" << 1))});
+                                         {BSON("op"
+                                               << "i"
+                                               << "ns"
+                                               << nss.ns()
+                                               << "ui"
+                                               << autoColl.getCollection()->uuid().get()
+                                               << "o"
+                                               << BSON("_id" << 0)),
+                                          BSON("op"
+                                               << "i"
+                                               << "ns"
+                                               << nss.ns()
+                                               << "ui"
+                                               << autoColl.getCollection()->uuid().get()
+                                               << "o"
+                                               << BSON("_id" << 1))});
         ASSERT_OK(swResult);
 
         ASSERT_EQ(2, swResult.getValue().getIntField("applied"));
@@ -882,22 +891,22 @@ public:
 
         const LogicalTime preInsertTimestamp = _clock->reserveTicks(1);
         auto swResult = doAtomicApplyOps(nss.db().toString(),
-                                         {BSON("v" << 2 << "op"
-                                                   << "i"
-                                                   << "ns"
-                                                   << nss.ns()
-                                                   << "ui"
-                                                   << autoColl.getCollection()->uuid().get()
-                                                   << "o"
-                                                   << BSON("_id" << 0 << "field" << 0)),
-                                          BSON("v" << 2 << "op"
-                                                   << "i"
-                                                   << "ns"
-                                                   << nss.ns()
-                                                   << "ui"
-                                                   << autoColl.getCollection()->uuid().get()
-                                                   << "o"
-                                                   << BSON("_id" << 0))});
+                                         {BSON("op"
+                                               << "i"
+                                               << "ns"
+                                               << nss.ns()
+                                               << "ui"
+                                               << autoColl.getCollection()->uuid().get()
+                                               << "o"
+                                               << BSON("_id" << 0 << "field" << 0)),
+                                          BSON("op"
+                                               << "i"
+                                               << "ns"
+                                               << nss.ns()
+                                               << "ui"
+                                               << autoColl.getCollection()->uuid().get()
+                                               << "o"
+                                               << BSON("_id" << 0))});
         ASSERT_OK(swResult);
 
         ASSERT_EQ(2, swResult.getValue().getIntField("applied"));
@@ -938,19 +947,17 @@ public:
         { ASSERT_FALSE(AutoGetCollectionForReadCommand(_opCtx, nss).getCollection()); }
 
         BSONObjBuilder resultBuilder;
-        auto swResult = doNonAtomicApplyOps(
-            nss.db().toString(),
-            {
-                BSON("ts" << presentTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                          << "c"
-                          << "ui"
-                          << UUID::gen()
-                          << "ns"
-                          << nss.getCommandNS().ns()
-                          << "o"
-                          << BSON("create" << nss.coll())),
-            },
-            presentTs);
+        auto swResult = doNonAtomicApplyOps(nss.db().toString(),
+                                            {
+                                                BSON("ts" << presentTs << "t" << 1LL << "op"
+                                                          << "c"
+                                                          << "ui"
+                                                          << UUID::gen()
+                                                          << "ns"
+                                                          << nss.getCommandNS().ns()
+                                                          << "o"
+                                                          << BSON("create" << nss.coll())),
+                                            });
         ASSERT_OK(swResult);
 
         { ASSERT(AutoGetCollectionForReadCommand(_opCtx, nss).getCollection()); }
@@ -986,27 +993,25 @@ public:
         const Timestamp dummyTs = dummyLt.asTimestamp();
 
         BSONObjBuilder resultBuilder;
-        auto swResult = doNonAtomicApplyOps(
-            dbName,
-            {
-                BSON("ts" << presentTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                          << "c"
-                          << "ui"
-                          << UUID::gen()
-                          << "ns"
-                          << nss1.getCommandNS().ns()
-                          << "o"
-                          << BSON("create" << nss1.coll())),
-                BSON("ts" << futureTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                          << "c"
-                          << "ui"
-                          << UUID::gen()
-                          << "ns"
-                          << nss2.getCommandNS().ns()
-                          << "o"
-                          << BSON("create" << nss2.coll())),
-            },
-            dummyTs);
+        auto swResult = doNonAtomicApplyOps(dbName,
+                                            {
+                                                BSON("ts" << presentTs << "t" << 1LL << "op"
+                                                          << "c"
+                                                          << "ui"
+                                                          << UUID::gen()
+                                                          << "ns"
+                                                          << nss1.getCommandNS().ns()
+                                                          << "o"
+                                                          << BSON("create" << nss1.coll())),
+                                                BSON("ts" << futureTs << "t" << 1LL << "op"
+                                                          << "c"
+                                                          << "ui"
+                                                          << UUID::gen()
+                                                          << "ns"
+                                                          << nss2.getCommandNS().ns()
+                                                          << "o"
+                                                          << BSON("create" << nss2.coll())),
+                                            });
         ASSERT_OK(swResult);
 
         { ASSERT(AutoGetCollectionForReadCommand(_opCtx, nss1).getCollection()); }
@@ -1059,35 +1064,34 @@ public:
             { ASSERT_FALSE(AutoGetCollectionForReadCommand(_opCtx, nss2).getCollection()); }
 
             BSONObjBuilder resultBuilder;
-            auto swResult = doNonAtomicApplyOps(
-                dbName,
-                {
-                    BSON("ts" << presentTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                              << "i"
-                              << "ns"
-                              << nss1.ns()
-                              << "ui"
-                              << autoColl.getCollection()->uuid().get()
-                              << "o"
-                              << doc1),
-                    BSON("ts" << futureTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                              << "c"
-                              << "ui"
-                              << uuid2
-                              << "ns"
-                              << nss2.getCommandNS().ns()
-                              << "o"
-                              << BSON("create" << nss2.coll())),
-                    BSON("ts" << insert2Ts << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                              << "i"
-                              << "ns"
-                              << nss2.ns()
-                              << "ui"
-                              << uuid2
-                              << "o"
-                              << doc2),
-                },
-                dummyTs);
+            auto swResult =
+                doNonAtomicApplyOps(dbName,
+                                    {
+                                        BSON("ts" << presentTs << "t" << 1LL << "op"
+                                                  << "i"
+                                                  << "ns"
+                                                  << nss1.ns()
+                                                  << "ui"
+                                                  << autoColl.getCollection()->uuid().get()
+                                                  << "o"
+                                                  << doc1),
+                                        BSON("ts" << futureTs << "t" << 1LL << "op"
+                                                  << "c"
+                                                  << "ui"
+                                                  << uuid2
+                                                  << "ns"
+                                                  << nss2.getCommandNS().ns()
+                                                  << "o"
+                                                  << BSON("create" << nss2.coll())),
+                                        BSON("ts" << insert2Ts << "t" << 1LL << "op"
+                                                  << "i"
+                                                  << "ns"
+                                                  << nss2.ns()
+                                                  << "ui"
+                                                  << uuid2
+                                                  << "o"
+                                                  << doc2),
+                                    });
             ASSERT_OK(swResult);
         }
 
@@ -1137,20 +1141,17 @@ public:
         { ASSERT_FALSE(AutoGetCollectionForReadCommand(_opCtx, nss).getCollection()); }
 
         BSONObjBuilder resultBuilder;
-        // This 'applyOps' command will not actually be atomic, however we use the atomic helper
-        // to avoid the extra 'applyOps' oplog entry that the non-atomic form creates on primaries.
-        auto swResult = doAtomicApplyOps(
-            nss.db().toString(),
-            {
-                BSON("ts" << presentTs << "t" << 1LL << "h" << 0xBEEFBEEFLL << "v" << 2 << "op"
-                          << "c"
-                          << "ui"
-                          << UUID::gen()
-                          << "ns"
-                          << nss.getCommandNS().ns()
-                          << "o"
-                          << BSON("create" << nss.coll())),
-            });
+        auto swResult = doNonAtomicApplyOps(nss.db().toString(),
+                                            {
+                                                BSON("ts" << presentTs << "t" << 1LL << "op"
+                                                          << "c"
+                                                          << "ui"
+                                                          << UUID::gen()
+                                                          << "ns"
+                                                          << nss.getCommandNS().ns()
+                                                          << "o"
+                                                          << BSON("create" << nss.coll())),
+                                            });
         ASSERT_OK(swResult);
 
         { ASSERT(AutoGetCollectionForReadCommand(_opCtx, nss).getCollection()); }
@@ -1339,11 +1340,19 @@ public:
 
         // We add in an index creation op to test that we restart tracking multikey path info
         // after bulk index builds.
-        std::vector<const repl::OplogEntry*> ops = {&op0, &createIndexOp, &op1, &op2};
+        std::vector<repl::OplogEntry> ops = {op0, createIndexOp, op1, op2};
 
-        repl::SyncTail syncTail(nullptr, repl::SyncTail::MultiSyncApplyFunc(), nullptr);
         AtomicUInt32 fetchCount(0);
-        ASSERT_OK(repl::multiInitialSyncApply_noAbort(_opCtx, &ops, &syncTail, &fetchCount));
+        repl::SyncTail syncTail(nullptr, repl::multiSyncApply);
+        repl::MultiApplier::ApplyOperationFn applyOpFn = [&fetchCount, &syncTail](
+            repl::MultiApplier::OperationPtrs* ops,
+            WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
+            return repl::multiInitialSyncApply(ops, &syncTail, &fetchCount, workerMultikeyPathInfo);
+        };
+
+        auto lastTime =
+            assertGet(repl::multiApply(_opCtx, syncTail.getWriterPool(), ops, applyOpFn));
+        ASSERT_EQ(lastTime.getTimestamp(), insertTime2.asTimestamp());
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
         assertMultikeyPaths(
@@ -1854,6 +1863,110 @@ public:
     }
 };
 
+/**
+ * This test asserts that the catalog updates that represent the beginning and end of an index
+ * build are timestamped. Additionally, the index will be `multikey` and that catalog update that
+ * finishes the index build will also observe the index is multikey.
+ */
+template <bool SimulateBackground>
+class TimestampIndexBuilds : public StorageTimestampTest {
+public:
+    void run() {
+        // Only run on 'wiredTiger'. No other storage engines to-date timestamp writes.
+        if (mongo::storageGlobalParams.engine != "wiredTiger") {
+            return;
+        }
+
+        auto kvStorageEngine =
+            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getGlobalStorageEngine());
+        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+
+        NamespaceString nss("unittests.timestampIndexBuilds");
+        reset(nss);
+
+        AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_X);
+
+        const LogicalTime insertTimestamp = _clock->reserveTicks(1);
+        {
+            WriteUnitOfWork wuow(_opCtx);
+            insertDocument(autoColl.getCollection(),
+                           InsertStatement(BSON("_id" << 0 << "a" << BSON_ARRAY(1 << 2)),
+                                           insertTimestamp.asTimestamp(),
+                                           0LL));
+            wuow.commit();
+            ASSERT_EQ(1, itCount(autoColl.getCollection()));
+        }
+
+        // Save the pre-state idents so we can capture the specific ident related to index
+        // creation.
+        std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+
+        // Build an index on `{a: 1}`. This index will be multikey.
+        MultiIndexBlock indexer(_opCtx, autoColl.getCollection());
+        const LogicalTime beforeIndexBuild = _clock->reserveTicks(2);
+        {
+            const Timestamp commitTimestamp =
+                SimulateBackground ? Timestamp::min() : beforeIndexBuild.addTicks(1).asTimestamp();
+            TimestampBlock tsBlock(_opCtx, commitTimestamp);
+
+            ASSERT_OK(indexer
+                          .init({BSON("v" << 2 << "unique" << true << "name"
+                                          << "a_1"
+                                          << "ns"
+                                          << nss.ns()
+                                          << "key"
+                                          << BSON("a" << 1))})
+                          .getStatus());
+        }
+        const LogicalTime afterIndexInit = _clock->reserveTicks(2);
+
+        // Inserting all the documents has the side-effect of setting internal state on the index
+        // builder that the index is multikey.
+        ASSERT_OK(indexer.insertAllDocumentsInCollection());
+
+        {
+            const Timestamp commitTimestamp =
+                SimulateBackground ? Timestamp::min() : afterIndexInit.addTicks(1).asTimestamp();
+            TimestampBlock tsBlock(_opCtx, commitTimestamp);
+
+            WriteUnitOfWork wuow(_opCtx);
+            indexer.commit();
+            wuow.commit();
+        }
+
+        const Timestamp afterIndexBuild = _clock->reserveTicks(1).asTimestamp();
+
+        const std::string indexIdent = getNewIndexIdent(kvCatalog, origIdents);
+        assertIdentsMissingAtTimestamp(kvCatalog, "", indexIdent, beforeIndexBuild.asTimestamp());
+
+        // Assert that the index entry exists after init and `ready: false`.
+        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexInit.asTimestamp());
+        {
+            _opCtx->recoveryUnit()->abandonSnapshot();
+            ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(afterIndexInit.asTimestamp()));
+            auto collMetaData = kvCatalog->getMetaData(_opCtx, nss.ns());
+            auto indexMetaData = collMetaData.indexes[collMetaData.findIndexOffset("a_1")];
+            ASSERT_FALSE(indexMetaData.ready);
+        }
+
+        // After the build completes, assert that the index is `ready: true` and multikey.
+        assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexBuild);
+        {
+            _opCtx->recoveryUnit()->abandonSnapshot();
+            ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(afterIndexBuild));
+            auto collMetaData = kvCatalog->getMetaData(_opCtx, nss.ns());
+            auto indexMetaData = collMetaData.indexes[collMetaData.findIndexOffset("a_1")];
+            ASSERT(indexMetaData.ready);
+            ASSERT(indexMetaData.multikey);
+            ASSERT_EQ(std::size_t(1), indexMetaData.multikeyPaths.size());
+            const bool match = indexMetaData.multikeyPaths[0] == std::set<std::size_t>({0});
+            if (!match) {
+                FAIL(str::stream() << "Expected: [ [ 0 ] ] Actual: "
+                                   << dumpMultikeyPaths(indexMetaData.multikeyPaths));
+            }
+        }
+    }
+};
 
 class AllStorageTimestampTests : public unittest::Suite {
 public:
@@ -1883,6 +1996,9 @@ public:
         // KVDropDatabase<IsPrimary>
         add<KVDropDatabase<false>>();
         add<KVDropDatabase<true>>();
+        // Timestamp<SimulateBackground>
+        add<TimestampIndexBuilds<false>>();
+        add<TimestampIndexBuilds<true>>();
     }
 };
 

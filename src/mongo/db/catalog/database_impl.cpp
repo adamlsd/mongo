@@ -71,6 +71,7 @@
 #include "mongo/db/system_index.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/platform/random.h"
+#include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/fail_point_service.h"
@@ -161,15 +162,10 @@ DatabaseImpl::~DatabaseImpl() {
 }
 
 void DatabaseImpl::close(OperationContext* opCtx, const std::string& reason) {
-    // XXX? - Do we need to close database under global lock or just DB-lock is sufficient ?
     invariant(opCtx->lockState()->isW());
 
     // Clear cache of oplog Collection pointer.
     repl::oplogCheckCloseDatabase(opCtx, this->_this);
-
-    if (BackgroundOperation::inProgForDb(_name)) {
-        log() << "warning: bg op in prog during close db? " << _name;
-    }
 
     for (auto&& pair : _collections) {
         auto* coll = pair.second;
@@ -771,22 +767,19 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
     invariant(!options.isView());
     NamespaceString nss(ns);
 
-    uassert(ErrorCodes::CannotImplicitlyCreateCollection,
+    uassert(CannotImplicitlyCreateCollectionInfo(nss),
             "request doesn't allow collection to be created implicitly",
             OperationShardingState::get(opCtx).allowImplicitCollectionCreation());
 
     CollectionOptions optionsWithUUID = options;
     bool generatedUUID = false;
-    if (enableCollectionUUIDs && !optionsWithUUID.uuid &&
-        serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
+    if (!optionsWithUUID.uuid) {
         auto coordinator = repl::ReplicationCoordinator::get(opCtx);
-        bool fullyUpgraded = serverGlobalParams.featureCompatibility.getVersion() >=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
         bool canGenerateUUID =
             (coordinator->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) ||
             coordinator->canAcceptWritesForDatabase(opCtx, nss.db()) || nss.isSystemDotProfile();
 
-        if (fullyUpgraded && !canGenerateUUID) {
+        if (!canGenerateUUID) {
             std::string msg = str::stream() << "Attempted to create a new collection " << nss.ns()
                                             << " without a UUID";
             severe() << msg;
@@ -855,6 +848,7 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
 
     // Store the name so we have if for after the db object is deleted
     const string name = db->name();
+
     LOG(1) << "dropDatabase " << name;
 
     invariant(opCtx->lockState()->isDbLockedForMode(name, MODE_X));

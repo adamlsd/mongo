@@ -192,10 +192,7 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
 
     // Construct the query and parameters.
 
-    ClusterClientCursorParams params(
-        query.nss(),
-        AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-        readPref);
+    ClusterClientCursorParams params(query.nss(), readPref);
     params.limit = query.getQueryRequest().getLimit();
     params.batchSize = query.getQueryRequest().getEffectiveBatchSize();
     params.skip = query.getQueryRequest().getSkip();
@@ -325,8 +322,10 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     const auto cursorLifetime = query.getQueryRequest().isNoCursorTimeout()
         ? ClusterCursorManager::CursorLifetime::Immortal
         : ClusterCursorManager::CursorLifetime::Mortal;
+    auto authUsers = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames();
+
     return uassertStatusOK(cursorManager->registerCursor(
-        opCtx, ccc.releaseCursor(), query.nss(), cursorType, cursorLifetime));
+        opCtx, ccc.releaseCursor(), query.nss(), cursorType, cursorLifetime, authUsers));
 }
 
 }  // namespace
@@ -391,24 +390,22 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
                                                    const GetMoreRequest& request) {
     auto cursorManager = Grid::get(opCtx)->getCursorManager();
 
-    auto pinnedCursor = cursorManager->checkOutCursor(request.nss, request.cursorid, opCtx);
+    auto authzSession = AuthorizationSession::get(opCtx->getClient());
+    auto authChecker = [&authzSession](UserNameIterator userNames) -> Status {
+        return authzSession->isCoauthorizedWith(userNames)
+            ? Status::OK()
+            : Status(ErrorCodes::Unauthorized, "User not authorized to access cursor");
+    };
+
+    auto pinnedCursor =
+        cursorManager->checkOutCursor(request.nss, request.cursorid, opCtx, authChecker);
     if (!pinnedCursor.isOK()) {
         return pinnedCursor.getStatus();
     }
     invariant(request.cursorid == pinnedCursor.getValue().getCursorId());
 
     // If the fail point is enabled, busy wait until it is disabled.
-    while (MONGO_FAIL_POINT(keepCursorPinnedDuringGetMore)) {
-    }
-
-    // A user can only call getMore on their own cursor. If there were multiple users authenticated
-    // when the cursor was created, then at least one of them must be authenticated in order to run
-    // getMore on the cursor.
-    if (!AuthorizationSession::get(opCtx->getClient())
-             ->isCoauthorizedWith(pinnedCursor.getValue().getAuthenticatedUsers())) {
-        return {ErrorCodes::Unauthorized,
-                str::stream() << "cursor id " << request.cursorid
-                              << " was not created by the authenticated user"};
+    while (MONGO_FAIL_POINT(waitAfterPinningCursorBeforeGetMoreBatch)) {
     }
 
     if (auto readPref = pinnedCursor.getValue().getReadPreference()) {
@@ -436,15 +433,6 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     long long batchSize = request.batchSize.value_or(0);
     long long startingFrom = pinnedCursor.getValue().getNumReturnedSoFar();
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
-
-    pinnedCursor.getValue().reattachToOperationContext(opCtx);
-
-    // A pinned cursor will not be destroyed immediately if an exception is thrown. Instead it will
-    // be marked as killed, then reaped by a background thread later. If this happens, we want to be
-    // sure the cursor does not have a pointer to this OperationContext, since it will be destroyed
-    // as soon as we return, but the cursor will live on a bit longer.
-    ScopeGuard cursorDetach =
-        MakeGuard([&pinnedCursor]() { pinnedCursor.getValue().detachFromOperationContext(); });
 
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
         auto context = batch.empty()
@@ -492,10 +480,8 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         batch.push_back(std::move(*next.getValue().getResult()));
     }
 
-    // Upon successful completion, we need to detach from the operation and transfer ownership of
-    // the cursor back to the cursor manager.
-    cursorDetach.Dismiss();
-    pinnedCursor.getValue().detachFromOperationContext();
+    // Upon successful completion, transfer ownership of the cursor back to the cursor manager. If
+    // the cursor has been exhausted, the cursor manager will clean it up for us.
     pinnedCursor.getValue().returnCursor(cursorState);
 
     CursorId idToReturn = (cursorState == ClusterCursorManager::CursorState::Exhausted)

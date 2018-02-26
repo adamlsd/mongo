@@ -210,6 +210,12 @@ public:
                       const InsertDeleteOptions& options,
                       int64_t* numInserted);
 
+        const MultikeyPaths& getMultikeyPaths() const {
+            return _indexMultikeyPaths;
+        }
+
+        bool isMultikey() const;
+
     private:
         friend class IndexAccessMethod;
 
@@ -254,15 +260,23 @@ public:
      *               if not NULL, put the bad RecordIds there
      */
     Status commitBulk(OperationContext* opCtx,
-                      std::unique_ptr<BulkBuilder> bulk,
+                      BulkBuilder* bulk,
                       bool mayInterrupt,
                       bool dupsAllowed,
                       std::set<RecordId>* dups);
 
     /**
-     * Specifies whether getKeys should relax the index constraints or not.
+     * Specifies whether getKeys should relax the index constraints or not, in order of most
+     * permissive to least permissive.
      */
-    enum class GetKeysMode { kRelaxConstraints, kEnforceConstraints };
+    enum class GetKeysMode {
+        // Relax all constraints.
+        kRelaxConstraints,
+        // Relax all constraints on documents that don't apply to a partial index.
+        kRelaxConstraintsUnfiltered,
+        // Enforce all constraints.
+        kEnforceConstraints
+    };
 
     /**
      * Fills 'keys' with the keys that should be generated for 'obj' on this index.

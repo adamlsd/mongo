@@ -57,15 +57,19 @@ public:
         invariant(false);
     }
 
+    void setSharedLocksShouldTwoPhaseLock(bool sharedLocksShouldTwoPhaseLock) override {
+        invariant(false);
+    }
+
     virtual LockResult lockGlobal(LockMode mode) {
         invariant(false);
     }
 
-    virtual LockResult lockGlobalBegin(LockMode mode, Milliseconds timeout) {
+    virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) {
         invariant(false);
     }
 
-    virtual LockResult lockGlobalComplete(Milliseconds timeout) {
+    virtual LockResult lockGlobalComplete(Date_t deadline) {
         invariant(false);
     }
 
@@ -89,10 +93,7 @@ public:
         invariant(false);
     }
 
-    virtual LockResult lock(ResourceId resId,
-                            LockMode mode,
-                            Milliseconds timeout,
-                            bool checkDeadlock) {
+    virtual LockResult lock(ResourceId resId, LockMode mode, Date_t deadline, bool checkDeadlock) {
         return LockResult::LOCK_OK;
     }
 
@@ -133,6 +134,14 @@ public:
     }
 
     virtual void restoreLockState(const LockSnapshot& stateToRestore) {
+        invariant(false);
+    }
+
+    virtual void releaseTicket() {
+        invariant(false);
+    }
+
+    virtual void reacquireTicket() {
         invariant(false);
     }
 

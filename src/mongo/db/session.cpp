@@ -33,6 +33,7 @@
 #include "mongo/db/session.h"
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -257,12 +258,22 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
     }
 }
 
-void Session::beginTxn(OperationContext* opCtx, TxnNumber txnNumber) {
+void Session::beginOrContinueTxn(OperationContext* opCtx,
+                                 TxnNumber txnNumber,
+                                 boost::optional<bool> autocommit) {
     invariant(!opCtx->lockState()->isLocked());
 
     stdx::lock_guard<stdx::mutex> lg(_mutex);
-    _beginTxn(lg, txnNumber);
+    _beginOrContinueTxn(lg, txnNumber, autocommit);
 }
+
+void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber) {
+    invariant(!opCtx->lockState()->isLocked());
+
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    _beginOrContinueTxnOnMigration(lg, txnNumber);
+}
+
 
 void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
                                           TxnNumber txnNumber,
@@ -292,6 +303,29 @@ void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
     updateSessionEntry(opCtx, updateRequest);
     _registerUpdateCacheOnCommit(
         opCtx, txnNumber, std::move(stmtIdsWritten), lastStmtIdWriteOpTime);
+}
+
+bool Session::onMigrateBeginOnPrimary(OperationContext* opCtx, TxnNumber txnNumber, StmtId stmtId) {
+    beginOrContinueTxnOnMigration(opCtx, txnNumber);
+
+    try {
+        if (checkStatementExecuted(opCtx, txnNumber, stmtId)) {
+            return false;
+        }
+    } catch (const DBException& ex) {
+        // If the transaction chain was truncated on the recipient shard, then we
+        // are most likely copying from a session that hasn't been touched on the
+        // recipient shard for a very long time but could be recent on the donor.
+        // We continue copying regardless to get the entire transaction from the donor.
+        if (ex.code() != ErrorCodes::IncompleteTransactionHistory) {
+            throw;
+        }
+        if (stmtId == kIncompleteHistoryStmtId) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void Session::onMigrateCompletedOnPrimary(OperationContext* opCtx,
@@ -389,9 +423,28 @@ bool Session::checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber, StmtI
     return bool(_checkStatementExecuted(lg, txnNumber, stmtId));
 }
 
-void Session::_beginTxn(WithLock wl, TxnNumber txnNumber) {
+void Session::_beginOrContinueTxn(WithLock wl,
+                                  TxnNumber txnNumber,
+                                  boost::optional<bool> autocommit) {
     _checkValid(wl);
+    _checkTxnValid(wl, txnNumber);
 
+    if (txnNumber == _activeTxnNumber) {
+        // Continuing an existing transaction.
+        uassert(ErrorCodes::IllegalOperation,
+                "Specifying 'autocommit' is only allowed at the beginning of a transaction",
+                autocommit == boost::none);
+
+        return;
+    }
+
+    // Start a new transaction with an autocommit field
+    _setActiveTxn(wl, txnNumber);
+    _autocommit = (autocommit != boost::none) ? *autocommit : true;  // autocommit defaults to true
+    _isSnapshotTxn = false;
+}
+
+void Session::_checkTxnValid(WithLock, TxnNumber txnNumber) const {
     uassert(ErrorCodes::TransactionTooOld,
             str::stream() << "Cannot start transaction " << txnNumber << " on session "
                           << getSessionId()
@@ -399,11 +452,95 @@ void Session::_beginTxn(WithLock wl, TxnNumber txnNumber) {
                           << _activeTxnNumber
                           << " has already started.",
             txnNumber >= _activeTxnNumber);
+}
+
+void Session::stashTransactionResources(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    if (!_isSnapshotTxn) {
+        return;
+    }
+
+    invariant(opCtx->hasStashedCursor());
+
+    if (*opCtx->getTxnNumber() != _activeTxnNumber) {
+        // The session is checked out, so _activeTxnNumber cannot advance due to a user operation.
+        // However, when a chunk is migrated, session and transaction information is copied from the
+        // donor shard to the recipient. This occurs outside of the check-out mechanism and can lead
+        // to a higher _activeTxnNumber during the lifetime of a checkout. If that occurs, we abort
+        // the current transaction. Note that it would indicate a user bug to have a newer
+        // transaction on one shard while an older transaction is still active on another shard.
+        uasserted(ErrorCodes::TransactionAborted,
+                  str::stream() << "Transaction aborted. Active txnNumber is now "
+                                << _activeTxnNumber);
+    }
+
+    opCtx->getWriteUnitOfWork()->release();
+    opCtx->setWriteUnitOfWork(nullptr);
+
+    _stashedLocker = opCtx->releaseLockState();
+    _stashedLocker->releaseTicket();
+    _stashedRecoveryUnit.reset(opCtx->releaseRecoveryUnit());
+
+    opCtx->setLockState(stdx::make_unique<DefaultLockerImpl>());
+    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+                           OperationContext::kNotInUnitOfWork);
+}
+
+void Session::unstashTransactionResources(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    if (opCtx->getTxnNumber() < _activeTxnNumber) {
+        // The session is checked out, so _activeTxnNumber cannot advance due to a user operation.
+        // However, when a chunk is migrated, session and transaction information is copied from the
+        // donor shard to the recipient. This occurs outside of the check-out mechanism and can lead
+        // to a higher _activeTxnNumber during the lifetime of a checkout. If that occurs, we abort
+        // the current transaction. Note that it would indicate a user bug to have a newer
+        // transaction on one shard while an older transaction is still active on another shard.
+        _releaseStashedTransactionResources(lg, opCtx);
+        uasserted(ErrorCodes::TransactionAborted,
+                  str::stream() << "Transaction aborted. Active txnNumber is now "
+                                << _activeTxnNumber);
+        return;
+    }
+
+    if (_stashedLocker) {
+        invariant(_stashedRecoveryUnit);
+        opCtx->releaseLockState();
+        _stashedLocker->reacquireTicket();
+        opCtx->setLockState(std::move(_stashedLocker));
+        opCtx->setRecoveryUnit(_stashedRecoveryUnit.release(),
+                               OperationContext::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
+    } else {
+        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
+            opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
+            _isSnapshotTxn = true;
+        }
+    }
+}
+
+void Session::_releaseStashedTransactionResources(WithLock wl, OperationContext* opCtx) {
+    if (opCtx->getWriteUnitOfWork()) {
+        opCtx->setWriteUnitOfWork(nullptr);
+    }
+
+    _stashedRecoveryUnit.reset(nullptr);
+    _stashedLocker.reset(nullptr);
+    _isSnapshotTxn = false;
+}
+
+void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
+    _checkValid(wl);
+    _checkTxnValid(wl, txnNumber);
 
     // Check for continuing an existing transaction
     if (txnNumber == _activeTxnNumber)
         return;
 
+    _setActiveTxn(wl, txnNumber);
+}
+
+void Session::_setActiveTxn(WithLock, TxnNumber txnNumber) {
     _activeTxnNumber = txnNumber;
     _activeTxnCommittedStatements.clear();
     _hasIncompleteHistory = false;
@@ -521,7 +658,7 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
             // invalidated and immediately refreshed while there were no writes for newTxnNumber
             // yet. In this case _activeTxnNumber will be less than newTxnNumber and we will fail to
             // update the cache even though the write was successful.
-            _beginTxn(lg, newTxnNumber);
+            _beginOrContinueTxn(lg, newTxnNumber, boost::none);
         }
 
         if (newTxnNumber == _activeTxnNumber) {
@@ -551,8 +688,7 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
 
         const auto closeConnectionElem = data["closeConnection"];
         if (closeConnectionElem.eoo() || closeConnectionElem.Bool()) {
-            auto transportSession = opCtx->getClient()->session();
-            transportSession->getTransportLayer()->end(transportSession);
+            opCtx->getClient()->session()->end();
         }
 
         const auto failBeforeCommitExceptionElem = data["failBeforeCommitExceptionCode"];

@@ -41,12 +41,12 @@
 #include "mongo/s/async_requests_sender.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/cluster_last_error_info.h"
-#include "mongo/s/commands/chunk_manager_targeter.h"
 #include "mongo/s/commands/cluster_explain.h"
-#include "mongo/s/commands/cluster_write.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/write_ops/batched_command_request.h"
 #include "mongo/s/write_ops/batched_command_response.h"
+#include "mongo/s/write_ops/chunk_manager_targeter.h"
+#include "mongo/s/write_ops/cluster_write.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
@@ -139,7 +139,7 @@ class ClusterWriteCmd : public Command {
 public:
     virtual ~ClusterWriteCmd() {}
 
-    AllowedOnSecondary secondaryAllowed() const final {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kNever;
     }
 
@@ -196,7 +196,12 @@ public:
     bool enhancedRun(OperationContext* opCtx,
                      const OpMsgRequest& request,
                      BSONObjBuilder& result) final {
-        const auto batchedRequest(parseRequest(_writeType, request));
+        auto batchedRequest(parseRequest(_writeType, request));
+
+        auto db = batchedRequest.getNS().db();
+        if (db != NamespaceString::kAdminDb && db != NamespaceString::kConfigDb) {
+            batchedRequest.setAllowImplicitCreate(false);
+        }
 
         BatchWriteExecStats stats;
         BatchedCommandResponse response;

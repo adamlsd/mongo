@@ -240,8 +240,11 @@ void SessionCatalog::_releaseSession(const LogicalSessionId& lsid) {
     sri->availableCondVar.notify_one();
 }
 
-OperationContextSession::OperationContextSession(OperationContext* opCtx, bool checkOutSession)
+OperationContextSession::OperationContextSession(OperationContext* opCtx,
+                                                 bool checkOutSession,
+                                                 boost::optional<bool> autocommit)
     : _opCtx(opCtx) {
+
     if (!opCtx->getLogicalSessionId()) {
         return;
     }
@@ -273,7 +276,8 @@ OperationContextSession::OperationContextSession(OperationContext* opCtx, bool c
     checkedOutSession->scopedSession->refreshFromStorageIfNeeded(opCtx);
 
     if (opCtx->getTxnNumber()) {
-        checkedOutSession->scopedSession->beginTxn(opCtx, *opCtx->getTxnNumber());
+        checkedOutSession->scopedSession->beginOrContinueTxn(
+            opCtx, *opCtx->getTxnNumber(), autocommit);
     }
 }
 
@@ -283,6 +287,30 @@ OperationContextSession::~OperationContextSession() {
         invariant(checkedOutSession->checkOutNestingLevel > 0);
         if (--checkedOutSession->checkOutNestingLevel == 0) {
             checkedOutSession.reset();
+        }
+    }
+}
+
+void OperationContextSession::stashTransactionResources() {
+    if (auto& checkedOutSession = operationSessionDecoration(_opCtx)) {
+        if (checkedOutSession->checkOutNestingLevel == 1) {
+            if (auto session = checkedOutSession->scopedSession.get()) {
+                session->stashTransactionResources(_opCtx);
+            }
+        }
+    }
+}
+
+void OperationContextSession::unstashTransactionResources() {
+    if (!_opCtx->getTxnNumber()) {
+        return;
+    }
+
+    if (auto& checkedOutSession = operationSessionDecoration(_opCtx)) {
+        if (checkedOutSession->checkOutNestingLevel == 1) {
+            if (auto session = checkedOutSession->scopedSession.get()) {
+                session->unstashTransactionResources(_opCtx);
+            }
         }
     }
 }

@@ -101,11 +101,15 @@ public:
 
     stdx::thread::id getThreadId() const override;
 
-    virtual LockResult lockGlobal(LockMode mode);
-    virtual LockResult lockGlobalBegin(LockMode mode, Milliseconds timeout) {
-        return _lockGlobalBegin(mode, timeout);
+    void setSharedLocksShouldTwoPhaseLock(bool sharedLocksShouldTwoPhaseLock) override {
+        _sharedLocksShouldTwoPhaseLock = sharedLocksShouldTwoPhaseLock;
     }
-    virtual LockResult lockGlobalComplete(Milliseconds timeout);
+
+    virtual LockResult lockGlobal(LockMode mode);
+    virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) {
+        return _lockGlobalBegin(mode, deadline);
+    }
+    virtual LockResult lockGlobalComplete(Date_t deadline);
     virtual void lockMMAPV1Flush();
 
     virtual void downgradeGlobalXtoSForMMAPV1();
@@ -120,7 +124,7 @@ public:
 
     virtual LockResult lock(ResourceId resId,
                             LockMode mode,
-                            Milliseconds timeout = Milliseconds::max(),
+                            Date_t deadline = Date_t::max(),
                             bool checkDeadlock = false);
 
     virtual void downgrade(ResourceId resId, LockMode newMode);
@@ -139,6 +143,10 @@ public:
     virtual bool saveLockStateAndUnlock(LockSnapshot* stateOut);
 
     virtual void restoreLockState(const LockSnapshot& stateToRestore);
+
+    virtual void releaseTicket();
+
+    virtual void reacquireTicket();
 
     /**
      * Allows for lock requests to be requested in a non-blocking way. There can be only one
@@ -169,13 +177,11 @@ public:
      *
      * @param resId Resource id which was passed to an earlier lockBegin call. Must match.
      * @param mode Mode which was passed to an earlier lockBegin call. Must match.
-     * @param timeout How long to wait for the lock acquisition to complete.
+     * @param deadline The absolute time point when this lock acquisition will time out, if not yet
+     * granted.
      * @param checkDeadlock whether to perform deadlock detection while waiting.
      */
-    LockResult lockComplete(ResourceId resId,
-                            LockMode mode,
-                            Milliseconds timeout,
-                            bool checkDeadlock);
+    LockResult lockComplete(ResourceId resId, LockMode mode, Date_t deadline, bool checkDeadlock);
 
 private:
     friend class AutoYieldFlushLockForMMAPV1Commit;
@@ -183,9 +189,9 @@ private:
     typedef FastMapNoAlloc<ResourceId, LockRequest, 16> LockRequestsMap;
 
     /**
-     * Like lockGlobalBegin, but accepts a timeout for acquiring a ticket.
+     * Like lockGlobalBegin, but accepts a deadline for acquiring a ticket.
      */
-    LockResult _lockGlobalBegin(LockMode, Milliseconds timeout);
+    LockResult _lockGlobalBegin(LockMode, Date_t deadline);
 
     /**
      * The main functionality of the unlock method, except accepts iterator in order to avoid
@@ -200,6 +206,25 @@ private:
      * acquired. It is based on the type of the operation (IS for readers, IX for writers).
      */
     LockMode _getModeForMMAPV1FlushLock() const;
+
+    /**
+     * Whether the particular lock's release should be held until the end of the operation. We delay
+     * release of exclusive locks (locks that are for write operations) in order to ensure that the
+     * data they protect is committed successfully. Shared locks will also participate in two-phase
+     * locking if '_sharedLocksShouldTwoPhaseLock' is true.
+     */
+    bool _shouldDelayUnlock(ResourceId resId, LockMode mode) const;
+
+    /**
+     * Releases the ticket for the Locker.
+     */
+    void _releaseTicket();
+
+    /**
+     * Acquires a ticket for the Locker under 'mode'. Returns LOCK_TIMEOUT if it cannot acquire a
+     * ticket within 'deadline'.
+     */
+    LockResult _acquireTicket(LockMode mode, Date_t deadline);
 
     // Used to disambiguate different lockers
     const LockerId _id;
@@ -233,6 +258,9 @@ private:
 
     // Track the thread who owns the lock for debugging purposes
     stdx::thread::id _threadId;
+
+    // If true, shared locks will participate in two-phase locking.
+    bool _sharedLocksShouldTwoPhaseLock = false;
 
     //////////////////////////////////////////////////////////////////////////////////////////
     //

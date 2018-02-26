@@ -69,9 +69,7 @@ struct CommandHelpers {
     // The first field is interpreted as a collection name.
     static NamespaceString parseNsCollectionRequired(StringData dbname, const BSONObj& cmdObj);
 
-    static NamespaceString parseNsOrUUID(OperationContext* opCtx,
-                                         StringData dbname,
-                                         const BSONObj& cmdObj);
+    static NamespaceStringOrUUID parseNsOrUUID(StringData dbname, const BSONObj& cmdObj);
 
     static Command* findCommand(StringData name);
 
@@ -267,7 +265,7 @@ public:
         return false;
     }
 
-    virtual AllowedOnSecondary secondaryAllowed() const = 0;
+    virtual AllowedOnSecondary secondaryAllowed(ServiceContext*) const = 0;
 
     /**
      * Override and return fales if the command opcounters should not be incremented on
@@ -319,6 +317,10 @@ public:
      * Redacts "cmdObj" in-place to a form suitable for writing to logs.
      *
      * The default implementation does nothing.
+     *
+     * This is NOT used to implement user-configurable redaction of PII. Instead, that is
+     * implemented via the set of redact() free functions, which are no-ops when log redaction is
+     * disabled. All PII must pass through one of the redact() overloads before being logged.
      */
     virtual void redactForLogging(mutablebson::Document* cmdObj) const {}
 

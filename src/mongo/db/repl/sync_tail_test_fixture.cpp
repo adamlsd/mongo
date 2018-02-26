@@ -94,8 +94,11 @@ void SyncTailTest::setUp() {
                    OplogApplication::Mode oplogApplicationMode) { return Status::OK(); };
     _incOps = [this]() { _opsApplied++; };
 
+    // Initialize the featureCompatibilityVersion server parameter. This is necessary because this
+    // test fixture does not create a featureCompatibilityVersion document from which to initialize
+    // the server parameter.
     serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
 }
 
 void SyncTailTest::tearDown() {
@@ -107,12 +110,9 @@ void SyncTailTest::tearDown() {
     ServiceContextMongoDTest::tearDown();
 }
 
-void SyncTailTest::_testSyncApplyInsertDocument(ErrorCodes::Error expectedError,
-                                                const BSONObj* explicitOp) {
-    const BSONObj op = explicitOp ? *explicitOp : BSON("op"
-                                                       << "i"
-                                                       << "ns"
-                                                       << "test.t");
+void SyncTailTest::_testSyncApplyCrudOperation(ErrorCodes::Error expectedError,
+                                               const BSONObj& op,
+                                               bool expectedApplyOpCalled) {
     bool applyOpCalled = false;
     SyncTail::ApplyOperationInLockFn applyOp = [&](OperationContext* opCtx,
                                                    Database* db,
@@ -142,7 +142,16 @@ void SyncTailTest::_testSyncApplyInsertDocument(ErrorCodes::Error expectedError,
                                   failedApplyCommand,
                                   _incOps),
               expectedError);
-    ASSERT_EQ(applyOpCalled, expectedError == ErrorCodes::OK);
+    ASSERT_EQ(applyOpCalled, expectedApplyOpCalled);
+}
+
+void SyncTailTest::_testSyncApplyInsertDocument(ErrorCodes::Error expectedError) {
+    _testSyncApplyCrudOperation(expectedError,
+                                BSON("op"
+                                     << "i"
+                                     << "ns"
+                                     << "test.t"),
+                                expectedError == ErrorCodes::OK);
 }
 
 Status failedApplyCommand(OperationContext* opCtx,
@@ -173,7 +182,8 @@ Status SyncTailTest::runOpsInitialSync(std::vector<OplogEntry> ops) {
         opsPtrs.push_back(&op);
     }
     AtomicUInt32 fetchCount(0);
-    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount);
+    WorkerMultikeyPathInfo pathInfo;
+    return multiInitialSyncApply_noAbort(_opCtx.get(), &opsPtrs, &syncTail, &fetchCount, &pathInfo);
 }
 
 

@@ -56,6 +56,7 @@ class WiredTigerSizeStorer;
 
 class WiredTigerKVEngine final : public KVEngine {
 public:
+    static const int kDefaultJournalDelayMillis;
     WiredTigerKVEngine(const std::string& canonicalName,
                        const std::string& path,
                        ClockSource* cs,
@@ -174,6 +175,7 @@ public:
     void setOldestTimestamp(Timestamp oldestTimestamp);
 
     Timestamp getPreviousSetOldestTimestamp() const {
+        stdx::unique_lock<stdx::mutex> lock(_oplogManagerMutex);
         return _previousSetOldestTimestamp;
     }
 
@@ -262,6 +264,8 @@ private:
 
     // Not threadsafe; callers must be serialized along with `setOldestTimestamp`.
     void _advanceOldestTimestamp(Timestamp oldestTimestamp);
+
+    // Protected by _oplogManagerMutex.
     Timestamp _previousSetOldestTimestamp;
 
     WT_CONNECTION* _conn;

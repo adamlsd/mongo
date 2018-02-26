@@ -96,6 +96,9 @@ env.Library(
         'connection_pool_stats',
         'remote_command',
     ],
+    LIBDEPS_PRIVATE=[
+        'egress_tag_closer_manager',
+    ],
 )
 
 env.CppUnitTest(
@@ -106,6 +109,9 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'connection_pool_executor',
+    ],
+    LIBDEPS_PRIVATE=[
+        'egress_tag_closer_manager',
     ],
 )
 
@@ -140,6 +146,14 @@ env.Library(target='network_test_env',
                 '$BUILD_DIR/mongo/db/commands',
                 'network_interface_mock',
                 'task_executor_interface',
+            ])
+
+env.Library(target='egress_tag_closer_manager',
+            source=[
+                'egress_tag_closer_manager.cpp',
+            ],
+            LIBDEPS_PRIVATE=[
+                '$BUILD_DIR/mongo/db/service_context',
             ])
 
 env.Library(
@@ -181,6 +195,7 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base/system_error',
         '$BUILD_DIR/mongo/client/authentication',
+        '$BUILD_DIR/mongo/util/net/ssl_stream',
         '$BUILD_DIR/third_party/shim_asio',
         'task_executor_interface',
     ]
@@ -264,6 +279,9 @@ env.Library(
     LIBDEPS=[
         'network_interface',
         'network_interface_asio',
+    ],
+    LIBDEPS_PRIVATE=[
+        'egress_tag_closer_manager',
     ])
 
 env.Library(

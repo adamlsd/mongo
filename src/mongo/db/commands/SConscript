@@ -106,7 +106,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/stats/timer_stats',
         '$BUILD_DIR/mongo/db/views/views',
         '$BUILD_DIR/mongo/logger/parse_log_component_settings',
-        '$BUILD_DIR/mongo/s/client/sharding_client',
+        '$BUILD_DIR/mongo/s/sharding_legacy_api',
         '$BUILD_DIR/mongo/s/coreshard',
         '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
         '$BUILD_DIR/mongo/scripting/scripting_common',
@@ -130,6 +130,9 @@ env.Library(
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
     ],
+    LIBDEPS_PRIVATE=[
+        'fsync_locked',
+    ]
 )
 
 env.Library(
@@ -141,6 +144,15 @@ env.Library(
         'core',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/dbdirectclient',
+    ],
+)
+
+env.Library(
+    target='fsync_locked',
+    source=[
+        'fsync_locked.cpp',
+    ],
+    LIBDEPS=[
     ],
 )
 
@@ -198,6 +210,7 @@ env.Library(
         "test_commands.cpp",
         "top_command.cpp",
         "touch.cpp",
+        "txn_cmds.cpp",
         "user_management_commands.cpp",
         "validate.cpp",
         "write_commands/write_commands.cpp",
@@ -229,18 +242,18 @@ env.Library(
         '$BUILD_DIR/mongo/db/s/sharding_catalog_manager',
         '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/stats/serveronly_stats',
-        '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
         '$BUILD_DIR/mongo/db/views/views_mongod',
-        '$BUILD_DIR/mongo/s/client/parallel',
+        '$BUILD_DIR/mongo/s/sharding_legacy_api',
         'core',
         'current_op_common',
         'dcommands_fcv',
-        'dcommands_fsync',
+        'fsync_locked',
         'killcursors_common',
         'write_commands_common',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/ops/write_ops_exec',
+        '$BUILD_DIR/mongo/util/icu',
     ],
 )
 
@@ -311,8 +324,11 @@ env.CppUnitTest(
         "mr_test.cpp",
     ],
     LIBDEPS=[
+        "$BUILD_DIR/mongo/db/repl/replmocks",
+        "$BUILD_DIR/mongo/db/repl/storage_interface_impl",
         "$BUILD_DIR/mongo/db/serveronly",
         "$BUILD_DIR/mongo/db/service_context_d",
+        "$BUILD_DIR/mongo/db/service_context_d_test_fixture",
         "dcommands",
     ],
 )

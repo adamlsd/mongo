@@ -28,6 +28,19 @@ env.Library(
 env.CppUnitTest('collection_options_test', ['collection_options_test.cpp'],
                 LIBDEPS=['collection_options'])
 
+env.CppUnitTest(
+    target = 'collection_test',
+    source = 'collection_test.cpp',
+    LIBDEPS=[
+        'catalog_helpers',
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        '$BUILD_DIR/mongo/db/repl/replmocks',
+        '$BUILD_DIR/mongo/db/repl/storage_interface_impl',
+        '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
+    ],
+)
 
 env.Library(
     target='document_validation',
@@ -135,6 +148,19 @@ env.Library(
 )
 
 env.CppUnitTest(
+    target='catalog_raii_test',
+    source=[
+        'catalog_raii_test.cpp',
+    ],
+    LIBDEPS=[
+        'database_holder_mock',
+        '$BUILD_DIR/mongo/db/catalog/catalog_raii',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+    ],
+)
+
+env.CppUnitTest(
     target='database_test',
     source=[
         'database_test.cpp',
@@ -220,6 +246,17 @@ env.CppUnitTest(
 )
 
 env.Library(
+    target='database_holder_mock',
+    source=[
+        'database_holder_mock.cpp',
+    ],
+    LIBDEPS=[
+	'database_holder',
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.Library(
     target='catalog_impl',
     source=[
         "catalog_control.cpp",
@@ -260,10 +297,14 @@ env.Library(
         '$BUILD_DIR/mongo/db/s/balancer',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/storage/key_string',
-        '$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1',
         '$BUILD_DIR/mongo/db/system_index',
         '$BUILD_DIR/mongo/db/ttl_collection_cache',
         '$BUILD_DIR/mongo/db/views/views_mongod',
+        '$BUILD_DIR/mongo/s/stale_config',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/logical_clock',
+        '$BUILD_DIR/mongo/db/storage/mmap_v1/mmap_v1_options',
     ],
 )
 

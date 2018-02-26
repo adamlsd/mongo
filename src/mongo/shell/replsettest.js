@@ -1992,7 +1992,7 @@ var ReplSetTest = function(opts) {
             return;
         }
 
-        if (_alldbpaths) {
+        if ((!opts || !opts.noCleanData) && _alldbpaths) {
             print("ReplSetTest stopSet deleting all dbpaths");
             for (var i = 0; i < _alldbpaths.length; i++) {
                 resetDbpath(_alldbpaths[i]);
@@ -2114,7 +2114,12 @@ var ReplSetTest = function(opts) {
     }
 
     if (typeof opts === 'string' || opts instanceof String) {
-        _constructFromExistingSeedNode(opts);
+        retryOnNetworkError(function() {
+            // The primary may unexpectedly step down during startup if under heavy load
+            // and too slowly processing heartbeats. When it steps down, it closes all of
+            // its connections.
+            _constructFromExistingSeedNode(opts);
+        }, 10);
     } else {
         _constructStartNewInstances(opts);
     }

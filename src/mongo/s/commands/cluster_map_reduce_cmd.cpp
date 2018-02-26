@@ -48,7 +48,6 @@
 #include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
-#include "mongo/s/commands/cluster_write.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/shard_collection_gen.h"
@@ -151,7 +150,7 @@ class MRCmd : public ErrmsgCommandDeprecated {
 public:
     MRCmd() : ErrmsgCommandDeprecated("mapReduce", "mapreduce") {}
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
 

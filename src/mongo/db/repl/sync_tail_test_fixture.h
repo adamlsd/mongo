@@ -45,8 +45,10 @@ class StorageInterfaceMock;
 
 class SyncTailTest : public ServiceContextMongoDTest {
 protected:
-    void _testSyncApplyInsertDocument(ErrorCodes::Error expectedError,
-                                      const BSONObj* explicitOp = nullptr);
+    void _testSyncApplyCrudOperation(ErrorCodes::Error expectedError,
+                                     const BSONObj& op,
+                                     bool expectedApplyOpCalled);
+    void _testSyncApplyInsertDocument(ErrorCodes::Error expectedError);
     ServiceContext::UniqueOperationContext _opCtx;
     unsigned int _opsApplied;
     SyncTail::ApplyOperationInLockFn _applyOp;
@@ -56,7 +58,7 @@ protected:
     ReplicationProcess* _replicationProcess = nullptr;
 
     // Implements the MultiApplier::ApplyOperationFn interface and does nothing.
-    static Status noopApplyOperationFn(MultiApplier::OperationPtrs*) {
+    static Status noopApplyOperationFn(MultiApplier::OperationPtrs*, WorkerMultikeyPathInfo*) {
         return Status::OK();
     }
 

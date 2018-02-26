@@ -31,10 +31,12 @@
 #include "mongo/db/client.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/mock_repl_coord_server_fixture.h"
+#include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 
 namespace mongo {
@@ -69,14 +71,28 @@ TEST_F(SessionCatalogTest, OperationContextSession) {
     opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
 
     {
-        OperationContextSession ocs(opCtx(), true);
+        OperationContextSession ocs(opCtx(), true, boost::none);
         auto session = OperationContextSession::get(opCtx());
 
         ASSERT(session);
         ASSERT_EQ(*opCtx()->getLogicalSessionId(), session->getSessionId());
+
+        // Confirm that stash and unstash can be executed against a top-level checked-out Session.
+        ocs.stashTransactionResources();
+        ocs.unstashTransactionResources();
     }
 
-    ASSERT(!OperationContextSession::get(opCtx()));
+    {
+        OperationContextSession ocs(opCtx(), false, boost::none);
+        auto session = OperationContextSession::get(opCtx());
+
+        ASSERT(!session);
+
+        // Confirm that stash and unstash can be executed against a top-level not-checked-out
+        // Session.
+        ocs.stashTransactionResources();
+        ocs.unstashTransactionResources();
+    }
 }
 
 TEST_F(SessionCatalogTest, GetOrCreateNonExistentSession) {
@@ -92,7 +108,7 @@ TEST_F(SessionCatalogTest, GetOrCreateSessionAfterCheckOutSession) {
     opCtx()->setLogicalSessionId(lsid);
 
     boost::optional<OperationContextSession> ocs;
-    ocs.emplace(opCtx(), true);
+    ocs.emplace(opCtx(), true, boost::none);
 
     stdx::async(stdx::launch::async, [&] {
         Client::initThreadIfNotAlready();
@@ -121,10 +137,10 @@ TEST_F(SessionCatalogTest, NestedOperationContextSession) {
     opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
 
     {
-        OperationContextSession outerScopedSession(opCtx(), true);
+        OperationContextSession outerScopedSession(opCtx(), true, boost::none);
 
         {
-            OperationContextSession innerScopedSession(opCtx(), true);
+            OperationContextSession innerScopedSession(opCtx(), true, boost::none);
 
             auto session = OperationContextSession::get(opCtx());
             ASSERT(session);
@@ -141,16 +157,95 @@ TEST_F(SessionCatalogTest, NestedOperationContextSession) {
     ASSERT(!OperationContextSession::get(opCtx()));
 }
 
+TEST_F(SessionCatalogTest, StashInNestedSessionIsANoop) {
+    opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
+    opCtx()->setTxnNumber(1);
+
+    {
+        OperationContextSession outerScopedSession(opCtx(), true, boost::none);
+
+        Locker* originalLocker = opCtx()->lockState();
+        RecoveryUnit* originalRecoveryUnit = opCtx()->recoveryUnit();
+        ASSERT(originalLocker);
+        ASSERT(originalRecoveryUnit);
+
+        // Set the readConcern on the OperationContext.
+        repl::ReadConcernArgs readConcernArgs;
+        ASSERT_OK(readConcernArgs.initialize(BSON("find"
+                                                  << "test"
+                                                  << repl::ReadConcernArgs::kReadConcernFieldName
+                                                  << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                          << "snapshot"))));
+        repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
+
+        // Perform initial unstash, which sets up a WriteUnitOfWork.
+        outerScopedSession.unstashTransactionResources();
+        ASSERT_EQUALS(originalLocker, opCtx()->lockState());
+        ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
+        ASSERT(opCtx()->getWriteUnitOfWork());
+
+        {
+            OperationContextSession innerScopedSession(opCtx(), true, boost::none);
+
+            // Indicate that there is a stashed cursor. If we were not in a nested session, this
+            // would ensure that stashing is not a noop.
+            opCtx()->setStashedCursor();
+
+            innerScopedSession.stashTransactionResources();
+
+            // The stash was a noop, so the locker, RecoveryUnit, and WriteUnitOfWork on the
+            // OperationContext are unaffected.
+            ASSERT_EQUALS(originalLocker, opCtx()->lockState());
+            ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
+            ASSERT(opCtx()->getWriteUnitOfWork());
+        }
+    }
+}
+
+TEST_F(SessionCatalogTest, UnstashInNestedSessionIsANoop) {
+    opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
+    opCtx()->setTxnNumber(1);
+
+    {
+        OperationContextSession outerScopedSession(opCtx(), true, boost::none);
+
+        Locker* originalLocker = opCtx()->lockState();
+        RecoveryUnit* originalRecoveryUnit = opCtx()->recoveryUnit();
+        ASSERT(originalLocker);
+        ASSERT(originalRecoveryUnit);
+
+        // Set the readConcern on the OperationContext.
+        repl::ReadConcernArgs readConcernArgs;
+        ASSERT_OK(readConcernArgs.initialize(BSON("find"
+                                                  << "test"
+                                                  << repl::ReadConcernArgs::kReadConcernFieldName
+                                                  << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                          << "snapshot"))));
+        repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
+
+        {
+            OperationContextSession innerScopedSession(opCtx(), true, boost::none);
+
+            innerScopedSession.unstashTransactionResources();
+
+            // The unstash was a noop, so the OperationContext did not get a WriteUnitOfWork.
+            ASSERT_EQUALS(originalLocker, opCtx()->lockState());
+            ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
+            ASSERT_FALSE(opCtx()->getWriteUnitOfWork());
+        }
+    }
+}
+
 TEST_F(SessionCatalogTest, OnlyCheckOutSessionWithCheckOutSessionTrue) {
     opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
 
     {
-        OperationContextSession ocs(opCtx(), true);
+        OperationContextSession ocs(opCtx(), true, boost::none);
         ASSERT(OperationContextSession::get(opCtx()));
     }
 
     {
-        OperationContextSession ocs(opCtx(), false);
+        OperationContextSession ocs(opCtx(), false, boost::none);
         ASSERT(!OperationContextSession::get(opCtx()));
     }
 }

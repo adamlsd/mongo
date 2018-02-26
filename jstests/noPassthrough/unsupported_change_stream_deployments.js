@@ -27,19 +27,6 @@
     assertChangeStreamNotSupportedOnConnection(conn);
     assert.eq(0, MongoRunner.stopMongod(conn));
 
-    // Test master/slave deployments.
-    const masterSlaveFixture = new ReplTest("change_stream");
-    const master = masterSlaveFixture.start(true, {enableMajorityReadConcern: ""});
-    assert.writeOK(master.getDB("test").ensure_db_exists.insert({}));
-    assertChangeStreamNotSupportedOnConnection(master);
-
-    const slave = masterSlaveFixture.start(false);
-    // Slaves start in FCV 3.4; we need to wait for it to sync the FCV document from the master
-    // before trying a change stream, or the change stream will fail for the wrong reason.
-    assert.soonNoExcept(() => checkFCV(slave.getDB("admin"), "3.6") || true);
-    assert.soonNoExcept(() => slave.getDB("test").ensure_db_exists.exists());
-    assertChangeStreamNotSupportedOnConnection(slave);
-
     // Test a sharded cluster with standalone shards.
     const clusterWithStandalones = new ShardingTest(
         {shards: 2, other: {shardOptions: {enableMajorityReadConcern: ""}}, config: 1});
@@ -55,4 +42,5 @@
         mongosDB.adminCommand({shardCollection: "test.ensure_db_exists", key: {_id: "hashed"}}));
     assertChangeStreamNotSupportedOnConnection(clusterWithStandalones.shard0);
     assertChangeStreamNotSupportedOnConnection(clusterWithStandalones.shard1);
+    clusterWithStandalones.stop();
 }());

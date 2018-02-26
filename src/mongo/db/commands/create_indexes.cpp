@@ -216,7 +216,7 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -278,6 +278,11 @@ public:
                 errmsg = "Cannot create indexes on a view";
                 return CommandHelpers::appendCommandStatus(
                     result, {ErrorCodes::CommandNotSupportedOnView, errmsg});
+            }
+
+            status = userAllowedCreateNS(ns.db(), ns.coll());
+            if (!status.isOK()) {
+                return CommandHelpers::appendCommandStatus(result, status);
             }
 
             writeConflictRetry(opCtx, kCommandName, ns.ns(), [&] {

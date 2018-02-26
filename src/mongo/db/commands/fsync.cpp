@@ -43,6 +43,7 @@
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/fsync_locked.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db.h"
@@ -101,7 +102,7 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
@@ -146,7 +147,7 @@ public:
             }
 
             // Take a global IS lock to ensure the storage engine is not shutdown
-            Lock::GlobalLock global(opCtx, MODE_IS, UINT_MAX);
+            Lock::GlobalLock global(opCtx, MODE_IS, Date_t::max());
             StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
             result.append("numFiles", storageEngine->flushAllFiles(opCtx, sync));
             return true;
@@ -273,7 +274,7 @@ public:
         return false;
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
 
@@ -391,7 +392,8 @@ void FSyncLockThread::run() {
     }
 }
 
-bool lockedForWriting() {
-    return fsyncCmd.fsyncLocked();
+MONGO_INITIALIZER(fsyncLockedForWriting)(InitializerContext* context) {
+    setLockedForWritingImpl([]() { return fsyncCmd.fsyncLocked(); });
+    return Status::OK();
 }
 }

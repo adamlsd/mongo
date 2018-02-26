@@ -9,10 +9,16 @@ import collections
 import json
 import math
 import os
+import sys
 import tarfile
 import tempfile
 import threading
 import time
+
+_IS_WINDOWS = sys.platform == "win32" or sys.platform == "cygwin"
+
+if _IS_WINDOWS:
+    import ctypes
 
 UploadArgs = collections.namedtuple(
     "UploadArgs",
@@ -46,7 +52,7 @@ def file_list_size(files):
 def directory_size(directory):
     """ Return size (in bytes) of files in 'directory' tree. """
     dir_bytes = 0
-    for root_dir, _, files in os.walk(directory):
+    for root_dir, _, files in os.walk(unicode(directory)):
         for name in files:
             full_name = os.path.join(root_dir, name)
             try:
@@ -62,8 +68,30 @@ def directory_size(directory):
 
 def free_space(path):
     """ Return file system free space (in bytes) for 'path'. """
-    stat = os.statvfs(path)
-    return stat.f_bavail * stat.f_bsize
+    if _IS_WINDOWS:
+        dirname = os.path.dirname(path)
+        free_bytes = ctypes.c_ulonglong(0)
+        ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+            ctypes.c_wchar_p(dirname), None, None, ctypes.pointer(free_bytes))
+        return free_bytes.value
+    else:
+        stat = os.statvfs(path)
+        return stat.f_bavail * stat.f_bsize
+
+
+def remove_file(file_name):
+    """ Attempts to remove file. Returns status and message. """
+    try:
+        # File descriptors, on Windows, are inherited by all subprocesses and file removal may fail
+        # because the file is still open.
+        # See https://www.python.org/dev/peps/pep-0446/#issues-with-inheritable-file-descriptors
+        os.remove(file_name)
+        status = 0
+        message = "Successfully deleted file {}".format(file_name)
+    except Exception as err:
+        status = 1
+        message = "Error deleting file {}: {}".format(file_name, err)
+    return status, message
 
 
 class Archival(object):
@@ -72,7 +100,6 @@ class Archival(object):
     def __init__(self,
                  logger,
                  archival_json_file="archive.json",
-                 execution=0,
                  limit_size_mb=0,
                  limit_files=0,
                  s3_client=None):
@@ -93,7 +120,7 @@ class Archival(object):
         self._archive_file_queue = Queue.Queue()
         self._archive_file_worker = threading.Thread(
             target=self._update_archive_file_wkr,
-            args=(self._archive_file_queue, execution, logger),
+            args=(self._archive_file_queue, logger),
             name="archive_file_worker")
         self._archive_file_worker.setDaemon(True)
         self._archive_file_worker.start()
@@ -135,10 +162,10 @@ class Archival(object):
                 message = "No input_files specified"
             elif self.limit_size_mb and self.size_mb >= self.limit_size_mb:
                 status = 1
-                message = "Files not archived, limit size {}MB reached".format(self.limit_size_mb)
+                message = "Files not archived, {}MB size limit reached".format(self.limit_size_mb)
             elif self.limit_files and self.num_files >= self.limit_files:
                 status = 1
-                message = "Files not archived, limit files {} reached".format(self.limit_files)
+                message = "Files not archived, {} file limit reached".format(self.limit_files)
             else:
                 status, message, file_size_mb = self._archive_files(
                     display_name,
@@ -146,31 +173,33 @@ class Archival(object):
                     s3_bucket,
                     s3_path)
 
-                self.num_files += 1
+                if status == 0:
+                    self.num_files += 1
                 self.size_mb += file_size_mb
                 self.archive_time += time.time() - start_time
 
         return status, message
 
     @staticmethod
-    def _update_archive_file_wkr(queue, execution, logger):
+    def _update_archive_file_wkr(queue, logger):
         """ Worker thread: Update the archival JSON file from 'queue'. """
-        archival_json = {"files": [], "execution": execution}
+        archival_json = []
         while True:
             archive_args = queue.get()
             # Exit worker thread when sentinel is received.
             if archive_args is None:
                 queue.task_done()
                 break
-            logger.debug("Updating archive file %s", archive_args.archival_file)
             archival_record = {
                 "name": archive_args.display_name,
                 "link": archive_args.remote_file,
                 "visibility": "private"
             }
-            archival_json["files"].append(archival_record)
+            logger.debug(
+                "Updating archive file %s with %s", archive_args.archival_file, archival_record)
+            archival_json.append(archival_record)
             with open(archive_args.archival_file, "w") as archival_fh:
-                json.dump([archival_json], archival_fh)
+                json.dump(archival_json, archival_fh)
             queue.task_done()
 
     @staticmethod
@@ -184,7 +213,7 @@ class Archival(object):
                 archive_file_queue.put(None)
                 break
             extra_args = {"ContentType": upload_args.content_type, "ACL": "public-read"}
-            logger.debug("Uploading to S3 %s to %s %s",
+            logger.debug("Uploading to S3 %s to bucket %s path %s",
                          upload_args.local_file,
                          upload_args.s3_bucket,
                          upload_args.s3_path)
@@ -203,7 +232,9 @@ class Archival(object):
                 logger.exception("Upload to S3 error %s", err)
 
             if upload_args.delete_file:
-                os.remove(upload_args.local_file)
+                status, message = remove_file(upload_args.local_file)
+                if status:
+                    logger.error("Upload to S3 delete file error %s", message)
 
             remote_file = "https://s3.amazonaws.com/{}/{}".format(
                 upload_args.s3_bucket, upload_args.s3_path)
@@ -232,28 +263,35 @@ class Archival(object):
         size_mb = 0
 
         # Tar/gzip to a temporary file.
-        temp_file = tempfile.NamedTemporaryFile(suffix=".tgz", delete=False)
-        local_file = temp_file.name
+        _, temp_file = tempfile.mkstemp(suffix=".tgz")
 
         # Check if there is sufficient space for the temporary tgz file.
-        if file_list_size(input_files) > free_space(local_file):
-            os.remove(local_file)
+        if file_list_size(input_files) > free_space(temp_file):
+            status, message = remove_file(temp_file)
+            if status:
+                self.logger.warning("Removing tarfile due to insufficient space - %s", message)
             return 1, "Insufficient space for {}".format(message), 0
 
         try:
-            with tarfile.open(local_file, "w:gz") as tar_handle:
+            with tarfile.open(temp_file, "w:gz") as tar_handle:
                 for input_file in input_files:
-                    tar_handle.add(input_file)
-        except (IOError, tarfile.TarError) as err:
-            message = str(err)
-            status = 1
+                    try:
+                        tar_handle.add(input_file)
+                    except (IOError, OSError, tarfile.TarError) as err:
+                        message = "{}; Unable to add {} to archive file: {}".format(
+                            message, input_file, err)
+        except (IOError, OSError, tarfile.TarError) as err:
+            status, message = remove_file(temp_file)
+            if status:
+                self.logger.warning("Removing tarfile due to creation failure - %s", message)
+            return 1, str(err), 0
 
-        # Round up the size of archive.
-        size_mb = int(math.ceil(float(file_list_size(local_file)) / (1024 * 1024)))
+        # Round up the size of the archive.
+        size_mb = int(math.ceil(float(file_list_size(temp_file)) / (1024 * 1024)))
         self._upload_queue.put(UploadArgs(
             self.archival_json_file,
             display_name,
-            local_file,
+            temp_file,
             "application/x-gzip",
             s3_bucket,
             s3_path,
@@ -284,7 +322,8 @@ class Archival(object):
         self._archive_file_worker.join(timeout=timeout)
         self.check_thread(self._archive_file_worker, False)
 
-        self.logger.info("Total tar/gzip archive time is %0.2f seconds", self.archive_time)
+        self.logger.info("Total tar/gzip archive time is %0.2f seconds, for %d file(s) %d MB",
+                         self.archive_time, self.num_files, self.size_mb)
 
     def files_archived_num(self):
         """ Returns the number of the archived files. """

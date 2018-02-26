@@ -416,7 +416,7 @@ Status _collModInternal(OperationContext* opCtx,
             cce->addUUID(opCtx, uuid.get(), coll);
         } else if (!uuid && coll->uuid() &&
                    serverGlobalParams.featureCompatibility.getVersion() <
-                       ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+                       ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36) {
             log() << "Removing UUID " << coll->uuid().get().toString() << " from collection "
                   << coll->ns();
             CollectionCatalogEntry* cce = coll->getCatalogEntry();
@@ -618,7 +618,7 @@ void updateUUIDSchemaVersion(OperationContext* opCtx, bool upgrade) {
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
         storageEngine->listDatabases(&dbNames);
     }
 
@@ -661,7 +661,7 @@ Status updateUUIDSchemaVersionNonReplicated(OperationContext* opCtx, bool upgrad
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
         storageEngine->listDatabases(&dbNames);
     }
     for (auto it = dbNames.begin(); it != dbNames.end(); ++it) {

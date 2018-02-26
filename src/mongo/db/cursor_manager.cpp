@@ -26,6 +26,8 @@
 *    it in the license file.
 */
 
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kQuery
+
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/cursor_manager.h"
@@ -51,6 +53,7 @@
 #include "mongo/platform/random.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/exit.h"
+#include "mongo/util/log.h"
 #include "mongo/util/startup_test.h"
 
 namespace mongo {
@@ -107,7 +110,7 @@ public:
 private:
     SimpleMutex _mutex;
 
-    typedef unordered_map<unsigned, NamespaceString> Map;
+    typedef stdx::unordered_map<unsigned, NamespaceString> Map;
     Map _idToNss;
     unsigned _nextId;
 
@@ -258,14 +261,21 @@ std::size_t GlobalCursorIdCache::timeoutCursors(OperationContext* opCtx, Date_t 
 
     // For each collection, time out its cursors under the collection lock (to prevent the
     // collection from going away during the erase).
-    for (unsigned i = 0; i < todo.size(); i++) {
-        AutoGetCollectionOrViewForReadCommand ctx(opCtx, NamespaceString(todo[i]));
+    for (const auto& nsTodo : todo) {
+        // Note that we specify 'kViewsPermitted' here, even though we don't expect 'nsTodo' to be a
+        // view. Because we are not holding the mutex anymore, it is possible that the collection we
+        // are trying to access has since been destroyed and a view of the same name has been
+        // created in its place. Without 'kViewsPermitted' here, that would result in a uassert that
+        // would crash the cursor cleaner background thread.
+        AutoGetCollectionForReadCommand ctx(
+            opCtx, nsTodo, AutoGetCollection::ViewMode::kViewsPermitted);
         if (!ctx.getDb()) {
             continue;
         }
 
-        Collection* collection = ctx.getCollection();
-        if (collection == NULL) {
+        Collection* const collection = ctx.getCollection();
+        if (!collection) {
+            // The 'nsTodo' collection has been dropped since we held _mutex. We can safely skip it.
             continue;
         }
 
@@ -274,6 +284,7 @@ std::size_t GlobalCursorIdCache::timeoutCursors(OperationContext* opCtx, Date_t 
 
     return totalTimedOut;
 }
+
 }  // namespace
 
 template <typename Visitor>
@@ -397,7 +408,7 @@ CursorManager::CursorManager(NamespaceString nss)
                                                : globalCursorIdCache->registerCursorManager(_nss)),
       _random(stdx::make_unique<PseudoRandom>(globalCursorIdCache->nextSeed())),
       _registeredPlanExecutors(),
-      _cursorMap(stdx::make_unique<Partitioned<unordered_map<CursorId, ClientCursor*>>>()) {}
+      _cursorMap(stdx::make_unique<Partitioned<stdx::unordered_map<CursorId, ClientCursor*>>>()) {}
 
 CursorManager::~CursorManager() {
     // All cursors and PlanExecutors should have been deleted already.
@@ -420,7 +431,7 @@ void CursorManager::invalidateAll(OperationContext* opCtx,
         for (auto&& exec : partition) {
             // The PlanExecutor is owned elsewhere, so we just mark it as killed and let it be
             // cleaned up later.
-            exec->markAsKilled(reason);
+            exec->markAsKilled({ErrorCodes::QueryPlanKilled, reason});
         }
     }
     allExecPartitions.clear();
@@ -431,7 +442,7 @@ void CursorManager::invalidateAll(OperationContext* opCtx,
     for (auto&& partition : allCurrentPartitions) {
         for (auto it = partition.begin(); it != partition.end();) {
             auto* cursor = it->second;
-            cursor->markAsKilled(reason);
+            cursor->markAsKilled({ErrorCodes::QueryPlanKilled, reason});
 
             // If there's an operation actively using the cursor, then that operation is now
             // responsible for cleaning it up.  Otherwise we can immediately dispose of it.
@@ -512,7 +523,7 @@ namespace {
 static AtomicUInt32 registeredPlanExecutorId;
 }  // namespace
 
-Partitioned<unordered_set<PlanExecutor*>>::PartitionId CursorManager::registerExecutor(
+Partitioned<stdx::unordered_set<PlanExecutor*>>::PartitionId CursorManager::registerExecutor(
     PlanExecutor* exec) {
     auto partitionId = registeredPlanExecutorId.fetchAndAdd(1);
     exec->setRegistrationToken(partitionId);
@@ -541,9 +552,7 @@ StatusWith<ClientCursorPin> CursorManager::pinCursor(OperationContext* opCtx,
             !cursor->_operationUsingCursor);
     if (cursor->getExecutor()->isMarkedAsKilled()) {
         // This cursor was killed while it was idle.
-        Status error{ErrorCodes::QueryPlanKilled,
-                     str::stream() << "cursor killed because: "
-                                   << cursor->getExecutor()->getKillReason()};
+        Status error = cursor->getExecutor()->getKillStatus();
         lockedPartition->erase(cursor->cursorid());
         cursor->dispose(opCtx);
         delete cursor;
@@ -572,10 +581,24 @@ void CursorManager::unpin(OperationContext* opCtx, ClientCursor* cursor) {
     // Avoid computing the current time within the critical section.
     auto now = opCtx->getServiceContext()->getPreciseClockSource()->now();
 
-    auto partitionLock = _cursorMap->lockOnePartition(cursor->cursorid());
+    auto partition = _cursorMap->lockOnePartition(cursor->cursorid());
     invariant(cursor->_operationUsingCursor);
+
+    // We must verify that no interrupts have occurred since we finished building the current
+    // batch. Otherwise, the cursor will be checked back in, the interrupted opCtx will be
+    // destroyed, and subsequent getMores with a fresh opCtx will succeed.
+    auto interruptStatus = cursor->_operationUsingCursor->checkForInterruptNoAssert();
     cursor->_operationUsingCursor = nullptr;
     cursor->_lastUseDate = now;
+    if (!interruptStatus.isOK()) {
+        // If an interrupt occurred after the batch was completed, we remove the now-unpinned cursor
+        // from the CursorManager, then dispose of and delete it.
+        LOG(0) << "removing cursor " << cursor->cursorid()
+               << " after completing batch: " << interruptStatus;
+        partition->erase(cursor->cursorid());
+        cursor->dispose(opCtx);
+        delete cursor;
+    }
 }
 
 void CursorManager::getCursorIds(std::set<CursorId>* openCursors) const {

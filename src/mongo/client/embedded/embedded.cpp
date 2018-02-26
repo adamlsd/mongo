@@ -30,7 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "embedded.h"
+#include "mongo/client/embedded/embedded.h"
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/base/initializer.h"
@@ -42,12 +42,13 @@
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
+#include "mongo/db/commands/fsync_locked.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/global_settings.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/log_process_details.h"
-#include "mongo/db/mongod_options.h"
 #include "mongo/db/op_observer_impl.h"
 #include "mongo/db/op_observer_registry.h"
 #include "mongo/db/repair_database_and_check_version.h"
@@ -107,6 +108,11 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
     repl::setOplogCollectionName(serviceContext);
     return Status::OK();
 }
+
+MONGO_INITIALIZER(fsyncLockedForWriting)(InitializerContext* context) {
+    setLockedForWritingImpl([]() { return false; });
+    return Status::OK();
+}
 }  // namespace
 
 using logger::LogComponent;
@@ -135,9 +141,9 @@ void shutdown() {
     // of this function to prevent any operations from running that need a lock.
     //
     DefaultLockerImpl* globalLocker = new DefaultLockerImpl();
-    LockResult result = globalLocker->lockGlobalBegin(MODE_X, Milliseconds::max());
+    LockResult result = globalLocker->lockGlobalBegin(MODE_X, Date_t::max());
     if (result == LOCK_WAITING) {
-        result = globalLocker->lockGlobalComplete(Milliseconds::max());
+        result = globalLocker->lockGlobalComplete(Date_t::max());
     }
 
     invariant(LOCK_OK == result);

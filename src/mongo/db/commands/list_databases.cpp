@@ -57,7 +57,7 @@ intmax_t dbSize(const string& database);
 
 class CmdListDatabases : public BasicCommand {
 public:
-    AllowedOnSecondary secondaryAllowed() const final {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kOptIn;
     }
     bool adminOnly() const final {
@@ -114,7 +114,7 @@ public:
         vector<string> dbNames;
         StorageEngine* storageEngine = getGlobalServiceContext()->getGlobalStorageEngine();
         {
-            Lock::GlobalLock lk(opCtx, MODE_IS, UINT_MAX);
+            Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
             storageEngine->listDatabases(&dbNames);
         }
 

@@ -44,7 +44,7 @@ class CmdMakeSnapshot final : public BasicCommand {
 public:
     CmdMakeSnapshot() : BasicCommand("makeSnapshot") {}
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -76,7 +76,7 @@ public:
                                                        {ErrorCodes::CommandNotSupported, ""});
         }
 
-        Lock::GlobalLock lk(opCtx, MODE_IX, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IX, Date_t::max());
 
         auto status = snapshotManager->prepareForCreateSnapshot(opCtx);
         if (status.isOK()) {
@@ -92,7 +92,7 @@ class CmdSetCommittedSnapshot final : public BasicCommand {
 public:
     CmdSetCommittedSnapshot() : BasicCommand("setCommittedSnapshot") {}
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -124,7 +124,7 @@ public:
                                                        {ErrorCodes::CommandNotSupported, ""});
         }
 
-        Lock::GlobalLock lk(opCtx, MODE_IX, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IX, Date_t::max());
         auto timestamp = Timestamp(cmdObj.firstElement().Long());
         snapshotManager->setCommittedSnapshot(timestamp);
         return true;

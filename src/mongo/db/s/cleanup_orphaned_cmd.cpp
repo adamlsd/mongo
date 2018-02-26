@@ -45,6 +45,7 @@
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/db/s/chunk_move_write_concern_options.h"
 #include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/s/request_types/migration_secondary_throttle_options.h"
@@ -164,7 +165,7 @@ class CleanupOrphanedCommand : public ErrmsgCommandDeprecated {
 public:
     CleanupOrphanedCommand() : ErrmsgCommandDeprecated("cleanupOrphaned") {}
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -226,8 +227,7 @@ public:
             return false;
         }
 
-        ChunkVersion unusedShardVersion;
-        uassertStatusOK(shardingState->refreshMetadataNow(opCtx, nss, &unusedShardVersion));
+        forceShardFilteringMetadataRefresh(opCtx, nss);
 
         BSONObj stoppedAtKey;
         CleanupResult cleanupResult =

@@ -5,6 +5,9 @@ selector:
   - jstestfuzz/out/*.js
 
 executor:
+  archive:
+    hooks:
+      - BackgroundInitialSync
   config:
     shell_options:
       readMode: commands
@@ -23,7 +26,6 @@ executor:
   fixture:
     class: ReplicaSetFixture
     mongod_options:
-      oplogSize: 511
       verbose: ''
       set_parameters:
         logComponentVerbosity:

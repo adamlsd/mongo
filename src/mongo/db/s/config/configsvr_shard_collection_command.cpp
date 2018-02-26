@@ -643,11 +643,6 @@ void migrateAndFurtherSplitInitialChunks(OperationContext* opCtx,
 
 boost::optional<UUID> getUUIDFromPrimaryShard(const NamespaceString& nss,
                                               ScopedDbConnection& conn) {
-    // UUIDs were introduced in featureCompatibilityVersion 3.6.
-    if (!serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
-        return boost::none;
-    }
-
     // Obtain the collection's UUID from the primary shard's listCollections response.
     BSONObj res;
     {
@@ -706,7 +701,7 @@ public:
         return Status::OK();
     }
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -744,7 +739,8 @@ public:
 
         // Do not allow sharding collections while a featureCompatibilityVersion upgrade or
         // downgrade is in progress (see SERVER-31231 for details).
-        Lock::ExclusiveLock lk(opCtx->lockState(), FeatureCompatibilityVersion::fcvLock);
+        invariant(!opCtx->lockState()->isLocked());
+        Lock::SharedLock lk(opCtx->lockState(), FeatureCompatibilityVersion::fcvLock);
 
         const NamespaceString nss(parseNs(dbname, cmdObj));
         auto request = ConfigsvrShardCollectionRequest::parse(

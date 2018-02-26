@@ -47,8 +47,13 @@
 namespace mongo {
 
 namespace {
+
 const auto getTimeZoneDatabase =
     ServiceContext::declareDecoration<std::unique_ptr<TimeZoneDatabase>>();
+
+std::unique_ptr<_timelib_time, TimeZone::TimelibTimeDeleter> createTimelibTime() {
+    return std::unique_ptr<_timelib_time, TimeZone::TimelibTimeDeleter>(timelib_time_ctor());
+}
 
 // Converts a date to a number of seconds, being careful to round appropriately for negative numbers
 // of seconds.
@@ -195,7 +200,7 @@ static timelib_tzinfo* timezonedatabase_gettzinfowrapper(char* tz_id,
 }
 
 Date_t TimeZoneDatabase::fromString(StringData dateString,
-                                    boost::optional<TimeZone> tz,
+                                    const TimeZone& tz,
                                     boost::optional<StringData> format) const {
     std::unique_ptr<timelib_error_container, TimeZoneDatabase::TimelibErrorContainerDeleter>
         errors{};
@@ -254,7 +259,7 @@ Date_t TimeZoneDatabase::fromString(StringData dateString,
                << errors->warning_messages[i].character << "'";
         }
 
-        uasserted(40553, sb.str());
+        uasserted(ErrorCodes::ConversionFailure, sb.str());
     }
 
     // If the time portion is fully missing, initialize to 0. This allows for the '%Y-%m-%d' format
@@ -267,33 +272,33 @@ Date_t TimeZoneDatabase::fromString(StringData dateString,
     if (parsedTime->y == TIMELIB_UNSET || parsedTime->m == TIMELIB_UNSET ||
         parsedTime->d == TIMELIB_UNSET || parsedTime->h == TIMELIB_UNSET ||
         parsedTime->i == TIMELIB_UNSET || parsedTime->s == TIMELIB_UNSET) {
-        uasserted(40545,
+        uasserted(ErrorCodes::ConversionFailure,
                   str::stream()
                       << "an incomplete date/time string has been found, with elements missing: \""
                       << dateString
                       << "\"");
     }
 
-    if (tz && !tz->isUtcZone()) {
+    if (!tz.isUtcZone()) {
         switch (parsedTime->zone_type) {
             case 0:
                 // Do nothing, as this indicates there is no associated time zone information.
                 break;
             case 1:
-                uasserted(40554,
+                uasserted(ErrorCodes::ConversionFailure,
                           "you cannot pass in a date/time string with GMT "
                           "offset together with a timezone argument");
                 break;
             case 2:
                 uasserted(
-                    40551,
+                    ErrorCodes::ConversionFailure,
                     str::stream()
                         << "you cannot pass in a date/time string with time zone information ('"
                         << parsedTime.get()->tz_abbr
                         << "') together with a timezone argument");
                 break;
             default:  // should technically not be possible to reach
-                uasserted(40552,
+                uasserted(ErrorCodes::ConversionFailure,
                           "you cannot pass in a date/time string with "
                           "time zone information and a timezone argument "
                           "at the same time");
@@ -301,7 +306,7 @@ Date_t TimeZoneDatabase::fromString(StringData dateString,
         }
     }
 
-    tz->adjustTimeZone(parsedTime.get());
+    tz.adjustTimeZone(parsedTime.get());
 
     return Date_t::fromMillisSinceEpoch(
         durationCount<Milliseconds>(Seconds(parsedTime->sse) + Microseconds(parsedTime->us)));
@@ -373,9 +378,14 @@ void TimeZone::adjustTimeZone(timelib_time* timelibTime) const {
     timelib_update_from_sse(timelibTime);
 }
 
-Date_t TimeZone::createFromDateParts(
-    int year, int month, int day, int hour, int minute, int second, int millisecond) const {
-    std::unique_ptr<timelib_time, TimeZone::TimelibTimeDeleter> newTime(timelib_time_ctor());
+Date_t TimeZone::createFromDateParts(long long year,
+                                     long long month,
+                                     long long day,
+                                     long long hour,
+                                     long long minute,
+                                     long long second,
+                                     long long millisecond) const {
+    auto newTime = createTimelibTime();
 
     newTime->y = year;
     newTime->m = month;
@@ -393,14 +403,14 @@ Date_t TimeZone::createFromDateParts(
     return returnValue;
 }
 
-Date_t TimeZone::createFromIso8601DateParts(int isoYear,
-                                            int isoWeekYear,
-                                            int isoDayOfWeek,
-                                            int hour,
-                                            int minute,
-                                            int second,
-                                            int millisecond) const {
-    std::unique_ptr<timelib_time, TimeZone::TimelibTimeDeleter> newTime(timelib_time_ctor());
+Date_t TimeZone::createFromIso8601DateParts(long long isoYear,
+                                            long long isoWeekYear,
+                                            long long isoDayOfWeek,
+                                            long long hour,
+                                            long long minute,
+                                            long long second,
+                                            long long millisecond) const {
+    auto newTime = createTimelibTime();
 
     timelib_date_from_isodate(
         isoYear, isoWeekYear, isoDayOfWeek, &newTime->y, &newTime->m, &newTime->d);
@@ -468,7 +478,7 @@ void TimeZone::TimelibTimeDeleter::operator()(timelib_time* time) {
 
 std::unique_ptr<timelib_time, TimeZone::TimelibTimeDeleter> TimeZone::getTimelibTime(
     Date_t date) const {
-    std::unique_ptr<timelib_time, TimeZone::TimelibTimeDeleter> time(timelib_time_ctor());
+    auto time = createTimelibTime();
 
     timelib_unixtime2gmt(time.get(), seconds(date));
     adjustTimeZone(time.get());

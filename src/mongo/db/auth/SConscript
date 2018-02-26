@@ -80,12 +80,13 @@ env.Library(
              '$BUILD_DIR/mongo/bson/util/bson_extract',
              '$BUILD_DIR/mongo/db/catalog/document_validation',
              '$BUILD_DIR/mongo/db/common',
-             '$BUILD_DIR/mongo/db/mongod_options',
+             '$BUILD_DIR/mongo/db/global_settings',
              '$BUILD_DIR/mongo/db/namespace_string',
              '$BUILD_DIR/mongo/db/pipeline/lite_parsed_document_source',
              '$BUILD_DIR/mongo/db/service_context',
              '$BUILD_DIR/mongo/db/update/update_driver',
              '$BUILD_DIR/mongo/util/md5',
+             '$BUILD_DIR/mongo/util/icu',
              '$BUILD_DIR/mongo/util/net/network',
     ],
 )
@@ -181,6 +182,7 @@ env.Library('saslauth',
                 'sasl_options',
                 '$BUILD_DIR/mongo/base/secure_allocator',
                 '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
+                '$BUILD_DIR/mongo/util/icu',
                 '$BUILD_DIR/mongo/util/net/network',
              ],
 )
@@ -293,10 +295,10 @@ env.CppUnitTest(
 )
 
 env.CppUnitTest(
-    target='sasl_scramsha1_test',
+    target='sasl_scram_test',
     source=[
         'sasl_authentication_session_test.cpp',
-        'sasl_scramsha1_test.cpp',
+        'sasl_scram_test.cpp',
     ],
     LIBDEPS_PRIVATE=[
         'saslauth',

@@ -594,24 +594,6 @@ TEST_F(ReplCoordTest, NodeReturnsImmediatelyWhenAwaitReplicationIsRanAgainstASta
     ASSERT_OK(statusAndDur.status);
 }
 
-TEST_F(ReplCoordTest, NodeReturnsImmediatelyWhenAwaitReplicationIsRanAgainstAMasterSlaveNode) {
-    ReplSettings settings;
-    settings.setMaster(true);
-    init(settings);
-    auto opCtx = makeOperationContext();
-
-    OpTimeWithTermOne time(100, 1);
-
-    WriteConcernOptions writeConcern;
-    writeConcern.wTimeout = WriteConcernOptions::kNoWaiting;
-    writeConcern.wNumNodes = 0;
-    writeConcern.wMode = WriteConcernOptions::kMajority;
-    // w:majority always works on master/slave
-    ReplicationCoordinator::StatusAndDuration statusAndDur =
-        getReplCoord()->awaitReplication(opCtx.get(), time, writeConcern);
-    ASSERT_OK(statusAndDur.status);
-}
-
 TEST_F(ReplCoordTest, NodeReturnsNotMasterWhenRunningAwaitReplicationAgainstASecondaryNode) {
     assertStartSuccess(BSON("_id"
                             << "mySet"
@@ -2118,7 +2100,7 @@ TEST_F(StepDownTest, InterruptingStepDownCommandRestoresWriteAvailability) {
     // This is the important check, that we didn't accidentally step back up when aborting the
     // stepdown command attempt.
     const auto opCtx = makeOperationContext();
-    Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
+    Lock::GlobalLock lock(opCtx.get(), MODE_IX, Date_t::max());
     ASSERT_TRUE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
 }
 
@@ -2174,31 +2156,13 @@ TEST_F(StepDownTest, InterruptingAfterUnconditionalStepdownDoesNotRestoreWriteAv
 
     // This is the important check, that we didn't accidentally step back up when aborting the
     // stepdown command attempt.
-    Lock::GlobalLock lock(opCtx.get(), MODE_IX, UINT_MAX);
+    Lock::GlobalLock lock(opCtx.get(), MODE_IX, Date_t::max());
     ASSERT_FALSE(getReplCoord()->canAcceptWritesForDatabase(opCtx.get(), "admin"));
 }
 
 TEST_F(ReplCoordTest, GetReplicationModeNone) {
     init();
     ASSERT_EQUALS(MemberState::RS_STARTUP, getReplCoord()->getMemberState().s);
-}
-
-TEST_F(ReplCoordTest,
-       NodeReturnsModeMasterSlaveInResponseToGetReplicationModeWhenRunningWithTheMasterFlag) {
-    // modeMasterSlave if master set
-    ReplSettings settings;
-    settings.setMaster(true);
-    init(settings);
-    ASSERT_EQUALS(ReplicationCoordinator::modeMasterSlave, getReplCoord()->getReplicationMode());
-}
-
-TEST_F(ReplCoordTest,
-       NodeReturnsModeMasterSlaveInResponseToGetReplicationModeWhenRunningWithTheSlaveFlag) {
-    // modeMasterSlave if the slave flag was set
-    ReplSettings settings;
-    settings.setSlave(true);
-    init(settings);
-    ASSERT_EQUALS(ReplicationCoordinator::modeMasterSlave, getReplCoord()->getReplicationMode());
 }
 
 TEST_F(ReplCoordTest,
@@ -2622,36 +2586,6 @@ TEST_F(ReplCoordTest,
     }
 }
 
-TEST_F(ReplCoordTest, NodeDoesNotIncludeItselfWhenRunningGetHostsWrittenToInMasterSlave) {
-    ReplSettings settings;
-    settings.setMaster(true);
-    init(settings);
-    HostAndPort clientHost("node2:12345");
-    auto opCtx = makeOperationContext();
-
-
-    OID client = OID::gen();
-    OpTimeWithTermOne time1(100, 1);
-    OpTimeWithTermOne time2(100, 2);
-
-    getExternalState()->setClientHostAndPort(clientHost);
-    HandshakeArgs handshake;
-    ASSERT_OK(handshake.initialize(BSON("handshake" << client)));
-    ASSERT_OK(getReplCoord()->processHandshake(opCtx.get(), handshake));
-
-    getReplCoord()->setMyLastAppliedOpTime(time2);
-    getReplCoord()->setMyLastDurableOpTime(time2);
-    ASSERT_OK(getReplCoord()->setLastOptimeForSlave(client, time1.timestamp));
-
-    std::vector<HostAndPort> caughtUpHosts = getReplCoord()->getHostsWrittenTo(time2, false);
-    ASSERT_EQUALS(0U, caughtUpHosts.size());  // self doesn't get included in master-slave
-
-    ASSERT_OK(getReplCoord()->setLastOptimeForSlave(client, time2.timestamp));
-    caughtUpHosts = getReplCoord()->getHostsWrittenTo(time2, false);
-    ASSERT_EQUALS(1U, caughtUpHosts.size());
-    ASSERT_EQUALS(clientHost, caughtUpHosts[0]);
-}
-
 TEST_F(ReplCoordTest, NodeReturnsNoNodesWhenGetOtherNodesInReplSetIsRunBeforeHavingAConfig) {
     start();
     ASSERT_EQUALS(0U, getReplCoord()->getOtherNodesInReplSet().size());
@@ -2759,7 +2693,7 @@ TEST_F(ReplCoordTest, IsMaster) {
     ASSERT_EQUALS(1U, arbiters.size());
     ASSERT_EQUALS(h3, arbiters[0]);
 
-    unordered_map<std::string, std::string> tags = response.getTags();
+    stdx::unordered_map<std::string, std::string> tags = response.getTags();
     ASSERT_EQUALS(2U, tags.size());
     ASSERT_EQUALS("value1", tags["key1"]);
     ASSERT_EQUALS("value2", tags["key2"]);
@@ -3479,12 +3413,6 @@ protected:
         settings.setReplSetString("replset");
         init(settings);
     }
-
-    void initMasterSlaveMode() {
-        auto settings = ReplSettings();
-        settings.setSlave(true);
-        init(settings);
-    }
 };
 
 // An equality assertion for two std::set<OpTime> values. Prints the elements of each set when
@@ -3681,25 +3609,6 @@ TEST_F(StableOpTimeTest, AdvanceCommitPointSetsStableOpTimeForStorage) {
     auto opTimeCandidates = getReplCoord()->getStableOpTimeCandidates_forTest();
     std::set<OpTime> expectedOpTimeCandidates = {OpTime({1, 2}, term)};
     ASSERT_OPTIME_SET_EQ(expectedOpTimeCandidates, opTimeCandidates);
-}
-
-TEST_F(StableOpTimeTest, SetMyLastAppliedDoesntAddTimestampCandidateInMasterSlaveMode) {
-
-    /**
-     * Test that 'setMyLastAppliedOpTime' doesn't add timestamp candidates to the stable optime
-     * list when running in master-slave mode.
-     */
-
-    initMasterSlaveMode();
-    auto repl = getReplCoord();
-
-    ASSERT(repl->getStableOpTimeCandidates_forTest().empty());
-
-    repl->setMyLastAppliedOpTime(OpTime({0, 1}, 0));
-    repl->setMyLastAppliedOpTime(OpTime({0, 2}, 0));
-
-    // Make sure no timestamps candidates were added.
-    ASSERT(repl->getStableOpTimeCandidates_forTest().empty());
 }
 
 TEST_F(StableOpTimeTest, ClearOpTimeCandidatesPastCommonPointAfterRollback) {
@@ -4356,7 +4265,6 @@ TEST_F(ReplCoordTest, PrepareOplogQueryMetadata) {
 
     BSONObjBuilder metadataBob;
     getReplCoord()->prepareReplMetadata(
-        opCtx.get(),
         BSON(rpc::kOplogQueryMetadataFieldName << 1 << rpc::kReplSetMetadataFieldName << 1),
         OpTime(),
         &metadataBob);

@@ -78,12 +78,6 @@
 
     assert.commandWorked(st.s.adminCommand({setFeatureCompatibilityVersion: "3.6"}));
     assertDbVersionNotAssigned(st.s, dbName);
-
-    //
-    // FCV 3.4 (This section can be deleted once FCV 3.4 is removed).
-    //
-
-    assert.commandWorked(st.s.adminCommand({setFeatureCompatibilityVersion: "3.4"}));
-    assertDbVersionNotAssigned(st.s, dbName);
+    st.stop();
 
 })();

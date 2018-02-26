@@ -680,8 +680,10 @@ void InitialSyncer::_fcvFetcherCallback(const StatusWith<Fetcher::QueryResponse>
     }
 
     auto version = fCVParseSW.getValue();
-    if (version > ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34 &&
-        version < ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+
+    // Changing the featureCompatibilityVersion during initial sync is unsafe.
+    if (version > ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36 &&
+        version < ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
         onCompletionGuard->setResultAndCancelRemainingWork_inlock(
             lock,
             Status(ErrorCodes::IncompatibleServerVersion,
@@ -932,8 +934,10 @@ void InitialSyncer::_getNextApplierBatchCallback(
     if (!ops.empty()) {
         _fetchCount.store(0);
         MultiApplier::ApplyOperationFn applyOperationsForEachReplicationWorkerThreadFn =
-            [ =, source = _syncSource ](MultiApplier::OperationPtrs * x) {
-            return _dataReplicatorExternalState->_multiInitialSyncApply(x, source, &_fetchCount);
+            [ =, source = _syncSource ](MultiApplier::OperationPtrs * x,
+                                        WorkerMultikeyPathInfo * workerMultikeyPathInfo) {
+            return _dataReplicatorExternalState->_multiInitialSyncApply(
+                x, source, &_fetchCount, workerMultikeyPathInfo);
         };
         MultiApplier::MultiApplyFn applyBatchOfOperationsFn =
             [=](OperationContext* opCtx,

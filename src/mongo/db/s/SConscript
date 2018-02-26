@@ -4,18 +4,36 @@ Import("env")
 
 env = env.Clone()
 
+# This is the main library to use for consumers of sharding on a mongod shard. It will pull the
+# version checking and document filtering functionality.
+#
+# This is the only library, which should be referenced directly outside of mongo/s/ and mongo/db/s/
 env.Library(
-    target='collection_metadata',
+    target='sharding_api_d',
     source=[
         'collection_metadata.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/common',
         '$BUILD_DIR/mongo/db/range_arithmetic',
-        '$BUILD_DIR/mongo/db/service_context',
-        '$BUILD_DIR/mongo/s/common_s',
-        '$BUILD_DIR/mongo/s/routing_table',
+        '$BUILD_DIR/mongo/s/sharding_routing_table',
+    ],
+)
+
+env.Library(
+    target='sharding_runtime_d',
+    source=[
+        'implicit_create_collection.cpp',
+        'migration_destination_manager.cpp',
+        'session_catalog_migration_destination.cpp',
+        'shard_filtering_metadata_refresh.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/dbhelpers',
+        '$BUILD_DIR/mongo/db/repl/oplog',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        '$BUILD_DIR/mongo/db/rw_concern_d',
+        'sharding',
     ],
 )
 
@@ -56,14 +74,12 @@ env.Library(
         'metadata_manager.cpp',
         'migration_chunk_cloner_source.cpp',
         'migration_chunk_cloner_source_legacy.cpp',
-        'migration_destination_manager.cpp',
         'migration_source_manager.cpp',
         'migration_util.cpp',
         'move_timing_helper.cpp',
         'namespace_metadata_change_notifications.cpp',
         'operation_sharding_state.cpp',
         'read_only_catalog_cache_loader.cpp',
-        'session_catalog_migration_destination.cpp',
         'session_catalog_migration_source.cpp',
         'shard_identity_rollback_notifier.cpp',
         'shard_metadata_util.cpp',
@@ -87,7 +103,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands/dcommands_fcv',
         '$BUILD_DIR/mongo/db/commands/server_status',
         '$BUILD_DIR/mongo/db/common',
-        '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
         '$BUILD_DIR/mongo/s/client/shard_local',
         '$BUILD_DIR/mongo/s/coreshard',
         '$BUILD_DIR/mongo/s/is_mongos',
@@ -95,8 +110,8 @@ env.Library(
         '$BUILD_DIR/mongo/s/sharding_task_executor',
         '$BUILD_DIR/mongo/util/elapsed_tracker',
         'balancer',
-        'collection_metadata',
         'migration_types',
+        'sharding_api_d',
         'type_shard_identity',
     ],
     LIBDEPS_TAGS=[
@@ -157,13 +172,15 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/catalog/catalog_raii',
+        '$BUILD_DIR/mongo/db/catalog/collection_options',
         '$BUILD_DIR/mongo/db/commands/dcommands_fcv',
         '$BUILD_DIR/mongo/db/repl/read_concern_args',
-        '$BUILD_DIR/mongo/db/s/balancer',
         '$BUILD_DIR/mongo/executor/network_interface',
         '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client',
         '$BUILD_DIR/mongo/s/client/sharding_client',
         '$BUILD_DIR/mongo/s/coreshard',
+        'balancer',
+        'type_shard_identity',
     ],
 )
 
@@ -175,6 +192,7 @@ env.Library(
         'config/configsvr_add_shard_command.cpp',
         'config/configsvr_add_shard_to_zone_command.cpp',
         'config/configsvr_commit_chunk_migration_command.cpp',
+        'config/configsvr_commit_move_primary_command.cpp',
         'config/configsvr_control_balancer_command.cpp',
         'config/configsvr_create_collection_command.cpp',
         'config/configsvr_create_database_command.cpp',
@@ -195,6 +213,7 @@ env.Library(
         'migration_chunk_cloner_source_legacy_commands.cpp',
         'migration_destination_manager_legacy_commands.cpp',
         'move_chunk_command.cpp',
+        'move_primary_command.cpp',
         'set_shard_version_command.cpp',
         'sharding_server_status.cpp',
         'sharding_state_command.cpp',
@@ -206,16 +225,12 @@ env.Library(
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
         '$BUILD_DIR/mongo/db/commands/dcommands_fcv',
         '$BUILD_DIR/mongo/db/commands/server_status',
-        '$BUILD_DIR/mongo/db/db_raii',
-        '$BUILD_DIR/mongo/db/dbhelpers',
         '$BUILD_DIR/mongo/db/index_d',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
-        '$BUILD_DIR/mongo/db/rw_concern_d',
         '$BUILD_DIR/mongo/s/commands/shared_cluster_commands',
         'balancer',
-        'collection_metadata',
-        'sharding',
         'sharding_catalog_manager',
+        'sharding_runtime_d',
     ],
 )
 
@@ -320,7 +335,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/ops/write_ops_exec',
         '$BUILD_DIR/mongo/s/catalog/sharding_catalog_client_mock',
         '$BUILD_DIR/mongo/s/shard_server_test_fixture',
-        'sharding',
+        'sharding_runtime_d',
     ]
 )
 
@@ -332,6 +347,7 @@ env.CppUnitTest(
         'config/sharding_catalog_manager_assign_key_range_to_zone_test.cpp',
         'config/sharding_catalog_manager_commit_chunk_migration_test.cpp',
         'config/sharding_catalog_manager_config_initialization_test.cpp',
+        'config/sharding_catalog_manager_create_collection_test.cpp',
         'config/sharding_catalog_manager_create_database_test.cpp',
         'config/sharding_catalog_manager_drop_coll_test.cpp',
         'config/sharding_catalog_manager_enable_sharding_test.cpp',

@@ -60,7 +60,7 @@ class ConfigSvrCreateCollectionCommand : public BasicCommand {
 public:
     ConfigSvrCreateCollectionCommand() : BasicCommand("_configsvrCreateCollection") {}
 
-    AllowedOnSecondary secondaryAllowed() const override {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
     }
 
@@ -109,7 +109,9 @@ public:
             IDLParserErrorContext("ConfigsvrCreateCollection"), cmdObj);
 
         CollectionOptions options;
-        uassertStatusOK(options.parse(createCmd.getOptions()));
+        if (auto requestOptions = createCmd.getOptions()) {
+            uassertStatusOK(options.parse(*requestOptions));
+        }
 
         ShardingCatalogManager::get(opCtx)->createCollection(opCtx, createCmd.getNs(), options);
 

@@ -66,7 +66,7 @@ public:
         return false;
     }
 
-    AllowedOnSecondary secondaryAllowed() const final {
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kAlways;
     }
 
@@ -84,7 +84,7 @@ public:
              const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
-        Lock::GlobalLock global(opCtx, MODE_X, UINT_MAX);
+        Lock::GlobalLock global(opCtx, MODE_X, Date_t::max());
 
         log() << "Closing database catalog";
         catalog::closeCatalog(opCtx);

@@ -414,6 +414,16 @@ env.Library(
     ],
 )
 
+env.Library(
+    target="global_settings",
+    source=[
+        "global_settings.cpp",
+    ],
+    LIBDEPS=[
+        'repl/repl_settings',
+    ],
+)
+
 # mongod options
 env.Library(
     target="mongod_options",
@@ -427,6 +437,9 @@ env.Library(
         'server_options',
         'storage/storage_options',
     ],
+    LIBDEPS_PRIVATE=[
+        'global_settings',
+    ]
 )
 
 env.Library(
@@ -459,6 +472,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/logical_session_id',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/util/clock_sources',
         '$BUILD_DIR/mongo/util/concurrency/spin_lock',
         '$BUILD_DIR/mongo/util/decorable',
@@ -512,11 +526,10 @@ env.Library(
         '$BUILD_DIR/mongo/rpc/rpc',
         'audit',
         'auth/authcore',
+        'command_can_run_here',
         'commands/server_status_core',
         'commands/test_commands_enabled',
-        'command_can_run_here',
         'service_context',
-        '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
     ],
 )
 
@@ -611,21 +624,22 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/auth/authmongod',
+        '$BUILD_DIR/mongo/db/concurrency/lock_manager',
+        '$BUILD_DIR/mongo/db/commands/dcommands_fsync',
+        '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
+        '$BUILD_DIR/mongo/db/s/sharding',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
         '$BUILD_DIR/mongo/transport/service_entry_point',
-        'auth/authmongod',
         'command_can_run_here',
-        'commands/dcommands_fsync',
-        'concurrency/lock_manager',
         'curop',
         'curop_metrics',
         'lasterror',
-        'ops/write_ops_parsers',
         'rw_concern_d',
-        's/sharding',
-        'storage/storage_options',
     ],
     LIBDEPS_PRIVATE=[
-        'ops/write_ops_exec',
+        '$BUILD_DIR/mongo/db/commands/fsync_locked',
+        '$BUILD_DIR/mongo/db/service_entry_point_common',
     ],
 )
 
@@ -640,6 +654,26 @@ env.Library(
         'views/views_mongod',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/catalog/uuid_catalog',
+    ],
+)
+
+env.Library(
+    target="service_entry_point_common",
+    source=[
+        "service_entry_point_common.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/authmongod',
+        '$BUILD_DIR/mongo/db/command_can_run_here',
+        '$BUILD_DIR/mongo/db/ops/write_ops_exec',
+        '$BUILD_DIR/mongo/db/rw_concern_d',
+        '$BUILD_DIR/mongo/db/s/sharding_runtime_d',
+        '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
+        '$BUILD_DIR/mongo/db/storage/storage_engine_metadata',
     ],
 )
 
@@ -741,14 +775,17 @@ env.Library(
         "repair_database.cpp",
     ],
     LIBDEPS=[
-        "background",
-        "catalog/index_key_validate",
         '$BUILD_DIR/mongo/db/catalog/collection',
         '$BUILD_DIR/mongo/db/catalog/database',
-        "$BUILD_DIR/mongo/db/storage/mmap_v1/storage_mmapv1",
+        '$BUILD_DIR/mongo/db/storage/mmap_v1/repair_database_interface',
+        'background',
     ],
     LIBDEPS_PRIVATE=[
-        "$BUILD_DIR/mongo/db/repl/oplog",
+        '$BUILD_DIR/mongo/db/catalog/document_validation',
+        '$BUILD_DIR/mongo/db/catalog/index_create',
+        '$BUILD_DIR/mongo/db/catalog/index_key_validate',
+        '$BUILD_DIR/mongo/db/repl/oplog',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
     ],
 )
 
@@ -758,11 +795,14 @@ env.Library(
         "ttl.cpp",
     ],
     LIBDEPS=[
-        "commands/dcommands_fsync",
-        "db_raii",
-        "query_exec",
-        "ttl_collection_cache",
+        'db_raii',
+        'query_exec',
+        'ttl_collection_cache',
     ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/commands/fsync_locked',
+        'write_ops',
+    ]
 )
 
 env.Library(
@@ -923,7 +963,6 @@ env.Library(
         "index/index_descriptor",
         "index_d",
         "introspect",
-        'keys_collection_client_direct',
         "matcher/expressions_mongod_only",
         "op_observer_d",
         "ops/write_ops_parsers",
@@ -945,9 +984,9 @@ env.Library(
         "repl/sync_tail",
         "repl/topology_coordinator",
         "rw_concern_d",
-        "s/collection_metadata",
         "s/commands_db_s",
-        "s/sharding",
+        "s/sharding_api_d",
+        "s/sharding_runtime_d",
         "startup_warnings_mongod",
         "stats/counters",
         "stats/serveronly_stats",
@@ -965,6 +1004,7 @@ env.Library(
         "update/update_driver",
         "update_index_data",
         "views/views_mongod",
+        'keys_collection_client_direct',
     ],
 )
 
@@ -1151,12 +1191,11 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/s/write_ops/cluster_write_op',
         'logical_session_id',
         'sessions_collection',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/s/query/cluster_query',
+        '$BUILD_DIR/mongo/s/sharding_api',
         'sessions_collection_rs',
     ],
 )
@@ -1571,19 +1610,6 @@ env.Library(
         'server_options',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
-    ],
-)
-
-env.Library(
-    target='conn_pool_options',
-    source=[
-        'conn_pool_options.cpp',
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/client/clientdriver',
-        '$BUILD_DIR/mongo/db/server_parameters',
-        '$BUILD_DIR/mongo/s/client/sharding_client',
     ],
 )
 

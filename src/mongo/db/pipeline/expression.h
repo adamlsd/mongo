@@ -874,11 +874,15 @@ private:
     ExpressionDateFromString(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                              boost::intrusive_ptr<Expression> dateString,
                              boost::intrusive_ptr<Expression> timeZone,
-                             boost::intrusive_ptr<Expression> format);
+                             boost::intrusive_ptr<Expression> format,
+                             boost::intrusive_ptr<Expression> onNull,
+                             boost::intrusive_ptr<Expression> onError);
 
     boost::intrusive_ptr<Expression> _dateString;
     boost::intrusive_ptr<Expression> _timeZone;
     boost::intrusive_ptr<Expression> _format;
+    boost::intrusive_ptr<Expression> _onNull;
+    boost::intrusive_ptr<Expression> _onError;
 };
 
 class ExpressionDateFromParts final : public Expression {
@@ -910,16 +914,22 @@ private:
                             boost::intrusive_ptr<Expression> timeZone);
 
     /**
-     * Evaluates the value in field as number, and makes sure it fits in the minValue..maxValue
-     * range. If the field is missing or empty, the function returns the defaultValue.
+     * This function checks whether a field is a number.
+     *
+     * If 'field' is null, the default value is returned trough the 'returnValue' out
+     * parameter and the function returns true.
+     *
+     * If 'field' is not null:
+     * - if the value is "nullish", the function returns false.
+     * - if the value can not be coerced to an integral value, a UserException is thrown.
+     * - otherwise, the coerced integral value is returned through the 'returnValue'
+     *   out parameter, and the function returns true.
      */
-    bool evaluateNumberWithinRange(const Document& root,
-                                   const Expression* field,
+    bool evaluateNumberWithDefault(const Document& root,
+                                   boost::intrusive_ptr<Expression> field,
                                    StringData fieldName,
-                                   int defaultValue,
-                                   int minValue,
-                                   int maxValue,
-                                   int* returnValue) const;
+                                   long long defaultValue,
+                                   long long* returnValue) const;
 
     boost::intrusive_ptr<Expression> _year;
     boost::intrusive_ptr<Expression> _month;
@@ -980,13 +990,15 @@ protected:
 
 private:
     ExpressionDateToString(const boost::intrusive_ptr<ExpressionContext>& expCtx,
-                           const std::string& format,                   // The format string.
-                           boost::intrusive_ptr<Expression> date,       // The date to format.
-                           boost::intrusive_ptr<Expression> timeZone);  // The optional timezone.
+                           boost::intrusive_ptr<Expression> format,
+                           boost::intrusive_ptr<Expression> date,
+                           boost::intrusive_ptr<Expression> timeZone,
+                           boost::intrusive_ptr<Expression> onNull);
 
-    const std::string _format;
+    boost::intrusive_ptr<Expression> _format;
     boost::intrusive_ptr<Expression> _date;
     boost::intrusive_ptr<Expression> _timeZone;
+    boost::intrusive_ptr<Expression> _onNull;
 };
 
 class ExpressionDayOfMonth final : public DateExpressionAcceptingTimeZone<ExpressionDayOfMonth> {
@@ -1772,6 +1784,74 @@ public:
 };
 
 
+/**
+ * This class is used to implement all three trim expressions: $trim, $ltrim, and $rtrim.
+ */
+class ExpressionTrim final : public Expression {
+private:
+    enum class TrimType {
+        kBoth,
+        kLeft,
+        kRight,
+    };
+
+public:
+    ExpressionTrim(const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                   TrimType trimType,
+                   StringData name,
+                   const boost::intrusive_ptr<Expression>& input,
+                   const boost::intrusive_ptr<Expression>& charactersToTrim)
+        : Expression(expCtx),
+          _trimType(trimType),
+          _name(name.toString()),
+          _input(input),
+          _characters(charactersToTrim) {}
+
+    Value evaluate(const Document& root) const final;
+    boost::intrusive_ptr<Expression> optimize() final;
+    static boost::intrusive_ptr<Expression> parse(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        BSONElement expr,
+        const VariablesParseState& vpsIn);
+    Value serialize(bool explain) const final;
+
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final;
+
+private:
+    /**
+     * Returns true if the unicode character found at index 'indexIntoInput' of 'input' is equal to
+     * 'testCP'.
+     */
+    static bool codePointMatchesAtIndex(const StringData& input,
+                                        std::size_t indexIntoInput,
+                                        const StringData& testCP);
+
+    /**
+     * Given the input string and the code points to trim from that string, returns a substring of
+     * 'input' with any code point from 'trimCPs' trimmed from the left.
+     */
+    static StringData trimFromLeft(StringData input, const std::vector<StringData>& trimCPs);
+
+    /**
+     * Given the input string and the code points to trim from that string, returns a substring of
+     * 'input' with any code point from 'trimCPs' trimmed from the right.
+     */
+    static StringData trimFromRight(StringData input, const std::vector<StringData>& trimCPs);
+
+    /**
+     * Returns the trimmed version of 'input', with all code points in 'trimCPs' removed from the
+     * front, back, or both - depending on _trimType.
+     */
+    StringData doTrim(StringData input, const std::vector<StringData>& trimCPs) const;
+
+    TrimType _trimType;
+    std::string _name;  // "$trim", "$ltrim", or "$rtrim".
+    boost::intrusive_ptr<Expression> _input;
+    boost::intrusive_ptr<Expression> _characters;  // Optional, null if not specified.
+};
+
+
 class ExpressionTrunc final : public ExpressionSingleNumericArg<ExpressionTrunc> {
 public:
     explicit ExpressionTrunc(const boost::intrusive_ptr<ExpressionContext>& expCtx)
@@ -1868,5 +1948,36 @@ private:
     bool _useLongestLength = false;
     ExpressionVector _inputs;
     ExpressionVector _defaults;
+};
+
+class ExpressionConvert final : public Expression {
+public:
+    /**
+     * Constant double representation of 2^63.
+     */
+    static const double kLongLongMaxPlusOneAsDouble;
+
+    static boost::intrusive_ptr<Expression> parse(
+        const boost::intrusive_ptr<ExpressionContext>& expCtx,
+        BSONElement expr,
+        const VariablesParseState& vpsIn);
+
+    explicit ExpressionConvert(const boost::intrusive_ptr<ExpressionContext>& expCtx)
+        : Expression(expCtx) {}
+    Value evaluate(const Document& root) const final;
+    boost::intrusive_ptr<Expression> optimize() final;
+    Value serialize(bool explain) const final;
+
+protected:
+    void _doAddDependencies(DepsTracker* deps) const final;
+
+private:
+    BSONType computeTargetType(Value typeName) const;
+    Value performConversion(BSONType targetType, Value inputValue) const;
+
+    boost::intrusive_ptr<Expression> _input;
+    boost::intrusive_ptr<Expression> _to;
+    boost::intrusive_ptr<Expression> _onError;
+    boost::intrusive_ptr<Expression> _onNull;
 };
 }

@@ -52,10 +52,10 @@ class AutoGetDb {
     MONGO_DISALLOW_COPYING(AutoGetDb);
 
 public:
-    AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode);
-
-    // TODO (SERVER-32367): Do not use this constructor, it is for internal purposes only
-    AutoGetDb(OperationContext* opCtx, StringData dbName, Lock::DBLock dbLock);
+    AutoGetDb(OperationContext* opCtx,
+              StringData dbName,
+              LockMode mode,
+              Date_t deadline = Date_t::max());
 
     /**
      * Returns nullptr if the database didn't exist.
@@ -86,22 +86,24 @@ public:
 
     AutoGetCollection(OperationContext* opCtx,
                       const NamespaceStringOrUUID& nsOrUUID,
+                      LockMode modeAll,
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max())
+        : AutoGetCollection(opCtx, nsOrUUID, modeAll, modeAll, viewMode, deadline) {}
+
+    AutoGetCollection(OperationContext* opCtx,
+                      const NamespaceStringOrUUID& nsOrUUID,
                       LockMode modeDB,
                       LockMode modeColl,
-                      ViewMode viewMode = kViewsForbidden);
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max());
 
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceStringOrUUID& nsOrUUID,
-                      LockMode modeAll,
-                      ViewMode viewMode = kViewsForbidden)
-        : AutoGetCollection(opCtx, nsOrUUID, modeAll, modeAll, viewMode) {}
-
-    // TODO (SERVER-32367): Do not use this constructor, it is for internal purposes only
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceStringOrUUID& nsOrUUID,
-                      Lock::DBLock dbLock,
-                      LockMode modeColl,
-                      ViewMode viewMode);
+    /**
+     * Without acquiring any locks resolves the given NamespaceStringOrUUID to an actual namespace.
+     * Throws NamespaceNotFound if the collection UUID cannot be resolved to a name.
+     */
+    static NamespaceString resolveNamespaceStringOrUUID(OperationContext* opCtx,
+                                                        NamespaceStringOrUUID nsOrUUID);
 
     /**
      * Returns nullptr if the database didn't exist.
@@ -128,17 +130,19 @@ public:
      * Returns the resolved namespace of the collection or view.
      */
     const NamespaceString& getNss() const {
-        return _nsAndLock.nss;
+        return _resolvedNss;
     }
 
 private:
-    struct NamespaceAndCollectionLock {
-        Lock::CollectionLock lock;
-        NamespaceString nss;
-    };
+    // If the object was instantiated with a UUID, contains the resolved namespace, otherwise it is
+    // the same as the input namespace string
+    NamespaceString _resolvedNss;
 
     AutoGetDb _autoDb;
-    const NamespaceAndCollectionLock _nsAndLock;
+
+    // This field is boost::optional, because in the case of lookup by UUID, the collection lock
+    // might need to be relocked for the correct namespace
+    boost::optional<Lock::CollectionLock> _collLock;
 
     Collection* _coll = nullptr;
     std::shared_ptr<ViewDefinition> _view;
@@ -161,7 +165,10 @@ class AutoGetOrCreateDb {
     MONGO_DISALLOW_COPYING(AutoGetOrCreateDb);
 
 public:
-    AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode);
+    AutoGetOrCreateDb(OperationContext* opCtx,
+                      StringData dbName,
+                      LockMode mode,
+                      Date_t deadline = Date_t::max());
 
     Database* getDb() const {
         return _db;
@@ -171,14 +178,11 @@ public:
         return _justCreated;
     }
 
-    Lock::DBLock& lock() {
-        return _dbLock;
-    }
-
 private:
-    Lock::DBLock _dbLock;  // not const, as we may need to relock for implicit create
+    boost::optional<AutoGetDb> _autoDb;
+
     Database* _db;
-    bool _justCreated;
+    bool _justCreated{false};
 };
 
 }  // namespace mongo

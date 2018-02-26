@@ -1676,11 +1676,8 @@ __rec_child_deleted(WT_SESSION_IMPL *session,
 		 * Minor memory cleanup: if a truncate call deleted this page
 		 * and we were ever forced to instantiate the page in memory,
 		 * we would have built a list of updates in the page reference
-		 * in order to be able to abort the truncate.  It's a cheap
-		 * test to make that memory go away, we do it here because
-		 * there's really nowhere else we do the checks.  In short, if
-		 * we have such a list, and the backing address blocks are
-		 * gone, there can't be any transaction that can abort.
+		 * in order to be able to commit/rollback the truncate. We just
+		 * passed a visibility test, discard the update list.
 		 */
 		if (page_del != NULL) {
 			__wt_free(session, ref->page_del->update_list);
@@ -6155,9 +6152,13 @@ __rec_las_wrapup(WT_SESSION_IMPL *session, WT_RECONCILE *r)
 	__wt_las_cursor(session, &cursor, &session_flags);
 
 	for (multi = r->multi, i = 0; i < r->multi_next; ++multi, ++i)
-		if (multi->supd != NULL)
+		if (multi->supd != NULL) {
 			WT_ERR(__wt_las_insert_block(
 			    session, cursor, r->page, multi, key));
+
+			__wt_free(session, multi->supd);
+			multi->supd_entries = 0;
+		}
 
 err:	WT_TRET(__wt_las_cursor_close(session, &cursor, session_flags));
 
@@ -6184,7 +6185,7 @@ __rec_las_wrapup_err(WT_SESSION_IMPL *session, WT_RECONCILE *r)
 	 */
 	for (multi = r->multi, i = 0; i < r->multi_next; ++multi, ++i)
 		if (multi->supd != NULL && multi->page_las.las_pageid != 0)
-			WT_TRET(__wt_las_remove_block(session, NULL,
+			WT_TRET(__wt_las_remove_block(session,
 			    btree_id, multi->page_las.las_pageid));
 
 	return (ret);

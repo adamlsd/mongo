@@ -92,12 +92,15 @@ static AtomicBool atPrompt(false);  // can eval before getting to prompt
 namespace {
 const auto kDefaultMongoURL = "mongodb://127.0.0.1:27017"_sd;
 
-// We set the featureCompatibilityVersion to 3.6 in the mongo shell and rely on the server to reject
-// usages of new features if its featureCompatibilityVersion is lower.
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion36, ("EndStartupOptionSetup"))
+// Initialize the featureCompatibilityVersion server parameter since the mongo shell does not have a
+// featureCompatibilityVersion document from which to initialize the parameter. The parameter is set
+// to the latest version because there is no feature gating that currently occurs at the mongo shell
+// level. The server is responsible for rejecting usages of new features if its
+// featureCompatibilityVersion is lower.
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion40, ("EndStartupOptionSetup"))
 (InitializerContext* context) {
     mongo::serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36);
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
     return Status::OK();
 }
 const auto kAuthParam = "authSource"s;
@@ -930,10 +933,37 @@ int _main(int argc, char* argv[], char** envp) {
             cout << "failed to load: " << shellGlobalParams.files[i] << endl;
             return -3;
         }
-        if (mongo::shell_utils::KillMongoProgramInstances() != EXIT_SUCCESS) {
-            cout << "one more more child processes exited with an error during "
-                 << shellGlobalParams.files[i] << endl;
-            return -3;
+
+        // Check if the process left any running child processes.
+        std::vector<ProcessId> pids = mongo::shell_utils::getRunningMongoChildProcessIds();
+
+        if (!pids.empty()) {
+            cout << "terminating the following processes started by " << shellGlobalParams.files[i]
+                 << ": ";
+            std::copy(pids.begin(), pids.end(), std::ostream_iterator<ProcessId>(cout, " "));
+            cout << endl;
+
+            if (mongo::shell_utils::KillMongoProgramInstances() != EXIT_SUCCESS) {
+                cout << "one more more child processes exited with an error during "
+                     << shellGlobalParams.files[i] << endl;
+                return -3;
+            }
+
+            bool failIfUnterminatedProcesses = false;
+            const StringData code =
+                "function() { return typeof TestData === 'object' && TestData !== null && "
+                "TestData.hasOwnProperty('failIfUnterminatedProcesses') && "
+                "TestData.failIfUnterminatedProcesses; }"_sd;
+            shellMainScope->invokeSafe(code.rawData(), 0, 0);
+            failIfUnterminatedProcesses = shellMainScope->getBoolean("__returnValue");
+
+            if (failIfUnterminatedProcesses) {
+                cout << "exiting with a failure due to unterminated processes" << endl
+                     << "a call to MongoRunner.stopMongod(), ReplSetTest#stopSet(), or "
+                        "ShardingTest#stop() may be missing from the test"
+                     << endl;
+                return -6;
+            }
         }
     }
 

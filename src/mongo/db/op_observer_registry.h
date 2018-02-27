@@ -44,32 +44,7 @@ namespace mongo {
  * handler with the recovery unit.
  */
 class OpObserverRegistry final : public OpObserver {
-    OpObserverRegistry(const OpObserverRegistry&) = delete;
-    OpObserverRegistry& operator=(const OpObserverRegistry&) = delete;
-
-    class RecursionState {
-        RecursionState(const RecursionState&) = delete;
-        RecursionState& operator=(const RecursionState&) = delete;
-
-    private:
-        OpObserverRegistry* const _registry;
-        stdx::optional<ReservedTimes> times;
-
-    public:
-        ~RecursionState() {
-            --_registry->recursionDepth;
-            invariant(_registry->recursionDepth >= 0);
-        }
-
-        explicit RecursionState(OperationContext* const opCtx, OpObserverRegistry* const registry)
-            : _registry(registry) {
-            if (!_registry->recursionDepth) {
-                times.emplace(opCtx);
-            }
-            ++_registry->recursionDepth;
-            invariant(_registry->recursionDepth > 0);
-        }
-    };
+    MONGO_DISALLOW_COPYING(OpObserverRegistry);
 
 public:
     OpObserverRegistry() = default;
@@ -86,7 +61,7 @@ public:
                        OptionalCollectionUUID uuid,
                        BSONObj indexDoc,
                        bool fromMigrate) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onCreateIndex(opCtx, nss, uuid, indexDoc, fromMigrate);
     }
@@ -97,13 +72,13 @@ public:
                    std::vector<InsertStatement>::const_iterator begin,
                    std::vector<InsertStatement>::const_iterator end,
                    bool fromMigrate) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onInserts(opCtx, nss, uuid, begin, end, fromMigrate);
     }
 
     void onUpdate(OperationContext* const opCtx, const OplogUpdateEntryArgs& args) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onUpdate(opCtx, args);
     }
@@ -111,7 +86,7 @@ public:
     void aboutToDelete(OperationContext* const opCtx,
                        const NamespaceString& nss,
                        const BSONObj& doc) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->aboutToDelete(opCtx, nss, doc);
     }
@@ -122,7 +97,7 @@ public:
                   StmtId stmtId,
                   bool fromMigrate,
                   const boost::optional<BSONObj>& deletedDoc) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onDelete(opCtx, nss, uuid, stmtId, fromMigrate, deletedDoc);
     }
@@ -132,7 +107,7 @@ public:
                              const boost::optional<UUID> uuid,
                              const BSONObj& msgObj,
                              const boost::optional<BSONObj> o2MsgObj) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onInternalOpMessage(opCtx, nss, uuid, msgObj, o2MsgObj);
     }
@@ -142,7 +117,7 @@ public:
                             const NamespaceString& collectionName,
                             const CollectionOptions& options,
                             const BSONObj& idIndex) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onCreateCollection(opCtx, coll, collectionName, options, idIndex);
     }
@@ -153,13 +128,13 @@ public:
                    const BSONObj& collModCmd,
                    const CollectionOptions& oldCollOptions,
                    boost::optional<TTLCollModInfo> ttlInfo) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onCollMod(opCtx, nss, uuid, collModCmd, oldCollOptions, ttlInfo);
     }
 
     void onDropDatabase(OperationContext* const opCtx, const std::string& dbName) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onDropDatabase(opCtx, dbName);
     }
@@ -167,12 +142,12 @@ public:
     repl::OpTime onDropCollection(OperationContext* const opCtx,
                                   const NamespaceString& collectionName,
                                   const OptionalCollectionUUID uuid) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& observer : this->_observers) {
             auto time = observer->onDropCollection(opCtx, collectionName, uuid);
             invariant(time.isNull());
         }
-        return _getOpTimeToReturn(OpObserver::Times::get(opCtx).reservedOpTimes);
+        return _getOpTimeToReturn(times.get().reservedOpTimes);
     }
 
     void onDropIndex(OperationContext* const opCtx,
@@ -180,7 +155,7 @@ public:
                      OptionalCollectionUUID uuid,
                      const std::string& indexName,
                      const BSONObj& idxDescriptor) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onDropIndex(opCtx, nss, uuid, indexName, idxDescriptor);
     }
@@ -192,20 +167,20 @@ public:
                                     bool dropTarget,
                                     OptionalCollectionUUID dropTargetUUID,
                                     bool stayTemp) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& observer : this->_observers) {
             const auto time = observer->onRenameCollection(
                 opCtx, fromCollection, toCollection, uuid, dropTarget, dropTargetUUID, stayTemp);
             invariant(time.isNull());
         }
 
-        return _getOpTimeToReturn(OpObserver::Times::get(opCtx).reservedOpTimes);
+        return _getOpTimeToReturn(times.get().reservedOpTimes);
     }
 
     void onApplyOps(OperationContext* const opCtx,
                     const std::string& dbName,
                     const BSONObj& applyOpCmd) override {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onApplyOps(opCtx, dbName, applyOpCmd);
     }
@@ -213,26 +188,23 @@ public:
     void onEmptyCapped(OperationContext* const opCtx,
                        const NamespaceString& collectionName,
                        OptionalCollectionUUID uuid) {
-        RecursionState recursionState{opCtx, this};
+        ReservedTimes times{opCtx};
         for (auto& o : _observers)
             o->onEmptyCapped(opCtx, collectionName, uuid);
     }
 
     void onTransactionCommit(OperationContext* opCtx) override {
-        RecursionState recursionState{opCtx, this};
         for (auto& o : _observers)
             o->onTransactionCommit(opCtx);
     }
 
     void onTransactionAbort(OperationContext* opCtx) override {
-        RecursionState recursionState{opCtx, this};
         for (auto& o : _observers)
             o->onTransactionAbort(opCtx);
     }
 
     void onReplicationRollback(OperationContext* opCtx,
                                const RollbackObserverInfo& rbInfo) override {
-        RecursionState recursionState{opCtx, this};
         for (auto& o : _observers)
             o->onReplicationRollback(opCtx, rbInfo);
     }
@@ -246,7 +218,6 @@ private:
         return times.front();
     }
 
-    int recursionDepth = 0;
     std::vector<std::unique_ptr<OpObserver>> _observers;
 };
 }  // namespace mongo

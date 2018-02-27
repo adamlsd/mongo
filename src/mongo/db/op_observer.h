@@ -275,38 +275,58 @@ public:
     virtual void onReplicationRollback(OperationContext* opCtx,
                                        const RollbackObserverInfo& rbInfo) = 0;
 
-    /**
-     * This struct is a decoration for `OperationContext` which contains collected `repl::OpTime`
-     * and `Date_t` timestamps of various critical stages of an operation performed by an OpObserver
-     * chain.
-     */
-    struct Times {
-        static Times& get(OperationContext*);
-
-        std::vector<repl::OpTime> reservedOpTimes;
-    };
+    struct Times;
 
 protected:
-    /**
-     * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
-     * operation context.  Upon destruction the list of times in the decoration on the operation
-     * context is cleared.
-     */
-    class ReservedTimes {
-        ReservedTimes(const ReservedTimes&) = delete;
-        ReservedTimes& operator=(const ReservedTimes&) = delete;
+    class ReservedTimes;
+};
 
-    public:
-        ~ReservedTimes() {
+/**
+ * This struct is a decoration for `OperationContext` which contains collected `repl::OpTime`
+ * and `Date_t` timestamps of various critical stages of an operation performed by an OpObserver
+ * chain.
+ */
+struct OpObserver::Times {
+    static Times& get(OperationContext*);
+
+    std::vector<repl::OpTime> reservedOpTimes;
+
+private:
+    friend OpObserver::ReservedTimes;
+
+    int _recursionDepth = 0;
+};
+
+/**
+ * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
+ * operation context.  Upon destruction the list of times in the decoration on the operation
+ * context is cleared.
+ */
+class OpObserver::ReservedTimes {
+    ReservedTimes(const ReservedTimes&) = delete;
+    ReservedTimes& operator=(const ReservedTimes&) = delete;
+
+public:
+    ~ReservedTimes() {
+        if (!--_times._recursionDepth) {
             _times.reservedOpTimes.clear();
         }
+        invariant(_times._recursionDepth >= 0);
+    }
 
-        explicit ReservedTimes(OperationContext* const opCtx) : _times(Times::get(opCtx)) {
+    explicit ReservedTimes(OperationContext* const opCtx) : _times(Times::get(opCtx)) {
+        if (!_times._recursionDepth++) {
             invariant(_times.reservedOpTimes.empty());
         }
 
-    private:
-        Times& _times;
-    };
+        invariant(_times._recursionDepth > 0);
+    }
+
+    const Times& get() const {
+        return _times;
+    }
+
+private:
+    Times& _times;
 };
 }  // namespace mongo

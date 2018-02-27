@@ -33,11 +33,11 @@
 #include <type_traits>
 #include <vector>
 
-#include "mongo/util/scopeguard.h"
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/static_assert.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/util/decoration_container.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -97,29 +97,29 @@ public:
      */
     void construct(DecorationContainer<DecoratedType>* const container,
                    DecoratedType* const owner) const {
-		using std::cbegin;
+        using std::cbegin;
 
-        auto iter = begin( _decorationInfo );
+        auto iter = begin(_decorationInfo);
 
-		auto cleanupFunction= [&iter, container, this] () noexcept -> void
-		{
-			using std::crend;
-			std::for_each( std::make_reverse_iterator( iter ), crend( this->_decorationInfo ),
-				[&] ( auto &&decoration )
-				{
-					decoration.destructor( container->getDecoration( decoration.descriptor ) );
-				} );
-		};
+        auto cleanupFunction = [&iter, container, this ]() noexcept->void {
+            using std::crend;
+            std::for_each(std::make_reverse_iterator(iter),
+                          crend(this->_decorationInfo),
+                          [&](auto&& decoration) {
+                              decoration.destructor(
+                                  container->getDecoration(decoration.descriptor));
+                          });
+        };
 
-		auto cleanup= MakeGuard( std::move( cleanupFunction ) );
+        auto cleanup = MakeGuard(std::move(cleanupFunction));
 
-		using std::cend;
+        using std::cend;
 
-		for (; iter != cend( _decorationInfo ); ++iter) {
-			iter->constructor(container->getDecoration(iter->descriptor), owner);
-		}
+        for (; iter != cend(_decorationInfo); ++iter) {
+            iter->constructor(container->getDecoration(iter->descriptor), owner);
+        }
 
-		cleanup.Dismiss();
+        cleanup.Dismiss();
     }
 
     /**

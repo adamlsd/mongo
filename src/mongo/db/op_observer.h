@@ -305,11 +305,6 @@ protected:
             invariant(_times.reservedOpTimes.empty());
         }
 
-
-        Times& get() const {
-            return _times;
-        }
-
     private:
         Times& _times;
     };

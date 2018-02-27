@@ -31,6 +31,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "mongo/util/scopeguard.h"
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/static_assert.h"
 #include "mongo/stdx/functional.h"
@@ -94,22 +95,29 @@ public:
      */
     void construct(DecorationContainer<DecoratedType>* const container,
                    DecoratedType* const owner) const {
-        auto iter = _decorationInfo.cbegin();
-        try {
-            for (; iter != _decorationInfo.cend(); ++iter) {
-                iter->constructor(container->getDecoration(iter->descriptor), owner);
-            }
-        } catch (...) {
-            try {
-                while (iter != _decorationInfo.cbegin()) {
-                    --iter;
-                    iter->destructor(container->getDecoration(iter->descriptor));
-                }
-            } catch (...) {
-                std::terminate();
-            }
-            throw;
-        }
+		using std::cbegin;
+
+        auto iter = begin( _decorationInfo );
+
+		auto cleanupFunction= [&iter, container, this] () noexcept -> void
+		{
+			using std::crend;
+			std::for_each( std::make_reverse_iterator( iter ), crend( this->_decorationInfo ),
+				[&] ( auto &&decoration )
+				{
+					decoration.destructor( container->getDecoration( decoration.descriptor ) );
+				} );
+		};
+
+		auto cleanup= MakeGuard( std::move( cleanupFunction ) );
+
+		using std::cend;
+
+		for (; iter != cend( _decorationInfo ); ++iter) {
+			iter->constructor(container->getDecoration(iter->descriptor), owner);
+		}
+
+		cleanup.Dismiss();
     }
 
     /**

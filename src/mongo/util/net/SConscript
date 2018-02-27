@@ -29,7 +29,6 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/auth_rolename',
         '$BUILD_DIR/mongo/util/concurrency/ticketholder',
-        '$BUILD_DIR/mongo/util/decorable',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',

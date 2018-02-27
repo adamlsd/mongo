@@ -58,7 +58,7 @@ class OpObserverRegistry final : public OpObserver {
     public:
         ~RecursionState() {
             --_registry->recursionDepth;
-            invariant(!_registry->recursionDepth >= 0);
+            invariant(_registry->recursionDepth >= 0);
         }
 
         explicit RecursionState(OperationContext* const opCtx, OpObserverRegistry* const registry)

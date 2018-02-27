@@ -99,7 +99,7 @@ public:
                    DecoratedType* const owner) const {
         using std::cbegin;
 
-        auto iter = begin(_decorationInfo);
+        auto iter = cbegin(_decorationInfo);
 
         auto cleanupFunction = [&iter, container, this ]() noexcept->void {
             using std::crend;

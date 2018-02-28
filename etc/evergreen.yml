@@ -4604,16 +4604,19 @@ tasks:
 
         # Create the jira credentials configuration file
         cat > ~/.jira.yml <<END_OF_CREDS
-        user: "${testlifecycle_jira_user}"
-        password: "${testlifecycle_jira_password}"
         server: "https://jira.mongodb.org"
+        access_token: "${testlifecycle_jira_access_token}"
+        access_token_secret: "${testlifecycle_jira_access_token_secret}"
+        consumer_key: "${testlifecycle_jira_consumer_key}"
+        key_cert: |
+        $(echo "${testlifecycle_jira_key_certificate}" | sed  's/^/  /')
         END_OF_CREDS
 
         set -o verbose
 
         ${activate_virtualenv}
-        # Install Python jira client with pip until it is available in the toolchain
-        pip install jira==1.0.10
+        # Install Python modules to support OAuth with pip until it is available in the toolchain.
+        pip install cryptography==1.7.2 pyjwt==1.5.3
 
         # We use a small batch size to avoid hitting the load balancer timeout if the Evergreen
         # API query is not fast enough.
@@ -4666,6 +4669,7 @@ buildvariants:
   - rhel62-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: linux
     push_bucket: downloads.mongodb.org
     push_name: linux
@@ -4758,6 +4762,7 @@ buildvariants:
   - rhel62-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --repeat=10 --shuffle
@@ -4787,6 +4792,7 @@ buildvariants:
   run_on:
   - rhel62-large
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: linux
     push_bucket: downloads.mongodb.org
     push_name: linux-debug
@@ -4891,7 +4897,7 @@ buildvariants:
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     # Running WiredTiger with --nojournal in a replica set is no longer supported,
     # so this variant does not include replica set tests.
-    test_flags: --nojournal --excludeWithAnyTags=requires_journaling,requires_replication
+    test_flags: --nojournal --excludeWithAnyTags=requires_journaling,requires_replication,requires_mmapv1
     use_scons_cache: true
     build_mongoreplay: true
   tasks:
@@ -4926,7 +4932,7 @@ buildvariants:
   expansions:
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    test_flags: --wiredTigerCollectionConfig=type=lsm --wiredTigerIndexConfig=type=lsm
+    test_flags: --wiredTigerCollectionConfig=type=lsm --wiredTigerIndexConfig=type=lsm --excludeWithAnyTags=requires_mmapv1
     use_scons_cache: true
     build_mongoreplay: true
   tasks:
@@ -4980,6 +4986,7 @@ buildvariants:
   - ubuntu1204-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags ssl"
     push_path: linux
     push_bucket: downloads.mongodb.org
@@ -5061,6 +5068,7 @@ buildvariants:
   - ubuntu1404-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags ssl"
     push_path: linux
     push_bucket: downloads.mongodb.org
@@ -5169,6 +5177,7 @@ buildvariants:
   - ubuntu1604-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags ssl"
     push_path: linux
     push_bucket: downloads.mongodb.org
@@ -5564,6 +5573,7 @@ buildvariants:
   - linux-64-amzn-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
     push_bucket: downloads.10gen.com
@@ -5634,6 +5644,7 @@ buildvariants:
   - linux-64-amzn-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags 'ssl'"
     push_path: linux
     push_bucket: downloads.mongodb.org
@@ -5721,6 +5732,7 @@ buildvariants:
   run_on:
   - windows-64-vs2015-small
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     platform_decompress: unzip
     exe: ".exe"
     push_path: win32
@@ -5848,6 +5860,7 @@ buildvariants:
   run_on:
   - windows-64-vs2015-small
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     platform_decompress: unzip
     tooltags: "-tags 'ssl sasl'"
     exe: ".exe"
@@ -5919,6 +5932,7 @@ buildvariants:
   - enterprise
   - wtdevelop
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     use_wt_develop: true
     platform_decompress: unzip
     tooltags: "-tags 'ssl sasl'"
@@ -5944,6 +5958,7 @@ buildvariants:
   stepback: true
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     platform_decompress: unzip
     tooltags: "-tags 'ssl sasl'"
     exe: ".exe"
@@ -5995,7 +6010,7 @@ buildvariants:
     num_scons_compile_all_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling
+    test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling,requires_mmapv1
     ext: zip
     use_scons_cache: true
   tasks:
@@ -6043,6 +6058,7 @@ buildvariants:
   - windows-64-vs2015-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     platform_decompress: unzip
     exe: ".exe"
     gorootvars: 'PATH="/cygdrive/c/mingw-w64/x86_64-4.9.1-posix-seh-rt_v3-rev1/mingw64/bin:/cygdrive/c/sasl/:$PATH" CGO_CFLAGS="-D_WIN32_WINNT=0x0601 -DNTDDI_VERSION=0x06010000"'
@@ -6154,6 +6170,7 @@ buildvariants:
   - windows-64-vs2015-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     platform_decompress: unzip
     tooltags: "-tags 'ssl sasl'"
     exe: ".exe"
@@ -6187,6 +6204,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: osx
     push_bucket: downloads.mongodb.org
     push_name: osx-ssl
@@ -6280,6 +6298,7 @@ buildvariants:
   run_on:
   - macos-1012
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: osx
     push_bucket: downloads.mongodb.org
     push_name: osx-debug
@@ -6312,6 +6331,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: osx
     push_bucket: downloads.10gen.com
     push_name: osx
@@ -6352,6 +6372,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     build_cdriver: true
     cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk iphoneos clang)" CXX="$(xcrun -f --sdk iphoneos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 "  CFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " CXXFLAGS="-isysroot $(xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=10.2 -arch arm64 " LDFLAGS="-miphoneos-version-min=10.2 -arch arm64"
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
@@ -6366,6 +6387,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     build_cdriver: true
     cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk iphonesimulator clang)" CXX="$(xcrun -f --sdk iphonesimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 "  CFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " CXXFLAGS="-isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) -miphoneos-version-min=10.2 " LDFLAGS="-miphoneos-version-min=10.2 "
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
@@ -6385,6 +6407,7 @@ buildvariants:
   expansions:
     build_cdriver: true
     cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host arm-apple-darwin CC="$(xcrun -f --sdk appletvos clang)" CXX="$(xcrun -f --sdk appletvos clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64"  CFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" CXXFLAGS="-isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.1 -arch arm64" LDFLAGS="-mtvos-version-min=10.1 -arch arm64"
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
@@ -6399,6 +6422,7 @@ buildvariants:
   expansions:
     build_cdriver: true
     cdriver_configure_flags: --build x86_64-apple-darwin16.6.0 --host x86_64-apple-darwin CC="$(xcrun -f --sdk appletvsimulator clang)" CXX="$(xcrun -f --sdk appletvsimulator clang++)" CPPFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1"  CFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" CXXFLAGS="-isysroot $(xcrun --sdk appletvsimulator --show-sdk-path) -mtvos-version-min=10.1" LDFLAGS="-mtvos-version-min=10.1"
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: -j$(sysctl -n hw.logicalcpu) --dbg=on --disable-warnings-as-errors --js-engine=none --variables-files=etc/scons/xcode_tvos_sim.vars CPPPATH="$(dirname $PWD)/mongo-c-driver/install/include/libbson-1.0 $(dirname $PWD)/mongo-c-driver/install/include/libmongoc-1.0" LIBPATH="$(dirname $PWD)/mongo-c-driver/install/lib"
     disable_unit_tests: true
@@ -6414,6 +6438,7 @@ buildvariants:
   - ubuntu1604-build
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     build_cdriver: true
     cdriver_configure_flags: --prefix=$(pwd)/install --host aarch64-unknown-linux-gnu CC=$(dirname $(pwd))/android_toolchain/bin/clang CXX=$(dirname $(pwd))/android_toolchain/clang++
     compile_env: JAVA_HOME=/opt/java/jdk8/
@@ -6435,6 +6460,7 @@ buildvariants:
   run_on:
   - rhel62-small
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -6634,6 +6660,7 @@ buildvariants:
   batchtime: 10080 # 7 days
   stepback: false
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     compile_flags: --dbg=on --gcov --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
@@ -6748,6 +6775,7 @@ buildvariants:
   run_on:
   - rhel70-small
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -6802,6 +6830,7 @@ buildvariants:
   run_on:
   - ubuntu1604-test
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
     compile_flags: MONGO_DISTMOD=ubuntu1604 --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     shared_scons_cache: true
@@ -6824,6 +6853,7 @@ buildvariants:
   - rhel62-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -6906,6 +6936,7 @@ buildvariants:
   - rhel70-small
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -7000,6 +7031,7 @@ buildvariants:
   batchtime: 1440 # 1 day
   stepback: false
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: PATH=/opt/mongodbtoolchain/v2/bin:$PATH
     tooltags: -gccgoflags "$(pkg-config --libs --cflags libssl libsasl2)" -tags 'sasl ssl'
     # We need to compensate for SMT8 setting the cpu count very high and lower the amount of parallelism down
@@ -7310,6 +7342,7 @@ buildvariants:
   - ubuntu1204-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7364,6 +7397,7 @@ buildvariants:
   - ubuntu1404-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7439,6 +7473,7 @@ buildvariants:
   - ubuntu1604-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7496,6 +7531,7 @@ buildvariants:
   run_on:
    - ubuntu1604-test
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     lang_environment: LANG=C
@@ -7522,6 +7558,7 @@ buildvariants:
   - suse12-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7678,6 +7715,7 @@ buildvariants:
   - suse12-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -7765,6 +7803,7 @@ buildvariants:
   - debian71-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7819,6 +7858,7 @@ buildvariants:
   - debian81-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -7871,6 +7911,7 @@ buildvariants:
   - debian71-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -7956,6 +7997,7 @@ buildvariants:
   - debian81-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -8042,6 +8084,7 @@ buildvariants:
   - debian92-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     push_path: linux
@@ -8093,6 +8136,7 @@ buildvariants:
   - debian92-test
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags ssl"
     push_path: linux
@@ -8186,7 +8230,7 @@ buildvariants:
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     rlp_environment: MONGOD_UNITTEST_RLP_LANGUAGE_TEST_BTROOT=/opt/basis
-    test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling
+    test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling,requires_mmapv1
     compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
     multiversion_platform_arch: "rhel62"
     multiversion_edition: "enterprise"
@@ -8304,7 +8348,7 @@ buildvariants:
     tooltags: "-tags 'ssl sasl'"
     rlp_environment: MONGOD_UNITTEST_RLP_LANGUAGE_TEST_BTROOT=/opt/basis
     test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32869,SERVER-32993,SERVER-32997
-    compile_flags: --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
+    compile_flags: --mobile-se=on --ssl MONGO_DISTMOD=rhel62 -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars CPPPATH="/opt/basis/rlp/rlp/include /opt/basis/rlp/utilities/include" --use-basis-tech-rosette-linguistics-platform=on
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     use_scons_cache: true
     build_mongoreplay: true
@@ -8365,7 +8409,7 @@ buildvariants:
     tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
     test_flags: --storageEngine=mobile --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_sharding,requires_replication,SERVER-32709,SERVER-32869,SERVER-32993,SERVER-32997
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
+    compile_flags: --mobile-se=on --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
     num_jobs_available: 1
     build_mongoreplay: true
   tasks:
@@ -8407,7 +8451,7 @@ buildvariants:
   - rhel62-small
   batchtime: 1440 # 1 day
   expansions:
-    test_flags: --storageEngine=ephemeralForTest --excludeWithAnyTags=requires_persistence,requires_fsync,SERVER-21420,SERVER-21658,requires_journaling
+    test_flags: --storageEngine=ephemeralForTest --excludeWithAnyTags=requires_persistence,requires_fsync,SERVER-21420,SERVER-21658,requires_journaling,requires_mmapv1,requires_wiredtiger
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --dbg=off --opt=on --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     use_scons_cache: true
@@ -8656,7 +8700,7 @@ buildvariants:
     build_rocksdb: true
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --dbg=off --opt=on CPPPATH=$(readlink -f ../rocksdb/include/) LIBPATH=$(readlink -f ../rocksdb/) LIBS=rocksdb --variables-files=etc/scons/mongodbtoolchain_gcc.vars --runtime-hardening=off
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    test_flags: --storageEngine=rocksdb
+    test_flags: --storageEngine=rocksdb --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger
     use_scons_cache: true
     build_mongoreplay: true
   stepback: false
@@ -8680,6 +8724,7 @@ buildvariants:
   stepback: true
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags 'ssl'"
     # We need llvm-symbolizer in the PATH for ASAN for clang-3.7 or later.
     variant_path_suffix: /opt/mongodbtoolchain/v2/bin
@@ -8798,6 +8843,7 @@ buildvariants:
   stepback: true
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags 'ssl'"
     # We need llvm-symbolizer in the PATH for ASAN for clang-3.7 or later.
     variant_path_suffix: /opt/mongodbtoolchain/v2/bin
@@ -8835,6 +8881,7 @@ buildvariants:
   stepback: true
   batchtime: 1440 # 1 day
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     # We need llvm-symbolizer in the PATH for UBSAN.
     variant_path_suffix: /opt/mongodbtoolchain/v2/bin
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
@@ -8955,6 +9002,7 @@ buildvariants:
   - ubuntu1604-build
   stepback: true
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     tooltags: "-tags 'ssl'"
     # We need llvm-symbolizer in the PATH for ASAN for clang-3.7 or later.
     variant_path_suffix: /opt/mongodbtoolchain/v2/bin
@@ -8989,7 +9037,7 @@ buildvariants:
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 3)) # Avoid starting too many mongod's under {A,UB}SAN build.
     build_mongoreplay: false
     hang_analyzer_dump_core: false
-    test_flags: --serviceExecutor=adaptive
+    test_flags: --serviceExecutor=adaptive --excludeWithAnyTags=requires_mmapv1
   tasks:
   - name: compile
   - name: compile_all
@@ -9076,6 +9124,7 @@ buildvariants:
   modules:
   - enterprise
   expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
     gorootvars: GOROOT=/opt/go PATH="/opt/go/bin:$PATH"
     tooltags: "-tags 'ssl sasl'"
     lang_environment: LANG=C

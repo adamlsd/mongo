@@ -477,11 +477,9 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     opCtx->getWriteUnitOfWork()->release();
     opCtx->setWriteUnitOfWork(nullptr);
 
-    _stashedLocker = opCtx->releaseLockState();
+    _stashedLocker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
     _stashedLocker->releaseTicket();
     _stashedRecoveryUnit.reset(opCtx->releaseRecoveryUnit());
-
-    opCtx->setLockState(stdx::make_unique<DefaultLockerImpl>());
     opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
                            OperationContext::kNotInUnitOfWork);
 }
@@ -504,9 +502,14 @@ void Session::unstashTransactionResources(OperationContext* opCtx) {
 
     if (_stashedLocker) {
         invariant(_stashedRecoveryUnit);
-        opCtx->releaseLockState();
         _stashedLocker->reacquireTicket();
-        opCtx->setLockState(std::move(_stashedLocker));
+
+        // We intentionally do not capture the return value of swapLockState(), which is just an
+        // empty locker. At the end of the operation, if the transaction is not complete, we will
+        // stash the operation context's locker and replace it with a new empty locker.
+        invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
+        opCtx->swapLockState(std::move(_stashedLocker));
+
         opCtx->setRecoveryUnit(_stashedRecoveryUnit.release(),
                                OperationContext::RecoveryUnitState::kNotInUnitOfWork);
         opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
@@ -602,18 +605,8 @@ UpdateRequest Session::_makeUpdateRequest(WithLock,
         return newTxnRecord.toBSON();
     }();
     updateRequest.setUpdates(updateBSON);
-
-    if (_lastWrittenSessionRecord) {
-        updateRequest.setQuery(BSON(SessionTxnRecord::kSessionIdFieldName
-                                    << _sessionId.toBSON()
-                                    << SessionTxnRecord::kTxnNumFieldName
-                                    << _lastWrittenSessionRecord->getTxnNum()
-                                    << SessionTxnRecord::kLastWriteOpTimeFieldName
-                                    << _lastWrittenSessionRecord->getLastWriteOpTime()));
-    } else {
-        updateRequest.setQuery(updateBSON);
-        updateRequest.setUpsert(true);
-    }
+    updateRequest.setQuery(BSON(SessionTxnRecord::kSessionIdFieldName << _sessionId.toBSON()));
+    updateRequest.setUpsert(true);
 
     return updateRequest;
 }

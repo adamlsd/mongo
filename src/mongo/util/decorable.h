@@ -59,8 +59,6 @@
 
 #pragma once
 
-#include <functional>
-
 #include "mongo/util/decoration_container.h"
 #include "mongo/util/decoration_registry.h"
 

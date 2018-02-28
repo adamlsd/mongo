@@ -29,6 +29,7 @@
 #pragma once
 
 #include <algorithm>
+#include <functional>
 #include <iterator>
 #include <type_traits>
 #include <vector>
@@ -96,7 +97,7 @@ public:
      * Called by the DecorationContainer constructor. Do not call directly.
      */
     void construct(DecorationContainer<DecoratedType>* const container,
-                   DecoratedType* const owner) const {
+                   std::function<DecoratedType*()> owner) const {
         using std::cbegin;
 
         auto iter = cbegin(_decorationInfo);
@@ -139,7 +140,7 @@ private:
     /**
      * Function that constructs (initializes) a single instance of a decoration.
      */
-    using DecorationConstructorFn = std::function<void(void*, DecoratedType*)>;
+    using DecorationConstructorFn = std::function<void(void*, std::function<DecoratedType*()>)>;
 
     /**
      * Function that destroys (deinitializes) a single instance of a decoration.
@@ -164,13 +165,13 @@ private:
     using DecorationInfoVector = std::vector<DecorationInfo>;
 
     template <typename T>
-    static void constructAt(void* location, DecoratedType* const owner) {
+    static void constructAt(void* location, std::function<DecoratedType*()> owner) {
         new (location) T();
     }
 
     template <typename T>
-    static void constructAtWithOwner(void* location, DecoratedType* const owner) {
-        new (location) T(owner);
+    static void constructAtWithOwner(void* location, std::function<DecoratedType*()> owner) {
+        new (location) T(std::move(owner));
     }
 
     template <typename T>

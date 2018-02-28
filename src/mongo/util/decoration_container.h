@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 namespace mongo {
@@ -89,7 +90,7 @@ public:
      * is in scope.
      */
     explicit DecorationContainer(const DecorationRegistry<DecoratedType>* const registry,
-                                 DecoratedType* const owner)
+                                 std::function<DecoratedType*()> owner)
         : _registry(registry),
           _decorationData(new unsigned char[registry->getDecorationBufferSizeBytes()]) {
         _registry->construct(this, owner);

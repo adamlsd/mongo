@@ -59,6 +59,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include "mongo/util/decoration_container.h"
 #include "mongo/util/decoration_registry.h"
 
@@ -112,7 +114,7 @@ public:
     }
 
 protected:
-    Decorable() : _decorations(getRegistry(), static_cast<D*>(this)) {}
+    Decorable() : _decorations(getRegistry(), [this] { return static_cast<D*>(this); }) {}
     ~Decorable() = default;
 
 private:

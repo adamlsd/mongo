@@ -37,6 +37,9 @@ namespace mongo {
 template <typename DecoratedType>
 class DecorationRegistry;
 
+template <typename DecoratedType>
+class Decorable;
+
 /**
  * An container for decorations.
  */
@@ -57,6 +60,7 @@ public:
     private:
         friend DecorationContainer;
         friend DecorationRegistry<DecoratedType>;
+        friend Decorable<DecoratedType>;
 
         explicit DecorationDescriptor(size_t index) : _index(index) {}
 
@@ -76,6 +80,7 @@ public:
     private:
         friend DecorationContainer;
         friend DecorationRegistry<DecoratedType>;
+        friend Decorable<DecoratedType>;
 
         explicit DecorationDescriptorWithType(DecorationDescriptor raw) : _raw(std::move(raw)) {}
 
@@ -89,11 +94,14 @@ public:
      * have any declareDecoration() calls made on it while a DecorationContainer dependent on it
      * is in scope.
      */
-    explicit DecorationContainer(const DecorationRegistry<DecoratedType>* const registry,
-                                 std::function<DecoratedType*()> owner)
+    explicit DecorationContainer(Decorable<DecoratedType>* const decorated,
+                                 const DecorationRegistry<DecoratedType>* const registry)
         : _registry(registry),
           _decorationData(new unsigned char[registry->getDecorationBufferSizeBytes()]) {
-        _registry->construct(this, owner);
+        Decorable<DecoratedType>** const backLink =
+            reinterpret_cast<Decorable<DecoratedType>**>(_decorationData.get());
+        *backLink = decorated;
+        _registry->construct(this);
     }
 
     ~DecorationContainer() {

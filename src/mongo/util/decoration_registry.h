@@ -73,19 +73,6 @@ public:
                     sizeof(T), std::alignment_of<T>::value, &constructAt<T>, &destroyAt<T>)));
     }
 
-    template <typename T>
-    auto declareDecorationWithOwner() {
-        MONGO_STATIC_ASSERT_MSG(std::is_nothrow_destructible<T>::value,
-                                "Decorations must be nothrow destructible");
-        return
-            typename DecorationContainer<DecoratedType>::template DecorationDescriptorWithType<T>(
-                std::move(declareDecoration(sizeof(T),
-                                            std::alignment_of<T>::value,
-                                            &constructAtWithOwner<T>,
-                                            &destroyAt<T>)));
-    }
-
-
     size_t getDecorationBufferSizeBytes() const {
         return _totalSizeBytes;
     }
@@ -96,8 +83,7 @@ public:
      *
      * Called by the DecorationContainer constructor. Do not call directly.
      */
-    void construct(DecorationContainer<DecoratedType>* const container,
-                   std::function<DecoratedType*()> owner) const {
+    void construct(DecorationContainer<DecoratedType>* const container) const {
         using std::cbegin;
 
         auto iter = cbegin(_decorationInfo);
@@ -117,7 +103,7 @@ public:
         using std::cend;
 
         for (; iter != cend(_decorationInfo); ++iter) {
-            iter->constructor(container->getDecoration(iter->descriptor), owner);
+            iter->constructor(container->getDecoration(iter->descriptor));
         }
 
         cleanup.Dismiss();
@@ -140,7 +126,7 @@ private:
     /**
      * Function that constructs (initializes) a single instance of a decoration.
      */
-    using DecorationConstructorFn = std::function<void(void*, std::function<DecoratedType*()>)>;
+    using DecorationConstructorFn = std::function<void(void*)>;
 
     /**
      * Function that destroys (deinitializes) a single instance of a decoration.
@@ -165,13 +151,8 @@ private:
     using DecorationInfoVector = std::vector<DecorationInfo>;
 
     template <typename T>
-    static void constructAt(void* location, std::function<DecoratedType*()> owner) {
+    static void constructAt(void* location) {
         new (location) T();
-    }
-
-    template <typename T>
-    static void constructAtWithOwner(void* location, std::function<DecoratedType*()> owner) {
-        new (location) T(std::move(owner));
     }
 
     template <typename T>
@@ -201,7 +182,7 @@ private:
     }
 
     DecorationInfoVector _decorationInfo;
-    size_t _totalSizeBytes{0};
+    size_t _totalSizeBytes{sizeof(void*)};
 };
 
 }  // namespace mongo

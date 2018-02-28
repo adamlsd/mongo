@@ -109,10 +109,10 @@ TEST(DecorableTest, SimpleDecoration) {
     const auto dd3 = registry.declareDecoration<int>();
 
     {
-        DecorationContainer<MyDecorable> decorable1(&registry, nullptr);
+        DecorationContainer<MyDecorable> decorable1(nullptr, &registry);
         ASSERT_EQ(2, numConstructedAs);
         ASSERT_EQ(0, numDestructedAs);
-        DecorationContainer<MyDecorable> decorable2(&registry, nullptr);
+        DecorationContainer<MyDecorable> decorable2(nullptr, &registry);
         ASSERT_EQ(4, numConstructedAs);
         ASSERT_EQ(0, numDestructedAs);
 
@@ -145,7 +145,7 @@ TEST(DecorableTest, ThrowingConstructor) {
     registry.declareDecoration<A>();
 
     try {
-        DecorationContainer<MyDecorable> d(&registry, nullptr);
+        DecorationContainer<MyDecorable> d(nullptr, &registry);
     } catch (const AssertionException& ex) {
         ASSERT_EQ(ErrorCodes::Unauthorized, ex.code());
     }
@@ -159,7 +159,7 @@ TEST(DecorableTest, Alignment) {
     const auto firstInt = registry.declareDecoration<int>();
     const auto secondChar = registry.declareDecoration<int>();
     const auto secondInt = registry.declareDecoration<int>();
-    DecorationContainer<MyDecorable> d(&registry, nullptr);
+    DecorationContainer<MyDecorable> d(nullptr, &registry);
     ASSERT_EQ(0U,
               reinterpret_cast<uintptr_t>(&d.getDecoration(firstChar)) %
                   std::alignment_of<char>::value);
@@ -174,16 +174,69 @@ TEST(DecorableTest, Alignment) {
                   std::alignment_of<int>::value);
 }
 
-class ClassWithOwnerPtr {
-public:
-    ClassWithOwnerPtr(MyDecorable* decorable) : owner(decorable) {}
-    MyDecorable* owner;
+struct DecoratedOwnerChecker : public Decorable<DecoratedOwnerChecker> {
+    const char answer[100] = "The answer to life the universe and everything is 42";
 };
 
+// Test all 4 variations of the owner back reference: const pointer, non-const pointer, const
+// reference, non-const reference.
+struct DecorationWithOwner {
+    DecorationWithOwner() {}
+
+    static const DecoratedOwnerChecker::Decoration<DecorationWithOwner> get;
+
+    std::string getTheAnswer1() const {
+        // const pointer variant
+        auto* const owner = get.owner(this);
+        static_assert(std::is_same<const DecoratedOwnerChecker* const, decltype(owner)>::value,
+                      "Type of fetched owner pointer is incorrect.");
+        return owner->answer;
+    }
+
+    std::string getTheAnswer2() {
+        // non-const pointer variant
+        DecoratedOwnerChecker* const owner = get.owner(this);
+        return owner->answer;
+    }
+
+    std::string getTheAnswer3() const {
+        // const reference variant
+        auto& owner = get.owner(*this);
+        static_assert(std::is_same<const DecoratedOwnerChecker&, decltype(owner)>::value,
+                      "Type of fetched owner reference is incorrect.");
+        return owner.answer;
+    }
+
+    std::string getTheAnswer4() {
+        // Non-const reference variant
+        DecoratedOwnerChecker& owner = get.owner(*this);
+        return owner.answer;
+    }
+};
+
+const DecoratedOwnerChecker::Decoration<DecorationWithOwner> DecorationWithOwner::get =
+    DecoratedOwnerChecker::declareDecoration<DecorationWithOwner>();
+
+
 TEST(DecorableTest, DecorationWithOwner) {
-    const auto get = MyDecorable::declareDecorationWithOwner<ClassWithOwnerPtr>();
-    MyDecorable decorable;
-    invariant(get(decorable).owner == &decorable);
+    DecoratedOwnerChecker owner;
+    const std::string answer = owner.answer;
+    ASSERT_NE(answer, "");
+
+    const std::string witness1 = DecorationWithOwner::get(owner).getTheAnswer1();
+    ASSERT_EQ(answer, witness1);
+
+    const std::string witness2 = DecorationWithOwner::get(owner).getTheAnswer2();
+    ASSERT_EQ(answer, witness2);
+
+    const std::string witness3 = DecorationWithOwner::get(owner).getTheAnswer3();
+    ASSERT_EQ(answer, witness3);
+
+    const std::string witness4 = DecorationWithOwner::get(owner).getTheAnswer4();
+    ASSERT_EQ(answer, witness4);
+
+    DecorationWithOwner& decoration = DecorationWithOwner::get(owner);
+    ASSERT_EQ(&owner, &DecorationWithOwner::get.owner(decoration));
 }
 
 }  // namespace

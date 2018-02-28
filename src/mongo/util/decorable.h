@@ -93,7 +93,32 @@ public:
             return (*this)(*d);
         }
 
+        const D* owner(const T* const t) const {
+            return static_cast<const D*>(getOwnerImpl(t));
+        }
+
+        D* owner(T* const t) const {
+            return static_cast<D*>(getOwnerImpl(t));
+        }
+
+        const D& owner(const T& t) const {
+            return *owner(&t);
+        }
+
+        D& owner(T& t) const {
+            return *owner(&t);
+        }
+
     private:
+        const Decorable* getOwnerImpl(const T* const t) const {
+            return *reinterpret_cast<const Decorable* const*>(
+                reinterpret_cast<const unsigned char* const>(t) - _raw._raw._index);
+        }
+
+        Decorable* getOwnerImpl(T* const t) const {
+            return const_cast<Decorable*>(getOwnerImpl(const_cast<const T*>(t)));
+        }
+
         friend class Decorable;
 
         explicit Decoration(
@@ -108,13 +133,8 @@ public:
         return Decoration<T>(getRegistry()->template declareDecoration<T>());
     }
 
-    template <typename T>
-    static Decoration<T> declareDecorationWithOwner() {
-        return Decoration<T>(getRegistry()->template declareDecorationWithOwner<T>());
-    }
-
 protected:
-    Decorable() : _decorations(getRegistry(), [this] { return static_cast<D*>(this); }) {}
+    Decorable() : _decorations(this, getRegistry()) {}
     ~Decorable() = default;
 
 private:

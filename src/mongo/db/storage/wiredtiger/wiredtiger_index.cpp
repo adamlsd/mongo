@@ -90,6 +90,9 @@ static const int kKeyStringV1Version = 8;
 static const int kMinimumIndexVersion = kKeyStringV0Version;
 static const int kMaximumIndexVersion = kKeyStringV1Version;
 
+// This is the size constituted by CType byte and the kEnd byte in a Keystring object.
+constexpr std::size_t kCTypeAndKEndSize = 2;
+
 bool hasFieldNames(const BSONObj& obj) {
     BSONForEach(e, obj) {
         if (e.fieldName()[0])
@@ -772,12 +775,7 @@ private:
 /**
  * Bulk builds a V2 format unique index.
  *
- * This is a copy of `UniqueBulkBuilder` at the moment; it would change later.
- *
- * In order to support V2 format unique indexes in dupsAllowed mode this class only does an actual
- * insert after it sees a key after the one we are trying to insert. This allows us to gather up all
- * duplicate ids and insert them all together. This is necessary since bulk cursors can only
- * append data.
+ * This is similar to `StandardBulkBuilder`, with duplicate check added in.
  */
 class WiredTigerIndex::UniqueV2BulkBuilder : public BulkBuilder {
 public:
@@ -785,10 +783,7 @@ public:
                         OperationContext* opCtx,
                         bool dupsAllowed,
                         KVPrefix prefix)
-        : BulkBuilder(idx, opCtx, prefix),
-          _idx(idx),
-          _dupsAllowed(dupsAllowed),
-          _keyString(idx->keyStringVersion()) {}
+        : BulkBuilder(idx, opCtx, prefix), _idx(idx), _dupsAllowed(dupsAllowed) {}
 
     Status addKey(const BSONObj& newKey, const RecordId& id) {
         {
@@ -797,71 +792,42 @@ public:
                 return s;
         }
 
-        const int cmp = newKey.woCompare(_key, _ordering);
-        if (cmp != 0) {
-            if (!_key.isEmpty()) {   // _key.isEmpty() is only true on the first call to addKey().
-                invariant(cmp > 0);  // newKey must be > the last key
-                // We are done with dups of the last key so we can insert it now.
-                doInsert();
-            }
-            invariant(_records.empty());
-        } else {
-            // Dup found!
+        // Do a duplicate check
+        const int cmp = newKey.woCompare(_previousKey, _ordering);
+        if (cmp == 0) {
+            // Duplicate found!
             if (!_dupsAllowed) {
                 return _idx->dupKeyError(newKey);
             }
-
-            // If we get here, we are in the weird mode where dups are allowed on a unique
-            // index, so add ourselves to the list of duplicate ids. This also replaces the
-            // _key which is correct since any dups seen later are likely to be newer.
+        } else {
+            // _previousKey.isEmpty() is only true on the first call to addKey().
+            // newKey must be > the last key
+            invariant(_previousKey.isEmpty() || cmp > 0);
         }
 
-        _key = newKey.getOwned();
-        _keyString.resetToKey(_key, _idx->ordering());
-        _records.push_back(std::make_pair(id, _keyString.getTypeBits()));
+        KeyString keyString(_idx->keyStringVersion(), newKey, _idx->_ordering, id);
 
-        return Status::OK();
-    }
-
-    void commit(bool mayInterrupt) {
-        WriteUnitOfWork uow(_opCtx);
-        if (!_records.empty()) {
-            // This handles inserting the last unique key.
-            doInsert();
-        }
-        uow.commit();
-    }
-
-private:
-    void doInsert() {
-        invariant(!_records.empty());
-
-        KeyString value(_idx->keyStringVersion());
-        for (size_t i = 0; i < _records.size(); i++) {
-            value.appendRecordId(_records[i].first);
-            // When there is only one record, we can omit AllZeros TypeBits. Otherwise they need
-            // to be included.
-            if (!(_records[i].second.isAllZeros() && _records.size() == 1)) {
-                value.appendTypeBits(_records[i].second);
-            }
-        }
-
-        WiredTigerItem keyItem(_keyString.getBuffer(), _keyString.getSize());
-        WiredTigerItem valueItem(value.getBuffer(), value.getSize());
-
+        // Can't use WiredTigerCursor since we aren't using the cache.
+        WiredTigerItem keyItem(keyString.getBuffer(), keyString.getSize());
         setKey(_cursor, keyItem.Get());
+
+        WiredTigerItem valueItem = keyString.getTypeBits().isAllZeros()
+            ? emptyItem
+            : WiredTigerItem(keyString.getTypeBits().getBuffer(),
+                             keyString.getTypeBits().getSize());
+
         _cursor->set_value(_cursor, valueItem.Get());
 
         invariantWTOK(_cursor->insert(_cursor));
 
-        _records.clear();
+        _previousKey = newKey.getOwned();
+        return Status::OK();
     }
 
+private:
     WiredTigerIndex* _idx;
     const bool _dupsAllowed;
-    BSONObj _key;
-    KeyString _keyString;
-    std::vector<std::pair<RecordId, KeyString::TypeBits>> _records;
+    BSONObj _previousKey;
 };
 
 namespace {
@@ -992,9 +958,6 @@ public:
     }
 
 protected:
-    // Called after _key has been filled in. Must not throw WriteConflictException.
-    virtual void updateIdAndTypeBits() = 0;
-
     void setKey(WT_CURSOR* cursor, const WT_ITEM* item) {
         if (_prefix == KVPrefix::kNotPrefixed) {
             cursor->set_key(cursor, item);
@@ -1163,7 +1126,7 @@ protected:
             return;
         }
 
-        updateIdAndTypeBits();
+        _updateIdAndTypeBits();
     }
 
     OperationContext* _opCtx;
@@ -1190,36 +1153,28 @@ protected:
     KVPrefix _prefix;
 
     std::unique_ptr<KeyString> _endPosition;
-};
 
-class WiredTigerIndexStandardCursor final : public WiredTigerIndexCursorBase {
-public:
-    WiredTigerIndexStandardCursor(const WiredTigerIndex& idx,
-                                  OperationContext* opCtx,
-                                  bool forward,
-                                  KVPrefix prefix)
-        : WiredTigerIndexCursorBase(idx, opCtx, forward, prefix) {}
+private:
+    // Called after _key has been filled in. Must not throw WriteConflictException.
+    void _updateIdAndTypeBits() {
+        LOG(3) << "KeyString: [" << _key.toString() << "]";
 
-    void updateIdAndTypeBits() override {
-        _id = KeyString::decodeRecordIdAtEnd(_key.getBuffer(), _key.getSize());
+        auto keySize = KeyString::getKeySize(
+            _key.getBuffer(), _key.getSize(), _idx.ordering(), _key.getTypeBits());
 
-        WT_CURSOR* c = _cursor->get();
-        WT_ITEM item;
-        invariantWTOK(c->get_value(c, &item));
-        BufReader br(item.data, item.size);
-        _typeBits.resetFromBuffer(&br);
+        // An index can have both old and new format index keys after a rolling upgrade. Detect
+        // correct index key format by checking key's size. Old format keys just had the index key
+        // while new format key has index key + Record id.
+        // When KeyString contains just the key, the RecordId is in value.
+        if (_key.getSize() == keySize + kCTypeAndKEndSize) {
+            _updateIdAndTypeBitsFromValue();
+        } else {
+            // The RecordId is in the key at the end.
+            _updateIdFromKeyAndTypeBitsFromValue();
+        }
     }
-};
 
-class WiredTigerIndexUniqueCursor final : public WiredTigerIndexCursorBase {
-public:
-    WiredTigerIndexUniqueCursor(const WiredTigerIndex& idx,
-                                OperationContext* opCtx,
-                                bool forward,
-                                KVPrefix prefix)
-        : WiredTigerIndexCursorBase(idx, opCtx, forward, prefix) {}
-
-    void updateIdAndTypeBits() override {
+    void _updateIdAndTypeBitsFromValue() {
         // We assume that cursors can only ever see unique indexes in their "pristine" state,
         // where no duplicates are possible. The cases where dups are allowed should hold
         // sufficient locks to ensure that no cursor ever sees them.
@@ -1237,6 +1192,34 @@ public:
             fassertFailed(28608);
         }
     }
+
+    void _updateIdFromKeyAndTypeBitsFromValue() {
+        _id = KeyString::decodeRecordIdAtEnd(_key.getBuffer(), _key.getSize());
+
+        WT_CURSOR* c = _cursor->get();
+        WT_ITEM item;
+        invariantWTOK(c->get_value(c, &item));
+        BufReader br(item.data, item.size);
+        _typeBits.resetFromBuffer(&br);
+    }
+};
+
+class WiredTigerIndexStandardCursor final : public WiredTigerIndexCursorBase {
+public:
+    WiredTigerIndexStandardCursor(const WiredTigerIndex& idx,
+                                  OperationContext* opCtx,
+                                  bool forward,
+                                  KVPrefix prefix)
+        : WiredTigerIndexCursorBase(idx, opCtx, forward, prefix) {}
+};
+
+class WiredTigerIndexUniqueCursor final : public WiredTigerIndexCursorBase {
+public:
+    WiredTigerIndexUniqueCursor(const WiredTigerIndex& idx,
+                                OperationContext* opCtx,
+                                bool forward,
+                                KVPrefix prefix)
+        : WiredTigerIndexCursorBase(idx, opCtx, forward, prefix) {}
 
     boost::optional<IndexKeyEntry> seekExact(const BSONObj& key, RequestedInfo parts) override {
         _query.resetToKey(stripFieldNames(key), _idx.ordering());
@@ -1263,16 +1246,6 @@ public:
                                   bool forward,
                                   KVPrefix prefix)
         : WiredTigerIndexCursorBase(idx, opCtx, forward, prefix) {}
-
-    void updateIdAndTypeBits() override {
-        _id = KeyString::decodeRecordIdAtEnd(_key.getBuffer(), _key.getSize());
-
-        WT_CURSOR* c = _cursor->get();
-        WT_ITEM item;
-        invariantWTOK(c->get_value(c, &item));
-        BufReader br(item.data, item.size);
-        _typeBits.resetFromBuffer(&br);
-    }
 
     boost::optional<IndexKeyEntry> seekExact(const BSONObj& key, RequestedInfo parts) override {
         _query.resetToKey(stripFieldNames(key), _idx.ordering());

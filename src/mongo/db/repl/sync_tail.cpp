@@ -655,8 +655,7 @@ void fillWriterVectors(OperationContext* opCtx,
 
         // Extract applyOps operations and fill writers with extracted operations using this
         // function.
-        if (supportsDocLocking && op.isCommand() &&
-            op.getCommandType() == OplogEntry::CommandType::kApplyOps) {
+        if (op.isCommand() && op.getCommandType() == OplogEntry::CommandType::kApplyOps) {
             try {
                 applyOpsOperations->emplace_back(ApplyOps::extractOperations(op));
                 fillWriterVectors(
@@ -689,7 +688,11 @@ SessionRecordMap getLatestSessionRecords(const MultiApplier::Operations& ops) {
 
     for (auto&& op : ops) {
         const auto& sessionInfo = op.getOperationSessionInfo();
-        if (sessionInfo.getTxnNumber()) {
+        // Do not write session table entries for applyOps, as multi-document transactions
+        // and retryable writes do not work together.
+        // TODO(SERVER-33501): Make multi-docunment transactions work with retryable writes.
+        if (sessionInfo.getTxnNumber() &&
+            (!op.isCommand() || op.getCommandType() != OplogEntry::CommandType::kApplyOps)) {
             const auto& lsid = *sessionInfo.getSessionId();
 
             SessionTxnRecord record;

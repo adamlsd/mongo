@@ -330,7 +330,7 @@ public:
         }
 
         invariant(_times._recursionDepth > 0);
-        invariant(_times._recursionDepth > 1 || !opCtx->writesAreReplicated());
+        invariant(_times._recursionDepth == 1 || !opCtx->writesAreReplicated());
     }
 
     const Times& get() const {

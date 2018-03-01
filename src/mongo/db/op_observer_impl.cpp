@@ -367,7 +367,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
                                bool fromMigrate) {
     Session* const session = opCtx->getTxnNumber() ? OperationContextSession::get(opCtx) : nullptr;
     if (session && opCtx->writesAreReplicated() && session->inMultiDocumentTransaction()) {
-        for (auto iter = begin; iter != end; iter++) {
+        for (auto iter = begin; iter != last; iter++) {
             auto operation = OplogEntry::makeInsertOperation(nss, uuid, iter->doc);
             session->addTransactionOperation(opCtx, operation);
         }

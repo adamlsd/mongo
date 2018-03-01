@@ -36,6 +36,7 @@
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/storage/kv/kv_database_catalog_entry.h"
 #include "mongo/db/storage/kv/kv_engine.h"
+#include "mongo/db/unclean_shutdown.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -115,14 +116,40 @@ void KVStorageEngine::loadCatalog(OperationContext* opCtx) {
         _catalogRecordStore.get(), _options.directoryPerDB, _options.directoryForIndexes));
     _catalog->init(opCtx);
 
-    std::vector<std::string> collections;
-    _catalog->getAllCollections(&collections);
+    // We populate 'identsKnownToStorageEngine' only if we are loading after an unclean shutdown.
+    std::vector<std::string> identsKnownToStorageEngine;
+    const bool loadingFromUncleanShutdown = startingAfterUncleanShutdown(getGlobalServiceContext());
+    if (loadingFromUncleanShutdown) {
+        identsKnownToStorageEngine = _engine->getAllIdents(opCtx);
+        std::sort(identsKnownToStorageEngine.begin(), identsKnownToStorageEngine.end());
+    }
+
+    std::vector<std::string> collectionsKnownToCatalog;
+    _catalog->getAllCollections(&collectionsKnownToCatalog);
 
     KVPrefix maxSeenPrefix = KVPrefix::kNotPrefixed;
-    for (size_t i = 0; i < collections.size(); i++) {
-        std::string coll = collections[i];
+    for (const auto& coll : collectionsKnownToCatalog) {
         NamespaceString nss(coll);
-        string dbName = nss.db().toString();
+        std::string dbName = nss.db().toString();
+
+        if (loadingFromUncleanShutdown) {
+            // If we are loading the catalog after an unclean shutdown, it's possible that there are
+            // collections in the catalog that are unknown to the storage engine. If we can't find
+            // it in the list of storage engine idents, remove the collection and move on to the
+            // next one.
+            const auto collectionIdent = _catalog->getCollectionIdent(coll);
+            if (!std::binary_search(identsKnownToStorageEngine.begin(),
+                                    identsKnownToStorageEngine.end(),
+                                    collectionIdent)) {
+                log() << "Dropping collection " << coll
+                      << " unknown to storage engine after unclean shutdown";
+
+                WriteUnitOfWork wuow(opCtx);
+                fassertStatusOK(50716, _catalog->dropCollection(opCtx, coll));
+                wuow.commit();
+                continue;
+            }
+        }
 
         // No rollback since this is only for committed dbs.
         KVDatabaseCatalogEntryBase*& db = _dbs[dbName];
@@ -137,6 +164,10 @@ void KVStorageEngine::loadCatalog(OperationContext* opCtx) {
 
     KVPrefix::setLargestPrefix(maxSeenPrefix);
     opCtx->recoveryUnit()->abandonSnapshot();
+
+    // Unset the unclean shutdown flag to avoid executing special behavior if this method is called
+    // after startup.
+    startingAfterUncleanShutdown(getGlobalServiceContext()) = false;
 }
 
 void KVStorageEngine::closeCatalog(OperationContext* opCtx) {
@@ -379,8 +410,9 @@ Status KVStorageEngine::dropDatabase(OperationContext* opCtx, StringData db) {
 
     // Now drop any leftover timestamped collections (i.e: not already dropped by the reaper).  On
     // secondaries there is already a `commit timestamp` set and these drops inherit the timestamp
-    // of the `dropDatabase` oplog entry. On primaries, we look at the logical clock and set the
-    // commit timestamp state.
+    // of the `dropDatabase` oplog entry. On primaries, these writes are allowed to be processed
+    // without a timestamp as these are, logically, behind the majority commit point. This method
+    // will enforce that all remaining collections were moved to a drop-pending namespace.
     //
     // Additionally, before returning, this method will remove the `KVDatabaseCatalogEntry` from
     // the `_dbs` map. This action creates a new constraint that this "timestamped drop" method
@@ -457,35 +489,15 @@ Status KVStorageEngine::_dropCollectionsWithTimestamp(OperationContext* opCtx,
                                                       std::list<std::string>& toDrop,
                                                       CollIter begin,
                                                       CollIter end) {
-    // On primaries, these collection drops are performed in a separate WUOW than the insertion of
-    // the `dropDatabase` oplog entry. In this case, we expect the `existingCommitTs` to be null
-    // and the code looks at the logical clock to assign a timestamp to the writes.
+    // This method does not enforce any timestamping rules for the writes that remove collections
+    // from the catalog.
     //
-    // Secondaries reach this from within a `TimestampBlock` where there should be a non-null
-    // `existingCommitTs`.
-    const Timestamp existingCommitTs = opCtx->recoveryUnit()->getCommitTimestamp();
-
-    // `LogicalClock`s on standalones and master/slave do not necessarily return real
-    // optimes. Assume it's safe to not timestamp the write.
-    const Timestamp chosenCommitTs = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
-    const bool setCommitTs = existingCommitTs.isNull() && !chosenCommitTs.isNull();
-    if (setCommitTs) {
-        opCtx->recoveryUnit()->setCommitTimestamp(chosenCommitTs);
-    }
-
-    // Ensure the method exits with the same "commit timestamp" state that it was called with.
-    auto removeCommitTimestamp = MakeGuard([&opCtx, setCommitTs] {
-        if (setCommitTs) {
-            opCtx->recoveryUnit()->clearCommitTimestamp();
-        }
-    });
-
     // This is called outside of a WUOW since MMAPv1 has unfortunate behavior around dropping
     // databases. We need to create one here since we want db dropping to all-or-nothing
     // wherever possible. Eventually we want to move this up so that it can include the logOp
     // inside of the WUOW, but that would require making DB dropping happen inside the Dur
     // system for MMAPv1.
-    WriteUnitOfWork timestampedDropWuow(opCtx);
+    WriteUnitOfWork wuow(opCtx);
 
     Status firstError = Status::OK();
     for (auto toDropStr = begin; toDropStr != toDrop.end(); ++toDropStr) {
@@ -508,7 +520,7 @@ Status KVStorageEngine::_dropCollectionsWithTimestamp(OperationContext* opCtx,
         _dbs.erase(dbce->name());
     }
 
-    timestampedDropWuow.commit();
+    wuow.commit();
     return firstError;
 }
 

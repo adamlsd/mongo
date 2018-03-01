@@ -398,6 +398,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
                                               const NamespaceString& nss,
                                               const CollectionOptions& options) {
     return writeConflictRetry(opCtx, "StorageInterfaceImpl::createCollection", nss.ns(), [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetOrCreateDb databaseWriteGuard(opCtx, nss.db(), MODE_X);
         auto db = databaseWriteGuard.getDb();
         invariant(db);
@@ -420,6 +421,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
 
 Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
     return writeConflictRetry(opCtx, "StorageInterfaceImpl::dropCollection", nss.ns(), [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetDb autoDB(opCtx, nss.db(), MODE_X);
         if (!autoDB.getDb()) {
             // Database does not exist - nothing to do.
@@ -429,10 +431,6 @@ Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const Names
         const auto status = autoDB.getDb()->dropCollectionEvenIfSystem(opCtx, nss);
         if (!status.isOK()) {
             return status;
-        }
-        if (nss.isDropPendingNamespace() && !opCtx->writesAreReplicated()) {
-            Timestamp ts = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
-            fassertStatusOK(50661, opCtx->recoveryUnit()->setTimestamp(ts));
         }
         wunit.commit();
         return Status::OK();

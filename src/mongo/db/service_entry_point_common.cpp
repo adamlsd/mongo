@@ -101,15 +101,20 @@ using logger::LogComponent;
 // session for commands that can take a lock and then run another whitelisted command in
 // DBDirectClient. Otherwise, the nested command would try to check out a session under a lock,
 // which is not allowed.
-const StringMap<int> sessionCheckoutWhitelist = {{"applyOps", 1},
+const StringMap<int> sessionCheckoutWhitelist = {{"aggregate", 1},
+                                                 {"applyOps", 1},
                                                  {"count", 1},
                                                  {"delete", 1},
+                                                 {"distinct", 1},
+                                                 {"doTxn", 1},
                                                  {"eval", 1},
                                                  {"$eval", 1},
                                                  {"explain", 1},
+                                                 {"filemd5", 1},
                                                  {"find", 1},
                                                  {"findandmodify", 1},
                                                  {"findAndModify", 1},
+                                                 {"geoNear", 1},
                                                  {"geoSearch", 1},
                                                  {"getMore", 1},
                                                  {"group", 1},
@@ -496,6 +501,11 @@ void execCommandDatabase(OperationContext* opCtx,
         boost::optional<bool> autocommitVal = boost::none;
         if (sessionOptions && sessionOptions->getAutocommit()) {
             autocommitVal = *sessionOptions->getAutocommit();
+        } else if (sessionOptions && command->getName() == "doTxn") {
+            // Autocommit is overridden specifically for doTxn to get the oplog entry generation
+            // behavior used for multi-document transactions.
+            // The doTxn command still logically behaves as a commit.
+            autocommitVal = false;
         }
 
         OperationContextSession sessionTxnState(opCtx, shouldCheckoutSession, autocommitVal);
@@ -511,7 +521,6 @@ void execCommandDatabase(OperationContext* opCtx,
         BSONElement cmdOptionMaxTimeMSField;
         BSONElement allowImplicitCollectionCreationField;
         BSONElement helpField;
-        BSONElement shardVersionFieldIdx;
         BSONElement queryOptionMaxTimeMSField;
 
         StringMap<int> topLevelFields;
@@ -523,8 +532,6 @@ void execCommandDatabase(OperationContext* opCtx,
                 allowImplicitCollectionCreationField = element;
             } else if (fieldName == CommandHelpers::kHelpFieldName) {
                 helpField = element;
-            } else if (fieldName == ChunkVersion::kShardVersionField) {
-                shardVersionFieldIdx = element;
             } else if (fieldName == QueryRequest::queryOptionMaxTimeMS) {
                 queryOptionMaxTimeMSField = element;
             }
@@ -649,11 +656,11 @@ void execCommandDatabase(OperationContext* opCtx,
             readConcernArgs.getLevel() != repl::ReadConcernLevel::kAvailableReadConcern &&
             (iAmPrimary ||
              (readConcernArgs.hasLevel() || readConcernArgs.getArgsAfterClusterTime()))) {
-            oss.initializeShardVersion(NamespaceString(command->parseNs(dbname, request.body)),
-                                       shardVersionFieldIdx);
+            oss.setClientRoutingVersions(NamespaceString(command->parseNs(dbname, request.body)),
+                                         request.body);
 
             auto const shardingState = ShardingState::get(opCtx);
-            if (oss.hasShardVersion()) {
+            if (oss.hasClientShardVersionForAnyNamespace() || oss.hasClientDbVersionForAnyDb()) {
                 uassertStatusOK(shardingState->canAcceptShardedCommands());
             }
 

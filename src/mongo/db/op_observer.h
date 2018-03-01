@@ -294,13 +294,16 @@ struct OpObserver::Times {
 private:
     friend OpObserver::ReservedTimes;
 
+    // Because `OpObserver`s are re-entrant, it is necessary to track the recursion depth to know
+    // when to actually clear the `reservedOpTimes` vector, using the `ReservedTimes` scope object.
     int _recursionDepth = 0;
 };
 
 /**
  * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
  * operation context.  Upon destruction the list of times in the decoration on the operation
- * context is cleared.
+ * context is cleared.  It is intended for use as a scope object in `OpObserverRegistry` to manage
+ * re-entrancy.
  */
 class OpObserver::ReservedTimes {
     ReservedTimes(const ReservedTimes&) = delete;
@@ -308,18 +311,26 @@ class OpObserver::ReservedTimes {
 
 public:
     ~ReservedTimes() {
+        // Every time the `ReservedTimes` guard goes out of scope, this indicates one fewer level of
+        // recursion in the `OpObserver` registered chain.
         if (!--_times._recursionDepth) {
+            // When the depth hits 0, the `OpObserver` is considered to have finished, and therefore
+            // the `reservedOpTimes` state needs to be reset.
             _times.reservedOpTimes.clear();
         }
         invariant(_times._recursionDepth >= 0);
     }
 
     explicit ReservedTimes(OperationContext* const opCtx) : _times(Times::get(opCtx)) {
+        // Every time that a `ReservedTimes` scope object is instantiated, we have to track if there
+        // was a potentially recursive call.  When there was no `OpObserver` chain being executed
+        // before this instantiation, we should have an empty `reservedOpTimes` vector.
         if (!_times._recursionDepth++) {
             invariant(_times.reservedOpTimes.empty());
         }
 
         invariant(_times._recursionDepth > 0);
+        invariant(_times._recursionDepth > 1 || !opCtx->writesAreReplicated());
     }
 
     const Times& get() const {

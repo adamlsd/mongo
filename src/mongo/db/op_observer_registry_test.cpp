@@ -26,8 +26,11 @@
  *    it in the license file.
  */
 
-#include "mongo/db/op_observer_noop.h"
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/op_observer_registry.h"
+
+#include "mongo/db/op_observer_noop.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/unittest/death_test.h"
@@ -84,22 +87,22 @@ struct OpObserverRegistryTest : public unittest::Test {
     OpObserverRegistry registry;
     /**
      * The 'op' function calls an observer method on the registry that returns an OpTime.
-     * The method checks that the registry correctly merges the results of the registered observers.
+     * The method checks that the registry correctly returns only the first observer's `OpTime`.
      */
     void checkConsistentOpTime(stdx::function<repl::OpTime()> op) {
         const repl::OpTime myTime(Timestamp(1, 1), 1);
         ASSERT(op() == repl::OpTime());
         observer1->opTime = myTime;
         ASSERT(op() == myTime);
-        observer2->opTime = myTime;
+        observer2->opTime = repl::OpTime(Timestamp(1, 1), 2);
         ASSERT(op() == myTime);
         observer1->opTime = {};
-        ASSERT(op() == myTime);
+        ASSERT(op() == repl::OpTime{});
     }
 
     /**
      * The 'op' function calls an observer method on the registry that returns an OpTime.
-     * The method checks that the registry invariants if the observers return conflicting times.
+     * The method checks that the registry invariants if the observers return multiple times.
      */
     void checkInconsistentOpTime(stdx::function<repl::OpTime()> op) {
         observer1->opTime = repl::OpTime(Timestamp(1, 1), 1);
@@ -167,7 +170,7 @@ TEST_F(OpObserverRegistryTest, OnRenameCollectionObserverResultReturnsRightTime)
 DEATH_TEST_F(OpObserverRegistryTest, OnDropCollectionReturnsInconsistentTime, "invariant") {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::make_unique<OpObserverNoop>());
+    registry.addObserver(std::move(unique2));
     auto op = [&]() -> repl::OpTime { return registry.onDropCollection(&opCtx, testNss, {}); };
     checkInconsistentOpTime(op);
 }
@@ -175,7 +178,7 @@ DEATH_TEST_F(OpObserverRegistryTest, OnDropCollectionReturnsInconsistentTime, "i
 DEATH_TEST_F(OpObserverRegistryTest, OnRenameCollectionReturnsInconsistentTime, "invariant") {
     OperationContextNoop opCtx;
     registry.addObserver(std::move(unique1));
-    registry.addObserver(std::make_unique<OpObserverNoop>());
+    registry.addObserver(std::move(unique2));
     auto op = [&]() -> repl::OpTime {
         return registry.onRenameCollection(&opCtx, testNss, testNss, {}, false, {}, false);
     };

@@ -294,16 +294,16 @@ OpTimeBundle replLogApplyOps(OperationContext* opCtx,
     OpTimeBundle times;
     times.wallClockTime = getWallClockTimeForOpLog(opCtx);
     times.writeOpTime = logOperation(opCtx,
-                                    "c",
-                                    cmdNss,
-                                    {},
-                                    applyOpCmd,
-                                    nullptr,
-                                    false,
-                                    times.wallClockTime,
-                                    sessionInfo,
-                                    stmtId,
-                                    oplogLink);
+                                     "c",
+                                     cmdNss,
+                                     {},
+                                     applyOpCmd,
+                                     nullptr,
+                                     false,
+                                     times.wallClockTime,
+                                     sessionInfo,
+                                     stmtId,
+                                     oplogLink);
     return times;
 }
 
@@ -367,7 +367,7 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
                                bool fromMigrate) {
     Session* const session = opCtx->getTxnNumber() ? OperationContextSession::get(opCtx) : nullptr;
     if (session && opCtx->writesAreReplicated() && session->inMultiDocumentTransaction()) {
-        for (auto iter = begin; iter != last; iter++) {
+        for (auto iter = first; iter != last; iter++) {
             auto operation = OplogEntry::makeInsertOperation(nss, uuid, iter->doc);
             session->addTransactionOperation(opCtx, operation);
         }

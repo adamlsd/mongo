@@ -652,7 +652,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/decorable',
     ],
 )
 

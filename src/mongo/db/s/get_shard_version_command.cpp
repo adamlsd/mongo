@@ -40,6 +40,7 @@
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_state.h"
+#include "mongo/s/grid.h"
 #include "mongo/util/log.h"
 #include "mongo/util/stringutils.h"
 
@@ -58,8 +59,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool adminOnly() const override {
@@ -68,7 +69,7 @@ public:
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
+                               const BSONObj& cmdObj) const override {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
                 ActionType::getShardVersion)) {
@@ -89,7 +90,9 @@ public:
 
         ShardingState* const shardingState = ShardingState::get(opCtx);
         if (shardingState->enabled()) {
-            result.append("configServer", shardingState->getConfigServer(opCtx).toString());
+            result.append(
+                "configServer",
+                Grid::get(opCtx)->shardRegistry()->getConfigServerConnectionString().toString());
         } else {
             result.append("configServer", "");
         }

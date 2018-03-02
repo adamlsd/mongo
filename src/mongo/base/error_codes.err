@@ -224,7 +224,7 @@ error_code("IllegalOpMsgFlag", 223)
 error_code("QueryFeatureNotAllowed", 224)
 error_code("TransactionTooOld", 225)
 error_code("AtomicityFailure", 226)
-error_code("CannotImplicitlyCreateCollection", 227);
+error_code("CannotImplicitlyCreateCollection", 227, extra="CannotImplicitlyCreateCollectionInfo");
 error_code("SessionTransferIncomplete", 228)
 error_code("MustDowngrade", 229)
 error_code("DNSHostNotFound", 230)
@@ -235,6 +235,13 @@ error_code("RetryChangeStream", 234)
 error_code("InternalErrorNotSupported", 235) # this function or module is not available on this platform or configuration
 error_code("ForTestingErrorExtraInfo", 236, extra="ErrorExtraInfoExample")
 error_code("CursorKilled", 237)
+error_code("NotImplemented", 238)
+error_code("SnapshotTooOld", 239)
+error_code("DNSRecordTypeMismatch", 240)
+error_code("ConversionFailure", 241)
+error_code("CannotCreateCollection", 242)
+error_code("IncompatibleWithUpgradedServer", 243)
+error_code("TransactionAborted", 244)
 
 # Error codes 4000-8999 are reserved.
 

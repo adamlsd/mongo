@@ -36,16 +36,11 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/chunk_version.h"
+#include "mongo/s/catalog_cache.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
-
-class CachedCollectionRoutingInfo;
-class CachedDatabaseInfo;
-class OperationContext;
-class ShardId;
 
 /**
  * This function appends the provided writeConcernError BSONElement to the sharded response.
@@ -133,6 +128,19 @@ bool appendRawResponses(OperationContext* opCtx,
                         std::set<ErrorCodes::Error> ignoredErrors = {});
 
 /**
+ * Extracts the query from a query-embedding command ('query' or 'q' fields). If the command does
+ * not have an embedded query, returns an empty BSON object.
+ */
+BSONObj extractQuery(const BSONObj& cmdObj);
+
+/**
+ * Extracts the collation from a collation-embedding command ('collation' field). If the command
+ * does not specify a collation, returns an empty BSON object. If the 'collation' field is of wrong
+ * type, throws.
+ */
+BSONObj extractCollation(const BSONObj& cmdObj);
+
+/**
  * Utility function to compute a single error code from a vector of command results.
  *
  * @return If there is an error code common to all of the error results, returns that error
@@ -144,13 +152,6 @@ int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& 
  * Utility function to return an empty result set from a command.
  */
 bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::string& ns);
-
-/**
- * Abstracts the common pattern of refreshing a collection and checking if it is sharded used across
- * multiple commands.
- */
-CachedCollectionRoutingInfo getShardedCollection(OperationContext* opCtx,
-                                                 const NamespaceString& nss);
 
 /**
  * If the specified database exists already, loads it in the cache (if not already there) and

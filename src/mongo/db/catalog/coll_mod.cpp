@@ -175,9 +175,23 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
             }
 
         } else if (fieldName == "validator" && !isView) {
-            MatchExpressionParser::AllowedFeatureSet allowedFeatures =
-                MatchExpressionParser::kDefaultSpecialFeatures;
-            auto statusW = coll->parseValidator(opCtx, e.Obj(), allowedFeatures);
+            // Save this to a variable to avoid reading the atomic variable multiple times.
+            const auto currentFCV = serverGlobalParams.featureCompatibility.getVersion();
+
+            // If the feature compatibility version is not 4.0, and we are validating features as
+            // master, ban the use of new agg features introduced in 4.0 to prevent them from being
+            // persisted in the catalog.
+            boost::optional<ServerGlobalParams::FeatureCompatibility::Version>
+                maxFeatureCompatibilityVersion;
+            if (serverGlobalParams.validateFeaturesAsMaster.load() &&
+                currentFCV !=
+                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
+                maxFeatureCompatibilityVersion = currentFCV;
+            }
+            auto statusW = coll->parseValidator(opCtx,
+                                                e.Obj(),
+                                                MatchExpressionParser::kDefaultSpecialFeatures,
+                                                maxFeatureCompatibilityVersion);
             if (!statusW.isOK()) {
                 return statusW.getStatus();
             }
@@ -416,7 +430,7 @@ Status _collModInternal(OperationContext* opCtx,
             cce->addUUID(opCtx, uuid.get(), coll);
         } else if (!uuid && coll->uuid() &&
                    serverGlobalParams.featureCompatibility.getVersion() <
-                       ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
+                       ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36) {
             log() << "Removing UUID " << coll->uuid().get().toString() << " from collection "
                   << coll->ns();
             CollectionCatalogEntry* cce = coll->getCatalogEntry();
@@ -595,7 +609,7 @@ void updateUUIDSchemaVersion(OperationContext* opCtx, bool upgrade) {
                     opCtx,
                     ReadPreferenceSetting{ReadPreference::PrimaryOnly},
                     repl::ReadConcernLevel::kMajorityReadConcern,
-                    NamespaceString(CollectionType::ConfigNS),
+                    CollectionType::ConfigNS,
                     BSON("dropped" << false),  // query
                     BSONObj(),                 // sort
                     boost::none                // limit
@@ -618,7 +632,7 @@ void updateUUIDSchemaVersion(OperationContext* opCtx, bool upgrade) {
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
         storageEngine->listDatabases(&dbNames);
     }
 
@@ -661,7 +675,7 @@ Status updateUUIDSchemaVersionNonReplicated(OperationContext* opCtx, bool upgrad
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, UINT_MAX);
+        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
         storageEngine->listDatabases(&dbNames);
     }
     for (auto it = dbNames.begin(); it != dbNames.end(); ++it) {

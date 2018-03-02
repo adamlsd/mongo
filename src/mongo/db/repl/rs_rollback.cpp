@@ -39,8 +39,9 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
-#include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/catalog_raii.h"
 #include "mongo/db/catalog/collection_catalog_entry.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/catalog/rename_collection.h"
@@ -52,6 +53,7 @@
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/logical_session_id.h"
+#include "mongo/db/logical_time_validator.h"
 #include "mongo/db/ops/delete.h"
 #include "mongo/db/ops/update.h"
 #include "mongo/db/ops/update_lifecycle_impl.h"
@@ -1418,6 +1420,10 @@ void rollback_internal::syncFixUp(OperationContext* opCtx,
     // If necessary, clear the memory of existing sessions.
     if (fixUpInfo.refetchTransactionDocs) {
         SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
+    }
+
+    if (auto validator = LogicalTimeValidator::get(opCtx)) {
+        validator->resetKeyManagerCache();
     }
 
     // Reload the lastAppliedOpTime and lastDurableOpTime value in the replcoord and the

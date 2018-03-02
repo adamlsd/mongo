@@ -52,9 +52,14 @@ class AutoGetDb {
     MONGO_DISALLOW_COPYING(AutoGetDb);
 
 public:
-    AutoGetDb(OperationContext* opCtx, StringData ns, LockMode mode);
-    AutoGetDb(OperationContext* opCtx, StringData ns, Lock::DBLock lock);
+    AutoGetDb(OperationContext* opCtx,
+              StringData dbName,
+              LockMode mode,
+              Date_t deadline = Date_t::max());
 
+    /**
+     * Returns nullptr if the database didn't exist.
+     */
     Database* getDb() const {
         return _db;
     }
@@ -66,52 +71,39 @@ private:
 
 /**
  * RAII-style class, which acquires a locks on the specified database and collection in the
- * requested mode and obtains references to both.
+ * requested modes and obtains references to both.
  *
- * Use this when you want to access something at the collection level, but do not want to do any of
- * the tasks associated with the 'ForRead' variants below. For example, you can use this to access a
- * Collection's CursorManager, or to remove a document.
+ * NOTE: Throws NamespaceNotFound if the collection UUID cannot be resolved to a name.
  *
- * It is guaranteed that locks will be released when this object goes out of scope, therefore
- * the database and the collection references returned by this class should not be retained.
+ * Any acquired locks may be released when this object goes out of scope, therefore the database
+ * and the collection references returned by this class should not be retained.
  */
 class AutoGetCollection {
     MONGO_DISALLOW_COPYING(AutoGetCollection);
 
 public:
-    enum class ViewMode { kViewsPermitted, kViewsForbidden };
-
-    AutoGetCollection(OperationContext* opCtx, const NamespaceString& nss, LockMode modeAll)
-        : AutoGetCollection(opCtx, nss, modeAll, modeAll, ViewMode::kViewsForbidden) {}
+    enum ViewMode { kViewsPermitted, kViewsForbidden };
 
     AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceString& nss,
+                      const NamespaceStringOrUUID& nsOrUUID,
+                      LockMode modeAll,
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max())
+        : AutoGetCollection(opCtx, nsOrUUID, modeAll, modeAll, viewMode, deadline) {}
+
+    AutoGetCollection(OperationContext* opCtx,
+                      const NamespaceStringOrUUID& nsOrUUID,
                       LockMode modeDB,
-                      LockMode modeColl)
-        : AutoGetCollection(opCtx, nss, modeDB, modeColl, ViewMode::kViewsForbidden) {}
-
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceString& nss,
-                      const UUID& uuid,
-                      LockMode modeAll);
-
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceString& nss,
                       LockMode modeColl,
-                      ViewMode viewMode,
-                      Lock::DBLock lock);
+                      ViewMode viewMode = kViewsForbidden,
+                      Date_t deadline = Date_t::max());
 
     /**
-     * This constructor is intended for internal use and should not be used outside this file.
-     * AutoGetCollectionForReadCommand and AutoGetCollectionOrViewForReadCommand use 'viewMode' to
-     * determine whether or not it is permissible to obtain a handle on a view namespace. Use
-     * another constructor or another 'AutoGet' class instead.
+     * Without acquiring any locks resolves the given NamespaceStringOrUUID to an actual namespace.
+     * Throws NamespaceNotFound if the collection UUID cannot be resolved to a name.
      */
-    AutoGetCollection(OperationContext* opCtx,
-                      const NamespaceString& nss,
-                      LockMode modeDB,
-                      LockMode modeColl,
-                      ViewMode viewMode);
+    static NamespaceString resolveNamespaceStringOrUUID(OperationContext* opCtx,
+                                                        NamespaceStringOrUUID nsOrUUID);
 
     /**
      * Returns nullptr if the database didn't exist.
@@ -127,44 +119,6 @@ public:
         return _coll;
     }
 
-private:
-    const ViewMode _viewMode;
-    const AutoGetDb _autoDb;
-    const Lock::CollectionLock _collLock;
-
-    Collection* const _coll;
-};
-
-/**
- * RAII-style class which acquires the appropriate hierarchy of locks for a collection or
- * view. The pointer to a view definition is nullptr if it does not exist.
- *
- * Use this when you have not yet determined if the namespace is a view or a collection.
- * For example, you can use this to access a namespace's CursorManager.
- *
- * It is guaranteed that locks will be released when this object goes out of scope, therefore
- * the view returned by this class should not be retained.
- */
-class AutoGetCollectionOrView {
-    MONGO_DISALLOW_COPYING(AutoGetCollectionOrView);
-
-public:
-    AutoGetCollectionOrView(OperationContext* opCtx, const NamespaceString& nss, LockMode modeAll);
-
-    /**
-     * Returns nullptr if the database didn't exist.
-     */
-    Database* getDb() const {
-        return _autoColl.getDb();
-    }
-
-    /**
-     * Returns nullptr if the collection didn't exist.
-     */
-    Collection* getCollection() const {
-        return _autoColl.getCollection();
-    }
-
     /**
      * Returns nullptr if the view didn't exist.
      */
@@ -172,8 +126,25 @@ public:
         return _view.get();
     }
 
+    /**
+     * Returns the resolved namespace of the collection or view.
+     */
+    const NamespaceString& getNss() const {
+        return _resolvedNss;
+    }
+
 private:
-    const AutoGetCollection _autoColl;
+    // If the object was instantiated with a UUID, contains the resolved namespace, otherwise it is
+    // the same as the input namespace string
+    NamespaceString _resolvedNss;
+
+    AutoGetDb _autoDb;
+
+    // This field is boost::optional, because in the case of lookup by UUID, the collection lock
+    // might need to be relocked for the correct namespace
+    boost::optional<Lock::CollectionLock> _collLock;
+
+    Collection* _coll = nullptr;
     std::shared_ptr<ViewDefinition> _view;
 };
 
@@ -194,7 +165,10 @@ class AutoGetOrCreateDb {
     MONGO_DISALLOW_COPYING(AutoGetOrCreateDb);
 
 public:
-    AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode);
+    AutoGetOrCreateDb(OperationContext* opCtx,
+                      StringData dbName,
+                      LockMode mode,
+                      Date_t deadline = Date_t::max());
 
     Database* getDb() const {
         return _db;
@@ -204,14 +178,11 @@ public:
         return _justCreated;
     }
 
-    Lock::DBLock& lock() {
-        return _dbLock;
-    }
-
 private:
-    Lock::DBLock _dbLock;  // not const, as we may need to relock for implicit create
+    boost::optional<AutoGetDb> _autoDb;
+
     Database* _db;
-    bool _justCreated;
+    bool _justCreated{false};
 };
 
 }  // namespace mongo

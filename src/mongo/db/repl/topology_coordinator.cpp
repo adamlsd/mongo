@@ -35,6 +35,7 @@
 #include <limits>
 #include <string>
 
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/client.h"
 #include "mongo/db/mongod_options.h"
@@ -62,7 +63,7 @@
 
 namespace mongo {
 namespace repl {
-using std::vector;
+
 const Seconds TopologyCoordinator::VoteLease::leaseTime = Seconds(30);
 
 // Controls how caught up in replication a secondary with higher priority than the current primary
@@ -939,10 +940,7 @@ std::pair<ReplSetHeartbeatArgs, Milliseconds> TopologyCoordinator::prepareHeartb
         hbArgs.setSetName(ourSetName);
         hbArgs.setConfigVersion(-2);
     }
-    if (serverGlobalParams.featureCompatibility.getVersion() !=
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
-        hbArgs.setHeartbeatVersion(1);
-    }
+    hbArgs.setHeartbeatVersion(1);
 
     const Milliseconds timeoutPeriod(
         _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
@@ -978,10 +976,7 @@ std::pair<ReplSetHeartbeatArgsV1, Milliseconds> TopologyCoordinator::prepareHear
         hbArgs.setConfigVersion(-2);
         hbArgs.setTerm(OpTime::kInitialTerm);
     }
-    if (serverGlobalParams.featureCompatibility.getVersion() !=
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
-        hbArgs.setHeartbeatVersion(1);
-    }
+    hbArgs.setHeartbeatVersion(1);
 
     const Milliseconds timeoutPeriod(
         _rsConfig.isInitialized() ? _rsConfig.getHeartbeatTimeoutPeriodMillis()
@@ -1915,6 +1910,11 @@ Status TopologyCoordinator::prepareForStepDownAttempt() {
         return Status{ErrorCodes::ConflictingOperationInProgress,
                       "This node is already in the process of stepping down"};
     }
+
+    if (_leaderMode == LeaderMode::kNotLeader) {
+        return Status{ErrorCodes::NotMaster, "This node is not a primary."};
+    }
+
     _setLeaderMode(LeaderMode::kAttemptingStepDown);
     return Status::OK();
 }
@@ -1995,7 +1995,7 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
                                                 BSONObjBuilder* response,
                                                 Status* result) {
     // output for each member
-    vector<BSONObj> membersOut;
+    std::vector<BSONObj> membersOut;
     const MemberState myState = getMemberState();
     const Date_t now = rsStatusArgs.now;
     const OpTime lastOpApplied = getMyLastAppliedOpTime();

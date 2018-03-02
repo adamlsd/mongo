@@ -398,6 +398,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
                                               const NamespaceString& nss,
                                               const CollectionOptions& options) {
     return writeConflictRetry(opCtx, "StorageInterfaceImpl::createCollection", nss.ns(), [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetOrCreateDb databaseWriteGuard(opCtx, nss.db(), MODE_X);
         auto db = databaseWriteGuard.getDb();
         invariant(db);
@@ -420,6 +421,7 @@ Status StorageInterfaceImpl::createCollection(OperationContext* opCtx,
 
 Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
     return writeConflictRetry(opCtx, "StorageInterfaceImpl::dropCollection", nss.ns(), [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         AutoGetDb autoDB(opCtx, nss.db(), MODE_X);
         if (!autoDB.getDb()) {
             // Database does not exist - nothing to do.
@@ -429,10 +431,6 @@ Status StorageInterfaceImpl::dropCollection(OperationContext* opCtx, const Names
         const auto status = autoDB.getDb()->dropCollectionEvenIfSystem(opCtx, nss);
         if (!status.isOK()) {
             return status;
-        }
-        if (nss.isDropPendingNamespace() && !opCtx->writesAreReplicated()) {
-            Timestamp ts = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
-            fassertStatusOK(50661, opCtx->recoveryUnit()->setTimestamp(ts));
         }
         wunit.commit();
         return Status::OK();
@@ -496,6 +494,46 @@ Status StorageInterfaceImpl::renameCollection(OperationContext* opCtx,
         }
         wunit.commit();
         return status;
+    });
+}
+
+Status StorageInterfaceImpl::setIndexIsMultikey(OperationContext* opCtx,
+                                                const NamespaceString& nss,
+                                                const std::string& indexName,
+                                                const MultikeyPaths& paths,
+                                                Timestamp ts) {
+    if (ts.isNull()) {
+        return Status(ErrorCodes::InvalidOptions,
+                      str::stream() << "Cannot set index " << indexName << " on " << nss.ns()
+                                    << " as multikey at null timestamp");
+    }
+
+    return writeConflictRetry(opCtx, "StorageInterfaceImpl::setIndexIsMultikey", nss.ns(), [&] {
+        AutoGetCollection autoColl(opCtx, nss, MODE_X);
+        auto collectionResult = getCollection(
+            autoColl, nss, "The collection must exist before setting an index to multikey.");
+        if (!collectionResult.isOK()) {
+            return collectionResult.getStatus();
+        }
+        auto collection = collectionResult.getValue();
+
+        WriteUnitOfWork wunit(opCtx);
+        auto tsResult = opCtx->recoveryUnit()->setTimestamp(ts);
+        if (!tsResult.isOK()) {
+            return tsResult;
+        }
+
+        auto idx = collection->getIndexCatalog()->findIndexByName(
+            opCtx, indexName, true /* includeUnfinishedIndexes */);
+        if (!idx) {
+            return Status(ErrorCodes::IndexNotFound,
+                          str::stream() << "Could not find index " << indexName << " in "
+                                        << nss.ns()
+                                        << " to set to multikey.");
+        }
+        collection->getIndexCatalog()->getIndex(idx)->setIndexIsMultikey(opCtx, paths);
+        wunit.commit();
+        return Status::OK();
     });
 }
 

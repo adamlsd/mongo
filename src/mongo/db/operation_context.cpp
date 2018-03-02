@@ -101,17 +101,6 @@ Microseconds OperationContext::computeMaxTimeFromDeadline(Date_t when) {
     return maxTime;
 }
 
-OperationContext::DeadlineStash::DeadlineStash(OperationContext* opCtx)
-    : _opCtx(opCtx), _originalDeadline(_opCtx->getDeadline()) {
-    _opCtx->_deadline = Date_t::max();
-    _opCtx->_maxTime = _opCtx->computeMaxTimeFromDeadline(Date_t::max());
-}
-
-OperationContext::DeadlineStash::~DeadlineStash() {
-    _opCtx->_deadline = _originalDeadline;
-    _opCtx->_maxTime = _opCtx->computeMaxTimeFromDeadline(_originalDeadline);
-}
-
 void OperationContext::setDeadlineByDate(Date_t when) {
     setDeadlineAndMaxTime(when, computeMaxTimeFromDeadline(when));
 }
@@ -393,15 +382,17 @@ OperationContext::RecoveryUnitState OperationContext::setRecoveryUnit(RecoveryUn
     return oldState;
 }
 
-std::unique_ptr<Locker> OperationContext::releaseLockState() {
-    dassert(_locker);
-    return std::move(_locker);
+void OperationContext::setLockState(std::unique_ptr<Locker> locker) {
+    invariant(!_locker);
+    invariant(locker);
+    _locker = std::move(locker);
 }
 
-void OperationContext::setLockState(std::unique_ptr<Locker> locker) {
-    dassert(!_locker);
-    dassert(locker);
-    _locker = std::move(locker);
+std::unique_ptr<Locker> OperationContext::swapLockState(std::unique_ptr<Locker> locker) {
+    invariant(_locker);
+    invariant(locker);
+    _locker.swap(locker);
+    return locker;
 }
 
 Date_t OperationContext::getExpirationDateForWaitForValue(Milliseconds waitFor) {

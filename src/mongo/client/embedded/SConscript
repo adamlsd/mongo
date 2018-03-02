@@ -16,8 +16,9 @@ env.Library(
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/auth/authcore',
         '$BUILD_DIR/mongo/db/auth/authmongod',
-        '$BUILD_DIR/mongo/db/ops/write_ops_exec',
+        '$BUILD_DIR/mongo/db/command_can_run_here',
         '$BUILD_DIR/mongo/db/rw_concern_d',
+        '$BUILD_DIR/mongo/db/service_entry_point_common',
         '$BUILD_DIR/mongo/db/s/sharding',
         '$BUILD_DIR/mongo/db/storage/storage_engine_lock_file',
         '$BUILD_DIR/mongo/db/storage/storage_engine_metadata',
@@ -44,6 +45,29 @@ env.Library(
     ],
 )
 
+env.Library('repl_coordinator_embedded',
+    [
+        'replication_coordinator_embedded.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
+        '$BUILD_DIR/mongo/db/repl/replica_set_messages',
+    ],
+)
+
+env.Library(
+    target="embedded_options",
+    source=[
+        'embedded_options.cpp',
+        'embedded_options_init.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/server_options',
+        '$BUILD_DIR/mongo/db/storage/storage_options',
+        '$BUILD_DIR/mongo/util/options_parser/options_parser',
+    ],
+)
+
 env.Library(
     target='embedded',
     source=[
@@ -57,16 +81,17 @@ env.Library(
         '$BUILD_DIR/mongo/db/catalog/catalog_impl',
         '$BUILD_DIR/mongo/db/commands/dcommands',
         '$BUILD_DIR/mongo/db/dbdirectclient',
-        '$BUILD_DIR/mongo/db/mongod_options',
         '$BUILD_DIR/mongo/db/op_observer_d',
         '$BUILD_DIR/mongo/db/repair_database_and_check_version',
+        '$BUILD_DIR/mongo/db/repl/replication_info',
         '$BUILD_DIR/mongo/db/repl/storage_interface_impl',
-        '$BUILD_DIR/mongo/db/repl/repl_coordinator_impl',
         '$BUILD_DIR/mongo/db/startup_warnings_mongod',
+        '$BUILD_DIR/mongo/db/storage/mobile/storage_mobile',
         '$BUILD_DIR/mongo/db/storage/wiredtiger/storage_wiredtiger',
-        '$BUILD_DIR/mongo/mongod_options_init',
         '$BUILD_DIR/mongo/util/net/network',
         '$BUILD_DIR/mongo/util/version_impl',
+        'embedded_options',
+        'repl_coordinator_embedded',
         'service_context_embedded',
         'service_entry_point_embedded',
     ]
@@ -97,6 +122,9 @@ capiTest = env.Program(
         '$BUILD_DIR/mongo/util/net/network',
         'mongo_embedded_capi',
     ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/server_options_core',
+    ],
 )
 
 env.RegisterUnitTest(capiTest[0])
@@ -113,6 +141,9 @@ embeddedTransport = env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         'mongo_embedded_capi',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/third_party/shim_zlib',
     ],
     SYSLIBDEPS=[
         'mongoc-1.0',
@@ -132,7 +163,10 @@ embeddedTransportTest = env.Program(
         'mongo_embedded_transport',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/unittest/unittest',
-    ]
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/server_options_core',
+    ],
 )
 
 env.Alias('embedded_capi', embeddedTransportTest)

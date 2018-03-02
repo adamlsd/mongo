@@ -48,6 +48,7 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
+#include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
@@ -57,7 +58,6 @@
 #include "mongo/s/catalog/dist_lock_catalog_impl.h"
 #include "mongo/s/catalog/replset_dist_lock_manager.h"
 #include "mongo/s/catalog/sharding_catalog_client_impl.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/catalog/type_changelog.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
@@ -243,25 +243,25 @@ Status ConfigServerTestFixture::deleteToConfigCollection(OperationContext* opCtx
                                                          const NamespaceString& ns,
                                                          const BSONObj& doc,
                                                          const bool multi) {
-    auto deleteReponse = getConfigShard()->runCommand(opCtx,
-                                                      kReadPref,
-                                                      ns.db().toString(),
-                                                      [&]() {
-                                                          write_ops::Delete deleteOp(ns);
-                                                          deleteOp.setDeletes({[&] {
-                                                              write_ops::DeleteOpEntry entry;
-                                                              entry.setQ(doc);
-                                                              entry.setMulti(multi);
-                                                              return entry;
-                                                          }()});
-                                                          return deleteOp.toBSON({});
-                                                      }(),
-                                                      Shard::kDefaultConfigCommandTimeout,
-                                                      Shard::RetryPolicy::kNoRetry);
+    auto deleteResponse = getConfigShard()->runCommand(opCtx,
+                                                       kReadPref,
+                                                       ns.db().toString(),
+                                                       [&]() {
+                                                           write_ops::Delete deleteOp(ns);
+                                                           deleteOp.setDeletes({[&] {
+                                                               write_ops::DeleteOpEntry entry;
+                                                               entry.setQ(doc);
+                                                               entry.setMulti(multi);
+                                                               return entry;
+                                                           }()});
+                                                           return deleteOp.toBSON({});
+                                                       }(),
+                                                       Shard::kDefaultConfigCommandTimeout,
+                                                       Shard::RetryPolicy::kNoRetry);
 
 
     BatchedCommandResponse batchResponse;
-    auto status = Shard::CommandResponse::processBatchWriteResponse(deleteReponse, &batchResponse);
+    auto status = Shard::CommandResponse::processBatchWriteResponse(deleteResponse, &batchResponse);
     return status;
 }
 
@@ -300,8 +300,8 @@ Status ConfigServerTestFixture::setupShards(const std::vector<ShardType>& shards
 
 StatusWith<ShardType> ConfigServerTestFixture::getShardDoc(OperationContext* opCtx,
                                                            const std::string& shardId) {
-    auto doc = findOneOnConfigCollection(
-        opCtx, NamespaceString(ShardType::ConfigNS), BSON(ShardType::name(shardId)));
+    auto doc =
+        findOneOnConfigCollection(opCtx, ShardType::ConfigNS, BSON(ShardType::name(shardId)));
     if (!doc.isOK()) {
         if (doc.getStatus() == ErrorCodes::NoMatchingDocument) {
             return {ErrorCodes::ShardNotFound,
@@ -327,8 +327,8 @@ Status ConfigServerTestFixture::setupChunks(const std::vector<ChunkType>& chunks
 
 StatusWith<ChunkType> ConfigServerTestFixture::getChunkDoc(OperationContext* opCtx,
                                                            const BSONObj& minKey) {
-    auto doc = findOneOnConfigCollection(
-        opCtx, NamespaceString(ChunkType::ConfigNS), BSON(ChunkType::min() << minKey));
+    auto doc =
+        findOneOnConfigCollection(opCtx, ChunkType::ConfigNS, BSON(ChunkType::min() << minKey));
     if (!doc.isOK())
         return doc.getStatus();
 
@@ -338,10 +338,7 @@ StatusWith<ChunkType> ConfigServerTestFixture::getChunkDoc(OperationContext* opC
 void ConfigServerTestFixture::setupDatabase(const std::string& dbName,
                                             const ShardId primaryShard,
                                             const bool sharded) {
-    DatabaseType db;
-    db.setName(dbName);
-    db.setPrimary(primaryShard);
-    db.setSharded(sharded);
+    DatabaseType db(dbName, primaryShard, sharded);
     ASSERT_OK(catalogClient()->insertConfigDocument(operationContext(),
                                                     DatabaseType::ConfigNS,
                                                     db.toBSON(),
@@ -374,14 +371,13 @@ StatusWith<std::vector<BSONObj>> ConfigServerTestFixture::getIndexes(OperationCo
 
 std::vector<KeysCollectionDocument> ConfigServerTestFixture::getKeys(OperationContext* opCtx) {
     auto config = getConfigShard();
-    auto findStatus =
-        config->exhaustiveFindOnConfig(opCtx,
-                                       kReadPref,
-                                       repl::ReadConcernLevel::kMajorityReadConcern,
-                                       NamespaceString(KeysCollectionDocument::ConfigNS),
-                                       BSONObj(),
-                                       BSON("expiresAt" << 1),
-                                       boost::none);
+    auto findStatus = config->exhaustiveFindOnConfig(opCtx,
+                                                     kReadPref,
+                                                     repl::ReadConcernLevel::kMajorityReadConcern,
+                                                     KeysCollectionDocument::ConfigNS,
+                                                     BSONObj(),
+                                                     BSON("expiresAt" << 1),
+                                                     boost::none);
     ASSERT_OK(findStatus.getStatus());
 
     std::vector<KeysCollectionDocument> keys;

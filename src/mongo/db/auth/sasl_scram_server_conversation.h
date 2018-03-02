@@ -33,9 +33,11 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/status.h"
+#include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/sasl_server_conversation.h"
+#include "mongo/util/icu.h"
 
 namespace mongo {
 /**
@@ -59,25 +61,45 @@ public:
     StatusWith<bool> step(StringData inputData, std::string* outputData) override;
 
     /**
+     * Initialize details, called after _creds has been loaded.
+     */
+    virtual bool initAndValidateCredentials() = 0;
+
+    /**
+     * Provide the predetermined salt to the client.
+     */
+    virtual std::string getSalt() const = 0;
+
+    /**
+     * Provide the predetermined iteration count to the client.
+     */
+    virtual size_t getIterationCount() const = 0;
+
+    /**
      * Verify proof submitted by authenticating client.
      */
-    virtual bool verifyClientProof(StringData) = 0;
+    virtual bool verifyClientProof(StringData) const = 0;
 
     /**
      * Generate a signature to prove ourselves.
      */
     virtual std::string generateServerSignature() const = 0;
 
+    /**
+     * Runs saslPrep except on SHA-1.
+     */
+    virtual StatusWith<std::string> saslPrep(StringData str) const = 0;
+
 private:
     /**
      * Parse client-first-message and generate server-first-message
      **/
-    StatusWith<bool> _firstStep(std::vector<std::string>& input, std::string* outputData);
+    StatusWith<bool> _firstStep(StringData input, std::string* outputData);
 
     /**
      * Parse client-final-message and generate server-final-message
      **/
-    StatusWith<bool> _secondStep(const std::vector<std::string>& input, std::string* outputData);
+    StatusWith<bool> _secondStep(StringData input, std::string* outputData);
 
 protected:
     int _step{0};
@@ -95,14 +117,40 @@ public:
         : SaslSCRAMServerConversation(session) {}
     ~SaslSCRAMServerConversationImpl() override = default;
 
-    bool verifyClientProof(StringData clientProof) final {
-        _credentials = scram::Secrets<HashBlock>(
-            "", base64::decode(_creds.scram.storedKey), base64::decode(_creds.scram.serverKey));
+    bool initAndValidateCredentials() final {
+        const auto& scram = _creds.scram<HashBlock>();
+        if (!scram.isValid()) {
+            return false;
+        }
+        if (!_credentials) {
+            _credentials = scram::Secrets<HashBlock>(
+                "", base64::decode(scram.storedKey), base64::decode(scram.serverKey));
+        }
+        return true;
+    }
+
+    std::string getSalt() const final {
+        return _creds.scram<HashBlock>().salt;
+    }
+
+    size_t getIterationCount() const final {
+        return _creds.scram<HashBlock>().iterationCount;
+    }
+
+    bool verifyClientProof(StringData clientProof) const final {
         return _credentials.verifyClientProof(_authMessage, clientProof);
     }
 
     std::string generateServerSignature() const final {
         return _credentials.generateServerSignature(_authMessage);
+    }
+
+    StatusWith<std::string> saslPrep(StringData str) const final {
+        if (std::is_same<SHA1Block, HashBlock>::value) {
+            return str.toString();
+        } else {
+            return mongo::saslPrep(str);
+        }
     }
 
 private:

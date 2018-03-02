@@ -52,6 +52,7 @@ StatusWith<ClusterQueryResult> RouterStageMerge::next(ExecContext execCtx) {
 
 StatusWith<ClusterQueryResult> RouterStageMerge::blockForNextNoTimeout(ExecContext execCtx) {
     invariant(_params->tailableMode != TailableMode::kTailableAndAwaitData);
+    invariant(getOpCtx());
     while (!_arm.ready()) {
         auto nextEventStatus = _arm.nextEvent();
         if (!nextEventStatus.isOK()) {
@@ -60,7 +61,15 @@ StatusWith<ClusterQueryResult> RouterStageMerge::blockForNextNoTimeout(ExecConte
         auto event = nextEventStatus.getValue();
 
         // Block until there are further results to return.
-        _executor->waitForEvent(event);
+        auto status = _executor->waitForEvent(getOpCtx(), event);
+
+        if (!status.isOK()) {
+            return status.getStatus();
+        }
+
+        // We have not provided a deadline, so if the wait returns without interruption, we do not
+        // expect to have timed out.
+        invariant(status.getValue() == stdx::cv_status::no_timeout);
     }
 
     return _arm.nextReady();
@@ -78,17 +87,17 @@ StatusWith<ClusterQueryResult> RouterStageMerge::awaitNextWithTimeout(ExecContex
         auto event = nextEventStatus.getValue();
 
         // Block until there are further results to return, or our time limit is exceeded.
-        auto waitStatus = _executor->waitForEvent(getOpCtx(), event);
-
-        // Swallow ExceededTimeLimit errors for tailable awaitData cursors, stash the event
-        // that we were waiting on, and return EOF.
-        if (waitStatus == ErrorCodes::ExceededTimeLimit) {
-            _leftoverEventFromLastTimeout = std::move(event);
-            return ClusterQueryResult{};
-        }
+        auto waitStatus = _executor->waitForEvent(
+            getOpCtx(), event, awaitDataState(getOpCtx()).waitForInsertsDeadline);
 
         if (!waitStatus.isOK()) {
-            return waitStatus;
+            return waitStatus.getStatus();
+        }
+        // Swallow timeout errors for tailable awaitData cursors, stash the event that we were
+        // waiting on, and return EOF.
+        if (waitStatus == stdx::cv_status::timeout) {
+            _leftoverEventFromLastTimeout = std::move(event);
+            return ClusterQueryResult{};
         }
     }
 

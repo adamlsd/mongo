@@ -66,8 +66,8 @@ using std::vector;
 /* "dropIndexes" is now the preferred form - "deleteIndexes" deprecated */
 class CmdDropIndexes : public BasicCommand {
 public:
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
@@ -77,7 +77,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::dropIndex);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
@@ -96,9 +96,9 @@ public:
 
 class CmdReIndex : public ErrmsgCommandDeprecated {
 public:
-    virtual bool slaveOk() const {
-        return true;
-    }  // can reindex on a secondary
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;  // can reindex on a secondary
+    }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
@@ -107,7 +107,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::reIndex);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
@@ -188,28 +188,31 @@ public:
 
         result.appendNumber("nIndexesWas", all.size());
 
+        std::unique_ptr<MultiIndexBlock> indexer;
+        StatusWith<std::vector<BSONObj>> swIndexesToRebuild(ErrorCodes::UnknownError,
+                                                            "Uninitialized");
+
         {
             WriteUnitOfWork wunit(opCtx);
             collection->getIndexCatalog()->dropAllIndexes(opCtx, true);
+
+            indexer = stdx::make_unique<MultiIndexBlock>(opCtx, collection);
+
+            swIndexesToRebuild = indexer->init(all);
+            if (!swIndexesToRebuild.isOK()) {
+                return CommandHelpers::appendCommandStatus(result, swIndexesToRebuild.getStatus());
+            }
             wunit.commit();
         }
 
-        MultiIndexBlock indexer(opCtx, collection);
-        // do not want interruption as that will leave us without indexes.
-
-        auto indexInfoObjs = indexer.init(all);
-        if (!indexInfoObjs.isOK()) {
-            return CommandHelpers::appendCommandStatus(result, indexInfoObjs.getStatus());
-        }
-
-        auto status = indexer.insertAllDocumentsInCollection();
+        auto status = indexer->insertAllDocumentsInCollection();
         if (!status.isOK()) {
             return CommandHelpers::appendCommandStatus(result, status);
         }
 
         {
             WriteUnitOfWork wunit(opCtx);
-            indexer.commit();
+            indexer->commit();
             wunit.commit();
         }
 
@@ -221,8 +224,8 @@ public:
         auto snapshotName = replCoord->getMinimumVisibleSnapshot(opCtx);
         collection->setMinimumVisibleSnapshot(snapshotName);
 
-        result.append("nIndexes", static_cast<int>(indexInfoObjs.getValue().size()));
-        result.append("indexes", indexInfoObjs.getValue());
+        result.append("nIndexes", static_cast<int>(swIndexesToRebuild.getValue().size()));
+        result.append("indexes", swIndexesToRebuild.getValue());
 
         return true;
     }

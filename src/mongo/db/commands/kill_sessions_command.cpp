@@ -84,8 +84,8 @@ class KillSessionsCommand final : public BasicCommand {
 public:
     KillSessionsCommand() : BasicCommand("killSessions") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool adminOnly() const override {
         return false;
@@ -100,7 +100,7 @@ public:
     // Any user can kill their own sessions
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) override {
+                                 const BSONObj& cmdObj) const override {
         return Status::OK();
     }
 

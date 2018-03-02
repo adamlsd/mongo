@@ -43,7 +43,6 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
-#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/jsobj.h"
@@ -95,8 +94,7 @@ BSONObj CommandHelpers::runCommandDirectly(OperationContext* opCtx, const OpMsgR
     return out.obj();
 }
 
-std::string CommandHelpers::parseNsFullyQualified(const std::string& dbname,
-                                                  const BSONObj& cmdObj) {
+std::string CommandHelpers::parseNsFullyQualified(StringData dbname, const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     uassert(ErrorCodes::BadValue,
             str::stream() << "collection name has invalid type " << typeName(first.type()),
@@ -108,7 +106,7 @@ std::string CommandHelpers::parseNsFullyQualified(const std::string& dbname,
     return nss.ns();
 }
 
-NamespaceString CommandHelpers::parseNsCollectionRequired(const std::string& dbname,
+NamespaceString CommandHelpers::parseNsCollectionRequired(StringData dbname,
                                                           const BSONObj& cmdObj) {
     // Accepts both BSON String and Symbol for collection name per SERVER-16260
     // TODO(kangas) remove Symbol support in MongoDB 3.0 after Ruby driver audit
@@ -123,23 +121,10 @@ NamespaceString CommandHelpers::parseNsCollectionRequired(const std::string& dbn
     return nss;
 }
 
-NamespaceString CommandHelpers::parseNsOrUUID(OperationContext* opCtx,
-                                              const std::string& dbname,
-                                              const BSONObj& cmdObj) {
+NamespaceStringOrUUID CommandHelpers::parseNsOrUUID(StringData dbname, const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
-        UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
-        UUID uuid = uassertStatusOK(UUID::parse(first));
-        NamespaceString nss = catalog.lookupNSSByUUID(uuid);
-        uassert(ErrorCodes::NamespaceNotFound,
-                str::stream() << "UUID " << uuid << " specified in "
-                              << cmdObj.firstElement().fieldNameStringData()
-                              << " command not found in "
-                              << dbname
-                              << " database",
-                nss.isValid() && nss.db() == dbname);
-
-        return nss;
+        return uassertStatusOK(UUID::parse(first));
     } else {
         // Ensure collection identifier is not a Command
         const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
@@ -265,11 +250,19 @@ bool CommandHelpers::isUserManagementCommand(const std::string& name) {
 }
 
 BSONObj CommandHelpers::filterCommandRequestForPassthrough(const BSONObj& cmdObj) {
+    BSONObjIterator cmdIter(cmdObj);
     BSONObjBuilder bob;
-    for (auto elem : cmdObj) {
+    filterCommandRequestForPassthrough(&cmdIter, &bob);
+    return bob.obj();
+}
+
+void CommandHelpers::filterCommandRequestForPassthrough(BSONObjIterator* cmdIter,
+                                                        BSONObjBuilder* requestBuilder) {
+    while (cmdIter->more()) {
+        auto elem = cmdIter->next();
         const auto name = elem.fieldNameStringData();
         if (name == "$readPreference") {
-            BSONObjBuilder(bob.subobjStart("$queryOptions")).append(elem);
+            BSONObjBuilder(requestBuilder->subobjStart("$queryOptions")).append(elem);
         } else if (!isGenericArgument(name) ||  //
                    name == "$queryOptions" ||   //
                    name == "maxTimeMS" ||       //
@@ -279,10 +272,9 @@ BSONObj CommandHelpers::filterCommandRequestForPassthrough(const BSONObj& cmdObj
                    name == "txnNumber") {
             // This is the whitelist of generic arguments that commands can be trusted to blindly
             // forward to the shards.
-            bob.append(elem);
+            requestBuilder->append(elem);
         }
     }
-    return bob.obj();
 }
 
 void CommandHelpers::filterCommandReplyForPassthrough(const BSONObj& cmdObj,
@@ -350,36 +342,26 @@ Status Command::explain(OperationContext* opCtx,
     return {ErrorCodes::IllegalOperation, str::stream() << "Cannot explain cmd: " << getName()};
 }
 
-Status BasicCommand::checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) {
+Status BasicCommand::checkAuthForRequest(OperationContext* opCtx,
+                                         const OpMsgRequest& request) const {
     uassertNoDocumentSequences(request);
     return checkAuthForOperation(opCtx, request.getDatabase().toString(), request.body);
 }
 
 Status BasicCommand::checkAuthForOperation(OperationContext* opCtx,
                                            const std::string& dbname,
-                                           const BSONObj& cmdObj) {
+                                           const BSONObj& cmdObj) const {
     return checkAuthForCommand(opCtx->getClient(), dbname, cmdObj);
 }
 
 Status BasicCommand::checkAuthForCommand(Client* client,
                                          const std::string& dbname,
-                                         const BSONObj& cmdObj) {
+                                         const BSONObj& cmdObj) const {
     std::vector<Privilege> privileges;
     this->addRequiredPrivileges(dbname, cmdObj, &privileges);
     if (AuthorizationSession::get(client)->isAuthorizedForPrivileges(privileges))
         return Status::OK();
     return Status(ErrorCodes::Unauthorized, "unauthorized");
-}
-
-void Command::redactForLogging(mutablebson::Document* cmdObj) {}
-
-BSONObj Command::getRedactedCopyForLogging(const BSONObj& cmdObj) {
-    namespace mmb = mutablebson;
-    mmb::Document cmdToLog(cmdObj, mmb::Document::kInPlaceDisabled);
-    redactForLogging(&cmdToLog);
-    BSONObjBuilder bob;
-    cmdToLog.writeTo(&bob);
-    return bob.obj();
 }
 
 static Status _checkAuthorizationImpl(Command* c,
@@ -400,7 +382,7 @@ static Status _checkAuthorizationImpl(Command* c,
             c->redactForLogging(&cmdToLog);
             return Status(ErrorCodes::Unauthorized,
                           str::stream() << "not authorized on " << dbname << " to execute command "
-                                        << cmdToLog.toString());
+                                        << redact(cmdToLog.getObject()));
         }
         if (!status.isOK()) {
             return status;
@@ -470,7 +452,7 @@ void Command::generateHelpResponse(OperationContext* opCtx,
     replyBuilder->setMetadata(rpc::makeEmptyMetadata());
 }
 
-void BasicCommand::uassertNoDocumentSequences(const OpMsgRequest& request) {
+void BasicCommand::uassertNoDocumentSequences(const OpMsgRequest& request) const {
     uassert(40472,
             str::stream() << "The " << getName() << " command does not support document sequences.",
             request.sequences.empty());

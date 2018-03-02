@@ -368,15 +368,15 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::internal);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -703,9 +703,8 @@ void ReplSource::_sync_pullOpLog_applyOperation(OperationContext* opCtx,
     if (op.getStringField("op")[0] == 'n')
         return;
 
-    char dbName[MaxDatabaseNameLen];
     const char* ns = op.getStringField("ns");
-    nsToDatabase(ns, dbName);
+    const auto dbName = nsToDatabaseSubstring(ns).toString();
 
     if (*ns == '.') {
         log() << "skipping bad op in oplog: " << redact(op) << endl;
@@ -775,7 +774,7 @@ void ReplSource::_sync_pullOpLog_applyOperation(OperationContext* opCtx,
         throw SyncException();
     }
 
-    if (!handleDuplicateDbName(opCtx, op, ns, dbName)) {
+    if (!handleDuplicateDbName(opCtx, op, ns, dbName.c_str())) {
         return;
     }
 
@@ -882,6 +881,9 @@ int ReplSource::_sync_pullOpLog(OperationContext* opCtx, int& nApplied) {
 
     bool tailing = true;
     oplogReader.tailCheck();
+
+    // Due to the lack of exception handlers, don't allow lock interrupts.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
     bool initial = syncedTo.isNull();
 
@@ -1302,7 +1304,8 @@ static void replMasterThread() {
         OperationContext& opCtx = *opCtxPtr;
         AuthorizationSession::get(opCtx.getClient())->grantInternalAuthorization();
 
-        Lock::GlobalWrite globalWrite(&opCtx, 1);
+        UninterruptibleLockGuard noInterrupt(opCtx.lockState());
+        Lock::GlobalWrite globalWrite(&opCtx, Date_t::now() + Milliseconds(1));
         if (globalWrite.isLocked()) {
             toSleep = 10;
 

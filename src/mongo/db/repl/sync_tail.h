@@ -43,6 +43,7 @@ namespace mongo {
 
 class Database;
 class OperationContext;
+struct MultikeyPathInfo;
 
 namespace repl {
 class BackgroundSync;
@@ -54,7 +55,9 @@ class OpTime;
  */
 class SyncTail {
 public:
-    using MultiSyncApplyFunc = stdx::function<void(MultiApplier::OperationPtrs* ops, SyncTail* st)>;
+    using MultiSyncApplyFunc = stdx::function<void(MultiApplier::OperationPtrs* ops,
+                                                   SyncTail* st,
+                                                   WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
 
     /**
      * Type of function to increment "repl.apply.ops" server status metric.
@@ -224,6 +227,11 @@ public:
 
     static AtomicInt32 replBatchLimitOperations;
 
+    /**
+     * Passthrough function to test multiApply.
+     */
+    OpTime multiApply_forTest(OperationContext* opCtx, MultiApplier::Operations ops);
+
 protected:
     static const unsigned int replBatchLimitBytes = 100 * 1024 * 1024;
     static const int replBatchLimitSeconds = 1;
@@ -264,15 +272,15 @@ StatusWith<OpTime> multiApply(OperationContext* opCtx,
 // They consume the passed in OperationPtrs and callers should not make any assumptions about the
 // state of the container after calling. However, these functions cannot modify the pointed-to
 // operations because the OperationPtrs container contains const pointers.
-void multiSyncApply(MultiApplier::OperationPtrs* ops, SyncTail* st);
-
-// Used by 3.2 initial sync.
-void multiInitialSyncApply_abortOnFailure(MultiApplier::OperationPtrs* ops, SyncTail* st);
+void multiSyncApply(MultiApplier::OperationPtrs* ops,
+                    SyncTail* st,
+                    WorkerMultikeyPathInfo* workerMultikeyPathInfo);
 
 // Used by 3.4 initial sync.
 Status multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
                              SyncTail* st,
-                             AtomicUInt32* fetchCount);
+                             AtomicUInt32* fetchCount,
+                             WorkerMultikeyPathInfo* workerMultikeyPathInfo);
 
 /**
  * Testing-only version of multiSyncApply that returns an error instead of aborting.
@@ -292,7 +300,8 @@ Status multiSyncApply_noAbort(OperationContext* opCtx,
 Status multiInitialSyncApply_noAbort(OperationContext* opCtx,
                                      MultiApplier::OperationPtrs* ops,
                                      SyncTail* st,
-                                     AtomicUInt32* fetchCount);
+                                     AtomicUInt32* fetchCount,
+                                     WorkerMultikeyPathInfo* workerMultikeyPathInfo);
 
 }  // namespace repl
 }  // namespace mongo

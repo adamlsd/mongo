@@ -33,6 +33,7 @@
 #include "mongo/db/commands/feature_compatibility_version.h"
 
 #include "mongo/base/status.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/optime.h"
@@ -42,6 +43,7 @@
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/wire_version.h"
 #include "mongo/db/write_concern_options.h"
+#include "mongo/executor/egress_tag_closer_manager.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/util/log.h"
@@ -62,7 +64,7 @@ Lock::ResourceMutex FeatureCompatibilityVersion::fcvLock("featureCompatibilityVe
 StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibilityVersion::parse(
     const BSONObj& featureCompatibilityVersionDoc) {
     ServerGlobalParams::FeatureCompatibility::Version version =
-        ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault34Behavior;
+        ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault36Behavior;
     std::string versionString;
     std::string targetVersionString;
 
@@ -73,42 +75,40 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
         } else if (fieldName == FeatureCompatibilityVersion::kVersionField ||
                    fieldName == FeatureCompatibilityVersion::kTargetVersionField) {
             if (elem.type() != BSONType::String) {
-                return Status(ErrorCodes::TypeMismatch,
-                              str::stream() << fieldName
-                                            << " must be of type String, but was of type "
-                                            << typeName(elem.type())
-                                            << ". Contents of "
-                                            << FeatureCompatibilityVersion::kParameterName
-                                            << " document in "
-                                            << FeatureCompatibilityVersion::kCollection
-                                            << ": "
-                                            << featureCompatibilityVersionDoc
-                                            << ". See "
-                                            << feature_compatibility_version::kDochubLink
-                                            << ".");
+                return Status(
+                    ErrorCodes::TypeMismatch,
+                    str::stream() << fieldName << " must be of type String, but was of type "
+                                  << typeName(elem.type())
+                                  << ". Contents of "
+                                  << FeatureCompatibilityVersion::kParameterName
+                                  << " document in "
+                                  << FeatureCompatibilityVersion::kCollection
+                                  << ": "
+                                  << featureCompatibilityVersionDoc
+                                  << ". See "
+                                  << feature_compatibility_version_documentation::kCompatibilityLink
+                                  << ".");
             }
 
             if (elem.String() != FeatureCompatibilityVersionCommandParser::kVersion40 &&
-                elem.String() != FeatureCompatibilityVersionCommandParser::kVersion36 &&
-                elem.String() != FeatureCompatibilityVersionCommandParser::kVersion34) {
-                return Status(ErrorCodes::BadValue,
-                              str::stream() << "Invalid value for " << fieldName << ", found "
-                                            << elem.String()
-                                            << ", expected '"
-                                            << FeatureCompatibilityVersionCommandParser::kVersion40
-                                            << "', '"
-                                            << FeatureCompatibilityVersionCommandParser::kVersion36
-                                            << "' or '"
-                                            << FeatureCompatibilityVersionCommandParser::kVersion34
-                                            << "'. Contents of "
-                                            << FeatureCompatibilityVersion::kParameterName
-                                            << " document in "
-                                            << FeatureCompatibilityVersion::kCollection
-                                            << ": "
-                                            << featureCompatibilityVersionDoc
-                                            << ". See "
-                                            << feature_compatibility_version::kDochubLink
-                                            << ".");
+                elem.String() != FeatureCompatibilityVersionCommandParser::kVersion36) {
+                return Status(
+                    ErrorCodes::BadValue,
+                    str::stream() << "Invalid value for " << fieldName << ", found "
+                                  << elem.String()
+                                  << ", expected '"
+                                  << FeatureCompatibilityVersionCommandParser::kVersion40
+                                  << "' or '"
+                                  << FeatureCompatibilityVersionCommandParser::kVersion36
+                                  << "'. Contents of "
+                                  << FeatureCompatibilityVersion::kParameterName
+                                  << " document in "
+                                  << FeatureCompatibilityVersion::kCollection
+                                  << ": "
+                                  << featureCompatibilityVersionDoc
+                                  << ". See "
+                                  << feature_compatibility_version_documentation::kCompatibilityLink
+                                  << ".");
             }
 
             if (fieldName == FeatureCompatibilityVersion::kVersionField) {
@@ -117,110 +117,61 @@ StatusWith<ServerGlobalParams::FeatureCompatibility::Version> FeatureCompatibili
                 targetVersionString = elem.String();
             }
         } else {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "Unrecognized field '" << fieldName << "'. Contents of "
-                                        << FeatureCompatibilityVersion::kParameterName
-                                        << " document in "
-                                        << FeatureCompatibilityVersion::kCollection
-                                        << ": "
-                                        << featureCompatibilityVersionDoc
-                                        << ". See "
-                                        << feature_compatibility_version::kDochubLink
-                                        << ".");
+            return Status(
+                ErrorCodes::BadValue,
+                str::stream() << "Unrecognized field '" << fieldName << "'. Contents of "
+                              << FeatureCompatibilityVersion::kParameterName
+                              << " document in "
+                              << FeatureCompatibilityVersion::kCollection
+                              << ": "
+                              << featureCompatibilityVersionDoc
+                              << ". See "
+                              << feature_compatibility_version_documentation::kCompatibilityLink
+                              << ".");
         }
     }
 
-    if (versionString == FeatureCompatibilityVersionCommandParser::kVersion34) {
-        if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion40) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "Invalid state for "
-                                        << FeatureCompatibilityVersion::kParameterName
-                                        << " document in "
-                                        << FeatureCompatibilityVersion::kCollection
-                                        << ": "
-                                        << featureCompatibilityVersionDoc
-                                        << ". See "
-                                        << feature_compatibility_version::kDochubLink
-                                        << ".");
-        } else if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion36) {
-            version = ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36;
-        } else if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion34) {
-            version = ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34;
-        } else {
-            version = ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34;
-        }
-    } else if (versionString == FeatureCompatibilityVersionCommandParser::kVersion36) {
+    if (versionString == FeatureCompatibilityVersionCommandParser::kVersion36) {
         if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion40) {
             version = ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo40;
         } else if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion36) {
             version = ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo36;
-        } else if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion34) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "Invalid state for "
-                                        << FeatureCompatibilityVersion::kParameterName
-                                        << " document in "
-                                        << FeatureCompatibilityVersion::kCollection
-                                        << ": "
-                                        << featureCompatibilityVersionDoc
-                                        << ". See "
-                                        << feature_compatibility_version::kDochubLink
-                                        << ".");
         } else {
-            version = ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
+            version = ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36;
         }
     } else if (versionString == FeatureCompatibilityVersionCommandParser::kVersion40) {
         if (targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion40 ||
-            targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion36 ||
-            targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion34) {
-            return Status(ErrorCodes::BadValue,
-                          str::stream() << "Invalid state for "
-                                        << FeatureCompatibilityVersion::kParameterName
-                                        << " document in "
-                                        << FeatureCompatibilityVersion::kCollection
-                                        << ": "
-                                        << featureCompatibilityVersionDoc
-                                        << ". See "
-                                        << feature_compatibility_version::kDochubLink
-                                        << ".");
+            targetVersionString == FeatureCompatibilityVersionCommandParser::kVersion36) {
+            return Status(
+                ErrorCodes::BadValue,
+                str::stream() << "Invalid state for " << FeatureCompatibilityVersion::kParameterName
+                              << " document in "
+                              << FeatureCompatibilityVersion::kCollection
+                              << ": "
+                              << featureCompatibilityVersionDoc
+                              << ". See "
+                              << feature_compatibility_version_documentation::kCompatibilityLink
+                              << ".");
         } else {
             version = ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40;
         }
     } else {
         return Status(ErrorCodes::BadValue,
-                      str::stream() << "Missing required field '"
-                                    << FeatureCompatibilityVersion::kVersionField
-                                    << "''. Contents of "
-                                    << FeatureCompatibilityVersion::kParameterName
-                                    << " document in "
-                                    << FeatureCompatibilityVersion::kCollection
-                                    << ": "
-                                    << featureCompatibilityVersionDoc
-                                    << ". See "
-                                    << feature_compatibility_version::kDochubLink
-                                    << ".");
+                      str::stream()
+                          << "Missing required field '"
+                          << FeatureCompatibilityVersion::kVersionField
+                          << "''. Contents of "
+                          << FeatureCompatibilityVersion::kParameterName
+                          << " document in "
+                          << FeatureCompatibilityVersion::kCollection
+                          << ": "
+                          << featureCompatibilityVersionDoc
+                          << ". See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << ".");
     }
 
     return version;
-}
-
-void FeatureCompatibilityVersion::setTargetUpgrade_DEPRECATED(OperationContext* opCtx) {
-    // Sets both 'version' and 'targetVersion' fields.
-    _runUpdateCommand(opCtx, [](auto updateMods) {
-        updateMods.append(FeatureCompatibilityVersion::kVersionField,
-                          FeatureCompatibilityVersionCommandParser::kVersion34);
-        updateMods.append(FeatureCompatibilityVersion::kTargetVersionField,
-                          FeatureCompatibilityVersionCommandParser::kVersion36);
-    });
-}
-
-void FeatureCompatibilityVersion::setTargetDowngrade_DEPRECATED(OperationContext* opCtx) {
-    // Sets both 'version' and 'targetVersion' fields.
-    _runUpdateCommand(opCtx, [](auto updateMods) {
-        updateMods.append(FeatureCompatibilityVersion::kVersionField,
-                          FeatureCompatibilityVersionCommandParser::kVersion34);
-        updateMods.append(FeatureCompatibilityVersion::kTargetVersionField,
-                          FeatureCompatibilityVersionCommandParser::kVersion34);
-    });
 }
 
 void FeatureCompatibilityVersion::setTargetUpgrade(OperationContext* opCtx) {
@@ -271,14 +222,6 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
     {
         CollectionOptions options;
         options.uuid = CollectionUUID::gen();
-
-        // Only for 3.4 shard servers, we create admin.system.version without UUID on clean startup.
-        // The mention of kFullyDowngradedTo34 below is to ensure this will not compile in 4.0.
-        if (!storeUpgradeVersion &&
-            serverGlobalParams.featureCompatibility.getVersion() ==
-                ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34)
-            options.uuid.reset();
-
         uassertStatusOK(storageInterface->createCollection(opCtx, nss, options));
     }
 
@@ -291,8 +234,8 @@ void FeatureCompatibilityVersion::setIfCleanStartup(OperationContext* opCtx,
             BSON("_id" << FeatureCompatibilityVersion::kParameterName
                        << FeatureCompatibilityVersion::kVersionField
                        << (storeUpgradeVersion
-                               ? FeatureCompatibilityVersionCommandParser::kVersion36
-                               : FeatureCompatibilityVersionCommandParser::kVersion34)),
+                               ? FeatureCompatibilityVersionCommandParser::kVersion40
+                               : FeatureCompatibilityVersionCommandParser::kVersion36)),
             Timestamp()},
         repl::OpTime::kUninitializedTerm));  // No timestamp or term because this write is not
                                              // replicated.
@@ -326,46 +269,22 @@ void FeatureCompatibilityVersion::onInsertOrUpdate(OperationContext* opCtx, cons
         log() << "setting featureCompatibilityVersion to " << toString(newVersion);
     }
 
-    // On commit, update the server parameters, and close any incoming connections with a wire
-    // version that is below the minimum.
+    // On commit, update the server parameters, and close any connections with a wire version that
+    // is below the minimum.
     opCtx->recoveryUnit()->onCommit([opCtx, newVersion]() {
         serverGlobalParams.featureCompatibility.setVersion(newVersion);
         updateMinWireVersion();
 
-        // Close all incoming connections from internal clients with binary versions lower than
-        // ours. It would be desirable to close all outgoing connections to servers with lower
-        // binary version, but it is not currently possible.
-        if (newVersion != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34) {
+        if (newVersion != ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36) {
+            // Close all incoming connections from internal clients with binary versions lower than
+            // ours.
             opCtx->getServiceContext()->getServiceEntryPoint()->endAllSessions(
                 transport::Session::kLatestVersionInternalClientKeepOpen |
                 transport::Session::kExternalClientKeepOpen);
+            // Close all outgoing connections to servers with binary versions lower than ours.
+            executor::EgressTagCloserManager::get(opCtx->getServiceContext())
+                .dropConnections(transport::Session::kKeepOpen);
         }
-    });
-}
-
-void FeatureCompatibilityVersion::onDelete(OperationContext* opCtx, const BSONObj& doc) {
-    auto idElement = doc["_id"];
-    if (idElement.type() != BSONType::String ||
-        idElement.String() != FeatureCompatibilityVersion::kParameterName) {
-        return;
-    }
-
-    log() << "setting featureCompatibilityVersion to "
-          << FeatureCompatibilityVersionCommandParser::kVersion34;
-    opCtx->recoveryUnit()->onCommit([]() {
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
-        updateMinWireVersion();
-    });
-}
-
-void FeatureCompatibilityVersion::onDropCollection(OperationContext* opCtx) {
-    log() << "setting featureCompatibilityVersion to "
-          << FeatureCompatibilityVersionCommandParser::kVersion34;
-    opCtx->recoveryUnit()->onCommit([]() {
-        serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34);
-        updateMinWireVersion();
     });
 }
 
@@ -379,17 +298,11 @@ void FeatureCompatibilityVersion::updateMinWireVersion() {
             spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION;
             spec.outgoing.minWireVersion = LATEST_WIRE_VERSION;
             return;
-        case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
-        case ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36:
-        case ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34:
+        case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36:
             spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION - 1;
             spec.outgoing.minWireVersion = LATEST_WIRE_VERSION - 1;
             return;
-        case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34:
-            spec.incomingInternalClient.minWireVersion = LATEST_WIRE_VERSION - 2;
-            spec.outgoing.minWireVersion = LATEST_WIRE_VERSION - 2;
-            return;
-        case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault34Behavior:
+        case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault36Behavior:
             // getVersion() does not return this value.
             MONGO_UNREACHABLE;
     }
@@ -399,16 +312,13 @@ void FeatureCompatibilityVersion::_validateVersion(StringData version) {
     uassert(40284,
             str::stream() << "featureCompatibilityVersion must be '"
                           << FeatureCompatibilityVersionCommandParser::kVersion40
-                          << "', '"
-                          << FeatureCompatibilityVersionCommandParser::kVersion36
                           << "' or '"
-                          << FeatureCompatibilityVersionCommandParser::kVersion34
+                          << FeatureCompatibilityVersionCommandParser::kVersion36
                           << "'. See "
-                          << feature_compatibility_version::kDochubLink
+                          << feature_compatibility_version_documentation::kCompatibilityLink
                           << ".",
             version == FeatureCompatibilityVersionCommandParser::kVersion40 ||
-                version == FeatureCompatibilityVersionCommandParser::kVersion36 ||
-                version == FeatureCompatibilityVersionCommandParser::kVersion34);
+                version == FeatureCompatibilityVersionCommandParser::kVersion36);
 }
 
 void FeatureCompatibilityVersion::_runUpdateCommand(OperationContext* opCtx,
@@ -478,33 +388,12 @@ public:
                     FeatureCompatibilityVersion::kTargetVersionField,
                     FeatureCompatibilityVersionCommandParser::kVersion36);
                 return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36:
+            case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo36:
                 featureCompatibilityVersionBuilder.append(
                     FeatureCompatibilityVersion::kVersionField,
                     FeatureCompatibilityVersionCommandParser::kVersion36);
                 return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo36:
-                featureCompatibilityVersionBuilder.append(
-                    FeatureCompatibilityVersion::kVersionField,
-                    FeatureCompatibilityVersionCommandParser::kVersion34);
-                featureCompatibilityVersionBuilder.append(
-                    FeatureCompatibilityVersion::kTargetVersionField,
-                    FeatureCompatibilityVersionCommandParser::kVersion36);
-                return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kDowngradingTo34:
-                featureCompatibilityVersionBuilder.append(
-                    FeatureCompatibilityVersion::kVersionField,
-                    FeatureCompatibilityVersionCommandParser::kVersion34);
-                featureCompatibilityVersionBuilder.append(
-                    FeatureCompatibilityVersion::kTargetVersionField,
-                    FeatureCompatibilityVersionCommandParser::kVersion34);
-                return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo34:
-                featureCompatibilityVersionBuilder.append(
-                    FeatureCompatibilityVersion::kVersionField,
-                    FeatureCompatibilityVersionCommandParser::kVersion34);
-                return;
-            case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault34Behavior:
+            case ServerGlobalParams::FeatureCompatibility::Version::kUnsetDefault36Behavior:
                 // getVersion() does not return this value.
                 MONGO_UNREACHABLE;
         }
@@ -512,18 +401,20 @@ public:
 
     virtual Status set(const BSONElement& newValueElement) {
         return Status(ErrorCodes::IllegalOperation,
-                      str::stream() << FeatureCompatibilityVersion::kParameterName
-                                    << " cannot be set via setParameter. See "
-                                    << feature_compatibility_version::kDochubLink
-                                    << ".");
+                      str::stream()
+                          << FeatureCompatibilityVersion::kParameterName
+                          << " cannot be set via setParameter. See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << ".");
     }
 
     virtual Status setFromString(const std::string& str) {
         return Status(ErrorCodes::IllegalOperation,
-                      str::stream() << FeatureCompatibilityVersion::kParameterName
-                                    << " cannot be set via setParameter. See "
-                                    << feature_compatibility_version::kDochubLink
-                                    << ".");
+                      str::stream()
+                          << FeatureCompatibilityVersion::kParameterName
+                          << " cannot be set via setParameter. See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << ".");
     }
 } featureCompatibilityVersionParameter;
 

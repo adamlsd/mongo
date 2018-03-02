@@ -33,12 +33,14 @@
 #include "mongo/base/checked_cast.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
+#include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/op_observer_noop.h"
+#include "mongo/db/op_observer_registry.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/service_context_d.h"
@@ -70,6 +72,16 @@ void ServiceContextMongoDTest::setUp() {
         serviceContext->initializeGlobalStorageEngine();
         serviceContext->setOpObserver(stdx::make_unique<OpObserverNoop>());
     }
+
+    // Set up UUID Catalog observer. This is necessary because the Collection destructor contains an
+    // invariant to ensure the UUID corresponding to that Collection object is no longer associated
+    // with that Collection object in the UUIDCatalog. UUIDs may be registered in the UUIDCatalog
+    // directly in certain code paths, but they can only be removed from the UUIDCatalog via a
+    // UUIDCatalogObserver. It is therefore necessary to install the observer to ensure the
+    // invariant in the Collection destructor is not triggered.
+    auto observerRegistry = stdx::make_unique<OpObserverRegistry>();
+    observerRegistry->addObserver(stdx::make_unique<UUIDCatalogObserver>());
+    serviceContext->setOpObserver(std::unique_ptr<OpObserver>(observerRegistry.release()));
 }
 
 void ServiceContextMongoDTest::tearDown() {
@@ -102,8 +114,7 @@ void ServiceContextMongoDTest::_dropAllDBs(OperationContext* opCtx) {
     // dropAllDatabasesExceptLocal() does not close empty databases. However the holder still
     // allocates resources to track these empty databases. These resources not released by
     // dropAllDatabasesExceptLocal() will be leaked at exit unless we call DatabaseHolder::closeAll.
-    BSONObjBuilder unused;
-    invariant(dbHolder().closeAll(opCtx, unused, false, "all databases dropped"));
+    dbHolder().closeAll(opCtx, "all databases dropped");
 }
 
 }  // namespace mongo

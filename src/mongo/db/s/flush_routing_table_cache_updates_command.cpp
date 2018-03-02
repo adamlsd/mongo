@@ -42,6 +42,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/s/migration_source_manager.h"
 #include "mongo/db/s/operation_sharding_state.h"
+#include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/s/catalog_cache_loader.h"
 #include "mongo/s/grid.h"
@@ -70,8 +71,8 @@ public:
         return true;
     }
 
-    bool slaveOk() const override {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -84,7 +85,7 @@ public:
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
+                               const BSONObj& cmdObj) const override {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forClusterResource(), ActionType::internal)) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
@@ -94,7 +95,7 @@ public:
 
     void addRequiredPrivileges(const std::string& dbname,
                                const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
+                               std::vector<Privilege>* out) const override {
         ActionSet actions;
         actions.addAction(ActionType::internal);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -142,8 +143,7 @@ public:
 
         if (request.getSyncFromConfig()) {
             LOG(1) << "Forcing remote routing table refresh for " << nss;
-            ChunkVersion unusedShardVersion;
-            uassertStatusOK(shardingState->refreshMetadataNow(opCtx, nss, &unusedShardVersion));
+            forceShardFilteringMetadataRefresh(opCtx, nss);
         }
 
         CatalogCacheLoader::get(opCtx).waitForCollectionFlush(opCtx, nss);

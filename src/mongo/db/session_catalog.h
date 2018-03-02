@@ -246,10 +246,25 @@ class OperationContextSession {
     MONGO_DISALLOW_COPYING(OperationContextSession);
 
 public:
-    OperationContextSession(OperationContext* opCtx, bool checkOutSession);
+    OperationContextSession(OperationContext* opCtx,
+                            bool checkOutSession,
+                            boost::optional<bool> autocommit);
+
     ~OperationContextSession();
 
     static Session* get(OperationContext* opCtx);
+
+    /**
+     * Stash the Locker and RecoveryUnit if both:
+     *  - The current session represents a transaction running in snapshot isolation.
+     *  - The current operation is ending with an open client cursor.
+     */
+    void stashTransactionResources();
+
+    /**
+     * Restore the stashed Locker and RecoveryUnit for the current transaction, if they exist.
+     */
+    void unstashTransactionResources();
 
 private:
     OperationContext* const _opCtx;

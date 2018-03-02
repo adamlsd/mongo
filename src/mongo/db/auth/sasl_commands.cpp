@@ -68,9 +68,9 @@ public:
 
     virtual void addRequiredPrivileges(const std::string&,
                                        const BSONObj&,
-                                       std::vector<Privilege>*) {}
+                                       std::vector<Privilege>*) const {}
 
-    void redactForLogging(mutablebson::Document* cmdObj) override;
+    void redactForLogging(mutablebson::Document* cmdObj) const override;
 
     virtual bool run(OperationContext* opCtx,
                      const std::string& db,
@@ -81,8 +81,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool requiresAuth() const override {
         return false;
@@ -96,7 +96,7 @@ public:
 
     virtual void addRequiredPrivileges(const std::string&,
                                        const BSONObj&,
-                                       std::vector<Privilege>*) {}
+                                       std::vector<Privilege>*) const {}
 
     virtual bool run(OperationContext* opCtx,
                      const std::string& db,
@@ -107,8 +107,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool requiresAuth() const override {
         return false;
@@ -258,7 +258,7 @@ std::string CmdSaslStart::help() const {
     return "First step in a SASL authentication conversation.";
 }
 
-void CmdSaslStart::redactForLogging(mutablebson::Document* cmdObj) {
+void CmdSaslStart::redactForLogging(mutablebson::Document* cmdObj) const {
     mutablebson::Element element = mutablebson::findFirstChildNamed(cmdObj->root(), "payload");
     if (element.ok()) {
         element.setValueString("xxx").transitional_ignore();

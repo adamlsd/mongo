@@ -95,8 +95,8 @@ public:
         return true;
     }
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -105,7 +105,7 @@ public:
 
     virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+                                       const BSONObj& cmdObj) const {
         return copydb::checkAuthForCopydbCommand(client, dbname, cmdObj);
     }
 

@@ -30,6 +30,11 @@ selector:
   - requires_eval_command
 
 executor:
+  archive:
+    hooks:
+      - CheckReplDBHash
+      - CheckReplOplogs
+      - ValidateCollections
   config:
     shell_options:
       global_vars:
@@ -52,7 +57,6 @@ executor:
   fixture:
     class: ReplicaSetFixture
     mongod_options:
-      oplogSize: 511
       set_parameters:
         enableTestCommands: 1
         numInitialSyncAttempts: 1

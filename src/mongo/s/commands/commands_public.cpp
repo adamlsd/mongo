@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2008-2015 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -32,54 +32,27 @@
 
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
-#include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/connpool.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/copydb.h"
 #include "mongo/db/commands/rename_collection.h"
-#include "mongo/db/lasterror.h"
-#include "mongo/db/matcher/extensions_callback_noop.h"
 #include "mongo/db/operation_context.h"
-#include "mongo/db/query/collation/collator_factory_interface.h"
-#include "mongo/db/query/parsed_distinct.h"
-#include "mongo/db/query/view_response_formatter.h"
-#include "mongo/db/views/resolved_view.h"
 #include "mongo/executor/task_executor_pool.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/async_requests_sender.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_connection.h"
-#include "mongo/s/client/shard_registry.h"
-#include "mongo/s/commands/cluster_aggregate.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/query/store_possible_cursor.h"
-#include "mongo/s/stale_exception.h"
-#include "mongo/scripting/engine.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
-
-using std::unique_ptr;
-using std::shared_ptr;
-using std::list;
-using std::make_pair;
-using std::map;
-using std::multimap;
-using std::set;
-using std::string;
-using std::stringstream;
-using std::vector;
-
 namespace {
 
 bool cursorCommandPassthrough(OperationContext* opCtx,
@@ -127,47 +100,20 @@ bool cursorCommandPassthrough(OperationContext* opCtx,
     return true;
 }
 
-BSONObj getQuery(const BSONObj& cmdObj) {
-    if (cmdObj["query"].type() == Object)
-        return cmdObj["query"].embeddedObject();
-    if (cmdObj["q"].type() == Object)
-        return cmdObj["q"].embeddedObject();
-    return BSONObj();
-}
-
-StatusWith<BSONObj> getCollation(const BSONObj& cmdObj) {
-    BSONElement collationElement;
-    auto status = bsonExtractTypedField(cmdObj, "collation", BSONType::Object, &collationElement);
-    if (status.isOK()) {
-        return collationElement.Obj();
-    }
-    if (status != ErrorCodes::NoSuchKey) {
-        return status;
-    }
-    return BSONObj();
-}
-
 class PublicGridCommand : public BasicCommand {
 protected:
     PublicGridCommand(const char* n, const char* oldname = NULL) : BasicCommand(n, oldname) {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
-    virtual bool adminOnly() const {
+    bool adminOnly() const override {
         return false;
     }
 
-    bool adminPassthrough(OperationContext* opCtx,
-                          const ShardId& shardId,
-                          const BSONObj& cmdObj,
-                          BSONObjBuilder& result) {
-        return passthrough(opCtx, "admin", shardId, cmdObj, result);
-    }
-
     bool passthrough(OperationContext* opCtx,
-                     const std::string& db,
+                     StringData dbName,
                      const ShardId& shardId,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
@@ -177,8 +123,8 @@ protected:
         ShardConnection conn(shard->getConnString(), "");
 
         BSONObj res;
-        bool ok =
-            conn->runCommand(db, CommandHelpers::filterCommandRequestForPassthrough(cmdObj), res);
+        bool ok = conn->runCommand(
+            dbName.toString(), CommandHelpers::filterCommandRequestForPassthrough(cmdObj), res);
         conn.done();
 
         // First append the properly constructed writeConcernError. It will then be skipped
@@ -191,12 +137,16 @@ protected:
     }
 };
 
-class NotAllowedOnShardedCollectionCmd : public PublicGridCommand {
+class NotAllowedOnShardedCollectionCmd : public BasicCommand {
 protected:
-    NotAllowedOnShardedCollectionCmd(const char* n) : PublicGridCommand(n) {}
+    NotAllowedOnShardedCollectionCmd(const char* n) : BasicCommand(n) {}
+
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
+    }
 
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
@@ -241,273 +191,18 @@ protected:
     }
 };
 
-// MongoS commands implementation
-
-class DropIndexesCmd : public ErrmsgCommandDeprecated {
+class RenameCollectionCmd : public PublicGridCommand {
 public:
-    DropIndexesCmd() : ErrmsgCommandDeprecated("dropIndexes", "deleteIndexes") {}
-
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool adminOnly() const override {
-        return false;
-    }
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        ActionSet actions;
-        actions.addAction(ActionType::dropIndex);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return true;
-    }
-
-    bool errmsgRun(OperationContext* opCtx,
-                   const string& dbName,
-                   const BSONObj& cmdObj,
-                   std::string& errmsg,
-                   BSONObjBuilder& output) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        LOG(1) << "dropIndexes: " << nss << " cmd:" << redact(cmdObj);
-
-        auto shardResponses = scatterGatherOnlyVersionIfUnsharded(
-            opCtx,
-            dbName,
-            nss,
-            CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kNotIdempotent);
-        return appendRawResponses(
-            opCtx, &errmsg, &output, std::move(shardResponses), {ErrorCodes::NamespaceNotFound});
-    }
-} dropIndexesCmd;
-
-class CreateIndexesCmd : public ErrmsgCommandDeprecated {
-public:
-    CreateIndexesCmd() : ErrmsgCommandDeprecated("createIndexes") {}
-
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool adminOnly() const override {
-        return false;
-    }
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        ActionSet actions;
-        actions.addAction(ActionType::createIndex);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return true;
-    }
-
-    bool errmsgRun(OperationContext* opCtx,
-                   const string& dbName,
-                   const BSONObj& cmdObj,
-                   std::string& errmsg,
-                   BSONObjBuilder& output) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        LOG(1) << "createIndexes: " << nss << " cmd:" << redact(cmdObj);
-
-        uassertStatusOK(createShardDatabase(opCtx, dbName));
-
-        auto shardResponses = scatterGatherOnlyVersionIfUnsharded(
-            opCtx,
-            dbName,
-            nss,
-            CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kNoRetry);
-        return appendRawResponses(opCtx,
-                                  &errmsg,
-                                  &output,
-                                  std::move(shardResponses),
-                                  {ErrorCodes::CannotImplicitlyCreateCollection});
-    }
-} createIndexesCmd;
-
-class ReIndexCmd : public ErrmsgCommandDeprecated {
-public:
-    ReIndexCmd() : ErrmsgCommandDeprecated("reIndex") {}
-
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool adminOnly() const override {
-        return false;
-    }
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        ActionSet actions;
-        actions.addAction(ActionType::reIndex);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    bool errmsgRun(OperationContext* opCtx,
-                   const string& dbName,
-                   const BSONObj& cmdObj,
-                   std::string& errmsg,
-                   BSONObjBuilder& output) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        LOG(1) << "reIndex: " << nss << " cmd:" << redact(cmdObj);
-
-        auto shardResponses = scatterGatherOnlyVersionIfUnsharded(
-            opCtx,
-            dbName,
-            nss,
-            CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kNoRetry);
-        return appendRawResponses(
-            opCtx, &errmsg, &output, std::move(shardResponses), {ErrorCodes::NamespaceNotFound});
-    }
-} reIndexCmd;
-
-class CollectionModCmd : public ErrmsgCommandDeprecated {
-public:
-    CollectionModCmd() : ErrmsgCommandDeprecated("collMod") {}
-
-    bool slaveOk() const override {
-        return false;
-    }
-
-    bool adminOnly() const override {
-        return false;
-    }
-
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
-        return AuthorizationSession::get(client)->checkAuthForCollMod(nss, cmdObj, true);
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return true;
-    }
-
-    bool errmsgRun(OperationContext* opCtx,
-                   const string& dbName,
-                   const BSONObj& cmdObj,
-                   std::string& errmsg,
-                   BSONObjBuilder& output) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-        LOG(1) << "collMod: " << nss << " cmd:" << redact(cmdObj);
-
-        auto shardResponses = scatterGatherOnlyVersionIfUnsharded(
-            opCtx,
-            dbName,
-            nss,
-            CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-            ReadPreferenceSetting::get(opCtx),
-            Shard::RetryPolicy::kNoRetry);
-        return appendRawResponses(
-            opCtx, &errmsg, &output, std::move(shardResponses), {ErrorCodes::NamespaceNotFound});
-    }
-} collectionModCmd;
-
-class ValidateCmd : public PublicGridCommand {
-public:
-    ValidateCmd() : PublicGridCommand("validate") {}
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        ActionSet actions;
-        actions.addAction(ActionType::validate);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    bool run(OperationContext* opCtx,
-             const string& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& output) {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-
-        auto routingInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-        if (!routingInfo.cm()) {
-            return passthrough(opCtx, dbName, routingInfo.primaryId(), cmdObj, output);
-        }
-
-        const auto cm = routingInfo.cm();
-
-        vector<Strategy::CommandResult> results;
-        const BSONObj query;
-        Strategy::commandOp(opCtx,
-                            dbName,
-                            CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                            cm->getns(),
-                            query,
-                            CollationSpec::kSimpleSpec,
-                            &results);
-
-        BSONObjBuilder rawResBuilder(output.subobjStart("raw"));
-        bool isValid = true;
-        bool errored = false;
-        for (const auto& cmdResult : results) {
-            const ShardId& shardName = cmdResult.shardTargetId;
-            BSONObj result = cmdResult.result;
-            const BSONElement valid = result["valid"];
-            if (!valid.trueValue()) {
-                isValid = false;
-            }
-            if (!result["errmsg"].eoo()) {
-                // errmsg indicates a user error, so returning the message from one shard is
-                // sufficient.
-                output.append(result["errmsg"]);
-                errored = true;
-            }
-            rawResBuilder.append(shardName.toString(), result);
-        }
-        rawResBuilder.done();
-
-        output.appendBool("valid", isValid);
-
-        int code = getUniqueCodeFromCommandResults(results);
-        if (code != 0) {
-            output.append("code", code);
-            output.append("codeName", ErrorCodes::errorString(ErrorCodes::Error(code)));
-        }
-
-        if (errored) {
-            return false;
-        }
-        return true;
-    }
-
-} validateCmd;
-
-class CreateCmd : public PublicGridCommand {
-public:
-    CreateCmd() : PublicGridCommand("create") {}
+    RenameCollectionCmd() : PublicGridCommand("renameCollection") {}
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
-        return AuthorizationSession::get(client)->checkAuthForCreate(nss, cmdObj, true);
+                               const BSONObj& cmdObj) const override {
+        return rename_collection::checkAuthForRenameCollectionCommand(client, dbname, cmdObj);
+    }
+
+    bool adminOnly() const override {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -515,38 +210,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const string& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        uassertStatusOK(createShardDatabase(opCtx, dbName));
-
-        const auto dbInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName));
-        return passthrough(opCtx, dbName, dbInfo.primaryId(), cmdObj, result);
-    }
-
-} createCmd;
-
-class RenameCollectionCmd : public PublicGridCommand {
-public:
-    RenameCollectionCmd() : PublicGridCommand("renameCollection") {}
-
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
-        return rename_collection::checkAuthForRenameCollectionCommand(client, dbname, cmdObj);
-    }
-
-    virtual bool adminOnly() const {
-        return true;
-    }
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return true;
-    }
-
-    bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const auto fullNsFromElt = cmdObj.firstElement();
@@ -579,7 +243,8 @@ public:
                 "Source and destination collections must be on same shard",
                 fromRoutingInfo.primaryId() == toRoutingInfo.primaryId());
 
-        return adminPassthrough(opCtx, fromRoutingInfo.primaryId(), cmdObj, result);
+        return passthrough(
+            opCtx, NamespaceString::kAdminDb, fromRoutingInfo.primaryId(), cmdObj, result);
     }
 
 } renameCollectionCmd;
@@ -594,7 +259,7 @@ public:
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
+                               const BSONObj& cmdObj) const override {
         return copydb::checkAuthForCopydbCommand(client, dbname, cmdObj);
     }
 
@@ -603,7 +268,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const auto todbElt = cmdObj["todb"];
@@ -622,7 +287,8 @@ public:
 
         const std::string fromhost = cmdObj.getStringField("fromhost");
         if (!fromhost.empty()) {
-            return adminPassthrough(opCtx, toDbInfo.primaryId(), cmdObj, result);
+            return passthrough(
+                opCtx, NamespaceString::kAdminDb, toDbInfo.primaryId(), cmdObj, result);
         }
 
         const auto fromDbElt = cmdObj["fromdb"];
@@ -653,7 +319,7 @@ public:
             b.append("fromhost", shard->getConnString().toString());
         }
 
-        return adminPassthrough(opCtx, toDbInfo.primaryId(), b.obj(), result);
+        return passthrough(opCtx, NamespaceString::kAdminDb, toDbInfo.primaryId(), b.obj(), result);
     }
 
 } clusterCopyDBCmd;
@@ -662,23 +328,27 @@ class CollectionStats : public PublicGridCommand {
 public:
     CollectionStats() : PublicGridCommand("collStats", "collstats") {}
 
-    void addRequiredPrivileges(const std::string& dbname,
-                               const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
-        ActionSet actions;
-        actions.addAction(ActionType::collStats);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {
+        ActionSet actions;
+        actions.addAction(ActionType::collStats);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
+    }
+
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
+        const NamespaceString nss(parseNs(dbName, cmdObj));
 
         auto routingInfo =
             uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
@@ -693,59 +363,50 @@ public:
         result.appendBool("sharded", true);
 
         BSONObjBuilder shardStats;
-        map<string, long long> counts;
-        map<string, long long> indexSizes;
+        std::map<std::string, long long> counts;
+        std::map<std::string, long long> indexSizes;
 
         long long unscaledCollSize = 0;
 
         int nindexes = 0;
         bool warnedAboutIndexes = false;
 
-        set<ShardId> shardIds;
+        std::set<ShardId> shardIds;
         cm->getAllShardIds(&shardIds);
-        for (const ShardId& shardId : shardIds) {
-            const auto shardStatus = Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardId);
-            if (!shardStatus.isOK()) {
-                invariant(shardStatus.getStatus() == ErrorCodes::ShardNotFound);
-                continue;
-            }
-            const auto shard = shardStatus.getValue();
 
-            BSONObj res;
-            {
-                ScopedDbConnection conn(shard->getConnString());
-                if (!conn->runCommand(
-                        dbName, CommandHelpers::filterCommandRequestForPassthrough(cmdObj), res)) {
-                    if (!res["code"].eoo()) {
-                        result.append(res["code"]);
-                    }
-                    result.append("errmsg", "failed on shard: " + res.toString());
-                    return false;
-                }
-                conn.done();
-            }
+        for (const auto& shardId : shardIds) {
+            const auto res = [&] {
+                const auto shard =
+                    uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, shardId));
+                auto commandResponse = uassertStatusOK(shard->runCommandWithFixedRetryAttempts(
+                    opCtx,
+                    ReadPreferenceSetting::get(opCtx),
+                    dbName,
+                    appendShardVersion(CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
+                                       cm->getVersion(shardId)),
+                    Shard::RetryPolicy::kIdempotent));
 
-            BSONObjIterator j(res);
-            // We don't know the order that we will encounter the count and size
-            // So we save them until we've iterated through all the fields before
-            // updating unscaledCollSize.
-            long long shardObjCount;
-            long long shardAvgObjSize;
-            while (j.more()) {
-                BSONElement e = j.next();
-                if (str::equals(e.fieldName(), "ns") || str::equals(e.fieldName(), "ok") ||
-                    str::equals(e.fieldName(), "lastExtentSize") ||
+                uassertStatusOK(commandResponse.commandStatus);
+                return commandResponse.response;
+            }();
+
+            // We don't know the order that we will encounter the count and size, so we save them
+            // until we've iterated through all the fields before updating unscaledCollSize
+            const auto shardObjCount = static_cast<long long>(res["count"].Number());
+            long long shardAvgObjSize = 0;
+
+            for (const auto& e : res) {
+                if (str::equals(e.fieldName(), "ns") ||              //
+                    str::equals(e.fieldName(), "ok") ||              //
+                    str::equals(e.fieldName(), "lastExtentSize") ||  //
                     str::equals(e.fieldName(), "paddingFactor")) {
                     continue;
-                } else if (str::equals(e.fieldName(), "count") ||
-                           str::equals(e.fieldName(), "size") ||
-                           str::equals(e.fieldName(), "storageSize") ||
-                           str::equals(e.fieldName(), "numExtents") ||
+                } else if (str::equals(e.fieldName(), "count") ||        //
+                           str::equals(e.fieldName(), "size") ||         //
+                           str::equals(e.fieldName(), "storageSize") ||  //
+                           str::equals(e.fieldName(), "numExtents") ||   //
                            str::equals(e.fieldName(), "totalIndexSize")) {
                     counts[e.fieldName()] += e.numberLong();
-                    if (str::equals(e.fieldName(), "count")) {
-                        shardObjCount = e.numberLong();
-                    }
                 } else if (str::equals(e.fieldName(), "avgObjSize")) {
                     shardAvgObjSize = e.numberLong();
                 } else if (str::equals(e.fieldName(), "indexSizes")) {
@@ -754,16 +415,6 @@ public:
                         BSONElement temp = k.next();
                         indexSizes[temp.fieldName()] += temp.numberLong();
                     }
-                }
-                // no longer used since 2.2
-                else if (str::equals(e.fieldName(), "flags")) {
-                    if (!result.hasField(e.fieldName()))
-                        result.append(e);
-                }
-                // flags broken out in 2.4+
-                else if (str::equals(e.fieldName(), "systemFlags")) {
-                    if (!result.hasField(e.fieldName()))
-                        result.append(e);
                 } else if (str::equals(e.fieldName(), "userFlags")) {
                     if (!result.hasField(e.fieldName()))
                         result.append(e);
@@ -774,8 +425,6 @@ public:
                     if (!result.hasField(e.fieldName()))
                         result.append(e);
                 } else if (str::equals(e.fieldName(), "indexDetails")) {
-                    // skip this field in the rollup
-                } else if (str::equals(e.fieldName(), "wiredTiger")) {
                     // skip this field in the rollup
                 } else if (str::equals(e.fieldName(), "nindexes")) {
                     int myIndexes = e.numberInt();
@@ -806,14 +455,15 @@ public:
 
         result.append("ns", nss.ns());
 
-        for (map<string, long long>::iterator i = counts.begin(); i != counts.end(); ++i)
-            result.appendNumber(i->first, i->second);
+        for (const auto& countEntry : counts) {
+            result.appendNumber(countEntry.first, countEntry.second);
+        }
 
         {
             BSONObjBuilder ib(result.subobjStart("indexSizes"));
-            for (map<string, long long>::iterator i = indexSizes.begin(); i != indexSizes.end();
-                 ++i)
-                ib.appendNumber(i->first, i->second);
+            for (const auto& entry : indexSizes) {
+                ib.appendNumber(entry.first, entry.second);
+            }
             ib.done();
         }
 
@@ -832,6 +482,7 @@ public:
 
         return true;
     }
+
 } collectionStatsCmd;
 
 class DataSizeCmd : public PublicGridCommand {
@@ -842,20 +493,20 @@ public:
         return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
     }
 
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+
     void addRequiredPrivileges(const std::string& dbname,
                                const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
+                               std::vector<Privilege>* out) const override {
         ActionSet actions;
         actions.addAction(ActionType::find);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
@@ -922,26 +573,26 @@ public:
         return true;
     }
 
-} DataSizeCmd;
+} dataSizeCmd;
 
 class ConvertToCappedCmd : public NotAllowedOnShardedCollectionCmd {
 public:
     ConvertToCappedCmd() : NotAllowedOnShardedCollectionCmd("convertToCapped") {}
 
-    void addRequiredPrivileges(const std::string& dbname,
-                               const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
-        ActionSet actions;
-        actions.addAction(ActionType::convertToCapped);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return true;
     }
 
-    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
+    void addRequiredPrivileges(const std::string& dbname,
+                               const BSONObj& cmdObj,
+                               std::vector<Privilege>* out) const override {
+        ActionSet actions;
+        actions.addAction(ActionType::convertToCapped);
+        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
     }
 
 } convertToCappedCmd;
@@ -952,7 +603,7 @@ public:
 
     void addRequiredPrivileges(const std::string& dbname,
                                const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
+                               std::vector<Privilege>* out) const override {
         ActionSet actions;
         actions.addAction(ActionType::find);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
@@ -1028,13 +679,17 @@ class SplitVectorCmd : public NotAllowedOnShardedCollectionCmd {
 public:
     SplitVectorCmd() : NotAllowedOnShardedCollectionCmd("splitVector") {}
 
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
+    }
+
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
+                               const BSONObj& cmdObj) const override {
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnResource(
                 ResourcePattern::forExactNamespace(NamespaceString(parseNs(dbname, cmdObj))),
                 ActionType::splitVector)) {
@@ -1043,236 +698,19 @@ public:
         return Status::OK();
     }
 
-    std::string parseNs(const string& dbname, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
-    }
-
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
-        const std::string ns = parseNs(dbName, cmdObj);
+        const NamespaceString nss(parseNs(dbName, cmdObj));
         uassert(ErrorCodes::IllegalOperation,
                 "Performing splitVector across dbs isn't supported via mongos",
-                str::startsWith(ns, dbName));
+                nss.db() == dbName);
 
         return NotAllowedOnShardedCollectionCmd::run(opCtx, dbName, cmdObj, result);
     }
 
 } splitVectorCmd;
-
-class DistinctCmd : public PublicGridCommand {
-public:
-    DistinctCmd() : PublicGridCommand("distinct") {}
-
-    std::string help() const override {
-        return "{ distinct : 'collection name' , key : 'a.b' , query : {} }";
-    }
-
-    void addRequiredPrivileges(const std::string& dbname,
-                               const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
-        ActionSet actions;
-        actions.addAction(ActionType::find);
-        out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
-    }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    bool run(OperationContext* opCtx,
-             const string& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
-
-        auto query = getQuery(cmdObj);
-
-        auto swCollation = getCollation(cmdObj);
-        if (!swCollation.isOK()) {
-            return appendEmptyResultSet(result, swCollation.getStatus(), nss.ns());
-        }
-        auto collation = std::move(swCollation.getValue());
-
-        // Construct collator for deduping.
-        std::unique_ptr<CollatorInterface> collator;
-        if (!collation.isEmpty()) {
-            auto swCollator =
-                CollatorFactoryInterface::get(opCtx->getServiceContext())->makeFromBSON(collation);
-            if (!swCollator.isOK()) {
-                return appendEmptyResultSet(result, swCollator.getStatus(), nss.ns());
-            }
-            collator = std::move(swCollator.getValue());
-        }
-
-        // Save a copy of routingInfo before calling scatterGather(), to guarantee that we extract
-        // the collation from the same routingInfo that was used by scatterGather().
-        // (scatterGather() will throw if the routingInfo needs to be refreshed).
-        const auto routingInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-
-        std::vector<AsyncRequestsSender::Response> shardResponses;
-        try {
-            shardResponses = scatterGatherVersionedTargetByRoutingTable(
-                opCtx,
-                dbName,
-                nss,
-                CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
-                ReadPreferenceSetting::get(opCtx),
-                Shard::RetryPolicy::kIdempotent,
-                query,
-                collation);
-        } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
-            auto parsedDistinct = ParsedDistinct::parse(
-                opCtx, ex->getNamespace(), cmdObj, ExtensionsCallbackNoop(), true);
-            if (!parsedDistinct.isOK()) {
-                return CommandHelpers::appendCommandStatus(result, parsedDistinct.getStatus());
-            }
-
-            auto aggCmdOnView = parsedDistinct.getValue().asAggregationCommand();
-            if (!aggCmdOnView.isOK()) {
-                return CommandHelpers::appendCommandStatus(result, aggCmdOnView.getStatus());
-            }
-
-            auto aggRequestOnView = AggregationRequest::parseFromBSON(nss, aggCmdOnView.getValue());
-            if (!aggRequestOnView.isOK()) {
-                return CommandHelpers::appendCommandStatus(result, aggRequestOnView.getStatus());
-            }
-
-            auto resolvedAggRequest = ex->asExpandedViewAggregation(aggRequestOnView.getValue());
-            auto resolvedAggCmd = resolvedAggRequest.serializeToCommandObj().toBson();
-
-            BSONObj aggResult = CommandHelpers::runCommandDirectly(
-                opCtx, OpMsgRequest::fromDBAndBody(dbName, std::move(resolvedAggCmd)));
-
-            ViewResponseFormatter formatter(aggResult);
-            auto formatStatus = formatter.appendAsDistinctResponse(&result);
-            if (!formatStatus.isOK()) {
-                return CommandHelpers::appendCommandStatus(result, formatStatus);
-            }
-            return true;
-        }
-
-        BSONObjComparator bsonCmp(
-            BSONObj(),
-            BSONObjComparator::FieldNamesMode::kConsider,
-            !collation.isEmpty()
-                ? collator.get()
-                : (routingInfo.cm() ? routingInfo.cm()->getDefaultCollator() : nullptr));
-        BSONObjSet all = bsonCmp.makeBSONObjSet();
-
-        for (const auto& response : shardResponses) {
-            auto status = response.swResponse.isOK()
-                ? getStatusFromCommandResult(response.swResponse.getValue().data)
-                : response.swResponse.getStatus();
-            uassertStatusOK(status);
-
-            BSONObj res = std::move(response.swResponse.getValue().data);
-            BSONObjIterator it(res["values"].embeddedObject());
-            while (it.more()) {
-                BSONElement nxt = it.next();
-                BSONObjBuilder temp(32);
-                temp.appendAs(nxt, "");
-                all.insert(temp.obj());
-            }
-        }
-
-        BSONObjBuilder b(32);
-        int n = 0;
-        for (auto&& obj : all) {
-            b.appendAs(obj.firstElement(), b.numStr(n++));
-        }
-
-        result.appendArray("values", b.obj());
-        return true;
-    }
-
-    Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
-                   ExplainOptions::Verbosity verbosity,
-                   BSONObjBuilder* out) const {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
-
-        // Extract the targeting query.
-        BSONObj targetingQuery;
-        if (BSONElement queryElt = cmdObj["query"]) {
-            if (queryElt.type() == BSONType::Object) {
-                targetingQuery = queryElt.embeddedObject();
-            } else if (queryElt.type() != BSONType::jstNULL) {
-                return Status(ErrorCodes::TypeMismatch,
-                              str::stream() << "\"query\" had the wrong type. Expected "
-                                            << typeName(BSONType::Object)
-                                            << " or "
-                                            << typeName(BSONType::jstNULL)
-                                            << ", found "
-                                            << typeName(queryElt.type()));
-            }
-        }
-
-        // Extract the targeting collation.
-        auto targetingCollation = uassertStatusOK(getCollation(cmdObj));
-
-        const auto explainCmd = ClusterExplain::wrapAsExplain(cmdObj, verbosity);
-
-        // We will time how long it takes to run the commands on the shards.
-        Timer timer;
-
-        std::vector<AsyncRequestsSender::Response> shardResponses;
-        try {
-            shardResponses =
-                scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                           dbname,
-                                                           nss,
-                                                           explainCmd,
-                                                           ReadPreferenceSetting::get(opCtx),
-                                                           Shard::RetryPolicy::kIdempotent,
-                                                           targetingQuery,
-                                                           targetingCollation);
-        } catch (const ExceptionFor<ErrorCodes::CommandOnShardedViewNotSupportedOnMongod>& ex) {
-            auto parsedDistinct = ParsedDistinct::parse(
-                opCtx, ex->getNamespace(), cmdObj, ExtensionsCallbackNoop(), true);
-            if (!parsedDistinct.isOK()) {
-                return parsedDistinct.getStatus();
-            }
-
-            auto aggCmdOnView = parsedDistinct.getValue().asAggregationCommand();
-            if (!aggCmdOnView.isOK()) {
-                return aggCmdOnView.getStatus();
-            }
-
-            auto aggRequestOnView =
-                AggregationRequest::parseFromBSON(nss, aggCmdOnView.getValue(), verbosity);
-            if (!aggRequestOnView.isOK()) {
-                return aggRequestOnView.getStatus();
-            }
-
-            auto resolvedAggRequest = ex->asExpandedViewAggregation(aggRequestOnView.getValue());
-            auto resolvedAggCmd = resolvedAggRequest.serializeToCommandObj().toBson();
-
-            ClusterAggregate::Namespaces nsStruct;
-            nsStruct.requestedNss = nss;
-            nsStruct.executionNss = resolvedAggRequest.getNamespaceString();
-
-            return ClusterAggregate::runAggregate(
-                opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, out);
-        }
-
-        long long millisElapsed = timer.millis();
-
-        const char* mongosStageName =
-            ClusterExplain::getStageNameForReadOp(shardResponses.size(), cmdObj);
-
-        return ClusterExplain::buildExplainResult(
-            opCtx,
-            ClusterExplain::downconvert(opCtx, shardResponses),
-            mongosStageName,
-            millisElapsed,
-            out);
-    }
-
-} disinctCmd;
 
 class FileMD5Cmd : public PublicGridCommand {
 public:
@@ -1298,7 +736,7 @@ public:
 
     void addRequiredPrivileges(const std::string& dbname,
                                const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
+                               std::vector<Privilege>* out) const override {
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), ActionType::find));
     }
 
@@ -1307,7 +745,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
@@ -1324,7 +762,7 @@ public:
                                                         BSON("files_id" << 1))) {
             BSONObj finder = BSON("files_id" << cmdObj.firstElement());
 
-            vector<Strategy::CommandResult> results;
+            std::vector<Strategy::CommandResult> results;
             Strategy::commandOp(opCtx,
                                 dbName,
                                 CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
@@ -1361,7 +799,7 @@ public:
 
                 BSONObj finder = BSON("files_id" << cmdObj.firstElement() << "n" << n);
 
-                vector<Strategy::CommandResult> results;
+                std::vector<Strategy::CommandResult> results;
                 try {
                     Strategy::commandOp(opCtx,
                                         dbName,
@@ -1395,9 +833,8 @@ public:
                     log() << "Sharded filemd5 failed: " << redact(result.asTempObj());
 
                     result.append("errmsg",
-                                  string("sharded filemd5 failed because: ") +
-                                      res["errmsg"].valuestrsafe());
-
+                                  str::stream() << "sharded filemd5 failed because: "
+                                                << res["errmsg"].valuestrsafe());
                     return false;
                 }
 
@@ -1430,6 +867,7 @@ public:
                       "{files_id:1, n:1}");
         return false;
     }
+
 } fileMD5Cmd;
 
 /**
@@ -1447,7 +885,7 @@ public:
 
     void addRequiredPrivileges(const std::string& dbname,
                                const BSONObj& cmdObj,
-                               std::vector<Privilege>* out) override {
+                               std::vector<Privilege>* out) const override {
         ActionSet actions;
         actions.addAction(ActionType::find);
         out->push_back(Privilege(parseResourcePattern(dbname, cmdObj), actions));
@@ -1458,7 +896,7 @@ public:
     }
 
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
         RARELY {
@@ -1470,7 +908,6 @@ public:
 
         const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
 
-
         auto routingInfo =
             uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
         if (!routingInfo.cm()) {
@@ -1479,13 +916,11 @@ public:
 
         const auto cm = routingInfo.cm();
 
-        BSONObj query = getQuery(cmdObj);
-        auto collation = getCollation(cmdObj);
-        if (!collation.isOK()) {
-            return appendEmptyResultSet(result, collation.getStatus(), nss.ns());
-        }
-        set<ShardId> shardIds;
-        cm->getShardIdsForQuery(opCtx, query, collation.getValue(), &shardIds);
+        auto query = extractQuery(cmdObj);
+        auto collation = extractCollation(cmdObj);
+
+        std::set<ShardId> shardIds;
+        cm->getShardIdsForQuery(opCtx, query, collation, &shardIds);
 
         // We support both "num" and "limit" options to control limit
         long long limit = 100;
@@ -1494,7 +929,7 @@ public:
             limit = cmdObj[limitName].safeNumberLong();
 
         // Construct the requests.
-        vector<AsyncRequestsSender::Request> requests;
+        std::vector<AsyncRequestsSender::Request> requests;
         BSONArrayBuilder shardArray;
         for (const ShardId& shardId : shardIds) {
             requests.emplace_back(shardId,
@@ -1511,8 +946,8 @@ public:
                                 Shard::RetryPolicy::kIdempotent);
 
         // Receive the responses.
-        multimap<double, BSONObj> results;  // TODO: maybe use merge-sort instead
-        string nearStr;
+        std::multimap<double, BSONObj> results;  // TODO: maybe use merge-sort instead
+        std::string nearStr;
         double time = 0;
         double btreelocs = 0;
         double nscanned = 0;
@@ -1534,7 +969,8 @@ public:
             }
 
             BSONForEach(obj, shardResult["results"].embeddedObject()) {
-                results.insert(make_pair(obj["dis"].Number(), obj.embeddedObject().getOwned()));
+                results.insert(
+                    std::make_pair(obj["dis"].Number(), obj.embeddedObject().getOwned()));
             }
 
             // TODO: maybe shrink results if size() > limit
@@ -1548,7 +984,8 @@ public:
         double maxDistance = 0;
         {
             BSONArrayBuilder sub(result.subarrayStart("results"));
-            for (multimap<double, BSONObj>::const_iterator it(results.begin()), end(results.end());
+            for (std::multimap<double, BSONObj>::const_iterator it(results.begin()),
+                 end(results.end());
                  it != end && outCount < limit;
                  ++it, ++outCount) {
                 totalDistance += it->first;
@@ -1576,45 +1013,25 @@ public:
 
 } geo2dFindNearCmd;
 
-class EvalCmd : public PublicGridCommand {
+class CmdListCollections : public BasicCommand {
 public:
-    EvalCmd() : PublicGridCommand("eval", "$eval") {}
-
-    virtual void addRequiredPrivileges(const std::string& dbname,
-                                       const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
-        // $eval can do pretty much anything, so require all privileges.
-        RoleGraph::generateUniversalPrivileges(out);
-    }
+    CmdListCollections() : BasicCommand("listCollections") {}
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    bool run(OperationContext* opCtx,
-             const string& dbName,
-             const BSONObj& cmdObj,
-             BSONObjBuilder& result) override {
-        RARELY {
-            warning() << "the eval command is deprecated" << startupWarningsLog;
-        }
-
-        // $eval isn't allowed to access sharded collections, but we need to leave the shard to
-        // detect that
-        const auto dbInfo =
-            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName));
-        return passthrough(opCtx, dbName, dbInfo.primaryId(), cmdObj, result);
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
-} evalCmd;
-
-class CmdListCollections final : public PublicGridCommand {
-public:
-    CmdListCollections() : PublicGridCommand("listCollections") {}
+    bool adminOnly() const override {
+        return false;
+    }
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) final {
+                               const BSONObj& cmdObj) const final {
         AuthorizationSession* authzSession = AuthorizationSession::get(client);
 
         // Check for the listCollections ActionType on the database
@@ -1631,14 +1048,10 @@ public:
                       str::stream() << "Not authorized to list collections on db: " << dbname);
     }
 
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
-             BSONObjBuilder& result) final {
+             BSONObjBuilder& result) override {
         auto nss = NamespaceString::makeListCollectionsNSS(dbName);
 
         auto dbInfoStatus = Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName);
@@ -1653,18 +1066,34 @@ public:
 
 } cmdListCollections;
 
-class CmdListIndexes final : public PublicGridCommand {
+class CmdListIndexes : public BasicCommand {
 public:
-    CmdListIndexes() : PublicGridCommand("listIndexes") {}
+    CmdListIndexes() : BasicCommand("listIndexes") {}
 
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
+        return CommandHelpers::parseNsCollectionRequired(dbname, cmdObj).ns();
+    }
+
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
+        return false;
+    }
+
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
+    }
+
+    bool adminOnly() const override {
+        return false;
+    }
+
+    Status checkAuthForCommand(Client* client,
+                               const std::string& dbname,
+                               const BSONObj& cmdObj) const override {
         AuthorizationSession* authzSession = AuthorizationSession::get(client);
 
         // Check for the listIndexes ActionType on the database, or find on system.indexes for pre
         // 3.0 systems.
-        const NamespaceString ns(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
+        const NamespaceString ns(parseNs(dbname, cmdObj));
 
         if (authzSession->isAuthorizedForActionsOnResource(ResourcePattern::forExactNamespace(ns),
                                                            ActionType::listIndexes) ||
@@ -1679,15 +1108,11 @@ public:
                                     << ns.coll());
     }
 
-    bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
     bool run(OperationContext* opCtx,
-             const string& dbName,
+             const std::string& dbName,
              const BSONObj& cmdObj,
-             BSONObjBuilder& result) final {
-        const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbName, cmdObj));
+             BSONObjBuilder& result) override {
+        const NamespaceString nss(parseNs(dbName, cmdObj));
 
         const auto routingInfo =
             uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));

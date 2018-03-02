@@ -449,6 +449,11 @@ void ReplicationCoordinatorImpl::appendConnectionStats(executor::ConnectionPoolS
 }
 
 bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) {
+    // Create necessary replication collections to guarantee that if a checkpoint sees data after
+    // initial sync has completed, it also sees these collections.
+    fassertStatusOK(50708,
+                    _replicationProcess->getConsistencyMarkers()->createInternalCollections(opCtx));
+
     _replicationProcess->getConsistencyMarkers()->initializeMinValidDocument(opCtx);
 
     StatusWith<LastVote> lastVote = _externalState->loadLocalLastVoteDocument(opCtx);
@@ -466,14 +471,14 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
     }
 
     // Check that we have a local Rollback ID. If we do not have one, create one.
-    auto rbid = _replicationProcess->getRollbackID(opCtx);
-    if (!rbid.isOK()) {
-        if (rbid.getStatus() == ErrorCodes::NamespaceNotFound) {
+    auto status = _replicationProcess->refreshRollbackID(opCtx);
+    if (!status.isOK()) {
+        if (status == ErrorCodes::NamespaceNotFound) {
             log() << "Did not find local Rollback ID document at startup. Creating one.";
             auto initializingStatus = _replicationProcess->initializeRollbackID(opCtx);
             fassertStatusOK(40424, initializingStatus);
         } else {
-            severe() << "Error loading local Rollback ID document at startup; " << rbid.getStatus();
+            severe() << "Error loading local Rollback ID document at startup; " << status;
             fassertFailedNoTrace(40428);
         }
     }
@@ -485,7 +490,7 @@ bool ReplicationCoordinatorImpl::_startLoadLocalConfig(OperationContext* opCtx) 
         return true;
     }
     ReplSetConfig localConfig;
-    Status status = localConfig.initialize(cfg.getValue());
+    status = localConfig.initialize(cfg.getValue());
     if (!status.isOK()) {
         error() << "Locally stored replica set configuration does not parse; See "
                    "http://www.mongodb.org/dochub/core/recover-replica-set-from-invalid-config "
@@ -1208,7 +1213,8 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForRead(OperationContext* opCt
     }
 
     // nothing to wait for
-    if (!readConcern.getArgsAfterClusterTime() && !readConcern.getArgsOpTime()) {
+    if (!readConcern.getArgsAfterClusterTime() && !readConcern.getArgsOpTime() &&
+        !readConcern.getArgsAtClusterTime()) {
         return Status::OK();
     }
 
@@ -1219,14 +1225,13 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForReadUntil(OperationContext*
                                                                const ReadConcernArgs& readConcern,
                                                                boost::optional<Date_t> deadline) {
     if (getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) {
-        // For master/slave and standalone nodes, readAfterOpTime is not supported, so we return an
-        // error. However, we consider all writes "committed" and can treat MajorityReadConcern as
-        // LocalReadConcern, which is immediately satisfied since there is no OpTime to wait for.
+        // 'afterOpTime', 'afterClusterTime', and 'atClusterTime' are only supported for replica
+        // sets.
         return {ErrorCodes::NotAReplicaSet,
                 "node needs to be a replica set member to use read concern"};
     }
 
-    if (readConcern.getArgsAfterClusterTime()) {
+    if (readConcern.getArgsAfterClusterTime() || readConcern.getArgsAtClusterTime()) {
         return _waitUntilClusterTimeForRead(opCtx, readConcern, deadline);
     } else {
         return _waitUntilOpTimeForReadDeprecated(opCtx, readConcern);
@@ -1234,10 +1239,10 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForReadUntil(OperationContext*
 }
 
 Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
-                                                    bool isMajorityReadConcern,
+                                                    bool isMajorityCommittedRead,
                                                     OpTime targetOpTime,
                                                     boost::optional<Date_t> deadline) {
-    if (!isMajorityReadConcern) {
+    if (!isMajorityCommittedRead) {
         // This assumes the read concern is "local" level.
         // We need to wait for all committed writes to be visible, even in the oplog (which uses
         // special visibility rules).
@@ -1246,17 +1251,17 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
 
     stdx::unique_lock<stdx::mutex> lock(_mutex);
 
-    if (isMajorityReadConcern && !_externalState->snapshotsEnabled()) {
+    if (isMajorityCommittedRead && !_externalState->snapshotsEnabled()) {
         return {ErrorCodes::CommandNotSupported,
-                "Current storage engine does not support majority readConcerns"};
+                "Current storage engine does not support majority committed reads"};
     }
 
-    auto getCurrentOpTime = [this, isMajorityReadConcern]() {
-        return isMajorityReadConcern ? _getCurrentCommittedSnapshotOpTime_inlock()
-                                     : _getMyLastAppliedOpTime_inlock();
+    auto getCurrentOpTime = [this, isMajorityCommittedRead]() {
+        return isMajorityCommittedRead ? _getCurrentCommittedSnapshotOpTime_inlock()
+                                       : _getMyLastAppliedOpTime_inlock();
     };
 
-    if (isMajorityReadConcern && targetOpTime > getCurrentOpTime()) {
+    if (isMajorityCommittedRead && targetOpTime > getCurrentOpTime()) {
         LOG(1) << "waitUntilOpTime: waiting for optime:" << targetOpTime
                << " to be in a snapshot -- current snapshot: " << getCurrentOpTime();
     }
@@ -1266,9 +1271,8 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
             return {ErrorCodes::ShutdownInProgress, "Shutdown in progress"};
         }
 
-        // If we are doing a majority read concern we only need to wait for a new snapshot.
-        if (isMajorityReadConcern) {
-            // Wait for a snapshot that meets our needs (< targetOpTime).
+        // If we are doing a majority committed read we only need to wait for a new snapshot.
+        if (isMajorityCommittedRead) {
             LOG(3) << "waitUntilOpTime: waiting for a new snapshot until " << opCtx->getDeadline();
 
             auto waitStatus =
@@ -1312,7 +1316,11 @@ Status ReplicationCoordinatorImpl::_waitUntilOpTime(OperationContext* opCtx,
 Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext* opCtx,
                                                                 const ReadConcernArgs& readConcern,
                                                                 boost::optional<Date_t> deadline) {
-    auto clusterTime = *readConcern.getArgsAfterClusterTime();
+    invariant(readConcern.getArgsAfterClusterTime() || readConcern.getArgsAtClusterTime());
+    invariant(!readConcern.getArgsAfterClusterTime() || !readConcern.getArgsAtClusterTime());
+    auto clusterTime = readConcern.getArgsAfterClusterTime()
+        ? *readConcern.getArgsAfterClusterTime()
+        : *readConcern.getArgsAtClusterTime();
     invariant(clusterTime != LogicalTime::kUninitialized);
 
     // convert clusterTime to opTime so it can be used by the _opTimeWaiterList for wait on
@@ -1320,20 +1328,22 @@ Status ReplicationCoordinatorImpl::_waitUntilClusterTimeForRead(OperationContext
     auto targetOpTime = OpTime(clusterTime.asTimestamp(), OpTime::kUninitializedTerm);
     invariant(!readConcern.getArgsOpTime());
 
-    const bool isMajorityReadConcern =
-        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern;
+    const bool isMajorityCommittedRead =
+        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern ||
+        readConcern.getLevel() == ReadConcernLevel::kSnapshotReadConcern;
 
-    return _waitUntilOpTime(opCtx, isMajorityReadConcern, targetOpTime, deadline);
+    return _waitUntilOpTime(opCtx, isMajorityCommittedRead, targetOpTime, deadline);
 }
 
 // TODO: remove when SERVER-29729 is done
 Status ReplicationCoordinatorImpl::_waitUntilOpTimeForReadDeprecated(
     OperationContext* opCtx, const ReadConcernArgs& readConcern) {
-    const bool isMajorityReadConcern =
-        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern;
+    const bool isMajorityCommittedRead =
+        readConcern.getLevel() == ReadConcernLevel::kMajorityReadConcern ||
+        readConcern.getLevel() == ReadConcernLevel::kSnapshotReadConcern;
 
     const auto targetOpTime = readConcern.getArgsOpTime().value_or(OpTime());
-    return _waitUntilOpTime(opCtx, isMajorityReadConcern, targetOpTime);
+    return _waitUntilOpTime(opCtx, isMajorityCommittedRead, targetOpTime);
 }
 
 OpTime ReplicationCoordinatorImpl::_getMyLastAppliedOpTime_inlock() const {
@@ -1575,6 +1585,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     const Date_t stepDownUntil = startTime + stepdownTime;
     const Date_t waitUntil = startTime + waitTime;
 
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     if (!getMemberState().primary()) {
         // Note this check is inherently racy - it's always possible for the node to
         // stepdown from some other path before we acquire the global exclusive lock.  This check
@@ -1583,14 +1594,14 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     }
 
     auto globalLock = stdx::make_unique<Lock::GlobalLock>(
-        opCtx, MODE_X, durationCount<Milliseconds>(stepdownTime), Lock::GlobalLock::EnqueueOnly());
+        opCtx, MODE_X, stepDownUntil, Lock::GlobalLock::EnqueueOnly());
 
     // We've requested the global exclusive lock which will stop new operations from coming in,
     // but existing operations could take a long time to finish, so kill all user operations
     // to help us get the global lock faster.
     _externalState->killAllUserOperations(opCtx);
 
-    globalLock->waitForLock(durationCount<Milliseconds>(stepdownTime));
+    globalLock->waitForLockUntil(stepDownUntil);
     if (!globalLock->isLocked()) {
         return {ErrorCodes::ExceededTimeLimit,
                 "Could not acquire the global shared lock within the amount of time "
@@ -1609,6 +1620,8 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     status = _topCoord->prepareForStepDownAttempt();
     if (!status.isOK()) {
         // This will cause us to fail if we're already in the process of stepping down.
+        // It is also possible to get here even if we're done stepping down via another path,
+        // and this will also elicit a failure from this call.
         return status;
     }
 
@@ -1690,7 +1703,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
                 // failed stepdown attempt, we might as well spend whatever time we need to acquire
                 // it
                 // now.
-                globalLock.reset(new Lock::GlobalLock(opCtx, MODE_X, UINT_MAX));
+                globalLock.reset(new Lock::GlobalLock(opCtx, MODE_X, Date_t::max()));
                 invariant(globalLock->isLocked());
                 lk.lock();
             });
@@ -3174,8 +3187,7 @@ Status ReplicationCoordinatorImpl::processReplSetRequestVotes(
     return Status::OK();
 }
 
-void ReplicationCoordinatorImpl::prepareReplMetadata(OperationContext* opCtx,
-                                                     const BSONObj& metadataRequestObj,
+void ReplicationCoordinatorImpl::prepareReplMetadata(const BSONObj& metadataRequestObj,
                                                      const OpTime& lastOpTimeFromClient,
                                                      BSONObjBuilder* builder) const {
 
@@ -3189,7 +3201,7 @@ void ReplicationCoordinatorImpl::prepareReplMetadata(OperationContext* opCtx,
     // Avoid retrieving Rollback ID if we do not need it for _prepareOplogQueryMetadata_inlock().
     int rbid = -1;
     if (hasOplogQueryMetadata) {
-        rbid = fassertStatusOK(40427, _replicationProcess->getRollbackID(opCtx));
+        rbid = _replicationProcess->getRollbackID();
         invariant(-1 != rbid);
     }
 
@@ -3362,8 +3374,10 @@ Timestamp ReplicationCoordinatorImpl::getMinimumVisibleSnapshot(OperationContext
     Timestamp reservedName;
     if (getReplicationMode() == Mode::modeReplSet) {
         invariant(opCtx->lockState()->isLocked());
-        if (getMemberState().primary()) {
-            // Use the current optime on the node, for primary nodes.
+        if (getMemberState().primary() || opCtx->recoveryUnit()->getCommitTimestamp().isNull()) {
+            // Use the current optime on the node, for primary nodes. Additionally, completion of
+            // background index builds on secondaries will not have a `commit time` and must also
+            // use the current optime.
             reservedName = LogicalClock::get(getServiceContext())->getClusterTime().asTimestamp();
         } else {
             // This function is only called when applying command operations on secondaries.

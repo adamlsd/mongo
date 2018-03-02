@@ -40,10 +40,7 @@
 #include "mongo/rpc/write_concern_error_detail.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog_cache.h"
-#include "mongo/s/client/parallel.h"
-#include "mongo/s/client/shard_connection.h"
 #include "mongo/s/client/shard_registry.h"
-#include "mongo/s/client/version_manager.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/request_types/create_database_gen.h"
 #include "mongo/s/shard_id.h"
@@ -73,6 +70,12 @@ void appendWriteConcernErrorToCmdResponse(const ShardId& shardId,
 
 namespace {
 
+BSONObj appendDbVersion(BSONObj cmdObj, DatabaseVersion version) {
+    BSONObjBuilder cmdWithVersionBob(std::move(cmdObj));
+    cmdWithVersionBob.append("databaseVersion", version.toBSON());
+    return cmdWithVersionBob.obj();
+}
+
 std::vector<AsyncRequestsSender::Request> buildUnversionedRequestsForAllShards(
     OperationContext* opCtx, const BSONObj& cmdObj) {
     std::vector<AsyncRequestsSender::Request> requests;
@@ -101,11 +104,22 @@ std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShard
         }
     } else {
         // The collection is unsharded. Target only the primary shard for the database.
-        // Don't append shard version info when contacting the config servers.
-        requests.emplace_back(routingInfo.primaryId(),
-                              !routingInfo.primary()->isConfig()
-                                  ? appendShardVersion(cmdObj, ChunkVersion::UNSHARDED())
-                                  : cmdObj);
+
+        // Attach shardVersion "UNSHARDED", unless targeting the config server.
+        const auto cmdObjWithShardVersion = (routingInfo.db().primaryId() != "config")
+            ? appendShardVersion(cmdObj, ChunkVersion::UNSHARDED())
+            : cmdObj;
+
+        // Attach the databaseVersion if we have one cached for the database.
+        // TODO: After 4.0 is released, require the routingInfo to have a databaseVersion for all
+        // databases besides "config" and "admin" (whose primary shard cannot be changed).
+        // (In v4.0, if the cluster is in fcv=3.6, we may not have a databaseVersion cached for any
+        // database).
+        const auto cmdObjWithShardVersionAndDbVersion = routingInfo.db().databaseVersion()
+            ? appendDbVersion(cmdObjWithShardVersion, *routingInfo.db().databaseVersion())
+            : cmdObjWithShardVersion;
+
+        requests.emplace_back(routingInfo.db().primaryId(), cmdObjWithShardVersionAndDbVersion);
     }
     return requests;
 }
@@ -350,6 +364,31 @@ bool appendRawResponses(OperationContext* opCtx,
     return true;
 }
 
+BSONObj extractQuery(const BSONObj& cmdObj) {
+    auto queryElem = cmdObj["query"];
+    if (!queryElem)
+        queryElem = cmdObj["q"];
+
+    if (!queryElem || queryElem.isNull())
+        return BSONObj();
+
+    uassert(ErrorCodes::TypeMismatch,
+            str::stream() << "Illegal type specified for query " << queryElem,
+            queryElem.type() == Object);
+    return queryElem.embeddedObject();
+}
+
+BSONObj extractCollation(const BSONObj& cmdObj) {
+    const auto collationElem = cmdObj["collation"];
+    if (!collationElem)
+        return BSONObj();
+
+    uassert(ErrorCodes::TypeMismatch,
+            str::stream() << "Illegal type specified for collation " << collationElem,
+            collationElem.type() == Object);
+    return collationElem.embeddedObject();
+}
+
 int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& results) {
     int commonErrCode = -1;
     for (std::vector<Strategy::CommandResult>::const_iterator it = results.begin();
@@ -391,17 +430,6 @@ bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::stri
     }
 
     return CommandHelpers::appendCommandStatus(result, status);
-}
-
-CachedCollectionRoutingInfo getShardedCollection(OperationContext* opCtx,
-                                                 const NamespaceString& nss) {
-    auto routingInfo =
-        uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-    uassert(ErrorCodes::NamespaceNotSharded,
-            str::stream() << "Collection " << nss.ns() << " is not sharded.",
-            routingInfo.cm());
-
-    return routingInfo;
 }
 
 StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, StringData dbName) {

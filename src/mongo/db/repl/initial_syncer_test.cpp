@@ -1542,24 +1542,24 @@ TEST_F(InitialSyncerTest,
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsIncompatibleServerVersionWhenFCVFetcherReturnsUpgradeTargetVersion) {
     auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersionCommandParser::kVersion36
                             << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
+                            << FeatureCompatibilityVersionCommandParser::kVersion40)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::IncompatibleServerVersion);
 }
 
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsIncompatibleServerVersionWhenFCVFetcherReturnsDowngradeTargetVersion) {
     auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion34
+                            << FeatureCompatibilityVersionCommandParser::kVersion36
                             << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion34)};
+                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::IncompatibleServerVersion);
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerReturnsBadValueWhenFCVFetcherReturnsNoVersion) {
     auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion34)};
+                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::BadValue);
 }
 
@@ -1582,7 +1582,7 @@ TEST_F(InitialSyncerTest, InitialSyncerSucceedsWhenFCVFetcherReturnsOldVersion) 
         processSuccessfulLastOplogEntryFetcherResponse({makeOplogEntryObj(1)});
 
         auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                                << FeatureCompatibilityVersionCommandParser::kVersion34)};
+                                << FeatureCompatibilityVersionCommandParser::kVersion36)};
         processSuccessfulFCVFetcherResponse(docs);
         ASSERT_TRUE(net->hasReadyRequests());
     }
@@ -3619,18 +3619,21 @@ TEST_F(
                                           const MultiApplier::Operations& ops,
                                           MultiApplier::ApplyOperationFn applyOperation) {
         // 'OperationPtr*' is ignored by our overridden _multiInitialSyncApply().
-        applyOperation(nullptr).transitional_ignore();
+        ASSERT_OK(applyOperation(nullptr, nullptr));
         return ops.back().getOpTime();
     };
     bool fetchCountIncremented = false;
-    getExternalState()->multiInitialSyncApplyFn = [&fetchCountIncremented](
-        MultiApplier::OperationPtrs*, const HostAndPort&, AtomicUInt32* fetchCount) {
-        if (!fetchCountIncremented) {
-            fetchCount->addAndFetch(1);
-            fetchCountIncremented = true;
-        }
-        return Status::OK();
-    };
+    getExternalState()->multiInitialSyncApplyFn =
+        [&fetchCountIncremented](MultiApplier::OperationPtrs*,
+                                 const HostAndPort&,
+                                 AtomicUInt32* fetchCount,
+                                 WorkerMultikeyPathInfo*) {
+            if (!fetchCountIncremented) {
+                fetchCount->addAndFetch(1);
+                fetchCountIncremented = true;
+            }
+            return Status::OK();
+        };
 
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));

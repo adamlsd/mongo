@@ -49,8 +49,8 @@ constexpr StringData kWaitFieldName = "wait"_sd;
 // operator requested resynchronization of replication (on a slave or secondary). {resync: 1}
 class CmdResync : public ErrmsgCommandDeprecated {
 public:
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return true;
@@ -60,7 +60,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::resync);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));

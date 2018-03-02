@@ -179,7 +179,7 @@ void WiredTigerRecoveryUnit::abandonSnapshot() {
     _areWriteUnitOfWorksBanned = false;
 }
 
-void WiredTigerRecoveryUnit::prepareSnapshot() {
+void WiredTigerRecoveryUnit::preallocateSnapshot() {
     // Begin a new transaction, if one is not already started.
     getSession();
 }
@@ -261,8 +261,18 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     WT_SESSION* session = _session->getSession();
 
     if (_readAtTimestamp != Timestamp::min()) {
-        uassertStatusOK(_sessionCache->snapshotManager().beginTransactionAtTimestamp(
-            _readAtTimestamp, session));
+        auto status =
+            _sessionCache->snapshotManager().beginTransactionAtTimestamp(_readAtTimestamp, session);
+        if (!status.isOK() && status.code() == ErrorCodes::BadValue) {
+            uasserted(
+                ErrorCodes::SnapshotTooOld,
+                str::stream()
+                    << "Read timestamp "
+                    << _readAtTimestamp.toString()
+                    << " is older than the oldest available timestamp: "
+                    << _sessionCache->getKVEngine()->getPreviousSetOldestTimestamp().toString());
+        }
+        uassertStatusOK(status);
     } else if (_readFromMajorityCommittedSnapshot) {
         _majorityCommittedSnapshot =
             _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(session);

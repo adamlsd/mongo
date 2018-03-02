@@ -35,11 +35,9 @@
 #include "mongo/bson/oid.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/active_migrations_registry.h"
+#include "mongo/db/s/active_move_primaries_registry.h"
 #include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/migration_destination_manager.h"
-#include "mongo/executor/task_executor.h"
-#include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
@@ -107,13 +105,7 @@ public:
      */
     Status canAcceptShardedCommands() const;
 
-    ConnectionString getConfigServer(OperationContext* opCtx);
-
     std::string getShardName();
-
-    MigrationDestinationManager* migrationDestinationManager() {
-        return &_migrationDestManager;
-    }
 
     /**
      * Initializes the sharding state of this server from the shard identity document argument
@@ -150,40 +142,6 @@ public:
      */
     void interruptChunkSplitter();
 
-    /**
-     * Refreshes the local metadata based on whether the expected version is higher than what we
-     * have cached.
-     */
-    Status onStaleShardVersion(OperationContext* opCtx,
-                               const NamespaceString& nss,
-                               const ChunkVersion& expectedVersion);
-
-    /**
-     * Refreshes collection metadata by asking the config server for the latest information.
-     * Starts a new config server request.
-     *
-     * Locking Notes:
-     *   + Must NOT be called with the write lock because this call may go into the network,
-     *     and deadlocks may occur with shard-as-a-config.  Therefore, nothing here guarantees
-     *     that 'latestShardVersion' is indeed the current one on return.
-     *
-     *   + Because this call must not be issued with the DBLock held, by the time the config
-     *     server sent us back the collection metadata information, someone else may have
-     *     updated the previously stored collection metadata.  There are cases when one can't
-     *     tell which of updated or loaded metadata are the freshest. There are also cases where
-     *     the data coming from configs do not correspond to a consistent snapshot.
-     *     In these cases, return RemoteChangeDetected. (This usually means this call needs to
-     *     be issued again, at caller discretion)
-     *
-     * @return OK if remote metadata successfully loaded (may or may not have been installed)
-     * @return RemoteChangeDetected if something changed while reloading and we may retry
-     * @return !OK if something else went wrong during reload
-     * @return latestShardVersion the version that is now stored for this collection
-     */
-    Status refreshMetadataNow(OperationContext* opCtx,
-                              const NamespaceString& nss,
-                              ChunkVersion* latestShardVersion);
-
     void appendInfo(OperationContext* opCtx, BSONObjBuilder& b);
 
     bool needCollectionMetadata(OperationContext* opCtx, const std::string& ns);
@@ -199,26 +157,26 @@ public:
 
     /**
      * If there are no migrations running on this shard, registers an active migration with the
-     * specified arguments and returns a ScopedRegisterDonateChunk, which must be signaled by the
+     * specified arguments and returns a ScopedDonateChunk, which must be signaled by the
      * caller before it goes out of scope.
      *
      * If there is an active migration already running on this shard and it has the exact same
-     * arguments, returns a ScopedRegisterDonateChunk, which can be used to join the existing one.
+     * arguments, returns a ScopedDonateChunk, which can be used to join the existing one.
      *
-     * Othwerwise returns a ConflictingOperationInProgress error.
+     * Otherwise returns a ConflictingOperationInProgress error.
      */
-    StatusWith<ScopedRegisterDonateChunk> registerDonateChunk(const MoveChunkRequest& args);
+    StatusWith<ScopedDonateChunk> registerDonateChunk(const MoveChunkRequest& args);
 
     /**
      * If there are no migrations running on this shard, registers an active receive operation with
-     * the specified session id and returns a ScopedRegisterReceiveChunk, which will unregister it
+     * the specified session id and returns a ScopedReceiveChunk, which will unregister it
      * when it goes out of scope.
      *
      * Otherwise returns a ConflictingOperationInProgress error.
      */
-    StatusWith<ScopedRegisterReceiveChunk> registerReceiveChunk(const NamespaceString& nss,
-                                                                const ChunkRange& chunkRange,
-                                                                const ShardId& fromShardId);
+    StatusWith<ScopedReceiveChunk> registerReceiveChunk(const NamespaceString& nss,
+                                                        const ChunkRange& chunkRange,
+                                                        const ShardId& fromShardId);
 
     /**
      * If a migration has been previously registered through a call to registerDonateChunk returns
@@ -238,16 +196,30 @@ public:
     BSONObj getActiveMigrationStatusReport(OperationContext* opCtx);
 
     /**
+     * If there are no movePrimary operations running on this shard, registers an active
+     * movePrimary operation with the specified arguments. Returns a ScopedMovePrimary, which must
+     * be signaled by the caller before it goes out of scope.
+     *
+     * If there is an active movePrimary operation already running on this shard and it has the
+     * exact same arguments, returns a ScopedMovePrimary, which can be used to join the already
+     * running movePrimary command.
+     *
+     * Otherwise returns a ConflictingOperationInProgress error.
+     */
+    StatusWith<ScopedMovePrimary> registerMovePrimary(const ShardMovePrimary& requestArgs);
+
+    /**
+     * If a movePrimary command has been previously registered through a call to
+     * registerMovePrimary,
+     * returns that namespace. Otherwise returns boost::none.
+     */
+    boost::optional<NamespaceString> getActiveMovePrimaryNss();
+
+    /**
      * For testing only. Mock the initialization method used by initializeFromConfigConnString and
      * initializeFromShardIdentity after all checks are performed.
      */
     void setGlobalInitMethodForTest(GlobalInitFunc func);
-
-    /**
-     * Schedules for the range to clean of the given namespace to be deleted.
-     * Behavior can be modified through setScheduleCleanupFunctionForTest.
-     */
-    void scheduleCleanup(const NamespaceString& nss);
 
     /**
      * If started with --shardsvr, initializes sharding awareness from the shardIdentity document
@@ -263,11 +235,6 @@ public:
      * Note: this function briefly takes the global lock to determine primary/secondary state.
      */
     StatusWith<bool> initializeShardingAwarenessIfNeeded(OperationContext* opCtx);
-
-    /**
-     * Return the task executor to be shared by the range deleters for all collections.
-     */
-    executor::TaskExecutor* getRangeDeleterTaskExecutor();
 
 private:
     // Progress of the sharding state initialization
@@ -296,18 +263,11 @@ private:
      */
     void _setInitializationState(InitializationState newState);
 
-    /**
-     * Refreshes collection metadata by asking the config server for the latest information and
-     * returns the latest version at the time the reload was done. This call does network I/O and
-     * should never be called with a lock.
-     */
-    ChunkVersion _refreshMetadata(OperationContext* opCtx, const NamespaceString& nss);
-
-    // Manages the state of the migration recipient shard
-    MigrationDestinationManager _migrationDestManager;
-
     // Tracks the active move chunk operations running on this shard
     ActiveMigrationsRegistry _activeMigrationsRegistry;
+
+    // Tracks the active move primary operations running on this shard
+    ActiveMovePrimariesRegistry _activeMovePrimariesRegistry;
 
     // Handles asynchronous auto-splitting of chunks
     std::unique_ptr<ChunkSplitter> _chunkSplitter;
@@ -332,14 +292,6 @@ private:
 
     // Function for initializing the external sharding state components not owned here.
     GlobalInitFunc _globalInit;
-
-    // Task executor shared by the collection range deleters.
-    struct RangeDeleterExecutor {
-        stdx::mutex lock{};
-        std::unique_ptr<executor::TaskExecutor> taskExecutor{nullptr};
-        ~RangeDeleterExecutor();
-    };
-    RangeDeleterExecutor _rangeDeleterExecutor;
 };
 
 }  // namespace mongo

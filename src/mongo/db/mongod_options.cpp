@@ -40,11 +40,11 @@
 #include "mongo/bson/util/builder.h"
 #include "mongo/config.h"
 #include "mongo/db/db.h"
+#include "mongo/db/global_settings.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_options_helpers.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/ssl_options.h"
@@ -54,12 +54,7 @@
 
 namespace mongo {
 
-using std::cout;
 using std::endl;
-using std::string;
-
-
-MongodGlobalParams mongodGlobalParams;
 
 Status addMongodOptions(moe::OptionSection* options) {
     moe::OptionSection general_options("General options");
@@ -213,19 +208,26 @@ Status addMongodOptions(moe::OptionSection* options) {
                            "collections within a database into a shared record store.")
         .hidden();
 
+    // Only allow `noIndexBuildRetry` on standalones to quickly access data. Running with
+    // `noIndexBuildRetry` is risky in a live replica set. For example, trying to drop a
+    // collection that did not have its indexes rebuilt results in a crash.
     general_options
         .addOptionChaining("noIndexBuildRetry",
                            "noIndexBuildRetry",
                            moe::Switch,
                            "don't retry any index builds that were interrupted by shutdown")
-        .setSources(moe::SourceAllLegacy);
+        .setSources(moe::SourceAllLegacy)
+        .incompatibleWith("replication.replSet")
+        .incompatibleWith("replication.replSetName");
 
     general_options
         .addOptionChaining("storage.indexBuildRetry",
                            "",
                            moe::Bool,
                            "don't retry any index builds that were interrupted by shutdown")
-        .setSources(moe::SourceYAMLConfig);
+        .setSources(moe::SourceYAMLConfig)
+        .incompatibleWith("replication.replSet")
+        .incompatibleWith("replication.replSetName");
 
     storage_options
         .addOptionChaining("noprealloc",
@@ -640,7 +642,7 @@ Status validateMongodOptions(const moe::Environment& params) {
 #ifdef _WIN32
     if (params.count("install") || params.count("reinstall")) {
         if (params.count("storage.dbPath") &&
-            !boost::filesystem::path(params["storage.dbPath"].as<string>()).is_absolute()) {
+            !boost::filesystem::path(params["storage.dbPath"].as<std::string>()).is_absolute()) {
             return Status(ErrorCodes::BadValue,
                           "dbPath requires an absolute file path with Windows services");
         }
@@ -943,12 +945,12 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
 
     if (params.count("storage.engine")) {
-        storageGlobalParams.engine = params["storage.engine"].as<string>();
+        storageGlobalParams.engine = params["storage.engine"].as<std::string>();
         storageGlobalParams.engineSetByUser = true;
     }
 
     if (params.count("storage.dbPath")) {
-        storageGlobalParams.dbpath = params["storage.dbPath"].as<string>();
+        storageGlobalParams.dbpath = params["storage.dbPath"].as<std::string>();
         if (params.count("processManagement.fork") && storageGlobalParams.dbpath[0] != '/') {
             // we need to change dbpath if we fork since we change
             // cwd to "/"
@@ -1069,7 +1071,7 @@ Status storeMongodOptions(const moe::Environment& params) {
 
     if (params.count("storage.mmapv1.preallocDataFiles")) {
         mmapv1GlobalOptions.prealloc = params["storage.mmapv1.preallocDataFiles"].as<bool>();
-        cout << "note: noprealloc may hurt performance in many applications" << endl;
+        log() << "note: noprealloc may hurt performance in many applications" << endl;
     }
     if (params.count("storage.mmapv1.smallFiles")) {
         mmapv1GlobalOptions.smallfiles = params["storage.mmapv1.smallFiles"].as<bool>();
@@ -1116,17 +1118,17 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
     if (params.count("source")) {
         /* specifies what the source in local.sources should be */
-        replSettings.setSource(params["source"].as<string>().c_str());
+        replSettings.setSource(params["source"].as<std::string>().c_str());
     }
     if (params.count("pretouch")) {
         replSettings.setPretouch(params["pretouch"].as<int>());
     }
     if (params.count("replication.replSetName")) {
-        replSettings.setReplSetString(params["replication.replSetName"].as<string>().c_str());
+        replSettings.setReplSetString(params["replication.replSetName"].as<std::string>().c_str());
     }
     if (params.count("replication.replSet")) {
         /* seed list of hosts for the repl set */
-        replSettings.setReplSetString(params["replication.replSet"].as<string>().c_str());
+        replSettings.setReplSetString(params["replication.replSet"].as<std::string>().c_str());
     }
     if (params.count("replication.secondaryIndexPrefetch")) {
         replSettings.setPrefetchIndexMode(
@@ -1146,7 +1148,7 @@ Status storeMongodOptions(const moe::Environment& params) {
     }
 
     if (params.count("only")) {
-        replSettings.setOnly(params["only"].as<string>().c_str());
+        replSettings.setOnly(params["only"].as<std::string>().c_str());
     }
     if (params.count("storage.mmapv1.nsSize")) {
         int x = params["storage.mmapv1.nsSize"].as<int>();
@@ -1255,7 +1257,7 @@ Status storeMongodOptions(const moe::Environment& params) {
 
     // needs to be after things like --configsvr parsing, thus here.
     if (params.count("storage.repairPath")) {
-        storageGlobalParams.repairpath = params["storage.repairPath"].as<string>();
+        storageGlobalParams.repairpath = params["storage.repairPath"].as<std::string>();
         if (!storageGlobalParams.repairpath.size()) {
             return Status(ErrorCodes::BadValue, "repairpath is empty");
         }
@@ -1299,18 +1301,6 @@ Status storeMongodOptions(const moe::Environment& params) {
 
     setGlobalReplSettings(replSettings);
     return Status::OK();
-}
-
-namespace {
-repl::ReplSettings globalReplSettings;
-}  // namespace
-
-void setGlobalReplSettings(const repl::ReplSettings& settings) {
-    globalReplSettings = settings;
-}
-
-const repl::ReplSettings& getGlobalReplSettings() {
-    return globalReplSettings;
 }
 
 }  // namespace mongo

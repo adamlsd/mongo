@@ -70,11 +70,10 @@ private:
                                    MultiApplier::Operations ops,
                                    MultiApplier::ApplyOperationFn applyOperation) override;
 
-    Status _multiSyncApply(MultiApplier::OperationPtrs* ops) override;
-
     Status _multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
                                   const HostAndPort& source,
-                                  AtomicUInt32* fetchCount) override;
+                                  AtomicUInt32* fetchCount,
+                                  WorkerMultikeyPathInfo* workerMultikeyPathInfo) override;
 
 protected:
     ReplicationCoordinator* getReplicationCoordinator() const;

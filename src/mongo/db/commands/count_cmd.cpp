@@ -59,78 +59,78 @@ class CmdCount : public BasicCommand {
 public:
     CmdCount() : BasicCommand("count") {}
 
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
+    std::string help() const override {
+        return "count objects in collection";
+    }
+
+    bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
 
-    virtual bool slaveOk() const {
-        // ok on --slave setups
-        return repl::getGlobalReplicationCoordinator()->getSettings().isSlave();
+    AllowedOnSecondary secondaryAllowed(ServiceContext* serviceContext) const override {
+        if (repl::ReplicationCoordinator::get(serviceContext)->getSettings().isSlave()) {
+            // ok on --slave setups
+            return Command::AllowedOnSecondary::kAlways;
+        }
+        return Command::AllowedOnSecondary::kOptIn;
     }
 
-    virtual bool slaveOverrideOk() const {
-        return true;
-    }
-
-    virtual bool maintenanceOk() const {
+    bool maintenanceOk() const override {
         return false;
     }
 
-    virtual bool adminOnly() const {
+    bool adminOnly() const override {
         return false;
     }
 
     bool supportsReadConcern(const std::string& dbName,
                              const BSONObj& cmdObj,
-                             repl::ReadConcernLevel level) const final {
+                             repl::ReadConcernLevel level) const override {
         return true;
     }
 
-    ReadWriteType getReadWriteType() const {
+    ReadWriteType getReadWriteType() const override {
         return ReadWriteType::kRead;
-    }
-
-    std::string help() const override {
-        return "count objects in collection";
     }
 
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) override {
+                                 const BSONObj& cmdObj) const override {
         AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
 
         if (!authSession->isAuthorizedToParseNamespaceElement(cmdObj.firstElement())) {
             return Status(ErrorCodes::Unauthorized, "Unauthorized");
         }
 
-        const NamespaceString nss(CommandHelpers::parseNsOrUUID(opCtx, dbname, cmdObj));
-        if (!authSession->isAuthorizedForActionsOnNamespace(nss, ActionType::find)) {
-            return Status(ErrorCodes::Unauthorized, "Unauthorized");
-        }
-
-        return Status::OK();
+        const auto hasTerm = false;
+        return authSession->checkAuthForFind(
+            AutoGetCollection::resolveNamespaceStringOrUUID(
+                opCtx, CommandHelpers::parseNsOrUUID(dbname, cmdObj)),
+            hasTerm);
     }
 
-    virtual Status explain(OperationContext* opCtx,
-                           const std::string& dbname,
-                           const BSONObj& cmdObj,
-                           ExplainOptions::Verbosity verbosity,
-                           BSONObjBuilder* out) const {
+    Status explain(OperationContext* opCtx,
+                   const std::string& dbname,
+                   const BSONObj& cmdObj,
+                   ExplainOptions::Verbosity verbosity,
+                   BSONObjBuilder* out) const override {
+        // Acquire locks and resolve possible UUID. The RAII object is optional, because in the case
+        // of a view, the locks need to be released.
+        boost::optional<AutoGetCollectionForReadCommand> ctx;
+        ctx.emplace(opCtx,
+                    CommandHelpers::parseNsOrUUID(dbname, cmdObj),
+                    AutoGetCollection::ViewMode::kViewsPermitted);
+        const auto nss = ctx->getNss();
+
         const bool isExplain = true;
-        Lock::DBLock dbLock(opCtx, dbname, MODE_IS);
-        auto nss = CommandHelpers::parseNsOrUUID(opCtx, dbname, cmdObj);
         auto request = CountRequest::parseFromBSON(nss, cmdObj, isExplain);
         if (!request.isOK()) {
             return request.getStatus();
         }
 
-        // Acquire the db read lock.
-        AutoGetCollectionOrViewForReadCommand ctx(
-            opCtx, request.getValue().getNs(), std::move(dbLock));
-        Collection* collection = ctx.getCollection();
-
-        if (ctx.getView()) {
-            ctx.releaseLocksForView();
+        if (ctx->getView()) {
+            // Relinquish locks. The aggregation command will re-acquire them.
+            ctx.reset();
 
             auto viewAggregation = request.getValue().asAggregationCommand();
             if (!viewAggregation.isOK()) {
@@ -150,10 +150,11 @@ public:
                                 *out);
         }
 
+        Collection* const collection = ctx->getCollection();
+
         // Prevent chunks from being cleaned up during yields - this allows us to only check the
         // version on initial entry into count.
-        auto rangePreserver =
-            CollectionShardingState::get(opCtx, request.getValue().getNs())->getMetadata();
+        auto rangePreserver = CollectionShardingState::get(opCtx, nss)->getMetadata();
 
         auto statusWithPlanExecutor = getExecutorCount(opCtx,
                                                        collection,
@@ -170,24 +171,27 @@ public:
         return Status::OK();
     }
 
-    virtual bool run(OperationContext* opCtx,
-                     const string& dbname,
-                     const BSONObj& cmdObj,
-                     BSONObjBuilder& result) {
+    bool run(OperationContext* opCtx,
+             const string& dbname,
+             const BSONObj& cmdObj,
+             BSONObjBuilder& result) override {
+        // Acquire locks and resolve possible UUID. The RAII object is optional, because in the case
+        // of a view, the locks need to be released.
+        boost::optional<AutoGetCollectionForReadCommand> ctx;
+        ctx.emplace(opCtx,
+                    CommandHelpers::parseNsOrUUID(dbname, cmdObj),
+                    AutoGetCollection::ViewMode::kViewsPermitted);
+        const auto nss = ctx->getNss();
+
         const bool isExplain = false;
-        Lock::DBLock dbLock(opCtx, dbname, MODE_IS);
-        auto nss = CommandHelpers::parseNsOrUUID(opCtx, dbname, cmdObj);
         auto request = CountRequest::parseFromBSON(nss, cmdObj, isExplain);
         if (!request.isOK()) {
             return CommandHelpers::appendCommandStatus(result, request.getStatus());
         }
 
-        AutoGetCollectionOrViewForReadCommand ctx(
-            opCtx, request.getValue().getNs(), std::move(dbLock));
-        Collection* collection = ctx.getCollection();
-
-        if (ctx.getView()) {
-            ctx.releaseLocksForView();
+        if (ctx->getView()) {
+            // Relinquish locks. The aggregation command will re-acquire them.
+            ctx.reset();
 
             auto viewAggregation = request.getValue().asAggregationCommand();
             if (!viewAggregation.isOK()) {
@@ -201,10 +205,11 @@ public:
             return true;
         }
 
+        Collection* const collection = ctx->getCollection();
+
         // Prevent chunks from being cleaned up during yields - this allows us to only check the
         // version on initial entry into count.
-        auto rangePreserver =
-            CollectionShardingState::get(opCtx, request.getValue().getNs())->getMetadata();
+        auto rangePreserver = CollectionShardingState::get(opCtx, nss)->getMetadata();
 
         auto statusWithPlanExecutor = getExecutorCount(opCtx,
                                                        collection,

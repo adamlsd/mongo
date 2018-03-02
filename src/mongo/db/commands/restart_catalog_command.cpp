@@ -49,7 +49,7 @@ public:
 
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) final {
+                                 const BSONObj& cmdObj) const final {
         // No auth checks as this is a testing-only command.
         return Status::OK();
     }
@@ -66,8 +66,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const final {
@@ -84,7 +84,7 @@ public:
              const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
-        Lock::GlobalLock global(opCtx, MODE_X, UINT_MAX);
+        Lock::GlobalLock global(opCtx, MODE_X, Date_t::max());
 
         log() << "Closing database catalog";
         catalog::closeCatalog(opCtx);

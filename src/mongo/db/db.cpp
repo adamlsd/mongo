@@ -44,6 +44,7 @@
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
 #include "mongo/base/status.h"
+#include "mongo/client/global_conn_pool.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/config.h"
 #include "mongo/db/audit.h"
@@ -70,6 +71,7 @@
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/ftdc/ftdc_mongod.h"
+#include "mongo/db/global_settings.h"
 #include "mongo/db/index_names.h"
 #include "mongo/db/index_rebuilder.h"
 #include "mongo/db/initialize_server_global_state.h"
@@ -105,11 +107,11 @@
 #include "mongo/db/repl/storage_interface_impl.h"
 #include "mongo/db/repl/topology_coordinator.h"
 #include "mongo/db/s/balancer/balancer.h"
+#include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
-#include "mongo/db/s/type_shard_identity.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
@@ -132,7 +134,6 @@
 #include "mongo/executor/thread_pool_task_executor.h"
 #include "mongo/platform/process_id.h"
 #include "mongo/rpc/metadata/egress_metadata_hook_list.h"
-#include "mongo/s/catalog/sharding_catalog_manager.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/sharding_initialization.h"
@@ -178,10 +179,6 @@ using logger::LogComponent;
 using std::endl;
 
 namespace {
-
-constexpr StringData upgradeLink = "http://dochub.mongodb.org/core/3.6-upgrade-fcv"_sd;
-constexpr StringData mustDowngradeErrorMsg =
-    "UPGRADE PROBLEM: The data files need to be fully upgraded to version 3.4 before attempting an upgrade to 3.6; see http://dochub.mongodb.org/core/3.6-upgrade-fcv for more details."_sd;
 
 const NamespaceString startupLogCollectionName("local.startup_log");
 const NamespaceString kSystemReplSetCollection("local.system.replset");
@@ -352,7 +349,7 @@ ExitCode _initAndListen(int listenPort) {
     // Disallow running WiredTiger with --nojournal in a replica set
     if (storageGlobalParams.engine == "wiredTiger" && !storageGlobalParams.dur &&
         replSettings.usingReplSets()) {
-        log() << "Runnning wiredTiger without journaling in a replica set is not "
+        log() << "Running wiredTiger without journaling in a replica set is not "
               << "supported. Make sure you are not using --nojournal and that "
               << "storage.journal.enabled is not set to 'false'.";
         exitCleanly(EXIT_BADOPTIONS);
@@ -822,6 +819,9 @@ void shutdownTask() {
         tl->shutdown();
     }
 
+    // Shut down the global dbclient pool so callers stop waiting for connections.
+    globalConnPool.shutdown();
+
     if (serviceContext->getGlobalStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
         OperationContext* opCtx = client->getOperationContext();
@@ -830,11 +830,9 @@ void shutdownTask() {
             opCtx = uniqueOpCtx.get();
         }
 
-        // TODO: Upgrade this check so that this block only runs when (FCV != kFullyUpgradedTo38).
-        // See SERVER-32589.
         if (serverGlobalParams.featureCompatibility.getVersion() !=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36) {
-            // If we are in fCV 3.6, drop the 'checkpointTimestamp' collection so if we downgrade
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
+            // If we are in latest fCV, drop the 'checkpointTimestamp' collection so if we downgrade
             // and then upgrade again, we do not trust a stale 'checkpointTimestamp'.
             log(LogComponent::kReplication)
                 << "shutdown: removing checkpointTimestamp collection...";
@@ -914,9 +912,9 @@ void shutdownTask() {
     // of this function to prevent any operations from running that need a lock.
     //
     DefaultLockerImpl* globalLocker = new DefaultLockerImpl();
-    LockResult result = globalLocker->lockGlobalBegin(MODE_X, Milliseconds::max());
+    LockResult result = globalLocker->lockGlobalBegin(MODE_X, Date_t::max());
     if (result == LOCK_WAITING) {
-        result = globalLocker->lockGlobalComplete(Milliseconds::max());
+        result = globalLocker->lockGlobalComplete(Date_t::max());
     }
 
     invariant(LOCK_OK == result);

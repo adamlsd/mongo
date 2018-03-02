@@ -94,6 +94,12 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     uassert(ErrorCodes::IllegalOperation,
             "Cannot drop a database in read-only mode",
             !storageGlobalParams.readOnly);
+
+    // As of SERVER-32205, dropping the admin database is prohibited.
+    uassert(ErrorCodes::IllegalOperation,
+            str::stream() << "Dropping the '" << dbName << "' database is prohibited.",
+            dbName != NamespaceString::kAdminDb);
+
     // TODO (Kal): OldClientContext legacy, needs to be removed
     {
         CurOp::get(opCtx)->ensureStarted();
@@ -111,6 +117,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     using Result = boost::optional<Status>;
     // Get an optional result--if it's there, early return; otherwise, wait for collections to drop.
     auto result = writeConflictRetry(opCtx, "dropDatabase_collection", dbName, [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         Lock::GlobalWrite lk(opCtx);
         AutoGetDb autoDB(opCtx, dbName, MODE_X);
         Database* const db = autoDB.getDb();
@@ -191,6 +198,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     // If waitForWriteConcern() returns an error or throws an exception, we should reset the
     // drop-pending state on Database.
     auto dropPendingGuardWhileAwaitingReplication = MakeGuard([dbName, opCtx] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         Lock::GlobalWrite lk(opCtx);
         AutoGetDb autoDB(opCtx, dbName, MODE_X);
         if (auto db = autoDB.getDb()) {
@@ -241,6 +249,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
     dropPendingGuardWhileAwaitingReplication.Dismiss();
 
     return writeConflictRetry(opCtx, "dropDatabase_database", dbName, [&] {
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
         Lock::GlobalWrite lk(opCtx);
         AutoGetDb autoDB(opCtx, dbName, MODE_X);
         auto db = autoDB.getDb();

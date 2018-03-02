@@ -28,24 +28,6 @@
     let coll = "foo";
     let nss = db + "." + coll;
 
-    // Given a command, build its expected shape in the system profiler.
-    let buildCommandProfile = function(command) {
-        let commandProfile = {ns: nss};
-        if (command.mapReduce) {
-            // Unlike other read commands, mapReduce is rewritten to a different format when sent to
-            // shards if the input collection is sharded, because it is executed in two phases.
-            // We do not check for the 'map' and 'reduce' fields, because they are functions, and
-            // we cannot compaare functions for equality.
-            commandProfile["command.out"] = {$regex: "^tmp.mrs"};
-            commandProfile["command.shardedFirstPass"] = true;
-        } else {
-            for (let key in command) {
-                commandProfile["command." + key] = command[key];
-            }
-        }
-        return commandProfile;
-    };
-
     // Check that a test case is well-formed.
     let validateTestCase = function(test) {
         assert(test.setUp && typeof(test.setUp) === "function");
@@ -65,6 +47,7 @@
         _configsvrCommitChunkMerge: {skip: "primary only"},
         _configsvrCommitChunkMigration: {skip: "primary only"},
         _configsvrCommitChunkSplit: {skip: "primary only"},
+        _configsvrCommitMovePrimary: {skip: "primary only"},
         _configsvrDropCollection: {skip: "primary only"},
         _configsvrDropDatabase: {skip: "primary only"},
         _configsvrMoveChunk: {skip: "primary only"},
@@ -78,11 +61,13 @@
         _isSelf: {skip: "does not return user data"},
         _mergeAuthzCollections: {skip: "primary only"},
         _migrateClone: {skip: "primary only"},
+        _movePrimary: {skip: "primary only"},
         _recvChunkAbort: {skip: "primary only"},
         _recvChunkCommit: {skip: "primary only"},
         _recvChunkStart: {skip: "primary only"},
         _recvChunkStatus: {skip: "primary only"},
         _transferMods: {skip: "primary only"},
+        abortTransaction: {skip: "primary only"},
         addShard: {skip: "primary only"},
         addShardToZone: {skip: "primary only"},
         aggregate: {
@@ -114,6 +99,7 @@
         cloneCollectionAsCapped: {skip: "primary only"},
         collMod: {skip: "primary only"},
         collStats: {skip: "does not return user data"},
+        commitTransaction: {skip: "primary only"},
         compact: {skip: "does not return user data"},
         configureFailPoint: {skip: "does not return user data"},
         connPoolStats: {skip: "does not return user data"},
@@ -419,7 +405,7 @@
         test.checkResults(res);
 
         // Build the query to identify the operation in the system profiler.
-        let commandProfile = buildCommandProfile(test.command);
+        let commandProfile = buildCommandProfile(test.command, true /* sharded */);
 
         if (test.behavior === "unshardedOnly") {
             // Check that neither the donor shard secondary nor recipient shard secondary
@@ -437,7 +423,7 @@
                     "command.shardVersion": {"$exists": false},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });
@@ -454,7 +440,7 @@
                     "command.shardVersion": {"$exists": false},
                     "command.$readPreference": {$exists: false},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$exists": false},
+                    "errCode": {"$exists": false},
                 },
                                       commandProfile)
             });
@@ -466,7 +452,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": ErrorCodes.StaleConfig
+                    "errCode": ErrorCodes.StaleConfig
                 },
                                       commandProfile)
             });
@@ -480,7 +466,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": ErrorCodes.StaleConfig
+                    "errCode": ErrorCodes.StaleConfig
                 },
                                       commandProfile)
             });
@@ -493,7 +479,7 @@
                     "command.shardVersion": {"$exists": true},
                     "command.$readPreference": {"mode": "secondary"},
                     "command.readConcern": {"level": "local"},
-                    "exceptionCode": {"$ne": ErrorCodes.StaleConfig},
+                    "errCode": {"$ne": ErrorCodes.StaleConfig},
                 },
                                       commandProfile)
             });

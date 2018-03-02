@@ -41,7 +41,7 @@ class ReplicaSetFixture(interface.ReplFixture):
                  all_nodes_electable=False,
                  use_replica_set_connection_string=None):
 
-        interface.ReplFixture.__init__(self, logger, job_num)
+        interface.ReplFixture.__init__(self, logger, job_num, dbpath_prefix=dbpath_prefix)
 
         self.mongod_executable = mongod_executable
         self.mongod_options = utils.default_if_none(mongod_options, {})
@@ -65,18 +65,16 @@ class ReplicaSetFixture(interface.ReplFixture):
         if self.use_replica_set_connection_string is None:
             self.use_replica_set_connection_string = self.all_nodes_electable
 
+        # Set the default oplogSize to 511MB.
+        self.mongod_options.setdefault("oplogSize", 511)
+
         # The dbpath in mongod_options is used as the dbpath prefix for replica set members and
         # takes precedence over other settings. The ShardedClusterFixture uses this parameter to
         # create replica sets and assign their dbpath structure explicitly.
         if "dbpath" in self.mongod_options:
             self._dbpath_prefix = self.mongod_options.pop("dbpath")
         else:
-            # Command line options override the YAML configuration.
-            dbpath_prefix = utils.default_if_none(config.DBPATH_PREFIX, dbpath_prefix)
-            dbpath_prefix = utils.default_if_none(dbpath_prefix, config.DEFAULT_DBPATH_PREFIX)
-            self._dbpath_prefix = os.path.join(dbpath_prefix,
-                                               "job{}".format(self.job_num),
-                                               config.FIXTURE_SUBDIR)
+            self._dbpath_prefix = os.path.join(self._dbpath_prefix, config.FIXTURE_SUBDIR)
 
         self.nodes = []
         self.replset_name = None

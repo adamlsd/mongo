@@ -184,11 +184,12 @@ env.Library(
         'expression.cpp',
         ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/query/datetime/date_time_support',
+        '$BUILD_DIR/mongo/db/server_options_core',
+        '$BUILD_DIR/mongo/util/summation',
         'dependencies',
         'document_value',
         'expression_context',
-        '$BUILD_DIR/mongo/db/query/datetime/date_time_support',
-        '$BUILD_DIR/mongo/util/summation',
     ]
 )
 
@@ -270,12 +271,14 @@ docSourceEnv.Library(
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
         '$BUILD_DIR/mongo/db/generic_cursor',
         '$BUILD_DIR/mongo/db/index/key_generator',
-        '$BUILD_DIR/mongo/db/logical_session_cache_impl',
+        '$BUILD_DIR/mongo/db/logical_session_cache',
+        '$BUILD_DIR/mongo/db/logical_session_id_helpers',
         '$BUILD_DIR/mongo/db/matcher/expressions',
         '$BUILD_DIR/mongo/db/pipeline/lite_parsed_document_source',
         '$BUILD_DIR/mongo/db/repl/oplog_entry',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
         '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/sessions_collection',
         '$BUILD_DIR/mongo/db/stats/top',
         '$BUILD_DIR/mongo/db/storage/encryption_hooks',
         '$BUILD_DIR/mongo/db/storage/storage_options',
@@ -389,7 +392,11 @@ env.CppUnitTest(
 
 env.CppUnitTest(
     target='agg_expression_test',
-    source='expression_test.cpp',
+    source=[
+        'expression_convert_test.cpp',
+        'expression_date_test.cpp',
+        'expression_test.cpp',
+    ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/query/query_test_service_context',
         'accumulator',

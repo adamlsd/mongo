@@ -404,8 +404,11 @@ var ShardingTest = function(params) {
             }
         }
 
-        for (var i = 0; i < _alldbpaths.length; i++) {
-            resetDbpath(MongoRunner.dataPath + _alldbpaths[i]);
+        if (!opts || !opts.noCleanData) {
+            print("ShardingTest stop deleting all dbpaths");
+            for (var i = 0; i < _alldbpaths.length; i++) {
+                resetDbpath(MongoRunner.dataPath + _alldbpaths[i]);
+            }
         }
 
         var timeMillis = new Date().getTime() - _startTime.getTime();
@@ -1341,7 +1344,7 @@ var ShardingTest = function(params) {
     const configRS = this.configRS;
     if (_hasNewFeatureCompatibilityVersion() && _isMixedVersionCluster()) {
         function setFeatureCompatibilityVersion() {
-            assert.commandWorked(csrsPrimary.adminCommand({setFeatureCompatibilityVersion: '3.4'}));
+            assert.commandWorked(csrsPrimary.adminCommand({setFeatureCompatibilityVersion: '3.6'}));
 
             // Wait for the new featureCompatibilityVersion to propagate to all nodes in the CSRS
             // to ensure that older versions of mongos can successfully connect.

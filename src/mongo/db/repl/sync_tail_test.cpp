@@ -171,6 +171,17 @@ void createCollection(OperationContext* opCtx,
     });
 }
 
+/**
+ * Create test database.
+ */
+void createDatabase(OperationContext* opCtx, StringData dbName) {
+    Lock::GlobalWrite globalLock(opCtx);
+    bool justCreated;
+    Database* db = dbHolder().openDb(opCtx, dbName, &justCreated);
+    ASSERT_TRUE(db);
+    ASSERT_TRUE(justCreated);
+}
+
 auto parseFromOplogEntryArray(const BSONObj& obj, int elem) {
     BSONElement tsArray;
     Status status =
@@ -290,6 +301,40 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentDatabaseMissing) {
                        ErrorCodes::NamespaceNotFound);
 }
 
+TEST_F(SyncTailTest, SyncApplyDeleteDocumentDatabaseMissing) {
+    const BSONObj op = BSON("op"
+                            << "d"
+                            << "ns"
+                            << "test.othername");
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, false);
+}
+
+TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLookupByUUIDFails) {
+    const NamespaceString nss("test.t");
+    createDatabase(_opCtx.get(), nss.db());
+    const BSONObj op = BSON("op"
+                            << "i"
+                            << "ns"
+                            << nss.getSisterNS("othername")
+                            << "ui"
+                            << UUID::gen());
+    ASSERT_THROWS_CODE(_testSyncApplyCrudOperation(ErrorCodes::OK, op, true),
+                       AssertionException,
+                       ErrorCodes::NamespaceNotFound);
+}
+
+TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionLookupByUUIDFails) {
+    const NamespaceString nss("test.t");
+    createDatabase(_opCtx.get(), nss.db());
+    const BSONObj op = BSON("op"
+                            << "d"
+                            << "ns"
+                            << nss.getSisterNS("othername")
+                            << "ui"
+                            << UUID::gen());
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, false);
+}
+
 TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionMissing) {
     {
         Lock::GlobalWrite globalLock(_opCtx.get());
@@ -304,6 +349,19 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionMissing) {
     _testSyncApplyInsertDocument(ErrorCodes::OK);
 }
 
+TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionMissing) {
+    const NamespaceString nss("test.t");
+    createDatabase(_opCtx.get(), nss.db());
+    // Even though the collection doesn't exist, this is handled in the actual application function,
+    // which in the case of this test just ignores such errors. This tests mostly that we don't
+    // implicitly create the collection and lock the database in MODE_X.
+    const BSONObj op = BSON("op"
+                            << "d"
+                            << "ns"
+                            << nss.ns());
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, true);
+}
+
 TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionExists) {
     {
         Lock::GlobalWrite globalLock(_opCtx.get());
@@ -311,10 +369,22 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionExists) {
         Database* db = dbHolder().openDb(_opCtx.get(), "test", &justCreated);
         ASSERT_TRUE(db);
         ASSERT_TRUE(justCreated);
+        WriteUnitOfWork wuow(_opCtx.get());
         Collection* collection = db->createCollection(_opCtx.get(), "test.t");
+        wuow.commit();
         ASSERT_TRUE(collection);
     }
     _testSyncApplyInsertDocument(ErrorCodes::OK);
+}
+
+TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionExists) {
+    const NamespaceString nss("test.t");
+    createCollection(_opCtx.get(), nss, {});
+    const BSONObj op = BSON("op"
+                            << "d"
+                            << "ns"
+                            << nss.ns());
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, true);
 }
 
 TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLockedByUUID) {
@@ -326,7 +396,9 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLockedByUUID) {
         Database* db = dbHolder().openDb(_opCtx.get(), "test", &justCreated);
         ASSERT_TRUE(db);
         ASSERT_TRUE(justCreated);
+        WriteUnitOfWork wuow(_opCtx.get());
         Collection* collection = db->createCollection(_opCtx.get(), "test.t", options);
+        wuow.commit();
         ASSERT_TRUE(collection);
     }
 
@@ -337,7 +409,23 @@ TEST_F(SyncTailTest, SyncApplyInsertDocumentCollectionLockedByUUID) {
                             << "test.othername"
                             << "ui"
                             << options.uuid.get());
-    _testSyncApplyInsertDocument(ErrorCodes::OK, &op);
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, true);
+}
+
+TEST_F(SyncTailTest, SyncApplyDeleteDocumentCollectionLockedByUUID) {
+    const NamespaceString nss("test.t");
+    CollectionOptions options;
+    options.uuid = UUID::gen();
+    createCollection(_opCtx.get(), nss, options);
+
+    // Test that the collection to lock is determined by the UUID and not the 'ns' field.
+    auto op = BSON("op"
+                   << "d"
+                   << "ns"
+                   << nss.getSisterNS("othername")
+                   << "ui"
+                   << options.uuid.get());
+    _testSyncApplyCrudOperation(ErrorCodes::OK, op, true);
 }
 
 TEST_F(SyncTailTest, SyncApplyIndexBuild) {
@@ -475,8 +563,8 @@ bool _testOplogEntryIsForCappedCollection(OperationContext* opCtx,
                                           const CollectionOptions& options) {
     auto writerPool = SyncTail::makeWriterPool();
     MultiApplier::Operations operationsApplied;
-    auto applyOperationFn =
-        [&operationsApplied](MultiApplier::OperationPtrs* operationsToApply) -> Status {
+    auto applyOperationFn = [&operationsApplied](MultiApplier::OperationPtrs* operationsToApply,
+                                                 WorkerMultikeyPathInfo*) -> Status {
         for (auto&& opPtr : *operationsToApply) {
             operationsApplied.push_back(*opPtr);
         }
@@ -523,8 +611,9 @@ TEST_F(SyncTailTest, MultiApplyAssignsOperationsToWriterThreadsBasedOnNamespaceH
 
     stdx::mutex mutex;
     std::vector<MultiApplier::Operations> operationsApplied;
-    auto applyOperationFn = [&mutex, &operationsApplied](
-        MultiApplier::OperationPtrs* operationsForWriterThreadToApply) -> Status {
+    auto applyOperationFn =
+        [&mutex, &operationsApplied](MultiApplier::OperationPtrs* operationsForWriterThreadToApply,
+                                     WorkerMultikeyPathInfo*) -> Status {
         stdx::lock_guard<stdx::mutex> lock(mutex);
         operationsApplied.emplace_back();
         for (auto&& opPtr : *operationsForWriterThreadToApply) {
@@ -694,10 +783,105 @@ TEST_F(SyncTailTest, MultiSyncApplyUsesSyncApplyToApplyOperation) {
     _opCtx.reset();
 
     MultiApplier::OperationPtrs ops = {&op};
-    multiSyncApply(&ops, nullptr);
+    WorkerMultikeyPathInfo pathInfo;
+    multiSyncApply(&ops, nullptr, &pathInfo);
     // Collection should be created after SyncTail::syncApply() processes operation.
     _opCtx = cc().makeOperationContext();
     ASSERT_TRUE(AutoGetCollectionForReadCommand(_opCtx.get(), nss).getCollection());
+}
+
+void testWorkerMultikeyPaths(const OplogEntry& op, unsigned long numPaths) {
+    WorkerMultikeyPathInfo pathInfo;
+    MultiApplier::OperationPtrs ops = {&op};
+    multiSyncApply(&ops, nullptr, &pathInfo);
+    ASSERT_EQ(pathInfo.size(), numPaths);
+}
+
+TEST_F(SyncTailTest, MultiSyncApplyAddsWorkerMultikeyPathInfoOnInsert) {
+    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
+    _opCtx.reset();
+
+    {
+        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto keyPattern = BSON("a" << 1);
+        auto op =
+            makeCreateIndexOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto doc = BSON("_id" << 1 << "a" << BSON_ARRAY(4 << 5));
+        auto op = makeInsertDocumentOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, doc);
+        testWorkerMultikeyPaths(op, 1UL);
+    }
+}
+
+TEST_F(SyncTailTest, MultiSyncApplyAddsMultipleWorkerMultikeyPathInfo) {
+    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
+    _opCtx.reset();
+
+    {
+        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto keyPattern = BSON("a" << 1);
+        auto op =
+            makeCreateIndexOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, "a_1", keyPattern);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto keyPattern = BSON("b" << 1);
+        auto op =
+            makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, "b_1", keyPattern);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto docA = BSON("_id" << 1 << "a" << BSON_ARRAY(4 << 5));
+        auto opA = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, docA);
+        auto docB = BSON("_id" << 2 << "b" << BSON_ARRAY(6 << 7));
+        auto opB = makeInsertDocumentOplogEntry({Timestamp(Seconds(5), 0), 1LL}, nss, docB);
+        WorkerMultikeyPathInfo pathInfo;
+        MultiApplier::OperationPtrs ops = {&opA, &opB};
+        multiSyncApply(&ops, nullptr, &pathInfo);
+        ASSERT_EQ(pathInfo.size(), 2UL);
+    }
+}
+
+TEST_F(SyncTailTest, MultiSyncApplyDoesNotAddWorkerMultikeyPathInfoOnCreateIndex) {
+    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
+    _opCtx.reset();
+
+    {
+        auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto doc = BSON("_id" << 1 << "a" << BSON_ARRAY(4 << 5));
+        auto op = makeInsertDocumentOplogEntry({Timestamp(Seconds(2), 0), 1LL}, nss, doc);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto keyPattern = BSON("a" << 1);
+        auto op =
+            makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, nss, "a_1", keyPattern);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
+
+    {
+        auto doc = BSON("_id" << 2 << "a" << BSON_ARRAY(6 << 7));
+        auto op = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, doc);
+        testWorkerMultikeyPaths(op, 0UL);
+    }
 }
 
 DEATH_TEST_F(SyncTailTest,
@@ -710,7 +894,7 @@ DEATH_TEST_F(SyncTailTest,
     auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
     _opCtx.reset();
     MultiApplier::OperationPtrs ops = {&op};
-    multiSyncApply(&ops, nullptr);
+    multiSyncApply(&ops, nullptr, nullptr);
 }
 
 TEST_F(SyncTailTest, MultiInitialSyncApplyFailsWhenCollectionCreationTriesToMakeUUID) {
@@ -721,7 +905,8 @@ TEST_F(SyncTailTest, MultiInitialSyncApplyFailsWhenCollectionCreationTriesToMake
 
     _opCtx.reset();
     MultiApplier::OperationPtrs ops = {&op};
-    ASSERT_EQUALS(ErrorCodes::InvalidOptions, multiInitialSyncApply(&ops, nullptr, nullptr));
+    ASSERT_EQUALS(ErrorCodes::InvalidOptions,
+                  multiInitialSyncApply(&ops, nullptr, nullptr, nullptr));
 }
 
 TEST_F(SyncTailTest, MultiSyncApplyDisablesDocumentValidationWhileApplyingOperations) {
@@ -1082,7 +1267,8 @@ TEST_F(SyncTailTest, MultiInitialSyncApplyDisablesDocumentValidationWhileApplyin
         {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("_id" << 0), BSON("_id" << 0 << "x" << 2));
     MultiApplier::OperationPtrs ops = {&op};
     AtomicUInt32 fetchCount(0);
-    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount));
+    WorkerMultikeyPathInfo pathInfo;
+    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount, &pathInfo));
     ASSERT_EQUALS(fetchCount.load(), 1U);
 }
 
@@ -1101,7 +1287,8 @@ TEST_F(SyncTailTest, MultiInitialSyncApplyIgnoresUpdateOperationIfDocumentIsMiss
         {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("_id" << 0), BSON("_id" << 0 << "x" << 2));
     MultiApplier::OperationPtrs ops = {&op};
     AtomicUInt32 fetchCount(0);
-    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount));
+    WorkerMultikeyPathInfo pathInfo;
+    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount, &pathInfo));
 
     // Since the missing document is not found on the sync source, the collection referenced by
     // the failed operation should not be automatically created.
@@ -1123,7 +1310,8 @@ TEST_F(SyncTailTest, MultiInitialSyncApplySkipsDocumentOnNamespaceNotFound) {
     auto op3 = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, doc3);
     MultiApplier::OperationPtrs ops = {&op0, &op1, &op2, &op3};
     AtomicUInt32 fetchCount(0);
-    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount));
+    WorkerMultikeyPathInfo pathInfo;
+    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount, &pathInfo));
     ASSERT_EQUALS(fetchCount.load(), 0U);
 
     OplogInterfaceLocal collectionReader(_opCtx.get(), nss.ns());
@@ -1148,7 +1336,8 @@ TEST_F(SyncTailTest, MultiInitialSyncApplySkipsIndexCreationOnNamespaceNotFound)
     auto op3 = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, doc3);
     MultiApplier::OperationPtrs ops = {&op0, &op1, &op2, &op3};
     AtomicUInt32 fetchCount(0);
-    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount));
+    WorkerMultikeyPathInfo pathInfo;
+    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount, &pathInfo));
     ASSERT_EQUALS(fetchCount.load(), 0U);
 
     OplogInterfaceLocal collectionReader(_opCtx.get(), nss.ns());
@@ -1171,7 +1360,8 @@ TEST_F(SyncTailTest,
         {Timestamp(Seconds(1), 0), 1LL}, nss, BSON("_id" << 0), updatedDocument);
     MultiApplier::OperationPtrs ops = {&op};
     AtomicUInt32 fetchCount(0);
-    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount));
+    WorkerMultikeyPathInfo pathInfo;
+    ASSERT_OK(multiInitialSyncApply_noAbort(_opCtx.get(), &ops, &syncTail, &fetchCount, &pathInfo));
     ASSERT_EQUALS(fetchCount.load(), 1U);
 
     // The collection referenced by "ns" in the failed operation is automatically created to hold

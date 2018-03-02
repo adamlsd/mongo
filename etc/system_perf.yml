@@ -78,11 +78,11 @@ functions:
         working_dir: work
         script: |
           cat > bootstrap.yml <<EOF
-          cluster_type: ${cluster}
+          infrastructure_provisioning: ${cluster}
           platform: ${platform}
-          setup: ${setup}
+          mongodb_setup: ${setup}
           storageEngine: ${storageEngine}
-          test: ${test}
+          test_control: ${test}
           production: true
           mongodb_binary_archive: "https://s3.amazonaws.com/mciuploads/${project}/${version_id}/${revision}/${platform}/mongod-${version_id}.tar.gz"
           workloads_dir: ../src/workloads/workloads
@@ -314,6 +314,7 @@ tasks:
   depends_on:
     - name: compile
       variant: linux-standalone
+  priority: 5
   commands:
     - func: "prepare environment"
       vars:
@@ -327,6 +328,7 @@ tasks:
         # script_flags: --ycsb-throughput-analysis reports
 
 - name: industry_benchmarks_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -342,6 +344,7 @@ tasks:
         script_flags: --ycsb-throughput-analysis reports
 
 - name: industry_benchmarks_wmajority_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -357,6 +360,7 @@ tasks:
         script_flags: --ycsb-throughput-analysis reports
 
 - name: industry_benchmarks_wmajority_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -372,6 +376,7 @@ tasks:
         script_flags: --ycsb-throughput-analysis reports
 
 - name: core_workloads_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -386,6 +391,7 @@ tasks:
     - func: "analyze"
 
 - name: core_workloads_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -400,6 +406,7 @@ tasks:
     - func: "analyze"
 
 - name: retryable_writes_workloads_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -413,6 +420,7 @@ tasks:
     - func: "analyze"
 
 - name: agg_query_comparison_bestbuy_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -426,6 +434,7 @@ tasks:
     - func: "analyze"
 
 - name: agg_query_comparison_bestbuy_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -439,6 +448,7 @@ tasks:
     - func: "analyze"
 
 - name: non_sharded_workloads_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -452,6 +462,7 @@ tasks:
     - func: "analyze"
 
 - name: non_sharded_workloads_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -465,6 +476,7 @@ tasks:
     - func: "analyze"
 
 - name: mongos_workloads_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -478,6 +490,7 @@ tasks:
     - func: "analyze"
 
 - name: mongos_workloads_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -492,6 +505,7 @@ tasks:
     - func: "analyze"
 
 - name: move_chunk_workloads_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -505,6 +519,7 @@ tasks:
     - func: "analyze"
 
 - name: move_chunk_workloads_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -518,6 +533,7 @@ tasks:
     - func: "analyze"
 
 - name: secondary_performance_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -533,6 +549,7 @@ tasks:
     - func: "analyze"
 
 - name: secondary_performance_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -548,6 +565,7 @@ tasks:
     - func: "analyze"
 
 - name: initialsync_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -561,6 +579,7 @@ tasks:
     - func: "analyze"
 
 - name: initialsync_MMAPv1
+  priority: 5
   depends_on:
     - name: compile
       variant : linux-standalone
@@ -574,6 +593,7 @@ tasks:
     - func: "analyze"
 
 - name: initialsync-logkeeper_WT
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -588,6 +608,7 @@ tasks:
     - func: "analyze"
 
 - name: change_streams
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone
@@ -601,6 +622,7 @@ tasks:
     - func: "analyze"
 
 - name: change_streams_multi_mongos
+  priority: 5
   depends_on:
     - name: compile
       variant: linux-standalone

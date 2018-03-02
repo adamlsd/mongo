@@ -110,6 +110,7 @@ saslClientEnv.Library(
         '$BUILD_DIR/mongo/executor/remote_command',
         '$BUILD_DIR/mongo/rpc/command_status',
         '$BUILD_DIR/mongo/rpc/metadata',
+        '$BUILD_DIR/mongo/util/icu',
         '$BUILD_DIR/mongo/util/md5',
         '$BUILD_DIR/mongo/util/net/network',
     ],
@@ -190,6 +191,17 @@ clientDriverEnv.Library(
         'authentication',
         'connection_string',
         'read_preference',
+    ],
+)
+
+env.CppIntegrationTest(
+    target='connpool_integration_test',
+    source=[
+        'connpool_integration_test.cpp',
+    ],
+    LIBDEPS=[
+        'clientdriver',
+        '$BUILD_DIR/mongo/util/version_impl',
     ],
 )
 

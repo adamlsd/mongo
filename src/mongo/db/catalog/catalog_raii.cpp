@@ -39,82 +39,116 @@ namespace {
 
 MONGO_FP_DECLARE(setAutoGetCollectionWait);
 
+void uassertLockTimeout(std::string resourceName,
+                        LockMode lockMode,
+                        Date_t deadline,
+                        bool isLocked) {
+    uassert(ErrorCodes::LockTimeout,
+            str::stream() << "Failed to acquire " << modeName(lockMode) << " lock for "
+                          << resourceName
+                          << " since deadline "
+                          << dateToISOStringLocal(deadline)
+                          << " has passed.",
+            isLocked);
+}
+
 }  // namespace
 
-AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData ns, LockMode mode)
-    : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {}
-
-AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData ns, Lock::DBLock lock)
-    : _dbLock(std::move(lock)), _db(dbHolder().get(opCtx, ns)) {}
-
-AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
-                                     const NamespaceString& nss,
-                                     const UUID& uuid,
-                                     LockMode modeAll)
-    : _viewMode(ViewMode::kViewsForbidden),
-      _autoDb(opCtx, nss.db(), Lock::DBLock(opCtx, nss.db(), modeAll)),
-      _collLock(opCtx->lockState(), nss.ns(), modeAll),
-      _coll(UUIDCatalog::get(opCtx).lookupCollectionByUUID(uuid)) {
-    // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
-    MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
-        const BSONObj& data = customWait.getData();
-        sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
-    }
-}
+AutoGetDb::AutoGetDb(OperationContext* opCtx, StringData dbName, LockMode mode, Date_t deadline)
+    : _dbLock(opCtx, dbName, mode, deadline), _db([&] {
+          uassertLockTimeout(
+              str::stream() << "database " << dbName, mode, deadline, _dbLock.isLocked());
+          return dbHolder().get(opCtx, dbName);
+      }()) {}
 
 AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
-                                     const NamespaceString& nss,
-                                     LockMode modeColl,
-                                     ViewMode viewMode,
-                                     Lock::DBLock lock)
-    : _viewMode(viewMode),
-      _autoDb(opCtx, nss.db(), std::move(lock)),
-      _collLock(opCtx->lockState(), nss.ns(), modeColl),
-      _coll(_autoDb.getDb() ? _autoDb.getDb()->getCollection(opCtx, nss) : nullptr) {
-    Database* const db = _autoDb.getDb();
-
-    // If the database exists, but not the collection, check for views
-    if (_viewMode == ViewMode::kViewsForbidden && db && !_coll &&
-        db->getViewCatalog()->lookup(opCtx, nss.ns())) {
-        uasserted(ErrorCodes::CommandNotSupportedOnView,
-                  str::stream() << "Namespace " << nss.ns() << " is a view, not a collection");
-    }
-
-    // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
-    MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
-        const BSONObj& data = customWait.getData();
-        sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
-    }
-}
-
-AutoGetCollection::AutoGetCollection(OperationContext* opCtx,
-                                     const NamespaceString& nss,
+                                     const NamespaceStringOrUUID& nsOrUUID,
                                      LockMode modeDB,
                                      LockMode modeColl,
-                                     ViewMode viewMode)
-    : AutoGetCollection(opCtx, nss, modeColl, viewMode, Lock::DBLock(opCtx, nss.db(), modeDB)) {}
+                                     ViewMode viewMode,
+                                     Date_t deadline)
+    :  // The UUID to NamespaceString resolution is performed outside of any locks
+      _resolvedNss(resolveNamespaceStringOrUUID(opCtx, nsOrUUID)),
+      // The database locking is performed based on the resolved NamespaceString
+      _autoDb(opCtx, _resolvedNss.db(), modeDB, deadline) {
+    // In order to account for possible collection rename happening because the resolution from UUID
+    // to NamespaceString was done outside of database lock, if UUID was specified we need to
+    // re-resolve the _resolvedNss after acquiring the database lock so it has the correct value.
+    //
+    // Holding a database lock prevents collection renames, so this guarantees a stable UUID to
+    // NamespaceString mapping.
+    if (nsOrUUID.uuid())
+        _resolvedNss = resolveNamespaceStringOrUUID(opCtx, nsOrUUID);
 
-AutoGetCollectionOrView::AutoGetCollectionOrView(OperationContext* opCtx,
-                                                 const NamespaceString& nss,
-                                                 LockMode modeAll)
-    : _autoColl(opCtx, nss, modeAll, modeAll, AutoGetCollection::ViewMode::kViewsPermitted),
-      _view(_autoColl.getDb() && !_autoColl.getCollection()
-                ? _autoColl.getDb()->getViewCatalog()->lookup(opCtx, nss.ns())
-                : nullptr) {}
+    _collLock.emplace(opCtx->lockState(), _resolvedNss.ns(), modeColl, deadline);
+    uassertLockTimeout(str::stream() << "collection " << nsOrUUID.toString(),
+                       modeColl,
+                       deadline,
+                       _collLock->isLocked());
 
-AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx, StringData ns, LockMode mode)
-    : _dbLock(opCtx, ns, mode), _db(dbHolder().get(opCtx, ns)) {
+    // Wait for a configured amount of time after acquiring locks if the failpoint is enabled
+    MONGO_FAIL_POINT_BLOCK(setAutoGetCollectionWait, customWait) {
+        const BSONObj& data = customWait.getData();
+        sleepFor(Milliseconds(data["waitForMillis"].numberInt()));
+    }
+
+    Database* const db = _autoDb.getDb();
+    invariant(!nsOrUUID.uuid() || db,
+              str::stream() << "Database for " << _resolvedNss.ns()
+                            << " disappeared after successufully resolving "
+                            << nsOrUUID.toString());
+
+    // If the database doesn't exists, we can't obtain a collection or check for views
+    if (!db)
+        return;
+
+    _coll = db->getCollection(opCtx, _resolvedNss);
+    invariant(!nsOrUUID.uuid() || _coll,
+              str::stream() << "Collection for " << _resolvedNss.ns()
+                            << " disappeared after successufully resolving "
+                            << nsOrUUID.toString());
+
+    // If the collection exists, there is no need to check for views
+    if (_coll)
+        return;
+
+    _view = db->getViewCatalog()->lookup(opCtx, _resolvedNss.ns());
+    uassert(ErrorCodes::CommandNotSupportedOnView,
+            str::stream() << "Namespace " << _resolvedNss.ns() << " is a view, not a collection",
+            !_view || viewMode == kViewsPermitted);
+}
+
+NamespaceString AutoGetCollection::resolveNamespaceStringOrUUID(OperationContext* opCtx,
+                                                                NamespaceStringOrUUID nsOrUUID) {
+    if (nsOrUUID.nss())
+        return *nsOrUUID.nss();
+
+    UUIDCatalog& uuidCatalog = UUIDCatalog::get(opCtx);
+    auto resolvedNss = uuidCatalog.lookupNSSByUUID(*nsOrUUID.uuid());
+
+    uassert(ErrorCodes::NamespaceNotFound,
+            str::stream() << "Unable to resolve " << nsOrUUID.toString(),
+            resolvedNss.isValid());
+
+    return resolvedNss;
+}
+
+AutoGetOrCreateDb::AutoGetOrCreateDb(OperationContext* opCtx,
+                                     StringData dbName,
+                                     LockMode mode,
+                                     Date_t deadline) {
     invariant(mode == MODE_IX || mode == MODE_X);
-    _justCreated = false;
+
+    _autoDb.emplace(opCtx, dbName, mode, deadline);
+    _db = _autoDb->getDb();
 
     // If the database didn't exist, relock in MODE_X
-    if (_db == NULL) {
+    if (!_db) {
         if (mode != MODE_X) {
-            _dbLock.relockWithMode(MODE_X);
+            _autoDb.emplace(opCtx, dbName, MODE_X, deadline);
         }
 
-        _db = dbHolder().openDb(opCtx, ns);
-        _justCreated = true;
+        _db = dbHolder().openDb(opCtx, dbName, &_justCreated);
     }
 }
 

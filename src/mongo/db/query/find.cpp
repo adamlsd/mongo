@@ -202,14 +202,22 @@ void generateBatch(int ntoreturn,
     }
 
     // Propagate any errors to the caller.
-    if (PlanExecutor::FAILURE == *state) {
-        error() << "getMore executor error, stats: " << redact(Explain::getWinningPlanStats(exec));
-        uasserted(17406, "getMore executor error: " + WorkingSetCommon::toStatusString(obj));
-    } else if (PlanExecutor::DEAD == *state) {
-        uasserted(ErrorCodes::QueryPlanKilled,
-                  str::stream() << "PlanExecutor killed: "
-                                << WorkingSetCommon::toStatusString(obj));
+    switch (*state) {
+        // Log an error message and then perform the same cleanup as DEAD.
+        case PlanExecutor::FAILURE:
+            error() << "getMore executor error, stats: "
+                    << redact(Explain::getWinningPlanStats(exec));
+        case PlanExecutor::DEAD: {
+            // We should always have a valid status object by this point.
+            auto status = WorkingSetCommon::getMemberObjectStatus(obj);
+            invariant(!status.isOK());
+            uassertStatusOK(status);
+        }
+        default:
+            return;
     }
+
+    MONGO_UNREACHABLE;
 }
 
 }  // namespace
@@ -254,6 +262,7 @@ Message getMore(OperationContext* opCtx,
     // Note that we acquire our locks before our ClientCursorPin, in order to ensure that the pin's
     // destructor is called before the lock's destructor (if there is one) so that the cursor
     // cleanup can occur under the lock.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     boost::optional<AutoGetCollectionForRead> readLock;
     boost::optional<AutoStatsTracker> statsTracker;
     CursorManager* cursorManager;
@@ -324,7 +333,6 @@ Message getMore(OperationContext* opCtx,
             cursorid = 0;
             resultFlags = ResultFlag_CursorNotFound;
         } else {
-            invariant(ccPin == ErrorCodes::QueryPlanKilled || ccPin == ErrorCodes::Unauthorized);
             uassertStatusOK(ccPin.getStatus());
         }
     } else {
@@ -547,17 +555,8 @@ std::string runQuery(OperationContext* opCtx,
     LOG(2) << "Running query: " << redact(cq->toStringShort());
 
     // Parse, canonicalize, plan, transcribe, and get a plan executor.
-    AutoGetCollectionOrViewForReadCommand ctx(opCtx, nss);
-    Collection* collection = ctx.getCollection();
-
-    if (ctx.getView()) {
-        uasserted(ErrorCodes::CommandNotSupportedOnView,
-                  str::stream()
-                      << "Namespace "
-                      << nss.ns()
-                      << " is a view. Legacy find operations are not supported on views. "
-                      << "Only clients which support the find command can be used to query views.");
-    }
+    AutoGetCollectionForReadCommand ctx(opCtx, nss, AutoGetCollection::ViewMode::kViewsForbidden);
+    Collection* const collection = ctx.getCollection();
 
     {
         const QueryRequest& qr = cq->getQueryRequest();

@@ -126,12 +126,12 @@ private:
     /**
      * Function that constructs (initializes) a single instance of a decoration.
      */
-    using DecorationConstructorFn = void(*)(void *);
+    using DecorationConstructorFn = void (*)(void*);
 
     /**
      * Function that destroys (deinitializes) a single instance of a decoration.
      */
-    using DecorationDestructorFn = void(*)(void *);
+    using DecorationDestructorFn = void (*)(void*);
 
     struct DecorationInfo {
         DecorationInfo() {}

@@ -58,7 +58,7 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -650,11 +650,9 @@ Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const Namespace
 
     if (it != _collections.end() && it->second) {
         Collection* found = it->second;
-        if (enableCollectionUUIDs) {
-            NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
-            if (auto uuid = found->uuid())
-                cache.ensureNamespaceInCache(nss, uuid.get());
-        }
+        NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
+        if (auto uuid = found->uuid())
+            cache.ensureNamespaceInCache(nss, uuid.get());
         return found;
     }
 

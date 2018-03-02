@@ -55,7 +55,7 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
@@ -1613,7 +1613,8 @@ TEST_F(IdempotencyTest, CreateCollectionWithValidation) {
 }
 
 TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
-    ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
+                  ->setFollowerMode(MemberState::RS_RECOVERING));
     ASSERT_OK(runOpInitialSync(createCollection()));
     CollectionUUID uuid = UUID::gen();
 
@@ -1659,7 +1660,8 @@ TEST_F(IdempotencyTest, CreateCollectionWithCollation) {
 }
 
 TEST_F(IdempotencyTest, CreateCollectionWithIdIndex) {
-    ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
+                  ->setFollowerMode(MemberState::RS_RECOVERING));
     CollectionUUID uuid = UUID::gen();
 
     auto options1 = BSON("idIndex" << BSON("key" << fromjson("{_id: 1}") << "name"
@@ -1691,7 +1693,8 @@ TEST_F(IdempotencyTest, CreateCollectionWithIdIndex) {
 }
 
 TEST_F(IdempotencyTest, CreateCollectionWithView) {
-    ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
+                  ->setFollowerMode(MemberState::RS_RECOVERING));
     CollectionOptions options;
     options.uuid = UUID::gen();
 
@@ -1713,7 +1716,8 @@ TEST_F(IdempotencyTest, CreateCollectionWithView) {
 }
 
 TEST_F(IdempotencyTest, CollModNamespaceNotFound) {
-    ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
+                  ->setFollowerMode(MemberState::RS_RECOVERING));
 
     ASSERT_OK(runOpInitialSync(createCollection()));
     ASSERT_OK(
@@ -1729,7 +1733,8 @@ TEST_F(IdempotencyTest, CollModNamespaceNotFound) {
 }
 
 TEST_F(IdempotencyTest, CollModIndexNotFound) {
-    ASSERT_OK(getGlobalReplicationCoordinator()->setFollowerMode(MemberState::RS_RECOVERING));
+    ASSERT_OK(ReplicationCoordinator::get(getGlobalServiceContext())
+                  ->setFollowerMode(MemberState::RS_RECOVERING));
 
     ASSERT_OK(runOpInitialSync(createCollection()));
     ASSERT_OK(
@@ -1742,61 +1747,6 @@ TEST_F(IdempotencyTest, CollModIndexNotFound) {
 
     auto ops = {collModOp, dropIndexOp};
     testOpsAreIdempotent(ops);
-}
-
-TEST_F(SyncTailTest, FailOnAssigningUUIDToCollectionWithExistingUUID) {
-    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
-    auto oldUUID = UUID::gen();
-    CollectionOptions options;
-    options.uuid = oldUUID;
-    createCollection(_opCtx.get(), nss, options);
-
-    auto collModCmd = BSON("collMod" << nss.coll());
-    auto newUUID = UUID::gen();
-    auto collModOp = repl::OplogEntry(nextOpTime(),
-                                      1LL,
-                                      OpTypeEnum::kCommand,
-                                      nss,
-                                      newUUID,
-                                      boost::none,
-                                      repl::OplogEntry::kOplogVersion,
-                                      collModCmd,
-                                      boost::none,
-                                      {},
-                                      boost::none,
-                                      boost::none,
-                                      boost::none,
-                                      boost::none,
-                                      boost::none);
-
-    ASSERT_EQUALS(runOpInitialSync(collModOp), ErrorCodes::duplicateCodeForTest(40676));
-}
-
-TEST_F(SyncTailTest, SuccessOnAssigningUUIDToCollectionWithExistingUUID) {
-    NamespaceString nss("local." + _agent.getSuiteName() + "_" + _agent.getTestName());
-    auto oldUUID = UUID::gen();
-    CollectionOptions options;
-    options.uuid = oldUUID;
-    createCollection(_opCtx.get(), nss, options);
-
-    auto collModCmd = BSON("collMod" << nss.coll());
-    auto collModOp = repl::OplogEntry(nextOpTime(),
-                                      1LL,
-                                      OpTypeEnum::kCommand,
-                                      nss,
-                                      oldUUID,
-                                      boost::none,
-                                      repl::OplogEntry::kOplogVersion,
-                                      collModCmd,
-                                      boost::none,
-                                      {},
-                                      boost::none,
-                                      boost::none,
-                                      boost::none,
-                                      boost::none,
-                                      boost::none);
-
-    ASSERT_OK(runOpInitialSync(collModOp));
 }
 
 TEST_F(SyncTailTest, FailOnDropFCVCollection) {

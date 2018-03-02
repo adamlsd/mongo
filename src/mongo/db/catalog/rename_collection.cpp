@@ -47,7 +47,7 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/index_builder.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/log.h"
@@ -315,7 +315,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
         // two collections with the same uuid (temporarily).
         if (targetUUID)
             newUUID = targetUUID;
-        else if (collectionOptions.uuid && enableCollectionUUIDs)
+        else if (collectionOptions.uuid)
             newUUID = UUID::gen();
 
         collectionOptions.uuid = newUUID;

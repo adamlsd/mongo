@@ -71,7 +71,6 @@
 #include "mongo/db/repl/collection_bulk_loader_impl.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/repl/rollback_gen.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/assert_util.h"
@@ -1004,10 +1003,6 @@ StatusWith<OptionalCollectionUUID> StorageInterfaceImpl::getCollectionUUID(
     }
     auto collection = collectionResult.getValue();
     return collection->uuid();
-}
-
-Status StorageInterfaceImpl::upgradeUUIDSchemaVersionNonReplicated(OperationContext* opCtx) {
-    return updateUUIDSchemaVersionNonReplicated(opCtx, true);
 }
 
 void StorageInterfaceImpl::setStableTimestamp(ServiceContext* serviceCtx, Timestamp snapshotName) {

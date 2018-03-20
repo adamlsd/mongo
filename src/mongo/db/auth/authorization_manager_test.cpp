@@ -176,7 +176,7 @@ public:
     void setUp() override {
         auto localExternalState = stdx::make_unique<AuthzManagerExternalStateMock>();
         externalState = localExternalState.get();
-        authzManager = stdx::make_unique<AuthorizationManager>(
+        authzManager = stdx::make_unique<AuthorizationManagerImpl>(
             std::move(localExternalState), AuthorizationManagerImpl::TestingMock{});
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);

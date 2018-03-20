@@ -526,10 +526,6 @@ ExitCode main(ServiceContext* serviceContext) {
     return runMongosServer(serviceContext);
 }
 
-MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
-()->std::unique_ptr<AuthzManagerExternalState> {
-    return stdx::make_unique<AuthzManagerExternalStateMongos>();
-
 namespace {
 MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 (InitializerContext* context) {
@@ -608,7 +604,12 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
         return EXIT_UNCAUGHT;
     }
 }
+}  // namespace
 
+MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
+()->std::unique_ptr<AuthzManagerExternalState> {
+    return stdx::make_unique<AuthzManagerExternalStateMongos>();
+}
 }  // namespace mongo
 
 #if defined(_WIN32)

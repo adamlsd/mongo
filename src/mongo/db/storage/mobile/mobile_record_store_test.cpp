@@ -130,14 +130,9 @@ private:
     std::string _fullPath;
     std::unique_ptr<MobileSessionPool> _sessionPool;
 };
+}  // namespace
 
-std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<MobileHarnessHelper>();
 }
-
-MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
-    mongo::registerHarnessHelperFactory(makeHarnessHelper);
-    return Status::OK();
-}
-}  // namespace
 }  // namespace mongo

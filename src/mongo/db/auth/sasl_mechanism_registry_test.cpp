@@ -26,10 +26,11 @@
  *    it in the license file.
  */
 
-#include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
+#include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/unittest/unittest.h"
@@ -135,8 +136,9 @@ public:
         : opClient(serviceContext.makeClient("mechanismRegistryTest")),
           opCtx(serviceContext.makeOperationContext(opClient.get())),
           authManagerExternalState(new AuthzManagerExternalStateMock()),
-          authManager(new AuthorizationManager(
-              std::unique_ptr<AuthzManagerExternalStateMock>(authManagerExternalState))) {
+          authManager(new AuthorizationManagerImpl(
+              std::unique_ptr<AuthzManagerExternalStateMock>(authManagerExternalState),
+              AuthorizationManagerImpl::TestingMock{})) {
         AuthorizationManager::set(&serviceContext,
                                   std::unique_ptr<AuthorizationManager>(authManager));
 

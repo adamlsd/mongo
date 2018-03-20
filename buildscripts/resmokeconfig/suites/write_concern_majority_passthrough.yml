@@ -4,6 +4,8 @@ selector:
   roots:
   - jstests/core/**/*.js
   exclude_files:
+  # Operations within a transaction do not support write concern.
+  - jstests/core/txns/**/*.js
   # These tests are not expected to pass with replica-sets:
   - jstests/core/dbadmin.js
   - jstests/core/opcounters_write_cmd.js
@@ -40,6 +42,11 @@ selector:
   - assumes_read_preference_unchanged
 
 executor:
+  archive:
+    hooks:
+      - CheckReplDBHash
+      - CheckReplOplogs
+      - ValidateCollections
   config:
     shell_options:
       global_vars:

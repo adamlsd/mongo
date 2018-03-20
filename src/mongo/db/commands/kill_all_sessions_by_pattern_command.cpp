@@ -57,8 +57,8 @@ class KillAllSessionsByPatternCommand final : public BasicCommand {
 public:
     KillAllSessionsByPatternCommand() : BasicCommand("killAllSessionsByPattern") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     bool adminOnly() const override {
         return false;
@@ -71,7 +71,7 @@ public:
     }
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) override {
+                                 const BSONObj& cmdObj) const override {
         AuthorizationSession* authSession = AuthorizationSession::get(opCtx->getClient());
         if (!authSession->isAuthorizedForPrivilege(
                 Privilege{ResourcePattern::forClusterResource(), ActionType::killAnySession})) {

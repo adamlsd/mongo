@@ -73,9 +73,11 @@ using std::vector;
 class CmdBuildInfo : public BasicCommand {
 public:
     CmdBuildInfo() : BasicCommand("buildInfo", "buildinfo") {}
-    virtual bool slaveOk() const {
-        return true;
+
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
+
     virtual bool adminOnly() const {
         return false;
     }
@@ -84,7 +86,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {}  // No auth required
+                                       std::vector<Privilege>* out) const {}  // No auth required
     std::string help() const override {
         return "get version #, etc.\n"
                "{ buildinfo:1 }";
@@ -104,8 +106,9 @@ public:
 class PingCommand : public BasicCommand {
 public:
     PingCommand() : BasicCommand("ping") {}
-    virtual bool slaveOk() const {
-        return true;
+
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     std::string help() const override {
         return "a way to check that the server is alive. responds immediately even if server is "
@@ -119,7 +122,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {}  // No auth required
+                                       std::vector<Privilege>* out) const {}  // No auth required
     virtual bool requiresAuth() const override {
         return false;
     }
@@ -138,15 +141,15 @@ public:
     std::string help() const override {
         return "return build level feature settings";
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {}  // No auth required
+                                       std::vector<Privilege>* out) const {}  // No auth required
     virtual bool run(OperationContext* opCtx,
                      const string& ns,
                      const BSONObj& cmdObj,
@@ -169,10 +172,10 @@ public:
 class HostInfoCmd : public BasicCommand {
 public:
     HostInfoCmd() : BasicCommand("hostInfo") {}
-    virtual bool slaveOk() const {
-        return true;
-    }
 
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
+    }
 
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -183,7 +186,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::hostInfo);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -221,15 +224,15 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
-    virtual bool adminOnly() const {
+    bool adminOnly() const override {
         return true;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::logRotate);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -255,15 +258,15 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return false;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {}  // No auth required
+                                       std::vector<Privilege>* out) const {}  // No auth required
     virtual bool run(OperationContext* opCtx,
                      const string& ns,
                      const BSONObj& cmdObj,
@@ -283,11 +286,14 @@ public:
         for (const auto& c : commands) {
             BSONObjBuilder temp(b.subobjStart(c->getName()));
             temp.append("help", c->help());
-            temp.append("slaveOk", c->slaveOk());
+            temp.append("slaveOk",
+                        c->secondaryAllowed(opCtx->getServiceContext()) ==
+                            Command::AllowedOnSecondary::kAlways);
             temp.append("adminOnly", c->adminOnly());
             // optionally indicates that the command can be forced to run on a slave/secondary
-            if (c->slaveOverrideOk())
-                temp.append("slaveOverrideOk", c->slaveOverrideOk());
+            if (c->secondaryAllowed(opCtx->getServiceContext()) ==
+                Command::AllowedOnSecondary::kOptIn)
+                temp.append("slaveOverrideOk", true);
             temp.done();
         }
         b.done();
@@ -301,8 +307,8 @@ class GetLogCmd : public ErrmsgCommandDeprecated {
 public:
     GetLogCmd() : ErrmsgCommandDeprecated("getLog") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -312,7 +318,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::getLog);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -372,8 +378,8 @@ class ClearLogCmd : public BasicCommand {
 public:
     ClearLogCmd() : BasicCommand("clearLog") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
@@ -383,7 +389,7 @@ public:
     }
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) override {
+                               const BSONObj& cmdObj) const override {
         // No access control needed since this command is a testing-only command that must be
         // enabled at the command line.
         return Status::OK();
@@ -414,7 +420,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterClearLogCmd)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new ClearLogCmd();
     }
@@ -433,12 +439,12 @@ public:
     virtual bool adminOnly() const {
         return true;
     }
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::getCmdLineOpts);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -461,13 +467,13 @@ int* volatile illegalAddress;  // NOLINT - used for fail point only
 
 void CmdShutdown::addRequiredPrivileges(const std::string& dbname,
                                         const BSONObj& cmdObj,
-                                        std::vector<Privilege>* out) {
+                                        std::vector<Privilege>* out) const {
     ActionSet actions;
     actions.addAction(ActionType::shutdown);
     out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
 }
 
-void CmdShutdown::shutdownHelper() {
+void CmdShutdown::shutdownHelper(const BSONObj& cmdObj) {
     MONGO_FAIL_POINT_BLOCK(crashOnShutdown, crashBlock) {
         const std::string crashHow = crashBlock.getData()["how"].str();
         if (crashHow == "fault") {
@@ -476,7 +482,7 @@ void CmdShutdown::shutdownHelper() {
         ::abort();
     }
 
-    log() << "terminating, shutdown command received";
+    log() << "terminating, shutdown command received " << cmdObj;
 
 #if defined(_WIN32)
     // Signal the ServiceMain thread to shutdown.

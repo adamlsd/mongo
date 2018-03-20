@@ -36,6 +36,7 @@
 
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/kill_sessions_common.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
@@ -57,15 +58,12 @@ struct CheckedOutSession {
     int checkOutNestingLevel = 0;
 };
 
-const auto sessionTransactionTableDecoration =
-    ServiceContext::declareDecoration<boost::optional<SessionCatalog>>();
+const auto sessionTransactionTableDecoration = ServiceContext::declareDecoration<SessionCatalog>();
 
 const auto operationSessionDecoration =
     OperationContext::declareDecoration<boost::optional<CheckedOutSession>>();
 
 }  // namespace
-
-SessionCatalog::SessionCatalog(ServiceContext* serviceContext) : _serviceContext(serviceContext) {}
 
 SessionCatalog::~SessionCatalog() {
     stdx::lock_guard<stdx::mutex> lg(_mutex);
@@ -75,16 +73,9 @@ SessionCatalog::~SessionCatalog() {
     }
 }
 
-void SessionCatalog::create(ServiceContext* service) {
-    auto& sessionTransactionTable = sessionTransactionTableDecoration(service);
-    invariant(!sessionTransactionTable);
-
-    sessionTransactionTable.emplace(service);
-}
-
-void SessionCatalog::reset_forTest(ServiceContext* service) {
-    auto& sessionTransactionTable = sessionTransactionTableDecoration(service);
-    sessionTransactionTable.reset();
+void SessionCatalog::reset_forTest() {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    _txnTable.clear();
 }
 
 SessionCatalog* SessionCatalog::get(OperationContext* opCtx) {
@@ -93,9 +84,7 @@ SessionCatalog* SessionCatalog::get(OperationContext* opCtx) {
 
 SessionCatalog* SessionCatalog::get(ServiceContext* service) {
     auto& sessionTransactionTable = sessionTransactionTableDecoration(service);
-    invariant(sessionTransactionTable);
-
-    return sessionTransactionTable.get_ptr();
+    return &sessionTransactionTable;
 }
 
 boost::optional<UUID> SessionCatalog::getTransactionTableUUID(OperationContext* opCtx) {
@@ -149,7 +138,7 @@ ScopedCheckedOutSession SessionCatalog::checkOutSession(OperationContext* opCtx)
 
     stdx::unique_lock<stdx::mutex> ul(_mutex);
 
-    auto sri = _getOrCreateSessionRuntimeInfo(opCtx, lsid, ul);
+    auto sri = _getOrCreateSessionRuntimeInfo(ul, opCtx, lsid);
 
     // Wait until the session is no longer checked out
     opCtx->waitForConditionOrInterrupt(
@@ -169,11 +158,33 @@ ScopedSession SessionCatalog::getOrCreateSession(OperationContext* opCtx,
 
     auto ss = [&] {
         stdx::unique_lock<stdx::mutex> ul(_mutex);
-        return ScopedSession(_getOrCreateSessionRuntimeInfo(opCtx, lsid, ul));
+        return ScopedSession(_getOrCreateSessionRuntimeInfo(ul, opCtx, lsid));
     }();
 
     // Perform the refresh outside of the mutex
     ss->refreshFromStorageIfNeeded(opCtx);
+
+    return ss;
+}
+
+boost::optional<ScopedSession> SessionCatalog::getSession(OperationContext* opCtx,
+                                                          const LogicalSessionId& lsid) {
+    invariant(!opCtx->lockState()->isLocked());
+    invariant(!OperationContextSession::get(opCtx));
+
+    boost::optional<ScopedSession> ss;
+    {
+        stdx::unique_lock<stdx::mutex> ul(_mutex);
+        auto sri = _getSessionRuntimeInfo(ul, opCtx, lsid);
+        if (sri) {
+            ss = ScopedSession(sri);
+        }
+    }
+
+    // Perform the refresh outside of the mutex.
+    if (ss) {
+        (*ss)->refreshFromStorageIfNeeded(opCtx);
+    }
 
     return ss;
 }
@@ -215,13 +226,42 @@ void SessionCatalog::invalidateSessions(OperationContext* opCtx,
     }
 }
 
+void SessionCatalog::scanSessions(OperationContext* opCtx,
+                                  const SessionKiller::Matcher& matcher,
+                                  stdx::function<void(OperationContext*, Session*)> workerFn) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+
+    LOG(2) << "Beginning scanSessions. Scanning " << _txnTable.size() << " sessions.";
+
+    for (auto it = _txnTable.begin(); it != _txnTable.end(); ++it) {
+        // TODO SERVER-33850: Rename KillAllSessionsByPattern and
+        // ScopedKillAllSessionsByPatternImpersonator to not refer to session kill.
+        if (const KillAllSessionsByPattern* pattern = matcher.match(it->first)) {
+            ScopedKillAllSessionsByPatternImpersonator impersonator(opCtx, *pattern);
+            workerFn(opCtx, &(it->second->txnState));
+        }
+    }
+}
+
 std::shared_ptr<SessionCatalog::SessionRuntimeInfo> SessionCatalog::_getOrCreateSessionRuntimeInfo(
-    OperationContext* opCtx, const LogicalSessionId& lsid, stdx::unique_lock<stdx::mutex>& ul) {
+    WithLock, OperationContext* opCtx, const LogicalSessionId& lsid) {
     invariant(!opCtx->lockState()->inAWriteUnitOfWork());
 
     auto it = _txnTable.find(lsid);
     if (it == _txnTable.end()) {
         it = _txnTable.emplace(lsid, std::make_shared<SessionRuntimeInfo>(lsid)).first;
+    }
+
+    return it->second;
+}
+
+std::shared_ptr<SessionCatalog::SessionRuntimeInfo> SessionCatalog::_getSessionRuntimeInfo(
+    WithLock, OperationContext* opCtx, const LogicalSessionId& lsid) {
+    invariant(!opCtx->lockState()->inAWriteUnitOfWork());
+
+    auto it = _txnTable.find(lsid);
+    if (it == _txnTable.end()) {
+        return nullptr;
     }
 
     return it->second;
@@ -240,8 +280,11 @@ void SessionCatalog::_releaseSession(const LogicalSessionId& lsid) {
     sri->availableCondVar.notify_one();
 }
 
-OperationContextSession::OperationContextSession(OperationContext* opCtx, bool checkOutSession)
+OperationContextSession::OperationContextSession(OperationContext* opCtx,
+                                                 bool checkOutSession,
+                                                 boost::optional<bool> autocommit)
     : _opCtx(opCtx) {
+
     if (!opCtx->getLogicalSessionId()) {
         return;
     }
@@ -273,7 +316,8 @@ OperationContextSession::OperationContextSession(OperationContext* opCtx, bool c
     checkedOutSession->scopedSession->refreshFromStorageIfNeeded(opCtx);
 
     if (opCtx->getTxnNumber()) {
-        checkedOutSession->scopedSession->beginTxn(opCtx, *opCtx->getTxnNumber());
+        checkedOutSession->scopedSession->beginOrContinueTxn(
+            opCtx, *opCtx->getTxnNumber(), autocommit);
     }
 }
 
@@ -287,9 +331,12 @@ OperationContextSession::~OperationContextSession() {
     }
 }
 
-Session* OperationContextSession::get(OperationContext* opCtx) {
+Session* OperationContextSession::get(OperationContext* opCtx, bool topLevelOnly) {
     auto& checkedOutSession = operationSessionDecoration(opCtx);
     if (checkedOutSession) {
+        if (topLevelOnly && checkedOutSession->checkOutNestingLevel != 1) {
+            return nullptr;
+        }
         return checkedOutSession->scopedSession.get();
     }
 

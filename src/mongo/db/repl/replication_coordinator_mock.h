@@ -111,8 +111,6 @@ public:
 
     virtual bool shouldRelaxIndexConstraints(OperationContext* opCtx, const NamespaceString& ns);
 
-    virtual Status setLastOptimeForSlave(const OID& rid, const Timestamp& ts);
-
     virtual void setMyLastAppliedOpTime(const OpTime& opTime);
     virtual void setMyLastDurableOpTime(const OpTime& opTime);
 
@@ -198,8 +196,6 @@ public:
     virtual Status processReplSetUpdatePosition(const UpdatePositionArgs& updates,
                                                 long long* configVersion);
 
-    virtual Status processHandshake(OperationContext* opCtx, const HandshakeArgs& handshake);
-
     virtual bool buildsIndexes();
 
     virtual std::vector<HostAndPort> getHostsWrittenTo(const OpTime& op, bool durablyWritten);
@@ -216,6 +212,8 @@ public:
 
     virtual void resetLastOpTimesFromOplog(OperationContext* opCtx, DataConsistency consistency);
 
+    bool lastOpTimesWereReset() const;
+
     virtual bool shouldChangeSyncSource(const HostAndPort& currentSource,
                                         const rpc::ReplSetMetadata& replMetadata,
                                         boost::optional<rpc::OplogQueryMetadata> oqMetadata);
@@ -226,8 +224,7 @@ public:
                                               const ReplSetRequestVotesArgs& args,
                                               ReplSetRequestVotesResponse* response);
 
-    void prepareReplMetadata(OperationContext* opCtx,
-                             const BSONObj& metadataRequestObj,
+    void prepareReplMetadata(const BSONObj& metadataRequestObj,
                              const OpTime& lastOpTimeFromClient,
                              BSONObjBuilder* builder) const override;
 
@@ -301,6 +298,7 @@ private:
         return StatusAndDuration(Status::OK(), Milliseconds(0));
     };
     bool _alwaysAllowWrites = false;
+    bool _resetLastOpTimesCalled = false;
 };
 
 }  // namespace repl

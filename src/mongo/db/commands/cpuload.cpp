@@ -42,8 +42,8 @@ using std::stringstream;
 class CPULoadCommand : public BasicCommand {
 public:
     CPULoadCommand() : BasicCommand("cpuload") {}
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool isWriteCommandForConfigServer() const {
         return false;
@@ -57,7 +57,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {}  // No auth required
+                                       std::vector<Privilege>* out) const {}  // No auth required
     virtual bool run(OperationContext* txn,
                      const string& badns,
                      const BSONObj& cmdObj,
@@ -82,7 +82,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterCpuLoadCmd)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         new CPULoadCommand();
     }
     return Status::OK();

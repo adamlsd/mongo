@@ -32,11 +32,11 @@
 
 #include "mongo/db/s/balancer/balancer_chunk_selection_policy_impl.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "mongo/base/status_with.h"
 #include "mongo/bson/bsonobj_comparator_interface.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
 #include "mongo/s/catalog/type_chunk.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog/type_tags.h"
@@ -86,12 +86,11 @@ StatusWith<DistributionStatus> createCollectionDistributionStatus(
         Grid::get(opCtx)->catalogClient()->getTagsForCollection(opCtx, chunkMgr->getns());
     if (!swCollectionTags.isOK()) {
         return swCollectionTags.getStatus().withContext(
-            str::stream() << "Unable to load tags for collection " << chunkMgr->getns());
+            str::stream() << "Unable to load tags for collection " << chunkMgr->getns().ns());
     }
     const auto& collectionTags = swCollectionTags.getValue();
 
-    DistributionStatus distribution(NamespaceString(chunkMgr->getns()),
-                                    std::move(shardToChunksMap));
+    DistributionStatus distribution(chunkMgr->getns(), std::move(shardToChunksMap));
 
     // Cache the collection tags
     const auto& keyPattern = chunkMgr->getShardKeyPattern().getKeyPattern();
@@ -174,8 +173,9 @@ private:
 
 }  // namespace
 
-BalancerChunkSelectionPolicyImpl::BalancerChunkSelectionPolicyImpl(ClusterStatistics* clusterStats)
-    : _clusterStats(clusterStats) {}
+BalancerChunkSelectionPolicyImpl::BalancerChunkSelectionPolicyImpl(ClusterStatistics* clusterStats,
+                                                                   BalancerRandomSource& random)
+    : _clusterStats(clusterStats), _random(random) {}
 
 BalancerChunkSelectionPolicyImpl::~BalancerChunkSelectionPolicyImpl() = default;
 
@@ -188,19 +188,20 @@ StatusWith<SplitInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToSpli
 
     const auto shardStats = std::move(shardStatsStatus.getValue());
 
-    const auto swCollections =
-        Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
+    auto swCollections = Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
     if (!swCollections.isOK()) {
         return swCollections.getStatus();
     }
 
-    const auto& collections = swCollections.getValue();
+    auto& collections = swCollections.getValue();
 
     if (collections.empty()) {
         return SplitInfoVector{};
     }
 
     SplitInfoVector splitCandidates;
+
+    std::shuffle(collections.begin(), collections.end(), _random);
 
     for (const auto& coll : collections) {
         if (coll.getDropped()) {
@@ -241,13 +242,12 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
     }
 
 
-    const auto swCollections =
-        Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
+    auto swCollections = Grid::get(opCtx)->catalogClient()->getCollections(opCtx, nullptr, nullptr);
     if (!swCollections.isOK()) {
         return swCollections.getStatus();
     }
 
-    const auto& collections = swCollections.getValue();
+    auto& collections = swCollections.getValue();
 
     if (collections.empty()) {
         return MigrateInfoVector{};
@@ -255,6 +255,8 @@ StatusWith<MigrateInfoVector> BalancerChunkSelectionPolicyImpl::selectChunksToMo
 
     MigrateInfoVector candidateChunks;
     std::set<ShardId> usedShards;
+
+    std::shuffle(collections.begin(), collections.end(), _random);
 
     for (const auto& coll : collections) {
         if (coll.getDropped()) {
@@ -298,8 +300,8 @@ BalancerChunkSelectionPolicyImpl::selectSpecificChunkToMove(OperationContext* op
     const auto& shardStats = shardStatsStatus.getValue();
 
     auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
-            opCtx, NamespaceString(chunk.getNS()));
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
+                                                                                     chunk.getNS());
     if (!routingInfoStatus.isOK()) {
         return routingInfoStatus.getStatus();
     }
@@ -327,8 +329,8 @@ Status BalancerChunkSelectionPolicyImpl::checkMoveAllowed(OperationContext* opCt
     auto shardStats = std::move(shardStatsStatus.getValue());
 
     auto routingInfoStatus =
-        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(
-            opCtx, NamespaceString(chunk.getNS()));
+        Grid::get(opCtx)->catalogCache()->getShardedCollectionRoutingInfoWithRefresh(opCtx,
+                                                                                     chunk.getNS());
     if (!routingInfoStatus.isOK()) {
         return routingInfoStatus.getStatus();
     }

@@ -73,7 +73,7 @@
 #include "mongo/db/query/query_settings.h"
 #include "mongo/db/query/stage_builder.h"
 #include "mongo/db/repl/optime.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
@@ -206,13 +206,6 @@ void fillOutPlannerParams(OperationContext* opCtx,
         plannerParams->options |= QueryPlannerParams::CANNOT_TRIM_IXISECT;
     } else {
         plannerParams->options |= QueryPlannerParams::KEEP_MUTATIONS;
-    }
-
-    // MMAPv1 storage engine should have snapshot() perform an index scan on _id rather than a
-    // collection scan since a collection scan on the MMAP storage engine can return duplicates
-    // or miss documents.
-    if (isMMAPV1()) {
-        plannerParams->options |= QueryPlannerParams::SNAPSHOT_USE_ID;
     }
 }
 
@@ -641,15 +634,18 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getOplogStartHack(
         opCtx, std::move(ws), std::move(cs), std::move(cq), collection, PlanExecutor::YIELD_AUTO);
 }
 
-}  // namespace
-
-StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
+StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> _getExecutorFind(
     OperationContext* opCtx,
     Collection* collection,
     const NamespaceString& nss,
     unique_ptr<CanonicalQuery> canonicalQuery,
     PlanExecutor::YieldPolicy yieldPolicy,
     size_t plannerOptions) {
+    if (canonicalQuery->getQueryRequest().getMaxScan()) {
+        RARELY log() << "Support for the maxScan option has been deprecated. Instead, use "
+                        "maxTimeMS. See http://dochub.mongodb.org/core/4.0-deprecate-maxScan.";
+    }
+
     if (NULL != collection && canonicalQuery->getQueryRequest().isOplogReplay()) {
         return getOplogStartHack(opCtx, collection, std::move(canonicalQuery), plannerOptions);
     }
@@ -657,8 +653,36 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
     if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, nss.ns())) {
         plannerOptions |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
     }
-    return getExecutor(
-        opCtx, collection, std::move(canonicalQuery), PlanExecutor::YIELD_AUTO, plannerOptions);
+    return getExecutor(opCtx, collection, std::move(canonicalQuery), yieldPolicy, plannerOptions);
+}
+
+}  // namespace
+
+StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorFind(
+    OperationContext* opCtx,
+    Collection* collection,
+    const NamespaceString& nss,
+    unique_ptr<CanonicalQuery> canonicalQuery,
+    size_t plannerOptions) {
+    auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    auto yieldPolicy = readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+        ? PlanExecutor::INTERRUPT_ONLY
+        : PlanExecutor::YIELD_AUTO;
+    return _getExecutorFind(
+        opCtx, collection, nss, std::move(canonicalQuery), yieldPolicy, plannerOptions);
+}
+
+StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorLegacyFind(
+    OperationContext* opCtx,
+    Collection* collection,
+    const NamespaceString& nss,
+    std::unique_ptr<CanonicalQuery> canonicalQuery) {
+    return _getExecutorFind(opCtx,
+                            collection,
+                            nss,
+                            std::move(canonicalQuery),
+                            PlanExecutor::YIELD_AUTO,
+                            QueryPlannerParams::DEFAULT);
 }
 
 namespace {
@@ -994,15 +1018,17 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorUpdate(
 //
 
 StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorGroup(
-    OperationContext* opCtx,
-    Collection* collection,
-    const GroupRequest& request,
-    PlanExecutor::YieldPolicy yieldPolicy) {
+    OperationContext* opCtx, Collection* collection, const GroupRequest& request) {
     if (!getGlobalScriptEngine()) {
         return Status(ErrorCodes::BadValue, "server-side JavaScript execution is disabled");
     }
 
     unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();
+    const auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    const auto yieldPolicy =
+        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+        ? PlanExecutor::INTERRUPT_ONLY
+        : PlanExecutor::YIELD_AUTO;
 
     if (!collection) {
         // Treat collections that do not exist as empty collections.  Note that the explain
@@ -1245,11 +1271,7 @@ BSONObj getDistinctProjection(const std::string& field) {
 }  // namespace
 
 StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
-    OperationContext* opCtx,
-    Collection* collection,
-    const CountRequest& request,
-    bool explain,
-    PlanExecutor::YieldPolicy yieldPolicy) {
+    OperationContext* opCtx, Collection* collection, const CountRequest& request, bool explain) {
     unique_ptr<WorkingSet> ws = make_unique<WorkingSet>();
 
     auto qr = stdx::make_unique<QueryRequest>(request.getNs());
@@ -1266,13 +1288,19 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
         collection ? static_cast<const ExtensionsCallback&>(
                          ExtensionsCallbackReal(opCtx, &collection->ns()))
                    : static_cast<const ExtensionsCallback&>(ExtensionsCallbackNoop()),
-        MatchExpressionParser::kAllowAllSpecialFeatures &
-            ~MatchExpressionParser::AllowedFeatures::kIsolated);
+        MatchExpressionParser::kAllowAllSpecialFeatures);
 
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
     }
     unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
+
+    const auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    const auto yieldPolicy =
+        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+        ? PlanExecutor::INTERRUPT_ONLY
+        : PlanExecutor::YIELD_AUTO;
+
     if (!collection) {
         // Treat collections that do not exist as empty collections. Note that the explain
         // reporting machinery always assumes that the root stage for a count operation is
@@ -1454,8 +1482,13 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
     OperationContext* opCtx,
     Collection* collection,
     const std::string& ns,
-    ParsedDistinct* parsedDistinct,
-    PlanExecutor::YieldPolicy yieldPolicy) {
+    ParsedDistinct* parsedDistinct) {
+    const auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    const auto yieldPolicy =
+        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+        ? PlanExecutor::INTERRUPT_ONLY
+        : PlanExecutor::YIELD_AUTO;
+
     if (!collection) {
         // Treat collections that do not exist as empty collections.
         return PlanExecutor::make(opCtx,
@@ -1524,8 +1557,7 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
                                      std::move(qr),
                                      expCtx,
                                      extensionsCallback,
-                                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                                     MatchExpressionParser::kAllowAllSpecialFeatures);
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
     }

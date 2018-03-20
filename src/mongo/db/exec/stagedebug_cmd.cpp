@@ -123,11 +123,8 @@ public:
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
-    bool slaveOk() const {
-        return false;
-    }
-    bool slaveOverrideOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
     std::string help() const override {
         return {};
@@ -135,7 +132,7 @@ public:
 
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         // Command is testing-only, and can only be enabled at command line.  Hence, no auth
         // check needed.
     }
@@ -214,10 +211,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during "
-                                     << "StageDebug command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error during StageDebug command"));
         }
 
         return true;
@@ -523,7 +518,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterStageDebugCmd)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new StageDebugCmd();
     }

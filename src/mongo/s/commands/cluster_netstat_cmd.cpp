@@ -40,8 +40,8 @@ class NetStatCmd : public BasicCommand {
 public:
     NetStatCmd() : BasicCommand("netstat") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -59,7 +59,7 @@ public:
 
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::netstat);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));

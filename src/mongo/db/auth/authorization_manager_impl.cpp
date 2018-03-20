@@ -58,9 +58,9 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/platform/compiler.h"
-#include "mongo/platform/unordered_map.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -258,7 +258,8 @@ AuthorizationManagerImpl::AuthorizationManagerImpl(
 }
 
 AuthorizationManagerImpl::~AuthorizationManagerImpl() {
-    for (unordered_map<UserName, User*>::iterator it = _userCache.begin(); it != _userCache.end();
+    for (stdx::unordered_map<UserName, User*>::iterator it = _userCache.begin();
+         it != _userCache.end();
          ++it) {
         fassert(17265, it->second != internalSecurity.user);
         delete it->second;
@@ -463,7 +464,7 @@ Status AuthorizationManagerImpl::acquireUser(OperationContext* opCtx,
         return Status::OK();
     }
 
-    unordered_map<UserName, User*>::iterator it;
+    stdx::unordered_map<UserName, User*>::iterator it;
 
     CacheGuard guard(this, CacheGuard::fetchSynchronizationManual);
     while ((_userCache.end() == (it = _userCache.find(userName))) &&
@@ -587,7 +588,7 @@ void AuthorizationManagerImpl::releaseUser(User* user) {
 void AuthorizationManagerImpl::invalidateUserByName(const UserName& userName) {
     CacheGuard guard(this, CacheGuard::fetchSynchronizationManual);
     _updateCacheGeneration_inlock();
-    unordered_map<UserName, User*>::iterator it = _userCache.find(userName);
+    stdx::unordered_map<UserName, User*>::iterator it = _userCache.find(userName);
     if (it == _userCache.end()) {
         return;
     }
@@ -600,7 +601,7 @@ void AuthorizationManagerImpl::invalidateUserByName(const UserName& userName) {
 void AuthorizationManagerImpl::invalidateUsersFromDB(const std::string& dbname) {
     CacheGuard guard(this, CacheGuard::fetchSynchronizationManual);
     _updateCacheGeneration_inlock();
-    unordered_map<UserName, User*>::iterator it = _userCache.begin();
+    stdx::unordered_map<UserName, User*>::iterator it = _userCache.begin();
     while (it != _userCache.end()) {
         User* user = it->second;
         if (user->getName().getDB() == dbname) {
@@ -619,7 +620,8 @@ void AuthorizationManagerImpl::invalidateUserCache() {
 
 void AuthorizationManagerImpl::_invalidateUserCache_inlock() {
     _updateCacheGeneration_inlock();
-    for (unordered_map<UserName, User*>::iterator it = _userCache.begin(); it != _userCache.end();
+    for (stdx::unordered_map<UserName, User*>::iterator it = _userCache.begin();
+         it != _userCache.end();
          ++it) {
         fassert(17266, it->second != internalSecurity.user);
         it->second->invalidate();

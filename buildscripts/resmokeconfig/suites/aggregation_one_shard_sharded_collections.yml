@@ -2,11 +2,10 @@ test_kind: js_test
 
 selector:
   roots:
-  - jstests/aggregation/*.js
-  - jstests/aggregation/bugs/*.js
-  - jstests/aggregation/expressions/*.js
-  - jstests/aggregation/sources/*/*.js
+  - jstests/aggregation/**/*.js
   exclude_files:
+  - jstests/aggregation/extras/*.js
+  - jstests/aggregation/data/*.js
   # The following tests start their own mongod.
   - jstests/aggregation/bugs/cursor_timeout.js
   - jstests/aggregation/bugs/lookup_unwind_getmore.js
@@ -24,9 +23,13 @@ selector:
   - requires_replication
 
 executor:
+  archive:
+    hooks:
+      - CheckReplDBHash
+      - ValidateCollections
   config:
     shell_options:
-      # Use the overloads to implicitly shard all accessed collections, and to error if a test
+      # Use the overrides to implicitly shard all accessed collections, and to error if a test
       # starts its own test fixture - since such a test should not be part of this passthrough.
       eval: >-
         load("jstests/libs/override_methods/implicitly_shard_accessed_collections.js");

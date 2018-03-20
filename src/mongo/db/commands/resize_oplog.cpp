@@ -54,8 +54,8 @@ class CmdReplSetResizeOplog : public BasicCommand {
 public:
     CmdReplSetResizeOplog() : BasicCommand("replSetResizeOplog") {}
 
-    virtual bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const final {
@@ -72,7 +72,7 @@ public:
 
     Status checkAuthForCommand(Client* client,
                                const std::string& dbname,
-                               const BSONObj& cmdObj) final {
+                               const BSONObj& cmdObj) const final {
         AuthorizationSession* authzSession = AuthorizationSession::get(client);
         if (authzSession->isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
                                                            ActionType::replSetResizeOplog)) {

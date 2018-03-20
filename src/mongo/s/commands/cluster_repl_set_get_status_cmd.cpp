@@ -40,8 +40,8 @@ class CmdReplSetGetStatus : public ErrmsgCommandDeprecated {
 public:
     CmdReplSetGetStatus() : ErrmsgCommandDeprecated("replSetGetStatus") {}
 
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     virtual bool adminOnly() const {
@@ -59,7 +59,7 @@ public:
 
     virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+                                       const BSONObj& cmdObj) const {
         // Require no auth since this command isn't supported in mongos
         return Status::OK();
     }

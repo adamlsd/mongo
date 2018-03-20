@@ -34,6 +34,8 @@
 #include <vector>
 
 #include "mongo/db/catalog/catalog_control.h"
+#include "mongo/db/catalog/database.h"
+#include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/util/log.h"
@@ -49,7 +51,7 @@ public:
 
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) final {
+                                 const BSONObj& cmdObj) const final {
         // No auth checks as this is a testing-only command.
         return Status::OK();
     }
@@ -66,8 +68,8 @@ public:
         return false;
     }
 
-    bool slaveOk() const final {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const final {
@@ -84,7 +86,23 @@ public:
              const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
-        Lock::GlobalLock global(opCtx, MODE_X, UINT_MAX);
+        Lock::GlobalLock global(opCtx, MODE_X, Date_t::max());
+
+        // This command will fail without modifying the catalog if there are any databases that are
+        // marked drop-pending. (Otherwise, the Database object will be reconstructed when
+        // re-opening the catalog, but with the drop pending flag cleared.)
+        std::vector<std::string> allDbs;
+        getGlobalServiceContext()->getGlobalStorageEngine()->listDatabases(&allDbs);
+        for (auto&& dbName : allDbs) {
+            const auto db = dbHolder().get(opCtx, dbName);
+            if (db->isDropPending(opCtx)) {
+                return CommandHelpers::appendCommandStatus(
+                    result,
+                    {ErrorCodes::DatabaseDropPending,
+                     str::stream() << "cannot restart the catalog because database " << dbName
+                                   << " is pending removal"});
+            }
+        }
 
         log() << "Closing database catalog";
         catalog::closeCatalog(opCtx);
@@ -97,7 +115,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterRestartCatalogCommand)(InitializerContext* ctx) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new RestartCatalogCmd();
     }

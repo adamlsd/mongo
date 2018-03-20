@@ -13,6 +13,8 @@ selector:
   roots:
   - jstests/core/**/*.js
   exclude_files:
+  # In MongoDB 4.0, transactions are not supported in sharded clusters.
+  - jstests/core/txns/**/*.js
   # Skip any tests that run with auth explicitly.
   - jstests/core/*[aA]uth*.js
   # Skip any tests that require privileges for non test databases.
@@ -127,10 +129,6 @@ selector:
   - jstests/core/or4.js
   - jstests/core/recursion.js
   - jstests/core/temp_cleanup.js
-  # Tests that use $snapshot and expect documents to arrive in some implicit sort order are not
-  # causally consistent.
-  - jstests/core/snapshot_queries.js
-  - jstests/core/find1.js
   # An index drop does not necessarily cause cursors to be killed on the secondary.
   - jstests/core/ord.js
   # plan_cache tests does not work because they check the plan_cache on the primary while the 
@@ -140,8 +138,9 @@ selector:
   - jstests/core/index_filter_commands.js
   # Parallel shell is not causally consistent
   - jstests/core/count10.js
-  - jstests/core/cursora.js
   - jstests/core/count_plan_summary.js
+  - jstests/core/cursora.js
+  - jstests/core/find_and_modify_concurrent_update.js
   - jstests/core/shellstartparallel.js
   # TODO SERVER-30466
   - jstests/core/explain_multi_plan.js
@@ -172,6 +171,10 @@ selector:
   - assumes_against_mongod_not_mongos
 
 executor:
+  archive:
+    hooks:
+      - CheckReplDBHash
+      - ValidateCollections
   config:
     shell_options:
       global_vars:

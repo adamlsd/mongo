@@ -489,8 +489,8 @@ class DbCheckCmd : public BasicCommand {
 public:
     DbCheckCmd() : BasicCommand("dbCheck") {}
 
-    virtual bool slaveOk() const {
-        return false;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kNever;
     }
 
     virtual bool adminOnly() const {
@@ -515,7 +515,7 @@ public:
 
     virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+                                       const BSONObj& cmdObj) const {
         // For now, just use `find` permissions.
         const NamespaceString nss(parseNs(dbname, cmdObj));
 
@@ -534,8 +534,6 @@ public:
                      const std::string& dbname,
                      const BSONObj& cmdObj,
                      BSONObjBuilder& result) {
-        uassert(40614, "dbCheck requires FeatureCompatibilityVersion >= 3.6", _hasCorrectFCV());
-
         auto job = getRun(opCtx, dbname, cmdObj);
         try {
             (new DbCheckJob(dbname, std::move(job)))->go();
@@ -547,16 +545,10 @@ public:
         result.append("ok", true);
         return true;
     }
-
-private:
-    bool _hasCorrectFCV(void) {
-        return serverGlobalParams.featureCompatibility.getVersion() >=
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo36;
-    }
 };
 
 MONGO_INITIALIZER(RegisterDbCheckCmd)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         new DbCheckCmd();
     }
     return Status::OK();

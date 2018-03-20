@@ -45,8 +45,8 @@ class RefreshLogicalSessionCacheNowCommand final : public BasicCommand {
 public:
     RefreshLogicalSessionCacheNowCommand() : BasicCommand("refreshLogicalSessionCacheNow") {}
 
-    bool slaveOk() const override {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
 
     bool adminOnly() const override {
@@ -64,7 +64,7 @@ public:
     // No auth needed because it only works when enabled via command line.
     Status checkAuthForOperation(OperationContext* opCtx,
                                  const std::string& dbname,
-                                 const BSONObj& cmdObj) override {
+                                 const BSONObj& cmdObj) const override {
         return Status::OK();
     }
 
@@ -85,7 +85,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterRefreshLogicalSessionCacheNowCommand)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new RefreshLogicalSessionCacheNowCommand();
     }

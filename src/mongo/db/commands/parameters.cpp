@@ -67,8 +67,8 @@ void appendParameterNames(std::string* help) {
 class CmdGet : public ErrmsgCommandDeprecated {
 public:
     CmdGet() : ErrmsgCommandDeprecated("getParameter") {}
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return true;
@@ -78,7 +78,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::getParameter);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));
@@ -118,8 +118,8 @@ public:
 class CmdSet : public ErrmsgCommandDeprecated {
 public:
     CmdSet() : ErrmsgCommandDeprecated("setParameter") {}
-    virtual bool slaveOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kAlways;
     }
     virtual bool adminOnly() const {
         return true;
@@ -129,7 +129,7 @@ public:
     }
     virtual void addRequiredPrivileges(const std::string& dbname,
                                        const BSONObj& cmdObj,
-                                       std::vector<Privilege>* out) {
+                                       std::vector<Privilege>* out) const {
         ActionSet actions;
         actions.addAction(ActionType::setParameter);
         out->push_back(Privilege(ResourcePattern::forClusterResource(), actions));

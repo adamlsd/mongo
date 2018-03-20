@@ -114,8 +114,6 @@ var blacklist = [
     'view_catalog_cycle_with_drop.js',
     'view_catalog.js',
 
-    'toggle_feature_compatibility.js',  // Sets FCV to 3.4, which will cause session use to fail.
-
     // Use getmores.
     'agg_base.js',
     'create_index_background.js',
@@ -145,8 +143,6 @@ var blacklist = [
     'remove_and_bulk_insert.js',
     'update_and_bulk_insert.js',
     'update_check_index.js',
-    'update_multifield_isolated_multiupdate.js',
-    'update_multifield_isolated_multiupdate_noindex.js',
     'update_multifield_multiupdate.js',
     'update_multifield_multiupdate_noindex.js',
     'update_ordered_bulk_inc.js',

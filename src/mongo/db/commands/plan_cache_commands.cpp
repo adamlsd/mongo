@@ -124,12 +124,8 @@ bool PlanCacheCommand::supportsWriteConcern(const BSONObj& cmd) const {
     return false;
 }
 
-bool PlanCacheCommand::slaveOk() const {
-    return false;
-}
-
-bool PlanCacheCommand::slaveOverrideOk() const {
-    return true;
+Command::AllowedOnSecondary PlanCacheCommand::secondaryAllowed(ServiceContext*) const {
+    return AllowedOnSecondary::kOptIn;
 }
 
 std::string PlanCacheCommand::help() const {
@@ -138,7 +134,7 @@ std::string PlanCacheCommand::help() const {
 
 Status PlanCacheCommand::checkAuthForCommand(Client* client,
                                              const std::string& dbname,
-                                             const BSONObj& cmdObj) {
+                                             const BSONObj& cmdObj) const {
     AuthorizationSession* authzSession = AuthorizationSession::get(client);
     ResourcePattern pattern = parseResourcePattern(dbname, cmdObj);
 

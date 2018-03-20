@@ -71,12 +71,8 @@ private:
         return false;
     }
 
-    virtual bool slaveOk() const {
-        return false;
-    }
-
-    virtual bool slaveOverrideOk() const {
-        return true;
+    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
+        return AllowedOnSecondary::kOptIn;
     }
 
     bool supportsReadConcern(const std::string& dbName,
@@ -99,7 +95,7 @@ private:
 
     virtual Status checkAuthForCommand(Client* client,
                                        const std::string& dbname,
-                                       const BSONObj& cmdObj) {
+                                       const BSONObj& cmdObj) const {
         const NamespaceString nss(parseNs(dbname, cmdObj));
 
         if (!AuthorizationSession::get(client)->isAuthorizedForActionsOnNamespace(
@@ -121,11 +117,12 @@ private:
         return nss.ns();
     }
 
-    virtual Status explain(OperationContext* opCtx,
-                           const std::string& dbname,
-                           const BSONObj& cmdObj,
-                           ExplainOptions::Verbosity verbosity,
-                           BSONObjBuilder* out) const {
+    Status explain(OperationContext* opCtx,
+                   const OpMsgRequest& request,
+                   ExplainOptions::Verbosity verbosity,
+                   BSONObjBuilder* out) const override {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         GroupRequest groupRequest;
         Status parseRequestStatus = _parseRequest(dbname, cmdObj, &groupRequest);
         if (!parseRequestStatus.isOK()) {
@@ -137,8 +134,7 @@ private:
         AutoGetCollectionForReadCommand ctx(opCtx, groupRequest.ns);
         Collection* coll = ctx.getCollection();
 
-        auto statusWithPlanExecutor =
-            getExecutorGroup(opCtx, coll, groupRequest, PlanExecutor::YIELD_AUTO);
+        auto statusWithPlanExecutor = getExecutorGroup(opCtx, coll, groupRequest);
         if (!statusWithPlanExecutor.isOK()) {
             return statusWithPlanExecutor.getStatus();
         }
@@ -167,8 +163,7 @@ private:
         AutoGetCollectionForReadCommand ctx(opCtx, groupRequest.ns);
         Collection* coll = ctx.getCollection();
 
-        auto statusWithPlanExecutor =
-            getExecutorGroup(opCtx, coll, groupRequest, PlanExecutor::YIELD_AUTO);
+        auto statusWithPlanExecutor = getExecutorGroup(opCtx, coll, groupRequest);
         if (!statusWithPlanExecutor.isOK()) {
             return CommandHelpers::appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
@@ -187,16 +182,10 @@ private:
         if (PlanExecutor::ADVANCED != state) {
             invariant(PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state);
 
-            if (WorkingSetCommon::isValidStatusMemberObject(retval)) {
-                return CommandHelpers::appendCommandStatus(
-                    result, WorkingSetCommon::getMemberObjectStatus(retval));
-            }
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::BadValue,
-                       str::stream() << "error encountered during group "
-                                     << "operation, executor returned "
-                                     << PlanExecutor::statestr(state)));
+                WorkingSetCommon::getMemberObjectStatus(retval).withContext(
+                    "Plan executor error during group command"));
         }
 
         invariant(planExecutor->isEOF());

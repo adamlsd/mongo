@@ -55,12 +55,12 @@
 #include "mongo/db/auth/user_document_parser.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/auth/user_name_hash.h"
+#include "mongo/db/global_settings.h"
 #include "mongo/db/jsobj.h"
-#include "mongo/db/mongod_options.h"
 #include "mongo/platform/compiler.h"
-#include "mongo/platform/unordered_map.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -88,8 +88,7 @@ const NamespaceString AuthorizationManager::defaultTempRolesCollectionNamespace(
 const Status AuthorizationManager::authenticationFailedStatus(ErrorCodes::AuthenticationFailed,
                                                               "Authentication failed.");
 
-const BSONObj AuthorizationManager::versionDocumentQuery = BSON("_id"
-                                                                << "authSchema");
+const BSONObj AuthorizationManager::versionDocumentQuery = BSON("_id" << "authSchema");
 
 const std::string AuthorizationManager::schemaVersionFieldName = "currentVersion";
 

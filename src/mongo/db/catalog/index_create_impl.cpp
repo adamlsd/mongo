@@ -187,9 +187,9 @@ MultiIndexBlockImpl::~MultiIndexBlockImpl() {
                 _indexes[i].block->fail();
             }
             if (requiresCommitTimestamp) {
-                fassertStatusOK(50703,
-                                _opCtx->recoveryUnit()->setTimestamp(
-                                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+                fassert(50703,
+                        _opCtx->recoveryUnit()->setTimestamp(
+                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
             }
             wunit.commit();
             return;
@@ -318,9 +318,9 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
         _backgroundOperation.reset(new BackgroundOperation(ns));
 
     if (requiresCommitTimestamp) {
-        fassertStatusOK(50702,
-                        _opCtx->recoveryUnit()->setTimestamp(
-                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+        fassert(50702,
+                _opCtx->recoveryUnit()->setTimestamp(
+                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
     }
 
     wunit.commit();
@@ -340,6 +340,16 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
 
 Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* dupsOut) {
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
+
+    // Refrain from persisting any multikey updates as a result from building the index. Instead,
+    // accumulate them in the `MultikeyPathTracker` and do the write as part of the update that
+    // commits the index.
+    auto stopTracker =
+        MakeGuard([this] { MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo(); });
+    if (MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo()) {
+        stopTracker.Dismiss();
+    }
+    MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo();
 
     const char* curopMessage = _buildInBackground ? "Index Build (background)" : "Index Build";
     const auto numRecords = _collection->numRecords(_opCtx);
@@ -450,7 +460,7 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* d
         }
 
         if (_buildInBackground) {
-            _opCtx->lockState()->restoreLockState(lockInfo);
+            _opCtx->lockState()->restoreLockState(_opCtx, lockInfo);
             _opCtx->recoveryUnit()->abandonSnapshot();
             return Status(ErrorCodes::OperationFailed,
                           "background index build aborted due to failpoint");
@@ -530,22 +540,31 @@ void MultiIndexBlockImpl::commit() {
     for (size_t i = 0; i < _indexes.size(); i++) {
         _indexes[i].block->success();
 
+        // The bulk builder will track multikey information itself. Non-bulk builders re-use the
+        // code path that a typical insert/update uses. State is altered on the non-bulk build
+        // path to accumulate the multikey information on the `MultikeyPathTracker`.
         if (_indexes[i].bulk) {
             const auto& bulkBuilder = _indexes[i].bulk;
             if (bulkBuilder->isMultikey()) {
                 _indexes[i].block->getEntry()->setMultikey(_opCtx, bulkBuilder->getMultikeyPaths());
             }
+        } else {
+            auto multikeyPaths =
+                boost::optional<MultikeyPaths>(MultikeyPathTracker::get(_opCtx).getMultikeyPathInfo(
+                    _collection->ns(), _indexes[i].block->getIndexName()));
+            if (multikeyPaths) {
+                _indexes[i].block->getEntry()->setMultikey(_opCtx, *multikeyPaths);
+            }
         }
     }
 
     if (requiresCommitTimestamp) {
-        fassertStatusOK(50701,
-                        _opCtx->recoveryUnit()->setTimestamp(
-                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+        fassert(50701,
+                _opCtx->recoveryUnit()->setTimestamp(
+                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
     }
 
     _opCtx->recoveryUnit()->registerChange(new SetNeedToCleanupOnRollback(this));
     _needToCleanup = false;
 }
-
 }  // namespace mongo

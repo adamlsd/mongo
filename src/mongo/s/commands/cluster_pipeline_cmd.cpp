@@ -47,6 +47,10 @@ public:
                "http://dochub.mongodb.org/core/aggregation for more details.";
     }
 
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const final {
+        return AggregationRequest::parseNs(dbname, cmdObj).ns();
+    }
+
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kAlways;
     }
@@ -75,10 +79,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const override {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         return _runAggCommand(opCtx, dbname, cmdObj, verbosity, out);
     }
 

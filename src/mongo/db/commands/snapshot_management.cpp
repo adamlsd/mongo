@@ -78,13 +78,11 @@ public:
 
         Lock::GlobalLock lk(opCtx, MODE_IX, Date_t::max());
 
-        auto status = snapshotManager->prepareForCreateSnapshot(opCtx);
-        if (status.isOK()) {
-            const auto name =
-                repl::ReplicationCoordinator::get(opCtx)->getMinimumVisibleSnapshot(opCtx);
-            result.append("name", static_cast<long long>(name.asULL()));
-        }
-        return CommandHelpers::appendCommandStatus(result, status);
+        const auto name =
+            repl::ReplicationCoordinator::get(opCtx)->getMinimumVisibleSnapshot(opCtx);
+        result.append("name", static_cast<long long>(name.asULL()));
+
+        return CommandHelpers::appendCommandStatus(result, Status::OK());
     }
 };
 
@@ -132,7 +130,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterSnapshotManagementCommands)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new CmdMakeSnapshot();
         new CmdSetCommittedSnapshot();

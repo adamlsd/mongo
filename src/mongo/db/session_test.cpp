@@ -69,6 +69,7 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
         object,                        // o
         boost::none,                   // o2
         sessionInfo,                   // sessionInfo
+        boost::none,                   // upsert
         wallClockTime,                 // wall clock time
         stmtId,                        // statement id
         prevWriteOpTimeInTransaction,  // optime of previous write within same transaction
@@ -82,8 +83,7 @@ protected:
         MockReplCoordServerFixture::setUp();
 
         auto service = opCtx()->getServiceContext();
-        SessionCatalog::reset_forTest(service);
-        SessionCatalog::create(service);
+        SessionCatalog::get(service)->reset_forTest();
         SessionCatalog::get(service)->onStepUp(opCtx());
     }
 
@@ -576,6 +576,9 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT_NOT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
     ASSERT(!opCtx()->getWriteUnitOfWork());
 
+    // Unset the read concern on the OperationContext. This is needed to unstash.
+    repl::ReadConcernArgs::get(opCtx()) = repl::ReadConcernArgs();
+
     // Unstash the stashed resources. This restores the original Locker and RecoveryUnit to the
     // OperationContext.
     session.unstashTransactionResources(opCtx());
@@ -606,6 +609,40 @@ TEST_F(SessionTest, CheckAutocommitOnlyAllowedAtBeginningOfTxn) {
     ASSERT_THROWS_CODE(session.beginOrContinueTxn(opCtx(), txnNum, true),
                        AssertionException,
                        ErrorCodes::IllegalOperation);
+}
+
+TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 22;
+    session.beginOrContinueTxn(opCtx(), txnNum, false);
+    WriteUnitOfWork wuow(opCtx());
+    auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
+    session.addTransactionOperation(opCtx(), operation);
+    ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
+
+    // Re-opening the same transaction should have no effect.
+    session.beginOrContinueTxn(opCtx(), txnNum, boost::none);
+    ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
+}
+
+TEST_F(SessionTest, RollbackClearsStoredStatements) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 24;
+    session.beginOrContinueTxn(opCtx(), txnNum, false);
+    {
+        WriteUnitOfWork wuow(opCtx());
+        auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
+        session.addTransactionOperation(opCtx(), operation);
+        ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
+        // Since the WriteUnitOfWork was not committed, it will implicitly roll back.
+    }
+    ASSERT_TRUE(session.transactionOperationsForTest().empty());
 }
 
 }  // anonymous

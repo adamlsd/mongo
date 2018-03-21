@@ -37,6 +37,7 @@
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/jsobj.h"
+#include "mongo/db/s/active_migrations_registry.h"
 #include "mongo/db/s/chunk_move_write_concern_options.h"
 #include "mongo/db/s/migration_destination_manager.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
@@ -117,12 +118,12 @@ public:
             uassertStatusOK(MigrationSessionId::extractFromBSON(cmdObj)));
 
         // Ensure this shard is not currently receiving or donating any chunks.
-        auto scopedRegisterReceiveChunk(
-            uassertStatusOK(shardingState->registerReceiveChunk(nss, chunkRange, fromShard)));
+        auto scopedReceiveChunk(uassertStatusOK(
+            ActiveMigrationsRegistry::get(opCtx).registerReceiveChunk(nss, chunkRange, fromShard)));
 
         uassertStatusOK(MigrationDestinationManager::get(opCtx)->start(
             nss,
-            std::move(scopedRegisterReceiveChunk),
+            std::move(scopedReceiveChunk),
             migrationSessionId,
             statusWithFromShardConnectionString.getValue(),
             fromShard,

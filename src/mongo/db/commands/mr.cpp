@@ -59,7 +59,7 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
@@ -364,6 +364,9 @@ Config::Config(const string& _dbname, const BSONObj& cmdObj) {
  * Clean up the temporary and incremental collections
  */
 void State::dropTempCollections() {
+    // The cleanup handler should not be interruptible.
+    UninterruptibleLockGuard noInterrupt(_opCtx->lockState());
+
     if (!_config.tempNamespace.isEmpty()) {
         writeConflictRetry(_opCtx, "M/R dropTempCollections", _config.tempNamespace.ns(), [this] {
             AutoGetDb autoDb(_opCtx, _config.tempNamespace.db(), MODE_X);
@@ -423,9 +426,8 @@ void State::prepTempCollection() {
             CollectionOptions options;
             options.setNoIdIndex();
             options.temp = true;
-            if (enableCollectionUUIDs) {
-                options.uuid.emplace(UUID::gen());
-            }
+            options.uuid.emplace(UUID::gen());
+
             incColl = incCtx.db()->createCollection(_opCtx, _config.incLong.ns(), options);
             invariant(incColl);
 
@@ -469,8 +471,7 @@ void State::prepTempCollection() {
                             << _config.outputOptions.finalNamespace.ns()
                             << " does not match UUID for the existing collection with that "
                                "name on this shard",
-                        finalColl->getCatalogEntry()->isEqualToMetadataUUID(
-                            _opCtx, _config.finalOutputCollUUID));
+                        finalColl->uuid() == _config.finalOutputCollUUID);
             }
 
             IndexCatalog::IndexIterator ii =
@@ -509,14 +510,12 @@ void State::prepTempCollection() {
 
         CollectionOptions options = finalOptions;
         options.temp = true;
-        if (enableCollectionUUIDs) {
-            // If a UUID for the final output collection was sent by mongos (i.e., the final output
-            // collection is sharded), use the UUID mongos sent when creating the temp collection.
-            // When the temp collection is renamed to the final output collection, the UUID will be
-            // preserved.
-            options.uuid.emplace(_config.finalOutputCollUUID ? *_config.finalOutputCollUUID
-                                                             : UUID::gen());
-        }
+        // If a UUID for the final output collection was sent by mongos (i.e., the final output
+        // collection is sharded), use the UUID mongos sent when creating the temp collection.
+        // When the temp collection is renamed to the final output collection, the UUID will be
+        // preserved.
+        options.uuid.emplace(_config.finalOutputCollUUID ? *_config.finalOutputCollUUID
+                                                         : UUID::gen());
         tempColl = tempCtx.db()->createCollection(_opCtx, _config.tempNamespace.ns(), options);
 
         for (vector<BSONObj>::iterator it = indexesToInsert.begin(); it != indexesToInsert.end();
@@ -1011,6 +1010,7 @@ void State::bailFromJS() {
 Collection* State::getCollectionOrUassert(OperationContext* opCtx,
                                           Database* db,
                                           const NamespaceString& nss) {
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     Collection* out = db ? db->getCollection(opCtx, nss) : NULL;
     uassert(18697, "Collection unexpectedly disappeared: " + nss.ns(), out);
     return out;
@@ -1133,8 +1133,7 @@ void State::finalReduce(OperationContext* opCtx, CurOp* curOp, ProgressMeterHold
                                      std::move(qr),
                                      expCtx,
                                      extensionsCallback,
-                                     MatchExpressionParser::kAllowAllSpecialFeatures &
-                                         ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                                     MatchExpressionParser::kAllowAllSpecialFeatures);
     verify(statusWithCQ.isOK());
     std::unique_ptr<CanonicalQuery> cq = std::move(statusWithCQ.getValue());
 
@@ -1397,6 +1396,8 @@ public:
                    string& errmsg,
                    BSONObjBuilder& result) {
         Timer t;
+        // Don't let a lock acquisition in map-reduce get interrupted.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
         if (shouldBypassDocumentValidationForCommand(cmd))
@@ -1493,13 +1494,12 @@ public:
                 const ExtensionsCallbackReal extensionsCallback(opCtx, &config.nss);
 
                 const boost::intrusive_ptr<ExpressionContext> expCtx;
-                auto statusWithCQ = CanonicalQuery::canonicalize(
-                    opCtx,
-                    std::move(qr),
-                    expCtx,
-                    extensionsCallback,
-                    MatchExpressionParser::kAllowAllSpecialFeatures &
-                        ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                auto statusWithCQ =
+                    CanonicalQuery::canonicalize(opCtx,
+                                                 std::move(qr),
+                                                 expCtx,
+                                                 extensionsCallback,
+                                                 MatchExpressionParser::kAllowAllSpecialFeatures);
                 if (!statusWithCQ.isOK()) {
                     uasserted(17238, "Can't canonicalize query " + config.filter.toString());
                     return 0;
@@ -1728,6 +1728,9 @@ public:
                        str::stream() << "Can not execute mapReduce with output database " << dbname
                                      << " which lives on config servers"));
         }
+
+        // Don't let any lock acquisitions get interrupted.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
         boost::optional<DisableDocumentValidation> maybeDisableValidation;
         if (shouldBypassDocumentValidationForCommand(cmdObj))

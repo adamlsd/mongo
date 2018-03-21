@@ -35,16 +35,14 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/feature_compatibility_version_command_parser.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/server_options.h"
 #include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/catalog/sharding_catalog_client_impl.h"
-#include "mongo/s/client/shard_registry.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/scopeguard.h"
@@ -67,7 +65,7 @@ MONGO_FP_DECLARE(featureCompatibilityUpgrade);
 class SetFeatureCompatibilityVersionCommand : public BasicCommand {
 public:
     SetFeatureCompatibilityVersionCommand()
-        : BasicCommand(FeatureCompatibilityVersion::kCommandName) {}
+        : BasicCommand(FeatureCompatibilityVersionCommandParser::kCommandName) {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
@@ -84,12 +82,12 @@ public:
     std::string help() const override {
         std::stringstream h;
         h << "Set the API version exposed by this node. If set to \""
-          << FeatureCompatibilityVersionCommandParser::kVersion36
+          << FeatureCompatibilityVersionParser::kVersion36
           << "\", then 4.0 features are disabled. If \""
-          << FeatureCompatibilityVersionCommandParser::kVersion40
+          << FeatureCompatibilityVersionParser::kVersion40
           << "\", then 4.0 features are enabled, and all nodes in the cluster must be binary "
              "version 4.0. See "
-          << feature_compatibility_version::kDochubLink << ".";
+          << feature_compatibility_version_documentation::kCompatibilityLink << ".";
         return h.str();
     }
 
@@ -137,7 +135,7 @@ public:
         ServerGlobalParams::FeatureCompatibility::Version actualVersion =
             serverGlobalParams.featureCompatibility.getVersion();
 
-        if (requestedVersion == FeatureCompatibilityVersionCommandParser::kVersion40) {
+        if (requestedVersion == FeatureCompatibilityVersionParser::kVersion40) {
             uassert(ErrorCodes::IllegalOperation,
                     "cannot initiate featureCompatibilityVersion upgrade to 4.0 while a previous "
                     "featureCompatibilityVersion downgrade to 3.6 has not completed. Finish "
@@ -175,12 +173,12 @@ public:
                         CommandHelpers::appendMajorityWriteConcern(
                             CommandHelpers::appendPassthroughFields(
                                 cmdObj,
-                                BSON(FeatureCompatibilityVersion::kCommandName
+                                BSON(FeatureCompatibilityVersionCommandParser::kCommandName
                                      << requestedVersion)))));
             }
 
             FeatureCompatibilityVersion::unsetTargetUpgradeOrDowngrade(opCtx, requestedVersion);
-        } else if (requestedVersion == FeatureCompatibilityVersionCommandParser::kVersion36) {
+        } else if (requestedVersion == FeatureCompatibilityVersionParser::kVersion36) {
             uassert(ErrorCodes::IllegalOperation,
                     "cannot initiate setting featureCompatibilityVersion to 3.6 while a previous "
                     "featureCompatibilityVersion upgrade to 4.0 has not completed.",
@@ -217,7 +215,7 @@ public:
                         CommandHelpers::appendMajorityWriteConcern(
                             CommandHelpers::appendPassthroughFields(
                                 cmdObj,
-                                BSON(FeatureCompatibilityVersion::kCommandName
+                                BSON(FeatureCompatibilityVersionCommandParser::kCommandName
                                      << requestedVersion)))));
             }
 

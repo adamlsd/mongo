@@ -126,10 +126,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const override {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         // Acquire locks and resolve possible UUID. The RAII object is optional, because in the case
         // of a view, the locks need to be released.
         boost::optional<AutoGetCollectionForReadCommand> ctx;
@@ -153,8 +154,7 @@ public:
                                          std::move(qrStatus.getValue()),
                                          expCtx,
                                          extensionsCallback,
-                                         MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                                         MatchExpressionParser::kAllowAllSpecialFeatures);
         if (!statusWithCQ.isOK()) {
             return statusWithCQ.getStatus();
         }
@@ -196,13 +196,7 @@ public:
         Collection* const collection = ctx->getCollection();
 
         // We have a parsed query. Time to get the execution plan for it.
-        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        auto yieldPolicy =
-            readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-            ? PlanExecutor::INTERRUPT_ONLY
-            : PlanExecutor::YIELD_AUTO;
-        auto statusWithPlanExecutor =
-            getExecutorFind(opCtx, collection, nss, std::move(cq), yieldPolicy);
+        auto statusWithPlanExecutor = getExecutorFind(opCtx, collection, nss, std::move(cq));
         if (!statusWithPlanExecutor.isOK()) {
             return statusWithPlanExecutor.getStatus();
         }
@@ -277,8 +271,7 @@ public:
                                          std::move(qr),
                                          expCtx,
                                          extensionsCallback,
-                                         MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                                         MatchExpressionParser::kAllowAllSpecialFeatures);
         if (!statusWithCQ.isOK()) {
             return CommandHelpers::appendCommandStatus(result, statusWithCQ.getStatus());
         }
@@ -314,13 +307,7 @@ public:
         Collection* const collection = ctx->getCollection();
 
         // Get the execution plan for the query.
-        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        auto yieldPolicy =
-            readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-            ? PlanExecutor::INTERRUPT_ONLY
-            : PlanExecutor::YIELD_AUTO;
-        auto statusWithPlanExecutor =
-            getExecutorFind(opCtx, collection, nss, std::move(cq), yieldPolicy);
+        auto statusWithPlanExecutor = getExecutorFind(opCtx, collection, nss, std::move(cq));
         if (!statusWithPlanExecutor.isOK()) {
             return CommandHelpers::appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
@@ -370,9 +357,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during find command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error during find command"));
         }
 
         // Before saving the cursor, ensure that whatever plan we established happened with the
@@ -390,7 +376,7 @@ public:
                 {std::move(exec),
                  nss,
                  AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-                 opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot(),
+                 opCtx->recoveryUnit()->getReadConcernLevel(),
                  cmdObj});
             cursorId = pinnedCursor.getCursor()->cursorid();
 

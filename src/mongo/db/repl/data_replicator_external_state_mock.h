@@ -45,7 +45,7 @@ public:
 
     executor::TaskExecutor* getTaskExecutor() const override;
 
-    OldThreadPool* getDbWorkThreadPool() const override;
+    ThreadPool* getDbWorkThreadPool() const override;
 
     OpTimeWithTerm getCurrentTermAndLastCommittedOpTime() override;
 
@@ -58,15 +58,13 @@ public:
 
     std::unique_ptr<OplogBuffer> makeInitialSyncOplogBuffer(OperationContext* opCtx) const override;
 
-    std::unique_ptr<OplogBuffer> makeSteadyStateOplogBuffer(OperationContext* opCtx) const override;
-
     StatusWith<ReplSetConfig> getCurrentConfig() const override;
 
     // Task executor. Not owned by us.
     executor::TaskExecutor* taskExecutor = nullptr;
 
     // DB worker thread pool. Not owned by us.
-    OldThreadPool* dbWorkThreadPool = nullptr;
+    ThreadPool* dbWorkThreadPool = nullptr;
 
     // Returned by getCurrentTermAndLastCommittedOpTime.
     long long currentTerm = OpTime::kUninitializedTerm;
@@ -90,12 +88,16 @@ public:
 
     // Override to change _multiInitialSyncApply behavior.
     using MultiInitialSyncApplyFn =
-        stdx::function<Status(MultiApplier::OperationPtrs* ops,
+        stdx::function<Status(OperationContext* opCtx,
+                              MultiApplier::OperationPtrs* ops,
                               const HostAndPort& source,
                               AtomicUInt32* fetchCount,
                               WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
-    MultiInitialSyncApplyFn multiInitialSyncApplyFn = [](
-        MultiApplier::OperationPtrs*, const HostAndPort&, AtomicUInt32*, WorkerMultikeyPathInfo*) {
+    MultiInitialSyncApplyFn multiInitialSyncApplyFn = [](OperationContext*,
+                                                         MultiApplier::OperationPtrs*,
+                                                         const HostAndPort&,
+                                                         AtomicUInt32*,
+                                                         WorkerMultikeyPathInfo*) {
         return Status::OK();
     };
 
@@ -106,7 +108,8 @@ private:
                                    MultiApplier::Operations ops,
                                    MultiApplier::ApplyOperationFn applyOperation) override;
 
-    Status _multiInitialSyncApply(MultiApplier::OperationPtrs* ops,
+    Status _multiInitialSyncApply(OperationContext* opCtx,
+                                  MultiApplier::OperationPtrs* ops,
                                   const HostAndPort& source,
                                   AtomicUInt32* fetchCount,
                                   WorkerMultikeyPathInfo* workerMultikeyPathInfo) override;

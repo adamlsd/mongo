@@ -220,8 +220,7 @@ public:
                                          std::move(qr),
                                          expCtx,
                                          extensionsCallback,
-                                         MatchExpressionParser::kAllowAllSpecialFeatures &
-                                             ~MatchExpressionParser::AllowedFeatures::kIsolated);
+                                         MatchExpressionParser::kAllowAllSpecialFeatures);
         if (!statusWithCQ.isOK()) {
             errmsg = "Can't parse filter / create query";
             return false;
@@ -303,9 +302,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during geoNear command: "
-                                     << WorkingSetCommon::toStatusString(currObj)));
+                WorkingSetCommon::getMemberObjectStatus(currObj).withContext(
+                    "Executor error during geoNear command"));
         }
 
         PlanSummaryStats summary;

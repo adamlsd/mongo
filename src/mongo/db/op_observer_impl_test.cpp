@@ -195,7 +195,8 @@ TEST_F(OpObserverTest, OnDropCollectionReturnsDropOpTime) {
     {
         AutoGetDb autoDb(opCtx.get(), nss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
-        dropOpTime = opObserver.onDropCollection(opCtx.get(), nss, uuid);
+        opObserver.onDropCollection(opCtx.get(), nss, uuid);
+        dropOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
 
@@ -229,8 +230,9 @@ TEST_F(OpObserverTest, OnRenameCollectionReturnsRenameOpTime) {
     {
         AutoGetDb autoDb(opCtx.get(), sourceNss.db(), MODE_X);
         WriteUnitOfWork wunit(opCtx.get());
-        renameOpTime = opObserver.onRenameCollection(
+        opObserver.onRenameCollection(
             opCtx.get(), sourceNss, targetNss, {}, dropTarget, {}, stayTemp);
+        renameOpTime = OpObserver::Times::get(opCtx.get()).reservedOpTimes.front();
         wunit.commit();
     }
 
@@ -253,9 +255,8 @@ public:
     void setUp() override {
         OpObserverTest::setUp();
         auto opCtx = cc().makeOperationContext();
-        SessionCatalog::reset_forTest(getServiceContext());
-        SessionCatalog::create(getServiceContext());
         auto sessionCatalog = SessionCatalog::get(getServiceContext());
+        sessionCatalog->reset_forTest();
         sessionCatalog->onStepUp(opCtx.get());
     }
 
@@ -388,8 +389,7 @@ TEST_F(OpObserverTest, MultipleAboutToDeleteAndOnDelete) {
 DEATH_TEST_F(OpObserverTest, AboutToDeleteMustPreceedOnDelete, "invariant") {
     OpObserverImpl opObserver;
     auto opCtx = cc().makeOperationContext();
-    opCtx->releaseLockState();
-    opCtx->setLockState(stdx::make_unique<LockerNoop>());
+    opCtx->swapLockState(stdx::make_unique<LockerNoop>());
     NamespaceString nss = {"test", "coll"};
     opObserver.onDelete(opCtx.get(), nss, {}, {}, false, {});
 }
@@ -397,8 +397,7 @@ DEATH_TEST_F(OpObserverTest, AboutToDeleteMustPreceedOnDelete, "invariant") {
 DEATH_TEST_F(OpObserverTest, EachOnDeleteRequiresAboutToDelete, "invariant") {
     OpObserverImpl opObserver;
     auto opCtx = cc().makeOperationContext();
-    opCtx->releaseLockState();
-    opCtx->setLockState(stdx::make_unique<LockerNoop>());
+    opCtx->swapLockState(stdx::make_unique<LockerNoop>());
     NamespaceString nss = {"test", "coll"};
     opObserver.aboutToDelete(opCtx.get(), nss, {});
     opObserver.onDelete(opCtx.get(), nss, {}, {}, false, {});

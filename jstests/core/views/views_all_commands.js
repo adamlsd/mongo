@@ -61,6 +61,7 @@
     const isUnrelated = "is unrelated";
 
     let viewsCommandTests = {
+        _cloneCatalogData: {skip: isAnInternalCommand},
         _configsvrAddShard: {skip: isAnInternalCommand},
         _configsvrAddShardToZone: {skip: isAnInternalCommand},
         _configsvrBalancerStart: {skip: isAnInternalCommand},
@@ -190,10 +191,17 @@
         delete: {command: {delete: "view", deletes: [{q: {x: 1}, limit: 1}]}, expectFailure: true},
         distinct: {command: {distinct: "view", key: "_id"}},
         doTxn: {
-            command: {doTxn: [{op: "i", o: {_id: 1}, ns: "test.view"}]},
+            command: {
+                doTxn: [{op: "i", o: {_id: 1}, ns: "test.view"}],
+                txnNumber: NumberLong("0"),
+                lsid: {id: UUID()}
+            },
             expectFailure: true,
-            expectedErrorCode:
-                [ErrorCodes.CommandNotSupportedOnView, ErrorCodes.CommandNotSupported],
+            expectedErrorCode: [
+                ErrorCodes.CommandNotSupportedOnView,
+                ErrorCodes.CommandNotSupported,
+                ErrorCodes.IllegalOperation
+            ],
             skipSharded: true,
         },
         driverOIDTest: {skip: isUnrelated},
@@ -436,7 +444,6 @@
         replSetUpdatePosition: {skip: isUnrelated},
         replSetResizeOplog: {skip: isUnrelated},
         resetError: {skip: isUnrelated},
-        resync: {skip: isUnrelated},
         revokePrivilegesFromRole: {
             command: {
                 revokePrivilegesFromRole: "testrole",

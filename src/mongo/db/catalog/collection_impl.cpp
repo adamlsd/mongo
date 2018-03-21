@@ -60,7 +60,7 @@
 #include "mongo/db/operation_context.h"
 #include "mongo/db/ops/update_request.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/key_string.h"
@@ -268,7 +268,9 @@ Status CollectionImpl::checkValidation(OperationContext* opCtx, const BSONObj& d
 StatusWithMatchExpression CollectionImpl::parseValidator(
     OperationContext* opCtx,
     const BSONObj& validator,
-    MatchExpressionParser::AllowedFeatureSet allowedFeatures) const {
+    MatchExpressionParser::AllowedFeatureSet allowedFeatures,
+    boost::optional<ServerGlobalParams::FeatureCompatibility::Version>
+        maxFeatureCompatibilityVersion) const {
     if (validator.isEmpty())
         return {nullptr};
 
@@ -293,6 +295,9 @@ StatusWithMatchExpression CollectionImpl::parseValidator(
     // The MatchExpression and contained ExpressionContext created as part of the validator are
     // owned by the Collection and will outlive the OperationContext they were created under.
     expCtx->opCtx = nullptr;
+
+    // Enforce a maximum feature version if requested.
+    expCtx->maxFeatureCompatibilityVersion = maxFeatureCompatibilityVersion;
 
     auto statusWithMatcher =
         MatchExpressionParser::parse(validator, expCtx, ExtensionsCallbackNoop(), allowedFeatures);

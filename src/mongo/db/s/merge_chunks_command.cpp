@@ -33,9 +33,10 @@
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
-#include "mongo/db/catalog/catalog_raii.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/field_parser.h"
+#include "mongo/db/logical_clock.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
@@ -240,8 +241,11 @@ Status mergeChunks(OperationContext* opCtx,
     //
     // Run _configsvrCommitChunkMerge.
     //
-    MergeChunkRequest request{
-        nss, shardingState->getShardName(), shardVersion.epoch(), chunkBoundaries};
+    MergeChunkRequest request{nss,
+                              shardingState->getShardName(),
+                              shardVersion.epoch(),
+                              chunkBoundaries,
+                              LogicalClock::get(opCtx)->getClusterTime().asTimestamp()};
 
     auto configCmdObj =
         request.toConfigCommandBSON(ShardingCatalogClient::kMajorityWriteConcern.toBSON());

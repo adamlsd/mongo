@@ -33,9 +33,6 @@
 
 #include "mongo/base/disallow_copying.h"
 #include "mongo/bson/oid.h"
-#include "mongo/db/namespace_string.h"
-#include "mongo/db/s/active_migrations_registry.h"
-#include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/memory.h"
@@ -127,20 +124,6 @@ public:
      */
     Status updateConfigServerOpTimeFromMetadata(OperationContext* opCtx);
 
-    ChunkSplitter* getChunkSplitter();
-
-    /**
-     * Should be invoked when the shard server primary enters the 'PRIMARY' state.
-     * Sets up the ChunkSplitter to begin accepting split requests.
-     */
-    void initiateChunkSplitter();
-
-    /**
-     * Should be invoked when this node which is currently serving as a 'PRIMARY' steps down.
-     * Sets the state of the ChunkSplitter so that it will no longer accept split requests.
-     */
-    void interruptChunkSplitter();
-
     void appendInfo(OperationContext* opCtx, BSONObjBuilder& b);
 
     bool needCollectionMetadata(OperationContext* opCtx, const std::string& ns);
@@ -153,46 +136,6 @@ public:
      */
     Status updateShardIdentityConfigString(OperationContext* opCtx,
                                            const std::string& newConnectionString);
-
-    /**
-     * If there are no migrations running on this shard, registers an active migration with the
-     * specified arguments and returns a ScopedRegisterDonateChunk, which must be signaled by the
-     * caller before it goes out of scope.
-     *
-     * If there is an active migration already running on this shard and it has the exact same
-     * arguments, returns a ScopedRegisterDonateChunk, which can be used to join the existing one.
-     *
-     * Othwerwise returns a ConflictingOperationInProgress error.
-     */
-    StatusWith<ScopedRegisterDonateChunk> registerDonateChunk(const MoveChunkRequest& args);
-
-    /**
-     * If there are no migrations running on this shard, registers an active receive operation with
-     * the specified session id and returns a ScopedRegisterReceiveChunk, which will unregister it
-     * when it goes out of scope.
-     *
-     * Otherwise returns a ConflictingOperationInProgress error.
-     */
-    StatusWith<ScopedRegisterReceiveChunk> registerReceiveChunk(const NamespaceString& nss,
-                                                                const ChunkRange& chunkRange,
-                                                                const ShardId& fromShardId);
-
-    /**
-     * If a migration has been previously registered through a call to registerDonateChunk returns
-     * that namespace. Otherwise returns boost::none.
-     *
-     * This method can be called without any locks, but once the namespace is fetched it needs to be
-     * re-checked after acquiring some intent lock on that namespace.
-     */
-    boost::optional<NamespaceString> getActiveDonateChunkNss();
-
-    /**
-     * Get a migration status report from the migration registry. If no migration is active, this
-     * returns an empty BSONObj.
-     *
-     * Takes an IS lock on the namespace of the active migration, if one is active.
-     */
-    BSONObj getActiveMigrationStatusReport(OperationContext* opCtx);
 
     /**
      * For testing only. Mock the initialization method used by initializeFromConfigConnString and
@@ -241,12 +184,6 @@ private:
      * Updates the initialization state.
      */
     void _setInitializationState(InitializationState newState);
-
-    // Tracks the active move chunk operations running on this shard
-    ActiveMigrationsRegistry _activeMigrationsRegistry;
-
-    // Handles asynchronous auto-splitting of chunks
-    std::unique_ptr<ChunkSplitter> _chunkSplitter;
 
     // Protects state below
     stdx::mutex _mutex;

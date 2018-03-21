@@ -29,6 +29,7 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/db/client.h"
+#include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/mock_repl_coord_server_fixture.h"
 #include "mongo/db/repl/read_concern_args.h"
@@ -48,8 +49,7 @@ protected:
         MockReplCoordServerFixture::setUp();
 
         auto service = opCtx()->getServiceContext();
-        SessionCatalog::reset_forTest(service);
-        SessionCatalog::create(service);
+        SessionCatalog::get(service)->reset_forTest();
         SessionCatalog::get(service)->onStepUp(opCtx());
     }
 
@@ -67,32 +67,24 @@ TEST_F(SessionCatalogTest, CheckoutAndReleaseSession) {
     ASSERT_EQ(*opCtx()->getLogicalSessionId(), scopedSession->getSessionId());
 }
 
-TEST_F(SessionCatalogTest, OperationContextSession) {
+TEST_F(SessionCatalogTest, OperationContextCheckedOutSession) {
+    opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
+    const TxnNumber txnNum = 20;
+    opCtx()->setTxnNumber(txnNum);
+
+    OperationContextSession ocs(opCtx(), true, boost::none);
+    auto session = OperationContextSession::get(opCtx());
+    ASSERT(session);
+    ASSERT_EQ(*opCtx()->getLogicalSessionId(), session->getSessionId());
+}
+
+TEST_F(SessionCatalogTest, OperationContextNonCheckedOutSession) {
     opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
 
-    {
-        OperationContextSession ocs(opCtx(), true, boost::none);
-        auto session = OperationContextSession::get(opCtx());
+    OperationContextSession ocs(opCtx(), false, boost::none);
+    auto session = OperationContextSession::get(opCtx());
 
-        ASSERT(session);
-        ASSERT_EQ(*opCtx()->getLogicalSessionId(), session->getSessionId());
-
-        // Confirm that stash and unstash can be executed against a top-level checked-out Session.
-        ocs.stashTransactionResources();
-        ocs.unstashTransactionResources();
-    }
-
-    {
-        OperationContextSession ocs(opCtx(), false, boost::none);
-        auto session = OperationContextSession::get(opCtx());
-
-        ASSERT(!session);
-
-        // Confirm that stash and unstash can be executed against a top-level not-checked-out
-        // Session.
-        ocs.stashTransactionResources();
-        ocs.unstashTransactionResources();
-    }
+    ASSERT(!session);
 }
 
 TEST_F(SessionCatalogTest, GetOrCreateNonExistentSession) {
@@ -157,97 +149,60 @@ TEST_F(SessionCatalogTest, NestedOperationContextSession) {
     ASSERT(!OperationContextSession::get(opCtx()));
 }
 
-TEST_F(SessionCatalogTest, StashInNestedSessionIsANoop) {
+TEST_F(SessionCatalogTest, CannotAccessTopLevelSessionInNestedOnes) {
     opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
     opCtx()->setTxnNumber(1);
 
     {
         OperationContextSession outerScopedSession(opCtx(), true, boost::none);
 
-        Locker* originalLocker = opCtx()->lockState();
-        RecoveryUnit* originalRecoveryUnit = opCtx()->recoveryUnit();
-        ASSERT(originalLocker);
-        ASSERT(originalRecoveryUnit);
-
-        // Set the readConcern on the OperationContext.
-        repl::ReadConcernArgs readConcernArgs;
-        ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                                  << "test"
-                                                  << repl::ReadConcernArgs::kReadConcernFieldName
-                                                  << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                          << "snapshot"))));
-        repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
-
-        // Perform initial unstash, which sets up a WriteUnitOfWork.
-        outerScopedSession.unstashTransactionResources();
-        ASSERT_EQUALS(originalLocker, opCtx()->lockState());
-        ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
-        ASSERT(opCtx()->getWriteUnitOfWork());
-
+        auto* session = outerScopedSession.get(opCtx(), true);
+        ASSERT(session);
         {
             OperationContextSession innerScopedSession(opCtx(), true, boost::none);
 
-            // Indicate that there is a stashed cursor. If we were not in a nested session, this
-            // would ensure that stashing is not a noop.
-            opCtx()->setStashedCursor();
-
-            innerScopedSession.stashTransactionResources();
-
-            // The stash was a noop, so the locker, RecoveryUnit, and WriteUnitOfWork on the
-            // OperationContext are unaffected.
-            ASSERT_EQUALS(originalLocker, opCtx()->lockState());
-            ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
-            ASSERT(opCtx()->getWriteUnitOfWork());
+            // Cannot get the top level session since we're a nested one.
+            const bool topLevelOnly = true;
+            auto* innerSession = OperationContextSession::get(opCtx(), topLevelOnly);
+            ASSERT(!innerSession);
         }
     }
 }
 
-TEST_F(SessionCatalogTest, UnstashInNestedSessionIsANoop) {
-    opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
-    opCtx()->setTxnNumber(1);
+TEST_F(SessionCatalogTest, ScanSessions) {
+    std::vector<LogicalSessionId> lsids;
+    auto workerFn = [&](OperationContext* opCtx, Session* session) {
+        lsids.push_back(session->getSessionId());
+    };
 
+    // Scan over zero Sessions.
+    SessionKiller::Matcher matcherAllSessions(
+        KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx())});
+    catalog()->scanSessions(opCtx(), matcherAllSessions, workerFn);
+    ASSERT(lsids.empty());
+
+    // Create three sessions in the catalog.
+    auto lsid1 = makeLogicalSessionIdForTest();
+    auto lsid2 = makeLogicalSessionIdForTest();
+    auto lsid3 = makeLogicalSessionIdForTest();
     {
-        OperationContextSession outerScopedSession(opCtx(), true, boost::none);
-
-        Locker* originalLocker = opCtx()->lockState();
-        RecoveryUnit* originalRecoveryUnit = opCtx()->recoveryUnit();
-        ASSERT(originalLocker);
-        ASSERT(originalRecoveryUnit);
-
-        // Set the readConcern on the OperationContext.
-        repl::ReadConcernArgs readConcernArgs;
-        ASSERT_OK(readConcernArgs.initialize(BSON("find"
-                                                  << "test"
-                                                  << repl::ReadConcernArgs::kReadConcernFieldName
-                                                  << BSON(repl::ReadConcernArgs::kLevelFieldName
-                                                          << "snapshot"))));
-        repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
-
-        {
-            OperationContextSession innerScopedSession(opCtx(), true, boost::none);
-
-            innerScopedSession.unstashTransactionResources();
-
-            // The unstash was a noop, so the OperationContext did not get a WriteUnitOfWork.
-            ASSERT_EQUALS(originalLocker, opCtx()->lockState());
-            ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
-            ASSERT_FALSE(opCtx()->getWriteUnitOfWork());
-        }
-    }
-}
-
-TEST_F(SessionCatalogTest, OnlyCheckOutSessionWithCheckOutSessionTrue) {
-    opCtx()->setLogicalSessionId(makeLogicalSessionIdForTest());
-
-    {
-        OperationContextSession ocs(opCtx(), true, boost::none);
-        ASSERT(OperationContextSession::get(opCtx()));
+        auto scopedSession1 = catalog()->getOrCreateSession(opCtx(), lsid1);
+        auto scopedSession2 = catalog()->getOrCreateSession(opCtx(), lsid2);
+        auto scopedSession3 = catalog()->getOrCreateSession(opCtx(), lsid3);
     }
 
-    {
-        OperationContextSession ocs(opCtx(), false, boost::none);
-        ASSERT(!OperationContextSession::get(opCtx()));
-    }
+    // Scan over all Sessions.
+    lsids.clear();
+    catalog()->scanSessions(opCtx(), matcherAllSessions, workerFn);
+    ASSERT_EQ(lsids.size(), 3U);
+
+    // Scan over all Sessions, visiting a particular Session.
+    SessionKiller::Matcher matcherLSID2(
+        KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx(), lsid2)});
+    lsids.clear();
+    catalog()->scanSessions(opCtx(), matcherLSID2, workerFn);
+    ASSERT_EQ(lsids.size(), 1U);
+    ASSERT_EQ(lsids.front(), lsid2);
 }
 
 }  // namespace

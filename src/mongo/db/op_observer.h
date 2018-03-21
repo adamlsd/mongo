@@ -38,14 +38,13 @@
 #include "mongo/db/s/collection_sharding_state.h"
 
 namespace mongo {
-struct CollectionOptions;
+
 struct InsertStatement;
-class NamespaceString;
 class OperationContext;
 
 namespace repl {
 class OpTime;
-}  // repl
+}  // namespace repl
 
 /**
  * Holds document update information used in logging.
@@ -274,6 +273,51 @@ public:
      */
     virtual void onReplicationRollback(OperationContext* opCtx,
                                        const RollbackObserverInfo& rbInfo) = 0;
+
+    struct Times;
+
+protected:
+    class ReservedTimes;
+};
+
+/**
+ * This struct is a decoration for `OperationContext` which contains collected `repl::OpTime`
+ * and `Date_t` timestamps of various critical stages of an operation performed by an OpObserver
+ * chain.
+ */
+struct OpObserver::Times {
+    static Times& get(OperationContext*);
+
+    std::vector<repl::OpTime> reservedOpTimes;
+
+private:
+    friend OpObserver::ReservedTimes;
+
+    // Because `OpObserver`s are re-entrant, it is necessary to track the recursion depth to know
+    // when to actually clear the `reservedOpTimes` vector, using the `ReservedTimes` scope object.
+    int _recursionDepth = 0;
+};
+
+/**
+ * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
+ * operation context. Upon destruction the list of times in the decoration on the operation context
+ * is cleared. It is intended for use as a scope object in `OpObserverRegistry` to manage
+ * re-entrancy.
+ */
+class OpObserver::ReservedTimes {
+    ReservedTimes(const ReservedTimes&) = delete;
+    ReservedTimes& operator=(const ReservedTimes&) = delete;
+
+public:
+    explicit ReservedTimes(OperationContext* const opCtx);
+    ~ReservedTimes();
+
+    const Times& get() const {
+        return _times;
+    }
+
+private:
+    Times& _times;
 };
 
 }  // namespace mongo

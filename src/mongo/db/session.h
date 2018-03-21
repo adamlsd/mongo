@@ -36,6 +36,7 @@
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/oplog_entry.h"
+#include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/session_txn_record_gen.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/stdx/unordered_map.h"
@@ -58,6 +59,35 @@ class Session {
     MONGO_DISALLOW_COPYING(Session);
 
 public:
+    /**
+     * Holds state for a snapshot read or multi-statement transaction in between network operations.
+     */
+    class TxnResources {
+    public:
+        /**
+         * Stashes transaction state from 'opCtx' in the newly constructed TxnResources.
+         */
+        TxnResources(OperationContext* opCtx);
+
+        ~TxnResources();
+
+        // Rule of 5: because we have a class-defined destructor, we need to explictly specify
+        // the move operator and move assignment operator.
+        TxnResources(TxnResources&&) = default;
+        TxnResources& operator=(TxnResources&&) = default;
+
+        /**
+         * Releases stashed transaction state onto 'opCtx'. Must only be called once.
+         */
+        void release(OperationContext* opCtx);
+
+    private:
+        bool _released = false;
+        std::unique_ptr<Locker> _locker;
+        std::unique_ptr<RecoveryUnit> _recoveryUnit;
+        repl::ReadConcernArgs _readConcernArgs;
+    };
+
     using CommittedStatementTimestampMap = stdx::unordered_map<StmtId, repl::OpTime>;
 
     static const BSONObj kDeadEndSentinel;
@@ -104,7 +134,6 @@ public:
      */
     void beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber);
 
-
     /**
      * Called after a write under the specified transaction completes while the node is a primary
      * and specifies the statement ids which were written. Must be called while the caller is still
@@ -147,16 +176,6 @@ public:
                                      Date_t lastStmtIdWriteDate);
 
     /**
-     * Called after a replication batch has been applied on a secondary node. Keeps the session
-     * transaction entry in sync with the oplog chain which has been written.
-     *
-     * In order to avoid the possibility of deadlock, this method must not be called while holding a
-     * lock.
-     */
-    static void updateSessionRecordOnSecondary(OperationContext* opCtx,
-                                               const SessionTxnRecord& sessionTxnRecord);
-
-    /**
      * Marks the session as requiring refresh. Used when the session state has been modified
      * externally, such as through a direct write to the transactions table.
      */
@@ -194,20 +213,72 @@ public:
     bool checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber, StmtId stmtId) const;
 
     /**
-     * Transfers management of both locks and WiredTiger transaction from the OperationContext to
-     * the Session.
+     * Transfers management of transaction resources from the OperationContext to the Session.
      */
     void stashTransactionResources(OperationContext* opCtx);
 
     /**
-     * Transfers management of both locks and WiredTiger transaction from the Session to the
-     * OperationContext.
+     * Transfers management of transaction resources from the Session to the OperationContext.
      */
     void unstashTransactionResources(OperationContext* opCtx);
+
+    /**
+     * If there is transaction in progress with transaction number 'txnNumber' and _autocommit=true,
+     * aborts the transaction.
+     */
+    void abortIfSnapshotRead(TxnNumber txnNumber);
+
+    /**
+     * Aborts the transaction, releasing stashed transaction resources.
+     */
+    void abortTransaction();
 
     bool getAutocommit() const {
         return _autocommit;
     }
+
+    /**
+     * Returns whether we are in a multi-document transaction, which means we have an active
+     * transaction which has autoCommit:false and has not been committed or aborted.
+     */
+    bool inMultiDocumentTransaction() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _txnState == MultiDocumentTransactionState::kInProgress;
+    };
+
+    /**
+     * Returns whether we are in a read-only or multi-document transaction.
+     */
+    bool inSnapshotReadOrMultiDocumentTransaction() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _txnState == MultiDocumentTransactionState::kInProgress ||
+            _txnState == MultiDocumentTransactionState::kInSnapshotRead;
+    }
+
+    /**
+     * Adds a stored operation to the list of stored operations for the current multi-document
+     * (non-autocommit) transaction.  It is illegal to add operations when no multi-document
+     * transaction is in progress.
+     */
+    void addTransactionOperation(OperationContext* opCtx, const repl::ReplOperation& operation);
+
+    /**
+     * Returns and clears the stored operations for an multi-document (non-autocommit) transaction,
+     * and marks the transaction as closed.  It is illegal to attempt to add operations to the
+     * transaction after this is called.
+     */
+    std::vector<repl::ReplOperation> endTransactionAndRetrieveOperations();
+
+    const std::vector<repl::ReplOperation>& transactionOperationsForTest() {
+        return _transactionOperations;
+    }
+
+    /**
+     * Scan through the list of operations and add new oplog entries for updating
+     * config.transactions if needed.
+     */
+    static std::vector<repl::OplogEntry> addOpsForReplicatingTxnTable(
+        const std::vector<repl::OplogEntry>& ops);
 
 private:
     void _beginOrContinueTxn(WithLock, TxnNumber txnNumber, boost::optional<bool> autocommit);
@@ -239,8 +310,7 @@ private:
                                       std::vector<StmtId> stmtIdsWritten,
                                       const repl::OpTime& lastStmtIdWriteTs);
 
-    // Releases stashed locks and WiredTiger transaction. This implicitly aborts the transaction.
-    void _releaseStashedTransactionResources(WithLock, OperationContext* opCtx);
+    void _releaseStashedTransactionResources(WithLock);
 
     const LogicalSessionId _sessionId;
 
@@ -266,16 +336,23 @@ private:
     // means a new transaction has begun on the session, but it hasn't yet performed any writes.
     TxnNumber _activeTxnNumber{kUninitializedTxnNumber};
 
-    // Set when the first command in a transaction specifies readConcern level snapshot.
-    bool _isSnapshotTxn{false};
+    // Holds transaction resources between network operations.
+    boost::optional<TxnResources> _txnResourceStash;
 
-    // Holds a transaction's Locker while not active. Combined with stashing of the RecoveryUnit,
-    // this allows transaction state to be maintained across network operations.
-    std::unique_ptr<Locker> _stashedLocker;
+    // Indicates the state of the current multi-document transaction or snapshot read, if any.  If
+    // the transaction is in any state but kInProgress, no more operations can be collected.
+    enum class MultiDocumentTransactionState {
+        kNone,
+        kInSnapshotRead,
+        kInProgress,
+        kCommitting,
+        kCommitted,
+        kAborted
+    } _txnState = MultiDocumentTransactionState::kNone;
 
-    // Holds a transaction's RecoveryUnit while not active. Combined with stashing of the Locker,
-    // this allows transaction state to be maintained across network operations.
-    std::unique_ptr<RecoveryUnit> _stashedRecoveryUnit;
+    // Holds oplog data for operations which have been applied in the current multi-document
+    // transaction.  Not used for retryable writes.
+    std::vector<repl::ReplOperation> _transactionOperations;
 
     // For the active txn, tracks which statement ids have been committed and at which oplog
     // opTime. Used for fast retryability check and retrieving the previous write's data without

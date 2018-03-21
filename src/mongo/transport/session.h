@@ -34,6 +34,7 @@
 #include "mongo/platform/atomic_word.h"
 #include "mongo/transport/session_id.h"
 #include "mongo/util/decorable.h"
+#include "mongo/util/future.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/net/message.h"
 #include "mongo/util/time_support.h"
@@ -102,7 +103,7 @@ public:
      * Source (receive) a new Message from the remote host for this Session.
      */
     virtual StatusWith<Message> sourceMessage() = 0;
-    virtual void asyncSourceMessage(std::function<void(StatusWith<Message>)> cb) = 0;
+    virtual Future<Message> asyncSourceMessage() = 0;
 
     /**
      * Sink (send) a Message to the remote host for this Session.
@@ -110,7 +111,27 @@ public:
      * Async version will keep the buffer alive until the operation completes.
      */
     virtual Status sinkMessage(Message message) = 0;
-    virtual void asyncSinkMessage(Message message, std::function<void(Status)> cb) = 0;
+    virtual Future<void> asyncSinkMessage(Message message) = 0;
+
+    /**
+    * This should only be used to detect when the remote host has disappeared without
+    * notice. It does NOT work correctly for ensuring that operations complete or fail
+    * by some deadline.
+    *
+    * This timeout will only effect calls sourceMessage()/sinkMessage(). Async operations do not
+    * currently support timeouts.
+    */
+    virtual void setTimeout(boost::optional<Milliseconds> timeout) = 0;
+
+    /**
+     * This will return whether calling sourceMessage()/sinkMessage() will fail with an EOF error.
+     *
+     * Implementations may actually perform some I/O or call syscalls to determine this, rather
+     * than just checking a flag.
+     *
+     * This must not be called while the session is currently sourcing or sinking a message.
+     */
+    virtual bool isConnected() = 0;
 
     virtual const HostAndPort& remote() const = 0;
     virtual const HostAndPort& local() const = 0;

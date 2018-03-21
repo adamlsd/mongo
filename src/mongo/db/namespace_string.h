@@ -72,7 +72,7 @@ public:
     // running as a replica set. Documents in this collection should represent some configuration
     // state of the server, which needs to be recovered/consulted at startup. Each document in this
     // namespace should have its _id set to some string, which meaningfully describes what it
-    // represents.
+    // represents. For example, 'shardIdentity' and 'featureCompatibilityVersion'.
     static const NamespaceString kServerConfigurationNamespace;
 
     // Namespace for storing the transaction information for each session
@@ -224,7 +224,7 @@ public:
     bool isSystemDotViews() const {
         return coll() == kSystemDotViewsCollectionName;
     }
-    bool isAdminDotSystemDotVersion() const {
+    bool isServerConfigurationCollection() const {
         return (db() == kAdminDb) && (coll() == "system.version");
     }
     bool isConfigDB() const {
@@ -450,7 +450,8 @@ private:
 class NamespaceStringOrUUID {
 public:
     NamespaceStringOrUUID(NamespaceString nss) : _nss(std::move(nss)) {}
-    NamespaceStringOrUUID(UUID uuid) : _uuid(std::move(uuid)) {}
+    NamespaceStringOrUUID(std::string dbname, UUID uuid)
+        : _uuid(std::move(uuid)), _dbname(std::move(dbname)) {}
 
     const boost::optional<NamespaceString>& nss() const {
         return _nss;
@@ -460,12 +461,21 @@ public:
         return _uuid;
     }
 
+    const std::string& dbname() const {
+        return _dbname;
+    }
+
     std::string toString() const;
 
 private:
     // At any given time exactly one of these optionals will be initialized
     boost::optional<NamespaceString> _nss;
     boost::optional<UUID> _uuid;
+
+    // Empty string when '_nss' is non-none, and contains the database name when '_uuid' is
+    // non-none. Although the UUID specifies a collection uniquely, we must later verify that the
+    // collection belongs to the database named here.
+    std::string _dbname;
 };
 
 std::ostream& operator<<(std::ostream& stream, const NamespaceString& nss);

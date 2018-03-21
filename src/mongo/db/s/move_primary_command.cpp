@@ -32,6 +32,9 @@
 
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/s/active_move_primaries_registry.h"
+#include "mongo/db/s/sharding_state.h"
+#include "mongo/s/grid.h"
 #include "mongo/s/request_types/move_primary_gen.h"
 #include "mongo/util/log.h"
 
@@ -68,7 +71,7 @@ public:
         return Status::OK();
     }
 
-    virtual std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
+    std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
         const auto nsElt = cmdObj.firstElement();
         uassert(ErrorCodes::InvalidNamespace,
                 "'movePrimary' must be of type String",
@@ -80,14 +83,11 @@ public:
              const std::string& dbname_unused,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
-        if (serverGlobalParams.clusterRole != ClusterRole::ShardServer) {
-            return CommandHelpers::appendCommandStatus(
-                result,
-                Status(ErrorCodes::IllegalOperation,
-                       "_movePrimary can only be run on shard servers"));
-        }
+        auto const shardingState = ShardingState::get(opCtx);
+        uassertStatusOK(shardingState->canAcceptShardedCommands());
 
-        auto movePrimaryRequest = MovePrimary::parse(IDLParserErrorContext("_movePrimary"), cmdObj);
+        const auto movePrimaryRequest =
+            ShardMovePrimary::parse(IDLParserErrorContext("_movePrimary"), cmdObj);
         const auto dbname = parseNs("", cmdObj);
 
         uassert(
@@ -95,26 +95,41 @@ public:
             str::stream() << "invalid db name specified: " << dbname,
             NamespaceString::validDBName(dbname, NamespaceString::DollarInDbNameBehavior::Allow));
 
-        if (dbname == NamespaceString::kAdminDb || dbname == NamespaceString::kConfigDb ||
-            dbname == NamespaceString::kLocalDb) {
-            return CommandHelpers::appendCommandStatus(
-                result,
-                {ErrorCodes::InvalidOptions,
-                 str::stream() << "Can't move primary for " << dbname << " database"});
-        }
+        uassert(ErrorCodes::InvalidOptions,
+                str::stream() << "Can't move primary for a system database " << dbname,
+                dbname != NamespaceString::kAdminDb && dbname != NamespaceString::kConfigDb &&
+                    dbname != NamespaceString::kLocalDb);
 
         uassert(ErrorCodes::InvalidOptions,
                 str::stream() << "_movePrimary must be called with majority writeConcern, got "
                               << cmdObj,
                 opCtx->getWriteConcern().wMode == WriteConcernOptions::kMajority);
 
-        const std::string to = movePrimaryRequest.getTo().toString();
+        uassert(ErrorCodes::InvalidOptions,
+                "you have to specify where you want to move it",
+                !movePrimaryRequest.getTo().empty());
 
-        if (to.empty()) {
-            return CommandHelpers::appendCommandStatus(
-                result,
-                {ErrorCodes::InvalidOptions,
-                 str::stream() << "you have to specify where you want to move it"});
+        // Make sure we're as up-to-date as possible with shard information. This catches the case
+        // where we might have changed a shard's host by removing/adding a shard with the same name.
+        Grid::get(opCtx)->shardRegistry()->reload(opCtx);
+
+        auto scopedMovePrimary = uassertStatusOK(
+            ActiveMovePrimariesRegistry::get(opCtx).registerMovePrimary(movePrimaryRequest));
+
+        // Check if there is an existing movePrimary running and if so, join it
+        if (scopedMovePrimary.mustExecute()) {
+            auto status = [&] {
+                try {
+                    // TODO: Implement _movePrimary
+                    return Status::OK();
+                } catch (const DBException& ex) {
+                    return ex.toStatus();
+                }
+            }();
+            scopedMovePrimary.signalComplete(status);
+            uassertStatusOK(status);
+        } else {
+            uassertStatusOK(scopedMovePrimary.waitForCompletion(opCtx));
         }
 
         return true;

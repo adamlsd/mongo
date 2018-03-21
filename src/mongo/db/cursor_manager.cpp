@@ -50,6 +50,7 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/platform/random.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/exit.h"
@@ -215,40 +216,62 @@ bool GlobalCursorIdCache::killCursor(OperationContext* opCtx, CursorId id, bool 
         }
     }
 
+    boost::optional<std::pair<LogicalSessionId, TxnNumber>> txnToAbort;
+
     // If this cursor is owned by the global cursor manager, ask it to kill the cursor for us.
     if (CursorManager::isGloballyManagedCursor(id)) {
-        Status killStatus = globalCursorManager->killCursor(opCtx, id, checkAuth);
+        auto statusWithTxnToAbort = globalCursorManager->killCursor(opCtx, id, checkAuth);
         massert(28697,
-                killStatus.reason(),
-                killStatus.code() == ErrorCodes::OK ||
-                    killStatus.code() == ErrorCodes::CursorNotFound);
-        return killStatus.isOK();
+                statusWithTxnToAbort.getStatus().reason(),
+                statusWithTxnToAbort.getStatus().code() == ErrorCodes::OK ||
+                    statusWithTxnToAbort.getStatus().code() == ErrorCodes::CursorNotFound);
+        if (!statusWithTxnToAbort.isOK()) {
+            return false;
+        }
+        txnToAbort = statusWithTxnToAbort.getValue();
+    } else {
+        // If not, then the cursor must be owned by a collection. Kill the cursor under the
+        // collection lock (to prevent the collection from going away during the erase).
+        AutoGetCollectionForReadCommand ctx(opCtx, nss);
+        Collection* collection = ctx.getCollection();
+        if (!collection) {
+            if (checkAuth)
+                audit::logKillCursorsAuthzCheck(
+                    opCtx->getClient(), nss, id, ErrorCodes::CursorNotFound);
+            return false;
+        }
+
+        auto statusWithTxnToAbort =
+            collection->getCursorManager()->killCursor(opCtx, id, checkAuth);
+        uassert(16089,
+                statusWithTxnToAbort.getStatus().reason(),
+                statusWithTxnToAbort.getStatus().code() == ErrorCodes::OK ||
+                    statusWithTxnToAbort.getStatus().code() == ErrorCodes::CursorNotFound);
+        if (!statusWithTxnToAbort.isOK()) {
+            return false;
+        }
+        txnToAbort = statusWithTxnToAbort.getValue();
     }
 
-    // If not, then the cursor must be owned by a collection. Kill the cursor under the
-    // collection lock (to prevent the collection from going away during the erase).
-    AutoGetCollectionForReadCommand ctx(opCtx, nss);
-    Collection* collection = ctx.getCollection();
-    if (!collection) {
-        if (checkAuth)
-            audit::logKillCursorsAuthzCheck(
-                opCtx->getClient(), nss, id, ErrorCodes::CursorNotFound);
-        return false;
+    // If the cursor has a corresponding transaction, abort that transaction if it is a snapshot
+    // read. This must be done while we are not holding locks.
+    invariant(!opCtx->lockState()->isLocked());
+    if (txnToAbort) {
+        auto session = SessionCatalog::get(opCtx)->getSession(opCtx, txnToAbort->first);
+        if (session) {
+            (*session)->abortIfSnapshotRead(txnToAbort->second);
+        }
     }
 
-    Status eraseStatus = collection->getCursorManager()->killCursor(opCtx, id, checkAuth);
-    uassert(16089,
-            eraseStatus.reason(),
-            eraseStatus.code() == ErrorCodes::OK ||
-                eraseStatus.code() == ErrorCodes::CursorNotFound);
-    return eraseStatus.isOK();
+    return true;
 }
 
 std::size_t GlobalCursorIdCache::timeoutCursors(OperationContext* opCtx, Date_t now) {
     size_t totalTimedOut = 0;
+    std::vector<std::pair<LogicalSessionId, TxnNumber>> txnsToAbort;
 
     // Time out the cursors from the global cursor manager.
-    totalTimedOut += globalCursorManager->timeoutCursors(opCtx, now);
+    totalTimedOut += globalCursorManager->timeoutCursors(opCtx, now, &txnsToAbort);
 
     // Compute the set of collection names that we have to time out cursors for.
     vector<NamespaceString> todo;
@@ -262,24 +285,41 @@ std::size_t GlobalCursorIdCache::timeoutCursors(OperationContext* opCtx, Date_t 
     // For each collection, time out its cursors under the collection lock (to prevent the
     // collection from going away during the erase).
     for (const auto& nsTodo : todo) {
-        // Note that we specify 'kViewsPermitted' here, even though we don't expect 'nsTodo' to be a
-        // view. Because we are not holding the mutex anymore, it is possible that the collection we
-        // are trying to access has since been destroyed and a view of the same name has been
-        // created in its place. Without 'kViewsPermitted' here, that would result in a uassert that
-        // would crash the cursor cleaner background thread.
-        AutoGetCollectionForReadCommand ctx(
-            opCtx, nsTodo, AutoGetCollection::ViewMode::kViewsPermitted);
-        if (!ctx.getDb()) {
+        // We need to be careful to not use an AutoGet* helper, since we only need the lock to
+        // protect potential access to the Collection's CursorManager, and those helpers may
+        // do things we don't want here, like check the shard version or throw an exception if this
+        // namespace has since turned into a view. Using Database::getCollection() will simply
+        // return nullptr if the collection has since turned into a view. In this case, the cursors
+        // will already have been cleaned up when the collection was dropped, so there will be none
+        // left to time out.
+        //
+        // Additionally, we need to use the UninterruptibleLockGuard to ensure the lock acquisition
+        // will not throw due to an interrupt. This method can be called from a background thread so
+        // we do not want to throw any exceptions.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+        AutoGetDb dbLock(opCtx, nsTodo.db(), MODE_IS);
+        Lock::CollectionLock collLock(opCtx->lockState(), nsTodo.ns(), MODE_IS);
+        if (!dbLock.getDb()) {
             continue;
         }
 
-        Collection* const collection = ctx.getCollection();
+        Collection* const collection = dbLock.getDb()->getCollection(opCtx, nsTodo);
         if (!collection) {
             // The 'nsTodo' collection has been dropped since we held _mutex. We can safely skip it.
             continue;
         }
 
-        totalTimedOut += collection->getCursorManager()->timeoutCursors(opCtx, now);
+        totalTimedOut += collection->getCursorManager()->timeoutCursors(opCtx, now, &txnsToAbort);
+    }
+
+    // If the cursors had corresponding transactions, abort the transactions if they are snapshot
+    // reads. This must be done while we are not holding locks.
+    invariant(!opCtx->lockState()->isLocked());
+    for (auto&& txnToAbort : txnsToAbort) {
+        auto session = SessionCatalog::get(opCtx)->getSession(opCtx, txnToAbort.first);
+        if (session) {
+            (*session)->abortIfSnapshotRead(txnToAbort.second);
+        }
     }
 
     return totalTimedOut;
@@ -498,7 +538,10 @@ bool CursorManager::cursorShouldTimeout_inlock(const ClientCursor* cursor, Date_
     return (now - cursor->_lastUseDate) >= Milliseconds(getCursorTimeoutMillis());
 }
 
-std::size_t CursorManager::timeoutCursors(OperationContext* opCtx, Date_t now) {
+std::size_t CursorManager::timeoutCursors(
+    OperationContext* opCtx,
+    Date_t now,
+    std::vector<std::pair<LogicalSessionId, TxnNumber>>* txnsToAbort) {
     std::vector<std::unique_ptr<ClientCursor, ClientCursor::Deleter>> toDelete;
 
     for (size_t partitionId = 0; partitionId < kNumPartitions; ++partitionId) {
@@ -509,6 +552,10 @@ std::size_t CursorManager::timeoutCursors(OperationContext* opCtx, Date_t now) {
                 // Dispose of the cursor and remove it from the partition.
                 cursor->dispose(opCtx);
                 toDelete.push_back(std::unique_ptr<ClientCursor, ClientCursor::Deleter>{cursor});
+                if (cursor->getTxnNumber()) {
+                    invariant(cursor->getSessionId());
+                    txnsToAbort->emplace_back(*cursor->getSessionId(), *cursor->getTxnNumber());
+                }
                 it = lockedPartition->erase(it);
             } else {
                 ++it;
@@ -590,14 +637,19 @@ void CursorManager::unpin(OperationContext* opCtx, ClientCursor* cursor) {
     auto interruptStatus = cursor->_operationUsingCursor->checkForInterruptNoAssert();
     cursor->_operationUsingCursor = nullptr;
     cursor->_lastUseDate = now;
-    if (!interruptStatus.isOK()) {
-        // If an interrupt occurred after the batch was completed, we remove the now-unpinned cursor
-        // from the CursorManager, then dispose of and delete it.
+
+    // If someone was trying to kill this cursor with a killOp or a killCursors, they are likely
+    // interesting in proactively cleaning up that cursor's resources. In these cases, we
+    // proactively delete the cursor. In other cases we preserve the error code so that the client
+    // will see the reason the cursor was killed when asking for the next batch.
+    if (interruptStatus == ErrorCodes::Interrupted || interruptStatus == ErrorCodes::CursorKilled) {
         LOG(0) << "removing cursor " << cursor->cursorid()
                << " after completing batch: " << interruptStatus;
         partition->erase(cursor->cursorid());
         cursor->dispose(opCtx);
         delete cursor;
+    } else if (!interruptStatus.isOK()) {
+        cursor->markAsKilled(interruptStatus);
     }
 }
 
@@ -710,7 +762,8 @@ void CursorManager::deregisterCursor(ClientCursor* cc) {
     _cursorMap->erase(cc->cursorid());
 }
 
-Status CursorManager::killCursor(OperationContext* opCtx, CursorId id, bool shouldAudit) {
+StatusWith<boost::optional<std::pair<LogicalSessionId, TxnNumber>>> CursorManager::killCursor(
+    OperationContext* opCtx, CursorId id, bool shouldAudit) {
     auto lockedPartition = _cursorMap->lockOnePartition(id);
     auto it = lockedPartition->find(id);
     if (it == lockedPartition->end()) {
@@ -735,9 +788,15 @@ Status CursorManager::killCursor(OperationContext* opCtx, CursorId id, bool shou
         if (shouldAudit) {
             audit::logKillCursorsAuthzCheck(opCtx->getClient(), _nss, id, ErrorCodes::OK);
         }
-        return Status::OK();
+        return {boost::none};
     }
     std::unique_ptr<ClientCursor, ClientCursor::Deleter> ownedCursor(cursor);
+
+    boost::optional<std::pair<LogicalSessionId, TxnNumber>> toReturn;
+    if (ownedCursor->getTxnNumber()) {
+        invariant(ownedCursor->getSessionId());
+        toReturn = std::make_pair(*ownedCursor->getSessionId(), *ownedCursor->getTxnNumber());
+    }
 
     if (shouldAudit) {
         audit::logKillCursorsAuthzCheck(opCtx->getClient(), _nss, id, ErrorCodes::OK);
@@ -745,7 +804,7 @@ Status CursorManager::killCursor(OperationContext* opCtx, CursorId id, bool shou
 
     lockedPartition->erase(ownedCursor->cursorid());
     ownedCursor->dispose(opCtx);
-    return Status::OK();
+    return toReturn;
 }
 
 Status CursorManager::checkAuthForKillCursors(OperationContext* opCtx, CursorId id) {

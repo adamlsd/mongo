@@ -211,10 +211,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during "
-                                     << "StageDebug command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error during StageDebug command"));
         }
 
         return true;
@@ -520,7 +518,7 @@ public:
 };
 
 MONGO_INITIALIZER(RegisterStageDebugCmd)(InitializerContext* context) {
-    if (Command::testCommandsEnabled) {
+    if (getTestCommandsEnabled()) {
         // Leaked intentionally: a Command registers itself when constructed.
         new StageDebugCmd();
     }

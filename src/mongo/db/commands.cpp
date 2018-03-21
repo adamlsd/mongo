@@ -60,9 +60,6 @@ using logger::LogComponent;
 
 namespace {
 
-ExportedServerParameter<bool, ServerParameterType::kStartupOnly> testCommandsParameter(
-    ServerParameterSet::getGlobal(), "enableTestCommands", &Command::testCommandsEnabled);
-
 const char kWriteConcernField[] = "writeConcern";
 const WriteConcernOptions kMajorityWriteConcern(
     WriteConcernOptions::kMajority,
@@ -74,7 +71,7 @@ const WriteConcernOptions kMajorityWriteConcern(
 // A facade presenting CommandDefinition as an audit::CommandInterface.
 class CommandAuditHook : public audit::CommandInterface {
 public:
-    explicit CommandAuditHook(Command* command) : _command(command) {}
+    explicit CommandAuditHook(const Command* command) : _command{command} {}
 
     void redactForLogging(mutablebson::Document* cmdObj) const final {
         _command->redactForLogging(cmdObj);
@@ -85,7 +82,7 @@ public:
     }
 
 private:
-    Command* _command;
+    const Command* _command;
 };
 
 }  // namespace
@@ -113,6 +110,22 @@ BSONObj CommandHelpers::runCommandDirectly(OperationContext* opCtx, const OpMsgR
         appendCommandStatus(body, ex.toStatus());
     }
     return BSONObj(bb.release());
+}
+
+void CommandHelpers::logAuthViolation(OperationContext* opCtx,
+                                      const Command* command,
+                                      const OpMsgRequest& request,
+                                      ErrorCodes::Error err) {
+    CommandAuditHook hook{command};
+    audit::logCommandAuthzCheck(opCtx->getClient(), request, &hook, err);
+}
+
+void CommandHelpers::uassertNoDocumentSequences(StringData commandName,
+                                                const OpMsgRequest& request) {
+    uassert(40472,
+            str::stream() << "The " << commandName
+                          << " command does not support document sequences.",
+            request.sequences.empty());
 }
 
 std::string CommandHelpers::parseNsFullyQualified(StringData dbname, const BSONObj& cmdObj) {
@@ -145,7 +158,7 @@ NamespaceString CommandHelpers::parseNsCollectionRequired(StringData dbname,
 NamespaceStringOrUUID CommandHelpers::parseNsOrUUID(StringData dbname, const BSONObj& cmdObj) {
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
-        return uassertStatusOK(UUID::parse(first));
+        return {dbname.toString(), uassertStatusOK(UUID::parse(first))};
     } else {
         // Ensure collection identifier is not a Command
         const NamespaceString nss(parseNsCollectionRequired(dbname, cmdObj));
@@ -317,7 +330,8 @@ void CommandHelpers::filterCommandReplyForPassthrough(const BSONObj& cmdObj,
             name == "$clusterTime" ||        //
             name == "$oplogQueryData" ||     //
             name == "$replData" ||           //
-            name == "operationTime") {
+            name == "operationTime" ||
+            name == "lastCommittedOpTime") {
             continue;
         }
         output->append(elem);
@@ -362,9 +376,9 @@ CommandInvocation::~CommandInvocation() = default;
 //////////////////////////////////////////////////////////////
 // Command
 
-class Command::InvocationShim final : public CommandInvocation {
+class BasicCommand::Invocation final : public CommandInvocation {
 public:
-    InvocationShim(OperationContext*, const OpMsgRequest& request, Command* command)
+    Invocation(OperationContext*, const OpMsgRequest& request, BasicCommand* command)
         : CommandInvocation(command),
           _command(command),
           _request(&request),
@@ -374,7 +388,7 @@ private:
     void run(OperationContext* opCtx, CommandReplyBuilder* result) override {
         try {
             BSONObjBuilder bob = result->getBodyBuilder();
-            bool ok = _command->enhancedRun(opCtx, *_request, bob);
+            bool ok = _command->run(opCtx, _dbName, _request->body, bob);
             CommandHelpers::appendCommandStatus(bob, ok);
         } catch (const ExceptionFor<ErrorCodes::Unauthorized>&) {
             CommandAuditHook hook(_command);
@@ -418,16 +432,17 @@ private:
         return _request->body;
     }
 
-    Command* const _command;
+    BasicCommand* const _command;
     const OpMsgRequest* const _request;
     const std::string _dbName;
 };
 
 Command::~Command() = default;
 
-std::unique_ptr<CommandInvocation> Command::parse(OperationContext* opCtx,
-                                                  const OpMsgRequest& request) {
-    return stdx::make_unique<InvocationShim>(opCtx, request, this);
+std::unique_ptr<CommandInvocation> BasicCommand::parse(OperationContext* opCtx,
+                                                       const OpMsgRequest& request) {
+    CommandHelpers::uassertNoDocumentSequences(getName(), request);
+    return stdx::make_unique<Invocation>(opCtx, request, this);
 }
 
 std::string Command::parseNs(const std::string& dbname, const BSONObj& cmdObj) const {
@@ -454,16 +469,16 @@ Command::Command(StringData name, StringData oldName)
     globalCommandRegistry()->registerCommand(this, name, oldName);
 }
 
-Status Command::explain(OperationContext* opCtx,
-                        const OpMsgRequest& request,
-                        ExplainOptions::Verbosity verbosity,
-                        BSONObjBuilder* out) const {
+Status BasicCommand::explain(OperationContext* opCtx,
+                             const OpMsgRequest& request,
+                             ExplainOptions::Verbosity verbosity,
+                             BSONObjBuilder* out) const {
     return {ErrorCodes::IllegalOperation, str::stream() << "Cannot explain cmd: " << getName()};
 }
 
 Status BasicCommand::checkAuthForRequest(OperationContext* opCtx,
                                          const OpMsgRequest& request) const {
-    uassertNoDocumentSequences(request);
+    CommandHelpers::uassertNoDocumentSequences(getName(), request);
     return checkAuthForOperation(opCtx, request.getDatabase().toString(), request.body);
 }
 
@@ -535,19 +550,6 @@ void Command::generateHelpResponse(OperationContext* opCtx,
                        str::stream() << "help for: " << command.getName() << " " << command.help());
     replyBuilder->setCommandReply(helpBuilder.obj());
     replyBuilder->setMetadata(rpc::makeEmptyMetadata());
-}
-
-void BasicCommand::uassertNoDocumentSequences(const OpMsgRequest& request) const {
-    uassert(40472,
-            str::stream() << "The " << getName() << " command does not support document sequences.",
-            request.sequences.empty());
-}
-
-bool BasicCommand::enhancedRun(OperationContext* opCtx,
-                               const OpMsgRequest& request,
-                               BSONObjBuilder& result) {
-    uassertNoDocumentSequences(request);
-    return run(opCtx, request.getDatabase().toString(), request.body, result);
 }
 
 bool ErrmsgCommandDeprecated::run(OperationContext* opCtx,

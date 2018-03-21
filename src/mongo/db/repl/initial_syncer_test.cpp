@@ -34,8 +34,9 @@
 
 #include "mongo/client/fetcher.h"
 #include "mongo/db/client.h"
-#include "mongo/db/commands/feature_compatibility_version.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/json.h"
+#include "mongo/db/namespace_string.h"
 #include "mongo/db/query/getmore_request.h"
 #include "mongo/db/repl/base_cloner_test_fixture.h"
 #include "mongo/db/repl/data_replicator_external_state_mock.h"
@@ -58,8 +59,8 @@
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/stdx/mutex.h"
-#include "mongo/util/concurrency/old_thread_pool.h"
 #include "mongo/util/concurrency/thread_name.h"
+#include "mongo/util/concurrency/thread_pool.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
@@ -226,7 +227,7 @@ public:
         return *_storageInterface;
     }
 
-    OldThreadPool& getDbWorkThreadPool() {
+    ThreadPool& getDbWorkThreadPool() {
         return *_dbWorkThreadPool;
     }
 
@@ -260,7 +261,7 @@ protected:
             return Status::OK();
         };
         _storageInterface->insertDocumentFn = [this](OperationContext* opCtx,
-                                                     const NamespaceString& nss,
+                                                     const NamespaceStringOrUUID& nsOrUUID,
                                                      const TimestampedBSONObj& doc,
                                                      long long term) {
             LockGuard lock(_storageInterfaceWorkDoneMutex);
@@ -268,7 +269,7 @@ protected:
             return Status::OK();
         };
         _storageInterface->insertDocumentsFn = [this](OperationContext* opCtx,
-                                                      const NamespaceString& nss,
+                                                      const NamespaceStringOrUUID& nsOrUUID,
                                                       const std::vector<InsertStatement>& ops) {
             LockGuard lock(_storageInterfaceWorkDoneMutex);
             _storageInterfaceWorkDone.insertedOplogEntries = true;
@@ -304,7 +305,8 @@ protected:
                     std::unique_ptr<CollectionBulkLoader>(collInfo->loader));
             };
 
-        _dbWorkThreadPool = stdx::make_unique<OldThreadPool>(1);
+        _dbWorkThreadPool = stdx::make_unique<ThreadPool>(ThreadPool::Options());
+        _dbWorkThreadPool->startup();
 
         Client::initThreadIfNotAlready();
         reset();
@@ -402,7 +404,6 @@ protected:
     void tearDown() override {
         tearDownExecutorThread();
         _initialSyncer.reset();
-        _dbWorkThreadPool->join();
         _dbWorkThreadPool.reset();
         _replicationProcess.reset();
         _storageInterface.reset();
@@ -438,7 +439,7 @@ protected:
     std::unique_ptr<SyncSourceSelectorMock> _syncSourceSelector;
     std::unique_ptr<StorageInterfaceMock> _storageInterface;
     std::unique_ptr<ReplicationProcess> _replicationProcess;
-    std::unique_ptr<OldThreadPool> _dbWorkThreadPool;
+    std::unique_ptr<ThreadPool> _dbWorkThreadPool;
     std::map<NamespaceString, CollectionMockStats> _collectionStats;
     std::map<NamespaceString, CollectionCloneInfo> _collections;
 
@@ -543,6 +544,7 @@ OplogEntry makeOplogEntry(int t,
                       oField,                      // o
                       boost::none,                 // o2
                       {},                          // sessionInfo
+                      boost::none,                 // upsert
                       boost::none,                 // wall clock time
                       boost::none,                 // statement id
                       boost::none,   // optime of previous write within same transaction
@@ -569,17 +571,17 @@ void InitialSyncerTest::processSuccessfulLastOplogEntryFetcherResponse(std::vect
 }
 
 void assertFCVRequest(RemoteCommandRequest request) {
-    ASSERT_EQUALS(nsToDatabaseSubstring(FeatureCompatibilityVersion::kCollection), request.dbname)
+    ASSERT_EQUALS(NamespaceString::kServerConfigurationNamespace.db(), request.dbname)
         << request.toString();
-    ASSERT_EQUALS(nsToCollectionSubstring(FeatureCompatibilityVersion::kCollection),
+    ASSERT_EQUALS(NamespaceString::kServerConfigurationNamespace.coll(),
                   request.cmdObj.getStringField("find"));
-    ASSERT_BSONOBJ_EQ(BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+    ASSERT_BSONOBJ_EQ(BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
                       request.cmdObj.getObjectField("filter"));
 }
 
 void InitialSyncerTest::processSuccessfulFCVFetcherResponse36() {
-    auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
+    auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "version"
+                            << FeatureCompatibilityVersionParser::kVersion36)};
     processSuccessfulFCVFetcherResponse(docs);
 }
 
@@ -587,8 +589,8 @@ void InitialSyncerTest::processSuccessfulFCVFetcherResponse(std::vector<BSONObj>
     auto net = getNet();
     auto request = assertRemoteCommandNameEquals(
         "find",
-        net->scheduleSuccessfulResponse(makeCursorResponse(
-            0LL, NamespaceString(FeatureCompatibilityVersion::kCollection), docs)));
+        net->scheduleSuccessfulResponse(
+            makeCursorResponse(0LL, NamespaceString::kServerConfigurationNamespace, docs)));
     assertFCVRequest(request);
     net->runReadyNetworkOperations();
 }
@@ -1348,7 +1350,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughFCVFetcherScheduleError) {
         [&request](const executor::RemoteCommandRequest& requestToSend) {
             request = requestToSend;
             return "find" == requestToSend.cmdObj.firstElement().fieldNameStringData() &&
-                nsToCollectionSubstring(FeatureCompatibilityVersion::kCollection) ==
+                NamespaceString::kServerConfigurationNamespace.coll() ==
                 requestToSend.cmdObj.firstElement().str();
         };
 
@@ -1495,8 +1497,8 @@ TEST_F(InitialSyncerTest,
 
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsTooManyMatchingDocumentsWhenFCVFetcherReturnsMultipleDocuments) {
-    auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36),
+    auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "version"
+                            << FeatureCompatibilityVersionParser::kVersion36),
                  BSON("_id"
                       << "other")};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::TooManyMatchingDocuments);
@@ -1504,25 +1506,25 @@ TEST_F(InitialSyncerTest,
 
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsIncompatibleServerVersionWhenFCVFetcherReturnsUpgradeTargetVersion) {
-    auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36
+    auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "version"
+                            << FeatureCompatibilityVersionParser::kVersion36
                             << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion40)};
+                            << FeatureCompatibilityVersionParser::kVersion40)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::IncompatibleServerVersion);
 }
 
 TEST_F(InitialSyncerTest,
        InitialSyncerReturnsIncompatibleServerVersionWhenFCVFetcherReturnsDowngradeTargetVersion) {
-    auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36
+    auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "version"
+                            << FeatureCompatibilityVersionParser::kVersion36
                             << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
+                            << FeatureCompatibilityVersionParser::kVersion36)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::IncompatibleServerVersion);
 }
 
 TEST_F(InitialSyncerTest, InitialSyncerReturnsBadValueWhenFCVFetcherReturnsNoVersion) {
-    auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "targetVersion"
-                            << FeatureCompatibilityVersionCommandParser::kVersion36)};
+    auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "targetVersion"
+                            << FeatureCompatibilityVersionParser::kVersion36)};
     runInitialSyncWithBadFCVResponse(docs, ErrorCodes::BadValue);
 }
 
@@ -1544,8 +1546,8 @@ TEST_F(InitialSyncerTest, InitialSyncerSucceedsWhenFCVFetcherReturnsOldVersion) 
         // Last oplog entry.
         processSuccessfulLastOplogEntryFetcherResponse({makeOplogEntryObj(1)});
 
-        auto docs = {BSON("_id" << FeatureCompatibilityVersion::kParameterName << "version"
-                                << FeatureCompatibilityVersionCommandParser::kVersion36)};
+        auto docs = {BSON("_id" << FeatureCompatibilityVersionParser::kParameterName << "version"
+                                << FeatureCompatibilityVersionParser::kVersion36)};
         processSuccessfulFCVFetcherResponse(docs);
         ASSERT_TRUE(net->hasReadyRequests());
     }
@@ -2394,11 +2396,12 @@ TEST_F(
     TimestampedBSONObj insertDocumentDoc;
     long long insertDocumentTerm;
     _storageInterface->insertDocumentFn =
-        [&insertDocumentDoc, &insertDocumentNss, &insertDocumentTerm](OperationContext*,
-                                                                      const NamespaceString& nss,
-                                                                      const TimestampedBSONObj& doc,
-                                                                      long long term) {
-            insertDocumentNss = nss;
+        [&insertDocumentDoc, &insertDocumentNss, &insertDocumentTerm](
+            OperationContext*,
+            const NamespaceStringOrUUID& nsOrUUID,
+            const TimestampedBSONObj& doc,
+            long long term) {
+            insertDocumentNss = *nsOrUUID.nss();
             insertDocumentDoc = doc;
             insertDocumentTerm = term;
             return Status(ErrorCodes::OperationFailed, "failed to insert oplog entry");
@@ -2460,19 +2463,18 @@ TEST_F(
     NamespaceString insertDocumentNss;
     TimestampedBSONObj insertDocumentDoc;
     long long insertDocumentTerm;
-    _storageInterface->insertDocumentFn = [initialSyncer,
-                                           &insertDocumentDoc,
-                                           &insertDocumentNss,
-                                           &insertDocumentTerm](OperationContext*,
-                                                                const NamespaceString& nss,
-                                                                const TimestampedBSONObj& doc,
-                                                                long long term) {
-        insertDocumentNss = nss;
-        insertDocumentDoc = doc;
-        insertDocumentTerm = term;
-        initialSyncer->shutdown().transitional_ignore();
-        return Status::OK();
-    };
+    _storageInterface->insertDocumentFn =
+        [initialSyncer, &insertDocumentDoc, &insertDocumentNss, &insertDocumentTerm](
+            OperationContext*,
+            const NamespaceStringOrUUID& nsOrUUID,
+            const TimestampedBSONObj& doc,
+            long long term) {
+            insertDocumentNss = *nsOrUUID.nss();
+            insertDocumentDoc = doc;
+            insertDocumentTerm = term;
+            initialSyncer->shutdown().transitional_ignore();
+            return Status::OK();
+        };
 
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));
@@ -3572,16 +3574,17 @@ TEST_F(
     // missing document.
     // This forces InitialSyncer to evaluate its end timestamp for applying operations after each
     // batch.
-    getExternalState()->multiApplyFn = [](OperationContext*,
+    getExternalState()->multiApplyFn = [](OperationContext* opCtx,
                                           const MultiApplier::Operations& ops,
                                           MultiApplier::ApplyOperationFn applyOperation) {
         // 'OperationPtr*' is ignored by our overridden _multiInitialSyncApply().
-        ASSERT_OK(applyOperation(nullptr, nullptr));
+        ASSERT_OK(applyOperation(opCtx, nullptr, nullptr));
         return ops.back().getOpTime();
     };
     bool fetchCountIncremented = false;
     getExternalState()->multiInitialSyncApplyFn =
-        [&fetchCountIncremented](MultiApplier::OperationPtrs*,
+        [&fetchCountIncremented](OperationContext*,
+                                 MultiApplier::OperationPtrs*,
                                  const HostAndPort&,
                                  AtomicUInt32* fetchCount,
                                  WorkerMultikeyPathInfo*) {

@@ -31,6 +31,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/jsobj.h"
@@ -38,9 +39,8 @@
 #include "mongo/db/s/collection_sharding_state.h"
 
 namespace mongo {
-struct CollectionOptions;
+
 struct InsertStatement;
-class NamespaceString;
 class OperationContext;
 
 namespace repl {
@@ -238,6 +238,15 @@ public:
     virtual void onTransactionCommit(OperationContext* opCtx) = 0;
 
     /**
+     * The onTransactionPrepare method is called when an atomic transaction is prepared. It must be
+     * called when a transaction is active. It generates an OpTime and sets the prepare timestamp on
+     * the recovery unit.
+     * TODO: This is an incomplete implementation and should only be used for testing. It does not
+     * write the prepare oplog entry, only generates an OpTime.
+     */
+    virtual void onTransactionPrepare(OperationContext* opCtx) = 0;
+
+    /**
      * The onTransactionAbort method is called when an atomic transaction aborts, before the
      * RecoveryUnit onRollback() is called.  It must not be called when no transaction is active.
      */
@@ -253,6 +262,13 @@ public:
 
         // Set of all session ids from ops being rolled back.
         std::set<UUID> rollbackSessionIds = {};
+
+        // Maps UUIDs to a set of BSONObjs containing the _ids of the documents that will be deleted
+        // from that collection due to rollback, and is used to populate rollback files.
+        // For simplicity, this BSONObj set uses the simple binary comparison, as it is never wrong
+        // to consider two _ids as distinct even if the collection default collation would put them
+        // in the same equivalence class.
+        stdx::unordered_map<UUID, SimpleBSONObjUnorderedSet, UUID::Hash> rollbackDeletedIdsMap;
 
         // True if the shard identity document was rolled back.
         bool shardIdentityRolledBack = false;
@@ -301,8 +317,8 @@ private:
 
 /**
  * This class is an RAII object to manage the state of the `OpObserver::Times` decoration on an
- * operation context.  Upon destruction the list of times in the decoration on the operation
- * context is cleared.  It is intended for use as a scope object in `OpObserverRegistry` to manage
+ * operation context. Upon destruction the list of times in the decoration on the operation context
+ * is cleared. It is intended for use as a scope object in `OpObserverRegistry` to manage
  * re-entrancy.
  */
 class OpObserver::ReservedTimes {
@@ -310,28 +326,8 @@ class OpObserver::ReservedTimes {
     ReservedTimes& operator=(const ReservedTimes&) = delete;
 
 public:
-    ~ReservedTimes() {
-        // Every time the `ReservedTimes` guard goes out of scope, this indicates one fewer level of
-        // recursion in the `OpObserver` registered chain.
-        if (!--_times._recursionDepth) {
-            // When the depth hits 0, the `OpObserver` is considered to have finished, and therefore
-            // the `reservedOpTimes` state needs to be reset.
-            _times.reservedOpTimes.clear();
-        }
-        invariant(_times._recursionDepth >= 0);
-    }
-
-    explicit ReservedTimes(OperationContext* const opCtx) : _times(Times::get(opCtx)) {
-        // Every time that a `ReservedTimes` scope object is instantiated, we have to track if there
-        // was a potentially recursive call.  When there was no `OpObserver` chain being executed
-        // before this instantiation, we should have an empty `reservedOpTimes` vector.
-        if (!_times._recursionDepth++) {
-            invariant(_times.reservedOpTimes.empty());
-        }
-
-        invariant(_times._recursionDepth > 0);
-        invariant(_times._recursionDepth == 1 || !opCtx->writesAreReplicated());
-    }
+    explicit ReservedTimes(OperationContext* const opCtx);
+    ~ReservedTimes();
 
     const Times& get() const {
         return _times;
@@ -340,4 +336,5 @@ public:
 private:
     Times& _times;
 };
+
 }  // namespace mongo

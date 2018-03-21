@@ -338,6 +338,17 @@ var ReplSetTest = function(opts) {
     }
 
     /**
+     * Returns the {readConcern: majority} OpTime for the host. Throws if not available.
+     */
+    this.getReadConcernMajorityOpTimeOrThrow = function(conn) {
+        const majorityOpTime = _getReadConcernMajorityOpTime(conn);
+        if (friendlyEqual(majorityOpTime, {ts: Timestamp(0, 0), t: NumberLong(0)})) {
+            throw new Error("readConcern majority optime not available");
+        }
+        return majorityOpTime;
+    };
+
+    /**
      * Returns the last durable OpTime for the host if running with journaling.
      * Returns the last applied OpTime otherwise.
      */
@@ -2149,7 +2160,11 @@ var ReplSetTest = function(opts) {
      * Constructor, which instantiates the ReplSetTest object from an existing set.
      */
     function _constructFromExistingSeedNode(seedNode) {
-        var conf = _replSetGetConfig(new Mongo(seedNode));
+        const conn = new Mongo(seedNode);
+        if (jsTest.options().keyFile) {
+            self.keyFile = jsTest.options().keyFile;
+        }
+        var conf = asCluster(conn, () => _replSetGetConfig(conn));
         print('Recreating replica set from config ' + tojson(conf));
 
         var existingNodes = conf.members.map(member => member.host);

@@ -68,16 +68,6 @@ WiredTigerRecoveryUnit::~WiredTigerRecoveryUnit() {
     _abort();
 }
 
-void WiredTigerRecoveryUnit::prepareForCreateSnapshot(OperationContext* opCtx) {
-    invariant(!_active);  // Can't already be in a WT transaction.
-    invariant(!_inUnitOfWork);
-    invariant(!_readFromMajorityCommittedSnapshot);
-
-    // Starts the WT transaction that will be the basis for creating a named snapshot.
-    getSession();
-    _areWriteUnitOfWorksBanned = true;
-}
-
 void WiredTigerRecoveryUnit::_commit() {
     try {
         if (_session && _active) {
@@ -120,6 +110,21 @@ void WiredTigerRecoveryUnit::beginUnitOfWork(OperationContext* opCtx) {
     invariant(!_areWriteUnitOfWorksBanned);
     invariant(!_inUnitOfWork);
     _inUnitOfWork = true;
+}
+
+void WiredTigerRecoveryUnit::prepareUnitOfWork() {
+    invariant(!_areWriteUnitOfWorksBanned);
+    invariant(_inUnitOfWork);
+    invariant(!_prepareTimestamp.isNull());
+
+    auto session = getSession();
+    WT_SESSION* s = session->getSession();
+
+    LOG(1) << "preparing transaction at time: " << _prepareTimestamp;
+
+    const std::string conf = "prepare_timestamp=" + integerToHex(_prepareTimestamp.asULL());
+    // Prepare the transaction.
+    invariantWTOK(s->prepare_transaction(s, conf.c_str()));
 }
 
 void WiredTigerRecoveryUnit::commitUnitOfWork() {
@@ -202,29 +207,41 @@ void WiredTigerRecoveryUnit::_txnClose(bool commit) {
 
     int wtRet;
     if (commit) {
+        // When committing a prepared transaction, a commit timestamp is required.
+        invariant(_prepareTimestamp.isNull() || !_commitTimestamp.isNull());
+        // Commit timestamps should greater than or equal to prepare timestamps.
+        invariant(_prepareTimestamp.isNull() || _commitTimestamp >= _prepareTimestamp);
+
         if (!_commitTimestamp.isNull()) {
             const std::string conf = "commit_timestamp=" + integerToHex(_commitTimestamp.asULL());
             invariantWTOK(s->timestamp_transaction(s, conf.c_str()));
             _isTimestamped = true;
         }
 
-        wtRet = s->commit_transaction(s, NULL);
+        wtRet = s->commit_transaction(s, nullptr);
         LOG(3) << "WT commit_transaction for snapshot id " << _mySnapshotId;
     } else {
-        wtRet = s->rollback_transaction(s, NULL);
+        wtRet = s->rollback_transaction(s, nullptr);
         invariant(!wtRet);
         LOG(3) << "WT rollback_transaction for snapshot id " << _mySnapshotId;
     }
 
     if (_isTimestamped) {
-        _oplogManager->triggerJournalFlush();
+        if (!_orderedCommit) {
+            // We only need to update oplog visibility where commits can be out-of-order with
+            // respect to their assigned optime and such commits might otherwise be visible.
+            // This should happen only on primary nodes.
+            _oplogManager->triggerJournalFlush();
+        }
         _isTimestamped = false;
     }
     invariantWTOK(wtRet);
 
     _active = false;
+    _prepareTimestamp = Timestamp();
     _mySnapshotId = nextSnapshotId.fetchAndAdd(1);
     _isOplogReader = false;
+    _orderedCommit = true;  // Default value is true; we assume all writes are ordered.
 }
 
 SnapshotId WiredTigerRecoveryUnit::getSnapshotId() const {
@@ -232,21 +249,27 @@ SnapshotId WiredTigerRecoveryUnit::getSnapshotId() const {
     return SnapshotId(_mySnapshotId);
 }
 
-Status WiredTigerRecoveryUnit::setReadFromMajorityCommittedSnapshot() {
+Status WiredTigerRecoveryUnit::obtainMajorityCommittedSnapshot() {
+    invariant(_isReadingFromPointInTime());
     auto snapshotName = _sessionCache->snapshotManager().getMinSnapshotForNextCommittedRead();
     if (!snapshotName) {
         return {ErrorCodes::ReadConcernMajorityNotAvailableYet,
                 "Read concern majority reads are currently not possible."};
     }
-
     _majorityCommittedSnapshot = *snapshotName;
-    _readFromMajorityCommittedSnapshot = true;
     return Status::OK();
 }
 
-boost::optional<Timestamp> WiredTigerRecoveryUnit::getMajorityCommittedSnapshot() const {
-    if (!_readFromMajorityCommittedSnapshot)
-        return {};
+boost::optional<Timestamp> WiredTigerRecoveryUnit::getPointInTimeReadTimestamp() const {
+    if (!_isReadingFromPointInTime())
+        return boost::none;
+
+    if (getReadConcernLevel() == repl::ReadConcernLevel::kSnapshotReadConcern &&
+        !_readAtTimestamp.isNull()) {
+        return _readAtTimestamp;
+    }
+
+    invariant(!_majorityCommittedSnapshot.isNull());
     return _majorityCommittedSnapshot;
 }
 
@@ -260,27 +283,31 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     }
     WT_SESSION* session = _session->getSession();
 
+    // '_readAtTimestamp' is available outside of a check for readConcern level 'snapshot' to
+    // accommodate unit testing.
     if (_readAtTimestamp != Timestamp::min()) {
         auto status =
             _sessionCache->snapshotManager().beginTransactionAtTimestamp(_readAtTimestamp, session);
         if (!status.isOK() && status.code() == ErrorCodes::BadValue) {
-            uasserted(
-                ErrorCodes::SnapshotTooOld,
-                str::stream()
-                    << "Read timestamp "
-                    << _readAtTimestamp.toString()
-                    << " is older than the oldest available timestamp: "
-                    << _sessionCache->getKVEngine()->getPreviousSetOldestTimestamp().toString());
+            uasserted(ErrorCodes::SnapshotTooOld,
+                      str::stream() << "Read timestamp " << _readAtTimestamp.toString()
+                                    << " is older than the oldest available timestamp.");
         }
         uassertStatusOK(status);
-    } else if (_readFromMajorityCommittedSnapshot) {
+    } else if (_isReadingFromPointInTime()) {
+        // We reset _majorityCommittedSnapshot to the actual read timestamp used when the
+        // transaction was started.
         _majorityCommittedSnapshot =
             _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(session);
     } else if (_isOplogReader) {
         _sessionCache->snapshotManager().beginTransactionOnOplog(
             _sessionCache->getKVEngine()->getOplogManager(), session);
     } else {
-        invariantWTOK(session->begin_transaction(session, NULL));
+        invariantWTOK(session->begin_transaction(
+            session,
+            _readConcernLevel == repl::ReadConcernLevel::kAvailableReadConcern
+                ? "ignore_prepare=true"
+                : nullptr));
     }
 
     LOG(3) << "WT begin_transaction for snapshot id " << _mySnapshotId;
@@ -293,6 +320,7 @@ Status WiredTigerRecoveryUnit::setTimestamp(Timestamp timestamp) {
     LOG(3) << "WT set timestamp of future write operations to " << timestamp;
     WT_SESSION* session = _session->getSession();
     invariant(_inUnitOfWork);
+    invariant(_prepareTimestamp.isNull());
     invariant(_commitTimestamp.isNull(),
               str::stream() << "Commit timestamp set to " << _commitTimestamp.toString()
                             << " and trying to set WUOW timestamp to "
@@ -328,7 +356,15 @@ void WiredTigerRecoveryUnit::clearCommitTimestamp() {
     _commitTimestamp = Timestamp();
 }
 
-Status WiredTigerRecoveryUnit::selectSnapshot(Timestamp timestamp) {
+void WiredTigerRecoveryUnit::setPrepareTimestamp(Timestamp timestamp) {
+    invariant(_inUnitOfWork);
+    invariant(_prepareTimestamp.isNull());
+    invariant(_commitTimestamp.isNull());
+
+    _prepareTimestamp = timestamp;
+}
+
+Status WiredTigerRecoveryUnit::setPointInTimeReadTimestamp(Timestamp timestamp) {
     _readAtTimestamp = timestamp;
     return Status::OK();
 }

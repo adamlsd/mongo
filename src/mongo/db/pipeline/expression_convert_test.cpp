@@ -209,44 +209,6 @@ TEST_F(ExpressionConvertTest, NonStringNonNumericalTypeFails) {
                              });
 }
 
-TEST_F(ExpressionConvertTest, IllegalTargetTypeFails) {
-    auto expCtx = getExpCtx();
-
-    std::vector<std::string> illegalTargetTypes{"minKey",
-                                                "object",
-                                                "array",
-                                                "binData",
-                                                "undefined",
-                                                "null",
-                                                "regex",
-                                                "dbPointer",
-                                                "javascript",
-                                                "symbol",
-                                                "javascriptWithScope",
-                                                "timestamp",
-                                                "maxKey"};
-
-    // Attempt a conversion with each illegal type.
-    for (auto&& typeName : illegalTargetTypes) {
-        auto spec = BSON("$convert" << BSON("input"
-                                            << "$path1"
-                                            << "to"
-                                            << Value(typeName)
-                                            << "onError"
-                                            << 0));
-
-        auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
-
-        ASSERT_THROWS_WITH_CHECK(convertExp->evaluate(Document()),
-                                 AssertionException,
-                                 [](const AssertionException& exception) {
-                                     ASSERT_EQ(exception.code(), ErrorCodes::FailedToParse);
-                                     ASSERT_STRING_CONTAINS(exception.reason(),
-                                                            "$convert with unsupported 'to' type");
-                                 });
-    }
-}
-
 TEST_F(ExpressionConvertTest, InvalidNumericTargetTypeFails) {
     auto expCtx = getExpCtx();
 
@@ -293,10 +255,12 @@ TEST_F(ExpressionConvertTest, NegativeNumericTargetTypeFails) {
         });
 }
 
-TEST_F(ExpressionConvertTest, UnsupportedConversionFails) {
+TEST_F(ExpressionConvertTest, UnsupportedConversionShouldThrowUnlessOnErrorProvided) {
     auto expCtx = getExpCtx();
 
     std::vector<std::pair<Value, std::string>> unsupportedConversions{
+        // Except for the ones listed below, $convert supports all conversions between the supported
+        // types: double, string, int, long, decimal, objectId, bool, int, and date.
         {Value(OID()), "double"},
         {Value(OID()), "int"},
         {Value(OID()), "long"},
@@ -305,9 +269,27 @@ TEST_F(ExpressionConvertTest, UnsupportedConversionFails) {
         {Value(Date_t{}), "int"},
         {Value(int{1}), "date"},
         {Value(true), "date"},
+
+        // All conversions that involve any other type will fail, unless the target type is bool,
+        // in which case the conversion results in a true value. Below is one conversion for each
+        // of the unsupported types.
+        {Value(1.0), "minKey"},
+        {Value(1.0), "missing"},
+        {Value(1.0), "object"},
+        {Value(1.0), "array"},
+        {Value(1.0), "binData"},
+        {Value(1.0), "undefined"},
+        {Value(1.0), "null"},
+        {Value(1.0), "regex"},
+        {Value(1.0), "dbPointer"},
+        {Value(1.0), "javascript"},
+        {Value(1.0), "symbol"},
+        {Value(1.0), "javascriptWithScope"},
+        {Value(1.0), "timestamp"},
+        {Value(1.0), "maxKey"},
     };
 
-    // Attempt every possible unsupported conversion.
+    // Attempt all of the unsupported conversions listed above.
     for (auto conversion : unsupportedConversions) {
         auto inputValue = conversion.first;
         auto targetTypeName = conversion.second;
@@ -317,17 +299,36 @@ TEST_F(ExpressionConvertTest, UnsupportedConversionFails) {
                                             << "to"
                                             << Value(targetTypeName)));
 
-        Document intInput{{"path1", inputValue}};
+        Document input{{"path1", inputValue}};
 
         auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
 
-        ASSERT_THROWS_WITH_CHECK(convertExp->evaluate(intInput),
+        ASSERT_THROWS_WITH_CHECK(convertExp->evaluate(input),
                                  AssertionException,
                                  [](const AssertionException& exception) {
                                      ASSERT_EQ(exception.code(), ErrorCodes::ConversionFailure);
                                      ASSERT_STRING_CONTAINS(exception.reason(),
                                                             "Unsupported conversion");
                                  });
+    }
+
+    // Attempt them again, this time with an "onError" value.
+    for (auto conversion : unsupportedConversions) {
+        auto inputValue = conversion.first;
+        auto targetTypeName = conversion.second;
+
+        auto spec = BSON("$convert" << BSON("input"
+                                            << "$path1"
+                                            << "to"
+                                            << Value(targetTypeName)
+                                            << "onError"
+                                            << "X"));
+
+        Document input{{"path1", inputValue}};
+
+        auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+        ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(input), "X"_sd, BSONType::String);
     }
 }
 
@@ -677,6 +678,180 @@ TEST_F(ExpressionConvertTest, ConvertDecimalToBool) {
     Document decimalNegativeInfinity{{"path1", Decimal128::kNegativeInfinity}};
     ASSERT_VALUE_CONTENTS_AND_TYPE(
         convertExp->evaluate(decimalNegativeInfinity), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertStringToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document stringInput{{"path1", "str"_sd}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(stringInput), true, BSONType::Bool);
+
+    Document emptyStringInput{{"path1", ""_sd}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(emptyStringInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertObjectIdToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document oidInput{{"path1", OID("59E8A8D8FEDCBA9876543210")}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(oidInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertMinKeyToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document minKeyInput{{"path1", MINKEY}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(minKeyInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertObjectToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document objectInput{{"path1", Document{{"foo", 1}}}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(objectInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertArrayToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document arrayInput{{"path1", BSON_ARRAY(1)}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(arrayInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertBinDataToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    char data[] = "(^_^)";
+    Document binInput{{"path1", BSONBinData(data, sizeof(data), BinDataType::BinDataGeneral)}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(binInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertRegexToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document regexInput{{"path1", BSONRegEx("ab*a"_sd)}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(regexInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertDBRefToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document refInput{{"path1", BSONDBRef("db.coll"_sd, OID("aaaaaaaaaaaaaaaaaaaaaaaa"))}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(refInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertCodeToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document codeInput{{"path1", BSONCode("print('Hello world!');"_sd)}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(codeInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertSymbolToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document symbolInput{{"path1", BSONSymbol("print"_sd)}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(symbolInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertCodeWScopeToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document codeWScopeInput{
+        {"path1", BSONCodeWScope("print('Hello again, world!')"_sd, BSONObj())}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(codeWScopeInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertTimestampToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document timestampInput{{"path1", Timestamp()}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(timestampInput), true, BSONType::Bool);
+}
+
+TEST_F(ExpressionConvertTest, ConvertMaxKeyToBool) {
+    auto expCtx = getExpCtx();
+
+    auto spec = BSON("$convert" << BSON("input"
+                                        << "$path1"
+                                        << "to"
+                                        << "bool"));
+    auto convertExp = Expression::parseExpression(expCtx, spec, expCtx->variablesParseState);
+
+    Document maxKeyInput{{"path1", MAXKEY}};
+    ASSERT_VALUE_CONTENTS_AND_TYPE(convertExp->evaluate(maxKeyInput), true, BSONType::Bool);
 }
 
 TEST_F(ExpressionConvertTest, ConvertNumericToDouble) {

@@ -130,6 +130,7 @@ public:
      * not yet granted. The lockGlobalBegin
      * method has a deadline for use with the TicketHolder, if there is one.
      */
+    virtual LockResult lockGlobalBegin(OperationContext* opCtx, LockMode mode, Date_t deadline) = 0;
     virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) = 0;
 
     /**
@@ -169,8 +170,8 @@ public:
     virtual void downgradeGlobalXtoSForMMAPV1() = 0;
 
     /**
-     * beginWriteUnitOfWork/endWriteUnitOfWork must only be called by WriteUnitOfWork. See
-     * comments there for the semantics of units of work.
+     * beginWriteUnitOfWork/endWriteUnitOfWork are called at the start and end of WriteUnitOfWorks.
+     * They can be used to implement two-phase locking.
      */
     virtual void beginWriteUnitOfWork() = 0;
     virtual void endWriteUnitOfWork() = 0;
@@ -333,8 +334,10 @@ public:
     /**
      * Reacquires a ticket for the Locker. This must only be called after releaseTicket(). It
      * restores the ticket under its previous LockMode.
+     * An OperationContext is required to interrupt the ticket acquisition to prevent deadlocks.
+     * A dead lock is possible when a ticket is reacquired while holding a lock.
      */
-    virtual void reacquireTicket() = 0;
+    virtual void reacquireTicket(OperationContext* opCtx) = 0;
 
     //
     // These methods are legacy from LockerImpl and will eventually go away or be converted to

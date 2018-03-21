@@ -66,12 +66,12 @@ public:
         const std::vector<BSONObj>& secondaryIndexSpecs) override;
 
     Status insertDocument(OperationContext* opCtx,
-                          const NamespaceString& nss,
+                          const NamespaceStringOrUUID& nsOrUUID,
                           const TimestampedBSONObj& doc,
                           long long term) override;
 
     Status insertDocuments(OperationContext* opCtx,
-                           const NamespaceString& nss,
+                           const NamespaceStringOrUUID& nsOrUUID,
                            const std::vector<InsertStatement>& docs) override;
 
     Status dropReplicatedDatabases(OperationContext* opCtx) override;
@@ -127,15 +127,15 @@ public:
                            const TimestampedBSONObj& update) override;
 
     StatusWith<BSONObj> findById(OperationContext* opCtx,
-                                 const NamespaceString& nss,
+                                 const NamespaceStringOrUUID& nsOrUUID,
                                  const BSONElement& idKey) override;
 
     StatusWith<BSONObj> deleteById(OperationContext* opCtx,
-                                   const NamespaceString& nss,
+                                   const NamespaceStringOrUUID& nsOrUUID,
                                    const BSONElement& idKey) override;
 
     Status upsertById(OperationContext* opCtx,
-                      const NamespaceString& nss,
+                      const NamespaceStringOrUUID& nsOrUUID,
                       const BSONElement& idKey,
                       const BSONObj& update) override;
 
@@ -156,7 +156,11 @@ public:
 
     void setInitialDataTimestamp(ServiceContext* serviceCtx, Timestamp snapshotName) override;
 
-    Status recoverToStableTimestamp(ServiceContext* serviceCtx) override;
+    StatusWith<Timestamp> recoverToStableTimestamp(ServiceContext* serviceCtx) override;
+
+    bool supportsRecoverToStableTimestamp(ServiceContext* serviceCtx) const override;
+
+    boost::optional<Timestamp> getRecoveryTimestamp(ServiceContext* serviceCtx) const override;
 
     /**
      * Checks that the "admin" database contains a supported version of the auth data schema.
@@ -164,6 +168,9 @@ public:
     Status isAdminDbValid(OperationContext* opCtx) override;
 
     void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) override;
+    void oplogDiskLocRegister(OperationContext* opCtx,
+                              const Timestamp& ts,
+                              bool orderedCommit) override;
 
 private:
     const NamespaceString _rollbackIdNss;

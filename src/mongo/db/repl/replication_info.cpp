@@ -33,7 +33,7 @@
 #include <vector>
 
 #include "mongo/client/connpool.h"
-#include "mongo/db/auth/sasl_mechanism_advertiser.h"
+#include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/db_raii.h"
@@ -46,7 +46,6 @@
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/is_master_response.h"
-#include "mongo/db/repl/master_slave.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplogreader.h"
 #include "mongo/db/repl/replication_coordinator.h"
@@ -88,15 +87,8 @@ void appendReplicationInfo(OperationContext* opCtx, BSONObjBuilder& result, int 
         return;
     }
 
-    // TODO(dannenberg) replAllDead is bad and should be removed when master slave is removed
-    if (replAllDead) {
-        result.append("ismaster", 0);
-        string s = string("dead: ") + replAllDead;
-        result.append("info", s);
-    } else {
-        result.appendBool("ismaster",
-                          ReplicationCoordinator::get(opCtx)->isMasterForReportingPurposes());
-    }
+    result.appendBool("ismaster",
+                      ReplicationCoordinator::get(opCtx)->isMasterForReportingPurposes());
 
     if (level) {
         BSONObjBuilder sources(result.subarrayStart("sources"));
@@ -206,14 +198,10 @@ public:
         // TODO(siyuan) Output term of OpTime
         result.append("latestOptime", replCoord->getMyLastAppliedOpTime().getTimestamp());
 
-        const std::string& oplogNS =
-            replCoord->getReplicationMode() == ReplicationCoordinator::modeReplSet
-            ? NamespaceString::kRsOplogNamespace.ns()
-            : masterSlaveOplogName;
         BSONObj o;
         uassert(17347,
                 "Problem reading earliest entry from oplog",
-                Helpers::getSingleton(opCtx, oplogNS.c_str(), o));
+                Helpers::getSingleton(opCtx, NamespaceString::kRsOplogNamespace.ns().c_str(), o));
         result.append("earliestOptime", o["ts"].timestamp());
         return result.obj();
     }
@@ -228,8 +216,7 @@ public:
         return AllowedOnSecondary::kAlways;
     }
     std::string help() const override {
-        return "Check if this server is primary for a replica pair/set; also if it is --master or "
-               "--slave in simple master/slave setups.\n"
+        return "Check if this server is primary for a replica set\n"
                "{ isMaster : 1 }";
     }
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -400,7 +387,8 @@ public:
                 .serverNegotiate(cmdObj, &result);
         }
 
-        SASLMechanismAdvertiser::advertise(opCtx, cmdObj, &result);
+        auto& saslMechanismRegistry = SASLServerMechanismRegistry::get(opCtx->getServiceContext());
+        saslMechanismRegistry.advertiseMechanismNamesForUser(opCtx, cmdObj, &result);
 
         return true;
     }

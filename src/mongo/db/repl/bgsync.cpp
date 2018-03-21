@@ -146,8 +146,8 @@ BackgroundSync::BackgroundSync(
     ReplicationCoordinator* replicationCoordinator,
     ReplicationCoordinatorExternalState* replicationCoordinatorExternalState,
     ReplicationProcess* replicationProcess,
-    std::unique_ptr<OplogBuffer> oplogBuffer)
-    : _oplogBuffer(std::move(oplogBuffer)),
+    OplogBuffer* oplogBuffer)
+    : _oplogBuffer(oplogBuffer),
       _replCoord(replicationCoordinator),
       _replicationCoordinatorExternalState(replicationCoordinatorExternalState),
       _replicationProcess(replicationProcess) {
@@ -157,8 +157,6 @@ BackgroundSync::BackgroundSync(
 }
 
 void BackgroundSync::startup(OperationContext* opCtx) {
-    _oplogBuffer->startup(opCtx);
-
     invariant(!_producerThread);
     _producerThread.reset(new stdx::thread([this] { _run(); }));
 }
@@ -166,10 +164,6 @@ void BackgroundSync::startup(OperationContext* opCtx) {
 void BackgroundSync::shutdown(OperationContext* opCtx) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
-    // Clear the buffer. This unblocks the OplogFetcher if it is blocked with a full queue, but
-    // ensures that it won't add anything. It will also unblock the OpApplier pipeline if it is
-    // waiting for an operation to be past the slaveDelay point.
-    clearBuffer(opCtx);
     _state = ProducerState::Stopped;
 
     if (_syncSourceResolver) {
@@ -189,7 +183,6 @@ void BackgroundSync::shutdown(OperationContext* opCtx) {
 
 void BackgroundSync::join(OperationContext* opCtx) {
     _producerThread->join();
-    _oplogBuffer->shutdown(opCtx);
 }
 
 bool BackgroundSync::inShutdown() const {
@@ -219,7 +212,8 @@ void BackgroundSync::_run() {
             fassertFailed(28546);
         }
     }
-    stop(true);
+    // No need to reset optimes here because we are shutting down.
+    stop(false);
 }
 
 void BackgroundSync::_runProducer() {
@@ -318,7 +312,7 @@ void BackgroundSync::_produce() {
     if (ErrorCodes::CallbackCanceled == status || ErrorCodes::isShutdownError(status.code())) {
         return;
     }
-    fassertStatusOK(40349, status);
+    fassert(40349, status);
     _syncSourceResolver->join();
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
@@ -464,7 +458,7 @@ void BackgroundSync::_produce() {
         fassertFailedWithStatus(34440, exceptionToStatus());
     }
 
-    const auto logLevel = Command::testCommandsEnabled ? 0 : 1;
+    const auto logLevel = getTestCommandsEnabled() ? 0 : 1;
     LOG(logLevel) << "scheduling fetcher to read remote oplog on " << _syncSourceHost
                   << " starting at " << oplogFetcher->getFindQuery_forTest()["filter"];
     auto scheduleStatus = oplogFetcher->startup();
@@ -565,28 +559,9 @@ Status BackgroundSync::_enqueueDocuments(Fetcher::Documents::const_iterator begi
     return Status::OK();
 }
 
-bool BackgroundSync::peek(OperationContext* opCtx, BSONObj* op) {
-    return _oplogBuffer->peek(opCtx, op);
-}
-
-void BackgroundSync::waitForMore() {
-    // Block for one second before timing out.
-    _oplogBuffer->waitForData(Seconds(1));
-}
-
-void BackgroundSync::consume(OperationContext* opCtx) {
-    // this is just to get the op off the queue, it's been peeked at
-    // and queued for application already
-    BSONObj op;
-    if (_oplogBuffer->tryPop(opCtx, &op)) {
-        bufferCountGauge.decrement(1);
-        bufferSizeGauge.decrement(getSize(op));
-    } else {
-        invariant(inShutdown());
-        // This means that shutdown() was called between the consumer's calls to peek() and
-        // consume(). shutdown() cleared the buffer so there is nothing for us to consume here.
-        // Since our postcondition is already met, it is safe to return successfully.
-    }
+void BackgroundSync::onOperationConsumed(const BSONObj& op) {
+    bufferCountGauge.decrement(1);
+    bufferSizeGauge.decrement(getSize(op));
 }
 
 void BackgroundSync::_runRollback(OperationContext* opCtx,
@@ -766,8 +741,7 @@ void BackgroundSync::start(OperationContext* opCtx) {
     LOG(1) << "bgsync fetch queue set to: " << _lastOpTimeFetched << " " << _lastFetchedHash;
 }
 
-void BackgroundSync::clearBuffer(OperationContext* opCtx) {
-    _oplogBuffer->clear(opCtx);
+void BackgroundSync::onBufferCleared() {
     const auto count = bufferCountGauge.get();
     bufferCountGauge.decrement(count);
     const auto size = bufferSizeGauge.get();
@@ -821,12 +795,6 @@ bool BackgroundSync::shouldStopFetching() const {
     }
 
     return false;
-}
-
-void BackgroundSync::pushTestOpToBuffer(OperationContext* opCtx, const BSONObj& op) {
-    _oplogBuffer->push(opCtx, op);
-    bufferCountGauge.increment();
-    bufferSizeGauge.increment(op.objsize());
 }
 
 BackgroundSync::ProducerState BackgroundSync::getState() const {

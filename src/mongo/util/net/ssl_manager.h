@@ -40,6 +40,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/util/decorable.h"
 #include "mongo/util/net/sock.h"
+#include "mongo/util/net/ssl/apple.hpp"
 #include "mongo/util/net/ssl_types.h"
 #include "mongo/util/time_support.h"
 
@@ -67,6 +68,9 @@ typedef SSL* SSLConnectionType;
 #elif MONGO_CONFIG_SSL_PROVIDER == SSL_PROVIDER_WINDOWS
 typedef SCHANNEL_CRED* SSLContextType;
 typedef PCtxtHandle SSLConnectionType;
+#elif MONGO_CONFIG_SSL_PROVIDER == SSL_PROVIDER_APPLE
+typedef asio::ssl::apple::Context* SSLContextType;
+typedef SSLContextRef SSLConnectionType;
 #else
 #error "Unknown SSL Provider"
 #endif
@@ -211,5 +215,11 @@ const SSLParams& getSSLGlobalParams();
  * x.509 certificate.  Matches a remote host name to an x.509 host name, including wildcards.
  */
 bool hostNameMatchForX509Certificates(std::string nameToMatch, std::string certHostName);
+
+/**
+ * Parse a binary blob of DER encoded ASN.1 into a set of RoleNames.
+ */
+StatusWith<stdx::unordered_set<RoleName>> parsePeerRoles(ConstDataRange cdrExtension);
+
 }  // namespace mongo
 #endif  // #ifdef MONGO_CONFIG_SSL

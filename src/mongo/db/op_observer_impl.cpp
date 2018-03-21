@@ -38,6 +38,7 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/namespace_uuid_cache.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/logical_time_validator.h"
@@ -46,7 +47,6 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/session_catalog.h"
 #include "mongo/db/views/durable_view_catalog.h"
@@ -90,14 +90,6 @@ repl::OpTime logOperation(OperationContext* opCtx,
                               oplogLink);
     times.push_back(opTime);
     return opTime;
-}
-
-/**
- * Returns whether we're a master using master-slave replication.
- */
-bool isMasterSlave(OperationContext* opCtx) {
-    return repl::ReplicationCoordinator::get(opCtx)->getReplicationMode() ==
-        repl::ReplicationCoordinator::modeMasterSlave;
 }
 
 /**
@@ -316,7 +308,7 @@ void OpObserverImpl::onCreateIndex(OperationContext* opCtx,
                                    bool fromMigrate) {
     const NamespaceString systemIndexes{nss.getSystemIndexesCollection()};
 
-    if (uuid && !isMasterSlave(opCtx)) {
+    if (uuid) {
         BSONObjBuilder builder;
         builder.append("createIndexes", nss.coll());
 
@@ -403,7 +395,9 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         Scope::storedFuncMod(opCtx);
     } else if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, nss);
-    } else if (nss.ns() == FeatureCompatibilityVersion::kCollection) {
+    } else if (nss == NamespaceString::kServerConfigurationNamespace) {
+        // We must check server configuration collection writes for featureCompatibilityVersion
+        // document changes.
         for (auto it = first; it != last; it++) {
             FeatureCompatibilityVersion::onInsertOrUpdate(opCtx, it->doc);
         }
@@ -457,12 +451,7 @@ void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
     if (args.nss != NamespaceString::kSessionTransactionsTableNamespace) {
         if (!args.fromMigrate) {
             auto css = CollectionShardingState::get(opCtx, args.nss);
-            css->onUpdateOp(opCtx,
-                            args.criteria,
-                            args.update,
-                            args.updatedDoc,
-                            opTime.writeOpTime,
-                            opTime.prePostImageOpTime);
+            css->onUpdateOp(opCtx, args.updatedDoc, opTime.writeOpTime, opTime.prePostImageOpTime);
         }
     }
 
@@ -470,7 +459,9 @@ void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
         Scope::storedFuncMod(opCtx);
     } else if (args.nss.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, args.nss);
-    } else if (args.nss.ns() == FeatureCompatibilityVersion::kCollection) {
+    } else if (args.nss == NamespaceString::kServerConfigurationNamespace) {
+        // We must check server configuration collection writes for featureCompatibilityVersion
+        // document changes.
         FeatureCompatibilityVersion::onInsertOrUpdate(opCtx, args.updatedDoc);
     } else if (args.nss == NamespaceString::kSessionTransactionsTableNamespace &&
                !opTime.writeOpTime.isNull()) {
@@ -524,10 +515,10 @@ void OpObserverImpl::onDelete(OperationContext* opCtx,
         Scope::storedFuncMod(opCtx);
     } else if (nss.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, nss);
-    } else if (nss.isAdminDotSystemDotVersion()) {
+    } else if (nss.isServerConfigurationCollection()) {
         auto _id = deleteState.documentKey["_id"];
         if (_id.type() == BSONType::String &&
-            _id.String() == FeatureCompatibilityVersion::kParameterName)
+            _id.String() == FeatureCompatibilityVersionParser::kParameterName)
             uasserted(40670, "removing FeatureCompatibilityVersion document is not allowed");
     } else if (nss == NamespaceString::kSessionTransactionsTableNamespace &&
                !opTime.writeOpTime.isNull()) {
@@ -650,7 +641,8 @@ void OpObserverImpl::onCollMod(OperationContext* opCtx,
         ->logOp(opCtx, "c", cmdNss, cmdObj, nullptr);
 
     // Make sure the UUID values in the Collection metadata, the Collection object, and the UUID
-    // catalog are all present and equal.
+    // catalog are all present and equal, unless the collection is system.indexes or
+    // system.namespaces (see SERVER-29926, SERVER-30095).
     invariant(opCtx->lockState()->isDbLockedForMode(nss.db(), MODE_X));
     Database* db = dbHolder().get(opCtx, nss.db());
     // Some unit tests call the op observer on an unregistered Database.
@@ -658,9 +650,11 @@ void OpObserverImpl::onCollMod(OperationContext* opCtx,
         return;
     }
     Collection* coll = db->getCollection(opCtx, nss.ns());
-    invariant(coll->uuid() == uuid && coll->uuid());
+
+    invariant(coll->uuid() || nss.coll() == "system.indexes" || nss.coll() == "system.namespaces");
+    invariant(coll->uuid() == uuid);
     CollectionCatalogEntry* entry = coll->getCatalogEntry();
-    invariant(entry->isEqualToMetadataUUID(opCtx, uuid.get()));
+    invariant(entry->isEqualToMetadataUUID(opCtx, uuid));
 }
 
 void OpObserverImpl::onDropDatabase(OperationContext* opCtx, const std::string& dbName) {
@@ -679,9 +673,8 @@ void OpObserverImpl::onDropDatabase(OperationContext* opCtx, const std::string& 
                  kUninitializedStmtId,
                  {});
 
-    uassert(50714,
-            "dropping the admin database is not allowed.",
-            dbName != FeatureCompatibilityVersion::kDatabase);
+    uassert(
+        50714, "dropping the admin database is not allowed.", dbName != NamespaceString::kAdminDb);
 
     if (dbName == NamespaceString::kSessionTransactionsTableNamespace.db()) {
         SessionCatalog::get(opCtx)->invalidateSessions(opCtx, boost::none);
@@ -715,8 +708,8 @@ repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
     }
 
     uassert(50715,
-            "dropping the admin.system.version collection is not allowed.",
-            collectionName.ns() != FeatureCompatibilityVersion::kCollection);
+            "dropping the server configuration collection (admin.system.version) is not allowed.",
+            collectionName != NamespaceString::kServerConfigurationNamespace);
 
     if (collectionName.coll() == DurableViewCatalog::viewsCollectionName()) {
         DurableViewCatalog::onExternalChange(opCtx, collectionName);
@@ -726,9 +719,6 @@ repl::OpTime OpObserverImpl::onDropCollection(OperationContext* opCtx,
 
     AuthorizationManager::get(opCtx->getServiceContext())
         ->logOp(opCtx, "c", cmdNss, cmdObj, nullptr);
-
-    auto css = CollectionShardingState::get(opCtx, collectionName);
-    css->onDropCollection(opCtx, collectionName);
 
     // Evict namespace entry from the namespace/uuid cache if it exists.
     NamespaceUUIDCache::get(opCtx).evictNamespace(collectionName);
@@ -773,7 +763,7 @@ repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* const opCtx,
     builder.append("renameCollection", fromCollection.ns());
     builder.append("to", toCollection.ns());
     builder.append("stayTemp", stayTemp);
-    if (dropTargetUUID && !isMasterSlave(opCtx)) {
+    if (dropTargetUUID) {
         dropTargetUUID->appendToBuilder(&builder, "dropTarget");
     } else {
         builder.append("dropTarget", dropTarget);
@@ -880,6 +870,15 @@ void OpObserverImpl::onTransactionCommit(OperationContext* opCtx) {
     auto times = replLogApplyOps(opCtx, cmdNss, applyOpCmd, sessionInfo, stmtId, oplogLink);
 
     onWriteOpCompleted(opCtx, cmdNss, session, {stmtId}, times.writeOpTime, times.wallClockTime);
+}
+
+void OpObserverImpl::onTransactionPrepare(OperationContext* opCtx) {
+    invariant(opCtx->getTxnNumber());
+    Session* const session = OperationContextSession::get(opCtx);
+    invariant(session->inMultiDocumentTransaction());
+
+    auto opTime = repl::getNextOpTimeNoPersistForTesting(opCtx).opTime;
+    opCtx->recoveryUnit()->setPrepareTimestamp(opTime.getTimestamp());
 }
 
 void OpObserverImpl::onTransactionAbort(OperationContext* opCtx) {

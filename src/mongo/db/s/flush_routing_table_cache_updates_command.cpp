@@ -35,7 +35,7 @@
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/privilege.h"
-#include "mongo/db/catalog/catalog_raii.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/operation_context.h"
@@ -129,13 +129,11 @@ public:
             // finish on the primary in case a secondary's caller has an afterClusterTime inclusive
             // of the commit (and new writes to the committed chunk) that hasn't yet propagated back
             // to this shard. This ensures the read your own writes causal consistency guarantee.
-            auto css = CollectionShardingState::get(opCtx, nss);
-            if (css->getMigrationSourceManager()) {
-                auto criticalSectionSignal =
-                    css->getMigrationSourceManager()->getMigrationCriticalSectionSignal(true);
-                if (criticalSectionSignal) {
-                    oss.setMigrationCriticalSectionSignal(criticalSectionSignal);
-                }
+            auto const css = CollectionShardingState::get(opCtx, nss);
+            auto criticalSectionSignal =
+                css->getCriticalSectionSignal(ShardingMigrationCriticalSection::kRead);
+            if (criticalSectionSignal) {
+                oss.setMigrationCriticalSectionSignal(criticalSectionSignal);
             }
         }
 

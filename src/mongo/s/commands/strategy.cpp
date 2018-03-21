@@ -41,6 +41,7 @@
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/logical_clock.h"
@@ -59,6 +60,7 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/rpc/metadata/logical_time_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
+#include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/parallel.h"
 #include "mongo/s/client/shard_connection.h"
@@ -151,7 +153,7 @@ void execCommandClient(OperationContext* opCtx,
         appendRequiredFieldsToResponse(opCtx, &body);
     });
 
-    const auto dbname = request.getDatabase().toString();
+    const auto dbname = request.getDatabase();
     uassert(ErrorCodes::IllegalOperation,
             "Can't use 'local' database through mongos",
             dbname != NamespaceString::kLocalDb);
@@ -191,7 +193,7 @@ void execCommandClient(OperationContext* opCtx,
     }
 
     StatusWith<WriteConcernOptions> wcResult =
-        WriteConcernOptions::extractWCFromCommand(request.body, dbname);
+        WriteConcernOptions::extractWCFromCommand(request.body);
     if (!wcResult.isOK()) {
         auto body = result->getBodyBuilder();
         CommandHelpers::appendCommandStatus(body, wcResult.getStatus());
@@ -211,19 +213,38 @@ void execCommandClient(OperationContext* opCtx,
         return;
     }
 
-    repl::ReadConcernArgs readConcernArgs;
-    auto readConcernParseStatus = readConcernArgs.initialize(request.body);
-    if (!readConcernParseStatus.isOK()) {
-        auto body = result->getBodyBuilder();
-        CommandHelpers::appendCommandStatus(body, readConcernParseStatus);
-        return;
-    }
+    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
-        auto body = result->getBodyBuilder();
-        CommandHelpers::appendCommandStatus(
-            body,
-            Status(ErrorCodes::InvalidOptions, "read concern snapshot is not supported on mongos"));
-        return;
+        // TODO SERVER-33708.
+        if (!invocation->supportsReadConcern(readConcernArgs.getLevel())) {
+            auto body = result->getBodyBuilder();
+            CommandHelpers::appendCommandStatus(
+                body,
+                Status(ErrorCodes::InvalidOptions,
+                       str::stream()
+                           << "read concern snapshot is not supported on mongos for the command "
+                           << c->getName()));
+            return;
+        }
+
+        if (!opCtx->getTxnNumber()) {
+            auto body = result->getBodyBuilder();
+            CommandHelpers::appendCommandStatus(
+                body,
+                Status(ErrorCodes::InvalidOptions,
+                       "read concern snapshot is supported only in a transaction"));
+            return;
+        }
+
+        if (readConcernArgs.getArgsAtClusterTime()) {
+            auto body = result->getBodyBuilder();
+            CommandHelpers::appendCommandStatus(
+                body,
+                Status(ErrorCodes::InvalidOptions,
+                       "read concern snapshot is not supported with atClusterTime on mongos"));
+            return;
+        }
     }
 
     // attach tracking
@@ -255,7 +276,10 @@ void execCommandClient(OperationContext* opCtx,
     }
 }
 
-void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBuilder&& builder) {
+void runCommand(OperationContext* opCtx,
+                const OpMsgRequest& request,
+                const NetworkOp opType,
+                BSONObjBuilder&& builder) {
     // Handle command option maxTimeMS first thing while processing the command so that the
     // subsequent code has the deadline available
     uassert(ErrorCodes::InvalidOptions,
@@ -279,7 +303,23 @@ void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBui
         return;
     }
 
+    // Set the logical optype, command object and namespace as soon as we identify the command. If
+    // the command does not define a fully-qualified namespace, set CurOp to the generic command
+    // namespace db.$cmd.
+    auto ns = command->parseNs(request.getDatabase().toString(), request.body);
+    auto nss = (request.getDatabase() == ns ? NamespaceString(ns, "$cmd") : NamespaceString(ns));
+
+    // Fill out all currentOp details.
+    CurOp::get(opCtx)->setGenericOpRequestDetails(opCtx, nss, command, request.body, opType);
+
     initializeOperationSessionInfo(opCtx, request.body, command->requiresAuth(), true, true);
+
+    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    auto readConcernParseStatus = readConcernArgs.initialize(request.body);
+    if (!readConcernParseStatus.isOK()) {
+        CommandHelpers::appendCommandStatus(builder, readConcernParseStatus);
+        return;
+    }
 
     CommandReplyBuilder crb(std::move(builder));
 
@@ -289,28 +329,36 @@ void runCommand(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBui
         try {
             execCommandClient(opCtx, command, request, &crb);
             return;
-        } catch (const StaleConfigException& e) {
-            if (e->getns().empty()) {
+        } catch (ExceptionForCat<ErrorCategory::NeedRetargettingError>& ex) {
+            const auto ns = [&] {
+                if (auto staleInfo = ex.extraInfo<StaleConfigInfo>()) {
+                    return NamespaceString(staleInfo->getns());
+                } else if (auto implicitCreateInfo =
+                               ex.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
+                    return NamespaceString(implicitCreateInfo->getNss());
+                } else {
+                    throw;
+                }
+            }();
+
+            if (ns.isEmpty()) {
                 // This should be impossible but older versions tried incorrectly to handle it here.
                 log() << "Received a stale config error with an empty namespace while executing "
-                      << redact(request.body) << " : " << redact(e);
+                      << redact(request.body) << " : " << redact(ex);
                 throw;
             }
 
             if (loops <= 0)
-                throw e;
+                throw;
 
-            loops--;
-            log() << "Retrying command " << redact(request.body) << causedBy(e);
+            log() << "Retrying command " << redact(request.body) << causedBy(ex);
 
-            ShardConnection::checkMyConnectionVersions(opCtx, e->getns());
-            if (loops < 4) {
-                const NamespaceString staleNSS(e->getns());
-                if (staleNSS.isValid()) {
-                    Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNSS);
-                }
+            ShardConnection::checkMyConnectionVersions(opCtx, ns.ns());
+            if (ns.isValid()) {
+                Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(ns);
             }
 
+            loops--;
             continue;
         } catch (const DBException& e) {
             crb.reset();
@@ -332,6 +380,12 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
     globalOpCounters.gotQuery();
 
     const QueryMessage q(*dbm);
+
+    const auto upconvertedQuery = upconvertQueryEntry(q.query, nss, q.ntoreturn, q.ntoskip);
+
+    // Set the upconverted query as the CurOp command object.
+    CurOp::get(opCtx)->setGenericOpRequestDetails(
+        opCtx, nss, nullptr, upconvertedQuery, dbm->msg().operation());
 
     Client* const client = opCtx->getClient();
     AuthorizationSession* const authSession = AuthorizationSession::get(client);
@@ -366,9 +420,18 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
                                      ExtensionsCallbackNoop(),
                                      MatchExpressionParser::kAllowAllSpecialFeatures));
 
+    const QueryRequest& queryRequest = canonicalQuery->getQueryRequest();
+    // Handle query option $maxTimeMS (not used with commands).
+    if (queryRequest.getMaxTimeMS() > 0) {
+        uassert(50749,
+                "Illegal attempt to set operation deadline within DBDirectClient",
+                !opCtx->getClient()->isInDirectClient());
+        opCtx->setDeadlineAfterNowBy(Milliseconds{queryRequest.getMaxTimeMS()});
+    }
+    opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
+
     // If the $explain flag was set, we must run the operation on the shards as an explain command
     // rather than a find command.
-    const QueryRequest& queryRequest = canonicalQuery->getQueryRequest();
     if (queryRequest.isExplain()) {
         const BSONObj findCommand = queryRequest.asFindCommand();
 
@@ -440,7 +503,7 @@ DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
 
         try {  // Execute.
             LOG(3) << "Command begin db: " << db << " msg id: " << m.header().getId();
-            runCommand(opCtx, request, reply->getInPlaceReplyBuilder(0));
+            runCommand(opCtx, request, m.operation(), reply->getInPlaceReplyBuilder(0));
             LOG(3) << "Command end db: " << db << " msg id: " << m.header().getId();
         } catch (const DBException& ex) {
             LOG(1) << "Exception thrown while processing command on " << db
@@ -483,8 +546,8 @@ void Strategy::commandOp(OperationContext* opCtx,
         CommandResult result;
         result.shardTargetId = shardId;
 
-        result.target = fassertStatusOK(
-            34417, ConnectionString::parse(cursor.getShardCursor(shardId)->originalHost()));
+        result.target =
+            fassert(34417, ConnectionString::parse(cursor.getShardCursor(shardId)->originalHost()));
         result.result = cursor.getShardCursor(shardId)->peekFirst().getOwned();
         results->push_back(result);
     }
@@ -513,6 +576,10 @@ DbResponse Strategy::getMore(OperationContext* opCtx, const NamespaceString& nss
     }
 
     GetMoreRequest getMoreRequest(nss, cursorId, batchSize, boost::none, boost::none, boost::none);
+
+    // Set the upconverted getMore as the CurOp command object.
+    CurOp::get(opCtx)->setGenericOpRequestDetails(
+        opCtx, nss, nullptr, getMoreRequest.toBSON(), dbm->msg().operation());
 
     auto cursorResponse = ClusterFind::runGetMore(opCtx, getMoreRequest);
     if (cursorResponse == ErrorCodes::CursorNotFound) {
@@ -609,6 +676,7 @@ void Strategy::writeOp(OperationContext* opCtx, DbMessage* dbm) {
                            MONGO_UNREACHABLE;
                    }
                }(),
+               dbm->msg().operation(),
                BSONObjBuilder{bb});  // built object is ignored
 }
 
@@ -623,10 +691,12 @@ void Strategy::explainFind(OperationContext* opCtx,
     // We will time how long it takes to run the commands on the shards.
     Timer timer;
 
+    const auto routingInfo = uassertStatusOK(
+        Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, qr.nss()));
     auto shardResponses =
         scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                   qr.nss().db().toString(),
                                                    qr.nss(),
+                                                   routingInfo,
                                                    explainCmd,
                                                    readPref,
                                                    Shard::RetryPolicy::kIdempotent,

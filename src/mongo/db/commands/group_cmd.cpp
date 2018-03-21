@@ -134,8 +134,7 @@ private:
         AutoGetCollectionForReadCommand ctx(opCtx, groupRequest.ns);
         Collection* coll = ctx.getCollection();
 
-        auto statusWithPlanExecutor =
-            getExecutorGroup(opCtx, coll, groupRequest, PlanExecutor::YIELD_AUTO);
+        auto statusWithPlanExecutor = getExecutorGroup(opCtx, coll, groupRequest);
         if (!statusWithPlanExecutor.isOK()) {
             return statusWithPlanExecutor.getStatus();
         }
@@ -164,8 +163,7 @@ private:
         AutoGetCollectionForReadCommand ctx(opCtx, groupRequest.ns);
         Collection* coll = ctx.getCollection();
 
-        auto statusWithPlanExecutor =
-            getExecutorGroup(opCtx, coll, groupRequest, PlanExecutor::YIELD_AUTO);
+        auto statusWithPlanExecutor = getExecutorGroup(opCtx, coll, groupRequest);
         if (!statusWithPlanExecutor.isOK()) {
             return CommandHelpers::appendCommandStatus(result, statusWithPlanExecutor.getStatus());
         }
@@ -184,16 +182,10 @@ private:
         if (PlanExecutor::ADVANCED != state) {
             invariant(PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state);
 
-            if (WorkingSetCommon::isValidStatusMemberObject(retval)) {
-                return CommandHelpers::appendCommandStatus(
-                    result, WorkingSetCommon::getMemberObjectStatus(retval));
-            }
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::BadValue,
-                       str::stream() << "error encountered during group "
-                                     << "operation, executor returned "
-                                     << PlanExecutor::statestr(state)));
+                WorkingSetCommon::getMemberObjectStatus(retval).withContext(
+                    "Plan executor error during group command"));
         }
 
         invariant(planExecutor->isEOF());

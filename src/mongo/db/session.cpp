@@ -183,8 +183,8 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
     invariant(collection->getDefaultCollator() == nullptr);
     boost::intrusive_ptr<ExpressionContext> expCtx(new ExpressionContext(opCtx, nullptr));
 
-    auto matcher = fassertStatusOK(
-        40673, MatchExpressionParser::parse(updateRequest.getQuery(), std::move(expCtx)));
+    auto matcher =
+        fassert(40673, MatchExpressionParser::parse(updateRequest.getQuery(), std::move(expCtx)));
     if (!matcher->matchesBSON(originalDoc)) {
         // Document no longer match what we expect so throw WCE to make the caller re-examine.
         throw WriteConflictException();
@@ -209,6 +209,59 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
     wuow.commit();
 }
 
+/**
+ * Returns a new oplog entry if the given entry has transaction state embedded within in.
+ * The new oplog entry will contain the operation needed to replicate the transaction
+ * table.
+ * Returns boost::none if the given oplog doesn't have any transaction state or does not
+ * support update to the transaction table.
+ */
+boost::optional<repl::OplogEntry> createMatchingTransactionTableUpdate(
+    const repl::OplogEntry& entry) {
+    auto sessionInfo = entry.getOperationSessionInfo();
+    if (!sessionInfo.getTxnNumber()) {
+        return boost::none;
+    }
+
+    // Do not write session table entries for applyOps, as multi-document transactions
+    // and retryable writes do not work together.
+    // TODO(SERVER-33501): Make multi-docunment transactions work with retryable writes.
+    if (entry.isCommand() && entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
+        return boost::none;
+    }
+
+    invariant(sessionInfo.getSessionId());
+    invariant(entry.getWallClockTime());
+
+    const auto updateBSON = [&] {
+        SessionTxnRecord newTxnRecord;
+        newTxnRecord.setSessionId(*sessionInfo.getSessionId());
+        newTxnRecord.setTxnNum(*sessionInfo.getTxnNumber());
+        newTxnRecord.setLastWriteOpTime(entry.getOpTime());
+        newTxnRecord.setLastWriteDate(*entry.getWallClockTime());
+        return newTxnRecord.toBSON();
+    }();
+
+    return repl::OplogEntry(
+        entry.getOpTime(),
+        0,  // hash
+        repl::OpTypeEnum::kUpdate,
+        NamespaceString::kSessionTransactionsTableNamespace,
+        boost::none,  // uuid
+        false,        // fromMigrate
+        repl::OplogEntry::kOplogVersion,
+        updateBSON,
+        BSON(SessionTxnRecord::kSessionIdFieldName << sessionInfo.getSessionId()->toBSON()),
+        {},    // sessionInfo
+        true,  // upsert
+        *entry.getWallClockTime(),
+        boost::none,  // statementId
+        boost::none,  // prevWriteOpTime
+        boost::none,  // preImangeOpTime
+        boost::none   // postImageOpTime
+        );
+}
+
 // Failpoint which allows different failure actions to happen after each write. Supports the
 // parameters below, which can be combined with each other (unless explicitly disallowed):
 //
@@ -218,6 +271,9 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
 //      will be allowed to commit.
 MONGO_FP_DECLARE(onPrimaryTransactionalWrite);
 
+// Failpoint which will pause an operation just after allocating a point-in-time storage engine
+// transaction.
+MONGO_FP_DECLARE(hangAfterPreallocateSnapshot);
 }  // namespace
 
 const BSONObj Session::kDeadEndSentinel(BSON("$incompleteOplogHistory" << 1));
@@ -225,6 +281,10 @@ const BSONObj Session::kDeadEndSentinel(BSON("$incompleteOplogHistory" << 1));
 Session::Session(LogicalSessionId sessionId) : _sessionId(std::move(sessionId)) {}
 
 void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
+    if (opCtx->getClient()->isInDirectClient()) {
+        return;
+    }
+
     invariant(!opCtx->lockState()->isLocked());
     invariant(repl::ReadConcernArgs::get(opCtx).getLevel() ==
               repl::ReadConcernLevel::kLocalReadConcern);
@@ -259,6 +319,10 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
 void Session::beginOrContinueTxn(OperationContext* opCtx,
                                  TxnNumber txnNumber,
                                  boost::optional<bool> autocommit) {
+    if (opCtx->getClient()->isInDirectClient()) {
+        return;
+    }
+
     invariant(!opCtx->lockState()->isLocked());
 
     stdx::lock_guard<stdx::mutex> lg(_mutex);
@@ -266,6 +330,7 @@ void Session::beginOrContinueTxn(OperationContext* opCtx,
 }
 
 void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber) {
+    invariant(!opCtx->getClient()->isInDirectClient());
     invariant(!opCtx->lockState()->isLocked());
 
     stdx::lock_guard<stdx::mutex> lg(_mutex);
@@ -354,27 +419,6 @@ void Session::onMigrateCompletedOnPrimary(OperationContext* opCtx,
         opCtx, txnNumber, std::move(stmtIdsWritten), lastStmtIdWriteOpTime);
 }
 
-void Session::updateSessionRecordOnSecondary(OperationContext* opCtx,
-                                             const SessionTxnRecord& sessionTxnRecord) {
-    invariant(!opCtx->lockState()->isLocked());
-
-    writeConflictRetry(
-        opCtx, "Update session txn", NamespaceString::kSessionTransactionsTableNamespace.ns(), [&] {
-            UpdateRequest updateRequest(NamespaceString::kSessionTransactionsTableNamespace);
-            updateRequest.setQuery(BSON(SessionTxnRecord::kSessionIdFieldName
-                                        << sessionTxnRecord.getSessionId().toBSON()));
-            updateRequest.setUpdates(sessionTxnRecord.toBSON());
-            updateRequest.setUpsert(true);
-
-            repl::UnreplicatedWritesBlock doNotReplicateWrites(opCtx);
-
-            Lock::DBLock configDBLock(opCtx, NamespaceString::kConfigDb, MODE_IX);
-            WriteUnitOfWork wuow(opCtx);
-            updateSessionEntry(opCtx, updateRequest);
-            wuow.commit();
-        });
-}
-
 void Session::invalidate() {
     stdx::lock_guard<stdx::mutex> lg(_mutex);
     _isValid = false;
@@ -443,7 +487,6 @@ void Session::_beginOrContinueTxn(WithLock wl,
     // Start a new transaction with an autocommit field
     _setActiveTxn(wl, txnNumber);
     _autocommit = (autocommit != boost::none) ? *autocommit : true;  // autocommit defaults to true
-    _isSnapshotTxn = false;
     _txnState = _autocommit ? MultiDocumentTransactionState::kNone
                             : MultiDocumentTransactionState::kInProgress;
     invariant(_transactionOperations.empty());
@@ -469,13 +512,74 @@ void Session::_checkTxnValid(WithLock, TxnNumber txnNumber) const {
                  _txnState != MultiDocumentTransactionState::kCommitting));
 }
 
+Session::TxnResources::TxnResources(OperationContext* opCtx) {
+    opCtx->getWriteUnitOfWork()->release();
+    opCtx->setWriteUnitOfWork(nullptr);
+
+    _locker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
+    _locker->releaseTicket();
+
+    _recoveryUnit = std::unique_ptr<RecoveryUnit>(opCtx->releaseRecoveryUnit());
+    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+                           OperationContext::kNotInUnitOfWork);
+
+    _readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+}
+
+Session::TxnResources::~TxnResources() {
+    if (!_released && _recoveryUnit) {
+        // This should only be reached when aborting a transaction that isn't active, i.e.
+        // when starting a new transaction before completing an old one.  So we should
+        // be at WUOW nesting level 1 (only the top level WriteUnitOfWork).
+        _locker->endWriteUnitOfWork();
+        invariant(!_locker->inAWriteUnitOfWork());
+        _recoveryUnit->abortUnitOfWork();
+    }
+}
+
+void Session::TxnResources::release(OperationContext* opCtx) {
+    // Perform operations that can fail the release before marking the TxnResources as released.
+    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    uassert(ErrorCodes::InvalidOptions,
+            "Only the first command in a transaction may specify a readConcern",
+            readConcernArgs.isEmpty());
+
+    _locker->reacquireTicket(opCtx);
+
+    invariant(!_released);
+    _released = true;
+
+    // We intentionally do not capture the return value of swapLockState(), which is just an empty
+    // locker. At the end of the operation, if the transaction is not complete, we will stash the
+    // operation context's locker and replace it with a new empty locker.
+    invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
+    opCtx->swapLockState(std::move(_locker));
+
+    opCtx->setRecoveryUnit(_recoveryUnit.release(),
+                           OperationContext::RecoveryUnitState::kNotInUnitOfWork);
+
+    opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
+
+    // 'readConcernArgs' is a mutable reference to the ReadConcernArgs decoration on opCtx.
+    readConcernArgs = _readConcernArgs;
+}
+
 void Session::stashTransactionResources(OperationContext* opCtx) {
-    stdx::lock_guard<stdx::mutex> lg(_mutex);
-    if (!_isSnapshotTxn) {
+    if (opCtx->getClient()->isInDirectClient()) {
         return;
     }
 
-    invariant(opCtx->hasStashedCursor());
+    invariant(opCtx->getTxnNumber());
+
+    // We must lock the Client to change the Locker on the OperationContext and the Session mutex to
+    // access Session state. We must lock the Client before the Session mutex, since the Client
+    // effectively owns the Session. That is, a user might lock the Client to ensure it doesn't go
+    // away, and then lock the Session owned by that client. We rely on the fact that we are not
+    // using the  DefaultLockerImpl to avoid deadlock.
+
+    invariant(!isMMAPV1());
+    stdx::lock_guard<Client> lk(*opCtx->getClient());
+    stdx::unique_lock<stdx::mutex> lg(_mutex);
 
     if (*opCtx->getTxnNumber() != _activeTxnNumber) {
         // The session is checked out, so _activeTxnNumber cannot advance due to a user operation.
@@ -489,62 +593,115 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
                                 << _activeTxnNumber);
     }
 
-    opCtx->getWriteUnitOfWork()->release();
-    opCtx->setWriteUnitOfWork(nullptr);
-
-    _stashedLocker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
-    _stashedLocker->releaseTicket();
-    _stashedRecoveryUnit.reset(opCtx->releaseRecoveryUnit());
-    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
-                           OperationContext::kNotInUnitOfWork);
-}
-
-void Session::unstashTransactionResources(OperationContext* opCtx) {
-    stdx::lock_guard<stdx::mutex> lg(_mutex);
-    if (opCtx->getTxnNumber() < _activeTxnNumber) {
-        // The session is checked out, so _activeTxnNumber cannot advance due to a user operation.
-        // However, when a chunk is migrated, session and transaction information is copied from the
-        // donor shard to the recipient. This occurs outside of the check-out mechanism and can lead
-        // to a higher _activeTxnNumber during the lifetime of a checkout. If that occurs, we abort
-        // the current transaction. Note that it would indicate a user bug to have a newer
-        // transaction on one shard while an older transaction is still active on another shard.
-        _releaseStashedTransactionResources(lg, opCtx);
-        uasserted(ErrorCodes::TransactionAborted,
-                  str::stream() << "Transaction aborted. Active txnNumber is now "
-                                << _activeTxnNumber);
+    if (_txnState != MultiDocumentTransactionState::kInProgress &&
+        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
+        // Not in a multi-document transaction or snapshot read: nothing to do.
         return;
     }
 
-    if (_stashedLocker) {
-        invariant(_stashedRecoveryUnit);
-        _stashedLocker->reacquireTicket();
+    if (_txnState == MultiDocumentTransactionState::kInSnapshotRead && !opCtx->hasStashedCursor()) {
+        // The snapshot read is complete.
+        invariant(opCtx->getWriteUnitOfWork());
+        // We cannot hold the session lock during the commit, or a deadlock results.
+        _txnState = MultiDocumentTransactionState::kCommitting;
+        lg.unlock();
+        opCtx->getWriteUnitOfWork()->commit();
+        opCtx->setWriteUnitOfWork(nullptr);
+        lg.lock();
+        _txnState = MultiDocumentTransactionState::kCommitted;
+        return;
+    }
 
-        // We intentionally do not capture the return value of swapLockState(), which is just an
-        // empty locker. At the end of the operation, if the transaction is not complete, we will
-        // stash the operation context's locker and replace it with a new empty locker.
-        invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
-        opCtx->swapLockState(std::move(_stashedLocker));
+    invariant(!_txnResourceStash);
+    _txnResourceStash = TxnResources(opCtx);
+}
 
-        opCtx->setRecoveryUnit(_stashedRecoveryUnit.release(),
-                               OperationContext::RecoveryUnitState::kNotInUnitOfWork);
-        opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
-    } else {
-        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
-            opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
-            _isSnapshotTxn = true;
+void Session::unstashTransactionResources(OperationContext* opCtx) {
+    if (opCtx->getClient()->isInDirectClient()) {
+        return;
+    }
+
+    invariant(opCtx->getTxnNumber());
+
+    // If the storage engine is mmapv1, it is not safe to lock both the Client and the Session
+    // mutex. This is fine because mmapv1 does not support transactions.
+    if (isMMAPV1()) {
+        return;
+    }
+
+    bool snapshotPreallocated = false;
+    {
+        // We must lock the Client to change the Locker on the OperationContext and the Session
+        // mutex to access Session state. We must lock the Client before the Session mutex, since
+        // the Client effectively owns the Session. That is, a user might lock the Client to ensure
+        // it doesn't go away, and then lock the Session owned by that client.
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        if (opCtx->getTxnNumber() < _activeTxnNumber) {
+            // The session is checked out, so _activeTxnNumber cannot advance due to a user
+            // operation.
+            // However, when a chunk is migrated, session and transaction information is copied from
+            // the donor shard to the recipient. This occurs outside of the check-out mechanism and
+            // can lead to a higher _activeTxnNumber during the lifetime of a checkout. If that
+            // occurs, we abort the current transaction. Note that it would indicate a user bug to
+            // have a newer transaction on one shard while an older transaction is still active on
+            // another shard.
+            _releaseStashedTransactionResources(lg);
+            uasserted(ErrorCodes::TransactionAborted,
+                      str::stream() << "Transaction aborted. Active txnNumber is now "
+                                    << _activeTxnNumber);
+            return;
         }
+
+        if (_txnResourceStash) {
+            invariant(_txnState != MultiDocumentTransactionState::kNone);
+            _txnResourceStash->release(opCtx);
+            _txnResourceStash = boost::none;
+        } else {
+            auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+            if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern ||
+                _txnState == MultiDocumentTransactionState::kInProgress) {
+                opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
+
+                // Storage engine transactions may be started in a lazy manner. By explicitly
+                // starting here we ensure that a point-in-time snapshot is established during the
+                // first operation of a transaction.
+                opCtx->recoveryUnit()->preallocateSnapshot();
+                snapshotPreallocated = true;
+
+                if (_txnState != MultiDocumentTransactionState::kInProgress) {
+                    invariant(_txnState == MultiDocumentTransactionState::kNone);
+                    _txnState = MultiDocumentTransactionState::kInSnapshotRead;
+                }
+            }
+        }
+    }
+
+    if (snapshotPreallocated) {
+        // The Client lock must not be held when executing this failpoint as it will block currentOp
+        // execution.
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterPreallocateSnapshot);
     }
 }
 
-void Session::_releaseStashedTransactionResources(WithLock wl, OperationContext* opCtx) {
-    if (opCtx->getWriteUnitOfWork()) {
-        opCtx->setWriteUnitOfWork(nullptr);
+void Session::abortIfSnapshotRead(TxnNumber txnNumber) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    if (_activeTxnNumber == txnNumber && _autocommit) {
+        _releaseStashedTransactionResources(lg);
+        _txnState = MultiDocumentTransactionState::kAborted;
     }
+}
 
-    _stashedRecoveryUnit.reset(nullptr);
-    _stashedLocker.reset(nullptr);
-    _isSnapshotTxn = false;
+void Session::abortTransaction() {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    _releaseStashedTransactionResources(lg);
+    _txnState = MultiDocumentTransactionState::kAborted;
+}
+
+void Session::_releaseStashedTransactionResources(WithLock wl) {
+    _txnResourceStash = boost::none;
+    _transactionOperations.clear();
+    _txnState = MultiDocumentTransactionState::kNone;
 }
 
 void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
@@ -562,6 +719,7 @@ void Session::_setActiveTxn(WithLock, TxnNumber txnNumber) {
     _activeTxnNumber = txnNumber;
     _activeTxnCommittedStatements.clear();
     _hasIncompleteHistory = false;
+    _txnResourceStash = boost::none;
 }
 
 void Session::addTransactionOperation(OperationContext* opCtx,
@@ -739,6 +897,21 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
                                     << " due to failpoint. The write must not be reflected.");
         }
     }
+}
+
+std::vector<repl::OplogEntry> Session::addOpsForReplicatingTxnTable(
+    const std::vector<repl::OplogEntry>& ops) {
+    std::vector<repl::OplogEntry> newOps;
+
+    for (auto&& op : ops) {
+        newOps.push_back(op);
+
+        if (auto updateTxnTableOp = createMatchingTransactionTableUpdate(op)) {
+            newOps.push_back(*updateTxnTableOp);
+        }
+    }
+
+    return newOps;
 }
 
 }  // namespace mongo

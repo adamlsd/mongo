@@ -85,6 +85,7 @@ public:
                const BSONObj& oField,
                const boost::optional<BSONObj>& o2Field,
                const OperationSessionInfo& sessionInfo,
+               const boost::optional<bool>& isUpsert,
                const boost::optional<mongo::Date_t>& wallClockTime,
                const boost::optional<StmtId>& statementId,
                const boost::optional<OpTime>& prevWriteOpTimeInTransaction,
@@ -107,6 +108,7 @@ public:
     /**
      * Returns if the oplog entry is for a CRUD operation.
      */
+    static bool isCrudOpType(OpTypeEnum opType);
     bool isCrudOpType() const;
 
     /**

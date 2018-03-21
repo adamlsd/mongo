@@ -105,8 +105,7 @@ void DoTxnTest::setUp() {
     ASSERT_OK(replCoord->setFollowerMode(MemberState::RS_PRIMARY));
 
     // Set up session catalog
-    SessionCatalog::reset_forTest(service);
-    SessionCatalog::create(service);
+    SessionCatalog::get(service)->reset_forTest();
     SessionCatalog::get(service)->onStepUp(_opCtx.get());
 
     // Need the OpObserverImpl in the registry in order for doTxn to work.
@@ -127,6 +126,7 @@ void DoTxnTest::setUp() {
     _opCtx->setLogicalSessionId(makeLogicalSessionIdForTest());
     _opCtx->setTxnNumber(0);  // TxnNumber can always be 0 because we have a new session.
     _ocs.emplace(_opCtx.get(), true /* checkOutSession */, false /* autocommit */);
+    OperationContextSession::get(opCtx())->unstashTransactionResources(opCtx());
 }
 
 void DoTxnTest::tearDown() {

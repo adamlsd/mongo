@@ -207,9 +207,12 @@ Status waitForReadConcern(OperationContext* opCtx,
     repl::ReplicationCoordinator* const replCoord = repl::ReplicationCoordinator::get(opCtx);
     invariant(replCoord);
 
+    opCtx->recoveryUnit()->setReadConcernLevelAndReplicationMode(readConcernArgs.getLevel(),
+                                                                 replCoord->getReplicationMode());
+
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kLinearizableReadConcern) {
         if (replCoord->getReplicationMode() != repl::ReplicationCoordinator::modeReplSet) {
-            // For master/slave and standalone nodes, Linearizable Read is not supported.
+            // For standalone nodes, Linearizable Read is not supported.
             return {ErrorCodes::NotAReplicaSet,
                     "node needs to be a replica set member to use read concern"};
         }
@@ -252,18 +255,32 @@ Status waitForReadConcern(OperationContext* opCtx,
         if (!allowAfterClusterTime) {
             return {ErrorCodes::InvalidOptions, "afterClusterTime is not allowed for this command"};
         }
-
-        auto currentTime = LogicalClock::get(opCtx)->getClusterTime();
-        if (currentTime < *afterClusterTime) {
-            return {ErrorCodes::InvalidOptions,
-                    "readConcern afterClusterTime must not be greater than clusterTime value"};
-        }
     }
 
     if (!readConcernArgs.isEmpty()) {
         invariant(!afterClusterTime || !atClusterTime);
         auto targetClusterTime = afterClusterTime ? afterClusterTime : atClusterTime;
-        if (replCoord->isReplEnabled() && targetClusterTime) {
+
+        if (targetClusterTime) {
+            std::string readConcernName = afterClusterTime ? "afterClusterTime" : "atClusterTime";
+
+            if (!replCoord->isReplEnabled()) {
+                return {ErrorCodes::IllegalOperation,
+                        str::stream() << "Cannot specify " << readConcernName
+                                      << " readConcern without replication enabled"};
+            }
+
+            auto currentTime = LogicalClock::get(opCtx)->getClusterTime();
+            if (currentTime < *targetClusterTime) {
+                return {ErrorCodes::InvalidOptions,
+                        str::stream() << "readConcern " << readConcernName
+                                      << " value must not be greater than the current clusterTime. "
+                                         "Requested clusterTime: "
+                                      << targetClusterTime->toString()
+                                      << "; current clusterTime: "
+                                      << currentTime.toString()};
+            }
+
             auto status = makeNoopWriteIfNeeded(opCtx, *targetClusterTime);
             if (!status.isOK()) {
                 LOG(0) << "Failed noop write at clusterTime: " << targetClusterTime->toString()
@@ -281,7 +298,8 @@ Status waitForReadConcern(OperationContext* opCtx,
 
 
     if (atClusterTime) {
-        fassertStatusOK(39345, opCtx->recoveryUnit()->selectSnapshot(atClusterTime->asTimestamp()));
+        fassert(39345,
+                opCtx->recoveryUnit()->setPointInTimeReadTimestamp(atClusterTime->asTimestamp()));
         return Status::OK();
     }
 
@@ -299,13 +317,13 @@ Status waitForReadConcern(OperationContext* opCtx,
         LOG(debugLevel) << "Waiting for 'committed' snapshot to be available for reading: "
                         << readConcernArgs;
 
-        Status status = opCtx->recoveryUnit()->setReadFromMajorityCommittedSnapshot();
+        Status status = opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot();
 
         // Wait until a snapshot is available.
         while (status == ErrorCodes::ReadConcernMajorityNotAvailableYet) {
             LOG(debugLevel) << "Snapshot not available yet.";
             replCoord->waitUntilSnapshotCommitted(opCtx, Timestamp());
-            status = opCtx->recoveryUnit()->setReadFromMajorityCommittedSnapshot();
+            status = opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot();
         }
 
         if (!status.isOK()) {

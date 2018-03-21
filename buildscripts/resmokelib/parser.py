@@ -6,6 +6,8 @@ from __future__ import absolute_import
 
 import os
 import os.path
+
+import datetime
 import optparse
 
 from . import config as _config
@@ -126,7 +128,10 @@ def parse_command_line():
                       help="Disables preallocation of journal files for all mongod processes.")
 
     parser.add_option("--numClientsPerFixture", type="int", dest="num_clients_per_fixture",
-                      help="Number of clients running tests per fixture")
+                      help="Number of clients running tests per fixture.")
+
+    parser.add_option("--perfReportFile", dest="perf_report_file", metavar="PERF_REPORT",
+                      help="Writes a JSON file with performance test results.")
 
     parser.add_option("--preallocJournal", type="choice", action="store", dest="prealloc_journal",
                       choices=("on", "off"), metavar="ON|OFF",
@@ -196,7 +201,7 @@ def parse_command_line():
 
     parser.add_option("--storageEngineCacheSizeGB", dest="storage_engine_cache_size_gb",
                       metavar="CONFIG", help="Sets the storage engine cache size configuration"
-                      " setting for all mongod's.")
+                                             " setting for all mongod's.")
 
     parser.add_option("--tagFile", dest="tag_file", metavar="OPTIONS",
                       help="A YAML file that associates tests and tags.")
@@ -221,6 +226,9 @@ def parse_command_line():
                      " script."))
     parser.add_option_group(evergreen_options)
 
+    evergreen_options.add_option("--buildId", dest="build_id", metavar="BUILD_ID",
+                                 help="Sets the build ID of the task.")
+
     evergreen_options.add_option("--distroId", dest="distro_id", metavar="DISTRO_ID",
                                  help=("Sets the identifier for the Evergreen distro running the"
                                        " tests."))
@@ -242,6 +250,10 @@ def parse_command_line():
                                  help=("Sets the name of the Evergreen project running the tests."
                                        ))
 
+    evergreen_options.add_option("--revisionOrderId", dest="revision_order_id",
+                                 metavar="REVISION_ORDER_ID",
+                                 help="Sets the chronological order number of this commit.")
+
     evergreen_options.add_option("--taskName", dest="task_name", metavar="TASK_NAME",
                                  help="Sets the name of the Evergreen task running the tests.")
 
@@ -251,6 +263,42 @@ def parse_command_line():
     evergreen_options.add_option("--variantName", dest="variant_name", metavar="VARIANT_NAME",
                                  help=("Sets the name of the Evergreen build variant running the"
                                        " tests."))
+
+    evergreen_options.add_option("--versionId", dest="version_id", metavar="VERSION_ID",
+                                 help="Sets the version ID of the task.")
+
+    benchmark_options = optparse.OptionGroup(
+        parser,
+        title="Benchmark test options",
+        description="Options for running Benchmark tests"
+    )
+
+    parser.add_option_group(benchmark_options)
+
+    benchmark_options.add_option("--benchmarkFilter", type="string", dest="benchmark_filter",
+                                 metavar="BENCHMARK_FILTER",
+                                 help="Regex to filter benchmark tests to run.")
+
+    benchmark_options.add_option("--benchmarkListTests", dest="benchmark_list_tests",
+                                 action="store_true",
+                                 metavar="BENCHMARK_LIST_TESTS",
+                                 help="Lists all benchmark test configurations in each test file.")
+
+    benchmark_min_time_help = (
+        "Minimum time to run each benchmark test for. Use this option instead of "
+        "--benchmarkRepetitions to make a test run for a longer or shorter duration.")
+    benchmark_options.add_option("--benchmarkMinTimeSecs", type="int",
+                                 dest="benchmark_min_time_secs", metavar="BENCHMARK_MIN_TIME",
+                                 help=benchmark_min_time_help)
+
+    benchmark_repetitions_help = (
+        "Set --benchmarkRepetitions=1 if you'd like to run the benchmark tests only once. By "
+        "default, each test is run multiple times to provide statistics on the variance between "
+        "runs; use --benchmarkMinTimeSecs if you'd like to run a test for a longer or shorter "
+        "duration.")
+    benchmark_options.add_option("--benchmarkRepetitions", type="int", dest="benchmark_repetitions",
+                                 metavar="BENCHMARK_REPETITIONS",
+                                 help=benchmark_repetitions_help)
 
     parser.set_defaults(logger_file="console",
                         dry_run="off",
@@ -282,6 +330,28 @@ def validate_options(parser, options, args):
                      .format(options.executor_file, " ".join(args)))
 
 
+def validate_benchmark_options():
+    """
+    Some options are incompatible with benchmark test suites, we error out early if any of
+    these options are specified.
+
+    :return: None
+    """
+
+    if _config.REPEAT > 1:
+        raise optparse.OptionValueError(
+            "--repeat cannot be used with benchmark tests. Please use --benchmarkMinTimeSecs to "
+            "increase the runtime of a single benchmark configuration.")
+
+    if _config.JOBS > 1:
+        raise optparse.OptionValueError(
+            "--jobs=%d cannot be used for benchmark tests. Parallel jobs affect CPU cache access "
+            "patterns and cause additional context switching, which lead to inaccurate benchmark "
+            "results. Please use --jobs=1"
+            % _config.JOBS
+        )
+
+
 def get_logging_config(values):
     return _get_logging_config(values.logger_file)
 
@@ -306,14 +376,6 @@ def update_config_vars(values):
     _config.DBPATH_PREFIX = _expand_user(config.pop("dbpath_prefix"))
     _config.DBTEST_EXECUTABLE = _expand_user(config.pop("dbtest_executable"))
     _config.DRY_RUN = config.pop("dry_run")
-    _config.EVERGREEN_DISTRO_ID = config.pop("distro_id")
-    _config.EVERGREEN_EXECUTION = config.pop("execution_number")
-    _config.EVERGREEN_PATCH_BUILD = config.pop("patch_build")
-    _config.EVERGREEN_PROJECT_NAME = config.pop("project_name")
-    _config.EVERGREEN_REVISION = config.pop("git_revision")
-    _config.EVERGREEN_TASK_ID = config.pop("task_id")
-    _config.EVERGREEN_TASK_NAME = config.pop("task_name")
-    _config.EVERGREEN_VARIANT_NAME = config.pop("variant_name")
     _config.EXCLUDE_WITH_ANY_TAGS = _tags_from_list(config.pop("exclude_with_any_tags"))
     _config.FAIL_FAST = not config.pop("continue_on_failure")
     _config.INCLUDE_WITH_ANY_TAGS = _tags_from_list(config.pop("include_with_any_tags"))
@@ -326,6 +388,7 @@ def update_config_vars(values):
     _config.NO_JOURNAL = config.pop("no_journal")
     _config.NO_PREALLOC_JOURNAL = config.pop("prealloc_journal") == "off"
     _config.NUM_CLIENTS_PER_FIXTURE = config.pop("num_clients_per_fixture")
+    _config.PERF_REPORT_FILE = config.pop("perf_report_file")
     _config.RANDOM_SEED = config.pop("seed")
     _config.REPEAT = config.pop("repeat")
     _config.REPORT_FAILURE_STATUS = config.pop("report_failure_status")
@@ -338,9 +401,32 @@ def update_config_vars(values):
     _config.STORAGE_ENGINE_CACHE_SIZE = config.pop("storage_engine_cache_size_gb")
     _config.TAG_FILE = config.pop("tag_file")
     _config.TRANSPORT_LAYER = config.pop("transport_layer")
+
+    # Evergreen options.
+    _config.EVERGREEN_BUILD_ID = config.pop("build_id")
+    _config.EVERGREEN_DISTRO_ID = config.pop("distro_id")
+    _config.EVERGREEN_EXECUTION = config.pop("execution_number")
+    _config.EVERGREEN_PATCH_BUILD = config.pop("patch_build")
+    _config.EVERGREEN_PROJECT_NAME = config.pop("project_name")
+    _config.EVERGREEN_REVISION = config.pop("git_revision")
+    _config.EVERGREEN_REVISION_ORDER_ID = config.pop("revision_order_id")
+    _config.EVERGREEN_TASK_ID = config.pop("task_id")
+    _config.EVERGREEN_TASK_NAME = config.pop("task_name")
+    _config.EVERGREEN_VARIANT_NAME = config.pop("variant_name")
+    _config.EVERGREEN_VERSION_ID = config.pop("version_id")
+
+    # Wiredtiger options.
     _config.WT_COLL_CONFIG = config.pop("wt_coll_config")
     _config.WT_ENGINE_CONFIG = config.pop("wt_engine_config")
     _config.WT_INDEX_CONFIG = config.pop("wt_index_config")
+
+    # Benchmark options.
+    _config.BENCHMARK_FILTER = config.pop("benchmark_filter")
+    _config.BENCHMARK_LIST_TESTS = config.pop("benchmark_list_tests")
+    benchmark_min_time = config.pop("benchmark_min_time_secs")
+    if benchmark_min_time is not None:
+        _config.BENCHMARK_MIN_TIME = datetime.timedelta(seconds=benchmark_min_time)
+    _config.BENCHMARK_REPETITIONS = config.pop("benchmark_repetitions")
 
     shuffle = config.pop("shuffle")
     if shuffle == "auto":

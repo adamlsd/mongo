@@ -84,7 +84,8 @@ ClientCursor::ClientCursor(ClientCursorParams params,
       _nss(std::move(params.nss)),
       _authenticatedUsers(std::move(params.authenticatedUsers)),
       _lsid(operationUsingCursor->getLogicalSessionId()),
-      _isReadCommitted(params.isReadCommitted),
+      _txnNumber(operationUsingCursor->getTxnNumber()),
+      _readConcernLevel(params.readConcernLevel),
       _cursorManager(cursorManager),
       _originatingCommand(params.originatingCommandObj),
       _queryOptions(params.queryOptions),
@@ -126,23 +127,6 @@ void ClientCursor::dispose(OperationContext* opCtx) {
 
     _exec->dispose(opCtx, _cursorManager);
     _disposed = true;
-}
-
-void ClientCursor::updateSlaveLocation(OperationContext* opCtx) {
-    if (_slaveReadTill.isNull())
-        return;
-
-    verify(_nss.isOplog());
-
-    Client* c = opCtx->getClient();
-    verify(c);
-    OID rid = repl::ReplClientInfo::forClient(c).getRemoteID();
-    if (!rid.isSet())
-        return;
-
-    repl::ReplicationCoordinator::get(opCtx)
-        ->setLastOptimeForSlave(rid, _slaveReadTill)
-        .transitional_ignore();
 }
 
 //

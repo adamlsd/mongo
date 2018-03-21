@@ -96,6 +96,14 @@ add_option('prefix',
     help='installation prefix',
 )
 
+add_option('install-mode',
+    choices=['legacy', 'hygienic'],
+    default='legacy',
+    help='select type of installation',
+    nargs=1,
+    type='choice',
+)
+
 add_option('nostrip',
     help='do not strip installed binaries',
     nargs=0,
@@ -264,15 +272,6 @@ add_option('gdbserver',
 
 add_option('gcov',
     help='compile with flags for gcov',
-    nargs=0,
-)
-
-add_option('smokedbprefix',
-    help='prefix to dbpath et al. for smoke tests',
-)
-
-add_option('smokeauth',
-    help='run smoke tests with --auth',
     nargs=0,
 )
 
@@ -2902,11 +2901,13 @@ def doConfigure(myenv):
             conf.env.Append( MONGO_CRYPTO=["windows"] )
 
         elif conf.env.TargetOSIs('darwin', 'macOS'):
+            ssl_provider = 'apple'
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_APPLE")
             conf.env.Append( MONGO_CRYPTO=["apple"] )
-            if has_option("ssl"):
-                # TODO: Replace SSL implementation as well.
-                # For now, let openssl fill that role.
-                checkOpenSSL(conf)
+            conf.env.AppendUnique(FRAMEWORKS=[
+                'CoreFoundation',
+                'Security',
+            ])
 
     if ssl_provider == 'openssl':
         if has_option("ssl"):
@@ -3151,6 +3152,33 @@ def doConfigure(myenv):
 
 env = doConfigure( env )
 
+# TODO: Later, this should live somewhere more graceful.
+if get_option('install-mode') == 'hygienic':
+    env.Tool('auto_install_binaries')
+    if env['PLATFORM'] == 'posix':
+        env.AppendUnique(
+            RPATH=[
+                env.Literal('\\$$ORIGIN/../lib')
+            ],
+            LINKFLAGS=[
+                '-Wl,-z,origin',
+                '-Wl,--enable-new-dtags',
+            ],
+            SHLINKFLAGS=[
+                # -h works for both the sun linker and the gnu linker.
+                "-Wl,-h,${TARGET.file}",
+            ]
+        )
+    elif env['PLATFORM'] == 'darwin':
+        env.AppendUnique(
+            LINKFLAGS=[
+                '-Wl,-rpath,@loader_path/../lib'
+            ],
+            SHLINKFLAGS=[
+                "-Wl,-install_name,@loader_path/../lib/${TARGET.file}",
+            ],
+        )
+
 # Now that we are done with configure checks, enable icecream, if available.
 env.Tool('icecream')
 
@@ -3325,7 +3353,7 @@ env.SConscript(
     variant_dir='$BUILD_DIR',
 )
 
-all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests'])
+all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests', 'benchmarks'])
 
 # run the Dagger tool if it's installed
 if should_dagger:

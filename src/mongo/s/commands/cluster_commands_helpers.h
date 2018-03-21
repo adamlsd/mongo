@@ -54,6 +54,16 @@ void appendWriteConcernErrorToCmdResponse(const ShardId& shardID,
 BSONObj appendShardVersion(BSONObj cmdObj, ChunkVersion version);
 
 /**
+ * Returns a copy of 'cmdObj' with 'allowImplicitCollectionCreation' appended.
+ */
+BSONObj appendAllowImplicitCreate(BSONObj cmdObj, bool allow);
+
+/**
+ * Returns a copy of 'cmdObj' with atClusterTime appended to a readConcern.
+ */
+BSONObj appendAtClusterTime(BSONObj cmdObj, LogicalTime atClusterTime);
+
+/**
  * Utility for dispatching unversioned commands to all shards in a cluster.
  *
  * Returns a non-OK status if a failure occurs on *this* node during execution. Otherwise, returns
@@ -68,8 +78,7 @@ BSONObj appendShardVersion(BSONObj cmdObj, ChunkVersion version);
  */
 std::vector<AsyncRequestsSender::Response> scatterGatherUnversionedTargetAllShards(
     OperationContext* opCtx,
-    const std::string& dbName,
-    boost::optional<NamespaceString> nss,
+    StringData dbName,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy);
@@ -84,8 +93,8 @@ std::vector<AsyncRequestsSender::Response> scatterGatherUnversionedTargetAllShar
  */
 std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRoutingTable(
     OperationContext* opCtx,
-    const std::string& dbName,
     const NamespaceString& nss,
+    const CachedCollectionRoutingInfo& routingInfo,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
@@ -105,8 +114,21 @@ std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRouting
  */
 std::vector<AsyncRequestsSender::Response> scatterGatherOnlyVersionIfUnsharded(
     OperationContext* opCtx,
-    const std::string& dbName,
     const NamespaceString& nss,
+    const BSONObj& cmdObj,
+    const ReadPreferenceSetting& readPref,
+    Shard::RetryPolicy retryPolicy);
+
+/**
+ * Utility for dispatching commands against the primary of a database and attach the appropriate
+ * database version.
+ *
+ * Does not retry on StaleDbVersion.
+ */
+AsyncRequestsSender::Response executeCommandAgainstDatabasePrimary(
+    OperationContext* opCtx,
+    StringData dbName,
+    const CachedDatabaseInfo& dbInfo,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy);
@@ -158,5 +180,11 @@ bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::stri
  * returns it. Otherwise, if it does not exist, this call will implicitly create it as non-sharded.
  */
 StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, StringData dbName);
+
+/**
+ *  Computes the cluster snapshot time for provided shards. Returns uninitialized LogicalTime if
+ *  the set is empty or every shard's lastCommittedOpTime is not initialized.
+ */
+LogicalTime computeAtClusterTime(OperationContext* opCtx, std::set<ShardId> shardIds);
 
 }  // namespace mongo

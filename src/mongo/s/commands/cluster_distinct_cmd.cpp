@@ -95,10 +95,12 @@ public:
 
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
+            const auto routingInfo = uassertStatusOK(
+                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
             shardResponses =
                 scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                           dbname,
                                                            nss,
+                                                           routingInfo,
                                                            explainCmd,
                                                            ReadPreferenceSetting::get(opCtx),
                                                            Shard::RetryPolicy::kIdempotent,
@@ -162,9 +164,6 @@ public:
                 CollatorFactoryInterface::get(opCtx->getServiceContext())->makeFromBSON(collation));
         }
 
-        // Save a copy of routingInfo before calling scatterGather(), to guarantee that we extract
-        // the collation from the same routingInfo that was used by scatterGather().
-        // (scatterGather() will throw if the routingInfo needs to be refreshed).
         const auto routingInfo =
             uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
 
@@ -172,8 +171,8 @@ public:
         try {
             shardResponses = scatterGatherVersionedTargetByRoutingTable(
                 opCtx,
-                dbName,
                 nss,
+                routingInfo,
                 CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
                 ReadPreferenceSetting::get(opCtx),
                 Shard::RetryPolicy::kIdempotent,

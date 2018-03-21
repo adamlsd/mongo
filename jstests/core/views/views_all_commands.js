@@ -61,6 +61,7 @@
     const isUnrelated = "is unrelated";
 
     let viewsCommandTests = {
+        _cloneCatalogData: {skip: isAnInternalCommand},
         _configsvrAddShard: {skip: isAnInternalCommand},
         _configsvrAddShardToZone: {skip: isAnInternalCommand},
         _configsvrBalancerStart: {skip: isAnInternalCommand},
@@ -398,6 +399,7 @@
         planCacheListQueryShapes:
             {command: {planCacheListQueryShapes: "view"}, expectFailure: true},
         planCacheSetFilter: {command: {planCacheSetFilter: "view"}, expectFailure: true},
+        prepareTransaction: {skip: isUnrelated},
         profile: {skip: isUnrelated},
         refreshLogicalSessionCacheNow: {skip: isAnInternalCommand},
         reapLogicalSessionCacheNow: {skip: isAnInternalCommand},
@@ -443,7 +445,6 @@
         replSetUpdatePosition: {skip: isUnrelated},
         replSetResizeOplog: {skip: isUnrelated},
         resetError: {skip: isUnrelated},
-        resync: {skip: isUnrelated},
         revokePrivilegesFromRole: {
             command: {
                 revokePrivilegesFromRole: "testrole",

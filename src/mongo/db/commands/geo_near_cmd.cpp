@@ -232,8 +232,12 @@ public:
         // version on initial entry into geoNear.
         auto rangePreserver = CollectionShardingState::get(opCtx, nss)->getMetadata();
 
-        auto exec = uassertStatusOK(
-            getExecutor(opCtx, collection, std::move(cq), PlanExecutor::YIELD_AUTO, 0));
+        const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        const PlanExecutor::YieldPolicy yieldPolicy =
+            readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+            ? PlanExecutor::INTERRUPT_ONLY
+            : PlanExecutor::YIELD_AUTO;
+        auto exec = uassertStatusOK(getExecutor(opCtx, collection, std::move(cq), yieldPolicy, 0));
 
         auto curOp = CurOp::get(opCtx);
         {
@@ -303,9 +307,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during geoNear command: "
-                                     << WorkingSetCommon::toStatusString(currObj)));
+                WorkingSetCommon::getMemberObjectStatus(currObj).withContext(
+                    "Executor error during geoNear command"));
         }
 
         PlanSummaryStats summary;

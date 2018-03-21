@@ -204,7 +204,7 @@ __txn_global_query_timestamp(
 	WT_CONNECTION_IMPL *conn;
 	WT_TXN *txn;
 	WT_TXN_GLOBAL *txn_global;
-	wt_timestamp_t ts;
+	wt_timestamp_t ts, tmpts;
 
 	conn = S2C(session);
 	txn_global = &conn->txn_global;
@@ -228,19 +228,21 @@ __txn_global_query_timestamp(
 		    commit_timestampq) {
 			if (txn->clear_ts_queue)
 				continue;
-			/*
-			 * Compare on the first real running transaction.
-			 */
-			if (__wt_timestamp_cmp(
-			    &txn->first_commit_timestamp, &ts) < 0) {
-				__wt_timestamp_set(
-				    &ts, &txn->first_commit_timestamp);
-				WT_ASSERT(session, !__wt_timestamp_iszero(&ts));
-			}
+
+			__wt_timestamp_set(
+			    &tmpts, &txn->first_commit_timestamp);
+			WT_ASSERT(session, !__wt_timestamp_iszero(&tmpts));
+			__wt_timestamp_subone(&tmpts);
+
+			if (__wt_timestamp_cmp(&tmpts, &ts) < 0)
+				__wt_timestamp_set(&ts, &tmpts);
 			break;
 		}
 		__wt_readunlock(session, &txn_global->commit_timestamp_rwlock);
-	} else if (WT_STRING_MATCH("oldest", cval.str, cval.len)) {
+	} else if (WT_STRING_MATCH("last_checkpoint", cval.str, cval.len))
+		/* Read-only value forever. No lock needed. */
+		__wt_timestamp_set(&ts, &txn_global->last_ckpt_timestamp);
+	else if (WT_STRING_MATCH("oldest", cval.str, cval.len)) {
 		if (!txn_global->has_oldest_timestamp)
 			return (WT_NOTFOUND);
 		WT_WITH_TIMESTAMP_READLOCK(session, &txn_global->rwlock,

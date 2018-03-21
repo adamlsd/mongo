@@ -1168,6 +1168,15 @@ var authCommandsLib = {
           skipSharded: true
         },
         {
+          testname: "aggregate_currentOp_allUsers_false_localOps_true",
+          command: {
+              aggregate: 1,
+              pipeline: [{$currentOp: {allUsers: false, localOps: true}}],
+              cursor: {}
+          },
+          testcases: [{runOnDb: adminDbName, roles: roles_all}]
+        },
+        {
           testname: "aggregate_listLocalCursors",
           command: {aggregate: 1, pipeline: [{$listLocalCursors: {}}], cursor: {}},
           testcases: [{
@@ -2085,6 +2094,7 @@ var authCommandsLib = {
           testname: "commitTxn",
           command: {commitTransaction: 1},
           skipSharded: true,
+          skipUnlessReplicaSet: true,
           testcases: [
               {
                 runOnDb: firstDbName,
@@ -2790,17 +2800,22 @@ var authCommandsLib = {
           }]
         },
         {
-          testname: "currentOp",
-          command: {currentOp: 1, $all: true},
+          testname: "currentOp_$ownOps_false",
+          command: {currentOp: 1, $all: true, $ownOps: false},
           testcases: [
               {
                 runOnDb: adminDbName,
                 roles: roles_monitoring,
                 privileges: [{resource: {cluster: true}, actions: ["inprog"]}]
               },
-              {runOnDb: firstDbName, roles: {}},
-              {runOnDb: secondDbName, roles: {}}
+              {runOnDb: firstDbName, roles: {}}
           ]
+        },
+        {
+          testname: "currentOp_$ownOps_true",
+          command: {currentOp: 1, $all: true, $ownOps: true},
+          testcases: [{runOnDb: adminDbName, roles: roles_all}],
+          skipSharded: true
         },
         {
           testname: "lockInfo",
@@ -5195,21 +5210,6 @@ var authCommandsLib = {
               {runOnDb: adminDbName, roles: roles_all, privileges: []},
               {runOnDb: firstDbName, roles: roles_all, privileges: []},
               {runOnDb: secondDbName, roles: roles_all, privileges: []}
-          ]
-        },
-        {
-          testname: "resync",
-          command: {resync: 1},
-          skipSharded: true,
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: {hostManager: 1, clusterManager: 1, clusterAdmin: 1, root: 1, __system: 1},
-                privileges: [{resource: {cluster: true}, actions: ["resync"]}],
-                expectFail: true
-              },
-              {runOnDb: firstDbName, roles: {}},
-              {runOnDb: secondDbName, roles: {}}
           ]
         },
         {

@@ -125,7 +125,7 @@ public:
      * an error is returned.
      */
     virtual Status insertDocument(OperationContext* opCtx,
-                                  const NamespaceString& nss,
+                                  const NamespaceStringOrUUID& nsOrUUID,
                                   const TimestampedBSONObj& doc,
                                   long long term) = 0;
 
@@ -135,7 +135,7 @@ public:
      * It is an error to call this function with an empty set of documents.
      */
     virtual Status insertDocuments(OperationContext* opCtx,
-                                   const NamespaceString& nss,
+                                   const NamespaceStringOrUUID& nsOrUUID,
                                    const std::vector<InsertStatement>& docs) = 0;
 
     /**
@@ -277,7 +277,7 @@ public:
      * Not supported on collections with a default collation.
      */
     virtual StatusWith<BSONObj> findById(OperationContext* opCtx,
-                                         const NamespaceString& nss,
+                                         const NamespaceStringOrUUID& nsOrUUID,
                                          const BSONElement& idKey) = 0;
 
     /**
@@ -287,7 +287,7 @@ public:
      * Not supported on collections with a default collation.
      */
     virtual StatusWith<BSONObj> deleteById(OperationContext* opCtx,
-                                           const NamespaceString& nss,
+                                           const NamespaceStringOrUUID& nsOrUUID,
                                            const BSONElement& idKey) = 0;
 
     /**
@@ -299,7 +299,7 @@ public:
      * applied.
      */
     virtual Status upsertById(OperationContext* opCtx,
-                              const NamespaceString& nss,
+                              const NamespaceStringOrUUID& nsOrUUID,
                               const BSONElement& idKey,
                               const BSONObj& update) = 0;
 
@@ -348,12 +348,22 @@ public:
      * Reverts the state of all database data to the last stable timestamp.
      *
      * The "local" database is exempt and none of its state should be reverted except for
-     * "local.replset.minvalid" and "local.replset.checkpointTimestamp" which should be reverted to
-     * the last stable timestamp.
+     * "local.replset.minvalid" which should be reverted to the last stable timestamp.
      *
      * The 'stable' timestamp is set by calling StorageInterface::setStableTimestamp.
      */
-    virtual Status recoverToStableTimestamp(ServiceContext* serviceCtx) = 0;
+    virtual StatusWith<Timestamp> recoverToStableTimestamp(ServiceContext* serviceCtx) = 0;
+
+    /**
+     * Returns whether the storage engine supports "recover to stable timestamp".
+     */
+    virtual bool supportsRecoverToStableTimestamp(ServiceContext* serviceCtx) const = 0;
+
+    /**
+     * Returns the stable timestamp that the storage engine recovered to on startup. If the
+     * recovery point was not stable, returns "none".
+     */
+    virtual boost::optional<Timestamp> getRecoveryTimestamp(ServiceContext* serviceCtx) const = 0;
 
     /**
      * Waits for oplog writes to be visible in the oplog.
@@ -361,6 +371,16 @@ public:
      * batch.
      */
     virtual void waitForAllEarlierOplogWritesToBeVisible(OperationContext* opCtx) = 0;
+
+    /**
+     * Registers a timestamp with the storage engine so that it can enforce oplog visiblity rules.
+     * orderedCommit - specifies whether the timestamp provided is ordered w.r.t. commits; that is,
+     * all commits with older timestamps have already occurred, and any commits with newer
+     * timestamps have not yet occurred.
+     */
+    virtual void oplogDiskLocRegister(OperationContext* opCtx,
+                                      const Timestamp& ts,
+                                      bool orderedCommit) = 0;
 };
 
 }  // namespace repl

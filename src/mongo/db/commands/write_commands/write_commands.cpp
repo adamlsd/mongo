@@ -201,6 +201,9 @@ class WriteCommand : public Command {
 public:
     explicit WriteCommand(StringData name) : Command(name) {}
 
+    std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
+                                             const OpMsgRequest& request) override;
+
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const final {
         return AllowedOnSecondary::kNever;
     }
@@ -209,37 +212,87 @@ public:
         return false;
     }
 
-    bool supportsReadConcern(const std::string& dbName,
-                             const BSONObj& cmdObj,
-                             repl::ReadConcernLevel level) const final {
-        return level == repl::ReadConcernLevel::kLocalReadConcern ||
-            level == repl::ReadConcernLevel::kSnapshotReadConcern;
-    }
-
-    bool supportsWriteConcern(const BSONObj& cmd) const {
-        return true;
-    }
-
     ReadWriteType getReadWriteType() const {
         return ReadWriteType::kWrite;
     }
 
-    bool enhancedRun(OperationContext* opCtx,
-                     const OpMsgRequest& request,
-                     BSONObjBuilder& result) final {
+    virtual void runImpl(OperationContext* opCtx,
+                         const OpMsgRequest& request,
+                         BSONObjBuilder& result) const = 0;
+
+    virtual Status explainImpl(OperationContext* opCtx,
+                               const OpMsgRequest& request,
+                               ExplainOptions::Verbosity verbosity,
+                               BSONObjBuilder* out) const {
+        return {ErrorCodes::IllegalOperation, str::stream() << "Cannot explain cmd: " << getName()};
+    }
+
+private:
+    class Invocation;
+};
+
+class WriteCommand::Invocation : public CommandInvocation {
+public:
+    Invocation(const WriteCommand* writeCommand, const OpMsgRequest& request, NamespaceString ns)
+        : CommandInvocation(writeCommand), _request{&request}, _ns{std::move(ns)} {}
+
+private:
+    void run(OperationContext* opCtx, CommandReplyBuilder* result) final {
         try {
-            runImpl(opCtx, request, result);
-            return true;
-        } catch (const DBException& ex) {
-            LastError::get(opCtx->getClient()).setLastError(ex.code(), ex.reason());
+            try {
+                BSONObjBuilder bob = result->getBodyBuilder();
+                command()->runImpl(opCtx, *_request, bob);
+                CommandHelpers::extractOrAppendOk(bob);
+            } catch (const DBException& ex) {
+                LastError::get(opCtx->getClient()).setLastError(ex.code(), ex.reason());
+                throw;
+            }
+        } catch (const ExceptionFor<ErrorCodes::Unauthorized>&) {
+            CommandHelpers::logAuthViolation(opCtx, command(), *_request, ErrorCodes::Unauthorized);
             throw;
         }
     }
 
-    virtual void runImpl(OperationContext* opCtx,
-                         const OpMsgRequest& request,
-                         BSONObjBuilder& result) = 0;
+    void explain(OperationContext* opCtx,
+                 ExplainOptions::Verbosity verbosity,
+                 BSONObjBuilder* result) final {
+        uassertStatusOK(command()->explainImpl(opCtx, *_request, verbosity, result));
+    }
+
+    NamespaceString ns() const final {
+        return _ns;
+    }
+
+    Command::AllowedOnSecondary secondaryAllowed(ServiceContext* context) const final {
+        return command()->secondaryAllowed(context);
+    }
+
+    bool supportsReadConcern(repl::ReadConcernLevel level) const final {
+        return level == repl::ReadConcernLevel::kLocalReadConcern ||
+            level == repl::ReadConcernLevel::kSnapshotReadConcern;
+    }
+
+    bool supportsWriteConcern() const final {
+        return true;
+    }
+
+    void doCheckAuthorization(OperationContext* opCtx) const final {
+        uassertStatusOK(command()->checkAuthForRequest(opCtx, *_request));
+    }
+
+    const WriteCommand* command() const {
+        return static_cast<const WriteCommand*>(definition());
+    }
+
+    const OpMsgRequest* _request;
+    NamespaceString _ns;
 };
+
+std::unique_ptr<CommandInvocation> WriteCommand::parse(OperationContext* opCtx,
+                                                       const OpMsgRequest& request) {
+    return stdx::make_unique<Invocation>(
+        this, request, NamespaceString(parseNs(request.getDatabase().toString(), request.body)));
+}
 
 class CmdInsert final : public WriteCommand {
 public:
@@ -260,7 +313,7 @@ public:
 
     void runImpl(OperationContext* opCtx,
                  const OpMsgRequest& request,
-                 BSONObjBuilder& result) final {
+                 BSONObjBuilder& result) const final {
         const auto batch = InsertOp::parse(request);
         auto reply = performInserts(opCtx, batch);
         serializeReply(opCtx,
@@ -291,7 +344,7 @@ public:
 
     void runImpl(OperationContext* opCtx,
                  const OpMsgRequest& request,
-                 BSONObjBuilder& result) final {
+                 BSONObjBuilder& result) const final {
         const auto batch = UpdateOp::parse(request);
         auto reply = performUpdates(opCtx, batch);
         serializeReply(opCtx,
@@ -302,10 +355,10 @@ public:
                        &result);
     }
 
-    Status explain(OperationContext* opCtx,
-                   const OpMsgRequest& opMsgRequest,
-                   ExplainOptions::Verbosity verbosity,
-                   BSONObjBuilder* out) const final {
+    Status explainImpl(OperationContext* opCtx,
+                       const OpMsgRequest& opMsgRequest,
+                       ExplainOptions::Verbosity verbosity,
+                       BSONObjBuilder* out) const final {
         const auto batch = UpdateOp::parse(opMsgRequest);
         uassert(ErrorCodes::InvalidLength,
                 "explained write batches must be of size 1",
@@ -356,7 +409,7 @@ public:
 
     void runImpl(OperationContext* opCtx,
                  const OpMsgRequest& request,
-                 BSONObjBuilder& result) final {
+                 BSONObjBuilder& result) const final {
         const auto batch = DeleteOp::parse(request);
         auto reply = performDeletes(opCtx, batch);
         serializeReply(opCtx,
@@ -367,10 +420,10 @@ public:
                        &result);
     }
 
-    Status explain(OperationContext* opCtx,
-                   const OpMsgRequest& opMsgRequest,
-                   ExplainOptions::Verbosity verbosity,
-                   BSONObjBuilder* out) const final {
+    Status explainImpl(OperationContext* opCtx,
+                       const OpMsgRequest& opMsgRequest,
+                       ExplainOptions::Verbosity verbosity,
+                       BSONObjBuilder* out) const final {
         const auto batch = DeleteOp::parse(opMsgRequest);
         uassert(ErrorCodes::InvalidLength,
                 "explained write batches must be of size 1",

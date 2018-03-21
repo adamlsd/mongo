@@ -31,6 +31,7 @@
 #include <string>
 
 #include "mongo/base/disallow_copying.h"
+#include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/jsobj.h"
@@ -237,6 +238,15 @@ public:
     virtual void onTransactionCommit(OperationContext* opCtx) = 0;
 
     /**
+     * The onTransactionPrepare method is called when an atomic transaction is prepared. It must be
+     * called when a transaction is active. It generates an OpTime and sets the prepare timestamp on
+     * the recovery unit.
+     * TODO: This is an incomplete implementation and should only be used for testing. It does not
+     * write the prepare oplog entry, only generates an OpTime.
+     */
+    virtual void onTransactionPrepare(OperationContext* opCtx) = 0;
+
+    /**
      * The onTransactionAbort method is called when an atomic transaction aborts, before the
      * RecoveryUnit onRollback() is called.  It must not be called when no transaction is active.
      */
@@ -252,6 +262,13 @@ public:
 
         // Set of all session ids from ops being rolled back.
         std::set<UUID> rollbackSessionIds = {};
+
+        // Maps UUIDs to a set of BSONObjs containing the _ids of the documents that will be deleted
+        // from that collection due to rollback, and is used to populate rollback files.
+        // For simplicity, this BSONObj set uses the simple binary comparison, as it is never wrong
+        // to consider two _ids as distinct even if the collection default collation would put them
+        // in the same equivalence class.
+        stdx::unordered_map<UUID, SimpleBSONObjUnorderedSet, UUID::Hash> rollbackDeletedIdsMap;
 
         // True if the shard identity document was rolled back.
         bool shardIdentityRolledBack = false;

@@ -139,7 +139,8 @@ void checkOplogInsert(Status result) {
 void _getNextOpTimes(OperationContext* opCtx,
                      Collection* oplog,
                      std::size_t count,
-                     OplogSlot* slotsOut) {
+                     OplogSlot* slotsOut,
+                     bool persist = true) {
     auto replCoord = ReplicationCoordinator::get(opCtx);
     long long term = OpTime::kUninitializedTerm;
 
@@ -158,7 +159,10 @@ void _getNextOpTimes(OperationContext* opCtx,
     lastSetTimestamp = ts;
     newTimestampNotifier.notify_all();
     const bool orderedCommit = false;
-    fassert(28560, oplog->getRecordStore()->oplogDiskLocRegister(opCtx, ts, orderedCommit));
+
+    if (persist) {
+        fassert(28560, oplog->getRecordStore()->oplogDiskLocRegister(opCtx, ts, orderedCommit));
+    }
 
     for (std::size_t i = 0; i < count; i++) {
         slotsOut[i].opTime = {Timestamp(ts.asULL() + i), term};
@@ -377,9 +381,29 @@ void _logOpsInner(OperationContext* opCtx,
 
     // Set replCoord last optime only after we're sure the WUOW didn't abort and roll back.
     opCtx->recoveryUnit()->onCommit([opCtx, replCoord, finalOpTime] {
+
+        auto lastAppliedTimestamp = finalOpTime.getTimestamp();
+        const auto storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+        if (storageEngine->supportsDocLocking()) {
+            // If the storage engine supports document level locking, then it is possible for
+            // oplog writes to commit out of order. In that case, we only want to set our last
+            // applied optime to the all committed timestamp to ensure that all operations earlier
+            // than the last applied optime have been storage-committed. We are guaranteed that
+            // whatever operation occurred at the all committed timestamp occurred during the same
+            // term as 'finalOpTime'. When a primary enters a new term, it first commits a
+            // 'new primary' oplog entry in the new term before accepting any new writes. This
+            // will ensure that the all committed timestamp is in the new term before any client
+            // writes are committed.
+            lastAppliedTimestamp = storageEngine->getAllCommittedTimestamp(opCtx);
+        }
+
         // Optimes on the primary should always represent consistent database states.
         replCoord->setMyLastAppliedOpTimeForward(
-            finalOpTime, ReplicationCoordinator::DataConsistency::Consistent);
+            OpTime(lastAppliedTimestamp, finalOpTime.getTerm()),
+            ReplicationCoordinator::DataConsistency::Consistent);
+
+        // We set the last op on the client to 'finalOpTime', because that contains the timestamp
+        // of the operation that the client actually performed.
         ReplClientInfo::forClient(opCtx->getClient()).setLastOp(finalOpTime);
     });
 }
@@ -627,6 +651,14 @@ OplogSlot getNextOpTime(OperationContext* opCtx) {
     invariant(_localOplogCollection);
     OplogSlot os;
     _getNextOpTimes(opCtx, _localOplogCollection, 1, &os);
+    return os;
+}
+
+OplogSlot getNextOpTimeNoPersistForTesting(OperationContext* opCtx) {
+    invariant(_localOplogCollection);
+    OplogSlot os;
+    bool persist = false;  // Don't update the storage engine with the allocated OpTime.
+    _getNextOpTimes(opCtx, _localOplogCollection, 1, &os, persist);
     return os;
 }
 

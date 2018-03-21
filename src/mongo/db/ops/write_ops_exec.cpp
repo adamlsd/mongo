@@ -325,11 +325,15 @@ void insertDocuments(OperationContext* opCtx,
     // This must only be done for doc-locking storage engines, which are allowed to insert oplog
     // documents out-of-timestamp-order.  For other storage engines, the oplog entries must be
     // physically written in timestamp order, so we defer optime assignment until the oplog is about
-    // to be written.
+    // to be written. Multidocument transactions should not generate opTimes because they are
+    // generated at the time of commit.
     auto batchSize = std::distance(begin, end);
     if (supportsDocLocking()) {
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-        if (!replCoord->isOplogDisabledFor(opCtx, collection->ns())) {
+        auto session = OperationContextSession::get(opCtx);
+        auto inTransaction = session && session->inMultiDocumentTransaction();
+
+        if (!inTransaction && !replCoord->isOplogDisabledFor(opCtx, collection->ns())) {
             // Populate 'slots' with new optimes for each insert.
             // This also notifies the storage engine of each new timestamp.
             auto oplogSlots = repl::getNextOpTimes(opCtx, batchSize);
@@ -587,10 +591,10 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
     request.setUpsert(op.getUpsert());
 
     auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    request.setYieldPolicy(readConcernArgs.getLevel() ==
-                                   repl::ReadConcernLevel::kSnapshotReadConcern
-                               ? PlanExecutor::INTERRUPT_ONLY
-                               : PlanExecutor::YIELD_AUTO);
+    request.setYieldPolicy(
+        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+            ? PlanExecutor::INTERRUPT_ONLY
+            : PlanExecutor::YIELD_AUTO);  // ParsedUpdate overrides this for $isolated.
 
     ParsedUpdate parsedUpdate(opCtx, &request);
     uassertStatusOK(parsedUpdate.parseRequest());
@@ -605,7 +609,7 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
         collection.emplace(opCtx,
                            ns,
                            MODE_IX,  // DB is always IX, even if collection is X.
-                           MODE_IX);
+                           parsedUpdate.isIsolated() ? MODE_X : MODE_IX);
         if (collection->getCollection() || !op.getUpsert())
             break;
 
@@ -742,10 +746,10 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
     request.setCollation(write_ops::collationOf(op));
     request.setMulti(op.getMulti());
     auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    request.setYieldPolicy(readConcernArgs.getLevel() ==
-                                   repl::ReadConcernLevel::kSnapshotReadConcern
-                               ? PlanExecutor::INTERRUPT_ONLY
-                               : PlanExecutor::YIELD_AUTO);
+    request.setYieldPolicy(
+        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
+            ? PlanExecutor::INTERRUPT_ONLY
+            : PlanExecutor::YIELD_AUTO);  // ParsedDelete overrides this for $isolated.
     request.setStmtId(stmtId);
 
     ParsedDelete parsedDelete(opCtx, &request);
@@ -760,7 +764,7 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
     AutoGetCollection collection(opCtx,
                                  ns,
                                  MODE_IX,  // DB is always IX, even if collection is X.
-                                 MODE_IX);
+                                 parsedDelete.isIsolated() ? MODE_X : MODE_IX);
     if (collection.getDb()) {
         curOp.raiseDbProfileLevel(collection.getDb()->getProfilingLevel());
     }

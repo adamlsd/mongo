@@ -1288,7 +1288,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
         collection ? static_cast<const ExtensionsCallback&>(
                          ExtensionsCallbackReal(opCtx, &collection->ns()))
                    : static_cast<const ExtensionsCallback&>(ExtensionsCallbackNoop()),
-        MatchExpressionParser::kAllowAllSpecialFeatures);
+        MatchExpressionParser::kAllowAllSpecialFeatures &
+            ~MatchExpressionParser::AllowedFeatures::kIsolated);
 
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
@@ -1330,7 +1331,11 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorCount(
             opCtx, std::move(ws), std::move(root), request.getNs(), yieldPolicy);
     }
 
-    const size_t plannerOptions = QueryPlannerParams::IS_COUNT;
+    size_t plannerOptions = QueryPlannerParams::IS_COUNT;
+    if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, request.getNs().ns())) {
+        plannerOptions |= QueryPlannerParams::INCLUDE_SHARD_FILTER;
+    }
+
     StatusWith<PrepareExecutionResult> executionResult =
         prepareExecution(opCtx, collection, ws.get(), std::move(cq), plannerOptions);
     if (!executionResult.isOK()) {
@@ -1557,7 +1562,8 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> getExecutorDistinct(
                                      std::move(qr),
                                      expCtx,
                                      extensionsCallback,
-                                     MatchExpressionParser::kAllowAllSpecialFeatures);
+                                     MatchExpressionParser::kAllowAllSpecialFeatures &
+                                         ~MatchExpressionParser::AllowedFeatures::kIsolated);
     if (!statusWithCQ.isOK()) {
         return statusWithCQ.getStatus();
     }

@@ -124,23 +124,9 @@ const StringMap<int> sessionCheckoutWhitelist = {{"aggregate", 1},
                                                  {"insert", 1},
                                                  {"mapReduce", 1},
                                                  {"parallelCollectionScan", 1},
+                                                 {"prepareTransaction", 1},
                                                  {"refreshLogicalSessionCacheNow", 1},
                                                  {"update", 1}};
-
-// The command names for which readConcern level snapshot is allowed. The getMore command is
-// implicitly allowed to operate on a cursor which was opened under readConcern level snapshot.
-const StringMap<int> readConcernSnapshotWhitelist = {{"aggregate", 1},
-                                                     {"count", 1},
-                                                     {"delete", 1},
-                                                     {"distinct", 1},
-                                                     {"find", 1},
-                                                     {"findandmodify", 1},
-                                                     {"findAndModify", 1},
-                                                     {"geoSearch", 1},
-                                                     {"group", 1},
-                                                     {"insert", 1},
-                                                     {"parallelCollectionScan", 1},
-                                                     {"update", 1}};
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -412,9 +398,7 @@ LogicalTime computeOperationTime(OperationContext* opCtx,
 void invokeInTransaction(OperationContext* opCtx,
                          CommandInvocation* invocation,
                          CommandReplyBuilder* replyBuilder) {
-    // Only get the session if it's at top nesting level.
-    const bool topLevelOnly = true;
-    auto session = OperationContextSession::get(opCtx, topLevelOnly);
+    auto session = OperationContextSession::get(opCtx);
     if (!session) {
         // Run the command directly if we're not in a transaction.
         invocation->run(opCtx, replyBuilder);
@@ -670,17 +654,7 @@ void execCommandDatabase(OperationContext* opCtx,
         auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
         readConcernArgs = uassertStatusOK(_extractReadConcern(invocation.get(), request.body));
 
-        // TODO SERVER-33354: Remove whitelist.
         if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
-            const bool snapshotAllowedForCommand =
-                readConcernSnapshotWhitelist.find(command->getName()) !=
-                readConcernSnapshotWhitelist.cend();
-            uassert(ErrorCodes::InvalidOptions,
-                    str::stream() << "readConcern level snapshot may not be used with the "
-                                  << command->getName()
-                                  << " command",
-                    snapshotAllowedForCommand);
-
             uassert(ErrorCodes::InvalidOptions,
                     "readConcernLevel snapshot requires a session ID",
                     opCtx->getLogicalSessionId());

@@ -67,7 +67,10 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
+mongo::AuthInfo mongo::internalSecurity;
+
 namespace mongo {
+namespace {
 
 using std::begin;
 using std::end;
@@ -76,7 +79,6 @@ using std::back_inserter;
 using std::string;
 using std::vector;
 
-AuthInfo internalSecurity;
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
 (InitializerContext* const context) try {
@@ -109,6 +111,8 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOpti
 } catch (...) {
     return exceptionToStatus();
 }
+}  // namespace
+
 
 MONGO_REGISTER_STATIC_SHIM(AuthorizationManager, create)()->std::unique_ptr<AuthorizationManager> {
     return std::make_unique<AuthorizationManagerImpl>();

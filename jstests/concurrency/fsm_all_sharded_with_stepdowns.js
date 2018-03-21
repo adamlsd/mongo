@@ -12,11 +12,10 @@ var blacklist = [
     'create_database.js',      // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'drop_database.js',        // SERVER-17397 Drops of sharded namespaces may not fully succeed
 
-    // Disabled due to SERVER-3645, '.count() can be wrong on sharded collections'.
-    // This bug is problematic for these workloads because they assert on count() values:
+    // Disabled due to SERVER-33753, '.count() without a predicate can be wrong on sharded
+    // collections'. This bug is problematic for these workloads because they assert on count()
+    // values:
     'agg_match.js',
-    'count.js',
-    'count_limit_skip.js',
 
     // $lookup and $graphLookup are not supported on sharded collections.
     'agg_graph_lookup.js',
@@ -107,8 +106,6 @@ var blacklist = [
     'kill_rooted_or.js',
     'view_catalog_cycle_with_drop.js',
     'view_catalog.js',
-
-    'toggle_feature_compatibility.js',  // Sets FCV to 3.4, which will cause session use to fail.
 
     // Use getmores.
     'agg_base.js',

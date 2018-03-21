@@ -43,11 +43,12 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/exec/working_set_common.h"
+#include "mongo/db/index/multikey_paths.h"
 #include "mongo/db/logical_clock.h"
+#include "mongo/db/multi_key_path_tracker.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/repl/timestamp_block.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/mutex.h"
@@ -57,6 +58,7 @@
 #include "mongo/util/processinfo.h"
 #include "mongo/util/progress_meter.h"
 #include "mongo/util/quick_exit.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 
@@ -68,6 +70,7 @@ MONGO_INITIALIZER(InitializeMultiIndexBlockFactory)(InitializerContext* const) {
         });
     return Status::OK();
 }
+
 
 /**
  * Returns true if writes to the catalog entry for the input namespace require being
@@ -180,9 +183,9 @@ MultiIndexBlockImpl::~MultiIndexBlockImpl() {
                 _indexes[i].block->fail();
             }
             if (requiresCommitTimestamp) {
-                fassertStatusOK(50703,
-                                _opCtx->recoveryUnit()->setTimestamp(
-                                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+                fassert(50703,
+                        _opCtx->recoveryUnit()->setTimestamp(
+                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
             }
             wunit.commit();
             return;
@@ -311,9 +314,9 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
         _backgroundOperation.reset(new BackgroundOperation(ns));
 
     if (requiresCommitTimestamp) {
-        fassertStatusOK(50702,
-                        _opCtx->recoveryUnit()->setTimestamp(
-                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+        fassert(50702,
+                _opCtx->recoveryUnit()->setTimestamp(
+                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
     }
 
     wunit.commit();
@@ -333,6 +336,16 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
 
 Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* dupsOut) {
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
+
+    // Refrain from persisting any multikey updates as a result from building the index. Instead,
+    // accumulate them in the `MultikeyPathTracker` and do the write as part of the update that
+    // commits the index.
+    auto stopTracker =
+        MakeGuard([this] { MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo(); });
+    if (MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo()) {
+        stopTracker.Dismiss();
+    }
+    MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo();
 
     const char* curopMessage = _buildInBackground ? "Index Build (background)" : "Index Build";
     const auto numRecords = _collection->numRecords(_opCtx);
@@ -443,7 +456,7 @@ Status MultiIndexBlockImpl::insertAllDocumentsInCollection(std::set<RecordId>* d
         }
 
         if (_buildInBackground) {
-            _opCtx->lockState()->restoreLockState(lockInfo);
+            _opCtx->lockState()->restoreLockState(_opCtx, lockInfo);
             _opCtx->recoveryUnit()->abandonSnapshot();
             return Status(ErrorCodes::OperationFailed,
                           "background index build aborted due to failpoint");
@@ -486,18 +499,16 @@ Status MultiIndexBlockImpl::insert(const BSONObj& doc, const RecordId& loc) {
 
 Status MultiIndexBlockImpl::doneInserting(std::set<RecordId>* dupsOut) {
     invariant(!_opCtx->lockState()->inAWriteUnitOfWork());
-    const bool requiresCommitTimestamp = requiresGhostCommitTimestamp(_opCtx, _collection->ns());
     for (size_t i = 0; i < _indexes.size(); i++) {
         if (_indexes[i].bulk == NULL)
             continue;
         LOG(1) << "\t bulk commit starting for index: "
                << _indexes[i].block->getEntry()->descriptor()->indexName();
         Status status = _indexes[i].real->commitBulk(_opCtx,
-                                                     std::move(_indexes[i].bulk),
+                                                     _indexes[i].bulk.get(),
                                                      _allowInterruption,
                                                      _indexes[i].options.dupsAllowed,
-                                                     dupsOut,
-                                                     requiresCommitTimestamp);
+                                                     dupsOut);
         if (!status.isOK()) {
             return status;
         }
@@ -514,18 +525,42 @@ void MultiIndexBlockImpl::abortWithoutCleanup() {
 void MultiIndexBlockImpl::commit() {
     const bool requiresCommitTimestamp = requiresGhostCommitTimestamp(_opCtx, _collection->ns());
 
+    // Do not interfere with writing multikey information when committing index builds.
+    auto restartTracker =
+        MakeGuard([this] { MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo(); });
+    if (!MultikeyPathTracker::get(_opCtx).isTrackingMultikeyPathInfo()) {
+        restartTracker.Dismiss();
+    }
+    MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo();
+
     for (size_t i = 0; i < _indexes.size(); i++) {
         _indexes[i].block->success();
+
+        // The bulk builder will track multikey information itself. Non-bulk builders re-use the
+        // code path that a typical insert/update uses. State is altered on the non-bulk build
+        // path to accumulate the multikey information on the `MultikeyPathTracker`.
+        if (_indexes[i].bulk) {
+            const auto& bulkBuilder = _indexes[i].bulk;
+            if (bulkBuilder->isMultikey()) {
+                _indexes[i].block->getEntry()->setMultikey(_opCtx, bulkBuilder->getMultikeyPaths());
+            }
+        } else {
+            auto multikeyPaths =
+                boost::optional<MultikeyPaths>(MultikeyPathTracker::get(_opCtx).getMultikeyPathInfo(
+                    _collection->ns(), _indexes[i].block->getIndexName()));
+            if (multikeyPaths) {
+                _indexes[i].block->getEntry()->setMultikey(_opCtx, *multikeyPaths);
+            }
+        }
     }
 
     if (requiresCommitTimestamp) {
-        fassertStatusOK(50701,
-                        _opCtx->recoveryUnit()->setTimestamp(
-                            LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
+        fassert(50701,
+                _opCtx->recoveryUnit()->setTimestamp(
+                    LogicalClock::get(_opCtx)->getClusterTime().asTimestamp()));
     }
 
     _opCtx->recoveryUnit()->registerChange(std::make_unique<SetNeedToCleanupOnRollback>(this));
     _needToCleanup = false;
 }
-
 }  // namespace mongo

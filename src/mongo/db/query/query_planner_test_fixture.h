@@ -103,8 +103,6 @@ protected:
                                            long long ntoreturn,
                                            const BSONObj& hint);
 
-    void runQuerySnapshot(const BSONObj& query);
-
     void runQueryFull(const BSONObj& query,
                       const BSONObj& sort,
                       const BSONObj& proj,
@@ -112,8 +110,7 @@ protected:
                       long long ntoreturn,
                       const BSONObj& hint,
                       const BSONObj& minObj,
-                      const BSONObj& maxObj,
-                      bool snapshot);
+                      const BSONObj& maxObj);
 
     //
     // Same as runQuery* functions except we expect a failed status from the planning stage.
@@ -150,8 +147,7 @@ protected:
                              long long ntoreturn,
                              const BSONObj& hint,
                              const BSONObj& minObj,
-                             const BSONObj& maxObj,
-                             bool snapshot);
+                             const BSONObj& maxObj);
 
     /**
      * The other runQuery* methods run the query as through it is an OP_QUERY style find. This

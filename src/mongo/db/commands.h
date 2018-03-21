@@ -39,6 +39,7 @@
 #include "mongo/db/auth/resource_pattern.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/server_status_metric.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/query/explain.h"
 #include "mongo/db/repl/read_concern_args.h"
@@ -80,6 +81,13 @@ struct CommandHelpers {
 
     // @return s.isOK()
     static bool appendCommandStatus(BSONObjBuilder& result, const Status& status);
+
+    /**
+     * If "ok" field is present in `reply`, uses its truthiness.
+     * Otherwise, the absence of failure is considered success, `reply` is patched to indicate it.
+     * Returns true if reply indicates a success.
+     */
+    static bool extractOrAppendOk(BSONObjBuilder& reply);
 
     /**
      * Helper for setting a writeConcernError field in the command result object if
@@ -128,11 +136,13 @@ struct CommandHelpers {
             arg == "$clusterTime" ||                     //
             arg == "maxTimeMS" ||                        //
             arg == "readConcern" ||                      //
+            arg == "databaseVersion" ||                  //
             arg == "shardVersion" ||                     //
             arg == "tracking_info" ||                    //
             arg == "writeConcern" ||                     //
             arg == "lsid" ||                             //
             arg == "txnNumber" ||                        //
+            arg == "autocommit" ||                       //
             false;  // These comments tell clang-format to keep this line-oriented.
     }
 
@@ -182,8 +192,17 @@ struct CommandHelpers {
      */
     static BSONObj runCommandDirectly(OperationContext* opCtx, const OpMsgRequest& request);
 
+    static void logAuthViolation(OperationContext* opCtx,
+                                 const Command* command,
+                                 const OpMsgRequest& request,
+                                 ErrorCodes::Error err);
+
+    static void uassertNoDocumentSequences(StringData commandName, const OpMsgRequest& request);
+
     static constexpr StringData kHelpFieldName = "help"_sd;
 };
+
+class CommandInvocation;
 
 /**
  * Serves as a base for server commands. See the constructor for more details.
@@ -204,6 +223,9 @@ public:
     // Do not remove or relocate the definition of this "key function".
     // See https://gcc.gnu.org/wiki/VerboseDiagnostics#missing_vtable
     virtual ~Command();
+
+    virtual std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
+                                                     const OpMsgRequest& request) = 0;
 
     /**
      * Returns the command's name. This value never changes for the lifetime of the command.
@@ -238,16 +260,6 @@ public:
     }
 
     /**
-     * supportsWriteConcern returns true if this command should be parsed for a writeConcern
-     * field and wait for that write concern to be satisfied after the command runs.
-     *
-     * @param cmd is a BSONObj representation of the command that is used to determine if the
-     *            the command supports a write concern. Ex. aggregate only supports write concern
-     *            when $out is provided.
-     */
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const = 0;
-
-    /**
      * Return true if only the admin ns has privileges to run this command.
      */
     virtual bool adminOnly() const {
@@ -265,7 +277,7 @@ public:
         return false;
     }
 
-    virtual AllowedOnSecondary secondaryAllowed(ServiceContext*) const = 0;
+    virtual AllowedOnSecondary secondaryAllowed(ServiceContext* context) const = 0;
 
     /**
      * Override and return fales if the command opcounters should not be incremented on
@@ -290,23 +302,6 @@ public:
     }
 
     /**
-     * Commands which can be explained override this method. Any operation which has a query
-     * part and executes as a tree of execution stages can be explained. A command should
-     * implement explain by:
-     *
-     *   1) Calling its custom parse function in order to parse the command. The output of
-     *   this function should be a CanonicalQuery (representing the query part of the
-     *   operation), and a PlanExecutor which wraps the tree of execution stages.
-     *
-     *   2) Calling Explain::explainStages(...) on the PlanExecutor. This is the function
-     *   which knows how to convert an execution stage tree into explain output.
-     */
-    virtual Status explain(OperationContext* opCtx,
-                           const std::string& dbname,
-                           const BSONObj& cmdObj,
-                           ExplainOptions::Verbosity verbosity,
-                           BSONObjBuilder* out) const;
-    /**
      * Checks if the client associated with the given OperationContext is authorized to run this
      * command.
      */
@@ -317,6 +312,10 @@ public:
      * Redacts "cmdObj" in-place to a form suitable for writing to logs.
      *
      * The default implementation does nothing.
+     *
+     * This is NOT used to implement user-configurable redaction of PII. Instead, that is
+     * implemented via the set of redact() free functions, which are no-ops when log redaction is
+     * disabled. All PII must pass through one of the redact() overloads before being logged.
      */
     virtual void redactForLogging(mutablebson::Document* cmdObj) const {}
 
@@ -334,33 +333,6 @@ public:
      */
     virtual bool maintenanceOk() const {
         return true; /* assumed true prior to commit */
-    }
-
-    /**
-     * Returns true if this Command supports the given readConcern level. Takes the command object
-     * and the name of the database on which it was invoked as arguments, so that readConcern can be
-     * conditionally rejected based on the command's parameters and/or namespace.
-     *
-     * If a readConcern level argument is sent to a command that returns false the command processor
-     * will reject the command, returning an appropriate error message.
-     *
-     * Note that this is never called on mongos. Sharded commands are responsible for forwarding
-     * the option to the shards as needed. We rely on the shards to fail the commands in the
-     * cases where it isn't supported.
-     */
-    virtual bool supportsReadConcern(const std::string& dbName,
-                                     const BSONObj& cmdObj,
-                                     repl::ReadConcernLevel level) const {
-        return level == repl::ReadConcernLevel::kLocalReadConcern;
-    }
-
-    /**
-     * Returns true if command allows afterClusterTime in its readConcern. The command may not allow
-     * it if it is specifically intended not to take any LockManager locks. Waiting for
-     * afterClusterTime takes the MODE_IS lock.
-     */
-    virtual bool allowsAfterClusterTime(const BSONObj& cmdObj) const {
-        return true;
     }
 
     /**
@@ -396,13 +368,6 @@ public:
     }
 
     /**
-     * Runs the command.
-     *
-     * Forwards to enhancedRun, but additionally runs audit checks if run throws unauthorized.
-     */
-    bool publicRun(OperationContext* opCtx, const OpMsgRequest& request, BSONObjBuilder& result);
-
-    /**
      * Generates a reply from the 'help' information associated with a command. The state of
      * the passed ReplyBuilder will be in kOutputDocs after calling this method.
      */
@@ -422,46 +387,7 @@ public:
                                      OperationContext* opCtx,
                                      const OpMsgRequest& request);
 
-    /**
-     * If true, then testing commands are available. Defaults to false.
-     *
-     * Testing commands should conditionally register themselves by consulting this flag:
-     *
-     *     MONGO_INITIALIZER(RegisterMyTestCommand)(InitializerContext* context) {
-     *         if (Command::testCommandsEnabled) {
-     *             // Leaked intentionally: a Command registers itself when constructed.
-     *             new MyTestCommand();
-     *         }
-     *         return Status::OK();
-     *     }
-     *
-     * To make testing commands available by default, change the value to true before running any
-     * mongo initializers:
-     *
-     *     int myMain(int argc, char** argv, char** envp) {
-     *         Command::testCommandsEnabled = true;
-     *         ...
-     *         runGlobalInitializersOrDie(argc, argv, envp);
-     *         ...
-     *     }
-     *
-     * Note: variable is defined in test_commands_enabled.cpp as a dependency hack.
-     */
-    static bool testCommandsEnabled;
-
 private:
-    /**
-     * Runs the command.
-     *
-     * The default implementation verifies that request has no document sections then forwards to
-     * BasicCommand::run().
-     *
-     * For now commands should only implement if they need access to OP_MSG-specific functionality.
-     */
-    virtual bool enhancedRun(OperationContext* opCtx,
-                             const OpMsgRequest& request,
-                             BSONObjBuilder& result) = 0;
-
     // Counters for how many times this command has been executed and failed
     Counter64 _commandsExecuted;
     Counter64 _commandsFailed;
@@ -474,11 +400,126 @@ private:
     ServerStatusMetricField<Counter64> _commandsFailedMetric;
 };
 
+class CommandReplyBuilder {
+public:
+    explicit CommandReplyBuilder(BSONObjBuilder bodyObj);
+
+    CommandReplyBuilder(const CommandReplyBuilder&) = delete;
+    CommandReplyBuilder& operator=(const CommandReplyBuilder&) = delete;
+
+    /**
+     * Returns a BSONObjBuilder that can be used to build the reply in-place. The returned
+     * builder (or an object into which it has been moved) must be completed before calling
+     * any more methods on this object. A builder is completed by a call to `done()` or by
+     * its destructor. Can be called repeatedly to append multiple things to the reply, as
+     * long as each returned builder must be completed between calls.
+     */
+    BSONObjBuilder getBodyBuilder() const;
+
+    void reset();
+
+private:
+    BufBuilder* const _bodyBuf;
+    const std::size_t _bodyOffset;
+};
+
+/**
+ * Represents a single invocation of a given command.
+ */
+class CommandInvocation {
+public:
+    CommandInvocation(const Command* definition) : _definition(definition) {}
+    virtual ~CommandInvocation();
+
+    /**
+     * Runs the command, filling in result. Any exception thrown from here will cause result
+     * to be reset and filled in with the error. Non-const to permit modifying the request
+     * type to perform normalization. Calls that return normally without setting an "ok"
+     * field into result are assumed to have completed successfully. Failure should be
+     * indicated either by throwing (preferred), or by calling
+     * `CommandHelpers::extractOrAppendOk`.
+     */
+    virtual void run(OperationContext* opCtx, CommandReplyBuilder* result) = 0;
+
+    virtual void explain(OperationContext* opCtx,
+                         ExplainOptions::Verbosity verbosity,
+                         BSONObjBuilder* result) = 0;
+
+    /**
+     * The primary namespace on which this command operates. May just be the db.
+     */
+    virtual NamespaceString ns() const = 0;
+
+    /**
+     * Returns true if this command should be parsed for a writeConcern field and wait
+     * for that write concern to be satisfied after the command runs.
+     */
+    virtual bool supportsWriteConcern() const = 0;
+
+    /**
+     * Returns true if this Command supports the given readConcern level. Takes the command object
+     * and the name of the database on which it was invoked as arguments, so that readConcern can be
+     * conditionally rejected based on the command's parameters and/or namespace.
+     *
+     * If a readConcern level argument is sent to a command that returns false the command processor
+     * will reject the command, returning an appropriate error message.
+     *
+     * Note that this is never called on mongos. Sharded commands are responsible for forwarding
+     * the option to the shards as needed. We rely on the shards to fail the commands in the
+     * cases where it isn't supported.
+     */
+    virtual bool supportsReadConcern(repl::ReadConcernLevel level) const {
+        return level == repl::ReadConcernLevel::kLocalReadConcern;
+    }
+
+    /**
+     * Returns true if command allows afterClusterTime in its readConcern. The command may not allow
+     * it if it is specifically intended not to take any LockManager locks. Waiting for
+     * afterClusterTime takes the MODE_IS lock.
+     */
+    virtual bool allowsAfterClusterTime() const {
+        return true;
+    }
+
+    virtual Command::AllowedOnSecondary secondaryAllowed(ServiceContext* context) const = 0;
+
+    /**
+     * The command definition that this invocation runs.
+     * Note: nonvirtual.
+     */
+    const Command* definition() const {
+        return _definition;
+    }
+
+    /**
+     * Throws DBException, most likely `ErrorCodes::Unauthorized`, unless
+     * the client executing "opCtx" is authorized to run the given command
+     * with the given parameters on the given named database.
+     * Note: nonvirtual.
+     */
+    void checkAuthorization(OperationContext* opCtx) const;
+
+protected:
+    ResourcePattern resourcePattern() const;
+
+private:
+    /**
+     * Polymorphic extension point for `checkAuthorization`.
+     * Throws unless `opCtx`'s client is authorized to `run()` this.
+     */
+    virtual void doCheckAuthorization(OperationContext* opCtx) const = 0;
+
+    const Command* const _definition;
+};
+
 /**
  * A subclass of Command that only cares about the BSONObj body and doesn't need access to document
  * sequences.
  */
 class BasicCommand : public Command {
+private:
+    class Invocation;
+
 public:
     using Command::Command;
 
@@ -498,6 +539,23 @@ public:
                      BSONObjBuilder& result) = 0;
 
     /**
+     * Commands which can be explained override this method. Any operation which has a query
+     * part and executes as a tree of execution stages can be explained. A command should
+     * implement explain by:
+     *
+     *   1) Calling its custom parse function in order to parse the command. The output of
+     *   this function should be a CanonicalQuery (representing the query part of the
+     *   operation), and a PlanExecutor which wraps the tree of execution stages.
+     *
+     *   2) Calling Explain::explainStages(...) on the PlanExecutor. This is the function
+     *   which knows how to convert an execution stage tree into explain output.
+     */
+    virtual Status explain(OperationContext* opCtx,
+                           const OpMsgRequest& request,
+                           ExplainOptions::Verbosity verbosity,
+                           BSONObjBuilder* out) const;
+
+    /**
      * Checks if the client associated with the given OperationContext is authorized to run this
      * command. Default implementation defers to checkAuthForCommand.
      */
@@ -505,7 +563,42 @@ public:
                                          const std::string& dbname,
                                          const BSONObj& cmdObj) const;
 
+    /**
+     * supportsWriteConcern returns true if this command should be parsed for a writeConcern
+     * field and wait for that write concern to be satisfied after the command runs.
+     *
+     * @param cmd is a BSONObj representation of the command that is used to determine if the
+     *            the command supports a write concern. Ex. aggregate only supports write concern
+     *            when $out is provided.
+     */
+    virtual bool supportsWriteConcern(const BSONObj& cmdObj) const = 0;
+
+    /**
+     * Returns true if this Command supports the given readConcern level. Takes the command object
+     * and the name of the database on which it was invoked as arguments, so that readConcern can be
+     * conditionally rejected based on the command's parameters and/or namespace.
+     *
+     * If a readConcern level argument is sent to a command that returns false the command processor
+     * will reject the command, returning an appropriate error message.
+     *
+     * Note that this is never called on mongos. Sharded commands are responsible for forwarding
+     * the option to the shards as needed. We rely on the shards to fail the commands in the
+     * cases where it isn't supported.
+     */
+    virtual bool supportsReadConcern(const std::string& dbName,
+                                     const BSONObj& cmdObj,
+                                     repl::ReadConcernLevel level) const {
+        return level == repl::ReadConcernLevel::kLocalReadConcern;
+    }
+
+    virtual bool allowsAfterClusterTime(const BSONObj& cmdObj) const {
+        return true;
+    }
+
 private:
+    std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
+                                             const OpMsgRequest& request) final;
+
     //
     // Deprecated virtual methods.
     //
@@ -537,18 +630,9 @@ private:
     //
 
     /**
-     * Calls run().
-     */
-    bool enhancedRun(OperationContext* opCtx,
-                     const OpMsgRequest& request,
-                     BSONObjBuilder& result) final;
-
-    /**
      * Calls checkAuthForOperation.
      */
     Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) const final;
-
-    void uassertNoDocumentSequences(const OpMsgRequest& request) const;
 };
 
 /**

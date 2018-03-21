@@ -121,7 +121,11 @@ public:
 
     virtual bool supportsRecoverToStableTimestamp() const override;
 
-    virtual Status recoverToStableTimestamp() override;
+    virtual StatusWith<Timestamp> recoverToStableTimestamp() override;
+
+    virtual boost::optional<Timestamp> getRecoveryTimestamp() const override;
+
+    virtual Timestamp getAllCommittedTimestamp(OperationContext* opCtx) const override;
 
     bool supportsReadConcernSnapshot() const final;
 
@@ -153,6 +157,10 @@ public:
     StatusWith<std::vector<StorageEngine::CollectionIndexNamePair>> reconcileCatalogAndIdents(
         OperationContext* opCtx) override;
 
+    /**
+     * When loading after an unclean shutdown, this performs cleanup on the KVCatalog and unsets the
+     * startingAfterUncleanShutdown decoration on the global ServiceContext.
+     */
     void loadCatalog(OperationContext* opCtx) final;
 
     void closeCatalog(OperationContext* opCtx) final;

@@ -454,13 +454,17 @@ assert = (function() {
         assert.doesNotThrow(func, params, func.toString());
     };
 
-    function _rawReplyOkAndNoWriteErrors(raw) {
+    function _rawReplyOkAndNoWriteErrors(raw, {ignoreWriteErrors, ignoreWriteConcernErrors} = {}) {
         if (raw.ok === 0) {
             return false;
         }
 
         // A write command response may have ok:1 but write errors.
-        if (raw.hasOwnProperty("writeErrors") && raw.writeErrors.length > 0) {
+        if (!ignoreWriteErrors && raw.hasOwnProperty("writeErrors") && raw.writeErrors.length > 0) {
+            return false;
+        }
+
+        if (!ignoreWriteConcernErrors && raw.hasOwnProperty("writeConcernError")) {
             return false;
         }
 
@@ -474,7 +478,7 @@ assert = (function() {
             res instanceof BulkWriteResult || res instanceof BulkWriteError;
     }
 
-    function _assertCommandWorked(res, msg, {ignoreWriteErrors}) {
+    function _assertCommandWorked(res, msg, {ignoreWriteErrors, ignoreWriteConcernErrors}) {
         _validateAssertionMessage(msg);
 
         if (typeof res !== "object") {
@@ -489,7 +493,7 @@ assert = (function() {
         if (_isWriteResultType(res)) {
             // These can only contain write errors, not command errors.
             if (!ignoreWriteErrors) {
-                assert.writeOK(res, msg);
+                assert.writeOK(res, msg, {ignoreWriteConcernErrors: ignoreWriteConcernErrors});
             }
         } else if (res instanceof WriteCommandError || res instanceof Error) {
             // A WriteCommandError implies ok:0.
@@ -499,14 +503,11 @@ assert = (function() {
         } else if (res.hasOwnProperty("ok")) {
             // Handle raw command responses or cases like MapReduceResult which extend command
             // response.
-            if (ignoreWriteErrors) {
-                if (res.ok === 0) {
-                    doassert(makeFailMsg(), res);
-                }
-            } else {
-                if (!_rawReplyOkAndNoWriteErrors(res)) {
-                    doassert(makeFailMsg(), res);
-                }
+            if (!_rawReplyOkAndNoWriteErrors(res, {
+                    ignoreWriteErrors: ignoreWriteErrors,
+                    ignoreWriteConcernErrors: ignoreWriteConcernErrors
+                })) {
+                doassert(makeFailMsg(), res);
             }
         } else if (res.hasOwnProperty("acknowledged")) {
             // CRUD api functions return plain js objects with an acknowledged property.
@@ -563,13 +564,17 @@ assert = (function() {
             if (_rawReplyOkAndNoWriteErrors(res)) {
                 doassert(makeFailMsg(), res);
             }
+
             if (expectedCode !== kAnyErrorCode) {
                 let foundCode = false;
                 if (res.hasOwnProperty("code") && expectedCode.includes(res.code)) {
                     foundCode = true;
                 } else if (res.hasOwnProperty("writeErrors")) {
                     foundCode = res.writeErrors.some((err) => expectedCode.includes(err.code));
+                } else if (res.hasOwnProperty("writeConcernError")) {
+                    foundCode = expectedCode.includes(res.writeConcernError.code);
                 }
+
                 if (!foundCode) {
                     doassert(makeFailCodeMsg(), res);
                 }
@@ -593,6 +598,15 @@ assert = (function() {
         return _assertCommandWorked(res, msg, {ignoreWriteErrors: true});
     };
 
+    assert.commandWorkedIgnoringWriteConcernErrors = function(res, msg) {
+        return _assertCommandWorked(res, msg, {ignoreWriteConcernErrors: true});
+    };
+
+    assert.commandWorkedIgnoringWriteErrorsAndWriteConcernErrors = function(res, msg) {
+        return _assertCommandWorked(
+            res, msg, {ignoreWriteConcernErrors: true, ignoreWriteErrors: true});
+    };
+
     assert.commandFailed = function(res, msg) {
         return _assertCommandFailed(res, kAnyErrorCode, msg);
     };
@@ -602,21 +616,20 @@ assert = (function() {
         return _assertCommandFailed(res, expectedCode, msg);
     };
 
-    assert.writeOK = function(res, msg) {
-
+    assert.writeOK = function(res, msg, {ignoreWriteConcernErrors} = {}) {
         var errMsg = null;
 
         if (res instanceof WriteResult) {
             if (res.hasWriteError()) {
                 errMsg = "write failed with error: " + tojson(res);
-            } else if (res.hasWriteConcernError()) {
+            } else if (!ignoreWriteConcernErrors && res.hasWriteConcernError()) {
                 errMsg = "write concern failed with errors: " + tojson(res);
             }
         } else if (res instanceof BulkWriteResult) {
             // Can only happen with bulk inserts
             if (res.hasWriteErrors()) {
                 errMsg = "write failed with errors: " + tojson(res);
-            } else if (res.hasWriteConcernError()) {
+            } else if (!ignoreWriteConcernErrors && res.hasWriteConcernError()) {
                 errMsg = "write concern failed with errors: " + tojson(res);
             }
         } else if (res instanceof WriteCommandError || res instanceof WriteError ||
@@ -706,10 +719,37 @@ assert = (function() {
         doassert("supposed to be null (" + (_processMsg(msg) || "") + ") was: " + tojson(what));
     };
 
+    function _shouldUseBsonWoCompare(a, b) {
+        const bsonTypes = [
+            Timestamp,
+        ];
+
+        if (typeof a !== "object" || typeof b !== "object") {
+            return false;
+        }
+
+        for (let t of bsonTypes) {
+            if (a instanceof t && b instanceof t) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function _compare(f, a, b) {
+        if (_shouldUseBsonWoCompare(a, b)) {
+            const result = bsonWoCompare({_: a}, {_: b});
+            return f(result, 0);
+        }
+
+        return f(a, b);
+    }
+
     function _assertCompare(f, a, b, description, msg) {
         _validateAssertionMessage(msg);
 
-        if (f(a, b)) {
+        if (_compare(f, a, b)) {
             return;
         }
 
@@ -743,9 +783,17 @@ assert = (function() {
     assert.between = function(a, b, c, msg, inclusive) {
         _validateAssertionMessage(msg);
 
-        if ((inclusive == undefined || inclusive == true) && a <= b && b <= c) {
-            return;
-        } else if (a < b && b < c) {
+        let compareFn = (a, b) => {
+            return a < b;
+        };
+
+        if ((inclusive == undefined || inclusive == true)) {
+            compareFn = (a, b) => {
+                return a <= b;
+            };
+        }
+
+        if (_compare(compareFn, a, b) && _compare(compareFn, b, c)) {
             return;
         }
 

@@ -60,6 +60,8 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
+#include "mongo/util/producer_consumer_queue.h"
+#include "mongo/util/scopeguard.h"
 
 namespace mongo {
 namespace {
@@ -272,6 +274,7 @@ void MigrationDestinationManager::report(BSONObjBuilder& b,
             // Ignoring this error because this is an optional parameter and we catch timeout
             // exceptions later.
         }
+        b.append("waited", true);
     }
     stdx::lock_guard<stdx::mutex> sl(_mutex);
 
@@ -280,7 +283,6 @@ void MigrationDestinationManager::report(BSONObjBuilder& b,
     if (_sessionId) {
         b.append("sessionId", _sessionId->toString());
     }
-    b.append("waited", waitForSteadyOrDone);
 
     b.append("ns", _nss.ns());
     b.append("from", _fromShardConnString.toString());
@@ -314,7 +316,7 @@ BSONObj MigrationDestinationManager::getMigrationStatusReport() {
 }
 
 Status MigrationDestinationManager::start(const NamespaceString& nss,
-                                          ScopedRegisterReceiveChunk scopedRegisterReceiveChunk,
+                                          ScopedReceiveChunk scopedReceiveChunk,
                                           const MigrationSessionId& sessionId,
                                           const ConnectionString& fromShardConnString,
                                           const ShardId& fromShard,
@@ -326,7 +328,7 @@ Status MigrationDestinationManager::start(const NamespaceString& nss,
                                           const WriteConcernOptions& writeConcern) {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     invariant(!_sessionId);
-    invariant(!_scopedRegisterReceiveChunk);
+    invariant(!_scopedReceiveChunk);
 
     _state = READY;
     _stateChangedCV.notify_all();
@@ -348,7 +350,7 @@ Status MigrationDestinationManager::start(const NamespaceString& nss,
     _numSteady = 0;
 
     _sessionId = sessionId;
-    _scopedRegisterReceiveChunk = std::move(scopedRegisterReceiveChunk);
+    _scopedReceiveChunk = std::move(scopedReceiveChunk);
 
     // TODO: If we are here, the migrate thread must have completed, otherwise _active above
     // would be false, so this would never block. There is no better place with the current
@@ -366,6 +368,51 @@ Status MigrationDestinationManager::start(const NamespaceString& nss,
         });
 
     return Status::OK();
+}
+
+void MigrationDestinationManager::cloneDocumentsFromDonor(
+    OperationContext* opCtx,
+    stdx::function<void(OperationContext*, BSONObjIterator)> insertBatchFn,
+    stdx::function<BSONObj(OperationContext*)> fetchBatchFn) {
+
+    ProducerConsumerQueue<BSONObj> batches(1);
+    stdx::thread inserterThread{[&] {
+        Client::initThreadIfNotAlready("chunkInserter");
+        auto inserterOpCtx = Client::getCurrent()->makeOperationContext();
+        auto consumerGuard = MakeGuard([&] { batches.closeConsumerEnd(); });
+        try {
+            while (true) {
+                auto nextBatch = batches.pop(inserterOpCtx.get());
+                auto arr = nextBatch["objects"].Obj();
+                if (arr.isEmpty()) {
+                    return;
+                }
+                insertBatchFn(inserterOpCtx.get(), BSONObjIterator(arr));
+            }
+        } catch (...) {
+            stdx::lock_guard<Client> lk(*opCtx->getClient());
+            opCtx->getServiceContext()->killOperation(opCtx, exceptionToStatus().code());
+            log() << "Batch insertion failed " << causedBy(redact(exceptionToStatus()));
+        }
+    }};
+    auto inserterThreadJoinGuard = MakeGuard([&] {
+        batches.closeProducerEnd();
+        inserterThread.join();
+    });
+
+    while (true) {
+        opCtx->checkForInterrupt();
+
+        auto res = fetchBatchFn(opCtx);
+        batches.push(res.getOwned(), opCtx);
+        auto arr = res["objects"].Obj();
+        if (arr.isEmpty()) {
+            inserterThreadJoinGuard.Dismiss();
+            inserterThread.join();
+            opCtx->checkForInterrupt();
+            break;
+        }
+    }
 }
 
 Status MigrationDestinationManager::abort(const MigrationSessionId& sessionId) {
@@ -462,10 +509,8 @@ void MigrationDestinationManager::_migrateThread(BSONObj min,
     try {
         _migrateDriver(
             opCtx.get(), min, max, shardKeyPattern, fromShardConnString, epoch, writeConcern);
-    } catch (std::exception& e) {
-        setStateFail(str::stream() << "migrate failed: " << redact(e.what()));
     } catch (...) {
-        setStateFail("migrate failed with unknown exception: UNKNOWN ERROR");
+        setStateFail(str::stream() << "migrate failed: " << redact(exceptionToStatus()));
     }
 
     if (getState() != DONE && !MONGO_FAIL_POINT(failMigrationLeaveOrphans)) {
@@ -474,7 +519,7 @@ void MigrationDestinationManager::_migrateThread(BSONObj min,
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
     _sessionId.reset();
-    _scopedRegisterReceiveChunk.reset();
+    _scopedReceiveChunk.reset();
     _isActiveCV.notify_all();
 }
 
@@ -487,7 +532,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
                                                  const WriteConcernOptions& writeConcern) {
     invariant(isActive());
     invariant(_sessionId);
-    invariant(_scopedRegisterReceiveChunk);
+    invariant(_scopedReceiveChunk);
     invariant(!min.isEmpty());
     invariant(!max.isEmpty());
 
@@ -561,25 +606,21 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
             donorOptionsBob.appendElements(entry["options"].Obj());
         }
 
-        if (serverGlobalParams.featureCompatibility.isSchemaVersion36()) {
-            BSONObj info;
-            if (entry["info"].isABSONObj()) {
-                info = entry["info"].Obj();
-            }
-            if (info["uuid"].eoo()) {
-                setStateFailWarn(str::stream()
-                                 << "The donor shard did not return a UUID for collection "
-                                 << _nss.ns()
-                                 << " as part of its listCollections response: "
-                                 << entry
-                                 << ", but this node expects to see a UUID since its "
-                                    "feature compatibility version is 3.6. Please follow "
-                                    "the online documentation to set the same feature "
-                                    "compatibility version across the cluster.");
-                return;
-            }
-            donorOptionsBob.append(info["uuid"]);
+        BSONObj info;
+        if (entry["info"].isABSONObj()) {
+            info = entry["info"].Obj();
         }
+        if (info["uuid"].eoo()) {
+            setStateFailWarn(str::stream()
+                             << "The donor shard did not return a UUID for collection "
+                             << _nss.ns()
+                             << " as part of its listCollections response: "
+                             << entry
+                             << ", but this node expects to see a UUID.");
+            return;
+        }
+        donorOptionsBob.append(info["uuid"]);
+
         donorOptions = donorOptionsBob.obj();
     }
 
@@ -613,7 +654,7 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
                 donorUUID.emplace(UUID::parse(donorOptions));
             }
 
-            if (!collection->getCatalogEntry()->isEqualToMetadataUUID(opCtx, donorUUID)) {
+            if (collection->uuid() != donorUUID) {
                 setStateFailWarn(
                     str::stream()
                     << "Cannot receive chunk "
@@ -720,32 +761,19 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
 
         _chunkMarkedPending = true;  // no lock needed, only the migrate thread looks.
 
-        while (true) {
-            BSONObj res;
-            if (!conn->runCommand("admin",
-                                  migrateCloneRequest,
-                                  res)) {  // gets array of objects to copy, in disk order
-                setStateFail(str::stream() << "_migrateClone failed: " << redact(res.toString()));
-                conn.done();
-                return;
-            }
-
-            BSONObj arr = res["objects"].Obj();
-            int thisTime = 0;
-
-            BSONObjIterator i(arr);
-            while (i.more()) {
+        auto insertBatchFn = [&](OperationContext* opCtx, BSONObjIterator docs) {
+            while (docs.more()) {
                 opCtx->checkForInterrupt();
 
                 if (getState() == ABORT) {
-                    log() << "Migration aborted while copying documents";
-                    return;
+                    auto message = "Migration aborted while copying documents";
+                    log() << message;
+                    uasserted(50748, message);
                 }
 
-                BSONObj docToClone = i.next().Obj();
+                BSONObj docToClone = docs.next().Obj();
                 {
                     OldClientWriteContext cx(opCtx, _nss.ns());
-
                     BSONObj localDoc;
                     if (willOverrideLocalId(opCtx,
                                             _nss,
@@ -764,17 +792,13 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
                         // Exception will abort migration cleanly
                         uasserted(16976, errMsg);
                     }
-
                     Helpers::upsert(opCtx, _nss.ns(), docToClone, true);
                 }
-                thisTime++;
-
                 {
                     stdx::lock_guard<stdx::mutex> statsLock(_mutex);
                     _numCloned++;
                     _clonedBytes += docToClone.objsize();
                 }
-
                 if (writeConcern.shouldWaitForOtherNodes()) {
                     repl::ReplicationCoordinator::StatusAndDuration replStatus =
                         repl::ReplicationCoordinator::get(opCtx)->awaitReplication(
@@ -789,10 +813,22 @@ void MigrationDestinationManager::_migrateDriver(OperationContext* opCtx,
                     }
                 }
             }
+        };
 
-            if (thisTime == 0)
-                break;
-        }
+        auto fetchBatchFn = [&](OperationContext* opCtx) {
+            BSONObj res;
+            if (!conn->runCommand("admin",
+                                  migrateCloneRequest,
+                                  res)) {  // gets array of objects to copy, in disk order
+                conn.done();
+                const std::string errMsg = str::stream() << "_migrateClone failed: "
+                                                         << redact(res.toString());
+                uasserted(50747, errMsg);
+            }
+            return res;
+        };
+
+        cloneDocumentsFromDonor(opCtx, insertBatchFn, fetchBatchFn);
 
         timing.done(3);
         MONGO_FAIL_POINT_PAUSE_WHILE_SET(migrateThreadHangAtStep3);
@@ -1107,6 +1143,7 @@ void MigrationDestinationManager::_forgetPending(OperationContext* opCtx,
         return;  // no documents can have been moved in, so there is nothing to clean up.
     }
 
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     AutoGetCollection autoColl(opCtx, nss, MODE_IX, MODE_X);
     auto css = CollectionShardingState::get(opCtx, nss);
     auto metadata = css->getMetadata();

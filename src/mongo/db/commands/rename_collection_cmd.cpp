@@ -44,7 +44,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/ops/insert.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/scopeguard.h"
 
@@ -144,11 +144,12 @@ public:
             return false;
         }
 
-        if (source.isAdminDotSystemDotVersion()) {
-            CommandHelpers::appendCommandStatus(
-                result,
-                Status(ErrorCodes::IllegalOperation,
-                       "renaming admin.system.version is not allowed"));
+        if (source.isServerConfigurationCollection()) {
+            CommandHelpers::appendCommandStatus(result,
+                                                Status(ErrorCodes::IllegalOperation,
+                                                       "renaming the server configuration "
+                                                       "collection (admin.system.version) is not "
+                                                       "allowed"));
             return false;
         }
 

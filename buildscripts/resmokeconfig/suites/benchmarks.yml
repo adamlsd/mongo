@@ -1,0 +1,10 @@
+test_kind: benchmark_test
+
+selector:
+  root: build/benchmarks.txt
+  # Please always add path glob for canary tests as part of include_files.
+
+executor:
+  config: {}
+  hooks:
+  - class: CombineBenchmarkResults

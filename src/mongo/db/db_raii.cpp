@@ -34,6 +34,7 @@
 #include "mongo/db/curop.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/session_catalog.h"
 
 namespace mongo {
 namespace {
@@ -90,7 +91,7 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
         if (!minSnapshot) {
             return;
         }
-        auto mySnapshot = opCtx->recoveryUnit()->getMajorityCommittedSnapshot();
+        auto mySnapshot = opCtx->recoveryUnit()->getPointInTimeReadTimestamp();
         if (!mySnapshot) {
             return;
         }
@@ -98,12 +99,24 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
             return;
         }
 
+        auto readConcernLevel = opCtx->recoveryUnit()->getReadConcernLevel();
+        if (readConcernLevel == repl::ReadConcernLevel::kSnapshotReadConcern) {
+            uasserted(ErrorCodes::SnapshotUnavailable,
+                      str::stream()
+                          << "Unable to read from a snapshot due to pending collection catalog "
+                             "changes; please retry the operation. Snapshot timestamp is "
+                          << mySnapshot->toString()
+                          << ". Collection minimum is "
+                          << minSnapshot->toString());
+        }
+        invariant(readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern);
+
         // Yield locks in order to do the blocking call below
         _autoColl = boost::none;
 
         repl::ReplicationCoordinator::get(opCtx)->waitUntilSnapshotCommitted(opCtx, *minSnapshot);
 
-        uassertStatusOK(opCtx->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
+        uassertStatusOK(opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot());
 
         {
             stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -167,9 +180,13 @@ OldClientContext::OldClientContext(
 }
 
 OldClientContext::~OldClientContext() {
-    // Lock must still be held
-    invariant(_opCtx->lockState()->isLocked());
+    // If in an interrupt, don't record any stats.
+    // It is possible to have no lock after saving the lock state and being interrupted while
+    // waiting to restore.
+    if (_opCtx->getKillStatus() != ErrorCodes::OK)
+        return;
 
+    invariant(_opCtx->lockState()->isLocked());
     auto currentOp = CurOp::get(_opCtx);
     Top::get(_opCtx->getClient()->getServiceContext())
         .record(_opCtx,
@@ -228,11 +245,11 @@ OldClientWriteContext::OldClientWriteContext(OperationContext* opCtx, StringData
 LockMode getLockModeForQuery(OperationContext* opCtx) {
     invariant(opCtx);
 
-    if (repl::ReadConcernArgs::get(opCtx).getLevel() ==
-        repl::ReadConcernLevel::kSnapshotReadConcern) {
+    // Use IX locks for autocommit:false multi-statement transactions; otherwise, use IS locks.
+    auto session = OperationContextSession::get(opCtx);
+    if (session && session->inMultiDocumentTransaction()) {
         return MODE_IX;
     }
-
     return MODE_IS;
 }
 

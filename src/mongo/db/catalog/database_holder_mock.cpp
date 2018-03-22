@@ -40,7 +40,7 @@ MONGO_REGISTER_SHIM(dbHolder)()->DatabaseHolder& {
 }
 
 MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)
-(PrivateTo<DatabaseHolder>)->std::unique_ptr<Impl> {
+(PrivateTo<DatabaseHolder>)->std::unique_ptr<DatabaseHolder::Impl> {
     return stdx::make_unique<DatabaseHolderMock>();
 }
 

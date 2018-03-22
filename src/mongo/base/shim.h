@@ -165,30 +165,30 @@ using PrivateTo = const PrivateCall<T>&;
  */
 #define MONGO_REGISTER_SHIM(SHIM_NAME) MONGO_REGISTER_SHIM_IMPL(SHIM_NAME, __LINE__)
 #define MONGO_REGISTER_SHIM_IMPL(SHIM_NAME, LN) MONGO_REGISTER_SHIM_IMPL2(SHIM_NAME, LN)
-#define MONGO_REGISTER_SHIM_IMPL2(SHIM_NAME, LN)                                                 \
-    /* verifies that someone linked a single instance in, since multiple registered shim         \
-     * implementations would conflict on this symbol. */                                         \
-    void SHIM_NAME##_base::tuHook() {}                                                           \
-                                                                                                 \
-    namespace {                                                                                  \
-    class SHIM_NAME##_specialization_##LN : public SHIM_NAME##_impl {                            \
-    public:                                                                                      \
-        decltype(SHIM_NAME##_impl::hook_check) implementation;                                   \
-    };                                                                                           \
-                                                                                                 \
-    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                 \
-        SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization_##LN);                     \
-        return Status::OK();                                                                     \
-    } catch (...) {                                                                              \
-        return exceptionToStatus();                                                              \
-    }                                                                                            \
-    }                                                                                            \
-                                                                                                 \
-    auto                                                                                         \
-        SHIM_NAME##_specialization_##LN::implementation /* After this point someone just writes  \
-                                                           the signature's arguments. and return \
-                                                           value (using arrow notation).  Then   \
-                                                           they write the body. */
+#define MONGO_REGISTER_SHIM_IMPL2(SHIM_NAME, LN)                                                  \
+    /* verifies that someone linked a single instance in, since multiple registered shim          \
+     * implementations would conflict on this symbol. */                                          \
+    void SHIM_NAME##_base::tuHook() {}                                                            \
+                                                                                                  \
+    namespace {                                                                                   \
+    class SHIM_NAME##_specialization_##LN : public SHIM_NAME##_impl {                             \
+    public:                                                                                       \
+        decltype(SHIM_NAME##_impl::hook_check) implementation;                                    \
+    };                                                                                            \
+                                                                                                  \
+    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
+        static SHIM_NAME##_specialization_##LN implStorage;                                       \
+        SHIM_NAME##_impl::registerImpl(&implStorage);                                             \
+        return Status::OK();                                                                      \
+    } catch (...) {                                                                               \
+        return exceptionToStatus();                                                               \
+    }                                                                                             \
+    }                                                                                             \
+                                                                                                  \
+    auto SHIM_NAME##_specialization_##LN::implementation /* After this point someone just writes  \
+                                                            the signature's arguments. and return \
+                                                            value (using arrow notation).  Then   \
+                                                            they write the body. */
 
 #define MONGO_REGISTER_STATIC_SHIM(CLASS_NAME, SHIM_NAME) \
     MONGO_REGISTER_STATIC_SHIM_IMPL(CLASS_NAME, SHIM_NAME, __LINE__)
@@ -206,7 +206,8 @@ using PrivateTo = const PrivateCall<T>&;
     };                                                                                            \
                                                                                                   \
     MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
-        CLASS_NAME::SHIM_NAME##_impl::registerImpl(new SHIM_NAME##_specialization_##LN);          \
+        static SHIM_NAME##_specialization_##LN implStorage;                                       \
+        CLASS_NAME::SHIM_NAME##_impl::registerImpl(&implStorage);                                 \
         return Status::OK();                                                                      \
     } catch (...) {                                                                               \
         return exceptionToStatus();                                                               \

@@ -14,9 +14,23 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/query/query_common',
+        '$BUILD_DIR/mongo/s/commands/shared_cluster_commands',
         "cluster_client_cursor",
         "cluster_cursor_cleanup_job",
         "store_possible_cursor",
+    ],
+)
+
+env.CppUnitTest(
+    target="cluster_find_test",
+    source=[
+        "cluster_find_test.cpp",
+    ],
+    LIBDEPS=[
+        'cluster_query',
+        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/s/catalog_cache_test_fixture',
     ],
 )
 
@@ -127,6 +141,7 @@ env.Library(
     ],
     LIBDEPS=[
         "$BUILD_DIR/mongo/base",
+        "$BUILD_DIR/mongo/db/curop",
         "$BUILD_DIR/mongo/db/query/command_request_response",
         "cluster_client_cursor",
         "cluster_cursor_manager",

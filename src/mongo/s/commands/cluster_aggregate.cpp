@@ -38,6 +38,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/document_source_change_stream.h"
 #include "mongo/db/pipeline/document_source_merge_cursors.h"
@@ -187,16 +188,7 @@ std::set<ShardId> getTargetedShards(OperationContext* opCtx,
         return {shardIds.begin(), shardIds.end()};
     }
 
-    if (routingInfo.cm()) {
-        // The collection is sharded. Use the routing table to decide which shards to target
-        // based on the query and collation.
-        std::set<ShardId> shardIds;
-        routingInfo.cm()->getShardIdsForQuery(opCtx, shardQuery, collation, &shardIds);
-        return shardIds;
-    }
-
-    // The collection is unsharded. Target only the primary shard for the database.
-    return {routingInfo.primaryId()};
+    return getTargetedShardsForQuery(opCtx, routingInfo, shardQuery, collation);
 }
 
 BSONObj createCommandForTargetedShards(
@@ -455,6 +447,7 @@ DispatchShardPipelineResults dispatchShardPipeline(
                     // shards, and should participate in the shard version protocol.
                     shardResults = scatterGatherVersionedTargetByRoutingTable(
                         opCtx,
+                        executionNss.db(),
                         executionNss,
                         executionNsRoutingInfo,
                         targetedCommand,
@@ -515,6 +508,7 @@ BSONObj establishMergingMongosCursor(OperationContext* opCtx,
 
     ClusterClientCursorParams params(requestedNss, ReadPreferenceSetting::get(opCtx));
 
+    params.originatingCommandObj = CurOp::get(opCtx)->opDescription().getOwned();
     params.tailableMode = pipelineForMerging->getContext()->tailableMode;
     params.mergePipeline = std::move(pipelineForMerging);
     params.remotes = std::move(cursors);

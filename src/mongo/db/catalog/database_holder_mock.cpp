@@ -34,14 +34,14 @@
 
 namespace mongo {
 
-MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)
-(PrivateTo<DatabaseHolder>)->std::unique_ptr<DatabaseHolder::Impl> {
-    return stdx::make_unique<DatabaseHolderMock>();
-}
-
 MONGO_REGISTER_SHIM(dbHolder)()->DatabaseHolder& {
     static DatabaseHolder _dbHolder;
     return _dbHolder;
+}
+
+MONGO_REGISTER_STATIC_SHIM(DatabaseHolder, makeImpl)
+(PrivateTo<DatabaseHolder>)->std::unique_ptr<DatabaseHolder::Impl> {
+    return stdx::make_unique<DatabaseHolderMock>();
 }
 
 }  // namespace mongo

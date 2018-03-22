@@ -133,6 +133,6 @@ private:
 }  // namespace
 
 MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
-    return stdx::make_unique<MobileHarnessHelper>();
+    return std::make_unique<MobileHarnessHelper>();
 }
 }  // namespace mongo

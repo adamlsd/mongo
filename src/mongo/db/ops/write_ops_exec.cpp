@@ -114,19 +114,10 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
                    << ": " << curOp->debug().errInfo.toString();
         }
 
-        const bool logAll = logger::globalLogDomain()->shouldLog(logger::LogComponent::kCommand,
-                                                                 logger::LogSeverity::Debug(1));
-        const bool logSlow = executionTimeMicros > (serverGlobalParams.slowMS * 1000LL);
-
-        const bool shouldSample = serverGlobalParams.sampleRate == 1.0
-            ? true
-            : opCtx->getClient()->getPrng().nextCanonicalDouble() < serverGlobalParams.sampleRate;
-
-        if (logAll || (shouldSample && logSlow)) {
-            Locker::LockerInfo lockerInfo;
-            opCtx->lockState()->getLockerInfo(&lockerInfo);
-            log() << curOp->debug().report(opCtx->getClient(), *curOp, lockerInfo.stats);
-        }
+        // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
+        // this op should be sampled for profiling.
+        const bool shouldSample =
+            curOp->completeAndLogOperation(opCtx, logger::LogComponent::kCommand);
 
         // Do not profile individual statements in a write command if we are in a transaction.
         auto session = OperationContextSession::get(opCtx);
@@ -242,7 +233,10 @@ bool handleError(OperationContext* opCtx,
         out->results.emplace_back(ex.toStatus());
 
         if (ShardingState::get(opCtx)->enabled()) {
-            onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss());
+            // Ignore status since we already put the cannot implicitly create error as the
+            // result of the write.
+            onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss())
+                .ignore();
         }
 
         return false;
@@ -325,11 +319,15 @@ void insertDocuments(OperationContext* opCtx,
     // This must only be done for doc-locking storage engines, which are allowed to insert oplog
     // documents out-of-timestamp-order.  For other storage engines, the oplog entries must be
     // physically written in timestamp order, so we defer optime assignment until the oplog is about
-    // to be written.
+    // to be written. Multidocument transactions should not generate opTimes because they are
+    // generated at the time of commit.
     auto batchSize = std::distance(begin, end);
     if (supportsDocLocking()) {
         auto replCoord = repl::ReplicationCoordinator::get(opCtx);
-        if (!replCoord->isOplogDisabledFor(opCtx, collection->ns())) {
+        auto session = OperationContextSession::get(opCtx);
+        auto inTransaction = session && session->inMultiDocumentTransaction();
+
+        if (!inTransaction && !replCoord->isOplogDisabledFor(opCtx, collection->ns())) {
             // Populate 'slots' with new optimes for each insert.
             // This also notifies the storage engine of each new timestamp.
             auto oplogSlots = repl::getNextOpTimes(opCtx, batchSize);

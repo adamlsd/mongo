@@ -10,6 +10,12 @@
     let testDB = st.getDB(dbName);
     let coll = testDB.coll;
 
+    let shardDB = st.rs0.getPrimary().getDB(dbName);
+    if (!shardDB.serverStatus().storageEngine.supportsSnapshotReadConcern) {
+        st.stop();
+        return;
+    }
+
     // noPassthrough tests
     // readConcern 'snapshot' is not allowed outside session context.
     assert.commandFailedWithCode(
@@ -95,8 +101,7 @@
     // Passthrough tests that are not implemented yet.
     //
     // readConcern 'snapshot' is allowed with 'afterClusterTime'.
-    // TODO SERVER-33028: Add snapshot support for cluster find on mongos and check for
-    // commandWorked.
+    // TODO SERVER-33989: Add support for afterClusterTime for snapshot reads through mongos.
     assert.commandFailedWithCode(sessionDb.runCommand({
         find: collName,
         readConcern: {level: "snapshot", afterClusterTime: clusterTime},
@@ -104,11 +109,9 @@
     }),
                                  ErrorCodes.InvalidOptions);
 
-    // TODO SERVER-33028: Add snapshot support for cluster find on mongos.
-    assert.commandFailedWithCode(
-        sessionDb.runCommand(
-            {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}),
-        ErrorCodes.InvalidOptions);
+    // readConcern 'snapshot' is supported by find on mongos.
+    assert.commandWorked(sessionDb.runCommand(
+        {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
 
     // TODO SERVER-33709: Add snapshot support for cluster count on mongos.
     assert.commandFailedWithCode(sessionDb.runCommand({

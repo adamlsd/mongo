@@ -36,6 +36,7 @@
 #include "mongo/client/embedded/embedded.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmain.h"
+#include "mongo/db/logical_session_id.h"
 #include "mongo/db/service_context.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_map.h"
@@ -78,12 +79,15 @@ struct libmongodbcapi_client {
 namespace mongo {
 namespace {
 
+bool libraryInitialized_ = false;
 libmongodbcapi_db* global_db = nullptr;
-thread_local int last_error = LIBMONGODB_CAPI_ERROR_SUCCESS;
+thread_local int last_error = LIBMONGODB_CAPI_SUCCESS;
 bool run_setup = false;
 
 libmongodbcapi_db* db_new(int argc, const char** argv, const char** envp) noexcept try {
-    last_error = LIBMONGODB_CAPI_ERROR_SUCCESS;
+    last_error = LIBMONGODB_CAPI_SUCCESS;
+    if (!libraryInitialized_)
+        throw std::runtime_error("libmongodbcapi_init not called");
     if (global_db) {
         throw std::runtime_error("DB already exists");
     }
@@ -146,11 +150,11 @@ void db_destroy(libmongodbcapi_db* db) noexcept {
     if (db) {
         global_db = nullptr;
     }
-    last_error = LIBMONGODB_CAPI_ERROR_SUCCESS;
+    last_error = LIBMONGODB_CAPI_SUCCESS;
 }
 
 int db_pump(libmongodbcapi_db* db) noexcept try {
-    return LIBMONGODB_CAPI_ERROR_SUCCESS;
+    return LIBMONGODB_CAPI_SUCCESS;
 } catch (const std::exception&) {
     return LIBMONGODB_CAPI_ERROR_UNKNOWN;
 }
@@ -163,7 +167,7 @@ libmongodbcapi_client* client_new(libmongodbcapi_db* db) noexcept try {
     auto session = global_db->transportLayer->createSession();
     rv->client = global_db->serviceContext->makeClient("embedded", std::move(session));
 
-    last_error = LIBMONGODB_CAPI_ERROR_SUCCESS;
+    last_error = LIBMONGODB_CAPI_SUCCESS;
     return rv;
 } catch (const std::exception&) {
     last_error = LIBMONGODB_CAPI_ERROR_UNKNOWN;
@@ -171,7 +175,7 @@ libmongodbcapi_client* client_new(libmongodbcapi_db* db) noexcept try {
 }
 
 void client_destroy(libmongodbcapi_client* client) noexcept {
-    last_error = LIBMONGODB_CAPI_ERROR_SUCCESS;
+    last_error = LIBMONGODB_CAPI_SUCCESS;
     if (!client) {
         return;
     }
@@ -198,7 +202,7 @@ int client_wire_protocol_rpc(libmongodbcapi_client* client,
     *output_size = client->response.response.size();
     *output = (void*)client->response.response.buf();
 
-    return LIBMONGODB_CAPI_ERROR_SUCCESS;
+    return LIBMONGODB_CAPI_SUCCESS;
 } catch (const std::exception&) {
     return LIBMONGODB_CAPI_ERROR_UNKNOWN;
 }
@@ -210,6 +214,27 @@ int get_last_capi_error() noexcept {
 }  // namespace mongo
 
 extern "C" {
+int libmongodbcapi_init(const char* yaml_config) {
+    if (mongo::libraryInitialized_)
+        return LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED;
+
+    mongo::localLogicalSessionTimeoutMinutes =
+        mongo::localLogicalSessionTimeoutMinutesDisabledValue;
+
+    mongo::libraryInitialized_ = true;
+    return LIBMONGODB_CAPI_SUCCESS;
+}
+
+int libmongodbcapi_fini() {
+    if (!mongo::libraryInitialized_)
+        return LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED;
+
+    if (mongo::global_db)
+        return LIBMONGODB_CAPI_ERROR_DB_OPEN;
+
+    return LIBMONGODB_CAPI_SUCCESS;
+}
+
 libmongodbcapi_db* libmongodbcapi_db_new(int argc, const char** argv, const char** envp) {
     return mongo::db_new(argc, argv, envp);
 }

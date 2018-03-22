@@ -142,6 +142,11 @@ void ClusterCursorManager::PinnedCursor::returnCursor(CursorState cursorState) {
     *this = PinnedCursor();
 }
 
+BSONObj ClusterCursorManager::PinnedCursor::getOriginatingCommand() const {
+    invariant(_cursor);
+    return _cursor->getOriginatingCommand();
+}
+
 CursorId ClusterCursorManager::PinnedCursor::getCursorId() const {
     return _cursorId;
 }
@@ -212,6 +217,7 @@ StatusWith<CursorId> ClusterCursorManager::registerCursor(
     }
 
     invariant(cursor);
+    cursor->setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
 
     // Find the CursorEntryContainer for this namespace.  If none exists, create one.
     auto nsToContainerIt = _namespaceToContainerMap.find(nss);

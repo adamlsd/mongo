@@ -59,6 +59,7 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
@@ -360,12 +361,13 @@ Status runAggregate(OperationContext* opCtx,
             // of the collection on which $changeStream was invoked, so that we do not end up
             // resolving the collation on the oplog.
             invariant(!collatorToUse);
-            // Change streams can only be run against collections; AutoGetCollection will raise an
-            // error if the given namespace is a view. A change stream may be opened on a namespace
-            // before the associated collection is created, but only if the database already exists.
-            // If the $changeStream was sent from mongoS then the database exists at the cluster
-            // level even if not yet present on this shard, so we allow the $changeStream to run.
-            AutoGetCollection origNssCtx(opCtx, origNss, MODE_IS);
+            // Change streams can only be run against collections; AutoGetCollectionForReadCommand
+            // will raise an error if the given namespace is a view. A change stream may be opened
+            // on a namespace before the associated collection is created, but only if the database
+            // already exists. If the $changeStream was sent from mongoS then the database exists at
+            // the cluster level even if not yet present on this shard, so we allow the
+            // $changeStream to run.
+            AutoGetCollectionForReadCommand origNssCtx(opCtx, origNss);
             uassert(ErrorCodes::NamespaceNotFound,
                     str::stream() << "cannot open $changeStream for non-existent database: "
                                   << origNss.db(),
@@ -452,6 +454,9 @@ Status runAggregate(OperationContext* opCtx,
                                   std::make_shared<PipelineD::MongoDInterface>(opCtx),
                                   uassertStatusOK(resolveInvolvedNamespaces(opCtx, request))));
         expCtx->tempDir = storageGlobalParams.dbpath + "/_tmp";
+        auto session = OperationContextSession::get(opCtx);
+        expCtx->inSnapshotReadOrMultiDocumentTransaction =
+            session && session->inSnapshotReadOrMultiDocumentTransaction();
 
         auto pipeline = uassertStatusOK(Pipeline::parse(request.getPipeline(), expCtx));
 
@@ -521,7 +526,7 @@ Status runAggregate(OperationContext* opCtx,
         std::move(exec),
         origNss,
         AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-        opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot(),
+        opCtx->recoveryUnit()->getReadConcernLevel(),
         cmdObj);
     if (expCtx->tailableMode == TailableMode::kTailableAndAwaitData) {
         cursorParams.setTailable(true);
@@ -542,6 +547,7 @@ Status runAggregate(OperationContext* opCtx,
         const bool keepCursor =
             handleCursorCommand(opCtx, origNss, pin.getCursor(), request, result);
         if (keepCursor) {
+            opCtx->setStashedCursor();
             cursorFreer.Dismiss();
         }
     }

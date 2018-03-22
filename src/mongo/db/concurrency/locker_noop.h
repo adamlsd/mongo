@@ -69,6 +69,10 @@ public:
         MONGO_UNREACHABLE;
     }
 
+    virtual LockResult lockGlobalBegin(OperationContext* opCtx, LockMode mode, Date_t deadline) {
+        MONGO_UNREACHABLE;
+    }
+
     virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) {
         MONGO_UNREACHABLE;
     }
@@ -76,6 +80,7 @@ public:
     virtual LockResult lockGlobalComplete(OperationContext* opCtx, Date_t deadline) {
         MONGO_UNREACHABLE;
     }
+
     virtual LockResult lockGlobalComplete(Date_t deadline) {
         MONGO_UNREACHABLE;
     }
@@ -144,6 +149,10 @@ public:
         MONGO_UNREACHABLE;
     }
 
+    virtual boost::optional<LockerInfo> getLockerInfo() const {
+        return boost::none;
+    }
+
     virtual bool saveLockStateAndUnlock(LockSnapshot* stateOut) {
         MONGO_UNREACHABLE;
     }
@@ -159,7 +168,7 @@ public:
         invariant(false);
     }
 
-    virtual void reacquireTicket() {
+    virtual void reacquireTicket(OperationContext* opCtx) {
         invariant(false);
     }
 

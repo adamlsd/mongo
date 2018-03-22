@@ -166,7 +166,7 @@ void Lock::GlobalLock::_enqueue(LockMode lockMode, Date_t deadline) {
         _pbwm.lock(MODE_IS);
     }
 
-    _result = _opCtx->lockState()->lockGlobalBegin(lockMode, deadline);
+    _result = _opCtx->lockState()->lockGlobalBegin(_opCtx, lockMode, deadline);
 }
 
 void Lock::GlobalLock::waitForLockUntil(Date_t deadline) {
@@ -306,14 +306,7 @@ void Lock::OplogIntentWriteLock::serializeIfNeeded() {
 
 Lock::ParallelBatchWriterMode::ParallelBatchWriterMode(Locker* lockState)
     : _pbwm(lockState, resourceIdParallelBatchWriterMode, MODE_X),
-      _lockState(lockState),
-      _orginalShouldConflict(_lockState->shouldConflictWithSecondaryBatchApplication()) {
-    _lockState->setShouldConflictWithSecondaryBatchApplication(false);
-}
-
-Lock::ParallelBatchWriterMode::~ParallelBatchWriterMode() {
-    _lockState->setShouldConflictWithSecondaryBatchApplication(_orginalShouldConflict);
-}
+      _shouldNotConflictBlock(lockState) {}
 
 void Lock::ResourceLock::lock(LockMode mode) {
     invariant(_result == LOCK_INVALID);

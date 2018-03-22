@@ -660,7 +660,6 @@ struct __wt_cursor {
 	int __F(reopen)(WT_CURSOR *cursor, bool check_only);
 
 	uint64_t uri_hash;			/* Hash of URI */
-	const char *checkpoint;			/* Checkpoint, if any */
 
 	/*
 	 * !!!
@@ -691,19 +690,20 @@ struct __wt_cursor {
 #define	WT_CURSTD_BULK		0x00002u
 #define	WT_CURSTD_CACHEABLE	0x00004u
 #define	WT_CURSTD_CACHED	0x00008u
-#define	WT_CURSTD_DUMP_HEX	0x00010u
-#define	WT_CURSTD_DUMP_JSON	0x00020u
-#define	WT_CURSTD_DUMP_PRINT	0x00040u
-#define	WT_CURSTD_JOINED	0x00080u
-#define	WT_CURSTD_KEY_EXT	0x00100u	/* Key points out of tree. */
-#define	WT_CURSTD_KEY_INT	0x00200u	/* Key points into tree. */
-#define	WT_CURSTD_META_INUSE	0x00400u
-#define	WT_CURSTD_OPEN		0x00800u
-#define	WT_CURSTD_OVERWRITE	0x01000u
-#define	WT_CURSTD_RAW		0x02000u
-#define	WT_CURSTD_RAW_SEARCH	0x04000u
-#define	WT_CURSTD_VALUE_EXT	0x08000u	/* Value points out of tree. */
-#define	WT_CURSTD_VALUE_INT	0x10000u	/* Value points into tree. */
+#define	WT_CURSTD_DEAD		0x00010u
+#define	WT_CURSTD_DUMP_HEX	0x00020u
+#define	WT_CURSTD_DUMP_JSON	0x00040u
+#define	WT_CURSTD_DUMP_PRINT	0x00080u
+#define	WT_CURSTD_JOINED	0x00100u
+#define	WT_CURSTD_KEY_EXT	0x00200u	/* Key points out of tree. */
+#define	WT_CURSTD_KEY_INT	0x00400u	/* Key points into tree. */
+#define	WT_CURSTD_META_INUSE	0x00800u
+#define	WT_CURSTD_OPEN		0x01000u
+#define	WT_CURSTD_OVERWRITE	0x02000u
+#define	WT_CURSTD_RAW		0x04000u
+#define	WT_CURSTD_RAW_SEARCH	0x08000u
+#define	WT_CURSTD_VALUE_EXT	0x10000u	/* Value points out of tree. */
+#define	WT_CURSTD_VALUE_INT	0x20000u	/* Value points into tree. */
 /* AUTOMATIC FLAG VALUE GENERATION STOP */
 #define	WT_CURSTD_KEY_SET	(WT_CURSTD_KEY_EXT | WT_CURSTD_KEY_INT)
 #define	WT_CURSTD_VALUE_SET	(WT_CURSTD_VALUE_EXT | WT_CURSTD_VALUE_INT)
@@ -959,7 +959,8 @@ struct __wt_session {
 	 * calls to WT_CURSOR::close for a cursor created in this session will
 	 * mark the cursor as cached and keep it available to be reused for
 	 * later calls to WT_SESSION::open_cursor.  Cached cursors may be
-	 * eventually closed., a boolean flag; default \c true.}
+	 * eventually closed.  This value is inherited from ::wiredtiger_open \c
+	 * cache_cursors., a boolean flag; default \c true.}
 	 * @config{ignore_cache_size, when set\, operations performed by this
 	 * session ignore the cache size and are not blocked when the cache is
 	 * full.  Note that use of this option for operations that create cache
@@ -2068,6 +2069,11 @@ struct __wt_connection {
 	 * @configstart{WT_CONNECTION.close, see dist/api_data.py}
 	 * @config{leak_memory, don't free memory during close., a boolean flag;
 	 * default \c false.}
+	 * @config{use_timestamp, by default\, create the close checkpoint as of
+	 * the last stable timestamp if timestamps are in use\, or all current
+	 * updates if there is no stable timestamp set.  If false\, this option
+	 * generates a checkpoint with all updates., a boolean flag; default \c
+	 * true.}
 	 * @configend
 	 * @errors
 	 */
@@ -2382,7 +2388,8 @@ struct __wt_connection {
 	 * calls to WT_CURSOR::close for a cursor created in this session will
 	 * mark the cursor as cached and keep it available to be reused for
 	 * later calls to WT_SESSION::open_cursor.  Cached cursors may be
-	 * eventually closed., a boolean flag; default \c true.}
+	 * eventually closed.  This value is inherited from ::wiredtiger_open \c
+	 * cache_cursors., a boolean flag; default \c true.}
 	 * @config{ignore_cache_size, when set\, operations performed by this
 	 * session ignore the cache size and are not blocked when the cache is
 	 * full.  Note that use of this option for operations that create cache
@@ -2417,15 +2424,16 @@ struct __wt_connection {
 	 * size plus one byte for NUL termination).
 	 * @configstart{WT_CONNECTION.query_timestamp, see dist/api_data.py}
 	 * @config{get, specify which timestamp to query: \c all_committed
-	 * returns the largest timestamp such that all earlier timestamps have
-	 * committed\, \c oldest returns the most recent \c oldest_timestamp set
-	 * with WT_CONNECTION::set_timestamp\, \c pinned returns the minimum of
-	 * the \c oldest_timestamp and the read timestamps of all active
-	 * readers\, and \c stable returns the most recent \c stable_timestamp
-	 * set with WT_CONNECTION::set_timestamp.  See @ref
-	 * transaction_timestamps., a string\, chosen from the following
-	 * options: \c "all_committed"\, \c "oldest"\, \c "pinned"\, \c
-	 * "recovery"\, \c "stable"; default \c all_committed.}
+	 * returns the largest timestamp such that all timestamps up to that
+	 * value have committed\, \c oldest returns the most recent \c
+	 * oldest_timestamp set with WT_CONNECTION::set_timestamp\, \c pinned
+	 * returns the minimum of the \c oldest_timestamp and the read
+	 * timestamps of all active readers\, and \c stable returns the most
+	 * recent \c stable_timestamp set with WT_CONNECTION::set_timestamp.
+	 * See @ref transaction_timestamps., a string\, chosen from the
+	 * following options: \c "all_committed"\, \c "last_checkpoint"\, \c
+	 * "oldest"\, \c "pinned"\, \c "recovery"\, \c "stable"; default \c
+	 * all_committed.}
 	 * @configend
 	 * @errors
 	 * If there is no matching timestamp (e.g., if this method is called
@@ -2694,6 +2702,10 @@ struct __wt_connection {
  * as the \c config parameter (for example\,
  * <code>builtin_extension_config={zlib={compression_level=3}}</code>)., a
  * string; default empty.}
+ * @config{cache_cursors, enable caching of cursors for reuse.  This is the
+ * default value for any sessions created\, and can be overridden in configuring
+ * \c cache_cursors in WT_CONNECTION.open_session., a boolean flag; default \c
+ * true.}
  * @config{cache_overhead, assume the heap allocator overhead is the specified
  * percentage\, and adjust the cache usage by that amount (for example\, if
  * there is 10GB of data in cache\, a percentage of 10 means WiredTiger treats
@@ -5551,81 +5563,87 @@ extern int wiredtiger_extension_terminate(WT_CONNECTION *connection);
 #define	WT_STAT_CONN_TXN_READ_QUEUE_INSERTS		1312
 /*! transaction: read timestamp queue length */
 #define	WT_STAT_CONN_TXN_READ_QUEUE_LEN			1313
+/*! transaction: rollback to stable calls */
+#define	WT_STAT_CONN_TXN_ROLLBACK_TO_STABLE		1314
+/*! transaction: rollback to stable updates aborted */
+#define	WT_STAT_CONN_TXN_ROLLBACK_UPD_ABORTED		1315
+/*! transaction: rollback to stable updates removed from lookaside */
+#define	WT_STAT_CONN_TXN_ROLLBACK_LAS_REMOVED		1316
 /*! transaction: set timestamp calls */
-#define	WT_STAT_CONN_TXN_SET_TS				1314
+#define	WT_STAT_CONN_TXN_SET_TS				1317
 /*! transaction: set timestamp commit calls */
-#define	WT_STAT_CONN_TXN_SET_TS_COMMIT			1315
+#define	WT_STAT_CONN_TXN_SET_TS_COMMIT			1318
 /*! transaction: set timestamp commit updates */
-#define	WT_STAT_CONN_TXN_SET_TS_COMMIT_UPD		1316
+#define	WT_STAT_CONN_TXN_SET_TS_COMMIT_UPD		1319
 /*! transaction: set timestamp oldest calls */
-#define	WT_STAT_CONN_TXN_SET_TS_OLDEST			1317
+#define	WT_STAT_CONN_TXN_SET_TS_OLDEST			1320
 /*! transaction: set timestamp oldest updates */
-#define	WT_STAT_CONN_TXN_SET_TS_OLDEST_UPD		1318
+#define	WT_STAT_CONN_TXN_SET_TS_OLDEST_UPD		1321
 /*! transaction: set timestamp stable calls */
-#define	WT_STAT_CONN_TXN_SET_TS_STABLE			1319
+#define	WT_STAT_CONN_TXN_SET_TS_STABLE			1322
 /*! transaction: set timestamp stable updates */
-#define	WT_STAT_CONN_TXN_SET_TS_STABLE_UPD		1320
+#define	WT_STAT_CONN_TXN_SET_TS_STABLE_UPD		1323
 /*! transaction: transaction begins */
-#define	WT_STAT_CONN_TXN_BEGIN				1321
+#define	WT_STAT_CONN_TXN_BEGIN				1324
 /*! transaction: transaction checkpoint currently running */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_RUNNING		1322
+#define	WT_STAT_CONN_TXN_CHECKPOINT_RUNNING		1325
 /*! transaction: transaction checkpoint generation */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_GENERATION		1323
+#define	WT_STAT_CONN_TXN_CHECKPOINT_GENERATION		1326
 /*! transaction: transaction checkpoint max time (msecs) */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_MAX		1324
+#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_MAX		1327
 /*! transaction: transaction checkpoint min time (msecs) */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_MIN		1325
+#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_MIN		1328
 /*! transaction: transaction checkpoint most recent time (msecs) */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_RECENT		1326
+#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_RECENT		1329
 /*! transaction: transaction checkpoint scrub dirty target */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_SCRUB_TARGET	1327
+#define	WT_STAT_CONN_TXN_CHECKPOINT_SCRUB_TARGET	1330
 /*! transaction: transaction checkpoint scrub time (msecs) */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_SCRUB_TIME		1328
+#define	WT_STAT_CONN_TXN_CHECKPOINT_SCRUB_TIME		1331
 /*! transaction: transaction checkpoint total time (msecs) */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_TOTAL		1329
+#define	WT_STAT_CONN_TXN_CHECKPOINT_TIME_TOTAL		1332
 /*! transaction: transaction checkpoints */
-#define	WT_STAT_CONN_TXN_CHECKPOINT			1330
+#define	WT_STAT_CONN_TXN_CHECKPOINT			1333
 /*!
  * transaction: transaction checkpoints skipped because database was
  * clean
  */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_SKIPPED		1331
+#define	WT_STAT_CONN_TXN_CHECKPOINT_SKIPPED		1334
 /*! transaction: transaction failures due to cache overflow */
-#define	WT_STAT_CONN_TXN_FAIL_CACHE			1332
+#define	WT_STAT_CONN_TXN_FAIL_CACHE			1335
 /*!
  * transaction: transaction fsync calls for checkpoint after allocating
  * the transaction ID
  */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_FSYNC_POST		1333
+#define	WT_STAT_CONN_TXN_CHECKPOINT_FSYNC_POST		1336
 /*!
  * transaction: transaction fsync duration for checkpoint after
  * allocating the transaction ID (usecs)
  */
-#define	WT_STAT_CONN_TXN_CHECKPOINT_FSYNC_POST_DURATION	1334
+#define	WT_STAT_CONN_TXN_CHECKPOINT_FSYNC_POST_DURATION	1337
 /*! transaction: transaction range of IDs currently pinned */
-#define	WT_STAT_CONN_TXN_PINNED_RANGE			1335
+#define	WT_STAT_CONN_TXN_PINNED_RANGE			1338
 /*! transaction: transaction range of IDs currently pinned by a checkpoint */
-#define	WT_STAT_CONN_TXN_PINNED_CHECKPOINT_RANGE	1336
+#define	WT_STAT_CONN_TXN_PINNED_CHECKPOINT_RANGE	1339
 /*!
  * transaction: transaction range of IDs currently pinned by named
  * snapshots
  */
-#define	WT_STAT_CONN_TXN_PINNED_SNAPSHOT_RANGE		1337
+#define	WT_STAT_CONN_TXN_PINNED_SNAPSHOT_RANGE		1340
 /*! transaction: transaction range of timestamps currently pinned */
-#define	WT_STAT_CONN_TXN_PINNED_TIMESTAMP		1338
+#define	WT_STAT_CONN_TXN_PINNED_TIMESTAMP		1341
 /*!
  * transaction: transaction range of timestamps pinned by the oldest
  * timestamp
  */
-#define	WT_STAT_CONN_TXN_PINNED_TIMESTAMP_OLDEST	1339
+#define	WT_STAT_CONN_TXN_PINNED_TIMESTAMP_OLDEST	1342
 /*! transaction: transaction sync calls */
-#define	WT_STAT_CONN_TXN_SYNC				1340
+#define	WT_STAT_CONN_TXN_SYNC				1343
 /*! transaction: transactions committed */
-#define	WT_STAT_CONN_TXN_COMMIT				1341
+#define	WT_STAT_CONN_TXN_COMMIT				1344
 /*! transaction: transactions rolled back */
-#define	WT_STAT_CONN_TXN_ROLLBACK			1342
+#define	WT_STAT_CONN_TXN_ROLLBACK			1345
 /*! transaction: update conflicts */
-#define	WT_STAT_CONN_TXN_UPDATE_CONFLICT		1343
+#define	WT_STAT_CONN_TXN_UPDATE_CONFLICT		1346
 
 /*!
  * @}

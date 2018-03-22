@@ -46,15 +46,17 @@
 #include "mongo/db/auth/user_management_commands_parser.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/background.h"
-#include "mongo/db/catalog/catalog_raii.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/drop_database.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/profile_common.h"
+#include "mongo/db/commands/profile_gen.h"
 #include "mongo/db/commands/server_status.h"
 #include "mongo/db/commands/shutdown.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -83,7 +85,7 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/repl_settings.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/stats/storage_stats.h"
 #include "mongo/db/write_concern.h"
@@ -294,105 +296,36 @@ public:
     }
 } cmdRepairDatabase;
 
-/* set db profiling level
-   todo: how do we handle profiling information put in the db with replication?
-         sensibly or not?
+/**
+ * Sets the profiling level, logging/profiling threshold, and logging/profiling sample rate for the
+ * given database.
 */
-class CmdProfile : public ErrmsgCommandDeprecated {
+class CmdProfile : public ProfileCmdBase {
 public:
-    AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
-        return AllowedOnSecondary::kAlways;
-    }
+    CmdProfile() = default;
 
-    std::string help() const override {
-        return "enable or disable performance profiling\n"
-               "{ profile : <n> }\n"
-               "0=off 1=log slow ops 2=log all\n"
-               "-1 to get current values\n"
-               "http://docs.mongodb.org/manual/reference/command/profile/#dbcmd.profile";
-    }
-
-
-    virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
-        return false;
-    }
-
-    virtual Status checkAuthForCommand(Client* client,
-                                       const std::string& dbname,
-                                       const BSONObj& cmdObj) const {
-        AuthorizationSession* authzSession = AuthorizationSession::get(client);
-
-        if (cmdObj.firstElement().numberInt() == -1 && !cmdObj.hasField("slowms") &&
-            !cmdObj.hasField("sampleRate")) {
-            // If you just want to get the current profiling level you can do so with just
-            // read access to system.profile, even if you can't change the profiling level.
-            if (authzSession->isAuthorizedForActionsOnResource(
-                    ResourcePattern::forExactNamespace(NamespaceString(dbname, "system.profile")),
-                    ActionType::find)) {
-                return Status::OK();
-            }
-        }
-
-        if (authzSession->isAuthorizedForActionsOnResource(ResourcePattern::forDatabaseName(dbname),
-                                                           ActionType::enableProfiler)) {
-            return Status::OK();
-        }
-
-        return Status(ErrorCodes::Unauthorized, "unauthorized");
-    }
-
-    CmdProfile() : ErrmsgCommandDeprecated("profile") {}
-
-    bool errmsgRun(OperationContext* opCtx,
-                   const string& dbname,
-                   const BSONObj& cmdObj,
-                   string& errmsg,
-                   BSONObjBuilder& result) {
-        BSONElement firstElement = cmdObj.firstElement();
-        int profilingLevel = firstElement.numberInt();
-
-        // If profilingLevel is 0, 1, or 2, needs to be locked exclusively,
-        // because creates the system.profile collection in the local database.
-
+protected:
+    int _applyProfilingLevel(OperationContext* opCtx,
+                             const std::string& dbName,
+                             int profilingLevel) const final {
         const bool readOnly = (profilingLevel < 0 || profilingLevel > 2);
         const LockMode dbMode = readOnly ? MODE_S : MODE_X;
 
-        Status status = Status::OK();
-
-        AutoGetDb ctx(opCtx, dbname, dbMode);
+        AutoGetDb ctx(opCtx, dbName, dbMode);
         Database* db = ctx.getDb();
 
-        result.append("was", db ? db->getProfilingLevel() : serverGlobalParams.defaultProfile);
-        result.append("slowms", serverGlobalParams.slowMS);
-        result.append("sampleRate", serverGlobalParams.sampleRate);
+        auto oldLevel = (db ? db->getProfilingLevel() : serverGlobalParams.defaultProfile);
 
         if (!readOnly) {
             if (!db) {
                 // When setting the profiling level, create the database if it didn't already exist.
                 // When just reading the profiling level, we do not create the database.
-                db = dbHolder().openDb(opCtx, dbname);
+                db = dbHolder().openDb(opCtx, dbName);
             }
-            status = db->setProfilingLevel(opCtx, profilingLevel);
+            uassertStatusOK(db->setProfilingLevel(opCtx, profilingLevel));
         }
 
-        const BSONElement slow = cmdObj["slowms"];
-        if (slow.isNumber()) {
-            serverGlobalParams.slowMS = slow.numberInt();
-        }
-
-        double newSampleRate;
-        uassertStatusOK(bsonExtractDoubleFieldWithDefault(
-            cmdObj, "sampleRate"_sd, serverGlobalParams.sampleRate, &newSampleRate));
-        uassert(ErrorCodes::BadValue,
-                "sampleRate must be between 0.0 and 1.0 inclusive",
-                newSampleRate >= 0.0 && newSampleRate <= 1.0);
-        serverGlobalParams.sampleRate = newSampleRate;
-
-        if (!status.isOK()) {
-            errmsg = status.reason();
-        }
-
-        return status.isOK();
+        return oldLevel;
     }
 
 } cmdProfile;
@@ -709,9 +642,8 @@ public:
             if (PlanExecutor::DEAD == state || PlanExecutor::FAILURE == state) {
                 return CommandHelpers::appendCommandStatus(
                     result,
-                    Status(ErrorCodes::OperationFailed,
-                           str::stream() << "Executor error during filemd5 command: "
-                                         << WorkingSetCommon::toStatusString(obj)));
+                    WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                        "Executor error during filemd5 command"));
             }
 
             if (partialOk)
@@ -877,9 +809,8 @@ public:
             warning() << "Internal error while reading " << ns;
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error while reading during dataSize command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error while reading during dataSize command"));
         }
 
         ostringstream os;

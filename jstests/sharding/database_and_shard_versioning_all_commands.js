@@ -74,10 +74,8 @@
             }
         },
         collStats: {
-            sendsDbVersion: false,
-            // It's a known bug that collStats uses ShardConnection without connection versioning
-            // (SERVER-33434).
-            sendsShardVersion: false,
+            sendsDbVersion: true,
+            sendsShardVersion: true,
             setUp: function(mongosConn) {
                 // Expects the collection to exist, and doesn't implicitly create it.
                 assert.commandWorked(mongosConn.getDB(dbName).runCommand({create: collName}));
@@ -93,7 +91,7 @@
         connPoolSync: {skip: "executes locally on mongos (not sent to any remote node)"},
         connectionStatus: {skip: "executes locally on mongos (not sent to any remote node)"},
         convertToCapped: {
-            sendsDbVersion: false,
+            sendsDbVersion: true,
             sendsShardVersion: true,
             setUp: function(mongosConn) {
                 // Expects the collection to exist, and doesn't implicitly create it.
@@ -126,10 +124,8 @@
         createUser: {skip: "always targets the config server"},
         currentOp: {skip: "not on a user database"},
         dataSize: {
-            sendsDbVersion: false,
-            // It's a known bug that dataSize uses ScopedDbConnection, which does not do connection
-            // versioning (SERVER-33434).
-            sendsShardVersion: false,
+            sendsDbVersion: true,
+            sendsShardVersion: true,
             setUp: function(mongosConn) {
                 // Expects the collection to exist, and doesn't implicitly create it.
                 assert.commandWorked(mongosConn.getDB(dbName).runCommand({create: collName}));
@@ -193,11 +189,9 @@
         explain: {skip: "TODO SERVER-31226"},
         features: {skip: "executes locally on mongos (not sent to any remote node)"},
         filemd5: {
-            sendsDbVersion: false,
-            // It's a known bug that filemd5 uses ShardConnection without connection versioning
-            // (SERVER-33434).
-            sendsShardVersion: false,
-            command: {filemd5: collName}
+            sendsDbVersion: true,
+            sendsShardVersion: true,
+            command: {filemd5: ObjectId(), root: collName}
         },
         find: {
             sendsDbVersion: false,
@@ -212,9 +206,8 @@
         flushRouterConfig: {skip: "executes locally on mongos (not sent to any remote node)"},
         fsync: {skip: "broadcast to all shards"},
         geoNear: {
-            sendsDbVersion: false,
-            // It's known a bug that geoNear does not attach shardVersion (SERVER-13364).
-            sendsShardVersion: false,
+            sendsDbVersion: true,
+            sendsShardVersion: true,
             setUp: function(mongosConn) {
                 // Expects the collection to exist with a geo index, and does not implicitly create
                 // the collection or index.
@@ -271,9 +264,7 @@
         listCommands: {skip: "executes locally on mongos (not sent to any remote node)"},
         listDatabases: {skip: "does not forward command to primary shard"},
         listIndexes: {
-            sendsDbVersion: false,
-            // It's a known bug that listIndexes uses ShardConnection without connection versioning
-            // (SERVER-33434).
+            sendsDbVersion: true,
             sendsShardVersion: false,
             setUp: function(mongosConn) {
                 // Expects the collection to exist, and doesn't implicitly create it.
@@ -362,12 +353,12 @@
         },
         profile: {skip: "not supported in mongos"},
         reIndex: {
+            sendsDbVersion: true,
+            sendsShardVersion: true,
             setUp: function(mongosConn) {
                 // Expects the collection to exist, and doesn't implicitly create it.
                 assert.commandWorked(mongosConn.getDB(dbName).runCommand({create: collName}));
             },
-            sendsDbVersion: true,
-            sendsShardVersion: true,
             command: {reIndex: collName},
             cleanUp: function(mongosConn) {
                 assert(mongosConn.getDB(dbName).getCollection(collName).drop());
@@ -455,16 +446,31 @@
             testCase.setUp(st.s);
         }
 
-        assert.commandWorked(st.s.getDB(dbName).runCommand(testCase.command));
-
-        let commandProfile = buildCommandProfile(testCase.command, false /* sharded */);
-        commandProfile["command.databaseVersion"] =
-            testCase.sendsDbVersion ? dbVersion : {$exists: false};
+        let commandProfile = buildCommandProfile(testCase.command, false);
         commandProfile["command.shardVersion"] =
             testCase.sendsShardVersion ? SHARD_VERSION_UNSHARDED : {$exists: false};
 
-        profilerHasSingleMatchingEntryOrThrow(
-            {profileDB: st.shard0.getDB(dbName), filter: commandProfile});
+        st.shard0.adminCommand({configureFailPoint: "checkForDbVersionMismatch", mode: "alwaysOn"});
+        if (testCase.sendsDbVersion) {
+            commandProfile["command.databaseVersion"] = dbVersion;
+            assert.commandFailedWithCode(st.s.getDB(dbName).runCommand(testCase.command),
+                                         ErrorCodes.StaleDbVersion);
+
+            // TODO: Currently, commands are profiled if they call CurOp::raiseDbProfilingLevel().
+            // But, some commands do so only after calling AutoGetDb, where dbVersion is checked.
+            // So, commands that send dbVersion will throw inside of AutoGetDb and may not be
+            // profiled. SERVER-33499 will change the server so that CurOp::raiseDbProfilingLevel()
+            // is called as part of generic command processing, before AutoGetDb can be called. Once
+            // that is in, we should check that the dbVersion sent matched what was expected.
+            // profilerHasSingleMatchingEntryOrThrow(
+            //    {profileDB: st.shard0.getDB(dbName), filter: commandProfile});
+        } else {
+            commandProfile["command.databaseVersion"] = {$exists: false};
+            assert.commandWorked(st.s.getDB(dbName).runCommand(testCase.command));
+            profilerHasSingleMatchingEntryOrThrow(
+                {profileDB: st.shard0.getDB(dbName), filter: commandProfile});
+        }
+        st.shard0.adminCommand({configureFailPoint: "checkForDbVersionMismatch", mode: "off"});
 
         if (testCase.cleanUp) {
             testCase.cleanUp(st.s);

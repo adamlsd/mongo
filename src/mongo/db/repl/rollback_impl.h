@@ -64,19 +64,19 @@ class ReplicationProcess;
  * machinery. This class runs synchronously on the caller's thread.
  *
  * Order of actions:
- *   1. Transition to ROLLBACK
- *   2. Find the common point between the local and remote oplogs.
- *       a. Keep track of what is rolled back to provide a summary to the user
- *       b. Write rolled back documents to 'Rollback Files'
- *   3. Increment the Rollback ID (RBID)
- *   4. Write the common point as the 'OplogTruncateAfterPoint'
- *   5. Tell the storage engine to recover to the last stable timestamp
- *   6. Call recovery code
- *       a. Truncate the oplog at the common point
+ *   1. Transition to ROLLBACK.
+ *   2. Await background index completion.
+ *   3. Find the common point between the local and remote oplogs.
+ *       a. Keep track of what is rolled back to provide a summary to the user.
+ *       b. Write rolled back documents to 'Rollback Files'.
+ *   4. Increment the Rollback ID (RBID).
+ *   5. Tell the storage engine to recover to the last stable timestamp.
+ *   6. Write the oplog entry after the common point as the 'OplogTruncateAfterPoint'.
+ *   7. Call recovery code.
+ *       a. Truncate the oplog at the common point.
  *       b. Apply all oplog entries to the end of oplog.
- *   7. Check the shard identity document for roll back
- *   8. Clear the in-memory transaction table
- *   9. Transition to SECONDARY
+ *   8. Trigger the on-rollback op observer.
+ *   9. Transition to SECONDARY.
  *
  * If the node crashes while in rollback and the storage engine has not recovered to the last
  * stable timestamp yet, then rollback will simply restart against the new sync source upon restart.
@@ -89,6 +89,12 @@ class ReplicationProcess;
  */
 class RollbackImpl : public Rollback {
 public:
+    /**
+     * Used to indicate that the files we create with deleted documents are from rollback.
+     */
+    static constexpr auto kRollbackRemoveSaverType = "rollback";
+    static constexpr auto kRollbackRemoveSaverWhy = "removed";
+
     /**
      * A class with functions that get called throughout rollback. These can be overridden to
      * instrument this class for diagnostics and testing.
@@ -113,9 +119,20 @@ public:
         virtual void onCommonPointFound(Timestamp commonPoint) noexcept {}
 
         /**
+         * Function called after a rollback file has been written for each namespace with inserts or
+         * updates that are being rolled back.
+         */
+        virtual void onRollbackFileWrittenForNamespace(UUID, NamespaceString) noexcept {}
+
+        /**
          * Function called after we recover to the stable timestamp.
          */
-        virtual void onRecoverToStableTimestamp() noexcept {}
+        virtual void onRecoverToStableTimestamp(Timestamp stableTimestamp) noexcept {}
+
+        /**
+         * Function called after we set the oplog truncate after point.
+         */
+        virtual void onSetOplogTruncateAfterPoint(Timestamp truncatePoint) noexcept {}
 
         /**
          * Function called after we recover from the oplog.
@@ -173,6 +190,59 @@ public:
         return _namespacesForOp(oplogEntry);
     }
 
+    /**
+     * Returns true if the rollback system should write out data files containing documents that
+     * will be deleted by rollback.
+     */
+    static bool shouldCreateDataFiles();
+
+    /**
+     * Returns a structure containing all of the documents that would have been written to a
+     * rollback data file for the namespace represented by 'uuid'.
+     *
+     * Only exposed for testing. It is invalid to call this function on a real RollbackImpl.
+     */
+    virtual const std::vector<BSONObj>& docsDeletedForNamespace_forTest(UUID uuid) const& {
+        MONGO_UNREACHABLE;
+    }
+    void docsDeletedForNamespace_forTest(UUID)&& = delete;
+
+protected:
+    /**
+     * Returns the document with _id 'id' in the namespace 'nss', or boost::none if that document
+     * no longer exists in 'nss'. This function is used to write documents to rollback data files,
+     * and this function will terminate the server if an unexpected error is returned by the storage
+     * interface.
+     *
+     * This function is protected so that subclasses can access this method for test purposes.
+     */
+    boost::optional<BSONObj> _findDocumentById(OperationContext* opCtx,
+                                               UUID uuid,
+                                               NamespaceString nss,
+                                               BSONElement id);
+
+    /**
+     * Writes a rollback file for the namespace 'nss' containing all of the documents whose _ids are
+     * listed in 'idSet'.
+     *
+     * This function is protected so that subclasses can override it for test purposes.
+     */
+    virtual void _writeRollbackFileForNamespace(OperationContext* opCtx,
+                                                UUID uuid,
+                                                NamespaceString nss,
+                                                const SimpleBSONObjUnorderedSet& idSet);
+
+    // All member variables are labeled with one of the following codes indicating the
+    // synchronization rules for accessing them.
+    //
+    // (R)  Read-only in concurrent operation; no synchronization required.
+    // (S)  Self-synchronizing; access in any way from any context.
+    // (M)  Reads and writes guarded by _mutex.
+    // (N)  Should only ever be accessed by a single thread; no synchronization required.
+
+    // A listener that's called at various points throughout rollback.
+    Listener* _listener;  // (R)
+
 private:
     /**
      * Returns if shutdown was called on this rollback process.
@@ -213,18 +283,20 @@ private:
 
     /**
      * Recovers to the stable timestamp while holding the global exclusive lock.
+     * Returns the stable timestamp that the storage engine recovered to.
      */
-    Status _recoverToStableTimestamp(OperationContext* opCtx);
+    StatusWith<Timestamp> _recoverToStableTimestamp(OperationContext* opCtx);
 
     /**
      * Runs the oplog recovery logic. This involves applying oplog operations between the stable
      * timestamp and the common point.
      */
-    Status _oplogRecovery(OperationContext* opCtx);
+    Status _oplogRecovery(OperationContext* opCtx, Timestamp stableTimestamp);
 
     /**
      * Process a single oplog entry that is getting rolled back and update the necessary rollback
-     * info structures.
+     * info structures. This function assumes that oplog entries are processed in descending
+     * timestamp order (that is, starting from the newest oplog entry, going backwards).
      */
     Status _processRollbackOp(const OplogEntry& oplogEntry);
 
@@ -250,13 +322,17 @@ private:
      */
     StatusWith<std::set<NamespaceString>> _namespacesForOp(const OplogEntry& oplogEntry);
 
-    // All member variables are labeled with one of the following codes indicating the
-    // synchronization rules for accessing them.
-    //
-    // (R)  Read-only in concurrent operation; no synchronization required.
-    // (S)  Self-synchronizing; access in any way from any context.
-    // (M)  Reads and writes guarded by _mutex.
-    // (N)  Should only ever be accessed by a single thread; no synchronization required.
+    /**
+     * Persists rollback files to disk for each namespace that contains documents inserted or
+     * updated after the common point, as these changes will be gone after rollback completes.
+     * Before each namespace is examined, we check for interrupt and return a non-OK status if
+     * shutdown is in progress.
+     *
+     * This function causes the server to terminate if an error occurs while fetching documents from
+     * disk or while writing documents to the rollback file. It must be called before marking the
+     * oplog truncate point, and before the storage engine recovers to the stable timestamp.
+     */
+    Status _writeRollbackFiles(OperationContext* opCtx);
 
     // Guards access to member variables.
     mutable stdx::mutex _mutex;  // (S)
@@ -281,9 +357,6 @@ private:
     // This is used to read and update global replication settings. This includes:
     // - update transition member states;
     ReplicationCoordinator* const _replicationCoordinator;  // (R)
-
-    // A listener that's called at various points throughout rollback.
-    Listener* _listener;  // (R)
 
     // Contains information about the rollback that will be passed along to the rollback OpObserver
     // method.

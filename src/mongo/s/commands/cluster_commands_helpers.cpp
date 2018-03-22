@@ -33,6 +33,7 @@
 #include "mongo/s/commands/cluster_commands_helpers.h"
 
 #include "mongo/db/commands.h"
+#include "mongo/db/logical_clock.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/cursor_response.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -70,21 +71,46 @@ void appendWriteConcernErrorToCmdResponse(const ShardId& shardId,
 
 namespace {
 
-BSONObj appendDbVersion(BSONObj cmdObj, DatabaseVersion version) {
+BSONObj appendDbVersionIfPresent(BSONObj cmdObj, const CachedDatabaseInfo& dbInfo) {
+    // Attach the databaseVersion if we have one cached for the database
+    //
+    // TODO: After 4.0 is released, require the routingInfo to have a databaseVersion for all
+    // databases besides "config" and "admin" (whose primary shard cannot be changed).
+    // (In v4.0, if the cluster is in fcv=3.6, we may not have a databaseVersion cached for any
+    // database).
+    if (!dbInfo.databaseVersion())
+        return cmdObj;
+
     BSONObjBuilder cmdWithVersionBob(std::move(cmdObj));
-    cmdWithVersionBob.append("databaseVersion", version.toBSON());
+    cmdWithVersionBob.append("databaseVersion", dbInfo.databaseVersion()->toBSON());
     return cmdWithVersionBob.obj();
+}
+
+const auto kAllowImplicitCollectionCreation = "allowImplicitCollectionCreation"_sd;
+
+/**
+ * Constructs a requests vector targeting each of the specified shard ids. Each request contains the
+ * same cmdObj combined with the default sharding parameters.
+ */
+std::vector<AsyncRequestsSender::Request> buildUnversionedRequestsForShards(
+    std::vector<ShardId> shardIds, const BSONObj& cmdObj) {
+    auto cmdToSend = cmdObj;
+    if (!cmdToSend.hasField(kAllowImplicitCollectionCreation)) {
+        cmdToSend = appendAllowImplicitCreate(cmdToSend, false);
+    }
+
+    std::vector<AsyncRequestsSender::Request> requests;
+    for (auto&& shardId : shardIds)
+        requests.emplace_back(std::move(shardId), cmdToSend);
+
+    return requests;
 }
 
 std::vector<AsyncRequestsSender::Request> buildUnversionedRequestsForAllShards(
     OperationContext* opCtx, const BSONObj& cmdObj) {
-    std::vector<AsyncRequestsSender::Request> requests;
     std::vector<ShardId> shardIds;
     Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
-    for (auto&& shardId : shardIds) {
-        requests.emplace_back(std::move(shardId), cmdObj);
-    }
-    return requests;
+    return buildUnversionedRequestsForShards(std::move(shardIds), cmdObj);
 }
 
 std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShards(
@@ -93,16 +119,7 @@ std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShard
     const BSONObj& cmdObj,
     const BSONObj& query,
     const BSONObj& collation) {
-    std::vector<AsyncRequestsSender::Request> requests;
-    if (routingInfo.cm()) {
-        // The collection is sharded. Target all shards that own chunks that match the query.
-        std::set<ShardId> shardIds;
-        routingInfo.cm()->getShardIdsForQuery(opCtx, query, collation, &shardIds);
-        for (const ShardId& shardId : shardIds) {
-            requests.emplace_back(
-                shardId, appendShardVersion(cmdObj, routingInfo.cm()->getVersion(shardId)));
-        }
-    } else {
+    if (!routingInfo.cm()) {
         // The collection is unsharded. Target only the primary shard for the database.
 
         // Attach shardVersion "UNSHARDED", unless targeting the config server.
@@ -110,17 +127,26 @@ std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShard
             ? appendShardVersion(cmdObj, ChunkVersion::UNSHARDED())
             : cmdObj;
 
-        // Attach the databaseVersion if we have one cached for the database.
-        // TODO: After 4.0 is released, require the routingInfo to have a databaseVersion for all
-        // databases besides "config" and "admin" (whose primary shard cannot be changed).
-        // (In v4.0, if the cluster is in fcv=3.6, we may not have a databaseVersion cached for any
-        // database).
-        const auto cmdObjWithShardVersionAndDbVersion = routingInfo.db().databaseVersion()
-            ? appendDbVersion(cmdObjWithShardVersion, *routingInfo.db().databaseVersion())
-            : cmdObjWithShardVersion;
-
-        requests.emplace_back(routingInfo.db().primaryId(), cmdObjWithShardVersionAndDbVersion);
+        return buildUnversionedRequestsForShards(
+            {routingInfo.db().primaryId()},
+            appendDbVersionIfPresent(cmdObjWithShardVersion, routingInfo.db()));
     }
+
+    auto cmdToSend = cmdObj;
+    if (!cmdToSend.hasField(kAllowImplicitCollectionCreation)) {
+        cmdToSend = appendAllowImplicitCreate(cmdToSend, false);
+    }
+
+    std::vector<AsyncRequestsSender::Request> requests;
+
+    // The collection is sharded. Target all shards that own chunks that match the query.
+    std::set<ShardId> shardIds;
+    routingInfo.cm()->getShardIdsForQuery(opCtx, query, collation, &shardIds);
+    for (const ShardId& shardId : shardIds) {
+        requests.emplace_back(shardId,
+                              appendShardVersion(cmdToSend, routingInfo.cm()->getVersion(shardId)));
+    }
+
     return requests;
 }
 
@@ -129,7 +155,7 @@ std::vector<AsyncRequestsSender::Request> buildVersionedRequestsForTargetedShard
  */
 std::vector<AsyncRequestsSender::Response> gatherResponses(
     OperationContext* opCtx,
-    const std::string& dbName,
+    StringData dbName,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
     const std::vector<AsyncRequestsSender::Request>& requests) {
@@ -145,6 +171,8 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
     // Get the responses.
 
     std::vector<AsyncRequestsSender::Response> responses;  // Stores results by ShardId
+    bool atLeastOneSucceeded = false;
+    boost::optional<Status> implicitCreateErrorStatus;
 
     while (!ars.done()) {
         auto response = ars.next();
@@ -156,6 +184,10 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
             // Check for special errors that require throwing out any accumulated results.
             auto& responseObj = response.swResponse.getValue().data;
             status = getStatusFromCommandResult(responseObj);
+
+            if (status.isOK()) {
+                atLeastOneSucceeded = true;
+            }
 
             // Failing to establish a consistent shardVersion means no results should be examined.
             if (ErrorCodes::isStaleShardingError(status.code())) {
@@ -174,9 +206,21 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
             if (ErrorCodes::CommandOnShardedViewNotSupportedOnMongod == status) {
                 uassertStatusOK(status);
             }
+
+            if (ErrorCodes::CannotImplicitlyCreateCollection == status) {
+                implicitCreateErrorStatus = status;
+            }
         }
         responses.push_back(std::move(response));
     }
+
+    // TODO: This should not be needed once we get better targetting with SERVER-32723.
+    // Some commands are sent with allowImplicit: false to all shards and expect only some of
+    // them to succeed.
+    if (implicitCreateErrorStatus && !atLeastOneSucceeded) {
+        uassertStatusOK(*implicitCreateErrorStatus);
+    }
+
     return responses;
 }
 
@@ -188,37 +232,33 @@ BSONObj appendShardVersion(BSONObj cmdObj, ChunkVersion version) {
     return cmdWithVersionBob.obj();
 }
 
+BSONObj appendAllowImplicitCreate(BSONObj cmdObj, bool allow) {
+    BSONObjBuilder newCmdBuilder(std::move(cmdObj));
+    newCmdBuilder.append(kAllowImplicitCollectionCreation, allow);
+    return newCmdBuilder.obj();
+}
+
 std::vector<AsyncRequestsSender::Response> scatterGatherUnversionedTargetAllShards(
     OperationContext* opCtx,
-    const std::string& dbName,
-    boost::optional<NamespaceString> nss,
+    StringData dbName,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy) {
-    // Some commands, such as $currentOp, operate on a collectionless namespace. If a full namespace
-    // is specified, its database must match the dbName.
-    invariant(!nss || (nss->db() == dbName));
-
-    auto requests = buildUnversionedRequestsForAllShards(opCtx, cmdObj);
-
-    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
+    return gatherResponses(
+        opCtx, dbName, readPref, retryPolicy, buildUnversionedRequestsForAllShards(opCtx, cmdObj));
 }
 
 std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRoutingTable(
     OperationContext* opCtx,
-    const std::string& dbName,
+    StringData dbName,
     const NamespaceString& nss,
+    const CachedCollectionRoutingInfo& routingInfo,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy,
     const BSONObj& query,
     const BSONObj& collation) {
-    // The database in the full namespace must match the dbName.
-    invariant(nss.db() == dbName);
-
-    auto routingInfo =
-        uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
-    auto requests =
+    const auto requests =
         buildVersionedRequestsForTargetedShards(opCtx, routingInfo, cmdObj, query, collation);
 
     return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
@@ -226,14 +266,10 @@ std::vector<AsyncRequestsSender::Response> scatterGatherVersionedTargetByRouting
 
 std::vector<AsyncRequestsSender::Response> scatterGatherOnlyVersionIfUnsharded(
     OperationContext* opCtx,
-    const std::string& dbName,
     const NamespaceString& nss,
     const BSONObj& cmdObj,
     const ReadPreferenceSetting& readPref,
     Shard::RetryPolicy retryPolicy) {
-    // The database in the full namespace must match the dbName.
-    invariant(nss.db() == dbName);
-
     auto routingInfo =
         uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
 
@@ -242,16 +278,30 @@ std::vector<AsyncRequestsSender::Response> scatterGatherOnlyVersionIfUnsharded(
         // An unversioned request on a sharded collection can cause a shard that has not owned data
         // for the collection yet to implicitly create the collection without all the collection
         // options. So, we signal to shards that they should not implicitly create the collection.
-        BSONObjBuilder augmentedCmdBob;
-        augmentedCmdBob.appendElementsUnique(cmdObj);
-        augmentedCmdBob.append("allowImplicitCollectionCreation", false);
-        requests = buildUnversionedRequestsForAllShards(opCtx, augmentedCmdBob.obj());
+        requests = buildUnversionedRequestsForAllShards(opCtx, cmdObj);
     } else {
         requests = buildVersionedRequestsForTargetedShards(
             opCtx, routingInfo, cmdObj, BSONObj(), BSONObj());
     }
 
-    return gatherResponses(opCtx, dbName, readPref, retryPolicy, requests);
+    return gatherResponses(opCtx, nss.db(), readPref, retryPolicy, requests);
+}
+
+AsyncRequestsSender::Response executeCommandAgainstDatabasePrimary(
+    OperationContext* opCtx,
+    StringData dbName,
+    const CachedDatabaseInfo& dbInfo,
+    const BSONObj& cmdObj,
+    const ReadPreferenceSetting& readPref,
+    Shard::RetryPolicy retryPolicy) {
+    auto responses =
+        gatherResponses(opCtx,
+                        dbName,
+                        readPref,
+                        retryPolicy,
+                        buildUnversionedRequestsForShards(
+                            {dbInfo.primaryId()}, appendDbVersionIfPresent(cmdObj, dbInfo)));
+    return std::move(responses.front());
 }
 
 bool appendRawResponses(OperationContext* opCtx,
@@ -462,6 +512,77 @@ StatusWith<CachedDatabaseInfo> createShardDatabase(OperationContext* opCtx, Stri
     }
 
     return dbStatus.getStatus().withContext(str::stream() << "Database " << dbName << " not found");
+}
+
+BSONObj appendAtClusterTime(BSONObj cmdObj, LogicalTime atClusterTime) {
+    BSONObjBuilder cmdAtClusterTimeBob;
+    for (auto el : cmdObj) {
+        if (el.fieldNameStringData() == repl::ReadConcernArgs::kReadConcernFieldName) {
+            BSONObjBuilder readConcernBob =
+                cmdAtClusterTimeBob.subobjStart(repl::ReadConcernArgs::kReadConcernFieldName);
+            readConcernBob.appendElements(el.Obj());
+            readConcernBob.append(repl::ReadConcernArgs::kAtClusterTimeFieldName,
+                                  atClusterTime.asTimestamp());
+        } else {
+            cmdAtClusterTimeBob.append(el);
+        }
+    }
+    return cmdAtClusterTimeBob.obj();
+}
+
+BSONObj appendAtClusterTimeToReadConcern(BSONObj readConcernObj, LogicalTime atClusterTime) {
+    invariant(readConcernObj[repl::ReadConcernArgs::kAtClusterTimeFieldName].eoo());
+
+    BSONObjBuilder readConcernBob;
+    readConcernBob.appendElements(readConcernObj);
+    readConcernBob.append(repl::ReadConcernArgs::kAtClusterTimeFieldName,
+                          atClusterTime.asTimestamp());
+    return readConcernBob.obj();
+}
+
+LogicalTime computeAtClusterTimeForShards(OperationContext* opCtx,
+                                          const std::set<ShardId>& shardIds) {
+    auto shardRegistry = Grid::get(opCtx)->shardRegistry();
+    invariant(shardRegistry);
+    LogicalTime highestTime;
+    for (const auto& shardId : shardIds) {
+        auto lastCommittedOpTime =
+            shardRegistry->getShardNoReload(shardId)->getLastCommittedOpTime();
+        if (lastCommittedOpTime > highestTime) {
+            highestTime = lastCommittedOpTime;
+        }
+    }
+    return highestTime;
+}
+
+std::set<ShardId> getTargetedShardsForQuery(OperationContext* opCtx,
+                                            const CachedCollectionRoutingInfo& routingInfo,
+                                            const BSONObj& query,
+                                            const BSONObj& collation) {
+    if (routingInfo.cm()) {
+        // The collection is sharded. Use the routing table to decide which shards to target
+        // based on the query and collation.
+        std::set<ShardId> shardIds;
+        routingInfo.cm()->getShardIdsForQuery(opCtx, query, collation, &shardIds);
+        return shardIds;
+    }
+
+    // The collection is unsharded. Target only the primary shard for the database.
+    return {routingInfo.primaryId()};
+}
+
+boost::optional<LogicalTime> computeAtClusterTime(OperationContext* opCtx,
+                                                  const CachedCollectionRoutingInfo& routingInfo,
+                                                  const std::set<ShardId>& shardIds,
+                                                  const BSONObj& query,
+                                                  const BSONObj& collation) {
+    if (repl::ReadConcernArgs::get(opCtx).getLevel() !=
+        repl::ReadConcernLevel::kSnapshotReadConcern) {
+        return boost::none;
+    }
+
+    // TODO SERVER-33767: Integrate multi-versioned routing table into atClusterTime selection.
+    return LogicalClock::get(opCtx)->getClusterTime();
 }
 
 }  // namespace mongo

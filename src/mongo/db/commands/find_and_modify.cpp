@@ -61,7 +61,7 @@
 #include "mongo/db/query/plan_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/retryable_writes_stats.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/session_catalog.h"
@@ -120,22 +120,17 @@ boost::optional<BSONObj> advanceExecutor(OperationContext* opCtx,
         error() << "Plan executor error during findAndModify: " << PlanExecutor::statestr(state)
                 << ", stats: " << redact(Explain::getWinningPlanStats(exec));
 
-        if (WorkingSetCommon::isValidStatusMemberObject(value)) {
-            uassertStatusOK(WorkingSetCommon::getMemberObjectStatus(value));
-            MONGO_UNREACHABLE;
-        }
-
-        uasserted(ErrorCodes::OperationFailed,
-                  str::stream() << "executor returned " << PlanExecutor::statestr(state)
-                                << " while executing "
-                                << (isRemove ? "delete" : "update"));
+        uassertStatusOKWithContext(WorkingSetCommon::getMemberObjectStatus(value),
+                                   "Plan executor error during findAndModify");
+        MONGO_UNREACHABLE;
     }
 
     invariant(state == PlanExecutor::IS_EOF);
     return boost::none;
 }
 
-void makeUpdateRequest(const FindAndModifyRequest& args,
+void makeUpdateRequest(const OperationContext* opCtx,
+                       const FindAndModifyRequest& args,
                        bool explain,
                        UpdateLifecycleImpl* updateLifecycle,
                        UpdateRequest* requestOut) {
@@ -149,20 +144,33 @@ void makeUpdateRequest(const FindAndModifyRequest& args,
     requestOut->setReturnDocs(args.shouldReturnNew() ? UpdateRequest::RETURN_NEW
                                                      : UpdateRequest::RETURN_OLD);
     requestOut->setMulti(false);
-    requestOut->setYieldPolicy(PlanExecutor::YIELD_AUTO);
     requestOut->setExplain(explain);
     requestOut->setLifecycle(updateLifecycle);
+
+    const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    requestOut->setYieldPolicy(readConcernArgs.getLevel() ==
+                                       repl::ReadConcernLevel::kSnapshotReadConcern
+                                   ? PlanExecutor::INTERRUPT_ONLY
+                                   : PlanExecutor::YIELD_AUTO);
 }
 
-void makeDeleteRequest(const FindAndModifyRequest& args, bool explain, DeleteRequest* requestOut) {
+void makeDeleteRequest(const OperationContext* opCtx,
+                       const FindAndModifyRequest& args,
+                       bool explain,
+                       DeleteRequest* requestOut) {
     requestOut->setQuery(args.getQuery());
     requestOut->setProj(args.getFields());
     requestOut->setSort(args.getSort());
     requestOut->setCollation(args.getCollation());
     requestOut->setMulti(false);
-    requestOut->setYieldPolicy(PlanExecutor::YIELD_AUTO);
     requestOut->setReturnDeleted(true);  // Always return the old value.
     requestOut->setExplain(explain);
+
+    const auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    requestOut->setYieldPolicy(readConcernArgs.getLevel() ==
+                                       repl::ReadConcernLevel::kSnapshotReadConcern
+                                   ? PlanExecutor::INTERRUPT_ONLY
+                                   : PlanExecutor::YIELD_AUTO);
 }
 
 void appendCommandResponse(const PlanExecutor* exec,
@@ -246,10 +254,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbName,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const override {
+        std::string dbName = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         const auto args(uassertStatusOK(FindAndModifyRequest::parseFromBSON(
             CommandHelpers::parseNsCollectionRequired(dbName, cmdObj), cmdObj)));
         const NamespaceString& nsString = args.getNamespaceString();
@@ -260,7 +269,7 @@ public:
         if (args.isRemove()) {
             DeleteRequest request(nsString);
             const bool isExplain = true;
-            makeDeleteRequest(args, isExplain, &request);
+            makeDeleteRequest(opCtx, args, isExplain, &request);
 
             ParsedDelete parsedDelete(opCtx, &request);
             uassertStatusOK(parsedDelete.parseRequest());
@@ -284,7 +293,7 @@ public:
             UpdateRequest request(nsString);
             UpdateLifecycleImpl updateLifecycle(nsString);
             const bool isExplain = true;
-            makeUpdateRequest(args, isExplain, &updateLifecycle, &request);
+            makeUpdateRequest(opCtx, args, isExplain, &updateLifecycle, &request);
 
             ParsedUpdate parsedUpdate(opCtx, &request);
             uassertStatusOK(parsedUpdate.parseRequest());
@@ -343,7 +352,7 @@ public:
             if (args.isRemove()) {
                 DeleteRequest request(nsString);
                 const bool isExplain = false;
-                makeDeleteRequest(args, isExplain, &request);
+                makeDeleteRequest(opCtx, args, isExplain, &request);
 
                 if (opCtx->getTxnNumber()) {
                     request.setStmtId(stmtId);
@@ -401,7 +410,7 @@ public:
                 UpdateRequest request(nsString);
                 UpdateLifecycleImpl updateLifecycle(nsString);
                 const bool isExplain = false;
-                makeUpdateRequest(args, isExplain, &updateLifecycle, &request);
+                makeUpdateRequest(opCtx, args, isExplain, &updateLifecycle, &request);
 
                 if (opCtx->getTxnNumber()) {
                     request.setStmtId(stmtId);
@@ -443,6 +452,7 @@ public:
 
                     // If someone else beat us to creating the collection, do nothing
                     if (!collection) {
+                        uassertStatusOK(userAllowedCreateNS(nsString.db(), nsString.coll()));
                         WriteUnitOfWork wuow(opCtx);
                         uassertStatusOK(
                             userCreateNS(opCtx, autoDb->getDb(), nsString.ns(), BSONObj()));

@@ -31,55 +31,99 @@
 #include "mongo/db/s/database_sharding_state.h"
 
 #include "mongo/db/operation_context.h"
+#include "mongo/db/s/operation_sharding_state.h"
+#include "mongo/s/stale_exception.h"
+#include "mongo/util/fail_point_service.h"
+#include "mongo/util/stacktrace.h"
 
 namespace mongo {
+
+MONGO_FP_DECLARE(checkForDbVersionMismatch);
+
 const Database::Decoration<DatabaseShardingState> DatabaseShardingState::get =
-    Database::declareDecorationWithOwner<DatabaseShardingState>();
+    Database::declareDecoration<DatabaseShardingState>();
 
-DatabaseShardingState::DatabaseShardingState(Database* db) : _db(db) {}
+DatabaseShardingState::DatabaseShardingState() = default;
 
-void DatabaseShardingState::enterCriticalSection(OperationContext* opCtx) {
-    invariant(opCtx->lockState()->isDbLockedForMode(_db->name(), MODE_X));
-    invariant(!_critSecSignal);
-    _critSecSignal = std::make_shared<Notification<void>>();
+void DatabaseShardingState::enterCriticalSectionCatchUpPhase(OperationContext* opCtx) {
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
+    _critSec.enterCriticalSectionCatchUpPhase();
     // TODO (SERVER-33313): call CursorManager::invalidateAll() on all collections in this database
     // with 'fromMovePrimary=true' and a predicate to only invalidate the cursor if the opCtx on its
     // PlanExecutor has a client dbVersion.
 }
 
-void DatabaseShardingState::exitCriticalSection(OperationContext* opCtx,
-                                                boost::optional<DatabaseVersion> newDbVersion) {
-    invariant(opCtx->lockState()->isDbLockedForMode(_db->name(), MODE_X));
-    invariant(_critSecSignal);
-    _critSecSignal->set();
-    _critSecSignal.reset();
-    _dbVersion = newDbVersion;
+void DatabaseShardingState::enterCriticalSectionCommitPhase(OperationContext* opCtx) {
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
+    _critSec.enterCriticalSectionCommitPhase();
 }
 
-std::shared_ptr<Notification<void>> DatabaseShardingState::getCriticalSectionSignal() const {
-    return _critSecSignal;
+void DatabaseShardingState::exitCriticalSection(OperationContext* opCtx,
+                                                boost::optional<DatabaseVersion> newDbVersion) {
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
+    _critSec.exitCriticalSection();
+    _dbVersion = newDbVersion;
 }
 
 void DatabaseShardingState::setDbVersion(OperationContext* opCtx,
                                          boost::optional<DatabaseVersion> newDbVersion) {
-    invariant(opCtx->lockState()->isDbLockedForMode(_db->name(), MODE_X));
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
     _dbVersion = newDbVersion;
 }
 
 void DatabaseShardingState::checkDbVersion(OperationContext* opCtx) const {
     invariant(opCtx->lockState()->isLocked());
+    const auto dbName = get.owner(this)->name();
 
-    if (_critSecSignal) {
-        // TODO (SERVER-33097): Set movePrimary critical section signal on the
+    const auto clientDbVersion = OperationShardingState::get(opCtx).getDbVersion(dbName);
+    if (!clientDbVersion) {
+        return;
+    }
+
+    if (!MONGO_FAIL_POINT(checkForDbVersionMismatch)) {
+        // While checking the dbVersion and triggering a cache refresh on StaleDbVersion is under
+        // development, only check for dbVersion mismatch if explicitly asked to.
+        return;
+    }
+
+    auto criticalSectionSignal = _critSec.getSignal(opCtx->lockState()->isWriteLocked()
+                                                        ? ShardingMigrationCriticalSection::kWrite
+                                                        : ShardingMigrationCriticalSection::kRead);
+    if (criticalSectionSignal) {
+        // TODO (SERVER-33773): Set movePrimary critical section signal on the
         // OperationShardingState (so that the operation can wait outside the DBLock for the
         // movePrimary critical section to end before returning to the client).
 
-        // TODO (SERVER-33098): throw StaleDbVersion.
+        uasserted(StaleDbRoutingVersion(dbName, *clientDbVersion, boost::none),
+                  "migration critical section active");
     }
 
-    // TODO (SERVER-33098): check the client's dbVersion (from the OperationShardingState) against
-    // _dbVersion, and throw StaleDbVersion if they don't match.
-    return;
+    uassert(StaleDbRoutingVersion(dbName, *clientDbVersion, boost::none),
+            "don't know dbVersion",
+            _dbVersion);
+    uassert(StaleDbRoutingVersion(dbName, *clientDbVersion, *_dbVersion),
+            "dbVersion mismatch",
+            *clientDbVersion == *_dbVersion);
+}
+
+MovePrimarySourceManager* DatabaseShardingState::getMovePrimarySourceManager() {
+    return _sourceMgr;
+}
+
+void DatabaseShardingState::setMovePrimarySourceManager(OperationContext* opCtx,
+                                                        MovePrimarySourceManager* sourceMgr) {
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
+    invariant(sourceMgr);
+    invariant(!_sourceMgr);
+
+    _sourceMgr = sourceMgr;
+}
+
+void DatabaseShardingState::clearMovePrimarySourceManager(OperationContext* opCtx) {
+    invariant(opCtx->lockState()->isDbLockedForMode(get.owner(this)->name(), MODE_X));
+    invariant(_sourceMgr);
+
+    _sourceMgr = nullptr;
 }
 
 }  // namespace mongo

@@ -55,7 +55,7 @@ public:
 
     std::string report(Client* client,
                        const CurOp& curop,
-                       const SingleThreadedLockStats& lockStats) const;
+                       const SingleThreadedLockStats* lockStats) const;
 
     /**
      * Appends information about the current operation to "builder"
@@ -158,10 +158,45 @@ public:
     static CurOp* get(const OperationContext& opCtx);
 
     /**
+     * Writes a report of the operation being executed by the given client to the supplied
+     * BSONObjBuilder, in a format suitable for display in currentOp. Does not include a lockInfo
+     * report, since this may be called in either a mongoD or mongoS context and the latter does not
+     * supply lock stats. The client must be locked before calling this method.
+     */
+    static void reportCurrentOpForClient(OperationContext* opCtx,
+                                         Client* client,
+                                         bool truncateOps,
+                                         BSONObjBuilder* infoBuilder);
+
+    /**
      * Constructs a nested CurOp at the top of the given "opCtx"'s CurOp stack.
      */
     explicit CurOp(OperationContext* opCtx);
     ~CurOp();
+
+    /**
+     * Fills out CurOp and OpDebug with basic info common to all commands. We require the NetworkOp
+     * in order to distinguish which protocol delivered this request, e.g. OP_QUERY or OP_MSG. This
+     * is set early in the request processing backend and does not typically need to be called
+     * thereafter. Locks the client as needed to apply the specified settings.
+     */
+    void setGenericOpRequestDetails(OperationContext* opCtx,
+                                    const NamespaceString& nss,
+                                    const Command* command,
+                                    BSONObj cmdObj,
+                                    NetworkOp op);
+
+    /**
+     * Marks the operation end time, records the length of the client response if a valid response
+     * exists, and then - subject to the current values of slowMs and sampleRate - logs this CurOp
+     * to file under the given LogComponent. Returns 'true' if, in addition to being logged, this
+     * operation should also be profiled.
+     */
+    bool completeAndLogOperation(OperationContext* opCtx,
+                                 logger::LogComponent logComponent,
+                                 boost::optional<size_t> responseLength = boost::none,
+                                 boost::optional<long long> slowMsOverride = boost::none,
+                                 bool forceLog = false);
 
     bool haveOpDescription() const {
         return !_opDescription.isEmpty();
@@ -262,6 +297,13 @@ public:
      */
     LogicalOp getLogicalOp() const {
         return _logicalOp;
+    }
+
+    /**
+     * Returns true if this CurOp represents a non-command OP_QUERY request.
+     */
+    bool isLegacyQuery() const {
+        return _networkOp == NetworkOp::dbQuery && !isCommand();
     }
 
     /**
@@ -369,10 +411,10 @@ public:
         _originatingCommand = commandObj.getOwned();
     }
 
-    Command* getCommand() const {
+    const Command* getCommand() const {
         return _command;
     }
-    void setCommand_inlock(Command* command) {
+    void setCommand_inlock(const Command* command) {
         _command = command;
     }
 
@@ -455,7 +497,7 @@ private:
 
     CurOpStack* _stack;
     CurOp* _parent{nullptr};
-    Command* _command{nullptr};
+    const Command* _command{nullptr};
 
     // The time at which this CurOp instance was marked as started.
     long long _start{0};

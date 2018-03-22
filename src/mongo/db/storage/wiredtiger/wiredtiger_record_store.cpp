@@ -78,7 +78,7 @@ MONGO_STATIC_ASSERT(kCurrentRecordStoreVersion <= kMaximumRecordStoreVersion);
 
 void checkOplogFormatVersion(OperationContext* opCtx, const std::string& uri) {
     StatusWith<BSONObj> appMetadata = WiredTigerUtil::getApplicationMetadata(opCtx, uri);
-    fassertStatusOK(39999, appMetadata);
+    fassert(39999, appMetadata);
 
     fassertNoTrace(39998, appMetadata.getValue().getIntField("oplogKeyExtractionVersion") == 1);
 }
@@ -589,7 +589,7 @@ StatusWith<std::string> WiredTigerRecordStore::generateCreateString(
     }
     ss << ")";
 
-    const bool keepOldLoggingSettings = true;
+    const bool keepOldLoggingSettings = !kDisableJournalForReplicatedCollections;
     if (keepOldLoggingSettings ||
         WiredTigerUtil::useTableLogging(NamespaceString(ns),
                                         getGlobalReplSettings().usingReplSets())) {
@@ -657,7 +657,7 @@ WiredTigerRecordStore::WiredTigerRecordStore(WiredTigerKVEngine* kvEngine,
 
 WiredTigerRecordStore::~WiredTigerRecordStore() {
     {
-        stdx::lock_guard<stdx::timed_mutex> lk(_cappedDeleterMutex);
+        stdx::lock_guard<stdx::mutex> lk(_cappedCallbackMutex);
         _shuttingDown = true;
     }
 
@@ -725,7 +725,7 @@ const char* WiredTigerRecordStore::name() const {
 }
 
 bool WiredTigerRecordStore::inShutdown() const {
-    stdx::lock_guard<stdx::timed_mutex> lk(_cappedDeleterMutex);
+    stdx::lock_guard<stdx::mutex> lk(_cappedCallbackMutex);
     return _shuttingDown;
 }
 
@@ -1145,14 +1145,18 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* opCtx,
         if (timestamps[i].isNull() && _isOplog) {
             // If the timestamp is 0, that probably means someone inserted a document directly
             // into the oplog.  In this case, use the RecordId as the timestamp, since they are
-            // one and the same.
+            // one and the same. Setting this transaction to be unordered will trigger a journal
+            // flush. Because these are direct writes into the oplog, the machinery to trigger a
+            // journal flush is bypassed. A followup oplog read will require a fresh visibility
+            // value to make progress.
             ts = Timestamp(record.id.repr());
+            opCtx->recoveryUnit()->setOrderedCommit(false);
         } else {
             ts = timestamps[i];
         }
         if (!ts.isNull()) {
             LOG(4) << "inserting record with timestamp " << ts;
-            fassertStatusOK(39001, opCtx->recoveryUnit()->setTimestamp(ts));
+            fassert(39001, opCtx->recoveryUnit()->setTimestamp(ts));
         }
         setKey(c, record.id);
         WiredTigerItem value(record.data.data(), record.data.size());
@@ -1595,7 +1599,12 @@ void WiredTigerRecordStore::_increaseDataSize(OperationContext* opCtx, int64_t a
 void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                                 RecordId end,
                                                 bool inclusive) {
+    // Only log messages at a lower level here for testing.
+    bool logLevel = getTestCommandsEnabled() ? 0 : 2;
+
     std::unique_ptr<SeekableRecordCursor> cursor = getCursor(opCtx, true);
+    LOG(logLevel) << "Truncating capped collection '" << _ns
+                  << "' in WiredTiger record store, (inclusive=" << inclusive << ")";
 
     auto record = cursor->seekExact(end);
     massert(28807, str::stream() << "Failed to seek to the record located at " << end, record);
@@ -1616,6 +1625,7 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // that is being deleted.
         record = cursor->next();
         if (!record) {
+            LOG(logLevel) << "No records to delete for truncation";
             return;  // No records to delete.
         }
         lastKeptId = end;
@@ -1632,6 +1642,8 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
             }
             recordsRemoved++;
             bytesRemoved += record->data.size();
+            LOG(logLevel) << "Record id to delete for truncation of '" << _ns << "': " << record->id
+                          << " (" << Timestamp(record->id.repr()) << ")";
         } while ((record = cursor->next()));
     }
 
@@ -1642,6 +1654,10 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
     WiredTigerCursor startwrap(_uri, _tableId, true, opCtx);
     WT_CURSOR* start = startwrap.get();
     setKey(start, firstRemovedId);
+
+    LOG(logLevel) << "Truncating collection '" << _ns << "' from " << firstRemovedId << " ("
+                  << Timestamp(firstRemovedId.repr()) << ")"
+                  << " to the end. Number of records to delete: " << recordsRemoved;
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
     invariantWTOK(session->truncate(session, nullptr, start, nullptr, nullptr));
@@ -1655,6 +1671,7 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
         // Immediately rewind visibility to our truncation point, to prevent new
         // transactions from appearing.
         Timestamp truncTs(lastKeptId.repr());
+        LOG(logLevel) << "Rewinding oplog visibility point to " << truncTs << " after truncation.";
 
 
         char commitTSConfigString["commit_timestamp="_sd.size() +
@@ -1684,11 +1701,19 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
 }
 
 Status WiredTigerRecordStore::oplogDiskLocRegister(OperationContext* opCtx,
-                                                   const Timestamp& opTime) {
-    // This labels the current transaction with a timestamp.
-    // This is required for oplog visibility to work correctly, as WiredTiger uses the transaction
-    // list to determine where there are holes in the oplog.
-    return opCtx->recoveryUnit()->setTimestamp(opTime);
+                                                   const Timestamp& ts,
+                                                   bool orderedCommit) {
+    opCtx->recoveryUnit()->setOrderedCommit(orderedCommit);
+    if (!orderedCommit) {
+        // This labels the current transaction with a timestamp.
+        // This is required for oplog visibility to work correctly, as WiredTiger uses the
+        // transaction list to determine where there are holes in the oplog.
+        return opCtx->recoveryUnit()->setTimestamp(ts);
+    }
+    // This handles non-primary (secondary) state behavior; we simply set the oplog visiblity read
+    // timestamp here, as there cannot be visible holes prior to the opTime passed in.
+    _kvEngine->getOplogManager()->setOplogReadTimestamp(ts);
+    return Status::OK();
 }
 
 // Cursor Base:

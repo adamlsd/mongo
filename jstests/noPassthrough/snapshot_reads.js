@@ -8,19 +8,41 @@
 
     const rst = new ReplSetTest({nodes: 2});
     rst.startSet();
-    rst.initiate();
+    let conf = rst.getReplSetConfig();
+    conf.members[1].votes = 0;
+    conf.members[1].priority = 0;
+    rst.initiate(conf);
 
     const primaryDB = rst.getPrimary().getDB(dbName);
     if (!primaryDB.serverStatus().storageEngine.supportsSnapshotReadConcern) {
         rst.stopSet();
         return;
     }
+    const secondaryDB = rst.getSecondary().getDB(dbName);
 
-    function runTest({useCausalConsistency}) {
+    function parseCursor(cmdResult) {
+        if (cmdResult.hasOwnProperty("cursor")) {
+            assert(cmdResult.cursor.hasOwnProperty("id"));
+            return cmdResult.cursor;
+        } else if (cmdResult.hasOwnProperty("cursors") && cmdResult.cursors.length === 1 &&
+                   cmdResult.cursors[0].hasOwnProperty("cursor")) {
+            assert(cmdResult.cursors[0].cursor.hasOwnProperty("id"));
+            return cmdResult.cursors[0].cursor;
+        }
+
+        throw Error("parseCursor failed to find cursor object. Command Result: " +
+                    tojson(cmdResult));
+    }
+
+    function runTest({useCausalConsistency, readFromSecondary, establishCursorCmd}) {
         primaryDB.coll.drop();
 
-        const session =
-            primaryDB.getMongo().startSession({causalConsistency: useCausalConsistency});
+        let readDB = primaryDB;
+        if (readFromSecondary) {
+            readDB = secondaryDB;
+        }
+
+        const session = readDB.getMongo().startSession({causalConsistency: useCausalConsistency});
         const sessionDb = session.getDatabase(dbName);
 
         const bulk = primaryDB.coll.initializeUnorderedBulkOp();
@@ -29,54 +51,63 @@
         }
         assert.commandWorked(bulk.execute({w: "majority"}));
 
+        if (readFromSecondary) {
+            rst.awaitLastOpCommitted();
+        }
+
         let txnNumber = 0;
 
-        // Establish a snapshot cursor, fetching the first 5 documents.
-        let res = assert.commandWorked(sessionDb.runCommand({
-            find: collName,
-            sort: {_id: 1},
-            batchSize: 5,
-            readConcern: {level: "snapshot"},
-            txnNumber: NumberLong(txnNumber)
-        }));
+        // Augment the cursor-establishing command with the proper readConcern and transaction
+        // number.
+        let cursorCmd = Object.extend({}, establishCursorCmd);
+        cursorCmd.readConcern = {level: "snapshot"};
+        cursorCmd.txnNumber = NumberLong(txnNumber);
 
-        assert(res.hasOwnProperty("cursor"));
-        assert(res.cursor.hasOwnProperty("id"));
-        const cursorId = res.cursor.id;
+        // Establish a snapshot batchSize:0 cursor.
+        let res = assert.commandWorked(sessionDb.runCommand(cursorCmd));
+        let cursor = parseCursor(res);
+
+        assert(cursor.hasOwnProperty("firstBatch"), tojson(res));
+        assert.eq(0, cursor.firstBatch.length, tojson(res));
+        assert.neq(cursor.id, 0);
 
         // Insert an 11th document which should not be visible to the snapshot cursor. This write is
         // performed outside of the session.
         assert.writeOK(primaryDB.coll.insert({_id: 10}, {writeConcern: {w: "majority"}}));
 
-        // Fetch the 6th document. This confirms that the transaction stash is preserved across
-        // multiple getMore invocations.
+        // Fetch the first 5 documents.
         res = assert.commandWorked(sessionDb.runCommand({
-            getMore: cursorId,
+            getMore: cursor.id,
             collection: collName,
-            batchSize: 1,
+            batchSize: 5,
             txnNumber: NumberLong(txnNumber)
         }));
-        assert(res.hasOwnProperty("cursor"));
-        assert(res.cursor.hasOwnProperty("id"));
-        assert.neq(0, res.cursor.id);
+        cursor = parseCursor(res);
+        assert.neq(0, cursor.id, tojson(res));
+        assert(cursor.hasOwnProperty("nextBatch"), tojson(res));
+        assert.eq(5, cursor.nextBatch.length, tojson(res));
 
-        // Exhaust the cursor, retrieving the remainder of the result set.
+        // Exhaust the cursor, retrieving the remainder of the result set. Performing a second
+        // getMore tests snapshot isolation across multiple getMore invocations.
         res = assert.commandWorked(sessionDb.runCommand({
-            getMore: cursorId,
+            getMore: cursor.id,
             collection: collName,
-            batchSize: 10,
+            batchSize: 20,
             txnNumber: NumberLong(txnNumber++)
         }));
 
         // The cursor has been exhausted.
-        assert(res.hasOwnProperty("cursor"));
-        assert(res.cursor.hasOwnProperty("id"));
-        assert.eq(0, res.cursor.id);
+        cursor = parseCursor(res);
+        assert.eq(0, cursor.id, tojson(res));
 
-        // Only the remaining 4 of the initial 10 documents are returned. The 11th document is not
+        // Only the remaining 5 of the initial 10 documents are returned. The 11th document is not
         // part of the result set.
-        assert(res.cursor.hasOwnProperty("nextBatch"));
-        assert.eq(4, res.cursor.nextBatch.length);
+        assert(cursor.hasOwnProperty("nextBatch"), tojson(res));
+        assert.eq(5, cursor.nextBatch.length, tojson(res));
+
+        if (readFromSecondary) {
+            rst.awaitLastOpCommitted();
+        }
 
         // Perform a second snapshot read under a new transaction.
         res = assert.commandWorked(sessionDb.runCommand({
@@ -88,20 +119,19 @@
         }));
 
         // The cursor has been exhausted.
-        assert(res.hasOwnProperty("cursor"));
-        assert(res.cursor.hasOwnProperty("id"));
-        assert.eq(0, res.cursor.id);
+        cursor = parseCursor(res);
+        assert.eq(0, cursor.id, tojson(res));
 
         // All 11 documents are returned.
-        assert(res.cursor.hasOwnProperty("firstBatch"));
-        assert.eq(11, res.cursor.firstBatch.length);
+        assert(cursor.hasOwnProperty("firstBatch"), tojson(res));
+        assert.eq(11, cursor.firstBatch.length, tojson(res));
 
         // Reject snapshot reads without txnNumber.
         assert.commandFailed(sessionDb.runCommand(
             {find: collName, sort: {_id: 1}, batchSize: 20, readConcern: {level: "snapshot"}}));
 
         // Reject snapshot reads without session.
-        assert.commandFailed(primaryDB.runCommand({
+        assert.commandFailed(readDB.runCommand({
             find: collName,
             sort: {_id: 1},
             batchSize: 20,
@@ -112,8 +142,42 @@
         session.endSession();
     }
 
-    runTest({useCausalConsistency: false});
-    runTest({useCausalConsistency: true});
+    // Test snapshot reads using find.
+    let findCmd = {find: collName, sort: {_id: 1}, batchSize: 0};
+    runTest({useCausalConsistency: false, readFromSecondary: false, establishCursorCmd: findCmd});
+    runTest({useCausalConsistency: true, readFromSecondary: false, establishCursorCmd: findCmd});
+    runTest({useCausalConsistency: false, readFromSecondary: true, establishCursorCmd: findCmd});
+    runTest({useCausalConsistency: true, readFromSecondary: true, establishCursorCmd: findCmd});
+
+    // Test snapshot reads using aggregate.
+    let aggCmd = {aggregate: collName, pipeline: [{$sort: {_id: 1}}], cursor: {batchSize: 0}};
+    runTest({useCausalConsistency: false, readFromSecondary: false, establishCursorCmd: aggCmd});
+    runTest({useCausalConsistency: true, readFromSecondary: false, establishCursorCmd: aggCmd});
+    runTest({useCausalConsistency: false, readFromSecondary: true, establishCursorCmd: aggCmd});
+    runTest({useCausalConsistency: true, readFromSecondary: true, establishCursorCmd: aggCmd});
+
+    // Test snapshot reads using parallelCollectionScan.
+    let parallelCollScanCmd = {parallelCollectionScan: collName, numCursors: 1};
+    runTest({
+        useCausalConsistency: false,
+        readFromSecondary: false,
+        establishCursorCmd: parallelCollScanCmd
+    });
+    runTest({
+        useCausalConsistency: true,
+        readFromSecondary: false,
+        establishCursorCmd: parallelCollScanCmd
+    });
+    runTest({
+        useCausalConsistency: false,
+        readFromSecondary: true,
+        establishCursorCmd: parallelCollScanCmd
+    });
+    runTest({
+        useCausalConsistency: true,
+        readFromSecondary: true,
+        establishCursorCmd: parallelCollScanCmd
+    });
 
     rst.stopSet();
 })();

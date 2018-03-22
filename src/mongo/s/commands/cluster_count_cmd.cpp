@@ -142,10 +142,13 @@ public:
 
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
+            const auto routingInfo = uassertStatusOK(
+                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
             shardResponses =
                 scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                           dbname,
+                                                           nss.db(),
                                                            nss,
+                                                           routingInfo,
                                                            countCmdObj,
                                                            ReadPreferenceSetting::get(opCtx),
                                                            Shard::RetryPolicy::kIdempotent,
@@ -218,10 +221,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const override {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         const NamespaceString nss(parseNs(dbname, cmdObj));
         uassert(ErrorCodes::InvalidNamespace,
                 str::stream() << "Invalid namespace specified '" << nss.ns() << "'",
@@ -251,10 +255,13 @@ public:
 
         std::vector<AsyncRequestsSender::Response> shardResponses;
         try {
+            const auto routingInfo = uassertStatusOK(
+                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
             shardResponses =
                 scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                           dbname,
+                                                           nss.db(),
                                                            nss,
+                                                           routingInfo,
                                                            explainCmd,
                                                            ReadPreferenceSetting::get(opCtx),
                                                            Shard::RetryPolicy::kIdempotent,

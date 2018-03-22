@@ -96,6 +96,14 @@ add_option('prefix',
     help='installation prefix',
 )
 
+add_option('install-mode',
+    choices=['legacy', 'hygienic'],
+    default='legacy',
+    help='select type of installation',
+    nargs=1,
+    type='choice',
+)
+
 add_option('nostrip',
     help='do not strip installed binaries',
     nargs=0,
@@ -264,15 +272,6 @@ add_option('gdbserver',
 
 add_option('gcov',
     help='compile with flags for gcov',
-    nargs=0,
-)
-
-add_option('smokedbprefix',
-    help='prefix to dbpath et al. for smoke tests',
-)
-
-add_option('smokeauth',
-    help='run smoke tests with --auth',
     nargs=0,
 )
 
@@ -493,6 +492,13 @@ add_option('git-decider',
 add_option('android-toolchain-path',
     default=None,
     help="Android NDK standalone toolchain path. Required when using --variables-files=etc/scons/android_ndk.vars",
+)
+
+add_option('msvc-debugging-format',
+    choices=["codeview", "pdb"],
+    default="codeview",
+    help='Debugging format in debug builds using msvc. Codeview (/Z7) or Program database (/Zi). Default is codeview.',
+    type='choice',
 )
 
 try:
@@ -1570,10 +1576,14 @@ elif env.TargetOSIs('windows'):
     # this would be for pre-compiled headers, could play with it later
     #env.Append( CCFLAGS=['/Yu"pch.h"'] )
 
-    # docs say don't use /FD from command line (minimal rebuild)
-    # /Gy function level linking (implicit when using /Z7)
-    # /Z7 debug info goes into each individual .obj file -- no .pdb created
-    env.Append( CCFLAGS= ["/Z7", "/errorReport:none"] )
+    # Don't send error reports in case of internal compiler error
+    env.Append( CCFLAGS= ["/errorReport:none"] ) 
+
+    # Select debugging format. /Zi gives faster links but seem to use more memory
+    if get_option('msvc-debugging-format') == "codeview":
+        env['CCPDBFLAGS'] = "/Z7"
+    elif get_option('msvc-debugging-format') == "pdb":
+        env['CCPDBFLAGS'] = '/Zi /Fd${TARGET}.pdb'
 
     # /DEBUG will tell the linker to create a .pdb file
     # which WinDbg and Visual Studio will use to resolve
@@ -2888,16 +2898,16 @@ def doConfigure(myenv):
         if conf.env.TargetOSIs('windows'):
             ssl_provider = 'windows'
             env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_WINDOWS")
-
-            # TODO: Implement native crypto for windows, for now use tom
-            conf.env.Append( MONGO_CRYPTO=["tom"] )
+            conf.env.Append( MONGO_CRYPTO=["windows"] )
 
         elif conf.env.TargetOSIs('darwin', 'macOS'):
+            ssl_provider = 'apple'
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_APPLE")
             conf.env.Append( MONGO_CRYPTO=["apple"] )
-            if has_option("ssl"):
-                # TODO: Replace SSL implementation as well.
-                # For now, let openssl fill that role.
-                checkOpenSSL(conf)
+            conf.env.AppendUnique(FRAMEWORKS=[
+                'CoreFoundation',
+                'Security',
+            ])
 
     if ssl_provider == 'openssl':
         if has_option("ssl"):
@@ -3142,6 +3152,37 @@ def doConfigure(myenv):
 
 env = doConfigure( env )
 
+# TODO: Later, this should live somewhere more graceful.
+if get_option('install-mode') == 'hygienic':
+    env.Tool('auto_install_binaries')
+    if env['PLATFORM'] == 'posix':
+        env.AppendUnique(
+            RPATH=[
+                env.Literal('\\$$ORIGIN/../lib')
+            ],
+            LINKFLAGS=[
+                # Most systems *require* -z,origin to make origin work, but android
+                # blows up at runtime if it finds DF_ORIGIN_1 in DT_FLAGS_1.
+                # https://android.googlesource.com/platform/bionic/+/cbc80ba9d839675a0c4891e2ab33f39ba51b04b2/linker/linker.h#68
+                # https://android.googlesource.com/platform/bionic/+/cbc80ba9d839675a0c4891e2ab33f39ba51b04b2/libc/include/elf.h#215
+                '-Wl,-z,origin' if not env.TargetOSIs('android') else [],
+                '-Wl,--enable-new-dtags',
+            ],
+            SHLINKFLAGS=[
+                # -h works for both the sun linker and the gnu linker.
+                "-Wl,-h,${TARGET.file}",
+            ]
+        )
+    elif env['PLATFORM'] == 'darwin':
+        env.AppendUnique(
+            LINKFLAGS=[
+                '-Wl,-rpath,@loader_path/../lib'
+            ],
+            SHLINKFLAGS=[
+                "-Wl,-install_name,@loader_path/../lib/${TARGET.file}",
+            ],
+        )
+
 # Now that we are done with configure checks, enable icecream, if available.
 env.Tool('icecream')
 
@@ -3316,7 +3357,7 @@ env.SConscript(
     variant_dir='$BUILD_DIR',
 )
 
-all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests'])
+all = env.Alias('all', ['core', 'tools', 'dbtest', 'unittests', 'integration_tests', 'benchmarks'])
 
 # run the Dagger tool if it's installed
 if should_dagger:

@@ -60,7 +60,6 @@ class ClusterFindCmd : public BasicCommand {
 public:
     ClusterFindCmd() : BasicCommand("find") {}
 
-
     virtual bool supportsWriteConcern(const BSONObj& cmd) const override {
         return false;
     }
@@ -75,6 +74,12 @@ public:
 
     bool adminOnly() const final {
         return false;
+    }
+
+    bool supportsReadConcern(const std::string& dbName,
+                             const BSONObj& cmdObj,
+                             repl::ReadConcernLevel level) const final {
+        return true;
     }
 
     bool shouldAffectCommandCounter() const final {
@@ -98,10 +103,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const final {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         const NamespaceString nss(CommandHelpers::parseNsCollectionRequired(dbname, cmdObj));
         // Parse the command BSON to a QueryRequest.
         bool isExplain = true;

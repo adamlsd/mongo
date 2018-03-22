@@ -39,6 +39,7 @@
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/record_id.h"
+#include "mongo/db/repl/read_concern_level.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/util/timer.h"
@@ -62,6 +63,7 @@ public:
     ~WiredTigerRecoveryUnit();
 
     void beginUnitOfWork(OperationContext* opCtx) override;
+    void prepareUnitOfWork() override;
     void commitUnitOfWork() override;
     void abortUnitOfWork() override;
 
@@ -72,12 +74,9 @@ public:
     void abandonSnapshot() override;
     void preallocateSnapshot() override;
 
-    Status setReadFromMajorityCommittedSnapshot() override;
-    bool isReadingFromMajorityCommittedSnapshot() const override {
-        return _readFromMajorityCommittedSnapshot;
-    }
+    Status obtainMajorityCommittedSnapshot() override;
 
-    boost::optional<Timestamp> getMajorityCommittedSnapshot() const override;
+    boost::optional<Timestamp> getPointInTimeReadTimestamp() const override;
 
     SnapshotId getSnapshotId() const override;
 
@@ -89,11 +88,17 @@ public:
 
     Timestamp getCommitTimestamp() override;
 
-    Status selectSnapshot(Timestamp timestamp) override;
+    void setPrepareTimestamp(Timestamp timestamp) override;
+
+    Status setPointInTimeReadTimestamp(Timestamp timestamp) override;
 
     void* writingPtr(void* data, size_t len) override;
 
     void setRollbackWritesDisabled() override {}
+
+    virtual void setOrderedCommit(bool orderedCommit) override {
+        _orderedCommit = orderedCommit;
+    }
 
     // ---- WT STUFF
 
@@ -127,15 +132,13 @@ public:
 
     static void appendGlobalStats(BSONObjBuilder& b);
 
-    /**
-     * Prepares this RU to be the basis for a named snapshot.
-     *
-     * Begins a WT transaction, and invariants if we are already in one.
-     * Bans being in a WriteUnitOfWork until the next call to abandonSnapshot().
-     */
-    void prepareForCreateSnapshot(OperationContext* opCtx);
-
 private:
+    bool _isReadingFromPointInTime() const {
+        return _replicationMode == repl::ReplicationCoordinator::modeReplSet &&
+            (_readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern ||
+             _readConcernLevel == repl::ReadConcernLevel::kSnapshotReadConcern);
+    }
+
     void _abort();
     void _commit();
 
@@ -152,9 +155,12 @@ private:
     bool _inUnitOfWork;
     bool _active;
     bool _isTimestamped = false;
+    // Commits are assumed ordered.  Unordered commits are assumed to always need to reserve a
+    // new optime, and thus always call oplogDiskLocRegister() on the record store.
+    bool _orderedCommit = true;
     Timestamp _commitTimestamp;
+    Timestamp _prepareTimestamp;
     uint64_t _mySnapshotId;
-    bool _readFromMajorityCommittedSnapshot = false;
     Timestamp _majorityCommittedSnapshot;
     Timestamp _readAtTimestamp;
     std::unique_ptr<Timer> _timer;

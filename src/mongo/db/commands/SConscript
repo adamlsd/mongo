@@ -9,6 +9,9 @@ env.Library(
     target="test_commands_enabled",
     source=[
         "test_commands_enabled.cpp",
+    ],
+    LIBDEPS=[
+        "server_status_core",
     ]
 )
 
@@ -47,6 +50,17 @@ env.Library(
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/ops/write_ops_parsers',
+    ],
+)
+
+env.Library(
+    target="feature_compatibility_version_parser",
+    source=[
+        "feature_compatibility_version_parser.cpp",
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/namespace_string',
     ],
 )
 
@@ -99,7 +113,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/logical_session_id_helpers',
         '$BUILD_DIR/mongo/db/matcher/expressions',
         '$BUILD_DIR/mongo/db/repl/isself',
-        '$BUILD_DIR/mongo/db/repl/repl_coordinator_global',
+        '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
         '$BUILD_DIR/mongo/db/server_options',
         '$BUILD_DIR/mongo/db/server_parameters',
         '$BUILD_DIR/mongo/db/startup_warnings_common',
@@ -116,6 +130,7 @@ env.Library(
         '$BUILD_DIR/mongo/util/cmdline_utils/cmdline_utils',
         '$BUILD_DIR/mongo/util/ntservice',
         '$BUILD_DIR/mongo/util/processinfo',
+        'feature_compatibility_version_parser',
         'server_status_core',
     ],
 )
@@ -250,6 +265,7 @@ env.Library(
         'dcommands_fcv',
         'fsync_locked',
         'killcursors_common',
+        'profile_common',
         'write_commands_common',
     ],
     LIBDEPS_PRIVATE=[
@@ -282,6 +298,17 @@ env.Library(
         '$BUILD_DIR/mongo/db/pipeline/aggregation_request',
         '$BUILD_DIR/mongo/db/query/command_request_response',
         '$BUILD_DIR/mongo/db/service_context',
+    ]
+)
+
+env.Library(
+    target='profile_common',
+    source=[
+        'profile_common.cpp',
+        env.Idlc('profile.idl')[0],
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/commands',
     ]
 )
 

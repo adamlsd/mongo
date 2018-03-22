@@ -44,6 +44,7 @@
 #include "mongo/db/catalog/collection_options.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/logical_clock.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
@@ -81,6 +82,7 @@ const Seconds kDefaultFindHostMaxWaitTime(20);
 
 const ReadPreferenceSetting kConfigReadSelector(ReadPreference::Nearest, TagSet{});
 const WriteConcernOptions kNoWaitWriteConcern(1, WriteConcernOptions::SyncMode::UNSET, Seconds(0));
+const char kWriteConcernField[] = "writeConcern";
 
 void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss) {
     BSONObjBuilder countBuilder;
@@ -274,6 +276,8 @@ ChunkVersion ShardingCatalogManager::_createFirstChunks(OperationContext* opCtx,
     log() << "going to create " << splitPoints.size() + 1 << " chunk(s) for: " << nss
           << " using new epoch " << version.epoch();
 
+    const auto validAfter = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
+
     for (unsigned i = 0; i <= splitPoints.size(); i++) {
         const BSONObj min = (i == 0) ? keyPattern.globalMin() : splitPoints[i - 1];
         const BSONObj max = (i < splitPoints.size()) ? splitPoints[i] : keyPattern.globalMax();
@@ -290,6 +294,10 @@ ChunkVersion ShardingCatalogManager::_createFirstChunks(OperationContext* opCtx,
         chunk.setMax(max);
         chunk.setShard(shardIds[i % shardIds.size()]);
         chunk.setVersion(version);
+        // TODO SERVER-33781 write history only when FCV4.0 config.
+        std::vector<ChunkHistory> initialHistory;
+        initialHistory.emplace_back(ChunkHistory(validAfter, shardIds[i % shardIds.size()]));
+        chunk.setHistory(std::move(initialHistory));
 
         uassertStatusOK(Grid::get(opCtx)->catalogClient()->insertConfigDocument(
             opCtx,
@@ -431,7 +439,7 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
         SetShardVersionRequest ssv = SetShardVersionRequest::makeForVersioningNoPersist(
             shardRegistry->getConfigServerConnectionString(),
             shardEntry.getName(),
-            fassertStatusOK(28781, ConnectionString::parse(shardEntry.getHost())),
+            fassert(28781, ConnectionString::parse(shardEntry.getHost())),
             nss,
             ChunkVersion::DROPPED(),
             true);
@@ -630,25 +638,6 @@ void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(Operatio
     }
 }
 
-std::vector<NamespaceString> ShardingCatalogManager::getAllShardedCollectionsForDb(
-    OperationContext* opCtx, StringData dbName) {
-    const auto dbNameStr = dbName.toString();
-
-    const std::vector<CollectionType> collectionsOnConfig =
-        uassertStatusOK(Grid::get(opCtx)->catalogClient()->getCollections(
-            opCtx, &dbNameStr, nullptr, repl::ReadConcernLevel::kLocalReadConcern));
-
-    std::vector<NamespaceString> collectionsToReturn;
-    for (const auto& coll : collectionsOnConfig) {
-        if (coll.getDropped())
-            continue;
-
-        collectionsToReturn.push_back(coll.getNs());
-    }
-
-    return collectionsToReturn;
-}
-
 void ShardingCatalogManager::createCollection(OperationContext* opCtx,
                                               const NamespaceString& ns,
                                               const CollectionOptions& collOptions) {
@@ -665,11 +654,13 @@ void ShardingCatalogManager::createCollection(OperationContext* opCtx,
     BSONObjBuilder createCmdBuilder;
     createCmdBuilder.append("create", ns.coll());
     collOptions.appendBSON(&createCmdBuilder);
+    createCmdBuilder.append(kWriteConcernField, opCtx->getWriteConcern().toBSON());
+
     auto swResponse = primaryShard->runCommandWithFixedRetryAttempts(
         opCtx,
         ReadPreferenceSetting{ReadPreference::PrimaryOnly},
         ns.db().toString(),
-        CommandHelpers::appendMajorityWriteConcern(createCmdBuilder.obj()),
+        createCmdBuilder.obj(),
         Shard::RetryPolicy::kIdempotent);
 
     auto createStatus = Shard::CommandResponse::getEffectiveStatus(swResponse);
@@ -678,7 +669,14 @@ void ShardingCatalogManager::createCollection(OperationContext* opCtx,
     }
 
     checkCollectionOptions(opCtx, primaryShard.get(), ns, collOptions);
+
     // TODO: SERVER-33094 use UUID returned to write config.collections entries.
+
+    // Make sure to advance the opTime if writes didn't occur during the execution of this
+    // command. This is to ensure that this request will wait for the opTime that at least
+    // reflects the current state (that this command observed) while waiting for replication
+    // to satisfy the write concern.
+    repl::ReplClientInfo::forClient(opCtx->getClient()).setLastOpToSystemLastOpTime(opCtx);
 }
 
 }  // namespace mongo

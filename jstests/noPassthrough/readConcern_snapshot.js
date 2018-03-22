@@ -38,28 +38,6 @@
         ErrorCodes.IllegalOperation);
     MongoRunner.stopMongod(conn);
 
-    // readConcern 'snapshot' is not allowed on mongos.
-    const st = new ShardingTest({shards: 1, rs: {nodes: 1}});
-    session = st.getDB(dbName).getMongo().startSession({causalConsistency: false});
-    sessionDb = session.getDatabase(dbName);
-    assert.commandFailedWithCode(
-        sessionDb.runCommand(
-            {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(0)}),
-        ErrorCodes.InvalidOptions);
-    st.stop();
-
-    // readConcern 'snapshot' is not allowed with protocol version 0.
-    rst = new ReplSetTest({nodes: 1, protocolVersion: 0});
-    rst.startSet();
-    rst.initiate();
-    session = rst.getPrimary().getDB(dbName).getMongo().startSession({causalConsistency: false});
-    sessionDb = session.getDatabase(dbName);
-    assert.commandFailedWithCode(
-        sessionDb.runCommand(
-            {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(0)}),
-        ErrorCodes.IncompatibleElectionProtocol);
-    rst.stopSet();
-
     // readConcern 'snapshot' is allowed on a replica set primary.
     rst = new ReplSetTest({nodes: 2});
     rst.startSet();
@@ -67,12 +45,12 @@
     session = rst.getPrimary().getDB(dbName).getMongo().startSession({causalConsistency: false});
     sessionDb = session.getDatabase(dbName);
     let txnNumber = 0;
-    assert.commandWorked(sessionDb.coll.insert({}, {w: 2}));
+    assert.commandWorked(sessionDb.coll.insert({}, {writeConcern: {w: "majority"}}));
     assert.commandWorked(sessionDb.runCommand(
         {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
 
     // readConcern 'snapshot' is allowed with 'afterClusterTime'.
-    const pingRes = assert.commandWorked(rst.getPrimary().adminCommand({ping: 1}));
+    let pingRes = assert.commandWorked(rst.getPrimary().adminCommand({ping: 1}));
     assert(pingRes.hasOwnProperty("$clusterTime"), tojson(pingRes));
     assert(pingRes.$clusterTime.hasOwnProperty("clusterTime"), tojson(pingRes));
     assert.commandWorked(sessionDb.runCommand({
@@ -89,13 +67,21 @@
     }),
                                  ErrorCodes.InvalidOptions);
 
-    // readConcern 'snapshot' is not allowed on a replica set secondary.
+    // readConcern 'snapshot' is allowed on a replica set secondary.
     session = rst.getSecondary().getDB(dbName).getMongo().startSession({causalConsistency: false});
     sessionDb = session.getDatabase(dbName);
-    assert.commandFailedWithCode(
-        sessionDb.runCommand(
-            {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}),
-        ErrorCodes.InvalidOptions);
+    assert.commandWorked(sessionDb.runCommand(
+        {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
+
+    pingRes = assert.commandWorked(rst.getSecondary().adminCommand({ping: 1}));
+    assert(pingRes.hasOwnProperty("$clusterTime"), tojson(pingRes));
+    assert(pingRes.$clusterTime.hasOwnProperty("clusterTime"), tojson(pingRes));
+
+    assert.commandWorked(sessionDb.runCommand({
+        find: collName,
+        readConcern: {level: "snapshot", afterClusterTime: pingRes.$clusterTime.clusterTime},
+        txnNumber: NumberLong(txnNumber++)
+    }));
 
     rst.stopSet();
 
@@ -109,7 +95,11 @@
     let testDB = rst.getPrimary().getDB(dbName);
     let coll = testDB.coll;
     assert.commandWorked(coll.createIndex({geo: "2d"}));
-    assert.commandWorked(coll.createIndex({haystack: "geoHaystack", a: 1}, {bucketSize: 1}));
+    assert.commandWorked(testDB.runCommand({
+        createIndexes: collName,
+        indexes: [{key: {haystack: "geoHaystack", a: 1}, name: "haystack_geo", bucketSize: 1}],
+        writeConcern: {w: "majority"}
+    }));
 
     session = testDB.getMongo().startSession({causalConsistency: false});
     sessionDb = session.getDatabase(dbName);
@@ -119,40 +109,34 @@
     assert.commandWorked(sessionDb.runCommand(
         {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
 
-    // readConcern 'snapshot' is not supported by aggregate.
-    // TODO SERVER-33354: Add snapshot support for aggregate.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // readConcern 'snapshot' is supported by aggregate.
+    assert.commandWorked(sessionDb.runCommand({
         aggregate: collName,
         pipeline: [],
         cursor: {},
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
     // readConcern 'snapshot' is supported by count.
     assert.commandWorked(sessionDb.runCommand(
         {count: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
 
-    // readConcern 'snapshot' is not supported by distinct.
-    // TODO SERVER-33354: Add snapshot support for distinct.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // readConcern 'snapshot' is supported by distinct.
+    assert.commandWorked(sessionDb.runCommand({
         distinct: collName,
         key: "x",
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
-    // readConcern 'snapshot' is not supported by geoNear.
-    // TODO SERVER-33354: Add snapshot support for geoNear.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // readConcern 'snapshot' is supported by geoNear.
+    assert.commandWorked(sessionDb.runCommand({
         geoNear: collName,
         near: [0, 0],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
     // readConcern 'snapshot' is supported by geoSearch.
     assert.commandWorked(sessionDb.runCommand({
@@ -165,23 +149,33 @@
     }));
 
     // readConcern 'snapshot' is supported by group.
-    // TODO SERVER-33354: Add snapshot support for group.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    assert.commandWorked(sessionDb.runCommand({
         group: {ns: collName, key: {_id: 1}, $reduce: function(curr, result) {}, initial: {}},
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
-    // readConcern 'snapshot' is not supported by insert.
-    // TODO SERVER-33354: Add snapshot support for insert.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // TODO SERVER-33412 Move all write related commands out of this test file when writes
+    // with snapshot read concern are only allowed in transactions.
+    // readConcern 'snapshot' is supported by insert.
+    assert.commandWorked(sessionDb.runCommand({
         insert: collName,
-        documents: [{}],
+        documents: [{_id: "single-insert"}],
+        readConcern: {level: "snapshot"},
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber++)
+    }));
+    assert.eq({_id: "single-insert"}, sessionDb.coll.findOne({_id: "single-insert"}));
+
+    // readConcern 'snapshot' is supported by batch insert.
+    assert.commandWorked(sessionDb.runCommand({
+        insert: collName,
+        documents: [{_id: "batch-insert-1"}, {_id: "batch-insert-2"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
+    assert.eq({_id: "batch-insert-1"}, sessionDb.coll.findOne({_id: "batch-insert-1"}));
+    assert.eq({_id: "batch-insert-2"}, sessionDb.coll.findOne({_id: "batch-insert-2"}));
 
     // readConcern 'snapshot' is supported by update.
     assert.commandWorked(sessionDb.coll.insert({_id: 0}, {writeConcern: {w: "majority"}}));
@@ -193,7 +187,7 @@
     })));
     assert.eq({_id: 0, a: 1}, sessionDb.coll.findOne({_id: 0}));
 
-    // readConcern 'snapshot' is supported by multi-statement updates.
+    // readConcern 'snapshot' is supported by batch updates.
     assert.commandWorked(sessionDb.coll.insert({_id: 1}, {writeConcern: {w: "majority"}}));
     assert.commandWorked(sessionDb.runCommand({
         update: collName,
@@ -204,34 +198,49 @@
     assert.eq({_id: 0, a: 2}, sessionDb.coll.findOne({_id: 0}));
     assert.eq({_id: 1, a: 1}, sessionDb.coll.findOne({_id: 1}));
 
-    // readConcern 'snapshot' is not supported by delete.
-    // TODO SERVER-33354: Add snapshot support for delete.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // readConcern 'snapshot' is supported by delete.
+    assert.commandWorked(sessionDb.coll.insert({_id: 2}, {writeConcern: {w: "majority"}}));
+    assert.commandWorked(sessionDb.runCommand({
         delete: collName,
         deletes: [{q: {}, limit: 1}],
         readConcern: {level: "snapshot"},
+        writeConcern: {w: "majority"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
-    // readConcern 'snapshot' is not supported by findAndModify.
-    // TODO SERVER-33354: Add snapshot support for findAndModify.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // readConcern 'snapshot' is supported by findAndModify.
+    assert.commandWorked(sessionDb.runCommand({
         findAndModify: collName,
-        filter: {},
-        update: {$set: {a: 1}},
+        query: {_id: 1},
+        update: {$set: {b: 1}},
         readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber++),
+    }));
+    assert.eq({_id: 1, a: 1, b: 1}, sessionDb.coll.findOne({_id: 1}));
+
+    assert.commandWorked(sessionDb.runCommand({
+        findAndModify: collName,
+        query: {_id: 1},
+        remove: true,
+        readConcern: {level: "snapshot"},
+        txnNumber: NumberLong(txnNumber++),
+    }));
+    assert.eq(0, sessionDb.coll.find({_id: 1}).itcount());
 
     // readConcern 'snapshot' is supported by parallelCollectionScan.
-    assert.commandWorked(sessionDb.runCommand({
+    const res = assert.commandWorked(sessionDb.runCommand({
         parallelCollectionScan: collName,
         numCursors: 1,
         readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber++)
+        txnNumber: NumberLong(txnNumber)
     }));
+    assert(res.hasOwnProperty("cursors"));
+    assert.eq(res.cursors.length, 1);
+    assert(res.cursors[0].hasOwnProperty("cursor"));
+    const cursorId = res.cursors[0].cursor.id;
+    assert.commandWorked(sessionDb.runCommand(
+        {getMore: cursorId, collection: collName, txnNumber: NumberLong(txnNumber++)}));
 
     // readConcern 'snapshot' is not supported by non-CRUD commands.
     assert.commandFailedWithCode(sessionDb.runCommand({

@@ -57,7 +57,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_consistency_markers_impl.h"
 #include "mongo/db/repl/replication_consistency_markers_mock.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/replication_recovery_mock.h"
@@ -103,7 +103,9 @@ public:
             new repl::ReplicationCoordinatorMock(_opCtx->getServiceContext(), replSettings);
         _coordinatorMock = coordinatorMock;
         coordinatorMock->alwaysAllowWrites(true);
-        setGlobalReplicationCoordinator(coordinatorMock);
+        repl::ReplicationCoordinator::set(
+            _opCtx->getServiceContext(),
+            std::unique_ptr<repl::ReplicationCoordinator>(coordinatorMock));
         repl::StorageInterface::set(_opCtx->getServiceContext(),
                                     stdx::make_unique<repl::StorageInterfaceImpl>());
 
@@ -153,7 +155,7 @@ public:
      */
     void reset(NamespaceString nss) const {
         ::mongo::writeConflictRetry(_opCtx, "deleteAll", nss.ns(), [&] {
-            invariant(_opCtx->recoveryUnit()->selectSnapshot(Timestamp::min()).isOK());
+            invariant(_opCtx->recoveryUnit()->setPointInTimeReadTimestamp(Timestamp::min()).isOK());
             AutoGetCollection collRaii(_opCtx, nss, LockMode::MODE_X);
 
             if (collRaii.getCollection()) {
@@ -235,7 +237,7 @@ public:
                                            const repl::MinValidDocument& expectedDoc) {
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
         auto doc =
             repl::MinValidDocument::parse(IDLParserErrorContext("MinValidDocument"), findOne(coll));
         ASSERT_EQ(expectedDoc.getMinValidTimestamp(), doc.getMinValidTimestamp())
@@ -261,7 +263,7 @@ public:
         const repl::CheckpointTimestampDocument& expectedDoc) {
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
         auto doc = repl::CheckpointTimestampDocument::parse(
             IDLParserErrorContext("CheckpointTimestampDocument"), findOne(coll));
         ASSERT_EQ(expectedDoc.getCheckpointTimestamp(), doc.getCheckpointTimestamp())
@@ -275,7 +277,7 @@ public:
     void assertEmptyCollectionAtTimestamp(Collection* coll, const Timestamp& ts) {
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
         ASSERT_EQ(0, itCount(coll)) << "collection " << coll->ns() << " isn't empty at "
                                     << ts.toString() << ". One document is " << findOne(coll);
     }
@@ -286,7 +288,7 @@ public:
 
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
         if (expectedDoc.isEmpty()) {
             ASSERT_EQ(0, itCount(coll)) << "Should not find any documents in " << coll->ns()
                                         << " at ts: " << ts;
@@ -300,7 +302,8 @@ public:
     }
 
     void setReplCoordAppliedOpTime(const repl::OpTime& opTime) {
-        repl::getGlobalReplicationCoordinator()->setMyLastAppliedOpTime(opTime);
+        repl::ReplicationCoordinator::get(getGlobalServiceContext())
+            ->setMyLastAppliedOpTime(opTime);
     }
 
     /**
@@ -317,7 +320,7 @@ public:
 
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
 
         // getCollectionIdent() returns the ident for the given namespace in the KVCatalog.
         // getAllIdents() actually looks in the RecordStore for a list of all idents, and is thus
@@ -385,7 +388,7 @@ public:
                                       Timestamp timestamp) {
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(timestamp));
+        ASSERT_OK(_opCtx->recoveryUnit()->setPointInTimeReadTimestamp(timestamp));
         auto allIdents = kvCatalog->getAllIdents(_opCtx);
         if (collIdent.size() > 0) {
             // Index build test does not pass in a collection ident.
@@ -404,7 +407,7 @@ public:
                                         Timestamp timestamp) {
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(timestamp));
+        ASSERT_OK(_opCtx->recoveryUnit()->setPointInTimeReadTimestamp(timestamp));
         auto allIdents = kvCatalog->getAllIdents(_opCtx);
         if (collIdent.size() > 0) {
             // Index build test does not pass in a collection ident.
@@ -441,7 +444,7 @@ public:
 
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(ts));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(ts));
 
         MultikeyPaths actualMultikeyPaths;
         if (!shouldBeMultikey) {
@@ -514,7 +517,8 @@ public:
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             auto recoveryUnit = _opCtx->recoveryUnit();
             recoveryUnit->abandonSnapshot();
-            ASSERT_OK(recoveryUnit->selectSnapshot(firstInsertTime.addTicks(idx).asTimestamp()));
+            ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+                firstInsertTime.addTicks(idx).asTimestamp()));
             BSONObj result;
             ASSERT(Helpers::getLast(_opCtx, nss.ns().c_str(), result)) << " idx is " << idx;
             ASSERT_EQ(0, SimpleBSONObjComparator::kInstance.compare(result, BSON("_id" << idx)))
@@ -596,7 +600,8 @@ public:
         for (std::uint32_t idx = 0; idx < docsToInsert; ++idx) {
             auto recoveryUnit = _opCtx->recoveryUnit();
             recoveryUnit->abandonSnapshot();
-            ASSERT_OK(recoveryUnit->selectSnapshot(firstInsertTime.addTicks(idx).asTimestamp()));
+            ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+                firstInsertTime.addTicks(idx).asTimestamp()));
             BSONObj result;
             ASSERT(Helpers::getLast(_opCtx, nss.ns().c_str(), result)) << " idx is " << idx;
             ASSERT_EQ(0, SimpleBSONObjComparator::kInstance.compare(result, BSON("_id" << idx)))
@@ -662,7 +667,8 @@ public:
             // at each successive tick counts one less document.
             auto recoveryUnit = _opCtx->recoveryUnit();
             recoveryUnit->abandonSnapshot();
-            ASSERT_OK(recoveryUnit->selectSnapshot(lastInsertTime.addTicks(num).asTimestamp()));
+            ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+                lastInsertTime.addTicks(num).asTimestamp()));
             ASSERT_EQ(docsToInsert - num, itCount(autoColl.getCollection()));
         }
     }
@@ -738,7 +744,8 @@ public:
             // the series.
             auto recoveryUnit = _opCtx->recoveryUnit();
             recoveryUnit->abandonSnapshot();
-            ASSERT_OK(recoveryUnit->selectSnapshot(insertTime.addTicks(idx + 1).asTimestamp()));
+            ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+                insertTime.addTicks(idx + 1).asTimestamp()));
 
             auto doc = findOne(autoColl.getCollection());
             ASSERT_EQ(0, SimpleBSONObjComparator::kInstance.compare(doc, updates[idx].second))
@@ -796,7 +803,7 @@ public:
         // Reading at `insertTime` should show the original document, `{_id: 0, field: 0}`.
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(insertTime.asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(insertTime.asTimestamp()));
         auto doc = findOne(autoColl.getCollection());
         ASSERT_EQ(0,
                   SimpleBSONObjComparator::kInstance.compare(doc, BSON("_id" << 0 << "field" << 0)))
@@ -805,7 +812,7 @@ public:
         // Reading at `insertTime + 1` should show the second insert that got converted to an
         // upsert, `{_id: 0}`.
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(insertTime.addTicks(1).asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(insertTime.addTicks(1).asTimestamp()));
         doc = findOne(autoColl.getCollection());
         ASSERT_EQ(0, SimpleBSONObjComparator::kInstance.compare(doc, BSON("_id" << 0)))
             << "Doc: " << doc.toString() << " Expected: {_id: 0}";
@@ -854,7 +861,7 @@ public:
         // Reading at `preInsertTimestamp` should not find anything.
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(preInsertTimestamp.asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(preInsertTimestamp.asTimestamp()));
         ASSERT_EQ(0, itCount(autoColl.getCollection()))
             << "Should not observe a write at `preInsertTimestamp`. TS: "
             << preInsertTimestamp.asTimestamp();
@@ -862,7 +869,8 @@ public:
         // Reading at `preInsertTimestamp + 1` should observe both inserts.
         recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(preInsertTimestamp.addTicks(1).asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+            preInsertTimestamp.addTicks(1).asTimestamp()));
         ASSERT_EQ(2, itCount(autoColl.getCollection()))
             << "Should observe both writes at `preInsertTimestamp + 1`. TS: "
             << preInsertTimestamp.addTicks(1).asTimestamp();
@@ -916,14 +924,15 @@ public:
         // Reading at `insertTime` should not see any documents.
         auto recoveryUnit = _opCtx->recoveryUnit();
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(preInsertTimestamp.asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(preInsertTimestamp.asTimestamp()));
         ASSERT_EQ(0, itCount(autoColl.getCollection()))
             << "Should not find any documents at `preInsertTimestamp`. TS: "
             << preInsertTimestamp.asTimestamp();
 
         // Reading at `preInsertTimestamp + 1` should show the final state of the document.
         recoveryUnit->abandonSnapshot();
-        ASSERT_OK(recoveryUnit->selectSnapshot(preInsertTimestamp.addTicks(1).asTimestamp()));
+        ASSERT_OK(recoveryUnit->setPointInTimeReadTimestamp(
+            preInsertTimestamp.addTicks(1).asTimestamp()));
         auto doc = findOne(autoColl.getCollection());
         ASSERT_EQ(0, SimpleBSONObjComparator::kInstance.compare(doc, BSON("_id" << 0)))
             << "Doc: " << doc.toString() << " Expected: {_id: 0}";
@@ -1241,7 +1250,9 @@ public:
                       << doc2));
         std::vector<repl::OplogEntry> ops = {op0, op1, op2};
 
-        repl::SyncTail(nullptr, repl::multiSyncApply).multiApply_forTest(_opCtx, ops);
+        auto writerPool = repl::SyncTail::makeWriterPool();
+        repl::SyncTail syncTail(nullptr, repl::multiSyncApply, writerPool.get());
+        ASSERT_EQUALS(op2.getOpTime(), unittest::assertGet(syncTail.multiApply(_opCtx, ops)));
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
         assertMultikeyPaths(
@@ -1342,16 +1353,9 @@ public:
         // after bulk index builds.
         std::vector<repl::OplogEntry> ops = {op0, createIndexOp, op1, op2};
 
-        AtomicUInt32 fetchCount(0);
-        repl::SyncTail syncTail(nullptr, repl::multiSyncApply);
-        repl::MultiApplier::ApplyOperationFn applyOpFn = [&fetchCount, &syncTail](
-            repl::MultiApplier::OperationPtrs* ops,
-            WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
-            return repl::multiInitialSyncApply(ops, &syncTail, &fetchCount, workerMultikeyPathInfo);
-        };
-
-        auto lastTime =
-            assertGet(repl::multiApply(_opCtx, syncTail.getWriterPool(), ops, applyOpFn));
+        auto writerPool = repl::SyncTail::makeWriterPool();
+        repl::SyncTail syncTail(nullptr, repl::multiInitialSyncApply, writerPool.get());
+        auto lastTime = unittest::assertGet(syncTail.multiApply(_opCtx, ops));
         ASSERT_EQ(lastTime.getTimestamp(), insertTime2.asTimestamp());
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
@@ -1826,7 +1830,8 @@ public:
         assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexInit.asTimestamp());
         {
             _opCtx->recoveryUnit()->abandonSnapshot();
-            ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(afterIndexInit.asTimestamp()));
+            ASSERT_OK(
+                _opCtx->recoveryUnit()->setPointInTimeReadTimestamp(afterIndexInit.asTimestamp()));
             auto collMetaData = kvCatalog->getMetaData(_opCtx, nss.ns());
             auto indexMetaData = collMetaData.indexes[collMetaData.findIndexOffset("a_1")];
             ASSERT_FALSE(indexMetaData.ready);
@@ -1836,7 +1841,7 @@ public:
         assertIdentsExistAtTimestamp(kvCatalog, "", indexIdent, afterIndexBuild);
         {
             _opCtx->recoveryUnit()->abandonSnapshot();
-            ASSERT_OK(_opCtx->recoveryUnit()->selectSnapshot(afterIndexBuild));
+            ASSERT_OK(_opCtx->recoveryUnit()->setPointInTimeReadTimestamp(afterIndexBuild));
             auto collMetaData = kvCatalog->getMetaData(_opCtx, nss.ns());
             auto indexMetaData = collMetaData.indexes[collMetaData.findIndexOffset("a_1")];
             ASSERT(indexMetaData.ready);

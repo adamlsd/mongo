@@ -13,12 +13,10 @@ var blacklist = [
     'drop_database.js',        // SERVER-17397 Drops of sharded namespaces may not fully succeed
     'remove_where.js',  // SERVER-14669 Multi-removes that use $where miscount removed documents
 
-    // Disabled due to SERVER-3645, '.count() can be wrong on sharded collections'.
-    // This bug is problematic for these workloads because they assert on count() values:
+    // Disabled due to SERVER-33753, '.count() without a predicate can be wrong on sharded
+    // collections'. This bug is problematic for these workloads because they assert on count()
+    // values:
     'agg_match.js',
-    'count.js',
-    'count_limit_skip.js',
-    'count_noindex.js',
 
     // $lookup and $graphLookup are not supported on sharded collections.
     'agg_graph_lookup.js',
@@ -143,8 +141,6 @@ var blacklist = [
     'remove_and_bulk_insert.js',
     'update_and_bulk_insert.js',
     'update_check_index.js',
-    'update_multifield_isolated_multiupdate.js',
-    'update_multifield_isolated_multiupdate_noindex.js',
     'update_multifield_multiupdate.js',
     'update_multifield_multiupdate_noindex.js',
     'update_ordered_bulk_inc.js',

@@ -37,6 +37,7 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/feature_compatibility_version_parser.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
@@ -44,7 +45,7 @@
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/repair_database.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/util/log.h"
@@ -69,9 +70,10 @@ const std::string mustDowngradeErrorMsg = str::stream()
 
 Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx,
                                                          const std::vector<std::string>& dbNames) {
-    NamespaceString fcvNss(FeatureCompatibilityVersion::kCollection);
+    NamespaceString fcvNss(NamespaceString::kServerConfigurationNamespace);
 
-    // If the admin database does not exist, create it.
+    // If the admin database, which contains the server configuration collection with the
+    // featureCompatibilityVersion document, does not exist, create it.
     Database* db = dbHolder().get(opCtx, fcvNss.db());
     if (!db) {
         log() << "Re-creating admin database that was dropped.";
@@ -79,28 +81,30 @@ Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx
     db = dbHolder().openDb(opCtx, fcvNss.db());
     invariant(db);
 
-    // If admin.system.version does not exist, create it.
-    if (!db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection)) {
-        log() << "Re-creating admin.system.version collection that was dropped.";
+    // If the server configuration collection, which contains the FCV document, does not exist, then
+    // create it.
+    if (!db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace)) {
+        log() << "Re-creating the server configuration collection (admin.system.version) that was "
+                 "dropped.";
         uassertStatusOK(
             createCollection(opCtx, fcvNss.db().toString(), BSON("create" << fcvNss.coll())));
     }
 
-    Collection* fcvColl = db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection);
+    Collection* fcvColl = db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace);
     invariant(fcvColl);
 
     // Restore the featureCompatibilityVersion document if it is missing.
     BSONObj featureCompatibilityVersion;
     if (!Helpers::findOne(opCtx,
                           fcvColl,
-                          BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                          BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
                           featureCompatibilityVersion)) {
         log() << "Re-creating featureCompatibilityVersion document that was deleted with version "
-              << FeatureCompatibilityVersionCommandParser::kVersion36 << ".";
+              << FeatureCompatibilityVersionParser::kVersion36 << ".";
 
-        BSONObj fcvObj = BSON("_id" << FeatureCompatibilityVersion::kParameterName
-                                    << FeatureCompatibilityVersion::kVersionField
-                                    << FeatureCompatibilityVersionCommandParser::kVersion36);
+        BSONObj fcvObj = BSON("_id" << FeatureCompatibilityVersionParser::kParameterName
+                                    << FeatureCompatibilityVersionParser::kVersionField
+                                    << FeatureCompatibilityVersionParser::kVersion36);
 
         writeConflictRetry(opCtx, "insertFCVDocument", fcvNss.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
@@ -113,7 +117,7 @@ Status restoreMissingFeatureCompatibilityVersionDocument(OperationContext* opCtx
 
     invariant(Helpers::findOne(opCtx,
                                fcvColl,
-                               BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                               BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
                                featureCompatibilityVersion));
 
     return Status::OK();
@@ -192,7 +196,7 @@ void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx, Databas
         const NamespaceString ns(collectionName);
 
         if (ns.isDropPendingNamespace()) {
-            auto dropOpTime = fassertStatusOK(40459, ns.getDropPendingNamespaceOpTime());
+            auto dropOpTime = fassert(40459, ns.getDropPendingNamespaceOpTime());
             log() << "Found drop-pending namespace " << ns << " with drop optime " << dropOpTime;
             repl::DropPendingCollectionReaper::get(opCtx)->addDropPendingNamespace(dropOpTime, ns);
         }
@@ -225,7 +229,9 @@ void checkForIdIndexesAndDropPendingCollections(OperationContext* opCtx, Databas
 unsigned long long checkIfReplMissingFromCommandLine(OperationContext* opCtx) {
     // This is helpful for the query below to work as you can't open files when readlocked
     Lock::GlobalWrite lk(opCtx);
-    if (!repl::getGlobalReplicationCoordinator()->getSettings().usingReplSets()) {
+    if (!repl::ReplicationCoordinator::get(getGlobalServiceContext())
+             ->getSettings()
+             .usingReplSets()) {
         DBDirectClient c(opCtx);
         return c.count(kSystemReplSetCollection.ns());
     }
@@ -281,15 +287,15 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
         repairVerifiedAllCollectionsHaveUUIDs = true;
 
         // Attempt to restore the featureCompatibilityVersion document if it is missing.
-        NamespaceString nss(FeatureCompatibilityVersion::kCollection);
+        NamespaceString fcvNSS(NamespaceString::kServerConfigurationNamespace);
 
-        Database* db = dbHolder().get(opCtx, nss.db());
+        Database* db = dbHolder().get(opCtx, fcvNSS.db());
         Collection* versionColl;
         BSONObj featureCompatibilityVersion;
-        if (!db || !(versionColl = db->getCollection(opCtx, nss)) ||
+        if (!db || !(versionColl = db->getCollection(opCtx, fcvNSS)) ||
             !Helpers::findOne(opCtx,
                               versionColl,
-                              BSON("_id" << FeatureCompatibilityVersion::kParameterName),
+                              BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
                               featureCompatibilityVersion)) {
             auto status = restoreMissingFeatureCompatibilityVersionDocument(opCtx, dbNames);
             if (!status.isOK()) {
@@ -312,7 +318,7 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     if (!storageGlobalParams.readOnly) {
         StatusWith<std::vector<StorageEngine::CollectionIndexNamePair>> swIndexesToRebuild =
             storageEngine->reconcileCatalogAndIdents(opCtx);
-        fassertStatusOK(40593, swIndexesToRebuild);
+        fassert(40593, swIndexesToRebuild);
 
         if (!swIndexesToRebuild.getValue().empty() && serverGlobalParams.indexBuildRetry) {
             log() << "note: restart the server with --noIndexBuildRetry "
@@ -344,8 +350,8 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
 
             invariant(swIndexToRebuild.getValue().first.size() == 1 &&
                       swIndexToRebuild.getValue().second.size() == 1);
-            fassertStatusOK(
-                40592, rebuildIndexesOnCollection(opCtx, dbce, cce, swIndexToRebuild.getValue()));
+            fassert(40592,
+                    rebuildIndexesOnCollection(opCtx, dbce, cce, swIndexToRebuild.getValue()));
         }
 
         // We open the "local" database before calling checkIfReplMissingFromCommandLine() to
@@ -363,8 +369,7 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
     // to. The local DB is special because it is not replicated.  See SERVER-10927 for more
     // details.
     const bool shouldClearNonLocalTmpCollections =
-        !(checkIfReplMissingFromCommandLine(opCtx) || replSettings.usingReplSets() ||
-          replSettings.isSlave());
+        !(checkIfReplMissingFromCommandLine(opCtx) || replSettings.usingReplSets());
 
     // To check whether a featureCompatibilityVersion document exists.
     bool fcvDocumentExists = false;
@@ -405,29 +410,31 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
             MONGO_UNREACHABLE;
         }
 
-        // Check if admin.system.version contains an invalid featureCompatibilityVersion.
-        // If a valid featureCompatibilityVersion is present, cache it as a server parameter.
+
+        // If the server configuration collection already contains a valid
+        // featureCompatibilityVersion document, cache it in-memory as a server parameter.
         if (dbName == "admin") {
             if (Collection* versionColl =
-                    db->getCollection(opCtx, FeatureCompatibilityVersion::kCollection)) {
+                    db->getCollection(opCtx, NamespaceString::kServerConfigurationNamespace)) {
                 BSONObj featureCompatibilityVersion;
-                if (Helpers::findOne(opCtx,
-                                     versionColl,
-                                     BSON("_id" << FeatureCompatibilityVersion::kParameterName),
-                                     featureCompatibilityVersion)) {
+                if (Helpers::findOne(
+                        opCtx,
+                        versionColl,
+                        BSON("_id" << FeatureCompatibilityVersionParser::kParameterName),
+                        featureCompatibilityVersion)) {
                     auto swVersion =
-                        FeatureCompatibilityVersion::parse(featureCompatibilityVersion);
+                        FeatureCompatibilityVersionParser::parse(featureCompatibilityVersion);
                     if (!swVersion.isOK()) {
                         severe() << swVersion.getStatus();
                         // Note this error path captures all cases of an FCV document existing,
-                        // but with any value other than "3.4" or "3.6". This includes unexpected
+                        // but with any value other than "3.6" or "4.0". This includes unexpected
                         // cases with no path forward such as the FCV value not being a string.
                         return {ErrorCodes::MustDowngrade,
                                 str::stream()
                                     << "UPGRADE PROBLEM: Unable to parse the "
                                        "featureCompatibilityVersion document. The data files need "
-                                       "to be fully upgraded to version 3.4 before attempting an "
-                                       "upgrade to 3.6. If you are upgrading to 3.6, see "
+                                       "to be fully upgraded to version 3.6 before attempting an "
+                                       "upgrade to 4.0. If you are upgrading to 4.0, see "
                                     << feature_compatibility_version_documentation::kUpgradeLink
                                     << "."};
                     }
@@ -443,7 +450,7 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                         log() << "** WARNING: A featureCompatibilityVersion upgrade did not "
                               << "complete. " << startupWarningsLog;
                         log() << "**          The current featureCompatibilityVersion is "
-                              << FeatureCompatibilityVersion::toString(version) << "."
+                              << FeatureCompatibilityVersionParser::toString(version) << "."
                               << startupWarningsLog;
                         log() << "**          To fix this, use the setFeatureCompatibilityVersion "
                               << "command to resume upgrade to 4.0." << startupWarningsLog;
@@ -452,7 +459,7 @@ StatusWith<bool> repairDatabasesAndCheckVersion(OperationContext* opCtx) {
                         log() << "** WARNING: A featureCompatibilityVersion downgrade did not "
                               << "complete. " << startupWarningsLog;
                         log() << "**          The current featureCompatibilityVersion is "
-                              << FeatureCompatibilityVersion::toString(version) << "."
+                              << FeatureCompatibilityVersionParser::toString(version) << "."
                               << startupWarningsLog;
                         log() << "**          To fix this, use the setFeatureCompatibilityVersion "
                               << "command to resume downgrade to 3.6." << startupWarningsLog;

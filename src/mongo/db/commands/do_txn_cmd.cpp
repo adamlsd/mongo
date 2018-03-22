@@ -51,7 +51,6 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_entry_gen.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -134,6 +133,14 @@ public:
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
+        // Clean the global WUOW to allow clients to wait for write concern.
+        // TODO SERVER-33591 Remove this after pushing down the stashing logic.
+        ON_BLOCK_EXIT([opCtx] {
+            if (opCtx->getWriteUnitOfWork()) {
+                opCtx->setWriteUnitOfWork(nullptr);
+            }
+        });
+
         uassert(ErrorCodes::CommandNotSupported,
                 "This storage engine does not support transactions.",
                 !opCtx->getServiceContext()->getGlobalStorageEngine()->isMmapV1());

@@ -726,7 +726,8 @@ session_config = [
         for a cursor created in this session will mark the cursor
         as cached and keep it available to be reused for later calls
         to WT_SESSION::open_cursor. Cached cursors may be eventually
-        closed.''',
+        closed. This value is inherited from ::wiredtiger_open
+        \c cache_cursors''',
         type='boolean'),
     Config('ignore_cache_size', 'false', r'''
         when set, operations performed by this session ignore the cache size
@@ -754,6 +755,11 @@ wiredtiger_open_common =\
         values are passed to WT_CONNECTION::load_extension as the \c config
         parameter (for example,
         <code>builtin_extension_config={zlib={compression_level=3}}</code>)'''),
+    Config('cache_cursors', 'true', r'''
+        enable caching of cursors for reuse. This is the default value
+        for any sessions created, and can be overridden in configuring
+        \c cache_cursors in WT_CONNECTION.open_session.''',
+        type='boolean'),
     Config('checkpoint_sync', 'true', r'''
         flush files to stable storage when closing or writing
         checkpoints''',
@@ -832,6 +838,9 @@ wiredtiger_open_common =\
     Config('session_scratch_max', '2MB', r'''
         maximum memory to cache in each session''',
         type='int', undoc=True),
+    Config('session_table_cache', 'true', r'''
+        Maintain a per-session cache of tables''',
+        type='boolean', undoc=True), # Obsolete after WT-3476
     Config('transaction_sync', '', r'''
         how to sync log records when the transaction commits''',
         type='category', subconfig=[
@@ -1303,6 +1312,12 @@ methods = {
     Config('leak_memory', 'false', r'''
         don't free memory during close''',
         type='boolean'),
+    Config('use_timestamp', 'true', r'''
+        by default, create the close checkpoint as of the last stable timestamp
+        if timestamps are in use, or all current updates if there is no
+        stable timestamp set.  If false, this option generates a checkpoint
+        with all updates''',
+        type='boolean'),
 ]),
 'WT_CONNECTION.debug_info' : Method([
     Config('cache', 'false', r'''
@@ -1350,13 +1365,14 @@ methods = {
 'WT_CONNECTION.query_timestamp' : Method([
     Config('get', 'all_committed', r'''
         specify which timestamp to query: \c all_committed returns the largest
-        timestamp such that all earlier timestamps have committed, \c oldest
-        returns the most recent \c oldest_timestamp set with
+        timestamp such that all timestamps up to that value have committed,
+        \c oldest returns the most recent \c oldest_timestamp set with
         WT_CONNECTION::set_timestamp, \c pinned returns the minimum of the
         \c oldest_timestamp and the read timestamps of all active readers, and
         \c stable returns the most recent \c stable_timestamp set with
         WT_CONNECTION::set_timestamp.  See @ref transaction_timestamps''',
-        choices=['all_committed','oldest','pinned','recovery','stable']),
+        choices=['all_committed','last_checkpoint',
+            'oldest','pinned','recovery','stable']),
 ]),
 
 'WT_CONNECTION.set_timestamp' : Method([

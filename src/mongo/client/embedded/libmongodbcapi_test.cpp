@@ -68,15 +68,20 @@ protected:
         if (!globalTempDir) {
             globalTempDir = mongo::stdx::make_unique<mongo::unittest::TempDir>("embedded_mongo");
         }
-        const char* argv[] = {
-            "mongo_embedded_capi_test", "--port", "0", "--dbpath", globalTempDir->path().c_str()};
-        db = libmongodbcapi_db_new(5, argv, nullptr);
+        const char* argv[] = {"mongo_embedded_capi_test",
+                              "--port",
+                              "0",
+                              "--storageEngine",
+                              "mobile",
+                              "--dbpath",
+                              globalTempDir->path().c_str()};
+        db = libmongodbcapi_db_new(7, argv, nullptr);
         ASSERT(db != nullptr);
     }
 
     void tearDown() {
         libmongodbcapi_db_destroy(db);
-        ASSERT_EQUALS(libmongodbcapi_get_last_error(), LIBMONGODB_CAPI_ERROR_SUCCESS);
+        ASSERT_EQUALS(libmongodbcapi_get_last_error(), LIBMONGODB_CAPI_SUCCESS);
     }
 
     libmongodbcapi_db* getDB() {
@@ -86,7 +91,7 @@ protected:
     MongoDBCAPIClientPtr createClient() {
         MongoDBCAPIClientPtr client(libmongodbcapi_db_client_new(db));
         ASSERT(client != nullptr);
-        ASSERT_EQUALS(libmongodbcapi_get_last_error(), LIBMONGODB_CAPI_ERROR_SUCCESS);
+        ASSERT_EQUALS(libmongodbcapi_get_last_error(), LIBMONGODB_CAPI_SUCCESS);
         return client;
     }
 
@@ -130,7 +135,7 @@ TEST_F(MongodbCAPITest, CreateMultipleClients) {
 TEST_F(MongodbCAPITest, DBPump) {
     libmongodbcapi_db* db = getDB();
     int err = libmongodbcapi_db_pump(db);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 }
 
 TEST_F(MongodbCAPITest, IsMaster) {
@@ -150,7 +155,7 @@ TEST_F(MongodbCAPITest, IsMaster) {
     // call the wire protocol
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), inputMessage.buf(), inputMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     // convert the shared buffer to a mongo::message and ensure that it is valid
     auto outputMessage = messageFromBuffer(output, outputSize);
@@ -161,6 +166,9 @@ TEST_F(MongodbCAPITest, IsMaster) {
     auto outputOpMsg = mongo::OpMsg::parseOwned(outputMessage);
     ASSERT(outputOpMsg.body.valid(mongo::BSONVersion::kLatest));
     ASSERT(outputOpMsg.body.getBoolField("ismaster"));
+
+    // logicalSessionTimeoutMinutes should not be in isMaster response for embedded
+    ASSERT(!outputOpMsg.body.hasField("logicalSessionTimeoutMinutes"));
 }
 
 
@@ -176,7 +184,7 @@ TEST_F(MongodbCAPITest, InsertDocument) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage.size() > 0);
@@ -206,7 +214,7 @@ TEST_F(MongodbCAPITest, InsertMultipleDocuments) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage.size() > 0);
@@ -233,7 +241,7 @@ TEST_F(MongodbCAPITest, ReadDB) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), findMessage.buf(), findMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage.size() > 0);
@@ -271,7 +279,7 @@ TEST_F(MongodbCAPITest, InsertAndRead) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage1 = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage1.size() > 0);
@@ -293,7 +301,7 @@ TEST_F(MongodbCAPITest, InsertAndRead) {
     size_t outputSize2;
     err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), findMessage.buf(), findMessage.size(), &output2, &outputSize2);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage2 = messageFromBuffer(output2, outputSize2);
     ASSERT(outputMessage2.size() > 0);
@@ -332,7 +340,7 @@ TEST_F(MongodbCAPITest, InsertAndReadDifferentClients) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client1.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage1 = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage1.size() > 0);
@@ -354,7 +362,7 @@ TEST_F(MongodbCAPITest, InsertAndReadDifferentClients) {
     size_t outputSize2;
     err = libmongodbcapi_db_client_wire_protocol_rpc(
         client2.get(), findMessage.buf(), findMessage.size(), &output2, &outputSize2);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage2 = messageFromBuffer(output2, outputSize2);
     ASSERT(outputMessage2.size() > 0);
@@ -392,7 +400,7 @@ TEST_F(MongodbCAPITest, InsertAndDelete) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage1 = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage1.size() > 0);
@@ -418,7 +426,7 @@ TEST_F(MongodbCAPITest, InsertAndDelete) {
     size_t outputSize2;
     err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), deleteMessage.buf(), deleteMessage.size(), &output2, &outputSize2);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage2 = messageFromBuffer(output2, outputSize2);
     ASSERT(outputMessage2.size() > 0);
@@ -447,7 +455,7 @@ TEST_F(MongodbCAPITest, InsertAndUpdate) {
     size_t outputSize;
     int err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), insertMessage.buf(), insertMessage.size(), &output, &outputSize);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage1 = messageFromBuffer(output, outputSize);
     ASSERT(outputMessage1.size() > 0);
@@ -473,7 +481,7 @@ TEST_F(MongodbCAPITest, InsertAndUpdate) {
     size_t outputSize2;
     err = libmongodbcapi_db_client_wire_protocol_rpc(
         client.get(), updateMessage.buf(), updateMessage.size(), &output2, &outputSize2);
-    ASSERT_EQUALS(err, LIBMONGODB_CAPI_ERROR_SUCCESS);
+    ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 
     auto outputMessage2 = messageFromBuffer(output2, outputSize2);
     ASSERT(outputMessage2.size() > 0);
@@ -523,7 +531,21 @@ int main(int argc, char** argv, char** envp) {
     ::mongo::setupSynchronousSignalHandlers();
     ::mongo::serverGlobalParams.noUnixSocket = true;
     ::mongo::unittest::setupTestLogger();
+
+    int init = libmongodbcapi_init(nullptr);
+    if (init != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_init() failed with " << init << std::endl;
+        return EXIT_FAILURE;
+    }
+
     auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
+
+    int fini = libmongodbcapi_fini();
+    if (fini != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with " << fini << std::endl;
+        return EXIT_FAILURE;
+    }
+
     globalTempDir.reset();
     mongo::quickExit(result);
 }

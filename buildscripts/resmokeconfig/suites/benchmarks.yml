@@ -2,10 +2,9 @@ test_kind: benchmark_test
 
 selector:
   root: build/benchmarks.txt
-  # TODO: SERVER-33203 Add path glob for canary tests.
+  # Please always add path glob for canary tests as part of include_files.
 
-# TODO: Remove the default executor configuration after SERVER-33201.
 executor:
-  config:
-    program_options:
-      benchmark_repetitions: 6
+  config: {}
+  hooks:
+  - class: CombineBenchmarkResults

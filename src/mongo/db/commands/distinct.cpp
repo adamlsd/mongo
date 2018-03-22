@@ -110,10 +110,11 @@ public:
     }
 
     Status explain(OperationContext* opCtx,
-                   const std::string& dbname,
-                   const BSONObj& cmdObj,
+                   const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
                    BSONObjBuilder* out) const override {
+        std::string dbname = request.getDatabase().toString();
+        const BSONObj& cmdObj = request.body;
         // Acquire locks and resolve possible UUID. The RAII object is optional, because in the case
         // of a view, the locks need to be released.
         boost::optional<AutoGetCollectionForReadCommand> ctx;
@@ -147,8 +148,8 @@ public:
 
         Collection* const collection = ctx->getCollection();
 
-        auto executor = uassertStatusOK(getExecutorDistinct(
-            opCtx, collection, nss.ns(), &parsedDistinct, PlanExecutor::YIELD_AUTO));
+        auto executor =
+            uassertStatusOK(getExecutorDistinct(opCtx, collection, nss.ns(), &parsedDistinct));
 
         Explain::explainStages(executor.get(), collection, verbosity, out);
         return Status::OK();
@@ -187,8 +188,7 @@ public:
 
         Collection* const collection = ctx->getCollection();
 
-        auto executor = getExecutorDistinct(
-            opCtx, collection, nss.ns(), &parsedDistinct, PlanExecutor::YIELD_AUTO);
+        auto executor = getExecutorDistinct(opCtx, collection, nss.ns(), &parsedDistinct);
         if (!executor.isOK()) {
             return CommandHelpers::appendCommandStatus(result, executor.getStatus());
         }
@@ -244,9 +244,8 @@ public:
 
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error during distinct command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error during distinct command"));
         }
 
 

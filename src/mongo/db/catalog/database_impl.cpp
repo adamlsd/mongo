@@ -58,7 +58,7 @@
 #include "mongo/db/query/collation/collator_factory_interface.h"
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/oplog.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -504,14 +504,10 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
 
     // Drop unreplicated collections immediately.
     // If 'dropOpTime' is provided, we should proceed to rename the collection.
-    // Under master/slave, collections are always dropped immediately. This is because drop-pending
-    // collections support the rollback process which is not applicable to master/slave.
     auto replCoord = repl::ReplicationCoordinator::get(opCtx);
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
     auto isOplogDisabledForNamespace = replCoord->isOplogDisabledFor(opCtx, fullns);
-    auto isMasterSlave =
-        repl::ReplicationCoordinator::modeMasterSlave == replCoord->getReplicationMode();
-    if ((dropOpTime.isNull() && isOplogDisabledForNamespace) || isMasterSlave) {
+    if (dropOpTime.isNull() && isOplogDisabledForNamespace) {
         auto status = _finishDropCollection(opCtx, fullns, collection);
         if (!status.isOK()) {
             return status;
@@ -552,7 +548,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
             log() << "dropCollection: " << fullns << " (" << uuidString << ") - index namespace '"
                   << index->indexNamespace()
                   << "' would be too long after drop-pending rename. Dropping index immediately.";
-            fassertStatusOK(40463, collection->getIndexCatalog()->dropIndex(opCtx, index));
+            fassert(40463, collection->getIndexCatalog()->dropIndex(opCtx, index));
             opObserver->onDropIndex(
                 opCtx, fullns, collection->uuid(), index->indexName(), index->infoObj());
         }
@@ -568,7 +564,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
             log() << "dropCollection: " << fullns << " (" << uuidString
                   << ") - no drop optime available for pending-drop. "
                   << "Dropping collection immediately.";
-            fassertStatusOK(40462, _finishDropCollection(opCtx, fullns, collection));
+            fassert(40462, _finishDropCollection(opCtx, fullns, collection));
             return Status::OK();
         }
     } else {
@@ -591,7 +587,7 @@ Status DatabaseImpl::dropCollectionEvenIfSystem(OperationContext* opCtx,
     log() << "dropCollection: " << fullns << " (" << uuidString
           << ") - renaming to drop-pending collection: " << dpns << " with drop optime "
           << dropOpTime;
-    fassertStatusOK(40464, renameCollection(opCtx, fullns.ns(), dpns.ns(), stayTemp));
+    fassert(40464, renameCollection(opCtx, fullns.ns(), dpns.ns(), stayTemp));
 
     // Register this drop-pending namespace with DropPendingCollectionReaper to remove when the
     // committed optime reaches the drop optime.
@@ -650,11 +646,9 @@ Collection* DatabaseImpl::getCollection(OperationContext* opCtx, const Namespace
 
     if (it != _collections.end() && it->second) {
         Collection* found = it->second;
-        if (enableCollectionUUIDs) {
-            NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
-            if (auto uuid = found->uuid())
-                cache.ensureNamespaceInCache(nss, uuid.get());
-        }
+        NamespaceUUIDCache& cache = NamespaceUUIDCache::get(opCtx);
+        if (auto uuid = found->uuid())
+            cache.ensureNamespaceInCache(nss, uuid.get());
         return found;
     }
 
@@ -816,8 +810,10 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
         if (collection->requiresIdIndex()) {
             if (optionsWithUUID.autoIndexId == CollectionOptions::YES ||
                 optionsWithUUID.autoIndexId == CollectionOptions::DEFAULT) {
+                // createCollection() may be called before the in-memory fCV parameter is
+                // initialized, so use the unsafe fCV getter here.
                 const auto featureCompatibilityVersion =
-                    serverGlobalParams.featureCompatibility.getVersion();
+                    serverGlobalParams.featureCompatibility.getVersionUnsafe();
                 IndexCatalog* ic = collection->getIndexCatalog();
                 fullIdIndexSpec = uassertStatusOK(ic->createIndexOnEmptyCollection(
                     opCtx,

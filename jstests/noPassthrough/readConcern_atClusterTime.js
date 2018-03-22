@@ -6,6 +6,14 @@
 (function() {
     "use strict";
 
+    // Skip this test if running with --nojournal and WiredTiger.
+    if (jsTest.options().noJournal &&
+        (!jsTest.options().storageEngine || jsTest.options().storageEngine === "wiredTiger")) {
+        print("Skipping test because running WiredTiger without journaling isn't a valid" +
+              " replica set configuration");
+        return;
+    }
+
     const dbName = "test";
     const collName = "coll";
 
@@ -34,6 +42,15 @@
         readConcern: {level: "snapshot", atClusterTime: clusterTime},
         txnNumber: NumberLong(txnNumber++)
     }));
+
+    // 'atClusterTime' cannot be greater than the current cluster time.
+    const futureClusterTime = new Timestamp(clusterTime.getTime() + 1000, 1);
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        find: collName,
+        readConcern: {level: "snapshot", atClusterTime: futureClusterTime},
+        txnNumber: NumberLong(txnNumber++)
+    }),
+                                 ErrorCodes.InvalidOptions);
 
     // 'atClusterTime' must have type Timestamp.
     assert.commandFailedWithCode(sessionDb.runCommand({

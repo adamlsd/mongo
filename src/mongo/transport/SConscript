@@ -13,7 +13,6 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/decorable',
     ],
 )
 
@@ -63,6 +62,46 @@ tlEnv.Library(
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/util/net/host',
         '$BUILD_DIR/mongo/util/net/ssl_stream',
+        '$BUILD_DIR/third_party/shim_asio',
+    ],
+)
+
+# This library will initialize an egress transport layer in a mongo initializer
+# for C++ tests that require networking.
+env.Library(
+    target='transport_layer_egress_init',
+    source=[
+        'transport_layer_egress_init.cpp',
+    ],
+    LIBDEPS_PRIVATE=[
+        'transport_layer',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+    ]
+)
+
+tlEnv.CppUnitTest(
+    target='transport_layer_asio_test',
+    source=[
+        'transport_layer_asio_test.cpp',
+    ],
+    LIBDEPS=[
+        'transport_layer',
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/service_context_noop_init',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/third_party/shim_asio',
+    ],
+)
+
+tlEnv.CppIntegrationTest(
+    target='transport_layer_asio_integration_test',
+    source=[
+        'transport_layer_asio_integration_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/util/net/network',
         '$BUILD_DIR/third_party/shim_asio',
     ],
 )
@@ -148,7 +187,6 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/rpc/command_request',
         '$BUILD_DIR/mongo/unittest/unittest',
         '$BUILD_DIR/mongo/util/clock_source_mock',
-        '$BUILD_DIR/mongo/util/decorable',
     ],
 )
 
@@ -165,7 +203,6 @@ zlibEnv.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/util/decorable',
         '$BUILD_DIR/mongo/util/options_parser/options_parser',
         '$BUILD_DIR/third_party/shim_snappy',
         '$BUILD_DIR/third_party/shim_zlib',
@@ -181,17 +218,5 @@ env.CppUnitTest(
     LIBDEPS=[
         'message_compressor',
     ]
-)
-
-env.CppUnitTest(
-    target='transport_layer_asio_test',
-    source=[
-        'transport_layer_asio_test.cpp',
-    ],
-    LIBDEPS=[
-        'transport_layer',
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-    ],
 )
 

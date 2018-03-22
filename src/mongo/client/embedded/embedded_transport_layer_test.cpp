@@ -55,9 +55,12 @@ protected:
         if (!globalTempDir) {
             globalTempDir = mongo::stdx::make_unique<mongo::unittest::TempDir>("embedded_mongo");
         }
-        int argc = 3;
-        const char* argv[] = {
-            "mongo_embedded_transport_layer_test", "--dbpath", globalTempDir->path().c_str()};
+        int argc = 5;
+        const char* argv[] = {"mongo_embedded_transport_layer_test",
+                              "--storageEngine",
+                              "mobile",
+                              "--dbpath",
+                              globalTempDir->path().c_str()};
         db_handle = libmongodbcapi_db_new(argc, argv, nullptr);
 
         mongoc_init();
@@ -183,7 +186,21 @@ int main(int argc, char** argv, char** envp) {
     ::mongo::setupSynchronousSignalHandlers();
     ::mongo::serverGlobalParams.noUnixSocket = true;
     ::mongo::unittest::setupTestLogger();
+
+    int init = libmongodbcapi_init(nullptr);
+    if (init != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_init() failed with " << init << std::endl;
+        return EXIT_FAILURE;
+    }
+
     auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
+
+    int fini = libmongodbcapi_fini();
+    if (fini != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with " << fini << std::endl;
+        return EXIT_FAILURE;
+    }
+
     globalTempDir.reset();
     mongo::quickExit(result);
 }

@@ -33,6 +33,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
+#include "mongo/s/grid.h"
 
 namespace mongo {
 namespace {
@@ -71,10 +72,13 @@ public:
              BSONObjBuilder& output) override {
         const NamespaceString nss(parseNs(dbName, cmdObj));
 
+        const auto routingInfo =
+            uassertStatusOK(Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, nss));
         auto results = scatterGatherVersionedTargetByRoutingTable(
             opCtx,
-            dbName,
+            nss.db(),
             nss,
+            routingInfo,
             CommandHelpers::filterCommandRequestForPassthrough(cmdObj),
             ReadPreferenceSetting::get(opCtx),
             Shard::RetryPolicy::kIdempotent,

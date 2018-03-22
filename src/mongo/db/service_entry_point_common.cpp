@@ -60,7 +60,8 @@
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/s/implicit_create_collection.h"
 #include "mongo/db/s/operation_sharding_state.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharded_connection_info.h"
@@ -79,6 +80,7 @@
 #include "mongo/rpc/metadata/sharding_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/rpc/reply_builder_interface.h"
+#include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/fail_point_service.h"
@@ -103,6 +105,7 @@ using logger::LogComponent;
 // which is not allowed.
 const StringMap<int> sessionCheckoutWhitelist = {{"aggregate", 1},
                                                  {"applyOps", 1},
+                                                 {"commitTransaction", 1},
                                                  {"count", 1},
                                                  {"delete", 1},
                                                  {"distinct", 1},
@@ -121,13 +124,9 @@ const StringMap<int> sessionCheckoutWhitelist = {{"aggregate", 1},
                                                  {"insert", 1},
                                                  {"mapReduce", 1},
                                                  {"parallelCollectionScan", 1},
+                                                 {"prepareTransaction", 1},
                                                  {"refreshLogicalSessionCacheNow", 1},
                                                  {"update", 1}};
-
-// The command names for which readConcern level snapshot is allowed. The getMore command is
-// implicitly allowed to operate on a cursor which was opened under readConcern level snapshot.
-const StringMap<int> readConcernSnapshotWhitelist = {
-    {"find", 1}, {"count", 1}, {"geoSearch", 1}, {"parallelCollectionScan", 1}, {"update", 1}};
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -246,6 +245,8 @@ private:
     const bool _maintenanceModeSet;
 };
 
+constexpr auto kLastCommittedOpTimeFieldName = "lastCommittedOpTime"_sd;
+
 // Called from the error contexts where request may not be available.
 // It only attaches clusterTime and operationTime.
 void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadataBob) {
@@ -266,6 +267,13 @@ void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadat
             rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
             logicalTimeMetadata.writeToMetadata(metadataBob);
         }
+    }
+
+    const bool isConfig = serverGlobalParams.clusterRole == ClusterRole::ConfigServer;
+    if (ShardingState::get(opCtx)->enabled() || isConfig) {
+        auto lastCommittedOpTime =
+            repl::ReplicationCoordinator::get(opCtx)->getLastCommittedOpTime();
+        metadataBob->append(kLastCommittedOpTimeFieldName, lastCommittedOpTime.getTimestamp());
     }
 }
 
@@ -302,6 +310,11 @@ void appendReplyMetadata(OperationContext* opCtx,
             rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
             logicalTimeMetadata.writeToMetadata(metadataBob);
         }
+
+        if (isShardingAware || isConfig) {
+            auto lastCommittedOpTime = replCoord->getLastCommittedOpTime();
+            metadataBob->append(kLastCommittedOpTimeFieldName, lastCommittedOpTime.getTimestamp());
+        }
     }
 
     // If we're a shard other than the config shard, attach the last configOpTime we know about.
@@ -315,8 +328,7 @@ void appendReplyMetadata(OperationContext* opCtx,
  * Given the specified command, returns an effective read concern which should be used or an error
  * if the read concern is not valid for the command.
  */
-StatusWith<repl::ReadConcernArgs> _extractReadConcern(const Command* command,
-                                                      const std::string& dbName,
+StatusWith<repl::ReadConcernArgs> _extractReadConcern(const CommandInvocation* invocation,
                                                       const BSONObj& cmdObj) {
     repl::ReadConcernArgs readConcernArgs;
 
@@ -325,7 +337,7 @@ StatusWith<repl::ReadConcernArgs> _extractReadConcern(const Command* command,
         return readConcernParseStatus;
     }
 
-    if (!command->supportsReadConcern(dbName, cmdObj, readConcernArgs.getLevel())) {
+    if (!invocation->supportsReadConcern(readConcernArgs.getLevel())) {
         return {ErrorCodes::InvalidOptions,
                 str::stream() << "Command does not support read concern "
                               << readConcernArgs.toString()};
@@ -383,12 +395,40 @@ LogicalTime computeOperationTime(OperationContext* opCtx,
     return operationTime;
 }
 
+void invokeInTransaction(OperationContext* opCtx,
+                         CommandInvocation* invocation,
+                         CommandReplyBuilder* replyBuilder) {
+    auto session = OperationContextSession::get(opCtx);
+    if (!session) {
+        // Run the command directly if we're not in a transaction.
+        invocation->run(opCtx, replyBuilder);
+        return;
+    }
+
+    session->unstashTransactionResources(opCtx);
+
+    // TODO: SERVER-33217 Add an RAII so that any exception will abort the transaction.
+    invocation->run(opCtx, replyBuilder);
+
+    if (auto okField = replyBuilder->getBodyBuilder().asTempObj()["ok"]) {
+        // If ok is present, use its truthiness.
+        if (!okField.trueValue()) {
+            // TODO: SERVER-33217 Abort the transaction if the command fails.
+            return;
+        }
+    }
+
+    // Stash or commit the transaction when the command succeeds.
+    session->stashTransactionResources(opCtx);
+}
+
 bool runCommandImpl(OperationContext* opCtx,
-                    Command* command,
+                    CommandInvocation* invocation,
                     const OpMsgRequest& request,
                     rpc::ReplyBuilderInterface* replyBuilder,
                     LogicalTime startOperationTime,
                     const ServiceEntryPointCommon::Hooks& behaviors) {
+    const Command* command = invocation->definition();
     auto bytesToReserve = command->reserveBytesForReply();
 
 // SERVER-22100: In Windows DEBUG builds, the CRT heap debugging overhead, in conjunction with the
@@ -399,22 +439,13 @@ bool runCommandImpl(OperationContext* opCtx,
         bytesToReserve = 0;
 #endif
 
-    // run expects non-const bsonobj
-    BSONObj cmd = request.body;
+    CommandReplyBuilder crb(replyBuilder->getInPlaceReplyBuilder(bytesToReserve));
 
-    // run expects const db std::string (can't bind to temporary)
-    const std::string db = request.getDatabase().toString();
-
-    BSONObjBuilder inPlaceReplyBob = replyBuilder->getInPlaceReplyBuilder(bytesToReserve);
-
-    behaviors.waitForReadConcern(opCtx, command, db, request, cmd);
-
-    bool result;
-    if (!command->supportsWriteConcern(cmd)) {
-        behaviors.uassertCommandDoesNotSpecifyWriteConcern(cmd);
-        result = command->publicRun(opCtx, request, inPlaceReplyBob);
+    if (!invocation->supportsWriteConcern()) {
+        behaviors.uassertCommandDoesNotSpecifyWriteConcern(request.body);
+        invokeInTransaction(opCtx, invocation, &crb);
     } else {
-        auto wcResult = uassertStatusOK(extractWriteConcern(opCtx, cmd, db));
+        auto wcResult = uassertStatusOK(extractWriteConcern(opCtx, request.body));
 
         auto lastOpBeforeRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
 
@@ -424,10 +455,9 @@ bool runCommandImpl(OperationContext* opCtx,
         opCtx->setWriteConcern(wcResult);
         ON_BLOCK_EXIT([&] {
             behaviors.waitForWriteConcern(
-                opCtx, command->getName(), lastOpBeforeRun, &inPlaceReplyBob);
+                opCtx, invocation->definition()->getName(), lastOpBeforeRun, crb.getBodyBuilder());
         });
-
-        result = command->publicRun(opCtx, request, inPlaceReplyBob);
+        invokeInTransaction(opCtx, invocation, &crb);
 
         // Nothing in run() should change the writeConcern.
         dassert(SimpleBSONObjComparator::kInstance.evaluate(opCtx->getWriteConcern().toBSON() ==
@@ -436,9 +466,11 @@ bool runCommandImpl(OperationContext* opCtx,
 
     behaviors.waitForLinearizableReadConcern(opCtx);
 
-    CommandHelpers::appendCommandStatus(inPlaceReplyBob, result);
-
-    behaviors.attachCurOpErrInfo(opCtx, inPlaceReplyBob);
+    const bool ok = [&] {
+        auto body = crb.getBodyBuilder();
+        return CommandHelpers::extractOrAppendOk(body);
+    }();
+    behaviors.attachCurOpErrInfo(opCtx, crb.getBodyBuilder().asTempObj());
 
     auto operationTime = computeOperationTime(
         opCtx, startOperationTime, repl::ReadConcernArgs::get(opCtx).getLevel());
@@ -446,16 +478,15 @@ bool runCommandImpl(OperationContext* opCtx,
     // An uninitialized operation time means the cluster time is not propagated, so the operation
     // time should not be attached to the response.
     if (operationTime != LogicalTime::kUninitialized) {
-        operationTime.appendAsOperationTime(&inPlaceReplyBob);
+        auto body = crb.getBodyBuilder();
+        operationTime.appendAsOperationTime(&body);
     }
-
-    inPlaceReplyBob.doneFast();
 
     BSONObjBuilder metadataBob;
     appendReplyMetadata(opCtx, request, &metadataBob);
     replyBuilder->setMetadata(metadataBob.done());
 
-    return result;
+    return ok;
 }
 
 /**
@@ -470,8 +501,8 @@ void execCommandDatabase(OperationContext* opCtx,
                          const OpMsgRequest& request,
                          rpc::ReplyBuilderInterface* replyBuilder,
                          const ServiceEntryPointCommon::Hooks& behaviors) {
-
     auto startOperationTime = getClientOperationTime(opCtx);
+    auto invocation = command->parse(opCtx, request);
     try {
         {
             stdx::lock_guard<Client> lk(*opCtx->getClient());
@@ -495,7 +526,7 @@ void execCommandDatabase(OperationContext* opCtx,
         // servers may result in a deadlock when a server tries to check out a session it is already
         // using to service an earlier operation in the command's chain. To avoid this, only check
         // out sessions for commands that require them.
-        const bool shouldCheckoutSession =
+        const bool shouldCheckoutSession = static_cast<bool>(opCtx->getTxnNumber()) &&
             sessionCheckoutWhitelist.find(command->getName()) != sessionCheckoutWhitelist.cend();
 
         boost::optional<bool> autocommitVal = boost::none;
@@ -521,7 +552,6 @@ void execCommandDatabase(OperationContext* opCtx,
         BSONElement cmdOptionMaxTimeMSField;
         BSONElement allowImplicitCollectionCreationField;
         BSONElement helpField;
-        BSONElement shardVersionFieldIdx;
         BSONElement queryOptionMaxTimeMSField;
 
         StringMap<int> topLevelFields;
@@ -533,8 +563,6 @@ void execCommandDatabase(OperationContext* opCtx,
                 allowImplicitCollectionCreationField = element;
             } else if (fieldName == CommandHelpers::kHelpFieldName) {
                 helpField = element;
-            } else if (fieldName == ChunkVersion::kShardVersionField) {
-                shardVersionFieldIdx = element;
             } else if (fieldName == QueryRequest::queryOptionMaxTimeMS) {
                 queryOptionMaxTimeMSField = element;
             }
@@ -624,31 +652,15 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        readConcernArgs = uassertStatusOK(_extractReadConcern(command, dbname, request.body));
+        readConcernArgs = uassertStatusOK(_extractReadConcern(invocation.get(), request.body));
 
-        // TODO SERVER-33354: Remove whitelist.
         if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
-            const bool snapshotAllowedForCommand =
-                readConcernSnapshotWhitelist.find(command->getName()) !=
-                readConcernSnapshotWhitelist.cend();
-            uassert(ErrorCodes::InvalidOptions,
-                    str::stream() << "readConcern level snapshot may not be used with the "
-                                  << command->getName()
-                                  << " command",
-                    snapshotAllowedForCommand);
-
             uassert(ErrorCodes::InvalidOptions,
                     "readConcernLevel snapshot requires a session ID",
                     opCtx->getLogicalSessionId());
             uassert(ErrorCodes::InvalidOptions,
                     "readConcernLevel snapshot requires a txnNumber",
                     opCtx->getTxnNumber());
-
-            // TODO SERVER-33355: Remove once readConcern level snapshot is supported on
-            // secondaries.
-            uassert(ErrorCodes::InvalidOptions,
-                    "readConcern level snapshot only supported on primaries",
-                    iAmPrimary);
 
             opCtx->lockState()->setSharedLocksShouldTwoPhaseLock(true);
         }
@@ -659,11 +671,11 @@ void execCommandDatabase(OperationContext* opCtx,
             readConcernArgs.getLevel() != repl::ReadConcernLevel::kAvailableReadConcern &&
             (iAmPrimary ||
              (readConcernArgs.hasLevel() || readConcernArgs.getArgsAfterClusterTime()))) {
-            oss.initializeShardVersion(NamespaceString(command->parseNs(dbname, request.body)),
-                                       shardVersionFieldIdx);
+            oss.initializeClientRoutingVersions(
+                NamespaceString(command->parseNs(dbname, request.body)), request.body);
 
             auto const shardingState = ShardingState::get(opCtx);
-            if (oss.hasShardVersion()) {
+            if (oss.hasShardVersion() || oss.hasDbVersion()) {
                 uassertStatusOK(shardingState->canAcceptShardedCommands());
             }
 
@@ -690,21 +702,12 @@ void execCommandDatabase(OperationContext* opCtx,
             rpc::TrackingMetadata::get(opCtx).setIsLogged(true);
         }
 
-        sessionTxnState.unstashTransactionResources();
-        retval =
-            runCommandImpl(opCtx, command, request, replyBuilder, startOperationTime, behaviors);
+        behaviors.waitForReadConcern(opCtx, invocation.get(), request);
 
-        if (retval) {
-            if (opCtx->getWriteUnitOfWork()) {
-                if (!opCtx->hasStashedCursor()) {
-                    // If we are in an autocommit=true transaction and have no stashed cursor,
-                    // commit the transaction.
-                    opCtx->getWriteUnitOfWork()->commit();
-                } else {
-                    sessionTxnState.stashTransactionResources();
-                }
-            }
-        } else {
+        retval = runCommandImpl(
+            opCtx, invocation.get(), request, replyBuilder, startOperationTime, behaviors);
+
+        if (!retval) {
             command->incrementCommandsFailed();
         }
     } catch (const DBException& e) {
@@ -717,6 +720,12 @@ void execCommandDatabase(OperationContext* opCtx,
                     opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
                     .ignore();
             }
+        } else if (auto cannotImplicitCreateCollInfo =
+                       e.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
+            if (ShardingState::get(opCtx)->enabled()) {
+                onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss())
+                    .ignore();
+            }
         }
 
         BSONObjBuilder metadataBob;
@@ -725,7 +734,7 @@ void execCommandDatabase(OperationContext* opCtx,
         // Note: the read concern may not have been successfully or yet placed on the opCtx, so
         // parsing it separately here.
         const std::string db = request.getDatabase().toString();
-        auto readConcernArgsStatus = _extractReadConcern(command, db, request.body);
+        auto readConcernArgsStatus = _extractReadConcern(invocation.get(), request.body);
         auto operationTime = readConcernArgsStatus.isOK()
             ? computeOperationTime(
                   opCtx, startOperationTime, readConcernArgsStatus.getValue().getLevel())
@@ -1062,8 +1071,13 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
     DbMessage dbmsg(m);
 
     Client& c = *opCtx->getClient();
+
     if (c.isInDirectClient()) {
-        invariant(!opCtx->lockState()->inAWriteUnitOfWork());
+        if (!opCtx->getLogicalSessionId() || !opCtx->getTxnNumber() ||
+            opCtx->recoveryUnit()->getReadConcernLevel() !=
+                repl::ReadConcernLevel::kSnapshotReadConcern) {
+            invariant(!opCtx->lockState()->inAWriteUnitOfWork());
+        }
     } else {
         LastError::get(c).startRequest();
         AuthorizationSession::get(c)->startRequest(opCtx);
@@ -1094,8 +1108,8 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
 
     OpDebug& debug = currentOp.debug();
 
-    long long logThresholdMs = serverGlobalParams.slowMS;
-    bool shouldLogOpDebug = shouldLog(logger::LogSeverity::Debug(1));
+    boost::optional<long long> slowMsOverride;
+    bool forceLog = false;
 
     DbResponse dbresponse;
     if (op == dbMsg || op == dbCommand || (op == dbQuery && isCommand)) {
@@ -1104,18 +1118,18 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
         invariant(!isCommand);
         dbresponse = receivedQuery(opCtx, nsString, c, m);
     } else if (op == dbGetMore) {
-        dbresponse = receivedGetMore(opCtx, m, currentOp, &shouldLogOpDebug);
+        dbresponse = receivedGetMore(opCtx, m, currentOp, &forceLog);
     } else {
         // The remaining operations do not return any response. They are fire-and-forget.
         try {
             if (op == dbKillCursors) {
                 currentOp.ensureStarted();
-                logThresholdMs = 10;
+                slowMsOverride = 10;
                 receivedKillCursors(opCtx, m);
             } else if (op != dbInsert && op != dbUpdate && op != dbDelete) {
                 log() << "    operation isn't supported: " << static_cast<int>(op);
                 currentOp.done();
-                shouldLogOpDebug = true;
+                forceLog = true;
             } else {
                 if (!opCtx->getClient()->isInDirectClient()) {
                     uassert(18663,
@@ -1146,9 +1160,14 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
             debug.errInfo = ue.toStatus();
         }
     }
-    currentOp.ensureStarted();
-    currentOp.done();
-    debug.executionTimeMicros = durationCount<Microseconds>(currentOp.elapsedTimeExcludingPauses());
+
+    // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
+    // this op should be sampled for profiling.
+    const bool shouldSample = currentOp.completeAndLogOperation(opCtx,
+                                                                logger::LogComponent::kCommand,
+                                                                dbresponse.response.size(),
+                                                                slowMsOverride,
+                                                                forceLog);
 
     Top::get(opCtx->getServiceContext())
         .incrementGlobalLatencyStats(
@@ -1156,20 +1175,12 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
             durationCount<Microseconds>(currentOp.elapsedTimeExcludingPauses()),
             currentOp.getReadWriteType());
 
-    const bool shouldSample = serverGlobalParams.sampleRate == 1.0
-        ? true
-        : c.getPrng().nextCanonicalDouble() < serverGlobalParams.sampleRate;
-
-    if (shouldLogOpDebug || (shouldSample && debug.executionTimeMicros > logThresholdMs * 1000LL)) {
-        Locker::LockerInfo lockerInfo;
-        opCtx->lockState()->getLockerInfo(&lockerInfo);
-        log() << debug.report(&c, currentOp, lockerInfo.stats);
-    }
-
     if (currentOp.shouldDBProfile(shouldSample)) {
         // Performance profiling is on
         if (opCtx->lockState()->isReadLocked()) {
             LOG(1) << "note: not profiling because recursive read lock";
+        } else if (c.isInDirectClient()) {
+            LOG(1) << "note: not profiling because we are in DBDirectClient";
         } else if (behaviors.lockedForWriting()) {
             // TODO SERVER-26825: Fix race condition where fsyncLock is acquired post
             // lockedForWriting() call but prior to profile collection lock acquisition.
@@ -1177,6 +1188,7 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
         } else if (storageGlobalParams.readOnly) {
             LOG(1) << "note: not profiling because server is read-only";
         } else {
+            invariant(!opCtx->lockState()->inAWriteUnitOfWork());
             profile(opCtx, op);
         }
     }

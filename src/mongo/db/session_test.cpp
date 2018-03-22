@@ -69,6 +69,7 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
         object,                        // o
         boost::none,                   // o2
         sessionInfo,                   // sessionInfo
+        boost::none,                   // upsert
         wallClockTime,                 // wall clock time
         stmtId,                        // statement id
         prevWriteOpTimeInTransaction,  // optime of previous write within same transaction
@@ -82,8 +83,7 @@ protected:
         MockReplCoordServerFixture::setUp();
 
         auto service = opCtx()->getServiceContext();
-        SessionCatalog::reset_forTest(service);
-        SessionCatalog::create(service);
+        SessionCatalog::get(service)->reset_forTest();
         SessionCatalog::get(service)->onStepUp(opCtx());
     }
 
@@ -576,6 +576,9 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT_NOT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
     ASSERT(!opCtx()->getWriteUnitOfWork());
 
+    // Unset the read concern on the OperationContext. This is needed to unstash.
+    repl::ReadConcernArgs::get(opCtx()) = repl::ReadConcernArgs();
+
     // Unstash the stashed resources. This restores the original Locker and RecoveryUnit to the
     // OperationContext.
     session.unstashTransactionResources(opCtx());
@@ -642,5 +645,5 @@ TEST_F(SessionTest, RollbackClearsStoredStatements) {
     ASSERT_TRUE(session.transactionOperationsForTest().empty());
 }
 
-}  // anonymous
+}  // namespace
 }  // namespace mongo

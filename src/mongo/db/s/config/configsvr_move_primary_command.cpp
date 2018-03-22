@@ -145,15 +145,8 @@ public:
 
         auto const catalogClient = Grid::get(opCtx)->catalogClient();
         auto const catalogCache = Grid::get(opCtx)->catalogCache();
-        auto const catalogManager = ShardingCatalogManager::get(opCtx);
         auto const shardRegistry = Grid::get(opCtx)->shardRegistry();
 
-        // Remove the backwards compatible lock after 3.6 ships.
-        auto backwardsCompatibleDbDistLock = uassertStatusOK(
-            catalogClient->getDistLockManager()->lock(opCtx,
-                                                      dbname + "-movePrimary",
-                                                      "movePrimary",
-                                                      DistLockManager::kDefaultLockTimeout));
         auto dbDistLock = uassertStatusOK(catalogClient->getDistLockManager()->lock(
             opCtx, dbname, "movePrimary", DistLockManager::kDefaultLockTimeout));
 
@@ -213,7 +206,8 @@ public:
         log() << "Moving " << dbname << " primary from: " << fromShard->toString()
               << " to: " << toShard->toString();
 
-        const auto shardedColls = catalogManager->getAllShardedCollectionsForDb(opCtx, dbname);
+        const auto shardedColls = catalogClient->getAllShardedCollectionsForDb(
+            opCtx, dbname, repl::ReadConcernLevel::kLocalReadConcern);
 
         // Record start in changelog
         uassertStatusOK(catalogClient->logChange(

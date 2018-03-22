@@ -145,7 +145,7 @@ void KVStorageEngine::loadCatalog(OperationContext* opCtx) {
                       << " unknown to storage engine after unclean shutdown";
 
                 WriteUnitOfWork wuow(opCtx);
-                fassertStatusOK(50716, _catalog->dropCollection(opCtx, coll));
+                fassert(50716, _catalog->dropCollection(opCtx, coll));
                 wuow.commit();
                 continue;
             }
@@ -236,7 +236,7 @@ KVStorageEngine::reconcileCatalogAndIdents(OperationContext* opCtx) {
         const auto& toRemove = it;
         log() << "Dropping unknown ident: " << toRemove;
         WriteUnitOfWork wuow(opCtx);
-        fassertStatusOK(40591, _engine->dropIdent(opCtx, toRemove));
+        fassert(40591, _engine->dropIdent(opCtx, toRemove));
         wuow.commit();
     }
 
@@ -305,7 +305,7 @@ KVStorageEngine::reconcileCatalogAndIdents(OperationContext* opCtx) {
                 log() << "Dropping unfinished index. Collection: " << coll
                       << " Index: " << indexName;
                 // Ensure the `ident` is dropped while we have the `indexIdent` value.
-                fassertStatusOK(50713, _engine->dropIdent(opCtx, indexIdent));
+                fassert(50713, _engine->dropIdent(opCtx, indexIdent));
                 indexesToDrop.push_back(indexName);
                 continue;
             }
@@ -587,8 +587,12 @@ bool KVStorageEngine::supportsRecoverToStableTimestamp() const {
     return _engine->supportsRecoverToStableTimestamp();
 }
 
-Status KVStorageEngine::recoverToStableTimestamp() {
+StatusWith<Timestamp> KVStorageEngine::recoverToStableTimestamp() {
     return _engine->recoverToStableTimestamp();
+}
+
+boost::optional<Timestamp> KVStorageEngine::getRecoveryTimestamp() const {
+    return _engine->getRecoveryTimestamp();
 }
 
 bool KVStorageEngine::supportsReadConcernSnapshot() const {
@@ -597,5 +601,9 @@ bool KVStorageEngine::supportsReadConcernSnapshot() const {
 
 void KVStorageEngine::replicationBatchIsComplete() const {
     return _engine->replicationBatchIsComplete();
+}
+
+Timestamp KVStorageEngine::getAllCommittedTimestamp(OperationContext* opCtx) const {
+    return _engine->getAllCommittedTimestamp(opCtx);
 }
 }  // namespace mongo

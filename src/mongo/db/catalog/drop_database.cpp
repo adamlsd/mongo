@@ -35,7 +35,7 @@
 #include <algorithm>
 
 #include "mongo/db/background.h"
-#include "mongo/db/catalog/catalog_raii.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/curop.h"
@@ -178,7 +178,7 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
             // A primary processing this will assign a timestamp when the operation is written to
             // the oplog. As stated above, a secondary processing must only observe non-replicated
             // collections, thus this should not be timestamped.
-            fassertStatusOK(40476, db->dropCollectionEvenIfSystem(opCtx, nss));
+            fassert(40476, db->dropCollectionEvenIfSystem(opCtx, nss));
             wunit.commit();
         }
         dropPendingGuard.Dismiss();
@@ -230,6 +230,10 @@ Status dropDatabase(OperationContext* opCtx, const std::string& dbName) {
             return latestDropPendingOpTime;
         }();
 
+        log() << "dropDatabase " << dbName << " waiting for " << awaitOpTime
+              << " to be replicated at " << kDropDatabaseWriteConcern.toBSON() << ". Dropping "
+              << numCollectionsToDrop << " collections, with last collection drop at "
+              << latestDropPendingOpTime;
         auto result = replCoord->awaitReplication(opCtx, awaitOpTime, kDropDatabaseWriteConcern);
         const auto& status = result.status;
         if (!status.isOK()) {

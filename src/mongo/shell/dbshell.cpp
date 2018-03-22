@@ -57,6 +57,7 @@
 #include "mongo/shell/shell_utils.h"
 #include "mongo/shell/shell_utils_launcher.h"
 #include "mongo/stdx/utility.h"
+#include "mongo/transport/transport_layer_asio.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/file.h"
 #include "mongo/util/log.h"
@@ -741,6 +742,18 @@ int _main(int argc, char* argv[], char** envp) {
 
     mongo::runGlobalInitializersOrDie(argc, argv, envp);
 
+    // TODO This should use a TransportLayerManager or TransportLayerFactory
+    auto serviceContext = getGlobalServiceContext();
+    transport::TransportLayerASIO::Options opts;
+    opts.enableIPv6 = shellGlobalParams.enableIPv6;
+    opts.mode = transport::TransportLayerASIO::Options::kEgress;
+
+    serviceContext->setTransportLayer(
+        std::make_unique<transport::TransportLayerASIO>(opts, nullptr));
+    auto tlPtr = serviceContext->getTransportLayer();
+    uassertStatusOK(tlPtr->setup());
+    uassertStatusOK(tlPtr->start());
+
     // hide password from ps output
     for (int i = 0; i < (argc - 1); ++i) {
         if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--password")) {
@@ -758,9 +771,8 @@ int _main(int argc, char* argv[], char** envp) {
 
     logger::globalLogManager()
         ->getNamedDomain("javascriptOutput")
-        ->attachAppender(logger::MessageLogDomain::AppenderAutoPtr(
-            new logger::ConsoleAppender<logger::MessageEventEphemeral>(
-                new logger::MessageEventUnadornedEncoder)));
+        ->attachAppender(std::make_unique<logger::ConsoleAppender<logger::MessageEventEphemeral>>(
+            std::make_unique<logger::MessageEventUnadornedEncoder>()));
 
     std::string& cmdlineURI = shellGlobalParams.url;
     MongoURI parsedURI;

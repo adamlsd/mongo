@@ -130,6 +130,7 @@ public:
      * not yet granted. The lockGlobalBegin
      * method has a deadline for use with the TicketHolder, if there is one.
      */
+    virtual LockResult lockGlobalBegin(OperationContext* opCtx, LockMode mode, Date_t deadline) = 0;
     virtual LockResult lockGlobalBegin(LockMode mode, Date_t deadline) = 0;
 
     /**
@@ -169,8 +170,8 @@ public:
     virtual void downgradeGlobalXtoSForMMAPV1() = 0;
 
     /**
-     * beginWriteUnitOfWork/endWriteUnitOfWork must only be called by WriteUnitOfWork. See
-     * comments there for the semantics of units of work.
+     * beginWriteUnitOfWork/endWriteUnitOfWork are called at the start and end of WriteUnitOfWorks.
+     * They can be used to implement two-phase locking.
      */
     virtual void beginWriteUnitOfWork() = 0;
     virtual void endWriteUnitOfWork() = 0;
@@ -286,6 +287,12 @@ public:
     virtual void getLockerInfo(LockerInfo* lockerInfo) const = 0;
 
     /**
+     * Returns boost::none if this is an instance of LockerNoop, or a populated LockerInfo
+     * otherwise.
+     */
+    virtual boost::optional<LockerInfo> getLockerInfo() const = 0;
+
+    /**
      * LockSnapshot captures the state of all resources that are locked, what modes they're
      * locked in, and how many times they've been locked in that mode.
      */
@@ -333,8 +340,10 @@ public:
     /**
      * Reacquires a ticket for the Locker. This must only be called after releaseTicket(). It
      * restores the ticket under its previous LockMode.
+     * An OperationContext is required to interrupt the ticket acquisition to prevent deadlocks.
+     * A dead lock is possible when a ticket is reacquired while holding a lock.
      */
-    virtual void reacquireTicket() = 0;
+    virtual void reacquireTicket(OperationContext* opCtx) = 0;
 
     //
     // These methods are legacy from LockerImpl and will eventually go away or be converted to
@@ -430,6 +439,28 @@ public:
 
 private:
     Locker* const _locker;
+};
+
+/**
+ * RAII-style class to opt out of replication's use of ParallelBatchWriterMode.
+ */
+class ShouldNotConflictWithSecondaryBatchApplicationBlock {
+    MONGO_DISALLOW_COPYING(ShouldNotConflictWithSecondaryBatchApplicationBlock);
+
+public:
+    explicit ShouldNotConflictWithSecondaryBatchApplicationBlock(Locker* lockState)
+        : _lockState(lockState),
+          _originalShouldConflict(_lockState->shouldConflictWithSecondaryBatchApplication()) {
+        _lockState->setShouldConflictWithSecondaryBatchApplication(false);
+    }
+
+    ~ShouldNotConflictWithSecondaryBatchApplicationBlock() {
+        _lockState->setShouldConflictWithSecondaryBatchApplication(_originalShouldConflict);
+    }
+
+private:
+    Locker* const _lockState;
+    const bool _originalShouldConflict;
 };
 
 }  // namespace mongo

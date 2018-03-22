@@ -46,13 +46,13 @@
 #include "mongo/db/auth/user_management_commands_parser.h"
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/background.h"
-#include "mongo/db/catalog/catalog_raii.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/drop_collection.h"
 #include "mongo/db/catalog/drop_database.h"
 #include "mongo/db/catalog/index_key_validate.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/server_status.h"
@@ -83,7 +83,7 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/repl_settings.h"
-#include "mongo/db/repl/replication_coordinator_global.h"
+#include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/stats/storage_stats.h"
 #include "mongo/db/write_concern.h"
@@ -132,7 +132,7 @@ public:
         }
 
         // Never returns
-        shutdownHelper();
+        shutdownHelper(cmdObj);
         return true;
     }
 
@@ -709,9 +709,8 @@ public:
             if (PlanExecutor::DEAD == state || PlanExecutor::FAILURE == state) {
                 return CommandHelpers::appendCommandStatus(
                     result,
-                    Status(ErrorCodes::OperationFailed,
-                           str::stream() << "Executor error during filemd5 command: "
-                                         << WorkingSetCommon::toStatusString(obj)));
+                    WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                        "Executor error during filemd5 command"));
             }
 
             if (partialOk)
@@ -877,9 +876,8 @@ public:
             warning() << "Internal error while reading " << ns;
             return CommandHelpers::appendCommandStatus(
                 result,
-                Status(ErrorCodes::OperationFailed,
-                       str::stream() << "Executor error while reading during dataSize command: "
-                                     << WorkingSetCommon::toStatusString(obj)));
+                WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+                    "Executor error while reading during dataSize command"));
         }
 
         ostringstream os;

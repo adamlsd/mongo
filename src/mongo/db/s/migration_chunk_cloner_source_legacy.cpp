@@ -34,8 +34,8 @@
 
 #include "mongo/base/status.h"
 #include "mongo/client/read_preference.h"
-#include "mongo/db/catalog/catalog_raii.h"
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/dbhelpers.h"
 #include "mongo/db/exec/plan_stage.h"
 #include "mongo/db/exec/working_set_common.h"
@@ -269,7 +269,7 @@ Status MigrationChunkClonerSourceLegacy::awaitUntilCriticalSectionIsAppropriate(
 
         const BSONObj& res = responseStatus.getValue();
 
-        if (res["waited"].boolean()) {
+        if (!res["waited"].boolean()) {
             sleepmillis(1LL << std::min(iteration, 10));
         }
         iteration++;
@@ -361,9 +361,14 @@ void MigrationChunkClonerSourceLegacy::cancelClone(OperationContext* opCtx) {
     switch (_state) {
         case kDone:
             break;
-        case kCloning:
-            _callRecipient(createRequestWithSessionId(kRecvChunkAbort, _args.getNss(), _sessionId))
-                .status_with_transitional_ignore();
+        case kCloning: {
+            const auto status = _callRecipient(createRequestWithSessionId(
+                                                   kRecvChunkAbort, _args.getNss(), _sessionId))
+                                    .getStatus();
+            if (!status.isOK()) {
+                LOG(0) << "Failed to cancel migration " << causedBy(redact(status));
+            }
+        }
         // Intentional fall through
         case kNew:
             _cleanup(opCtx);
@@ -665,9 +670,8 @@ Status MigrationChunkClonerSourceLegacy::_storeCurrentLocs(OperationContext* opC
     }
 
     if (PlanExecutor::DEAD == state || PlanExecutor::FAILURE == state) {
-        return {ErrorCodes::InternalError,
-                str::stream() << "Executor error while scanning for documents belonging to chunk: "
-                              << WorkingSetCommon::toStatusString(obj)};
+        return WorkingSetCommon::getMemberObjectStatus(obj).withContext(
+            "Executor error while scanning for documents belonging to chunk");
     }
 
     const uint64_t collectionAverageObjectSize = collection->averageObjectSize(opCtx);

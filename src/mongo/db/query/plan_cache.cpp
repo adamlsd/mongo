@@ -354,11 +354,6 @@ bool PlanCache::shouldCacheQuery(const CanonicalQuery& query) {
         return false;
     }
 
-    // Snapshot is really a hint.
-    if (query.getQueryRequest().isSnapshot()) {
-        return false;
-    }
-
     return true;
 }
 

@@ -182,6 +182,15 @@
         assert.eq(true, called, 'msg function should have been called');
     });
 
+    tests.push(function eqShouldPassOnObjectsWithSameContent() {
+        const a = {'foo': true};
+        const b = {'foo': true};
+
+        assert.doesNotThrow(() => {
+            assert.eq(a, b);
+        }, [], 'eq should not throw exception on two objects with the same content');
+    });
+
     /* assert.eq.automsg tests */
 
     tests.push(function eqAutomsgShouldCreateMessage() {
@@ -205,6 +214,15 @@
         assert.doesNotThrow(() => {
             assert.neq(2, 3);
         });
+    });
+
+    tests.push(function neqShouldFailOnObjectsWithSameContent() {
+        const a = {'foo': true};
+        const b = {'foo': true};
+
+        assert.throws(() => {
+            assert.neq(a, b);
+        }, [], 'neq should throw exception on two objects with the same content');
     });
 
     /* assert.hasFields tests */
@@ -412,6 +430,24 @@
         });
     });
 
+    tests.push(function ltPassesWhenLessThanWithTimestamps() {
+        assert.doesNotThrow(() => {
+            assert.lt(Timestamp(3, 0), Timestamp(10, 0));
+        });
+    });
+
+    tests.push(function ltFailsWhenNotLessThanWithTimestamps() {
+        assert.throws(() => {
+            assert.lt(Timestamp(0, 10), Timestamp(0, 3));
+        });
+    });
+
+    tests.push(function ltFailsWhenEqualWithTimestamps() {
+        assert.throws(() => {
+            assert.lt(Timestamp(5, 0), Timestamp(5, 0));
+        });
+    });
+
     /* assert.gt tests */
 
     tests.push(function gtPassesWhenGreaterThan() {
@@ -469,6 +505,24 @@
     tests.push(function gtePassesWhenEqual() {
         assert.doesNotThrow(() => {
             assert.gte(5, 5);
+        });
+    });
+
+    tests.push(function gtePassesWhenGreaterThanWithTimestamps() {
+        assert.doesNotThrow(() => {
+            assert.gte(Timestamp(0, 10), Timestamp(0, 3));
+        });
+    });
+
+    tests.push(function gteFailsWhenNotGreaterThanWithTimestamps() {
+        assert.throws(() => {
+            assert.gte(Timestamp(0, 3), Timestamp(0, 10));
+        });
+    });
+
+    tests.push(function gtePassesWhenEqualWIthTimestamps() {
+        assert.doesNotThrow(() => {
+            assert.gte(Timestamp(5, 0), Timestamp(5, 0));
         });
     });
 

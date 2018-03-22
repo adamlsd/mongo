@@ -79,7 +79,7 @@ ClusterClientCursorImpl::ClusterClientCursorImpl(OperationContext* opCtx,
       _opCtx(opCtx) {
     dassert(!_params.compareWholeSortKey ||
             SimpleBSONObjComparator::kInstance.evaluate(
-                _params.sort == ClusterClientCursorParams::kWholeSortKeySortPattern));
+                _params.sort == AsyncResultsMerger::kWholeSortKeySortPattern));
 }
 
 ClusterClientCursorImpl::ClusterClientCursorImpl(OperationContext* opCtx,
@@ -89,7 +89,7 @@ ClusterClientCursorImpl::ClusterClientCursorImpl(OperationContext* opCtx,
     : _params(std::move(params)), _root(std::move(root)), _lsid(lsid), _opCtx(opCtx) {
     dassert(!_params.compareWholeSortKey ||
             SimpleBSONObjComparator::kInstance.evaluate(
-                _params.sort == ClusterClientCursorParams::kWholeSortKeySortPattern));
+                _params.sort == AsyncResultsMerger::kWholeSortKeySortPattern));
 }
 
 StatusWith<ClusterQueryResult> ClusterClientCursorImpl::next(
@@ -130,12 +130,20 @@ void ClusterClientCursorImpl::detachFromOperationContext() {
     _root->detachFromOperationContext();
 }
 
+OperationContext* ClusterClientCursorImpl::getCurrentOperationContext() const {
+    return _opCtx;
+}
+
 bool ClusterClientCursorImpl::isTailable() const {
     return _params.tailableMode != TailableMode::kNormal;
 }
 
 bool ClusterClientCursorImpl::isTailableAndAwaitData() const {
     return _params.tailableMode == TailableMode::kTailableAndAwaitData;
+}
+
+BSONObj ClusterClientCursorImpl::getOriginatingCommand() const {
+    return _params.originatingCommandObj;
 }
 
 long long ClusterClientCursorImpl::getNumReturnedSoFar() const {
@@ -277,9 +285,7 @@ std::unique_ptr<RouterExecStage> ClusterClientCursorImpl::buildMergerPlan(
     if (hasSort) {
         // Strip out the sort key after sorting.
         root = stdx::make_unique<RouterStageRemoveMetadataFields>(
-            opCtx,
-            std::move(root),
-            std::vector<StringData>{ClusterClientCursorParams::kSortKeyField});
+            opCtx, std::move(root), std::vector<StringData>{AsyncResultsMerger::kSortKeyField});
     }
 
     return root;

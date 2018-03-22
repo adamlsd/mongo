@@ -549,10 +549,12 @@ unique_ptr<Scope> ScriptEngine::getPooledScope(OperationContext* opCtx,
         s->registerOperation(opCtx);
     }
 
-    auto p = std::make_unique<PooledScope>(fullPoolName, s);
-    p->setLocalDB(db);
-    p->loadStored(opCtx, true);
-    return p;
+    return [&] {
+        auto p = std::make_unique<PooledScope>(fullPoolName, s);
+        p->setLocalDB(db);
+        p->loadStored(opCtx, true);
+        return p;
+    }();
 }
 
 void (*ScriptEngine::_connectCallback)(DBClientBase&) = 0;

@@ -60,6 +60,12 @@ using ShardVersionMap = std::map<ShardId, ChunkVersion>;
 class ChunkManager : public std::enable_shared_from_this<ChunkManager> {
     MONGO_DISALLOW_COPYING(ChunkManager);
 
+    struct PrivateCall {
+    private:
+        friend ChunkManager;
+        explicit PrivateCall() = default;
+    };
+
 public:
     class ConstChunkIterator {
     public:
@@ -103,6 +109,16 @@ public:
         ConstChunkIterator _begin;
         ConstChunkIterator _end;
     };
+
+    ChunkManager(NamespaceString nss,
+                 boost::optional<UUID> uuid,
+                 KeyPattern shardKeyPattern,
+                 std::unique_ptr<CollatorInterface> defaultCollator,
+                 bool unique,
+                 ChunkMap chunkMap,
+                 ChunkVersion collectionVersion,
+                 PrivateCall);
+
 
     /**
      * Makes an instance with a routing table for collection "nss", sharded on
@@ -262,60 +278,13 @@ public:
 
 private:
     /**
-     * Represents a range of chunk keys [getMin(), getMax()) and the id of the shard on which they
-     * reside according to the metadata.
+     * Does a single pass over the chunkMap and constructs the ShardVersionMap object.
      */
-    struct ShardAndChunkRange {
-        const BSONObj& min() const {
-            return range.getMin();
-        }
-
-        const BSONObj& max() const {
-            return range.getMax();
-        }
-
-        ChunkRange range;
-        ShardId shardId;
-        std::string ksMax;
-    };
-
-    using ChunkRangeMap = std::vector<ShardAndChunkRange>;
-
-    /**
-     * Contains different transformations of the chunk map for efficient querying
-     */
-    struct ChunkMapViews {
-        // Transformation of the chunk map containing what range of keys reside on which shard. The
-        // index is the max key of the respective range and the union of all ranges in a such
-        // constructed map must cover the complete space from [MinKey, MaxKey).
-        const ChunkRangeMap chunkRangeMap;
-
-        // Map from shard id to the maximum chunk version for that shard. If a shard contains no
-        // chunks, it won't be present in this map.
-        const ShardVersionMap shardVersions;
-    };
-
-    /**
-     * Does a single pass over the chunkMap and constructs the ChunkMapViews object.
-     */
-    static ChunkMapViews _constructChunkMapViews(const OID& epoch,
-                                                 const ChunkMap& chunkMap,
-                                                 Ordering shardKeyOrdering);
-
-    ChunkManager(NamespaceString nss,
-                 boost::optional<UUID> uuid,
-                 KeyPattern shardKeyPattern,
-                 std::unique_ptr<CollatorInterface> defaultCollator,
-                 bool unique,
-                 ChunkMap chunkMap,
-                 ChunkVersion collectionVersion);
+    static ShardVersionMap _constructShardVersionMap(const OID& epoch,
+                                                     const ChunkMap& chunkMap,
+                                                     Ordering shardKeyOrdering);
 
     std::string _extractKeyString(const BSONObj& shardKeyValue) const;
-
-    ChunkRangeMap::const_iterator _rangeMapUpperBound(const BSONObj& key) const;
-
-    std::pair<ChunkRangeMap::const_iterator, ChunkRangeMap::const_iterator> _overlappingRanges(
-        const BSONObj& min, const BSONObj& max, bool isMaxInclusive) const;
 
     // The shard versioning mechanism hinges on keeping track of the number of times we reload
     // ChunkManagers.
@@ -342,8 +311,9 @@ private:
     // ranges must cover the complete space from [MinKey, MaxKey).
     const ChunkMap _chunkMap;
 
-    // Different transformations of the chunk map for efficient querying
-    const ChunkMapViews _chunkMapViews;
+    // Map from shard id to the maximum chunk version for that shard. If a shard contains no
+    // chunks, it won't be present in this map.
+    const ShardVersionMap _shardVersions;
 
     // Max version across all chunks
     const ChunkVersion _collectionVersion;

@@ -37,7 +37,7 @@
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/client/connection_string.h"
 #include "mongo/client/read_preference.h"
-#include "mongo/db/catalog/catalog_raii.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
@@ -70,7 +70,8 @@ void appendShortVersion(BufBuilder* b, const ChunkType& chunk) {
 }
 
 BSONArray buildMergeChunksTransactionUpdates(const std::vector<ChunkType>& chunksToMerge,
-                                             const ChunkVersion& mergeVersion) {
+                                             const ChunkVersion& mergeVersion,
+                                             const boost::optional<Timestamp>& validAfter) {
     BSONArrayBuilder updates;
 
     // Build an update operation to expand the first chunk into the newly merged chunk
@@ -86,6 +87,13 @@ BSONArray buildMergeChunksTransactionUpdates(const std::vector<ChunkType>& chunk
 
         // fill in additional details for sending through transaction
         mergedChunk.setVersion(mergeVersion);
+
+        // Clear the chunk history
+        std::vector<ChunkHistory> history;
+        if (validAfter) {
+            history.emplace_back(ChunkHistory(validAfter.get(), mergedChunk.getShard()));
+        }
+        mergedChunk.setHistory(std::move(history));
 
         // add the new chunk information as the update object
         op.append("o", mergedChunk.toConfigBSON());
@@ -188,6 +196,7 @@ BSONObj makeCommitChunkTransactionCommand(const NamespaceString& nss,
         n.append(ChunkType::min(), migratedChunk.getMin());
         n.append(ChunkType::max(), migratedChunk.getMax());
         n.append(ChunkType::shard(), toShard);
+        migratedChunk.addHistoryToBSON(n);
         n.done();
 
         BSONObjBuilder q(op.subobjStart("o2"));
@@ -220,10 +229,10 @@ BSONObj makeCommitChunkTransactionCommand(const NamespaceString& nss,
         updates.append(op.obj());
     }
 
-    // Do not give doTxn a write concern. If doTxn tries to wait for replication, it will fail
+    // Do not give applyOps a write concern. If applyOps tries to wait for replication, it will fail
     // because of the GlobalWrite lock CommitChunkMigration already holds. Replication will not be
     // able to take the lock it requires.
-    return BSON("doTxn" << updates.arr());
+    return BSON("applyOps" << updates.arr());
 }
 
 }  // namespace
@@ -273,6 +282,32 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
                                << " Current epoch: " << collVersion.epoch()
                                << ", cmd epoch: " << requestEpoch;
         return {ErrorCodes::StaleEpoch, errmsg};
+    }
+
+    // Find the chunk history.
+    auto findHistory = Grid::get(opCtx)->shardRegistry()->getConfigShard()->exhaustiveFindOnConfig(
+        opCtx,
+        ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+        repl::ReadConcernLevel::kLocalReadConcern,
+        ChunkType::ConfigNS,
+        BSON(ChunkType::name << ChunkType::genID(nss, range.getMin())),
+        BSONObj(),
+        1);
+    if (!findHistory.isOK()) {
+        return findHistory.getStatus();
+    }
+
+    const auto origChunks = std::move(findHistory.getValue().docs);
+    if (origChunks.size() != 1) {
+        return {ErrorCodes::IncompatibleShardingMetadata,
+                str::stream() << "Tried to find the chunk history for '"
+                              << ChunkType::genID(nss, range.getMin())
+                              << ", but found no chunks"};
+    }
+
+    const auto origChunk = ChunkType::fromConfigBSON(origChunks.front());
+    if (!origChunk.isOK()) {
+        return origChunk.getStatus();
     }
 
     std::vector<ChunkType> newChunks;
@@ -336,6 +371,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         n.append(ChunkType::min(), startKey);
         n.append(ChunkType::max(), endKey);
         n.append(ChunkType::shard(), shardName);
+        origChunk.getValue().addHistoryToBSON(n);
         n.done();
 
         // add the chunk's _id as the query part of the update statement
@@ -375,7 +411,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
     }
 
     // apply the batch of updates to local metadata.
-    Status doTxnStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
+    Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
         opCtx,
         updates.arr(),
         preCond.arr(),
@@ -383,8 +419,8 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         currentMaxVersion,
         WriteConcernOptions(),
         repl::ReadConcernLevel::kLocalReadConcern);
-    if (!doTxnStatus.isOK()) {
-        return doTxnStatus;
+    if (!applyOpsStatus.isOK()) {
+        return applyOpsStatus;
     }
 
     // log changes
@@ -424,14 +460,15 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
         }
     }
 
-    return doTxnStatus;
+    return applyOpsStatus;
 }
 
 Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
                                                 const NamespaceString& nss,
                                                 const OID& requestEpoch,
                                                 const std::vector<BSONObj>& chunkBoundaries,
-                                                const std::string& shardName) {
+                                                const std::string& shardName,
+                                                const boost::optional<Timestamp>& validAfter) {
     // This method must never be called with empty chunks to merge
     invariant(!chunkBoundaries.empty());
 
@@ -500,11 +537,11 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
     ChunkVersion mergeVersion = collVersion;
     mergeVersion.incMinor();
 
-    auto updates = buildMergeChunksTransactionUpdates(chunksToMerge, mergeVersion);
+    auto updates = buildMergeChunksTransactionUpdates(chunksToMerge, mergeVersion, validAfter);
     auto preCond = buildMergeChunksTransactionPrecond(chunksToMerge, collVersion);
 
     // apply the batch of updates to local metadata
-    Status doTxnStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
+    Status applyOpsStatus = Grid::get(opCtx)->catalogClient()->applyChunkOpsDeprecated(
         opCtx,
         updates,
         preCond,
@@ -512,8 +549,8 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
         mergeVersion,
         WriteConcernOptions(),
         repl::ReadConcernLevel::kLocalReadConcern);
-    if (!doTxnStatus.isOK()) {
-        return doTxnStatus;
+    if (!applyOpsStatus.isOK()) {
+        return applyOpsStatus;
     }
 
     // log changes
@@ -532,7 +569,7 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
         ->logChange(opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions())
         .transitional_ignore();
 
-    return doTxnStatus;
+    return applyOpsStatus;
 }
 
 StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
@@ -542,7 +579,8 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     const boost::optional<ChunkType>& controlChunk,
     const OID& collectionEpoch,
     const ShardId& fromShard,
-    const ShardId& toShard) {
+    const ShardId& toShard,
+    const boost::optional<Timestamp>& validAfter) {
 
     auto const configShard = Grid::get(opCtx)->shardRegistry()->getConfigShard();
 
@@ -624,11 +662,64 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
         }
     }
 
+    // Find the chunk history.
+    auto findHistory = configShard->exhaustiveFindOnConfig(
+        opCtx,
+        ReadPreferenceSetting{ReadPreference::PrimaryOnly},
+        repl::ReadConcernLevel::kLocalReadConcern,
+        ChunkType::ConfigNS,
+        BSON(ChunkType::name << ChunkType::genID(nss, migratedChunk.getMin())),
+        BSONObj(),
+        1);
+    if (!findHistory.isOK()) {
+        return findHistory.getStatus();
+    }
+
+    const auto origChunks = std::move(findHistory.getValue().docs);
+    if (origChunks.size() != 1) {
+        return {ErrorCodes::IncompatibleShardingMetadata,
+                str::stream() << "Tried to find the chunk history for '"
+                              << ChunkType::genID(nss, migratedChunk.getMin())
+                              << ", but found no chunks"};
+    }
+
+    const auto origChunk = ChunkType::fromConfigBSON(origChunks.front());
+    if (!origChunk.isOK()) {
+        return origChunk.getStatus();
+    }
+
     // Generate the new versions of migratedChunk and controlChunk. Migrating chunk's minor version
     // will be 0.
     ChunkType newMigratedChunk = migratedChunk;
     newMigratedChunk.setVersion(ChunkVersion(
         currentCollectionVersion.majorVersion() + 1, 0, currentCollectionVersion.epoch()));
+
+    // Copy the complete history.
+    auto newHistory = origChunk.getValue().getHistory();
+    const int kHistorySecs = 10;
+
+    // Update the history of the migrated chunk.
+    if (validAfter) {
+        // Drop the history that is too old (10 seconds of history for now).
+        // TODO SERVER-33831 to update the old history removal policy.
+        while (!newHistory.empty() &&
+               newHistory.back().getValidAfter().getSecs() + kHistorySecs <
+                   validAfter.get().getSecs()) {
+            newHistory.pop_back();
+        }
+
+        if (!newHistory.empty() && newHistory.front().getValidAfter() >= validAfter.get()) {
+            return {ErrorCodes::IncompatibleShardingMetadata,
+                    str::stream() << "The chunk history for '"
+                                  << ChunkType::genID(nss, migratedChunk.getMin())
+                                  << " is corrupted. The last validAfter "
+                                  << newHistory.back().getValidAfter().toString()
+                                  << " is greater or equal to the new validAfter "
+                                  << validAfter.get().toString()};
+        }
+        newHistory.emplace(newHistory.begin(), ChunkHistory(validAfter.get(), toShard));
+    }
+    newMigratedChunk.setHistory(std::move(newHistory));
 
     // Control chunk's minor version will be 1 (if control chunk is present).
     boost::optional<ChunkType> newControlChunk = boost::none;
@@ -641,7 +732,7 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
     auto command = makeCommitChunkTransactionCommand(
         nss, newMigratedChunk, newControlChunk, fromShard.toString(), toShard.toString());
 
-    StatusWith<Shard::CommandResponse> doTxnCommandResponse =
+    StatusWith<Shard::CommandResponse> applyOpsCommandResponse =
         configShard->runCommandWithFixedRetryAttempts(
             opCtx,
             ReadPreferenceSetting{ReadPreference::PrimaryOnly},
@@ -649,12 +740,12 @@ StatusWith<BSONObj> ShardingCatalogManager::commitChunkMigration(
             command,
             Shard::RetryPolicy::kIdempotent);
 
-    if (!doTxnCommandResponse.isOK()) {
-        return doTxnCommandResponse.getStatus();
+    if (!applyOpsCommandResponse.isOK()) {
+        return applyOpsCommandResponse.getStatus();
     }
 
-    if (!doTxnCommandResponse.getValue().commandStatus.isOK()) {
-        return doTxnCommandResponse.getValue().commandStatus;
+    if (!applyOpsCommandResponse.getValue().commandStatus.isOK()) {
+        return applyOpsCommandResponse.getValue().commandStatus;
     }
 
     BSONObjBuilder result;

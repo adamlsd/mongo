@@ -30,7 +30,7 @@
 
 #include "mongo/db/s/session_catalog_migration_source.h"
 
-#include "mongo/db/catalog/catalog_raii.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
@@ -89,6 +89,7 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
                             oField,                           // o
                             o2Field,                          // o2
                             sessionInfo,                      // session info
+                            boost::none,                      // upsert
                             boost::none,                      // wall clock time
                             statementId,                      // statement id
                             boost::none,   // optime of previous write within same transaction

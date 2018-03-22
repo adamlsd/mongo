@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "mongo/db/namespace_string.h"
-#include "mongo/s/sharding_test_fixture.h"
+#include "mongo/s/sharding_router_test_fixture.h"
 #include "mongo/stdx/memory.h"
 
 namespace mongo {
@@ -74,6 +74,20 @@ protected:
      * generated as "0", "1", etc.
      */
     void setupNShards(int numShards);
+
+    /**
+     * Triggers a refresh for the given namespace and mocks network calls to simulate loading
+     * metadata with two chunks: [minKey, 0) and [0, maxKey) on two shards with ids: "0" and "1".
+     */
+    void loadRoutingTableWithTwoChunksAndTwoShards(NamespaceString nss);
+
+    /**
+     * Mocks network responses for loading a sharded database and collection from the config server.
+     */
+    void expectGetDatabase(NamespaceString nss);
+    void expectGetCollection(NamespaceString nss,
+                             OID epoch,
+                             const ShardKeyPattern& shardKeyPattern);
 
     const HostAndPort kConfigHostAndPort{"DummyConfig", 1234};
 };

@@ -54,7 +54,7 @@ public:
 
     void abandonSnapshot() override {}
 
-    Status setReadFromMajorityCommittedSnapshot() final;
+    Status obtainMajorityCommittedSnapshot() final;
 
     void registerChange(std::unique_ptr<Change> change) override {
         _changes.push_back(std::move(change));
@@ -69,6 +69,8 @@ public:
     SnapshotId getSnapshotId() const override {
         return SnapshotId();
     }
+
+    virtual void setOrderedCommit(bool orderedCommit) {}
 
 private:
     typedef std::shared_ptr<Change> ChangePtr;

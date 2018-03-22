@@ -41,6 +41,7 @@
 #include "mongo/client/read_preference.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/find_common.h"
 #include "mongo/db/query/getmore_request.h"
@@ -50,6 +51,7 @@
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/query/async_results_merger.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/establish_cursors.h"
@@ -135,7 +137,7 @@ StatusWith<std::unique_ptr<QueryRequest>> transformQueryForShards(
     if (!qr.getSort().isEmpty() && !qr.getSort()["$natural"]) {
         BSONObjBuilder projectionBuilder;
         projectionBuilder.appendElements(qr.getProj());
-        projectionBuilder.append(ClusterClientCursorParams::kSortKeyField, kSortKeyMetaProjection);
+        projectionBuilder.append(AsyncResultsMerger::kSortKeyField, kSortKeyMetaProjection);
         newProjection = projectionBuilder.obj();
     }
 
@@ -143,8 +145,7 @@ StatusWith<std::unique_ptr<QueryRequest>> transformQueryForShards(
         invariant(qr.getSort().isEmpty());
         BSONObjBuilder projectionBuilder;
         projectionBuilder.appendElements(qr.getProj());
-        projectionBuilder.append(ClusterClientCursorParams::kSortKeyField,
-                                 kGeoNearDistanceMetaProjection);
+        projectionBuilder.append(AsyncResultsMerger::kSortKeyField, kGeoNearDistanceMetaProjection);
         newProjection = projectionBuilder.obj();
     }
 
@@ -174,11 +175,7 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     // Get the set of shards on which we will run the query.
 
     std::vector<std::shared_ptr<Shard>> shards;
-    if (primary) {
-        shards.emplace_back(std::move(primary));
-    } else {
-        invariant(chunkManager);
-
+    if (chunkManager) {
         std::set<ShardId> shardIds;
         chunkManager->getShardIdsForQuery(opCtx,
                                           query.getQueryRequest().getFilter(),
@@ -188,11 +185,14 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         for (auto id : shardIds) {
             shards.emplace_back(uassertStatusOK(shardRegistry->getShard(opCtx, id)));
         }
+    } else {
+        shards.emplace_back(std::move(primary));
     }
 
     // Construct the query and parameters.
 
     ClusterClientCursorParams params(query.nss(), readPref);
+    params.originatingCommandObj = CurOp::get(opCtx)->opDescription().getOwned();
     params.limit = query.getQueryRequest().getLimit();
     params.batchSize = query.getQueryRequest().getEffectiveBatchSize();
     params.skip = query.getQueryRequest().getSkip();
@@ -220,7 +220,7 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         // by the geoNearDistance. Request the projection {$sortKey: <geoNearDistance>} from the
         // shards. Indicate to the AsyncResultsMerger that it should extract the sort key
         // {"$sortKey": <geoNearDistance>} and sort by the order {"$sortKey": 1}.
-        params.sort = ClusterClientCursorParams::kWholeSortKeySortPattern;
+        params.sort = AsyncResultsMerger::kWholeSortKeySortPattern;
         params.compareWholeSortKey = true;
         appendGeoNearDistanceProjection = true;
     }
@@ -328,9 +328,42 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         opCtx, ccc.releaseCursor(), query.nss(), cursorType, cursorLifetime, authUsers));
 }
 
+/**
+ * Populates or re-populates some state of the OperationContext from what's stored on the cursor
+ * and/or what's specified on the request.
+ */
+Status setUpOperationContextStateForGetMore(OperationContext* opCtx,
+                                            const GetMoreRequest& request,
+                                            ClusterCursorManager::PinnedCursor* cursor) {
+    if (auto readPref = cursor->getReadPreference()) {
+        ReadPreferenceSetting::get(opCtx) = *readPref;
+    }
+
+    if (cursor->isTailableAndAwaitData()) {
+        // A maxTimeMS specified on a tailable, awaitData cursor is special. Instead of imposing a
+        // deadline on the operation, it is used to communicate how long the server should wait for
+        // new results. Here we clear any deadline set during command processing and track the
+        // deadline instead via the 'waitForInsertsDeadline' decoration. This deadline defaults to
+        // 1 second if the user didn't specify a maxTimeMS.
+        opCtx->clearDeadline();
+        auto timeout = request.awaitDataTimeout.value_or(Milliseconds{1000});
+        awaitDataState(opCtx).waitForInsertsDeadline =
+            opCtx->getServiceContext()->getPreciseClockSource()->now() + timeout;
+
+        invariant(cursor->setAwaitDataTimeout(timeout).isOK());
+    } else if (request.awaitDataTimeout) {
+        return {ErrorCodes::BadValue,
+                "maxTimeMS can only be used with getMore for tailable, awaitData cursors"};
+    } else if (cursor->getLeftoverMaxTimeMicros() < Microseconds::max()) {
+        // Be sure to do this only for non-tailable cursors.
+        opCtx->setDeadlineAfterNowBy(cursor->getLeftoverMaxTimeMicros());
+    }
+    return Status::OK();
+}
+
 }  // namespace
 
-const size_t ClusterFind::kMaxStaleConfigRetries = 10;
+const size_t ClusterFind::kMaxRetries = 10;
 
 CursorId ClusterFind::runQuery(OperationContext* opCtx,
                                const CanonicalQuery& query,
@@ -339,10 +372,10 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
     invariant(results);
 
     // Projection on the reserved sort key field is illegal in mongos.
-    if (query.getQueryRequest().getProj().hasField(ClusterClientCursorParams::kSortKeyField)) {
+    if (query.getQueryRequest().getProj().hasField(AsyncResultsMerger::kSortKeyField)) {
         uasserted(ErrorCodes::BadValue,
                   str::stream() << "Projection contains illegal field '"
-                                << ClusterClientCursorParams::kSortKeyField
+                                << AsyncResultsMerger::kSortKeyField
                                 << "': "
                                 << query.getQueryRequest().getProj());
     }
@@ -351,7 +384,7 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
 
     // Re-target and re-send the initial find command to the shards until we have established the
     // shard version.
-    for (size_t retries = 1; retries <= kMaxStaleConfigRetries; ++retries) {
+    for (size_t retries = 1; retries <= kMaxRetries; ++retries) {
         auto routingInfoStatus = catalogCache->getCollectionRoutingInfo(opCtx, query.nss());
         if (routingInfoStatus == ErrorCodes::NamespaceNotFound) {
             // If the database doesn't exist, we successfully return an empty result set without
@@ -364,26 +397,37 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
         try {
             return runQueryWithoutRetrying(
                 opCtx, query, readPref, routingInfo.cm().get(), routingInfo.primary(), results);
-        } catch (const DBException& ex) {
-            if (!ErrorCodes::isStaleShardingError(ex.code()) &&
-                ex.code() != ErrorCodes::ShardNotFound) {
-                // Errors other than trying to reach a non existent shard or receiving a stale
-                // metadata message from MongoD are fatal to the operation. Network errors and
-                // replication retries happen at the level of the AsyncResultsMerger.
+        } catch (DBException& ex) {
+            if (retries >= kMaxRetries) {
+                // Check if there are no retries remaining, so the last received error can be
+                // propagated to the caller.
+                ex.addContext(str::stream() << "Failed to run query after " << kMaxRetries
+                                            << " retries");
+                throw;
+            } else if (!ErrorCodes::isStaleShardingError(ex.code()) &&
+                       !ErrorCodes::isSnapshotError(ex.code()) &&
+                       ex.code() != ErrorCodes::ShardNotFound) {
+                // Errors other than stale metadata, snapshot unavailable, or from trying to reach a
+                // non existent shard are fatal to the operation. Network errors and replication
+                // retries happen at the level of the AsyncResultsMerger.
+                ex.addContext("Encountered non-retryable error during query");
                 throw;
             }
 
             LOG(1) << "Received error status for query " << redact(query.toStringShort())
-                   << " on attempt " << retries << " of " << kMaxStaleConfigRetries << ": "
-                   << redact(ex);
+                   << " on attempt " << retries << " of " << kMaxRetries << ": " << redact(ex);
 
-            catalogCache->onStaleConfigError(std::move(routingInfo));
+            // Note: there is no need to refresh metadata on snapshot errors since the request
+            // failed because atClusterTime was too low, not because the wrong shards were targeted,
+            // and subsequent attempts will choose a later atClusterTime.
+            if (ErrorCodes::isStaleShardingError(ex.code()) ||
+                ex.code() == ErrorCodes::ShardNotFound) {
+                catalogCache->onStaleConfigError(std::move(routingInfo));
+            }
         }
     }
 
-    uasserted(ErrorCodes::StaleShardVersion,
-              str::stream() << "Retried " << kMaxStaleConfigRetries
-                            << " times without successfully establishing shard version.");
+    MONGO_UNREACHABLE
 }
 
 StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
@@ -404,28 +448,22 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     }
     invariant(request.cursorid == pinnedCursor.getValue().getCursorId());
 
+    // Set the originatingCommand object and the cursorID in CurOp.
+    {
+        CurOp::get(opCtx)->debug().cursorid = request.cursorid;
+        stdx::lock_guard<Client> lk(*opCtx->getClient());
+        CurOp::get(opCtx)->setOriginatingCommand_inlock(
+            pinnedCursor.getValue().getOriginatingCommand());
+    }
+
     // If the fail point is enabled, busy wait until it is disabled.
     while (MONGO_FAIL_POINT(waitAfterPinningCursorBeforeGetMoreBatch)) {
     }
 
-    if (auto readPref = pinnedCursor.getValue().getReadPreference()) {
-        ReadPreferenceSetting::get(opCtx) = *readPref;
-    }
-    if (pinnedCursor.getValue().isTailableAndAwaitData()) {
-        // A maxTimeMS specified on a tailable, awaitData cursor is special. Instead of imposing a
-        // deadline on the operation, it is used to communicate how long the server should wait for
-        // new results. Here we clear any deadline set during command processing and track the
-        // deadline instead via the 'waitForInsertsDeadline' decoration. This deadline defaults to
-        // 1 second if the user didn't specify a maxTimeMS.
-        opCtx->clearDeadline();
-        auto timeout = request.awaitDataTimeout.value_or(Milliseconds{1000});
-        awaitDataState(opCtx).waitForInsertsDeadline =
-            opCtx->getServiceContext()->getPreciseClockSource()->now() + timeout;
-
-        invariant(pinnedCursor.getValue().setAwaitDataTimeout(timeout).isOK());
-    } else if (request.awaitDataTimeout) {
-        return {ErrorCodes::BadValue,
-                "maxTimeMS can only be used with getMore for tailable, awaitData cursors"};
+    auto opCtxSetupStatus =
+        setUpOperationContextStateForGetMore(opCtx, request, &pinnedCursor.getValue());
+    if (!opCtxSetupStatus.isOK()) {
+        return opCtxSetupStatus;
     }
 
     std::vector<BSONObj> batch;
@@ -433,15 +471,6 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     long long batchSize = request.batchSize.value_or(0);
     long long startingFrom = pinnedCursor.getValue().getNumReturnedSoFar();
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
-
-    pinnedCursor.getValue().reattachToOperationContext(opCtx);
-
-    // A pinned cursor will not be destroyed immediately if an exception is thrown. Instead it will
-    // be marked as killed, then reaped by a background thread later. If this happens, we want to be
-    // sure the cursor does not have a pointer to this OperationContext, since it will be destroyed
-    // as soon as we return, but the cursor will live on a bit longer.
-    ScopeGuard cursorDetach =
-        MakeGuard([&pinnedCursor]() { pinnedCursor.getValue().detachFromOperationContext(); });
 
     while (!FindCommon::enoughForGetMore(batchSize, batch.size())) {
         auto context = batch.empty()
@@ -489,10 +518,9 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
         batch.push_back(std::move(*next.getValue().getResult()));
     }
 
-    // Upon successful completion, we need to detach from the operation and transfer ownership of
-    // the cursor back to the cursor manager.
-    cursorDetach.Dismiss();
-    pinnedCursor.getValue().detachFromOperationContext();
+    pinnedCursor.getValue().setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
+    // Upon successful completion, transfer ownership of the cursor back to the cursor manager. If
+    // the cursor has been exhausted, the cursor manager will clean it up for us.
     pinnedCursor.getValue().returnCursor(cursorState);
 
     CursorId idToReturn = (cursorState == ClusterCursorManager::CursorState::Exhausted)

@@ -41,7 +41,7 @@ ClusterClientCursorMock::ClusterClientCursorMock(boost::optional<LogicalSessionI
     : _killCallback(std::move(killCallback)), _lsid(lsid) {}
 
 ClusterClientCursorMock::~ClusterClientCursorMock() {
-    invariant(_exhausted || _killed);
+    invariant((_exhausted && _remotesExhausted) || _killed);
 }
 
 StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(
@@ -62,6 +62,10 @@ StatusWith<ClusterQueryResult> ClusterClientCursorMock::next(
 
     ++_numReturnedSoFar;
     return out.getValue();
+}
+
+BSONObj ClusterClientCursorMock::getOriginatingCommand() const {
+    return _originatingCommand;
 }
 
 long long ClusterClientCursorMock::getNumReturnedSoFar() const {

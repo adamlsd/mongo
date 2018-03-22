@@ -163,8 +163,7 @@ namespace {
  *
  * Returns the number of documents in the batch in 'numResults', which must be initialized to
  * zero by the caller. Returns the final ExecState returned by the cursor in *state. Returns
- * whether or not to save the ClientCursor in 'shouldSaveCursor'. Returns the slave's time to
- * read until in 'slaveReadTill' (for master/slave).
+ * whether or not to save the ClientCursor in 'shouldSaveCursor'.
  *
  * Returns an OK status if the batch was successfully generated, and a non-OK status if the
  * PlanExecutor encounters a failure.
@@ -173,7 +172,6 @@ void generateBatch(int ntoreturn,
                    ClientCursor* cursor,
                    BufBuilder* bb,
                    int* numResults,
-                   Timestamp* slaveReadTill,
                    PlanExecutor::ExecState* state) {
     PlanExecutor* exec = cursor->getExecutor();
 
@@ -191,14 +189,6 @@ void generateBatch(int ntoreturn,
 
         // Count the result.
         (*numResults)++;
-
-        // Possibly note slave's position in the oplog.
-        if (cursor->queryOptions() & QueryOption_OplogReplay) {
-            BSONElement e = obj["ts"];
-            if (BSONType::Date == e.type() || BSONType::bsonTimestamp == e.type()) {
-                *slaveReadTill = e.timestamp();
-            }
-        }
     }
 
     // Propagate any errors to the caller.
@@ -262,6 +252,7 @@ Message getMore(OperationContext* opCtx,
     // Note that we acquire our locks before our ClientCursorPin, in order to ensure that the pin's
     // destructor is called before the lock's destructor (if there is one) so that the cursor
     // cleanup can occur under the lock.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
     boost::optional<AutoGetCollectionForRead> readLock;
     boost::optional<AutoStatsTracker> statsTracker;
     CursorManager* cursorManager;
@@ -357,8 +348,18 @@ Message getMore(OperationContext* opCtx,
 
         *isCursorAuthorized = true;
 
-        if (cc->isReadCommitted())
-            uassertStatusOK(opCtx->recoveryUnit()->setReadFromMajorityCommittedSnapshot());
+        const auto replicationMode = repl::ReplicationCoordinator::get(opCtx)->getReplicationMode();
+        opCtx->recoveryUnit()->setReadConcernLevelAndReplicationMode(cc->getReadConcernLevel(),
+                                                                     replicationMode);
+
+        // TODO SERVER-33698: Remove kSnapshotReadConcern clause once we can guarantee that a
+        // readConcern level snapshot getMore will have an established point-in-time WiredTiger
+        // snapshot.
+        if (replicationMode == repl::ReplicationCoordinator::modeReplSet &&
+            (cc->getReadConcernLevel() == repl::ReadConcernLevel::kMajorityReadConcern ||
+             cc->getReadConcernLevel() == repl::ReadConcernLevel::kSnapshotReadConcern)) {
+            uassertStatusOK(opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot());
+        }
 
         uassert(40548,
                 "OP_GET_MORE operations are not supported on tailable aggregations. Only clients "
@@ -374,11 +375,6 @@ Message getMore(OperationContext* opCtx,
             opCtx->setDeadlineAfterNowBy(cc->getLeftoverMaxTimeMicros());
         }
         opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
-
-        cc->updateSlaveLocation(opCtx);
-
-        // If we're replaying the oplog, we save the last time that we read.
-        Timestamp slaveReadTill;
 
         // What number result are we starting at?  Used to fill out the reply.
         startingResult = cc->pos();
@@ -422,7 +418,7 @@ Message getMore(OperationContext* opCtx,
         PlanSummaryStats preExecutionStats;
         Explain::getSummaryStats(*exec, &preExecutionStats);
 
-        generateBatch(ntoreturn, cc, &bb, &numResults, &slaveReadTill, &state);
+        generateBatch(ntoreturn, cc, &bb, &numResults, &state);
 
         // If this is an await data cursor, and we hit EOF without generating any results, then
         // we block waiting for new data to arrive.
@@ -447,7 +443,7 @@ Message getMore(OperationContext* opCtx,
 
             // We woke up because either the timed_wait expired, or there was more data. Either
             // way, attempt to generate another batch of results.
-            generateBatch(ntoreturn, cc, &bb, &numResults, &slaveReadTill, &state);
+            generateBatch(ntoreturn, cc, &bb, &numResults, &state);
         }
 
         PlanSummaryStats postExecutionStats;
@@ -490,11 +486,6 @@ Message getMore(OperationContext* opCtx,
             LOG(5) << "getMore saving client cursor ended with state "
                    << PlanExecutor::statestr(state);
 
-            // Possibly note slave's position in the oplog.
-            if ((cc->queryOptions() & QueryOption_OplogReplay) && !slaveReadTill.isNull()) {
-                cc->slaveReadTill(slaveReadTill);
-            }
-
             *exhaust = cc->queryOptions() & QueryOption_Exhaust;
 
             // We assume that cursors created through a DBDirectClient are always used from their
@@ -531,7 +522,8 @@ std::string runQuery(OperationContext* opCtx,
     invariant(!nss.isCommand());
 
     // Set CurOp information.
-    beginQueryOp(opCtx, nss, q.query, q.ntoreturn, q.ntoskip);
+    const auto upconvertedQuery = upconvertQueryEntry(q.query, nss, q.ntoreturn, q.ntoskip);
+    beginQueryOp(opCtx, nss, upconvertedQuery, q.ntoreturn, q.ntoskip);
 
     // Parse the qm into a CanonicalQuery.
     const boost::intrusive_ptr<ExpressionContext> expCtx;
@@ -571,8 +563,7 @@ std::string runQuery(OperationContext* opCtx,
     }
 
     // We have a parsed query. Time to get the execution plan for it.
-    auto exec = uassertStatusOK(
-        getExecutorFind(opCtx, collection, nss, std::move(cq), PlanExecutor::YIELD_AUTO));
+    auto exec = uassertStatusOK(getExecutorLegacyFind(opCtx, collection, nss, std::move(cq)));
 
     const QueryRequest& qr = exec->getCanonicalQuery()->getQueryRequest();
 
@@ -622,9 +613,6 @@ std::string runQuery(OperationContext* opCtx,
     // How many results have we obtained from the executor?
     int numResults = 0;
 
-    // If we're replaying the oplog, we save the last time that we read.
-    Timestamp slaveReadTill;
-
     BSONObj obj;
     PlanExecutor::ExecState state;
 
@@ -647,14 +635,6 @@ std::string runQuery(OperationContext* opCtx,
         // Count the result.
         ++numResults;
 
-        // Possibly note slave's position in the oplog.
-        if (qr.isOplogReplay()) {
-            BSONElement e = obj["ts"];
-            if (Date == e.type() || bsonTimestamp == e.type()) {
-                slaveReadTill = e.timestamp();
-            }
-        }
-
         if (FindCommon::enoughForFirstBatch(qr, numResults)) {
             LOG(5) << "Enough for first batch, wantMore=" << qr.wantMore()
                    << " ntoreturn=" << qr.getNToReturn().value_or(0)
@@ -667,7 +647,9 @@ std::string runQuery(OperationContext* opCtx,
     if (PlanExecutor::FAILURE == state || PlanExecutor::DEAD == state) {
         error() << "Plan executor error during find: " << PlanExecutor::statestr(state)
                 << ", stats: " << redact(Explain::getWinningPlanStats(exec.get()));
-        uasserted(17144, "Executor error: " + WorkingSetCommon::toStatusString(obj));
+        uassertStatusOKWithContext(WorkingSetCommon::getMemberObjectStatus(obj),
+                                   "Executor error during OP_QUERY find");
+        MONGO_UNREACHABLE;
     }
 
     // Before saving the cursor, ensure that whatever plan we established happened with the expected
@@ -690,17 +672,12 @@ std::string runQuery(OperationContext* opCtx,
             {std::move(exec),
              nss,
              AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-             opCtx->recoveryUnit()->isReadingFromMajorityCommittedSnapshot(),
-             upconvertQueryEntry(q.query, qr.nss(), q.ntoreturn, q.ntoskip)});
+             opCtx->recoveryUnit()->getReadConcernLevel(),
+             upconvertedQuery});
         ccId = pinnedCursor.getCursor()->cursorid();
 
         LOG(5) << "caching executor with cursorid " << ccId << " after returning " << numResults
                << " results";
-
-        // TODO document
-        if (qr.isOplogReplay() && !slaveReadTill.isNull()) {
-            pinnedCursor.getCursor()->slaveReadTill(slaveReadTill);
-        }
 
         // TODO document
         if (qr.isExhaust()) {

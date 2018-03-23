@@ -33,6 +33,7 @@
 #include "mongo/bson/bsonobj.h"
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/op_observer.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
@@ -75,7 +76,7 @@ public:
         // TODO SERVER-33501 Change this when commitTransaction is retryable.
         uassert(ErrorCodes::CommandFailed,
                 "Transaction isn't in progress",
-                opCtx->getWriteUnitOfWork() && session->inMultiDocumentTransaction());
+                session->inMultiDocumentTransaction());
 
         auto opObserver = opCtx->getServiceContext()->getOpObserver();
         invariant(opObserver);
@@ -87,6 +88,8 @@ public:
     }
 
 } commitTxn;
+
+MONGO_FP_DECLARE(pauseAfterTransactionPrepare);
 
 // TODO: This is a stub for testing storage prepare functionality.
 class CmdPrepareTxn : public BasicCommand {
@@ -131,7 +134,9 @@ public:
         // Running commit after prepare is not allowed yet.
         // Prepared units of work cannot be released by the session, so we immediately abort here.
         opCtx->getWriteUnitOfWork()->prepare();
-        opCtx->setWriteUnitOfWork(nullptr);
+        // This failpoint will cause readers of prepared documents to return prepare conflicts.
+        MONGO_FAIL_POINT_PAUSE_WHILE_SET(pauseAfterTransactionPrepare);
+        session->abortActiveTransaction(opCtx);
         return true;
     }
 };
@@ -169,6 +174,16 @@ public:
              const std::string& dbname,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) override {
+        auto session = OperationContextSession::get(opCtx);
+        uassert(
+            ErrorCodes::CommandFailed, "abortTransaction must be run within a session", session);
+
+        // TODO SERVER-33501 Change this when abortTransaction is retryable.
+        uassert(ErrorCodes::CommandFailed,
+                "Transaction isn't in progress",
+                session->inMultiDocumentTransaction());
+
+        session->abortActiveTransaction(opCtx);
         return true;
     }
 

@@ -34,10 +34,10 @@
 
 #include <string>
 
-#include "mongo/base/init.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/oid.h"
 #include "mongo/bson/util/bson_extract.h"
+#include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/catalog/coll_mod.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/database_holder.h"
@@ -62,13 +62,11 @@
 #include "mongo/db/repl/noop_writer.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_buffer_blocking_queue.h"
-#include "mongo/db/repl/oplog_buffer_collection.h"
-#include "mongo/db/repl/oplog_buffer_proxy.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_process.h"
-#include "mongo/db/repl/rs_sync.h"
 #include "mongo/db/repl/storage_interface.h"
+#include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
@@ -119,18 +117,6 @@ const char meCollectionName[] = "local.me";
 const auto meDatabaseName = localDbName;
 const char tsFieldName[] = "ts";
 
-const char kCollectionOplogBufferName[] = "collection";
-const char kBlockingQueueOplogBufferName[] = "inMemoryBlockingQueue";
-
-// Set this to specify whether to use a collection to buffer the oplog on the destination server
-// during initial sync to prevent rolling over the oplog.
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(initialSyncOplogBuffer,
-                                      std::string,
-                                      kCollectionOplogBufferName);
-
-// Set this to specify size of read ahead buffer in the OplogBufferCollection.
-MONGO_EXPORT_STARTUP_SERVER_PARAMETER(initialSyncOplogBufferPeekCacheSize, int, 10000);
-
 // Set this to specify maximum number of times the oplog fetcher will consecutively restart the
 // oplog tailing query on non-cancellation errors.
 server_parameter_storage_type<int, ServerParameterType::kStartupAndRuntime>::value_type
@@ -158,25 +144,28 @@ Status ExportedOplogFetcherMaxFetcherRestartsServerParameter::validate(
     return Status::OK();
 }
 
-MONGO_INITIALIZER(initialSyncOplogBuffer)(InitializerContext*) {
-    if ((initialSyncOplogBuffer != kCollectionOplogBufferName) &&
-        (initialSyncOplogBuffer != kBlockingQueueOplogBufferName)) {
-        return Status(ErrorCodes::BadValue,
-                      "unsupported initial sync oplog buffer option: " + initialSyncOplogBuffer);
-    }
-    return Status::OK();
-}
-
 /**
  * Returns new thread pool for thread pool task executor.
  */
-std::unique_ptr<ThreadPool> makeThreadPool() {
+auto makeThreadPool(const std::string& poolName) {
     ThreadPool::Options threadPoolOptions;
-    threadPoolOptions.poolName = "replication";
+    threadPoolOptions.poolName = poolName;
     threadPoolOptions.onCreateThread = [](const std::string& threadName) {
         Client::initThread(threadName.c_str());
+        AuthorizationSession::get(cc())->grantInternalAuthorization();
     };
     return stdx::make_unique<ThreadPool>(threadPoolOptions);
+}
+
+/**
+ * Returns a new thread pool task executor.
+ */
+auto makeTaskExecutor(ServiceContext* service, const std::string& poolName) {
+    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
+    hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(service));
+    return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
+        makeThreadPool(poolName),
+        executor::makeNetworkInterface("NetworkInterfaceASIO-RS", nullptr, std::move(hookList)));
 }
 
 /**
@@ -241,9 +230,15 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
     _bgSync->startup(opCtx);
 
     log() << "Starting replication applier thread";
-    invariant(!_applierThread);
-    _applierThread.reset(new RSDataSync{_bgSync.get(), _oplogBuffer.get(), replCoord});
-    _applierThread->startup();
+    invariant(!_oplogApplier);
+    _oplogApplier = stdx::make_unique<OplogApplier>(_oplogApplierTaskExecutor.get(),
+                                                    _oplogBuffer.get(),
+                                                    _bgSync.get(),
+                                                    replCoord,
+                                                    OplogApplier::Options(),
+                                                    _writerPool.get());
+    _oplogApplierShutdownFuture = _oplogApplier->startup();
+
     log() << "Starting replication reporter thread";
     invariant(!_syncSourceFeedbackThread);
     // Get the pointer while holding the lock so that _stopDataReplication_inlock() won't
@@ -269,7 +264,7 @@ void ReplicationCoordinatorExternalStateImpl::_stopDataReplication_inlock(Operat
     auto oldSSF = std::move(_syncSourceFeedbackThread);
     auto oldOplogBuffer = std::move(_oplogBuffer);
     auto oldBgSync = std::move(_bgSync);
-    auto oldApplier = std::move(_applierThread);
+    auto oldApplier = std::move(_oplogApplier);
     lock->unlock();
 
     // _syncSourceFeedbackThread should be joined before _bgSync's shutdown because it has
@@ -305,7 +300,7 @@ void ReplicationCoordinatorExternalStateImpl::_stopDataReplication_inlock(Operat
     }
 
     if (oldApplier) {
-        oldApplier->join();
+        _oplogApplierShutdownFuture.get();
     }
 
     if (oldOplogBuffer) {
@@ -327,11 +322,10 @@ void ReplicationCoordinatorExternalStateImpl::startThreads(const ReplSettings& s
     log() << "Starting replication storage threads";
     _service->getGlobalStorageEngine()->setJournalListener(this);
 
-    auto hookList = stdx::make_unique<rpc::EgressMetadataHookList>();
-    hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(_service));
-    _taskExecutor = stdx::make_unique<executor::ThreadPoolTaskExecutor>(
-        makeThreadPool(),
-        executor::makeNetworkInterface("NetworkInterfaceASIO-RS", nullptr, std::move(hookList)));
+    _oplogApplierTaskExecutor = makeTaskExecutor(_service, "rsSync");
+    _oplogApplierTaskExecutor->startup();
+
+    _taskExecutor = makeTaskExecutor(_service, "replication");
     _taskExecutor->startup();
 
     _writerPool = SyncTail::makeWriterPool();
@@ -355,6 +349,9 @@ void ReplicationCoordinatorExternalStateImpl::shutdown(OperationContext* opCtx) 
 
     log() << "Stopping replication storage threads";
     _taskExecutor->shutdown();
+    _oplogApplierTaskExecutor->shutdown();
+
+    _oplogApplierTaskExecutor->join();
     _taskExecutor->join();
     lk.unlock();
 
@@ -844,72 +841,6 @@ bool ReplicationCoordinatorExternalStateImpl::isReadConcernSnapshotSupportedBySt
     // This should never be called if the storage engine has not been initialized.
     invariant(storageEngine);
     return storageEngine->supportsReadConcernSnapshot();
-}
-
-StatusWith<OpTime> ReplicationCoordinatorExternalStateImpl::multiApply(
-    OperationContext* opCtx,
-    MultiApplier::Operations ops,
-    MultiApplier::ApplyOperationFn applyOperation) {
-    auto applyOperationsForWriter = [&](OperationContext* opCtx,
-                                        MultiApplier::OperationPtrs* ops,
-                                        SyncTail* st,
-                                        WorkerMultikeyPathInfo* workerMultikeyPathInfo) -> Status {
-        return applyOperation(opCtx, ops, workerMultikeyPathInfo);
-    };
-    SyncTail syncTail(nullptr, applyOperationsForWriter, _writerPool.get());
-    return syncTail.multiApply(opCtx, std::move(ops));
-}
-
-namespace {
-
-/**
- * OplogApplier observer that updates 'fetchCount' when applying operations for each writer thread.
- */
-class InitialSyncApplyObserver : public OplogApplier::Observer {
-public:
-    explicit InitialSyncApplyObserver(AtomicUInt32* fetchCount) : _fetchCount(fetchCount) {}
-
-    // OplogApplier::Observer functions
-    void onBatchBegin(const OplogApplier::Operations&) final {}
-    void onBatchEnd(const StatusWith<OpTime>&, const OplogApplier::Operations&) final {}
-    void onMissingDocumentsFetchedAndInserted(const std::vector<FetchInfo>& docs) final {
-        _fetchCount->fetchAndAdd(docs.size());
-    }
-    void onOperationConsumed(const BSONObj& op) final {}
-
-private:
-    AtomicUInt32* const _fetchCount;
-};
-
-}  // namespace
-
-Status ReplicationCoordinatorExternalStateImpl::multiInitialSyncApply(
-    OperationContext* opCtx,
-    MultiApplier::OperationPtrs* ops,
-    const HostAndPort& source,
-    AtomicUInt32* fetchCount,
-    WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
-    // repl::multiInitialSyncApply uses SyncTail::shouldRetry() (and implicitly getMissingDoc())
-    // to fetch missing documents during initial sync. Therefore, it is fine to construct SyncTail
-    // with MultiSyncApplyFunc and writerPool arguments because we will not be accessing any
-    // SyncTail functionality that require these constructor parameters.
-    InitialSyncApplyObserver observer(fetchCount);
-    SyncTail syncTail(&observer, SyncTail::MultiSyncApplyFunc(), nullptr);
-    syncTail.setHostname(source.toString());
-    return repl::multiInitialSyncApply(opCtx, ops, &syncTail, workerMultikeyPathInfo);
-}
-
-std::unique_ptr<OplogBuffer> ReplicationCoordinatorExternalStateImpl::makeInitialSyncOplogBuffer(
-    OperationContext* opCtx) const {
-    if (initialSyncOplogBuffer == kCollectionOplogBufferName) {
-        invariant(initialSyncOplogBufferPeekCacheSize >= 0);
-        OplogBufferCollection::Options options;
-        options.peekCacheSize = std::size_t(initialSyncOplogBufferPeekCacheSize);
-        return stdx::make_unique<OplogBufferProxy>(
-            stdx::make_unique<OplogBufferCollection>(StorageInterface::get(opCtx), options));
-    } else {
-        return stdx::make_unique<OplogBufferBlockingQueue>();
-    }
 }
 
 std::size_t ReplicationCoordinatorExternalStateImpl::getOplogFetcherMaxFetcherRestarts() const {

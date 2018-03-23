@@ -2,7 +2,7 @@
  * Tests prepared transaction support.
  * The current stub for prepareTransaction prepares and immediately aborts.
  *
- * @tags: [requires_wiredtiger]
+ * @tags: [uses_transactions]
  */
 (function() {
     "use strict";
@@ -21,11 +21,6 @@
     let testDB = replSet.getPrimary().getDB("test");
     let adminDB = replSet.getPrimary().getDB("admin");
     let testColl = testDB.getCollection(collName);
-
-    if (!testDB.serverStatus().storageEngine.supportsSnapshotReadConcern) {
-        rst.stopSet();
-        return;
-    }
 
     testColl.drop();
     assert.commandWorked(testDB.runCommand({create: collName, writeConcern: {w: "majority"}}));

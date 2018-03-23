@@ -1,9 +1,10 @@
 /**
- *    Copyright (C) 2008 10gen Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
  *    as published by the Free Software Foundation.
+ *
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -26,41 +27,23 @@
  *    it in the license file.
  */
 
-#pragma once
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/db/repl/oplog_applier.h"
-#include "mongo/db/repl/oplog_buffer.h"
-#include "mongo/db/repl/sync_tail.h"
-#include "mongo/stdx/thread.h"
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/storage/wiredtiger/wiredtiger_prepare_conflict.h"
+
+#include "mongo/util/fail_point_service.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
-namespace repl {
-class ReplicationCoordinator;
 
-/**
- * This class is used to apply oplog entries supplied by bgsync. It will automatically shutdown once
- * bgsync shuts down.  Callers must not call into methods concurrently.
- */
-class RSDataSync {
-public:
-    RSDataSync(OplogApplier::Observer* observer,
-               OplogBuffer* oplogBuffer,
-               ReplicationCoordinator* replCoord);
-    ~RSDataSync();
-    void startup();
-    void shutdown();
-    void join();
+// When set, simulates WT_PREPARE_CONFLICT returned from WiredTiger API calls.
+MONGO_FP_DECLARE(WTPrepareConflictForReads);
 
-private:
-    // Runs in a loop apply oplog entries from the buffer until this class cancels, or an error.
-    void _run();
+void wiredTigerPrepareConflictLog(int attempts) {
+    LOG(1) << "Caught WT_PREPARE_CONFLICT, attempt " << attempts
+           << ". Waiting for unit of work to commit or abort.";
+}
 
-    stdx::thread _runThread;
-    OplogBuffer* _oplogBuffer;
-    ReplicationCoordinator* _replCoord;
-    std::unique_ptr<ThreadPool> _writerPool;
-    SyncTail _syncTail;
-};
-
-}  // namespace repl
 }  // namespace mongo

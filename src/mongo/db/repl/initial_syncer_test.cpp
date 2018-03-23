@@ -227,10 +227,6 @@ public:
         return *_storageInterface;
     }
 
-    ThreadPool& getDbWorkThreadPool() {
-        return *_dbWorkThreadPool;
-    }
-
 protected:
     struct StorageInterfaceResults {
         bool createOplogCalled = false;
@@ -345,7 +341,6 @@ protected:
 
         auto dataReplicatorExternalState = stdx::make_unique<DataReplicatorExternalStateMock>();
         dataReplicatorExternalState->taskExecutor = _executorProxy.get();
-        dataReplicatorExternalState->dbWorkThreadPool = &getDbWorkThreadPool();
         dataReplicatorExternalState->currentTerm = 1LL;
         dataReplicatorExternalState->lastCommittedOpTime = _myLastOpTime;
         {
@@ -377,6 +372,7 @@ protected:
             _initialSyncer = stdx::make_unique<InitialSyncer>(
                 options,
                 std::move(dataReplicatorExternalState),
+                _dbWorkThreadPool.get(),
                 _storageInterface.get(),
                 _replicationProcess.get(),
                 [this](const StatusWith<OpTimeWithHash>& lastApplied) {
@@ -610,6 +606,7 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
         auto dataReplicatorExternalState = stdx::make_unique<DataReplicatorExternalStateMock>();
         ASSERT_THROWS_CODE_AND_WHAT(InitialSyncer(options,
                                                   std::move(dataReplicatorExternalState),
+                                                  _dbWorkThreadPool.get(),
                                                   _storageInterface.get(),
                                                   _replicationProcess.get(),
                                                   callback),
@@ -624,6 +621,7 @@ TEST_F(InitialSyncerTest, InvalidConstruction) {
         dataReplicatorExternalState->taskExecutor = &getExecutor();
         ASSERT_THROWS_CODE_AND_WHAT(InitialSyncer(options,
                                                   std::move(dataReplicatorExternalState),
+                                                  _dbWorkThreadPool.get(),
                                                   _storageInterface.get(),
                                                   _replicationProcess.get(),
                                                   InitialSyncer::OnCompletionFn()),
@@ -961,6 +959,7 @@ TEST_F(InitialSyncerTest, InitialSyncerResetsOnCompletionCallbackFunctionPointer
     auto initialSyncer = stdx::make_unique<InitialSyncer>(
         _options,
         std::move(dataReplicatorExternalState),
+        _dbWorkThreadPool.get(),
         _storageInterface.get(),
         _replicationProcess.get(),
         [&lastApplied, sharedCallbackData](const StatusWith<OpTimeWithHash>& result) {
@@ -3284,7 +3283,7 @@ TEST_F(InitialSyncerTest, InitialSyncerPassesThroughMultiApplierCallbackError) {
     auto opCtx = makeOpCtx();
 
     getExternalState()->multiApplyFn =
-        [](OperationContext*, const MultiApplier::Operations&, MultiApplier::ApplyOperationFn) {
+        [](OperationContext*, const MultiApplier::Operations&, OplogApplier::Observer*) {
             return Status(ErrorCodes::OperationFailed, "multiApply failed");
         };
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
@@ -3574,26 +3573,17 @@ TEST_F(
     // missing document.
     // This forces InitialSyncer to evaluate its end timestamp for applying operations after each
     // batch.
-    getExternalState()->multiApplyFn = [](OperationContext* opCtx,
-                                          const MultiApplier::Operations& ops,
-                                          MultiApplier::ApplyOperationFn applyOperation) {
-        // 'OperationPtr*' is ignored by our overridden _multiInitialSyncApply().
-        ASSERT_OK(applyOperation(opCtx, nullptr, nullptr));
+    bool fetchCountIncremented = false;
+    getExternalState()->multiApplyFn = [&fetchCountIncremented](OperationContext* opCtx,
+                                                                const MultiApplier::Operations& ops,
+                                                                OplogApplier::Observer* observer) {
+        if (!fetchCountIncremented) {
+            auto entry = makeOplogEntry(1);
+            observer->onMissingDocumentsFetchedAndInserted({std::make_pair(entry, BSONObj())});
+            fetchCountIncremented = true;
+        }
         return ops.back().getOpTime();
     };
-    bool fetchCountIncremented = false;
-    getExternalState()->multiInitialSyncApplyFn =
-        [&fetchCountIncremented](OperationContext*,
-                                 MultiApplier::OperationPtrs*,
-                                 const HostAndPort&,
-                                 AtomicUInt32* fetchCount,
-                                 WorkerMultikeyPathInfo*) {
-            if (!fetchCountIncremented) {
-                fetchCount->addAndFetch(1);
-                fetchCountIncremented = true;
-            }
-            return Status::OK();
-        };
 
     _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 12345));
     ASSERT_OK(initialSyncer->startup(opCtx.get(), maxAttempts));

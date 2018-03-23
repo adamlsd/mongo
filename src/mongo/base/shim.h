@@ -45,6 +45,8 @@ template <typename T>
 using PrivateTo = const PrivateCall<T>&;
 }  // namespace mongo
 
+#define MONGO_SHIM_DEPENDENTS ("ShimHooks")
+
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
 #define MONGO_SHIM_EMIT_TU_HOOK(SHIM_NAME) SHIM_NAME##_base::tuHook()
 #else
@@ -176,14 +178,17 @@ using PrivateTo = const PrivateCall<T>&;
         decltype(SHIM_NAME##_impl::hook_check) implementation;                                    \
     };                                                                                            \
                                                                                                   \
-    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
+    MONGO_INITIALIZER_GENERAL(Register##SHIM_NAME##LN,                                            \
+                              MONGO_NO_PREREQUISITES,                                             \
+                              MONGO_SHIM_DEPENDENTS)                                              \
+    (::mongo::InitializerContext * const) try {                                                   \
         static SHIM_NAME##_specialization_##LN implStorage;                                       \
         SHIM_NAME##_impl::registerImpl(&implStorage);                                             \
-        return Status::OK();                                                                      \
+        return ::mongo::Status::OK();                                                             \
     } catch (...) {                                                                               \
         return exceptionToStatus();                                                               \
     }                                                                                             \
-    }                                                                                             \
+    } /* namespace */                                                                             \
                                                                                                   \
     auto SHIM_NAME##_specialization_##LN::implementation /* After this point someone just writes  \
                                                             the signature's arguments. and return \
@@ -205,14 +210,17 @@ using PrivateTo = const PrivateCall<T>&;
         decltype(CLASS_NAME::SHIM_NAME##_impl::hook_check) implementation;                        \
     };                                                                                            \
                                                                                                   \
-    MONGO_INITIALIZER(Register##SHIM_NAME##LN)(InitializerContext * const) try {                  \
+    MONGO_INITIALIZER_GENERAL(Register##SHIM_NAME##LN,                                            \
+                              MONGO_NO_PREREQUISITES,                                             \
+                              MONGO_SHIM_DEPENDENTS)                                              \
+    (::mongo::InitializerContext * const) try {                                                   \
         static SHIM_NAME##_specialization_##LN implStorage;                                       \
         CLASS_NAME::SHIM_NAME##_impl::registerImpl(&implStorage);                                 \
-        return Status::OK();                                                                      \
+        return ::mongo::Status::OK();                                                             \
     } catch (...) {                                                                               \
         return exceptionToStatus();                                                               \
     }                                                                                             \
-    }                                                                                             \
+    } /* namespace */                                                                             \
                                                                                                   \
     auto SHIM_NAME##_specialization_##LN::implementation /* After this point someone just writes  \
                                                             the signature's arguments. and return \

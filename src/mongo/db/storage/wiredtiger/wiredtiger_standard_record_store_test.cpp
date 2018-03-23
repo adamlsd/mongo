@@ -442,9 +442,7 @@ TEST_F(SizeStorerValidateTest, InvalidSizeStorerAtCreation) {
 }
 }  // namespace
 
-MONGO_REGISTER_SHIM(newHarnessHelper) ()->
-std::unique_ptr<HarnessHelper>
-{
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
     return stdx::make_unique<WiredTigerHarnessHelper>();
 }
 }  // namespace mongo

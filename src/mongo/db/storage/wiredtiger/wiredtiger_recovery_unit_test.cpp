@@ -26,11 +26,11 @@
  *    it in the license file.
  */
 
-#include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 #include "mongo/base/checked_cast.h"
 #include "mongo/db/storage/recovery_unit_test_harness.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_record_store.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/unittest/temp_dir.h"
@@ -100,15 +100,6 @@ private:
     ClockSourceMock _cs;
     WiredTigerKVEngine _engine;
 };
-
-std::unique_ptr<HarnessHelper> makeHarnessHelper() {
-    return stdx::make_unique<WiredTigerRecoveryUnitHarnessHelper>();
-}
-
-MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
-    mongo::registerHarnessHelperFactory(makeHarnessHelper);
-    return Status::OK();
-}
 
 class WiredTigerRecoveryUnitTestFixture : public unittest::Test {
 public:
@@ -229,4 +220,8 @@ TEST_F(WiredTigerRecoveryUnitTestFixture, WriteOnADocumentBeingPreparedTriggersW
 }
 
 }  // namespace
+
+MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
+    return stdx::make_unique<WiredTigerRecoveryUnitHarnessHelper>();
+}
 }  // namespace mongo

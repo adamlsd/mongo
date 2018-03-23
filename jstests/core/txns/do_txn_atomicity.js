@@ -1,22 +1,8 @@
-// @tags: [requires_non_retryable_commands]
+// @tags: [uses_transactions]
 
 // Tests that doTxn is atomic for CRUD operations
 (function() {
     'use strict';
-
-    // For isWiredTiger.
-    load("jstests/concurrency/fsm_workload_helpers/server_types.js");
-    // For isReplSet
-    load("jstests/libs/fixture_helpers.js");
-
-    if (!isWiredTiger(db)) {
-        jsTestLog("Skipping test as the storage engine does not support doTxn.");
-        return;
-    }
-    if (!FixtureHelpers.isReplSet(db)) {
-        jsTestLog("Skipping test as doTxn requires a replSet and replication is not enabled.");
-        return;
-    }
 
     var session = db.getMongo().startSession();
     var sessionDb = session.getDatabase("test");
@@ -96,8 +82,8 @@
     applyWithManyLocks(1);
     applyWithManyLocks(2);
 
-    for (let i = 9; i < 16; i++) {
+    for (let i = 9; i < 20; i++) {
         applyWithManyLocks(i);
     }
-    assert(sawTooManyLocksError, "test no longer exhausts the max number of locks held at once");
+    assert(!sawTooManyLocksError, "test should not exhaust the max number of locks held at once");
 })();

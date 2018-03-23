@@ -602,6 +602,13 @@ void LockerImpl<IsForMMAPV1>::getLockerInfo(LockerInfo* lockerInfo) const {
 }
 
 template <bool IsForMMAPV1>
+boost::optional<Locker::LockerInfo> LockerImpl<IsForMMAPV1>::getLockerInfo() const {
+    Locker::LockerInfo lockerInfo;
+    getLockerInfo(&lockerInfo);
+    return std::move(lockerInfo);
+}
+
+template <bool IsForMMAPV1>
 bool LockerImpl<IsForMMAPV1>::saveLockStateAndUnlock(Locker::LockSnapshot* stateOut) {
     // We shouldn't be saving and restoring lock state from inside a WriteUnitOfWork.
     invariant(!inAWriteUnitOfWork());
@@ -991,7 +998,7 @@ namespace {
 /**
  *  Periodically purges unused lock buckets. The first time the lock is used again after
  *  cleanup it needs to be allocated, and similarly, every first use by a client for an intent
- *  mode may need to create a partitioned lock head. Cleanup is done roughtly once a minute.
+ *  mode may need to create a partitioned lock head. Cleanup is done roughly once a minute.
  */
 class UnusedLockCleaner : PeriodicTask {
 public:

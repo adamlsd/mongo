@@ -114,19 +114,10 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
                    << ": " << curOp->debug().errInfo.toString();
         }
 
-        const bool logAll = logger::globalLogDomain()->shouldLog(logger::LogComponent::kCommand,
-                                                                 logger::LogSeverity::Debug(1));
-        const bool logSlow = executionTimeMicros > (serverGlobalParams.slowMS * 1000LL);
-
-        const bool shouldSample = serverGlobalParams.sampleRate == 1.0
-            ? true
-            : opCtx->getClient()->getPrng().nextCanonicalDouble() < serverGlobalParams.sampleRate;
-
-        if (logAll || (shouldSample && logSlow)) {
-            Locker::LockerInfo lockerInfo;
-            opCtx->lockState()->getLockerInfo(&lockerInfo);
-            log() << curOp->debug().report(opCtx->getClient(), *curOp, lockerInfo.stats);
-        }
+        // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
+        // this op should be sampled for profiling.
+        const bool shouldSample =
+            curOp->completeAndLogOperation(opCtx, logger::LogComponent::kCommand);
 
         // Do not profile individual statements in a write command if we are in a transaction.
         auto session = OperationContextSession::get(opCtx);
@@ -242,7 +233,10 @@ bool handleError(OperationContext* opCtx,
         out->results.emplace_back(ex.toStatus());
 
         if (ShardingState::get(opCtx)->enabled()) {
-            onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss());
+            // Ignore status since we already put the cannot implicitly create error as the
+            // result of the write.
+            onCannotImplicitlyCreateCollection(opCtx, cannotImplicitCreateCollInfo->getNss())
+                .ignore();
         }
 
         return false;
@@ -591,10 +585,10 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
     request.setUpsert(op.getUpsert());
 
     auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    request.setYieldPolicy(
-        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-            ? PlanExecutor::INTERRUPT_ONLY
-            : PlanExecutor::YIELD_AUTO);  // ParsedUpdate overrides this for $isolated.
+    request.setYieldPolicy(readConcernArgs.getLevel() ==
+                                   repl::ReadConcernLevel::kSnapshotReadConcern
+                               ? PlanExecutor::INTERRUPT_ONLY
+                               : PlanExecutor::YIELD_AUTO);
 
     ParsedUpdate parsedUpdate(opCtx, &request);
     uassertStatusOK(parsedUpdate.parseRequest());
@@ -609,7 +603,7 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
         collection.emplace(opCtx,
                            ns,
                            MODE_IX,  // DB is always IX, even if collection is X.
-                           parsedUpdate.isIsolated() ? MODE_X : MODE_IX);
+                           MODE_IX);
         if (collection->getCollection() || !op.getUpsert())
             break;
 
@@ -746,10 +740,10 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
     request.setCollation(write_ops::collationOf(op));
     request.setMulti(op.getMulti());
     auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    request.setYieldPolicy(
-        readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern
-            ? PlanExecutor::INTERRUPT_ONLY
-            : PlanExecutor::YIELD_AUTO);  // ParsedDelete overrides this for $isolated.
+    request.setYieldPolicy(readConcernArgs.getLevel() ==
+                                   repl::ReadConcernLevel::kSnapshotReadConcern
+                               ? PlanExecutor::INTERRUPT_ONLY
+                               : PlanExecutor::YIELD_AUTO);
     request.setStmtId(stmtId);
 
     ParsedDelete parsedDelete(opCtx, &request);
@@ -764,7 +758,7 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
     AutoGetCollection collection(opCtx,
                                  ns,
                                  MODE_IX,  // DB is always IX, even if collection is X.
-                                 parsedDelete.isIsolated() ? MODE_X : MODE_IX);
+                                 MODE_IX);
     if (collection.getDb()) {
         curOp.raiseDbProfileLevel(collection.getDb()->getProfilingLevel());
     }

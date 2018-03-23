@@ -95,7 +95,6 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateAuthorizationManager,
                                      ("SetupInternalSecurityUser",
                                       "OIDGeneration",
                                       "SetGlobalEnvironment",
-                                      "CreateAuthorizationExternalStateFactory",
                                       "EndStartupOptionStorage"))
 (InitializerContext* context) {
     auto authzManager =

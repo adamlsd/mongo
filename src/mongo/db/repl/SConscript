@@ -755,8 +755,11 @@ env.CppUnitTest(
     LIBDEPS=[
         'topology_coordinator',
         'replica_set_messages',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/executor/network_interface_mock',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
     ],
 )
 
@@ -768,8 +771,11 @@ env.CppUnitTest(
     LIBDEPS=[
         'topology_coordinator',
         'replica_set_messages',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/executor/network_interface_mock',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
     ],
 )
 
@@ -825,10 +831,13 @@ env.Library(
         'service_context_repl_mock_init',
         'topology_coordinator',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/network_interface_mock',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
         '$BUILD_DIR/mongo/unittest/unittest',
+
     ],
 )
 
@@ -851,7 +860,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'repl_coordinator_impl',
         'replmocks',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
     ],
 )
@@ -876,7 +885,7 @@ env.CppUnitTest(
         'repl_coordinator_impl',
         'replmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
     ],
 )
@@ -891,7 +900,7 @@ env.CppUnitTest(
         'replica_set_messages',
         'replmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
     ],
 )
@@ -905,7 +914,7 @@ env.CppUnitTest(
         'repl_coordinator_impl',
         'replica_set_messages',
         'replmocks',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
     ],
 )
@@ -921,7 +930,7 @@ env.CppUnitTest(
         'replica_set_messages',
         'replmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
     ],
 )
@@ -1161,7 +1170,7 @@ env.CppUnitTest(
     source='reporter_test.cpp',
     LIBDEPS=[
         'reporter',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
         '$BUILD_DIR/mongo/unittest/task_executor_proxy',
@@ -1247,7 +1256,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'collection_cloner',
         'base_cloner_test_fixture',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
         '$BUILD_DIR/mongo/unittest/task_executor_proxy',
@@ -1274,7 +1283,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'database_cloner',
         'base_cloner_test_fixture',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/commands/list_collections_filter',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
         '$BUILD_DIR/mongo/unittest/task_executor_proxy',
@@ -1299,7 +1308,7 @@ env.CppUnitTest(
         'databases_cloner',
         'oplog_entry',
         'replmocks',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
         '$BUILD_DIR/mongo/unittest/task_executor_proxy',
@@ -1326,7 +1335,7 @@ env.Library(
         'replmocks',
         'service_context_repl_mock_init',
         'task_runner',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/unittest/concurrency',
@@ -1392,7 +1401,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'multiapplier',
         'service_context_repl_mock_init',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',
         '$BUILD_DIR/mongo/unittest/task_executor_proxy',
     ],
@@ -1469,7 +1478,7 @@ env.CppUnitTest(
         'initial_syncer_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/commands/mongod_fcv',
         '$BUILD_DIR/mongo/db/query/command_request_response',
         '$BUILD_DIR/mongo/executor/thread_pool_task_executor_test_fixture',

@@ -219,7 +219,7 @@ env.CppUnitTest(
         'logical_session_id',
         'logical_session_id_helpers',
         'service_context',
-        '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_noop_init',
         '$BUILD_DIR/mongo/unittest/concurrency',
         '$BUILD_DIR/mongo/util/clock_source_mock',
@@ -555,7 +555,7 @@ env.CppUnitTest(
     LIBDEPS=[
         "commands",
         "service_context_noop_init",
-        "auth/authorization_manager_mock_init",
+        "auth/authmocks",
         "repl/replmocks",
     ],
 )
@@ -614,7 +614,7 @@ env.CppUnitTest(
         'catalog_raii_test.cpp',
     ],
     LIBDEPS=[
-        'auth/authorization_manager_mock_init',
+        'auth/authmocks',
         'catalog/database_holder_mock',
         'catalog_raii',
         'service_context_noop_init',

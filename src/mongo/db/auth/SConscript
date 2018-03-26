@@ -125,20 +125,6 @@ env.Library('authorization_manager_global',
             ])
 
 env.Library(
-    target='authorization_manager_mock_init',
-    source=[
-        'authorization_manager_mock_init.cpp'
-    ],
-    LIBDEPS=[
-        'authcore',
-        'authmocks',
-        '$BUILD_DIR/mongo/executor/thread_pool_task_executor',
-        '$BUILD_DIR/mongo/executor/network_interface_thread_pool',
-        '$BUILD_DIR/mongo/executor/network_interface_factory'
-    ],
-)
-
-env.Library(
     target='authservercommon',
     source=[
         'authz_session_external_state_server_common.cpp',

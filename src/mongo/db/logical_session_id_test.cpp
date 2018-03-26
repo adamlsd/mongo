@@ -38,7 +38,6 @@
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
@@ -79,14 +78,8 @@ public:
         RestrictionEnvironment::set(
             session, stdx::make_unique<RestrictionEnvironment>(SockAddr(), SockAddr()));
         _opCtx = client->makeOperationContext();
-        auto localManagerState = stdx::make_unique<AuthzManagerExternalStateMock>();
-        managerState = localManagerState.get();
-        managerState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
-        auto uniqueAuthzManager = stdx::make_unique<AuthorizationManagerImpl>(
-            std::move(localManagerState), AuthorizationManagerImpl::TestingMock{});
-        authzManager = uniqueAuthzManager.get();
-        AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
-        auto localSessionState = stdx::make_unique<AuthzSessionExternalStateMock>(authzManager);
+        AuthorizationManager::set(&serviceContext, AuthorizationManager::create());
+        auto localSessionState = std::make_unique<AuthzSessionExternalStateMock>(authzManager);
         sessionState = localSessionState.get();
 
         auto localauthzSession =

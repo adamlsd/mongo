@@ -32,7 +32,6 @@
 
 #include "mongo/bson/oid.h"
 #include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
 #include "mongo/db/auth/authz_session_external_state_mock.h"
@@ -70,11 +69,7 @@ public:
           _sessions(std::make_shared<MockSessionsCollectionImpl>()) {}
 
     void setUp() override {
-        auto localManagerState = stdx::make_unique<AuthzManagerExternalStateMock>();
-        localManagerState.get()->setAuthzVersion(AuthorizationManager::schemaVersion28SCRAM);
-        auto uniqueAuthzManager = stdx::make_unique<AuthorizationManagerImpl>(
-            std::move(localManagerState), AuthorizationManagerImpl::TestingMock{});
-        AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
+        AuthorizationManager::set(&serviceContext, AuthorizationManager::create());
 
         auto client = serviceContext.makeClient("testClient");
         _opCtx = client->makeOperationContext();

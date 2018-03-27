@@ -70,7 +70,8 @@ SaslConversation::SaslConversation(std::string mech)
       opCtx(serviceContext.makeOperationContext(opClient.get())),
       authManagerExternalState(new AuthzManagerExternalStateMock),
       authManager(new AuthorizationManagerImpl(
-          std::unique_ptr<AuthzManagerExternalState>(authManagerExternalState),AuthorizationManagerImpl::TestingMock{})),
+          std::unique_ptr<AuthzManagerExternalState>(authManagerExternalState),
+          AuthorizationManagerImpl::TestingMock{})),
       authSession(authManager->makeAuthorizationSession()),
       mechanism(mech) {
 

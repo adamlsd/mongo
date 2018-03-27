@@ -65,4 +65,6 @@ void AuthorizationSession::ScopedImpersonate::swap() {
     swap(*std::get<0>(impersonations), _users);
     swap(*std::get<1>(impersonations), _roles);
 }
+
+MONGO_DEFINE_STATIC_SHIM(AuthorizationSession, create);
 }  // namespace mongo

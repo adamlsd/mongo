@@ -45,7 +45,6 @@
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/address_restriction.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/auth/authorization_session_impl.h"
 #include "mongo/db/auth/authz_manager_external_state.h"
 #include "mongo/db/auth/privilege.h"
 #include "mongo/db/auth/privilege_parser.h"

@@ -60,6 +60,10 @@ namespace mongo {
 namespace dps = ::mongo::dotted_path_support;
 using std::vector;
 
+MONGO_REGISTER_STATIC_SHIM(AuthorizationSession, create)(AuthorizationManager *authzManager)->std::unique_ptr<AuthorizationSession> {
+    return std::make_unique<AuthorizationSessionImpl>(AuthzSessionExternalState::create(authzManager));
+}
+
 namespace {
 const std::string ADMIN_DBNAME = "admin";
 
@@ -117,13 +121,13 @@ using UserHolder = std::unique_ptr<User, UserReleaser>;
 
 }  // namespace
 
-AuthorizationSessionImpl::AuthorizationSessionImpl(std::unique_ptr<AuthzSessionExternalState> externalState)
+AuthorizationSessionImpl::AuthorizationSessionImpl(
+    std::unique_ptr<AuthzSessionExternalState> externalState)
     : _externalState(std::move(externalState)), _impersonationFlag(false) {}
 
 AuthorizationSessionImpl::~AuthorizationSessionImpl() {
-    for( auto &user: _authenticatedUsers )
-    {
-        getAuthorizationManager().releaseUser( user );
+    for (auto& user : _authenticatedUsers) {
+        getAuthorizationManager().releaseUser(user);
     }
 }
 
@@ -137,7 +141,7 @@ void AuthorizationSessionImpl::startRequest(OperationContext* opCtx) {
 }
 
 Status AuthorizationSessionImpl::addAndAuthorizeUser(OperationContext* opCtx,
-                                                 const UserName& userName) {
+                                                     const UserName& userName) {
     User* user;
     AuthorizationManager* authzManager = AuthorizationManager::get(opCtx->getServiceContext());
     Status status = authzManager->acquireUser(opCtx, userName, &user);
@@ -269,8 +273,8 @@ PrivilegeVector AuthorizationSessionImpl::getDefaultPrivileges() {
 }
 
 Status AuthorizationSessionImpl::checkAuthForAggregate(const NamespaceString& nss,
-                                                   const BSONObj& cmdObj,
-                                                   bool isMongos) {
+                                                       const BSONObj& cmdObj,
+                                                       bool isMongos) {
     if (!nss.isValid()) {
         return Status(ErrorCodes::InvalidNamespace,
                       mongoutils::str::stream() << "Invalid input namespace, " << nss.ns());
@@ -361,8 +365,8 @@ Status AuthorizationSessionImpl::checkAuthForFind(const NamespaceString& ns, boo
 }
 
 Status AuthorizationSessionImpl::checkAuthForGetMore(const NamespaceString& ns,
-                                                 long long cursorID,
-                                                 bool hasTerm) {
+                                                     long long cursorID,
+                                                     bool hasTerm) {
     // Since users can only getMore their own cursors, we verify that a user either is authenticated
     // or does not need to be.
     if (!_externalState->shouldIgnoreAuthChecks() && !getAuthenticatedUserNames().more()) {
@@ -384,8 +388,8 @@ Status AuthorizationSessionImpl::checkAuthForGetMore(const NamespaceString& ns,
 }
 
 Status AuthorizationSessionImpl::checkAuthForInsert(OperationContext* opCtx,
-                                                const NamespaceString& ns,
-                                                const BSONObj& document) {
+                                                    const NamespaceString& ns,
+                                                    const BSONObj& document) {
     if (ns.coll() == "system.indexes"_sd) {
         BSONElement nsElement = document["ns"];
         if (nsElement.type() != String) {
@@ -414,10 +418,10 @@ Status AuthorizationSessionImpl::checkAuthForInsert(OperationContext* opCtx,
 }
 
 Status AuthorizationSessionImpl::checkAuthForUpdate(OperationContext* opCtx,
-                                                const NamespaceString& ns,
-                                                const BSONObj& query,
-                                                const BSONObj& update,
-                                                bool upsert) {
+                                                    const NamespaceString& ns,
+                                                    const BSONObj& query,
+                                                    const BSONObj& update,
+                                                    bool upsert) {
     ActionSet required{ActionType::update};
     StringData operationType = "update"_sd;
 
@@ -439,8 +443,8 @@ Status AuthorizationSessionImpl::checkAuthForUpdate(OperationContext* opCtx,
 }
 
 Status AuthorizationSessionImpl::checkAuthForDelete(OperationContext* opCtx,
-                                                const NamespaceString& ns,
-                                                const BSONObj& query) {
+                                                    const NamespaceString& ns,
+                                                    const BSONObj& query) {
     if (!isAuthorizedForActionsOnNamespace(ns, ActionType::remove)) {
         return Status(ErrorCodes::Unauthorized,
                       str::stream() << "not authorized to remove from " << ns.ns());
@@ -449,7 +453,7 @@ Status AuthorizationSessionImpl::checkAuthForDelete(OperationContext* opCtx,
 }
 
 Status AuthorizationSessionImpl::checkAuthForKillCursors(const NamespaceString& ns,
-                                                     UserNameIterator cursorOwner) {
+                                                         UserNameIterator cursorOwner) {
     if (isAuthorizedForActionsOnResource(ResourcePattern::forClusterResource(),
                                          ActionType::killAnyCursor)) {
         return Status::OK();
@@ -503,8 +507,8 @@ Status AuthorizationSessionImpl::checkAuthForKillCursors(const NamespaceString& 
 }
 
 Status AuthorizationSessionImpl::checkAuthForCreate(const NamespaceString& ns,
-                                                const BSONObj& cmdObj,
-                                                bool isMongos) {
+                                                    const BSONObj& cmdObj,
+                                                    bool isMongos) {
     if (cmdObj["capped"].trueValue() &&
         !isAuthorizedForActionsOnNamespace(ns, ActionType::convertToCapped)) {
         return Status(ErrorCodes::Unauthorized, "unauthorized");
@@ -539,8 +543,8 @@ Status AuthorizationSessionImpl::checkAuthForCreate(const NamespaceString& ns,
 }
 
 Status AuthorizationSessionImpl::checkAuthForCollMod(const NamespaceString& ns,
-                                                 const BSONObj& cmdObj,
-                                                 bool isMongos) {
+                                                     const BSONObj& cmdObj,
+                                                     bool isMongos) {
     if (!isAuthorizedForActionsOnNamespace(ns, ActionType::collMod)) {
         return Status(ErrorCodes::Unauthorized, "unauthorized");
     }
@@ -677,22 +681,22 @@ bool AuthorizationSessionImpl::isAuthorizedForPrivileges(const vector<Privilege>
 }
 
 bool AuthorizationSessionImpl::isAuthorizedForActionsOnResource(const ResourcePattern& resource,
-                                                            ActionType action) {
+                                                                ActionType action) {
     return isAuthorizedForPrivilege(Privilege(resource, action));
 }
 
 bool AuthorizationSessionImpl::isAuthorizedForActionsOnResource(const ResourcePattern& resource,
-                                                            const ActionSet& actions) {
+                                                                const ActionSet& actions) {
     return isAuthorizedForPrivilege(Privilege(resource, actions));
 }
 
 bool AuthorizationSessionImpl::isAuthorizedForActionsOnNamespace(const NamespaceString& ns,
-                                                             ActionType action) {
+                                                                 ActionType action) {
     return isAuthorizedForPrivilege(Privilege(ResourcePattern::forExactNamespace(ns), action));
 }
 
 bool AuthorizationSessionImpl::isAuthorizedForActionsOnNamespace(const NamespaceString& ns,
-                                                             const ActionSet& actions) {
+                                                                 const ActionSet& actions) {
     return isAuthorizedForPrivilege(Privilege(ResourcePattern::forExactNamespace(ns), actions));
 }
 
@@ -747,7 +751,7 @@ static int buildResourceSearchList(const ResourcePattern& target,
 }
 
 bool AuthorizationSessionImpl::isAuthorizedToChangeAsUser(const UserName& userName,
-                                                      ActionType actionType) {
+                                                          ActionType actionType) {
     User* user = lookupUser(userName);
     if (!user) {
         return false;
@@ -765,12 +769,12 @@ bool AuthorizationSessionImpl::isAuthorizedToChangeAsUser(const UserName& userNa
 
 bool AuthorizationSessionImpl::isAuthorizedToChangeOwnPasswordAsUser(const UserName& userName) {
     return AuthorizationSessionImpl::isAuthorizedToChangeAsUser(userName,
-                                                            ActionType::changeOwnPassword);
+                                                                ActionType::changeOwnPassword);
 }
 
 bool AuthorizationSessionImpl::isAuthorizedToChangeOwnCustomDataAsUser(const UserName& userName) {
     return AuthorizationSessionImpl::isAuthorizedToChangeAsUser(userName,
-                                                            ActionType::changeOwnCustomData);
+                                                                ActionType::changeOwnCustomData);
 }
 
 bool AuthorizationSessionImpl::isAuthorizedToListCollections(StringData dbname) {
@@ -923,7 +927,7 @@ bool AuthorizationSessionImpl::_isAuthorizedForPrivilege(const Privilege& privil
 }
 
 void AuthorizationSessionImpl::setImpersonatedUserData(std::vector<UserName> usernames,
-                                                   std::vector<RoleName> roles) {
+                                                       std::vector<RoleName> roles) {
     _impersonatedUserNames = usernames;
     _impersonatedRoleNames = roles;
     _impersonationFlag = true;

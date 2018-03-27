@@ -69,7 +69,11 @@ class AuthorizationSession {
     AuthorizationSession& operator=(const AuthorizationSession&) = delete;
 
 public:
-    AuthorizationSession()= default;
+    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<AuthorizationSession>,
+                              create,
+                              AuthorizationManager* authzManager);
+
+    AuthorizationSession() = default;
 
     /**
      * Provides a way to swap out impersonate data for the duration of the ScopedImpersonate's

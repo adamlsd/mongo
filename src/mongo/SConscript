@@ -293,6 +293,8 @@ env.Library(
         "db/db.cpp",
     ],
     LIBDEPS_PRIVATE=[
+        'db/auth/authmongod',
+        'db/authz_manager_external_state_factory_d',
         'db/catalog/health_log',
         'db/commands/mongod',
         'db/commands/mongod_fcv',

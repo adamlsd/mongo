@@ -31,8 +31,8 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/base/init.h"
 #include "mongo/db/auth/authorization_manager.h"
-#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_manager_global.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authz_manager_external_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -97,8 +97,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateAuthorizationManager,
                                       "SetGlobalEnvironment",
                                       "EndStartupOptionStorage"))
 (InitializerContext* context) {
-    auto authzManager =
-        stdx::make_unique<AuthorizationManagerImpl>();
+    auto authzManager = AuthorizationManager::create();
     authzManager->setAuthEnabled(serverGlobalParams.authState ==
                                  ServerGlobalParams::AuthState::kEnabled);
     authzManager->setShouldValidateAuthSchemaOnStartup(startupAuthSchemaValidation);

@@ -64,7 +64,7 @@ public:
     };
 
 public:
-    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>, makeImpl, PrivateTo<DatabaseHolder>);
+    static constexpr MONGO_DECLARE_SHIM((PrivateTo<DatabaseHolder>)->std::unique_ptr<Impl>) makeImpl{};
 
     inline ~DatabaseHolder() = default;
 
@@ -144,5 +144,5 @@ private:
     std::unique_ptr<Impl> _pimpl;
 };
 
-MONGO_DECLARE_SHIM(DatabaseHolder&, dbHolder);
+extern MONGO_DECLARE_SHIM(()->DatabaseHolder&) dbHolder;
 }  // namespace mongo

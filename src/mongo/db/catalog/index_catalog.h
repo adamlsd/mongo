@@ -77,12 +77,11 @@ public:
             virtual IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) = 0;
         };
 
-        MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
-                                  makeImpl,
-                                  OperationContext* opCtx,
-                                  const IndexCatalog* cat,
-                                  bool includeUnfinishedIndexes,
-                                  PrivateTo<IndexIterator>);
+        static constexpr MONGO_DECLARE_SHIM((OperationContext * opCtx,
+                                             const IndexCatalog* cat,
+                                             bool includeUnfinishedIndexes,
+                                             PrivateTo<IndexIterator>)
+                                                ->std::unique_ptr<Impl>) makeImpl{};
 
     private:
         explicit inline IndexIterator(OperationContext* const opCtx,
@@ -259,12 +258,11 @@ public:
     };
 
 public:
-    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
-                              makeImpl,
-                              IndexCatalog* this_,
-                              Collection* collection,
-                              int maxNumIndexesAllowed,
-                              PrivateTo<IndexCatalog>);
+    static constexpr MONGO_DECLARE_SHIM((IndexCatalog * this_,
+                                         Collection* collection,
+                                         int maxNumIndexesAllowed,
+                                         PrivateTo<IndexCatalog>)
+                                            ->std::unique_ptr<Impl>) makeImpl{};
 
     inline ~IndexCatalog() = default;
 
@@ -541,17 +539,15 @@ public:
 
     // public static helpers
 
-    MONGO_DECLARE_STATIC_SHIM(BSONObj, fixIndexKey, const BSONObj& key);
+    static constexpr MONGO_DECLARE_SHIM((const BSONObj& key)->BSONObj) fixIndexKey{};
 
     /**
      * Fills out 'options' in order to indicate whether to allow dups or relax
      * index constraints, as needed by replication.
      */
-    MONGO_DECLARE_STATIC_SHIM(void,
-                              prepareInsertDeleteOptions,
-                              OperationContext* opCtx,
-                              const IndexDescriptor* desc,
-                              InsertDeleteOptions* options);
+    static constexpr MONGO_DECLARE_SHIM(
+        (OperationContext * opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void)
+        prepareInsertDeleteOptions{};
 
 private:
     inline const Collection* _getCollection() const {

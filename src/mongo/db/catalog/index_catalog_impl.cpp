@@ -70,7 +70,8 @@
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, makeImpl)
+namespace {
+MONGO_REGISTER_SHIM(IndexCatalog::makeImpl)
 (IndexCatalog* const this_,
  Collection* const collection,
  const int maxNumIndexesAllowed,
@@ -79,7 +80,7 @@ MONGO_REGISTER_STATIC_SHIM(IndexCatalog, makeImpl)
     return stdx::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
 }
 
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog::IndexIterator, makeImpl)
+MONGO_REGISTER_SHIM(IndexCatalog::IndexIterator::makeImpl)
 (OperationContext* const opCtx,
  const IndexCatalog* const cat,
  const bool includeUnfinishedIndexes,
@@ -88,14 +89,15 @@ MONGO_REGISTER_STATIC_SHIM(IndexCatalog::IndexIterator, makeImpl)
     return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
         opCtx, cat, includeUnfinishedIndexes);
 }
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, fixIndexKey)(const BSONObj& key)->BSONObj {
+MONGO_REGISTER_SHIM(IndexCatalog::fixIndexKey)(const BSONObj& key)->BSONObj {
     return IndexCatalogImpl::fixIndexKey(key);
 }
 
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, prepareInsertDeleteOptions)
+MONGO_REGISTER_SHIM(IndexCatalog::prepareInsertDeleteOptions)
 (OperationContext* opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void {
     return IndexCatalogImpl::prepareInsertDeleteOptions(opCtx, desc, options);
 }
+}  // namespace
 
 using std::unique_ptr;
 using std::endl;

@@ -134,12 +134,11 @@ extern "C" ssize_t mongoc_stream_embedded_writev(mongoc_stream_t* s,
         // if we found a complete message, send it
         if (stream->input_length_to_go == 0) {
             auto input_len = (size_t)(stream->inputBuf.data() - stream->hiddenBuf.get());
-            int retVal =
-                libmongodbcapi_client_wire_protocol_rpc(stream->clientHandle,
-                                                           stream->hiddenBuf.get(),
-                                                           input_len,
-                                                           &(stream->libmongo_output),
-                                                           &(stream->libmongo_output_size));
+            int retVal = libmongodbcapi_client_wire_protocol_rpc(stream->clientHandle,
+                                                                 stream->hiddenBuf.get(),
+                                                                 input_len,
+                                                                 &(stream->libmongo_output),
+                                                                 &(stream->libmongo_output_size));
             if (retVal != LIBMONGODB_CAPI_SUCCESS) {
                 return -1;
             }

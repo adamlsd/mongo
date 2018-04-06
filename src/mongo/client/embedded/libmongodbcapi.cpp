@@ -28,11 +28,11 @@
 
 #include "mongo/client/embedded/libmongodbcapi.h"
 
+#include <cstring>
 #include <exception>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <cstring>
 
 #include "mongo/client/embedded/embedded.h"
 #include "mongo/db/client.h"
@@ -141,7 +141,7 @@ int capi_lib_fini(libmongodbcapi_lib* lib) try {
     return LIBMONGODB_CAPI_SUCCESS;
 } catch (const std::bad_alloc& ex) {
     process_status = {LIBMONGODB_CAPI_ERROR_ENOMEM, mongo::ErrorCodes::InternalError, ""};
-    return LIBMONGODB_CAPI_ERROR_EXCEPTION;
+    return LIBMONGODB_CAPI_ERROR_ENOMEM;
 } catch (const DBException& ex) {
     process_status = {LIBMONGODB_CAPI_ERROR_EXCEPTION, ex.code(), ex.what()};
     return LIBMONGODB_CAPI_ERROR_EXCEPTION;
@@ -275,11 +275,22 @@ libmongodbcapi_client* client_new(libmongodbcapi_db* db) noexcept try {
 }
 
 int client_destroy(libmongodbcapi_client* client) noexcept {
-    if (!client) {
+    if (!client)
         return LIBMONGODB_CAPI_SUCCESS;
+    libmongodbcapi_db* db = client->parent_db;
+    try {
+        client->parent_db->open_clients.erase(client);
+        return LIBMONGODB_CAPI_SUCCESS;
+    } catch (const std::bad_alloc& ex) {
+        db->status = {LIBMONGODB_CAPI_ERROR_ENOMEM, mongo::ErrorCodes::InternalError, ""};
+        return LIBMONGODB_CAPI_ERROR_ENOMEM;
+    } catch (const DBException& ex) {
+        db->status = {LIBMONGODB_CAPI_ERROR_EXCEPTION, ex.code(), ex.what()};
+        return LIBMONGODB_CAPI_ERROR_EXCEPTION;
+    } catch (const std::exception& ex) {
+        db->status = {LIBMONGODB_CAPI_ERROR_EXCEPTION, mongo::ErrorCodes::InternalError, ex.what()};
+        return LIBMONGODB_CAPI_ERROR_EXCEPTION;
     }
-    client->parent_db->open_clients.erase(client);
-    return LIBMONGODB_CAPI_SUCCESS;
 }
 
 int client_wire_protocol_rpc(libmongodbcapi_client* client,

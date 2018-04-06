@@ -380,7 +380,7 @@ TEST_F(MongodbCAPITest, CreateMultipleDBs) {
     libmongodbcapi_db* db2 = libmongodbcapi_db_new(lib, 0, nullptr, nullptr);
     ASSERT(db2 == nullptr);
     ASSERT_EQUALS(libmongodbcapi_status_get_error(libmongodbcapi_lib_get_status(lib)),
-                  LIBMONGODB_CAPI_ERROR_DB_OPEN);
+                  LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN);
 }
 }  // namespace
 

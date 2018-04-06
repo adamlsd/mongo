@@ -89,8 +89,8 @@ struct libmongodbcapi_client {
     mongo::ServiceContext::UniqueClient client;
     mongo::DbResponse response;
 
-    libmongodbcapi_db* parent_db = nullptr;
     libmongodbcapi_status status;
+    libmongodbcapi_db* parent_db = nullptr;
 };
 
 namespace mongo {
@@ -133,8 +133,8 @@ int capi_lib_fini(libmongodbcapi_lib* lib) try {
     }
 
     if (mongo::global_db) {
-        process_status = {LIBMONGODB_CAPI_ERROR_DB_OPEN, mongo::ErrorCodes::InternalError, ""};
-        return LIBMONGODB_CAPI_ERROR_DB_OPEN;
+        process_status = {LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN, mongo::ErrorCodes::InternalError, ""};
+        return LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN;
     }
 
     delete lib;
@@ -160,12 +160,12 @@ libmongodbcapi_db* db_new(libmongodbcapi_lib* lib,
         return nullptr;
     }
     if (global_db) {
-        lib->status = {LIBMONGODB_CAPI_ERROR_DB_OPEN, mongo::ErrorCodes::InternalError, ""};
+        lib->status = {LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN, mongo::ErrorCodes::InternalError, ""};
         return nullptr;
     }
 
-    global_db = new libmongodbcapi_db;
-    global_db->parent_lib = lib;
+    auto _global_db = std::make_unique<libmongodbcapi_db>();
+    _global_db->parent_lib = lib;
 
     // iterate over argv and copy them to argvStorage
     for (int i = 0; i < argc; i++) {
@@ -173,35 +173,34 @@ libmongodbcapi_db* db_new(libmongodbcapi_lib* lib,
         auto s = mongo::stdx::make_unique<char[]>(std::strlen(argv[i]) + 1);
         // copy the string + null terminator
         std::strncpy(s.get(), argv[i], std::strlen(argv[i]) + 1);
-        global_db->argvPointers.push_back(s.get());
-        global_db->argvStorage.push_back(std::move(s));
+        _global_db->argvPointers.push_back(s.get());
+        _global_db->argvStorage.push_back(std::move(s));
     }
-    global_db->argvPointers.push_back(nullptr);
+    _global_db->argvPointers.push_back(nullptr);
 
     // iterate over envp and copy them to envpStorage
     while (envp != nullptr && *envp != nullptr) {
         auto s = mongo::stdx::make_unique<char[]>(std::strlen(*envp) + 1);
         std::strncpy(s.get(), *envp, std::strlen(*envp) + 1);
-        global_db->envpPointers.push_back(s.get());
-        global_db->envpStorage.push_back(std::move(s));
+        _global_db->envpPointers.push_back(s.get());
+        _global_db->envpStorage.push_back(std::move(s));
         envp++;
     }
-    global_db->envpPointers.push_back(nullptr);
+    _global_db->envpPointers.push_back(nullptr);
 
-    global_db->serviceContext =
-        embedded::initialize(argc, global_db->argvPointers.data(), global_db->envpPointers.data());
-    if (!global_db->serviceContext) {
-        delete global_db;
-        global_db = nullptr;
+    _global_db->serviceContext =
+        embedded::initialize(argc, _global_db->argvPointers.data(), _global_db->envpPointers.data());
+    if (!_global_db->serviceContext) {
         lib->status = {
             LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED, mongo::ErrorCodes::InternalError, ""};
         return nullptr;
     }
 
     // creating mock transport layer to be able to create sessions
-    global_db->transportLayer = stdx::make_unique<transport::TransportLayerMock>();
+    _global_db->transportLayer = stdx::make_unique<transport::TransportLayerMock>();
 
     lib->status = {LIBMONGODB_CAPI_SUCCESS, mongo::ErrorCodes::OK, ""};
+    global_db = _global_db.release();
     return global_db;
 } catch (const std::bad_alloc& ex) {
     lib->status = {LIBMONGODB_CAPI_ERROR_ENOMEM, mongo::ErrorCodes::InternalError, ""};

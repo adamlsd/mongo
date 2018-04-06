@@ -48,7 +48,7 @@ typedef enum {
     LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED,
     LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
     LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
-    LIBMONGODB_CAPI_ERROR_DB_OPEN,
+    LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN,
     LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN,
     LIBMONGODB_CAPI_ERROR_ENOMEM,
 } libmongodbcapi_error;
@@ -89,7 +89,7 @@ libmongodbcapi_lib* libmongodbcapi_init(const char* yaml_config);
 * @return Returns LIBMONGODB_CAPI_SUCCESS on success.
 * @return Returns LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED if libmongodbcapi_init() has not
 * been called previously.
-* @return Returns LIBMONGODB_CAPI_ERROR_DB_OPEN if there are open databases that haven't been closed
+* @return Returns LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN if there are open databases that haven't been closed
 * with libmongodbcapi_db_destroy().
 * @return Returns LIBMONGODB_CAPI_ERROR_EXCEPTION for errors that resulted in an exception. Details
 * can be retrived via libmongodbcapi_process_get_status().

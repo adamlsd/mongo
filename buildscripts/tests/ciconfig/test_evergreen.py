@@ -8,6 +8,8 @@ import unittest
 
 import buildscripts.ciconfig.evergreen as _evergreen
 
+# pylint: disable=missing-docstring,protected-access
+
 TEST_FILE_PATH = os.path.join(os.path.dirname(__file__), "evergreen.yml")
 
 
@@ -192,7 +194,3 @@ class TestVariant(unittest.TestCase):
         resmoke_task = variant_debian.get_task("resmoke_task")
         self.assertEqual("--suites=somesuite --storageEngine=mmapv1",
                          resmoke_task.combined_resmoke_args)
-
-
-if __name__ == "__main__":
-    unittest.main()

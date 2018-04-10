@@ -20,6 +20,7 @@ env.SConscript(
         'commands',
         'concurrency',
         'exec',
+        'free_mon',
         'fts',
         'ftdc',
         'geo',
@@ -482,6 +483,7 @@ env.Library(
         'service_context.cpp',
         'service_context_noop.cpp',
         'service_context_registrar.cpp',
+        'server_recovery.cpp',
         'unclean_shutdown.cpp',
     ],
     LIBDEPS=[
@@ -606,6 +608,7 @@ env.Library(
         env.Idlc('transactions_stats.idl')[0],
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/stats/fill_locker_info',
         '$BUILD_DIR/mongo/idl/idl_parser',
         'catalog/collection',
         'catalog/database',
@@ -636,6 +639,7 @@ env.CppUnitTest(
         'catalog/database_holder_mock',
         'catalog_raii',
         'service_context_noop_init',
+        'stats/fill_locker_info',
     ],
 )
 
@@ -1025,6 +1029,7 @@ env.Library(
         "catalog/catalog_impl",
         "catalog/collection_options",
         "catalog/document_validation",
+        "catalog/index_create_impl_servers",
         "catalog/index_key_validate",
         "cloner",
         "collection_index_usage_tracker",

@@ -77,6 +77,13 @@ public:
         TxnResources& operator=(TxnResources&&) = default;
 
         /**
+         * Returns a const pointer to the stashed lock state, or nullptr if no stashed locks exist.
+         */
+        const Locker* locker() const {
+            return _locker.get();
+        }
+
+        /**
          * Releases stashed transaction state onto 'opCtx'. Must only be called once.
          */
         void release(OperationContext* opCtx);
@@ -108,26 +115,31 @@ public:
     void refreshFromStorageIfNeeded(OperationContext* opCtx);
 
     /**
-     * Starts a new transaction on the session, must be called after refreshFromStorageIfNeeded has
-     * been called. If an attempt is made to start a transaction with number less than the latest
-     * transaction this session has seen, an exception will be thrown.
+     * Starts a new transaction on the session, or continues an already active transaction. In this
+     * context, a "transaction" is a sequence of operations associated with a transaction number.
+     * This sequence of operations could be a retryable write or multi-statement transaction. Both
+     * utilize this method.
      *
-     * Sets the autocommit parameter for this transaction. If it is boost::none, no autocommit
-     * parameter was passed into the request. If this is the first statement of a transaction,
-     * the autocommit parameter will default to true.
+     * The 'autocommit' argument represents the value of the field given in the original client
+     * request. If it is boost::none, no autocommit parameter was passed into the request. Every
+     * operation that is part of a multi statement transaction must specify 'autocommit=false'.
+     * 'startTransaction' represents the value of the field given in the original client request,
+     * and indicates whether this operation is the beginning of a multi-statement transaction.
      *
-     * Autocommit can only be specified on the first statement of a transaction. If otherwise,
-     * this function will throw.
-     *
-     * Throws if the session has been invalidated or if an attempt is made to start a transaction
-     * older than the active.
+     * Throws an exception if:
+     *      - An attempt is made to start a transaction with number less than the latest
+     *        transaction this session has seen.
+     *      - The session has been invalidated.
+     *      - The values of 'autocommit' and/or 'startTransaction' are inconsistent with the current
+     *        state of the transaction.
      *
      * In order to avoid the possibility of deadlock, this method must not be called while holding a
-     * lock.
+     * lock. This method must also be called after refreshFromStorageIfNeeded has been called.
      */
     void beginOrContinueTxn(OperationContext* opCtx,
                             TxnNumber txnNumber,
-                            boost::optional<bool> autocommit);
+                            boost::optional<bool> autocommit,
+                            boost::optional<bool> startTransaction);
     /**
      * Similar to beginOrContinueTxn except it is used specifically for shard migrations and does
      * not check or modify the autocommit parameter.
@@ -220,7 +232,7 @@ public:
     /**
      * Transfers management of transaction resources from the Session to the OperationContext.
      */
-    void unstashTransactionResources(OperationContext* opCtx);
+    void unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName);
 
     /**
      * Commits the transaction, including committing the write unit of work and updating
@@ -296,14 +308,39 @@ public:
     }
 
     /**
+     * If this session is holding stashed locks in _txnResourceStash, reports the current state of
+     * the session using the provided builder. Locks the session object's mutex while running.
+     */
+    void reportStashedState(BSONObjBuilder* builder) const;
+
+    /**
+     * Convenience method which creates and populates a BSONObj containing the stashed state.
+     * Returns an empty BSONObj if this session has no stashed resources.
+     */
+    BSONObj reportStashedState() const;
+
+    /**
      * Scan through the list of operations and add new oplog entries for updating
      * config.transactions if needed.
      */
     static std::vector<repl::OplogEntry> addOpsForReplicatingTxnTable(
         const std::vector<repl::OplogEntry>& ops);
 
+    /**
+     * Returns a new oplog entry if the given entry has transaction state embedded within in.
+     * The new oplog entry will contain the operation needed to replicate the transaction
+     * table.
+     * Returns boost::none if the given oplog doesn't have any transaction state or does not
+     * support update to the transaction table.
+     */
+    static boost::optional<repl::OplogEntry> createMatchingTransactionTableUpdate(
+        const repl::OplogEntry& entry);
+
 private:
-    void _beginOrContinueTxn(WithLock, TxnNumber txnNumber, boost::optional<bool> autocommit);
+    void _beginOrContinueTxn(WithLock,
+                             TxnNumber txnNumber,
+                             boost::optional<bool> autocommit,
+                             boost::optional<bool> startTransaction);
 
     void _beginOrContinueTxnOnMigration(WithLock, TxnNumber txnNumber);
 
@@ -316,7 +353,7 @@ private:
 
     void _setActiveTxn(WithLock, TxnNumber txnNumber);
 
-    void _checkIsActiveTransaction(WithLock, TxnNumber txnNumber) const;
+    void _checkIsActiveTransaction(WithLock, TxnNumber txnNumber, bool checkAbort) const;
 
     boost::optional<repl::OpTime> _checkStatementExecuted(WithLock,
                                                           TxnNumber txnNumber,

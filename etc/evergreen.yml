@@ -472,6 +472,17 @@ functions:
         make USE_RTTI=1 CC=/opt/mongodbtoolchain/v2/bin/gcc CXX=/opt/mongodbtoolchain/v2/bin/g++ static_lib
         fi
 
+  "fetch and build OpenSSL" :
+    command: shell.exec
+    params:
+        working_dir:  src
+        script: |
+            set -o errexit
+            set -o verbose
+            if [ "${build_openssl|}" = "true" ]; then
+                bash buildscripts/fetch_and_build_openssl.sh "${python|python}" "${openssl_make_flags|}" "${openssl_config_flags|}"
+            fi
+
   "use WiredTiger develop" :
     command: shell.exec
     params:
@@ -681,11 +692,15 @@ functions:
           set -o verbose
 
           python_loc=$(which ${python|/opt/mongodbtoolchain/v2/bin/python2})
+          python3_loc=$(which ${python|/opt/mongodbtoolchain/v2/bin/python3})
           if [ "Windows_NT" = "$OS" ]; then
             python_loc=$(cygpath -w $python_loc)
+            python3_loc=$(cygpath -w c:/python/Python36/python.exe)
           fi
           # Set up virtualenv in ${workdir}
           virtualenv --python "$python_loc" --system-site-packages "${workdir}/venv"
+          # Add virtualenv for python3 in ${workdir}
+          virtualenv --python "$python3_loc" --system-site-packages "${workdir}/venv_3"
 
   "run tests" :
     - command: expansions.update
@@ -1190,7 +1205,7 @@ functions:
 
           if [ ! -z "${virtualenv_requirements}" ]; then
             ${activate_virtualenv}
-            pip install ${virtualenv_requirements}
+            pip install -r pytests/requirements.txt
           fi
 
     - command: shell.exec
@@ -1404,9 +1419,11 @@ functions:
 
         for i in {1..3}
         do
-          if ! kitchen verify "${packager_distro}"; then
+          # kitchen commands use regex so 'kitchen verify amazon' matches both amazon and amazon2
+          # that's why we pass $ at the end of "${packager_distro}"
+          if ! kitchen verify "${packager_distro}"\$; then
             verified="false"
-            kitchen destroy "${packager_distro}" || true
+            kitchen destroy "${packager_distro}"\$ || true
             sleep 30
           else
             verified="true"
@@ -1414,7 +1431,7 @@ functions:
           fi
         done
 
-        kitchen destroy "${packager_distro}" || true
+        kitchen destroy "${packager_distro}"\$ || true
         test "$verified" = "true"
 
   "fetch test_lifecycle.yml":
@@ -1493,7 +1510,8 @@ functions:
 
           set -o errexit
           ${activate_virtualenv}
-          pip install boto3==1.5.27
+          pip install -r buildscripts/requirements.txt
+          pip install -r pytests/requirements.txt
 
           if [ ! -z "${subnet_id}" ]; then
             subnet_id="-n ${subnet_id}"
@@ -2013,7 +2031,29 @@ functions:
           else
             python=${python|/opt/mongodbtoolchain/v2/bin/python2}
           fi
-          echo "python set to $(which python)"
+          echo "python set to $(which $python)"
+      - key: activate_virtualenv_3
+        value: |
+          # check if virtualenv for python3 is set up
+          if [ -d "${workdir}/venv_3" ]; then
+            if [ "Windows_NT" = "$OS" ]; then
+              # Need to quote the path on Windows to preserve the separator.
+              . "${workdir}/venv_3/Scripts/activate" 2> /tmp/activate_error.log
+            else
+              . ${workdir}/venv_3/bin/activate 2> /tmp/activate_error.log
+            fi
+            if [ $? -ne 0 ]; then
+              echo "Failed to activate virtualenv: $(cat /tmp/activate_error.log)"
+            fi
+            python=python
+          else
+            if [ "Windows_NT" = "$OS" ]; then
+              python=/cygdrive/c/python/Python36/python
+            else
+              python=${python3|/opt/mongodbtoolchain/v2/bin/python3}
+            fi
+          fi
+          echo "python set to $(which $python)"
       - key: posix_workdir
         value: eval 'if [ "Windows_NT" = "$OS" ]; then echo $(cygpath -u "${workdir}"); else echo ${workdir}; fi'
       # For ssh disable the options GSSAPIAuthentication, CheckHostIP, StrictHostKeyChecking
@@ -2519,6 +2559,19 @@ functions:
   - *archive_system_resource_information
 
   ### Attach report & artifacts ###
+  "attach scons config log":
+    command: s3.put
+    params:
+      optional: true
+      aws_key: ${aws_key}
+      aws_secret: ${aws_secret}
+      local_file: src/build/scons/config.log
+      remote_file: ${project}/${build_variant}/${revision}/artifacts/config-${build_id}.log
+      bucket: mciuploads
+      permissions: public-read
+      content_type: text/plain
+      display_name: config.log
+
   "attach report":
     command: attach.results
     params:
@@ -2544,6 +2597,7 @@ pre: &pre
 
 # Post task steps
 post: &post
+  - func: "attach scons config log"
   - func: "attach report"
   - func: "attach artifacts"
   - func: "save ec2 task artifacts"
@@ -2608,6 +2662,7 @@ tasks:
     - func: "update bypass expansions"
     - func: "get buildnumber"
     - func: "set up credentials"
+    - func: "fetch and build OpenSSL"
     - func: "build new tools"
     - func: "build rocksdb" # noop if ${build_rocksdb} is not "true"
     - func: "use WiredTiger develop" # noop if ${use_wt_develop} is not "true"
@@ -2775,6 +2830,7 @@ tasks:
     - func: "git get project"
     - func: "get buildnumber"
     - func: "set up credentials"
+    - func: "fetch and build OpenSSL"
     - func: "build new tools"
     - func: "build rocksdb" # noop if ${build_rocksdb} is not "true"
     - func: "use WiredTiger develop" # noop if ${use_wt_develop} is not "true"
@@ -2967,10 +3023,19 @@ tasks:
           set -o errexit
           set -o verbose
 
+          ### TODO: Remove python3 when mypy 0.580 is installed in the toolchain.
+          # Since mypy requires python3, we need to activate the venv_3
+          ${activate_virtualenv_3}
+          pip install -r buildscripts/requirements.txt
+          updated_mypy=$(which mypy)
+          deactivate
+          ###
           ${activate_virtualenv}
           # TODO: Remove once the linters have been updated on the variants.
           pip install -r buildscripts/requirements.txt
-          ${compile_env|} $python ./buildscripts/scons.py ${compile_flags|} --stack-size=1024 lint
+          # The linters require the modules be installed.
+          pip install -r pytests/requirements.txt
+          MYPY=$updated_mypy ${compile_env|} $python ./buildscripts/scons.py ${compile_flags|} --stack-size=1024 lint
 
 - <<: *task_template
   name: burn_in_tests
@@ -4452,7 +4517,7 @@ tasks:
   - func: "run powercycle test"
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --replSet=powercyle --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
+      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
 
 - name: powercycle_replication_smalloplog
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -4472,7 +4537,7 @@ tasks:
   - func: "run powercycle test"
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --replSet=powercyle --mongodOptions=\"--setParameter enableTestCommands=1 --oplogSize 20 --storageEngine wiredTiger\"
+      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --oplogSize 20 --storageEngine wiredTiger\"
 
 - name: powercycle_syncdelay
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -4521,6 +4586,16 @@ tasks:
   commands:
   - func: "do setup"
   - func: "run idl tests"
+
+- name: buildscripts_test
+  depends_on: []
+  commands:
+  - func: "git get project"
+  - func: "get buildnumber"
+  - func: "set up credentials"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=buildscripts_test
 
 - name: package
   depends_on:
@@ -5388,43 +5463,8 @@ buildvariants:
   - name: compile_all
     distros:
     - rhel62-large
-  - name: aggregation
-  - name: auth
   - name: dbtest
-  - name: gle_auth
-  - name: gle_auth_write_cmd
-  - name: gle_auth_basics_passthrough
-  - name: gle_auth_basics_passthrough_write_cmd
-  - name: sharding_gle_auth_basics_passthrough
-  - name: sharding_gle_auth_basics_passthrough_write_cmd
   - name: jsCore
-  - name: jsCore_compatibility
-  - name: aggregation_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
-  - name: bulk_gle_passthrough
-  - name: parallel
-  - name: parallel_compatibility
-  - name: concurrency
-  - name: concurrency_replication
-  - name: concurrency_sharded
-  - name: concurrency_simultaneous
-  - name: replica_sets
-  - name: replica_sets_jscore_passthrough
-  - name: sharding
-  - name: slow1
-  - name: serial_run
-  - name: sharded_collections_jscore_passthrough
-  - name: sharding_jscore_passthrough
-  - name: sharding_jscore_op_query_passthrough
-  - name: sharding_jscore_passthrough_wire_ops
-  - name: tool
 
 - name: ubuntu1404
   display_name: SSL Ubuntu 14.04
@@ -5641,7 +5681,7 @@ buildvariants:
     max_jobs: 8 # Avoid starting too many mongod's on ARM test servers
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: arm64
     packager_distro: ubuntu1604
     repo_edition: enterprise
@@ -5763,7 +5803,7 @@ buildvariants:
     num_jobs_available: 2
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: ppc64le
     packager_distro: ubuntu1604
     repo_edition: enterprise
@@ -5845,7 +5885,7 @@ buildvariants:
     num_jobs_available: 2
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: s390x
     packager_distro: ubuntu1604
     repo_edition: enterprise
@@ -5950,7 +5990,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=amzn64 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: amazon
     repo_edition: enterprise
@@ -6041,6 +6081,173 @@ buildvariants:
   - name: compile_all
     distros:
     - linux-64-amzn-build
+  - name: aggregation
+  - name: aggregation_auth
+  - name: auth
+  - name: dbtest
+  - name: disk_wiredtiger
+  - name: failpoints
+  - name: failpoints_auth
+  - name: gle_auth
+  - name: gle_auth_write_cmd
+  - name: gle_auth_basics_passthrough
+  - name: gle_auth_basics_passthrough_write_cmd
+  - name: sharding_gle_auth_basics_passthrough
+  - name: sharding_gle_auth_basics_passthrough_write_cmd
+  - name: jsCore
+  - name: jsCore_auth
+  - name: jsCore_compatibility
+  - name: jsCore_decimal
+  - name: jsCore_txns
+  - name: aggregation_fuzzer
+  - name: jstestfuzz
+  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_concurrent_replication
+  - name: jstestfuzz_concurrent_sharded
+  - name: jstestfuzz_replication
+  - name: jstestfuzz_sharded
+  - name: mongosTest
+  - name: multiversion
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: bulk_gle_passthrough
+  - name: parallel
+  - name: parallel_compatibility
+  - name: concurrency
+  - name: concurrency_replication
+  - name: concurrency_sharded
+  - name: concurrency_simultaneous
+  - name: replica_sets
+  - name: replica_sets_auth
+  - name: replica_sets_jscore_passthrough
+  - name: sharding
+  - name: sharding_auth
+  - name: sharding_last_stable_mongos_and_mixed_shards
+  - name: slow1
+  - name: serial_run
+  - name: sharded_collections_jscore_passthrough
+  - name: sharding_jscore_passthrough
+  - name: sharding_jscore_op_query_passthrough
+  - name: sharding_jscore_passthrough_wire_ops
+  - name: ssl
+  - name: sslSpecial
+  - name: tool
+  - name: package
+    distros:
+    - ubuntu1604-packer
+  - name: push
+
+- name: enterprise-amazon2
+  display_name: "Enterprise Amazon Linux 2"
+  modules:
+  - enterprise
+  run_on:
+  - amazon2-test
+  batchtime: 1440 # 1 day
+  expansions:
+    test_flags: >-
+      --excludeWithAnyTags=requires_mmapv1
+      --excludeWithAnyTags=SERVER-34286
+    push_path: linux
+    push_bucket: downloads.10gen.com
+    push_name: linux
+    push_arch: x86_64-enterprise-amazon2
+    compile_flags: --ssl MONGO_DISTMOD=amazon2 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    has_packages: true
+    packager_script: packager_enterprise.py
+    packager_arch: x86_64
+    packager_distro: amazon2
+    repo_edition: enterprise
+    scons_cache_scope: shared
+    gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
+    tooltags: "-tags 'ssl sasl'"
+    build_mongoreplay: true
+  tasks:
+  - name: compile
+    distros:
+    - amazon2-build
+  - name: compile_all
+    distros:
+    - amazon2-build
+  - name: aggregation_auth
+  - name: aggregation
+  - name: audit
+  - name: auth
+  - name: auth_audit
+  - name: dbtest
+  - name: ese
+  - name: failpoints_auth
+  - name: jsCore
+  - name: jsCore_ese
+  - name: jsCore_auth
+  - name: jsCore_decimal
+  - name: jsCore_txns
+  - name: aggregation_fuzzer
+  - name: jstestfuzz
+  - name: jstestfuzz_concurrent
+  - name: jstestfuzz_concurrent_replication
+  - name: jstestfuzz_concurrent_sharded
+  - name: jstestfuzz_replication
+  - name: jstestfuzz_sharded
+  - name: noPassthrough
+  - name: noPassthroughWithMongod
+  - name: bulk_gle_passthrough
+  - name: replica_sets_auth
+  - name: replica_sets_ese
+  - name: powercycle
+  - name: sasl
+  - name: sharding_auth
+  - name: sharding_auth_audit
+  - name: sharding_ese
+  - name: slow1
+  - name: serial_run
+  - name: sharded_collections_jscore_passthrough
+  - name: sharding_jscore_passthrough
+  - name: sharding_jscore_op_query_passthrough
+  - name: sharding_jscore_passthrough_wire_ops
+  - name: snmp
+  - name: ssl
+  - name: sslSpecial
+  - name: package
+    distros:
+    - ubuntu1604-packer
+  - name: push
+
+- name: amazon2
+  display_name: SSL Amazon Linux 2
+  run_on:
+  - amazon2-test
+  batchtime: 1440 # 1 day
+  expansions:
+    test_flags: >-
+      --excludeWithAnyTags=requires_mmapv1
+      --excludeWithAnyTags=SERVER-34286
+    push_path: linux
+    push_bucket: downloads.mongodb.org
+    push_name: linux
+    push_arch: x86_64-amazon2
+    compile_flags: --ssl MONGO_DISTMOD=amazon2 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    multiversion_platform: amazon
+    multiversion_edition: targeted
+    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
+    has_packages: true
+    packager_script: packager.py
+    packager_arch: x86_64
+    packager_distro: amazon2
+    repo_edition: org
+    scons_cache_scope: shared
+    shared_scons_pruning: true
+    gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
+    tooltags: "-tags 'ssl'"
+    build_mongoreplay: true
+  tasks:
+  - name: compile
+    distros:
+    - amazon2-build
+  - name: compile_all
+    distros:
+    - amazon2-build
   - name: aggregation
   - name: aggregation_auth
   - name: auth
@@ -6274,6 +6481,7 @@ buildvariants:
   - name: auth_audit
   - name: benchmarks_orphaned
   - name: benchmarks_sharding
+  - name: buildscripts_test
   - name: dbtest
   - name: ese
   - name: external_auth
@@ -6629,7 +6837,7 @@ buildvariants:
     push_name: osx-ssl
     push_arch: x86_64
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
+    compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10"
     multiversion_platform: osx-ssl
     num_jobs_available: 1
     gorootvars: 'PATH="/usr/local/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/usr/local/go1.8/go CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10'
@@ -6747,7 +6955,8 @@ buildvariants:
   - name: replica_sets
   - name: tool
 
-- name: enterprise-osx-1010
+- &enterprise-osx-1010-template
+  name: enterprise-osx-1010
   display_name: Enterprise OS X 10.10
   modules:
   - enterprise
@@ -6761,7 +6970,7 @@ buildvariants:
     push_name: osx
     push_arch: x86_64-enterprise
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
-    compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" CPPPATH=/opt/mongodbtoolchain/v2/include
+    compile_flags: --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10"
     num_jobs_available: 1
     gorootvars: 'PATH="/usr/local/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/usr/local/go1.8/go CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10'
     tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
@@ -6792,6 +7001,27 @@ buildvariants:
   - name: push
     distros:
     - rhel70-small
+
+- <<: *enterprise-osx-1010-template
+  name: enterprise-osx-1010-openssl
+  display_name: Enterprise OS X 10.10 OpenSSL
+  expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
+    push_path: osx
+    push_bucket: downloads.10gen.com
+    push_name: osx
+    push_arch: x86_64-enterprise
+    tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
+    gorootvars: CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10
+    compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
+    compile_flags: --ssl --ssl-provider=openssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10" LINKFLAGS="-mmacosx-version-min=10.10" LIBPATH="$PWD/openssl_install_dir/lib" CPPPATH="$PWD/openssl_install_dir/include"
+    num_jobs_available: 1
+    build_mongoreplay: true
+    multiversion_platform: osx
+    multiversion_edition: enterprise
+    build_openssl: true
+    openssl_config_flags: "-mmacosx-version-min=10.10"
+    openssl_make_flags: "-j$(sysctl -n hw.logicalcpu)"
 
 
 ###########################################
@@ -7040,7 +7270,7 @@ buildvariants:
     multiversion_edition: enterprise
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: rhel62
     repo_edition: enterprise
@@ -7081,6 +7311,7 @@ buildvariants:
   - name: benchmarks_sharding
     distros:
     - centos6-perf
+  - name: buildscripts_test
   - name: bulk_gle_passthrough
   - name: causally_consistent_jscore_passthrough
   - name: causally_consistent_jscore_passthrough_auth
@@ -7357,7 +7588,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: rhel70
     repo_edition: enterprise
@@ -7622,7 +7853,7 @@ buildvariants:
     num_jobs_available: $(echo "$(grep -c processor /proc/cpuinfo)/4" | bc)
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: ppc64le
     packager_distro: rhel71
     push_path: linux
@@ -7728,7 +7959,7 @@ buildvariants:
     num_jobs_available: 2
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: s390x
     packager_distro: rhel72
     push_path: linux
@@ -7834,7 +8065,7 @@ buildvariants:
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: s390x
     packager_distro: rhel67
     push_path: linux
@@ -7938,7 +8169,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=ubuntu1404 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: ubuntu1404
     repo_edition: enterprise
@@ -8016,7 +8247,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=ubuntu1604 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: ubuntu1604
     repo_edition: enterprise
@@ -8101,7 +8332,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=suse12 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: suse12
     repo_edition: enterprise
@@ -8158,7 +8389,7 @@ buildvariants:
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --excludeWithAnyTags=requires_mmapv1
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: s390x
     packager_distro: suse12
     repo_edition: enterprise
@@ -8352,7 +8583,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=debian71 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: debian71
     repo_edition: enterprise
@@ -8408,7 +8639,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=debian81 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: debian81
     repo_edition: enterprise
@@ -8639,7 +8870,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=debian92 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: debian92
     repo_edition: enterprise
@@ -9774,7 +10005,7 @@ buildvariants:
     multiversion_edition: enterprise
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
-    packager_script: packager-enterprise.py
+    packager_script: packager_enterprise.py
     packager_arch: x86_64
     packager_distro: rhel62
     repo_edition: enterprise

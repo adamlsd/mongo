@@ -38,6 +38,8 @@
 #include "mongo/db/repl/replication_consistency_markers_impl.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/sync_tail.h"
+#include "mongo/db/server_recovery.h"
+#include "mongo/db/session.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -53,6 +55,16 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
         log() << "No recovery needed. Initial sync flag set.";
         return;  // Initial Sync will take over so no cleanup is needed.
     }
+
+    const auto serviceCtx = getGlobalServiceContext();
+    inReplicationRecovery(serviceCtx) = true;
+    ON_BLOCK_EXIT([serviceCtx] {
+        invariant(
+            inReplicationRecovery(serviceCtx),
+            "replication recovery flag is unexpectedly unset when exiting recoverFromOplog()");
+        inReplicationRecovery(serviceCtx) = false;
+        sizeRecoveryState(serviceCtx).clearStateAfterRecovery();
+    });
 
     const auto truncateAfterPoint = _consistencyMarkers->getOplogTruncateAfterPoint(opCtx);
     if (!truncateAfterPoint.isNull()) {
@@ -196,6 +208,13 @@ void ReplicationRecoveryImpl::_applyToEndOfOplog(OperationContext* opCtx,
     while (cursor->more()) {
         entry = cursor->nextSafe();
         fassert(40294, SyncTail::syncApply(opCtx, entry, OplogApplication::Mode::kRecovering));
+
+        auto oplogEntry = fassert(50763, OplogEntry::parse(entry));
+        if (auto txnTableOplog = Session::createMatchingTransactionTableUpdate(oplogEntry)) {
+            fassert(50764,
+                    SyncTail::syncApply(
+                        opCtx, txnTableOplog->toBSON(), OplogApplication::Mode::kRecovering));
+        }
     }
 
     // We may crash before setting appliedThrough. If we have a stable checkpoint, we will recover

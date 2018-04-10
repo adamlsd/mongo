@@ -35,6 +35,7 @@
 #include "mongo/bson/json.h"
 #include "mongo/db/catalog/collection_mock.h"
 #include "mongo/db/catalog/uuid_catalog.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/pipeline/aggregation_context_fixture.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
@@ -268,6 +269,43 @@ TEST_F(ChangeStreamStageTest, ShouldRejectBothResumeAfterClusterTimeAndResumeAft
             expCtx),
         AssertionException,
         40674);
+}
+
+TEST_F(ChangeStreamStageTest, ShouldRejectBothStartAtClusterTimeAndResumeAfterOptions) {
+    auto expCtx = getExpCtx();
+
+    // Need to put the collection in the UUID catalog so the resume token is valid.
+    Collection collection(stdx::make_unique<CollectionMock>(nss));
+    UUIDCatalog::get(expCtx->opCtx).onCreateCollection(expCtx->opCtx, &collection, testUuid());
+
+    ASSERT_THROWS_CODE(
+        DSChangeStream::createFromBson(
+            BSON(DSChangeStream::kStageName << BSON(
+                     "resumeAfter" << makeResumeToken(ts, testUuid(), BSON("x" << 2 << "_id" << 1))
+                                   << "startAtClusterTime"
+                                   << BSON("ts" << ts)))
+                .firstElement(),
+            expCtx),
+        AssertionException,
+        40674);
+}
+
+TEST_F(ChangeStreamStageTest, ShouldRejectBothStartAtAndResumeAfterClusterTimeOptions) {
+    auto expCtx = getExpCtx();
+
+    // Need to put the collection in the UUID catalog so the resume token is valid.
+    Collection collection(stdx::make_unique<CollectionMock>(nss));
+    UUIDCatalog::get(expCtx->opCtx).onCreateCollection(expCtx->opCtx, &collection, testUuid());
+
+    ASSERT_THROWS_CODE(
+        DSChangeStream::createFromBson(
+            BSON(DSChangeStream::kStageName
+                 << BSON("$_resumeAfterClusterTime" << BSON("ts" << ts) << "startAtClusterTime"
+                                                    << BSON("ts" << ts)))
+                .firstElement(),
+            expCtx),
+        AssertionException,
+        50573);
 }
 
 TEST_F(ChangeStreamStageTestNoSetup, FailsWithNoReplicationCoordinator) {
@@ -691,8 +729,34 @@ TEST_F(ChangeStreamStageTest, CloseCursorEvenIfInvalidateEntriesGetFilteredOut) 
 class ChangeStreamStageDBTest : public ChangeStreamStageTest {
 public:
     ChangeStreamStageDBTest()
-        : ChangeStreamStageTest(NamespaceString::makeCollectionlessAggregateNSS(nss.db())) {}
+        : ChangeStreamStageTest(NamespaceString::makeCollectionlessAggregateNSS(nss.db())) {
+        setTestCommandsEnabled(true);
+    }
 };
+
+// TODO SERVER-34283: remove once whole-database $changeStream is feature-complete.
+TEST_F(ChangeStreamStageDBTest, ShouldSucceedIfTestCommandsEnabled) {
+    const auto spec = fromjson("{$changeStream: {}}");
+
+    const auto stages = DSChangeStream::createFromBson(spec.firstElement(), getExpCtx());
+    ASSERT_TRUE(dynamic_cast<DocumentSourceMatch*>(stages.front().get()));
+    ASSERT_EQUALS(stages.size(), 3UL);
+
+    for (auto&& stage : stages) {
+        ASSERT_EQUALS(string(stage->getSourceName()), DSChangeStream::kStageName);
+    }
+}
+
+// TODO SERVER-34283: remove once whole-database $changeStream is feature-complete.
+TEST_F(ChangeStreamStageDBTest, ShouldFailIfTestCommandsDisabled) {
+    setTestCommandsEnabled(false);
+
+    const auto spec = fromjson("{$changeStream: {}}");
+
+    ASSERT_THROWS_CODE(DSChangeStream::createFromBson(spec.firstElement(), getExpCtx()),
+                       AssertionException,
+                       ErrorCodes::QueryFeatureNotAllowed);
+}
 
 TEST_F(ChangeStreamStageDBTest, TransformInsert) {
     auto insert = makeOplogEntry(OpTypeEnum::kInsert, nss, BSON("_id" << 1 << "x" << 2));

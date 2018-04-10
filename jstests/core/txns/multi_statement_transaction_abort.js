@@ -8,7 +8,7 @@
     const testDB = db.getSiblingDB(dbName);
     const testColl = testDB[collName];
 
-    testColl.drop();
+    testDB.runCommand({drop: collName, writeConcern: {w: "majority"}});
 
     assert.commandWorked(testDB.runCommand({create: collName, writeConcern: {w: "majority"}}));
     let txnNumber = 0;
@@ -25,21 +25,30 @@
         documents: [{_id: "insert-1"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
-        // Only the first write in a transaction has autocommit flag.
+        startTransaction: true,
         autocommit: false
     }));
 
     // Insert a doc within a transaction.
-    assert.commandWorked(sessionDb.runCommand(
-        {insert: collName, documents: [{_id: "insert-2"}], txnNumber: NumberLong(txnNumber)}));
+    assert.commandWorked(sessionDb.runCommand({
+        insert: collName,
+        documents: [{_id: "insert-2"}],
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
 
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "insert-1"}));
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "insert-2"}));
 
-    assert.commandWorked(sessionDb.runCommand(
-        {abortTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}));
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        abortTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
 
     // Read with default read concern cannot see the aborted transaction.
     assert.eq(null, testColl.findOne({_id: "insert-1"}));
@@ -47,30 +56,40 @@
 
     jsTest.log("Insert two documents in a transaction and commit");
 
-    // Insert a doc with the same _id's in a new transaction should work.
+    // Insert a doc with the same _id in a new transaction should work.
     txnNumber++;
     assert.commandWorked(sessionDb.runCommand({
         insert: collName,
         documents: [{_id: "insert-1"}, {_id: "insert-2"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand(
-        {commitTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        commitTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
     // Read with default read concern sees the committed transaction.
     assert.eq({_id: "insert-1"}, testColl.findOne({_id: "insert-1"}));
     assert.eq({_id: "insert-2"}, testColl.findOne({_id: "insert-2"}));
 
     jsTest.log("Cannot abort empty transaction because it's not in progress");
     txnNumber++;
-    assert.commandFailedWithCode(
-        sessionDb.runCommand(
-            {abortTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}),
-        ErrorCodes.NoSuchTransaction);
+    // abortTransaction can only be called on the admin database.
+    assert.commandFailedWithCode(sessionDb.adminCommand({
+        abortTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }),
+                                 ErrorCodes.NoSuchTransaction);
 
     jsTest.log("Abort transaction on duplicated key errors");
-    testColl.drop();
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
     assert.commandWorked(testColl.insert({_id: "insert-1"}, {writeConcern: {w: "majority"}}));
     txnNumber++;
     // The first insert works well.
@@ -79,6 +98,7 @@
         documents: [{_id: "insert-2"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
     // But the second insert throws duplicated index key error.
@@ -86,22 +106,24 @@
         insert: collName,
         documents: [{_id: "insert-1", x: 0}],
         txnNumber: NumberLong(txnNumber),
+        autocommit: false
     }),
                                  ErrorCodes.DuplicateKey);
     // The error aborts the transaction.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // commitTransaction can only be called on the admin database.
+    assert.commandFailedWithCode(sessionDb.adminCommand({
         commitTransaction: 1,
         writeConcern: {w: "majority"},
-        txnNumber: NumberLong(txnNumber)
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
     }),
-                                 ErrorCodes.TransactionAborted);
+                                 ErrorCodes.NoSuchTransaction);
     // Verify the documents are the same.
     assert.eq({_id: "insert-1"}, testColl.findOne({_id: "insert-1"}));
     assert.eq(null, testColl.findOne({_id: "insert-2"}));
 
     jsTest.log("Abort transaction on write conflict errors");
-    testColl.drop();
-    assert.commandWorked(testDB.runCommand({create: collName, writeConcern: {w: "majority"}}));
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
     txnNumber++;
     const session2 = testDB.getMongo().startSession(sessionOptions);
     const sessionDb2 = session2.getDatabase(dbName);
@@ -111,6 +133,7 @@
         documents: [{_id: "insert-1", from: 1}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
     let txnNumber2 = 0;
@@ -119,24 +142,32 @@
         insert: collName,
         documents: [{_id: "insert-2", from: 2}],
         readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber),
+        txnNumber: NumberLong(txnNumber2),
+        startTransaction: true,
         autocommit: false
     }));
     // Insert a doc from session 2 that conflicts with session 1.
     assert.commandFailedWithCode(sessionDb2.runCommand({
         insert: collName,
         documents: [{_id: "insert-1", from: 2}],
-        txnNumber: NumberLong(txnNumber),
+        txnNumber: NumberLong(txnNumber2),
+        autocommit: false
     }),
                                  ErrorCodes.WriteConflict);
     // Session 1 isn't affected.
-    assert.commandWorked(sessionDb.runCommand(
-        {commitTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}));
-    // Transaction on session 2 is aborted.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         commitTransaction: 1,
         writeConcern: {w: "majority"},
-        txnNumber: NumberLong(txnNumber)
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
+    // Transaction on session 2 is aborted.
+    assert.commandFailedWithCode(sessionDb2.adminCommand({
+        commitTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber2),
+        autocommit: false
     }),
                                  ErrorCodes.NoSuchTransaction);
     // Verify the documents only reflect the first transaction.
@@ -150,6 +181,7 @@
         documents: [{_id: "running-txn-1"}, {_id: "running-txn-2"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
     // A higher txnNumber aborts the old and inserts the same document.
@@ -159,16 +191,22 @@
         documents: [{_id: "running-txn-2"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand(
-        {commitTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        commitTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
     // Read with default read concern sees the committed transaction but cannot see the aborted one.
     assert.eq(null, testColl.findOne({_id: "running-txn-1"}));
     assert.eq({_id: "running-txn-2"}, testColl.findOne({_id: "running-txn-2"}));
 
     jsTest.log("Higher transaction number aborts existing running snapshot read.");
-    assert.commandWorked(testColl.remove({}));
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
     assert.commandWorked(
         testColl.insert([{doc: 1}, {doc: 2}, {doc: 3}], {writeConcern: {w: "majority"}}));
     txnNumber++;
@@ -178,6 +216,7 @@
         batchSize: 2,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -191,14 +230,20 @@
         find: collName,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
 
     // The cursor has been exhausted.
     assert(newReadResult.hasOwnProperty("cursor"), tojson(newReadResult));
     assert.eq(0, newReadResult.cursor.id, tojson(newReadResult));
-    assert.commandWorked(sessionDb.runCommand(
-        {commitTransaction: 1, writeConcern: {w: "majority"}, txnNumber: NumberLong(txnNumber)}));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        commitTransaction: 1,
+        writeConcern: {w: "majority"},
+        txnNumber: NumberLong(txnNumber),
+        autocommit: false
+    }));
 
     // TODO: SERVER-33690 Test the old cursor has been killed when the transaction is aborted.
 

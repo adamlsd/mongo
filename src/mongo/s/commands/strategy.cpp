@@ -41,6 +41,7 @@
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/lasterror.h"
@@ -179,10 +180,13 @@ void execCommandClient(OperationContext* opCtx,
                 topLevelFields[fieldName]++ == 0);
     }
 
-    Status status = Command::checkAuthorization(c, opCtx, request);
-    if (!status.isOK()) {
+    auto invocation = c->parse(opCtx, request);
+
+    try {
+        invocation->checkAuthorization(opCtx, request);
+    } catch (const DBException& e) {
         auto body = result->getBodyBuilder();
-        CommandHelpers::appendCommandStatus(body, status);
+        CommandHelpers::appendCommandStatus(body, e.toStatus());
         return;
     }
 
@@ -200,8 +204,6 @@ void execCommandClient(OperationContext* opCtx,
         return;
     }
 
-    auto invocation = c->parse(opCtx, request);
-
     bool supportsWriteConcern = invocation->supportsWriteConcern();
     if (!supportsWriteConcern && !wcResult.getValue().usedDefault) {
         // This command doesn't do writes so it should not be passed a writeConcern.
@@ -216,6 +218,10 @@ void execCommandClient(OperationContext* opCtx,
     auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
 
     if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
+        uassert(ErrorCodes::InvalidOptions,
+                "readConcern level snapshot is not supported on mongos",
+                getTestCommandsEnabled());
+
         // TODO SERVER-33708.
         if (!invocation->supportsReadConcern(readConcernArgs.getLevel())) {
             auto body = result->getBodyBuilder();
@@ -280,18 +286,6 @@ void runCommand(OperationContext* opCtx,
                 const OpMsgRequest& request,
                 const NetworkOp opType,
                 BSONObjBuilder&& builder) {
-    // Handle command option maxTimeMS first thing while processing the command so that the
-    // subsequent code has the deadline available
-    uassert(ErrorCodes::InvalidOptions,
-            "no such command option $maxTimeMs; use maxTimeMS instead",
-            request.body[QueryRequest::queryOptionMaxTimeMS].eoo());
-
-    const int maxTimeMS = uassertStatusOK(
-        QueryRequest::parseMaxTimeMS(request.body[QueryRequest::cmdOptionMaxTimeMS]));
-    if (maxTimeMS > 0) {
-        opCtx->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
-    }
-
     auto const commandName = request.getCommandName();
     auto const command = CommandHelpers::findCommand(commandName);
     if (!command) {
@@ -302,6 +296,24 @@ void runCommand(OperationContext* opCtx,
         globalCommandRegistry()->incrementUnknownCommands();
         return;
     }
+
+    // Parse the 'maxTimeMS' command option, and use it to set a deadline for the operation on
+    // the OperationContext. Be sure to do this as soon as possible so that further processing by
+    // subsequent code has the deadline available. The 'maxTimeMS' option unfortunately has a
+    // different meaning for a getMore command, where it is used to communicate the maximum time to
+    // wait for new inserts on tailable cursors, not as a deadline for the operation.
+    // TODO SERVER-34277 Remove the special handling for maxTimeMS for getMores. This will
+    // require introducing a new 'max await time' parameter for getMore, and eventually banning
+    // maxTimeMS altogether on a getMore command.
+    uassert(ErrorCodes::InvalidOptions,
+            "no such command option $maxTimeMs; use maxTimeMS instead",
+            request.body[QueryRequest::queryOptionMaxTimeMS].eoo());
+    const int maxTimeMS = uassertStatusOK(
+        QueryRequest::parseMaxTimeMS(request.body[QueryRequest::cmdOptionMaxTimeMS]));
+    if (maxTimeMS > 0 && command->getLogicalOp() != LogicalOp::opGetMore) {
+        opCtx->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
+    }
+    opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
 
     // Set the logical optype, command object and namespace as soon as we identify the command. If
     // the command does not define a fully-qualified namespace, set CurOp to the generic command
@@ -579,7 +591,7 @@ DbResponse Strategy::getMore(OperationContext* opCtx, const NamespaceString& nss
     }
     uassertStatusOK(statusGetDb);
 
-    boost::optional<long long> batchSize;
+    boost::optional<std::int64_t> batchSize;
     if (ntoreturn) {
         batchSize = ntoreturn;
     }
@@ -697,23 +709,34 @@ void Strategy::explainFind(OperationContext* opCtx,
                            BSONObjBuilder* out) {
     const auto explainCmd = ClusterExplain::wrapAsExplain(findCommand, verbosity);
 
-    // We will time how long it takes to run the commands on the shards.
-    Timer timer;
+    long long millisElapsed;
+    std::vector<AsyncRequestsSender::Response> shardResponses;
 
-    const auto routingInfo = uassertStatusOK(
-        Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, qr.nss()));
-    auto shardResponses =
-        scatterGatherVersionedTargetByRoutingTable(opCtx,
-                                                   qr.nss().db(),
-                                                   qr.nss(),
-                                                   routingInfo,
-                                                   explainCmd,
-                                                   readPref,
-                                                   Shard::RetryPolicy::kIdempotent,
-                                                   qr.getFilter(),
-                                                   qr.getCollation());
-
-    long long millisElapsed = timer.millis();
+    short loops = 5;
+    do {
+        // We will time how long it takes to run the commands on the shards.
+        Timer timer;
+        try {
+            const auto routingInfo = uassertStatusOK(
+                Grid::get(opCtx)->catalogCache()->getCollectionRoutingInfo(opCtx, qr.nss()));
+            shardResponses =
+                scatterGatherVersionedTargetByRoutingTable(opCtx,
+                                                           qr.nss().db(),
+                                                           qr.nss(),
+                                                           routingInfo,
+                                                           explainCmd,
+                                                           readPref,
+                                                           Shard::RetryPolicy::kIdempotent,
+                                                           qr.getFilter(),
+                                                           qr.getCollation());
+            millisElapsed = timer.millis();
+            break;
+        } catch (const ExceptionFor<ErrorCodes::StaleDbVersion>& e) {
+            Grid::get(opCtx)->catalogCache()->onStaleDatabaseVersion(e->getDb(),
+                                                                     e->getVersionReceived());
+            loops--;
+        }
+    } while (loops > 0);
 
     const char* mongosStageName =
         ClusterExplain::getStageNameForReadOp(shardResponses.size(), findCommand);

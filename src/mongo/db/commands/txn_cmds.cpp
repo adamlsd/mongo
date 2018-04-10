@@ -48,7 +48,11 @@ public:
     CmdCommitTxn() : BasicCommand("commitTransaction") {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
-        return AllowedOnSecondary::kNever;
+        return AllowedOnSecondary::kAlways;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -73,7 +77,11 @@ public:
         uassert(
             ErrorCodes::CommandFailed, "commitTransaction must be run within a session", session);
 
-        // TODO SERVER-33501 Change this when commitTransaction is retryable.
+        // commitTransaction is retryable.
+        if (session->transactionIsCommitted()) {
+            return true;
+        }
+
         uassert(ErrorCodes::NoSuchTransaction,
                 "Transaction isn't in progress",
                 session->inMultiDocumentTransaction());
@@ -94,6 +102,10 @@ public:
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -149,7 +161,11 @@ public:
     CmdAbortTxn() : BasicCommand("abortTransaction") {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
-        return AllowedOnSecondary::kNever;
+        return AllowedOnSecondary::kAlways;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {

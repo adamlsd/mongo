@@ -225,6 +225,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/authorization_manager_mock_init',
+        '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
         '$BUILD_DIR/mongo/db/repl/oplog_entry',
         '$BUILD_DIR/mongo/db/repl/replmocks',
         '$BUILD_DIR/mongo/db/service_context',
@@ -300,6 +301,7 @@ pipelineeEnv.Library(
         'document_source_skip.cpp',
         'document_source_sort.cpp',
         'document_source_sort_by_count.cpp',
+        "cluster_aggregation_planner.cpp",
         'document_source_tee_consumer.cpp',
         'document_source_unwind.cpp',
         'mongo_process_common.cpp',
@@ -311,6 +313,7 @@ pipelineeEnv.Library(
         '$BUILD_DIR/mongo/client/clientdriver',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
+        '$BUILD_DIR/mongo/db/curop',
         '$BUILD_DIR/mongo/db/generic_cursor',
         '$BUILD_DIR/mongo/db/index/key_generator',
         '$BUILD_DIR/mongo/db/logical_session_cache',

@@ -34,9 +34,12 @@
 #include <vector>
 
 #include "mongo/client/embedded/embedded.h"
+#include "mongo/client/embedded/embedded_log_appender.h"
 #include "mongo/db/client.h"
 #include "mongo/db/dbmain.h"
 #include "mongo/db/service_context.h"
+#include "mongo/logger/logger.h"
+#include "mongo/logger/message_event_utf8_encoder.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/transport/service_entry_point.h"
@@ -56,11 +59,6 @@ struct libmongodbcapi_db {
     mongo::stdx::unordered_map<libmongodbcapi_client*, std::unique_ptr<libmongodbcapi_client>>
         open_clients;
     std::unique_ptr<mongo::transport::TransportLayerMock> transportLayer;
-
-    std::vector<std::unique_ptr<char[]>> argvStorage;
-    std::vector<char*> argvPointers;
-    std::vector<std::unique_ptr<char[]>> envpStorage;
-    std::vector<char*> envpPointers;
 };
 struct libmongodbcapi_client {
     libmongodbcapi_client(libmongodbcapi_db* db) : parent_db(db) {}
@@ -80,9 +78,105 @@ namespace {
 
 bool libraryInitialized_ = false;
 libmongodbcapi_db* global_db = nullptr;
+mongo::logger::ComponentMessageLogDomain::AppenderHandle logCallbackHandle;
 thread_local int last_error = LIBMONGODB_CAPI_SUCCESS;
+thread_local int callEntryDepth = 0;
 
-libmongodbcapi_db* db_new(int argc, const char** argv, const char** envp) noexcept try {
+class ReentrancyGuard {
+public:
+    explicit ReentrancyGuard() {
+        uassert(ErrorCodes::ReentrancyNotAllowed,
+                str::stream() << "Reentry into libmongodbcapi is not allowed",
+                callEntryDepth == 0);
+        ++callEntryDepth;
+    }
+
+    ~ReentrancyGuard() {
+        --callEntryDepth;
+    }
+
+    ReentrancyGuard(ReentrancyGuard const&) = delete;
+    ReentrancyGuard& operator=(ReentrancyGuard const&) = delete;
+};
+
+int register_log_callback(libmongodbcapi_log_callback log_callback, void* log_user_data) {
+    using namespace logger;
+
+    logCallbackHandle = globalLogDomain()->attachAppender(
+        std::make_unique<embedded::EmbeddedLogAppender<MessageEventEphemeral>>(
+            log_callback, log_user_data, std::make_unique<MessageEventUnadornedEncoder>()));
+
+    return LIBMONGODB_CAPI_SUCCESS;
+}
+
+int unregister_log_callback() {
+    using namespace logger;
+
+    globalLogDomain()->detachAppender(logCallbackHandle);
+    logCallbackHandle.reset();
+
+    return LIBMONGODB_CAPI_SUCCESS;
+}
+
+int init(libmongodbcapi_init_params const* params) noexcept try {
+    using namespace logger;
+
+    ReentrancyGuard guard;
+
+    if (libraryInitialized_)
+        return LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED;
+
+    int result = LIBMONGODB_CAPI_SUCCESS;
+    if (params) {
+        // The standard console log appender may or may not be installed here, depending if this is
+        // the first time we initialize the library or not. Make sure we handle both cases.
+        if (params->log_flags & LIBMONGODB_CAPI_LOG_STDOUT) {
+            if (!globalLogManager()->isDefaultConsoleAppenderAttached())
+                globalLogManager()->reattachDefaultConsoleAppender();
+        } else {
+            if (globalLogManager()->isDefaultConsoleAppenderAttached())
+                globalLogManager()->detachDefaultConsoleAppender();
+        }
+
+        if ((params->log_flags & LIBMONGODB_CAPI_LOG_CALLBACK) && params->log_callback) {
+            result = register_log_callback(params->log_callback, params->log_user_data);
+            if (result != LIBMONGODB_CAPI_SUCCESS)
+                return result;
+        }
+    }
+
+    libraryInitialized_ = true;
+    return result;
+} catch (const std::exception&) {
+    return LIBMONGODB_CAPI_ERROR_UNKNOWN;
+}
+
+int fini() noexcept try {
+    ReentrancyGuard guard;
+
+    if (!libraryInitialized_)
+        return LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED;
+
+    if (global_db)
+        return LIBMONGODB_CAPI_ERROR_DB_OPEN;
+
+    int result = LIBMONGODB_CAPI_SUCCESS;
+    if (logCallbackHandle) {
+        result = unregister_log_callback();
+        if (result != LIBMONGODB_CAPI_SUCCESS)
+            return result;
+    }
+
+    libraryInitialized_ = false;
+
+    return result;
+} catch (const std::exception&) {
+    return LIBMONGODB_CAPI_ERROR_UNKNOWN;
+}
+
+libmongodbcapi_db* db_new(const char* yaml_config) noexcept try {
+    ReentrancyGuard guard;
+
     last_error = LIBMONGODB_CAPI_SUCCESS;
     if (!libraryInitialized_)
         throw std::runtime_error("libmongodbcapi_init not called");
@@ -91,29 +185,7 @@ libmongodbcapi_db* db_new(int argc, const char** argv, const char** envp) noexce
     }
     global_db = new libmongodbcapi_db;
 
-    // iterate over argv and copy them to argvStorage
-    for (int i = 0; i < argc; i++) {
-        // allocate space for the null terminator
-        auto s = mongo::stdx::make_unique<char[]>(std::strlen(argv[i]) + 1);
-        // copy the string + null terminator
-        std::strncpy(s.get(), argv[i], std::strlen(argv[i]) + 1);
-        global_db->argvPointers.push_back(s.get());
-        global_db->argvStorage.push_back(std::move(s));
-    }
-    global_db->argvPointers.push_back(nullptr);
-
-    // iterate over envp and copy them to envpStorage
-    while (envp != nullptr && *envp != nullptr) {
-        auto s = mongo::stdx::make_unique<char[]>(std::strlen(*envp) + 1);
-        std::strncpy(s.get(), *envp, std::strlen(*envp) + 1);
-        global_db->envpPointers.push_back(s.get());
-        global_db->envpStorage.push_back(std::move(s));
-        envp++;
-    }
-    global_db->envpPointers.push_back(nullptr);
-
-    global_db->serviceContext =
-        embedded::initialize(argc, global_db->argvPointers.data(), global_db->envpPointers.data());
+    global_db->serviceContext = embedded::initialize(yaml_config);
     if (!global_db->serviceContext) {
         delete global_db;
         global_db = nullptr;
@@ -147,12 +219,16 @@ int db_destroy(libmongodbcapi_db* db) noexcept {
 }
 
 int db_pump(libmongodbcapi_db* db) noexcept try {
+    ReentrancyGuard guard;
+
     return LIBMONGODB_CAPI_SUCCESS;
 } catch (const std::exception&) {
     return LIBMONGODB_CAPI_ERROR_UNKNOWN;
 }
 
 libmongodbcapi_client* client_new(libmongodbcapi_db* db) noexcept try {
+    ReentrancyGuard guard;
+
     auto new_client = stdx::make_unique<libmongodbcapi_client>(db);
     libmongodbcapi_client* rv = new_client.get();
     db->open_clients.insert(std::make_pair(rv, std::move(new_client)));
@@ -180,6 +256,8 @@ int client_wire_protocol_rpc(libmongodbcapi_client* client,
                              size_t input_size,
                              void** output,
                              size_t* output_size) noexcept try {
+    ReentrancyGuard reentry_guard;
+
     mongo::Client::setCurrent(std::move(client->client));
     const auto guard = mongo::MakeGuard([&] { client->client = mongo::Client::releaseCurrent(); });
 
@@ -207,26 +285,16 @@ int get_last_capi_error() noexcept {
 }  // namespace mongo
 
 extern "C" {
-int libmongodbcapi_init(const char* yaml_config) {
-    if (mongo::libraryInitialized_)
-        return LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED;
-
-    mongo::libraryInitialized_ = true;
-    return LIBMONGODB_CAPI_SUCCESS;
+int libmongodbcapi_init(const libmongodbcapi_init_params* params) {
+    return mongo::init(params);
 }
 
 int libmongodbcapi_fini() {
-    if (!mongo::libraryInitialized_)
-        return LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED;
-
-    if (mongo::global_db)
-        return LIBMONGODB_CAPI_ERROR_DB_OPEN;
-
-    return LIBMONGODB_CAPI_SUCCESS;
+    return mongo::fini();
 }
 
-libmongodbcapi_db* libmongodbcapi_db_new(int argc, const char** argv, const char** envp) {
-    return mongo::db_new(argc, argv, envp);
+libmongodbcapi_db* libmongodbcapi_db_new(const char* yaml_config) {
+    return mongo::db_new(yaml_config);
 }
 
 int libmongodbcapi_db_destroy(libmongodbcapi_db* db) {

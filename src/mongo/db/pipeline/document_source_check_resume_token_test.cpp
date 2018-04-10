@@ -61,13 +61,19 @@ public:
 
 protected:
     /**
-     * Puts an arbitrary document with resume token corresponding to the given timestamp, id, and
-     * namespace in the mock queue.
+     * Pushes a document with a resume token corresponding to the given timestamp, docKey, and
+     * namespace into the mock queue.
+     */
+    void addDocument(Timestamp ts, Document docKey, UUID uuid = testUuid()) {
+        _mock->queue.push_back(
+            Document{{"_id", ResumeToken(ResumeTokenData(ts, Value(docKey), uuid)).toDocument()}});
+    }
+    /**
+     * Pushes a document with a resume token corresponding to the given timestamp, _id string, and
+     * namespace into the mock queue.
      */
     void addDocument(Timestamp ts, std::string id, UUID uuid = testUuid()) {
-        _mock->queue.push_back(Document{
-            {"_id",
-             ResumeToken(ResumeTokenData(ts, Value(Document{{"_id", id}}), uuid)).toDocument()}});
+        addDocument(ts, Document{{"_id", id}}, uuid);
     }
 
     void addPause() {
@@ -75,14 +81,23 @@ protected:
     }
 
     /**
-     * Convenience method to create the class under test with a given timestamp, id, and namespace.
+     * Convenience method to create the class under test with a given timestamp, docKey, and
+     * namespace.
      */
     intrusive_ptr<DocumentSourceEnsureResumeTokenPresent> createCheckResumeToken(
-        Timestamp ts, StringData id, UUID uuid = testUuid()) {
-        ResumeToken token(ResumeTokenData(ts, Value(Document{{"_id", id}}), uuid));
+        Timestamp ts, boost::optional<Document> docKey, UUID uuid = testUuid()) {
+        ResumeToken token(ResumeTokenData(ts, docKey ? Value(*docKey) : Value(), uuid));
         auto checkResumeToken = DocumentSourceEnsureResumeTokenPresent::create(getExpCtx(), token);
         checkResumeToken->setSource(_mock.get());
         return checkResumeToken;
+    }
+    /**
+     * Convenience method to create the class under test with a given timestamp, _id string, and
+     * namespace.
+     */
+    intrusive_ptr<DocumentSourceEnsureResumeTokenPresent> createCheckResumeToken(
+        Timestamp ts, StringData id, UUID uuid = testUuid()) {
+        return createCheckResumeToken(ts, Document{{"_id", id}}, uuid);
     }
 
     /**
@@ -99,11 +114,8 @@ protected:
 
 class ShardCheckResumabilityTest : public CheckResumeTokenTest {
 protected:
-    intrusive_ptr<DocumentSourceShardCheckResumability> createShardCheckResumability(
-        Timestamp ts, StringData id, UUID uuid = testUuid()) {
-        ResumeToken token(ResumeTokenData(ts, Value(Document{{"_id", id}}), uuid));
-        auto shardCheckResumability =
-            DocumentSourceShardCheckResumability::create(getExpCtx(), token);
+    intrusive_ptr<DocumentSourceShardCheckResumability> createShardCheckResumability(Timestamp ts) {
+        auto shardCheckResumability = DocumentSourceShardCheckResumability::create(getExpCtx(), ts);
         shardCheckResumability->setSource(_mock.get());
         return shardCheckResumability;
     }
@@ -213,6 +225,91 @@ TEST_F(CheckResumeTokenTest, ShouldSucceedWithBinaryCollation) {
     ASSERT_TRUE(checkResumeToken->getNext().isEOF());
 }
 
+TEST_F(CheckResumeTokenTest, UnshardedTokenSucceedsForShardedResumeOnMongosIfIdMatchesFirstDoc) {
+    // Verify that a resume token whose documentKey only contains _id can be used to resume a stream
+    // on a sharded collection as long as its _id matches the first document. We set 'inMongos'
+    // since this behaviour is only applicable when DocumentSourceEnsureResumeTokenPresent is
+    // running on mongoS.
+    Timestamp resumeTimestamp(100, 1);
+    getExpCtx()->inMongos = true;
+
+    auto checkResumeToken = createCheckResumeToken(resumeTimestamp, Document{{"_id"_sd, 1}});
+
+    Timestamp doc1Timestamp(100, 1);
+    addDocument(doc1Timestamp, {{"x"_sd, 0}, {"_id"_sd, 1}});
+    Timestamp doc2Timestamp(100, 2);
+    Document doc2DocKey{{"x"_sd, 0}, {"_id"_sd, 2}};
+    addDocument(doc2Timestamp, doc2DocKey);
+
+    // We should skip doc1 since it satisfies the resume token, and retrieve doc2.
+    const auto firstDocAfterResume = checkResumeToken->getNext();
+    const auto tokenFromFirstDocAfterResume =
+        ResumeToken::parse(firstDocAfterResume.getDocument()["_id"].getDocument()).getData();
+
+    ASSERT_EQ(tokenFromFirstDocAfterResume.clusterTime, doc2Timestamp);
+    ASSERT_DOCUMENT_EQ(tokenFromFirstDocAfterResume.documentKey.getDocument(), doc2DocKey);
+}
+
+TEST_F(CheckResumeTokenTest, UnshardedTokenFailsForShardedResumeOnMongosIfIdDoesNotMatchFirstDoc) {
+    Timestamp resumeTimestamp(100, 1);
+    getExpCtx()->inMongos = true;
+
+    auto checkResumeToken = createCheckResumeToken(resumeTimestamp, Document{{"_id"_sd, 1}});
+
+    addDocument(Timestamp(100, 1), {{"x"_sd, 0}, {"_id"_sd, 0}});
+    addDocument(Timestamp(100, 2), {{"x"_sd, 0}, {"_id"_sd, 2}});
+
+    ASSERT_THROWS_CODE(checkResumeToken->getNext(), AssertionException, 40585);
+}
+
+TEST_F(CheckResumeTokenTest, ShardedResumeFailsOnMongosIfTokenHasSubsetOfDocumentKeyFields) {
+    // Verify that the relaxed _id check only applies if _id is the sole field present in the
+    // client's resume token, even if all the fields that are present match the first doc. We set
+    // 'inMongos' since this is only applicable when DocumentSourceEnsureResumeTokenPresent is
+    // running on mongoS.
+    Timestamp resumeTimestamp(100, 1);
+    getExpCtx()->inMongos = true;
+
+    auto checkResumeToken =
+        createCheckResumeToken(resumeTimestamp, Document{{"x"_sd, 0}, {"_id"_sd, 1}});
+
+    addDocument(Timestamp(100, 1), {{"x"_sd, 0}, {"y"_sd, -1}, {"_id"_sd, 1}});
+    addDocument(Timestamp(100, 2), {{"x"_sd, 0}, {"y"_sd, -1}, {"_id"_sd, 2}});
+
+    ASSERT_THROWS_CODE(checkResumeToken->getNext(), AssertionException, 40585);
+}
+
+TEST_F(CheckResumeTokenTest, ShardedResumeFailsOnMongosIfDocumentKeyIsNonObject) {
+    // Verify that a resume token whose documentKey is not a valid object will neither succeed nor
+    // cause an invariant when we perform the relaxed documentKey._id check when running in a
+    // sharded context.
+    Timestamp resumeTimestamp(100, 1);
+    getExpCtx()->inMongos = true;
+
+    auto checkResumeToken = createCheckResumeToken(resumeTimestamp, boost::none);
+
+    addDocument(Timestamp(100, 1), {{"x"_sd, 0}, {"_id"_sd, 1}});
+    addDocument(Timestamp(100, 2), {{"x"_sd, 0}, {"_id"_sd, 2}});
+
+    ASSERT_THROWS_CODE(checkResumeToken->getNext(), AssertionException, 40585);
+}
+
+TEST_F(CheckResumeTokenTest, ShardedResumeFailsOnMongosIfDocumentKeyOmitsId) {
+    // Verify that a resume token whose documentKey omits the _id field will neither succeed nor
+    // cause an invariant when we perform the relaxed documentKey._id, even when compared against an
+    // artificial stream token whose _id is also missing.
+    Timestamp resumeTimestamp(100, 1);
+    getExpCtx()->inMongos = true;
+
+    auto checkResumeToken = createCheckResumeToken(resumeTimestamp, Document{{"x"_sd, 0}});
+
+    addDocument(Timestamp(100, 1), {{"x"_sd, 0}, {"y"_sd, -1}, {"_id", 1}});
+    addDocument(Timestamp(100, 1), {{"x"_sd, 0}, {"y"_sd, -1}});
+    addDocument(Timestamp(100, 2), {{"x"_sd, 0}, {"y"_sd, -1}});
+
+    ASSERT_THROWS_CODE(checkResumeToken->getNext(), AssertionException, 40585);
+}
+
 /**
  * We should _error_ on the no-document case, because that means the resume token was not found.
  */
@@ -270,7 +367,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp oplogTimestamp(100, 1);
     Timestamp resumeTimestamp(100, 2);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "ID");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     addDocument(resumeTimestamp, "ID");
@@ -286,7 +383,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp resumeTimestamp(100, 1);
     Timestamp oplogTimestamp(100, 2);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "ID");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     addDocument(resumeTimestamp, "ID");
@@ -300,7 +397,7 @@ TEST_F(ShardCheckResumabilityTest,
 TEST_F(ShardCheckResumabilityTest, ShouldSucceedIfResumeTokenIsPresentAndOplogIsEmpty) {
     Timestamp resumeTimestamp(100, 1);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "ID");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog;
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     addDocument(resumeTimestamp, "ID");
@@ -316,7 +413,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp oplogTimestamp(100, 1);
     Timestamp resumeTimestamp(100, 2);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     auto result = shardCheckResumability->getNext();
@@ -328,7 +425,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp resumeTimestamp(100, 1);
     Timestamp oplogTimestamp(100, 2);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     ASSERT_THROWS_CODE(shardCheckResumability->getNext(), AssertionException, 40576);
@@ -337,7 +434,7 @@ TEST_F(ShardCheckResumabilityTest,
 TEST_F(ShardCheckResumabilityTest, ShouldSucceedWithNoDocumentsInPipelineAndOplogIsEmpty) {
     Timestamp resumeTimestamp(100, 2);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog;
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     auto result = shardCheckResumability->getNext();
@@ -350,7 +447,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp resumeTimestamp(100, 2);
     Timestamp docTimestamp(100, 3);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     addDocument(docTimestamp, "ID");
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
@@ -366,7 +463,7 @@ TEST_F(ShardCheckResumabilityTest,
     Timestamp oplogTimestamp(100, 2);
     Timestamp docTimestamp(100, 3);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     addDocument(docTimestamp, "ID");
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
@@ -379,7 +476,7 @@ TEST_F(ShardCheckResumabilityTest, ShouldIgnoreOplogAfterFirstDoc) {
     Timestamp oplogFutureTimestamp(100, 3);
     Timestamp docTimestamp(100, 4);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     addDocument(docTimestamp, "ID");
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
@@ -400,7 +497,7 @@ TEST_F(ShardCheckResumabilityTest, ShouldSucceedWhenOplogEntriesExistBeforeAndAf
     Timestamp oplogFutureTimestamp(100, 3);
     Timestamp docTimestamp(100, 4);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     addDocument(docTimestamp, "ID");
     deque<DocumentSource::GetNextResult> mockOplog(
         {{Document{{"ts", oplogTimestamp}}}, {Document{{"ts", oplogFutureTimestamp}}}});
@@ -418,7 +515,7 @@ TEST_F(ShardCheckResumabilityTest, ShouldIgnoreOplogAfterFirstEOF) {
     Timestamp resumeTimestamp(100, 2);
     Timestamp oplogFutureTimestamp(100, 3);
 
-    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp, "0");
+    auto shardCheckResumability = createShardCheckResumability(resumeTimestamp);
     deque<DocumentSource::GetNextResult> mockOplog({Document{{"ts", oplogTimestamp}}});
     getExpCtx()->mongoProcessInterface = std::make_shared<MockMongoInterface>(mockOplog);
     auto result1 = shardCheckResumability->getNext();

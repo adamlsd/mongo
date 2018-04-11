@@ -48,7 +48,11 @@ public:
     CmdCommitTxn() : BasicCommand("commitTransaction") {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
-        return AllowedOnSecondary::kNever;
+        return AllowedOnSecondary::kAlways;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -74,15 +78,11 @@ public:
             ErrorCodes::CommandFailed, "commitTransaction must be run within a session", session);
 
         // TODO SERVER-33501 Change this when commitTransaction is retryable.
-        uassert(ErrorCodes::CommandFailed,
+        uassert(ErrorCodes::NoSuchTransaction,
                 "Transaction isn't in progress",
                 session->inMultiDocumentTransaction());
 
-        auto opObserver = opCtx->getServiceContext()->getOpObserver();
-        invariant(opObserver);
-        opObserver->onTransactionCommit(opCtx);
-        opCtx->getWriteUnitOfWork()->commit();
-        opCtx->setWriteUnitOfWork(nullptr);
+        session->commitTransaction(opCtx);
 
         return true;
     }
@@ -98,6 +98,10 @@ public:
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
         return AllowedOnSecondary::kNever;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -122,7 +126,7 @@ public:
         uassert(
             ErrorCodes::CommandFailed, "prepareTransaction must be run within a session", session);
 
-        uassert(ErrorCodes::CommandFailed,
+        uassert(ErrorCodes::NoSuchTransaction,
                 "Transaction isn't in progress",
                 session->inMultiDocumentTransaction());
 
@@ -153,7 +157,11 @@ public:
     CmdAbortTxn() : BasicCommand("abortTransaction") {}
 
     AllowedOnSecondary secondaryAllowed(ServiceContext*) const override {
-        return AllowedOnSecondary::kNever;
+        return AllowedOnSecondary::kAlways;
+    }
+
+    virtual bool adminOnly() const {
+        return true;
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -179,7 +187,7 @@ public:
             ErrorCodes::CommandFailed, "abortTransaction must be run within a session", session);
 
         // TODO SERVER-33501 Change this when abortTransaction is retryable.
-        uassert(ErrorCodes::CommandFailed,
+        uassert(ErrorCodes::NoSuchTransaction,
                 "Transaction isn't in progress",
                 session->inMultiDocumentTransaction());
 

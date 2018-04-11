@@ -43,6 +43,7 @@
 #include "mongo/db/auth/privilege_parser.h"
 #include "mongo/db/auth/user_document_parser.h"
 #include "mongo/db/auth/user_name.h"
+#include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/stdx/unordered_set.h"
@@ -61,8 +62,7 @@ Status _checkNoExtraFields(const BSONObj& cmdObj,
     // ones.
     for (BSONObjIterator iter(cmdObj); iter.more(); iter.next()) {
         StringData fieldName = (*iter).fieldNameStringData();
-        if (!CommandHelpers::isGenericArgument(fieldName) &&
-            !validFieldNames.count(fieldName.toString())) {
+        if (!isGenericArgument(fieldName) && !validFieldNames.count(fieldName.toString())) {
             return Status(ErrorCodes::BadValue,
                           mongoutils::str::stream() << "\"" << fieldName << "\" is not "
                                                                             "a valid argument to "
@@ -334,6 +334,7 @@ Status parseUsersInfoCommand(const BSONObj& cmdObj, StringData dbname, UsersInfo
     validFieldNames.insert("showAuthenticationRestrictions");
     validFieldNames.insert("showPrivileges");
     validFieldNames.insert("showCredentials");
+    validFieldNames.insert("filter");
 
     Status status = _checkNoExtraFields(cmdObj, "usersInfo", validFieldNames);
     if (!status.isOK()) {
@@ -385,6 +386,15 @@ Status parseUsersInfoCommand(const BSONObj& cmdObj, StringData dbname, UsersInfo
         parsedArgs->authenticationRestrictionsFormat = show
             ? AuthenticationRestrictionsFormat::kShow
             : AuthenticationRestrictionsFormat::kOmit;
+    }
+
+
+    const auto filterObj = cmdObj["filter"];
+    if (!filterObj.eoo()) {
+        if (filterObj.type() != Object) {
+            return Status(ErrorCodes::TypeMismatch, "filter must be an Object");
+        }
+        parsedArgs->filter = filterObj.Obj();
     }
 
     return Status::OK();

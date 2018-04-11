@@ -31,12 +31,15 @@
 
 #include "mongo/db/repl/replication_recovery.h"
 
+#include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/repl/replication_consistency_markers_impl.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/sync_tail.h"
+#include "mongo/db/server_recovery.h"
+#include "mongo/db/session.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -53,6 +56,16 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
         return;  // Initial Sync will take over so no cleanup is needed.
     }
 
+    const auto serviceCtx = getGlobalServiceContext();
+    inReplicationRecovery(serviceCtx) = true;
+    ON_BLOCK_EXIT([serviceCtx] {
+        invariant(
+            inReplicationRecovery(serviceCtx),
+            "replication recovery flag is unexpectedly unset when exiting recoverFromOplog()");
+        inReplicationRecovery(serviceCtx) = false;
+        sizeRecoveryState(serviceCtx).clearStateAfterRecovery();
+    });
+
     const auto truncateAfterPoint = _consistencyMarkers->getOplogTruncateAfterPoint(opCtx);
     if (!truncateAfterPoint.isNull()) {
         log() << "Removing unapplied entries starting at: " << truncateAfterPoint.toBSON();
@@ -61,6 +74,7 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
         // Clear the truncateAfterPoint so that we don't truncate the next batch of oplog entries
         // erroneously.
         _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, {});
+        opCtx->recoveryUnit()->waitUntilDurable();
     }
 
     auto topOfOplogSW = _getTopOfOplog(opCtx);
@@ -110,8 +124,10 @@ void ReplicationRecoveryImpl::_recoverFromStableTimestamp(OperationContext* opCt
                                                           OpTime topOfOplog) {
     invariant(!stableTimestamp.isNull());
     invariant(!topOfOplog.isNull());
+    const auto truncateAfterPoint = _consistencyMarkers->getOplogTruncateAfterPoint(opCtx);
     log() << "Recovering from stable timestamp: " << stableTimestamp
-          << " (top of oplog: " << topOfOplog << ", appliedThrough: " << appliedThrough << ")";
+          << " (top of oplog: " << topOfOplog << ", appliedThrough: " << appliedThrough
+          << ", TruncateAfter: " << truncateAfterPoint << ")";
 
     log() << "Starting recovery oplog application at the stable timestamp: " << stableTimestamp;
     _applyToEndOfOplog(opCtx, stableTimestamp, topOfOplog.getTimestamp());
@@ -186,11 +202,19 @@ void ReplicationRecoveryImpl::_applyToEndOfOplog(OperationContext* opCtx,
 
     // Apply remaining ops one at at time, but don't log them because they are already logged.
     UnreplicatedWritesBlock uwb(opCtx);
+    DisableDocumentValidation validationDisabler(opCtx);
 
     BSONObj entry;
     while (cursor->more()) {
         entry = cursor->nextSafe();
         fassert(40294, SyncTail::syncApply(opCtx, entry, OplogApplication::Mode::kRecovering));
+
+        auto oplogEntry = fassert(50763, OplogEntry::parse(entry));
+        if (auto txnTableOplog = Session::createMatchingTransactionTableUpdate(oplogEntry)) {
+            fassert(50764,
+                    SyncTail::syncApply(
+                        opCtx, txnTableOplog->toBSON(), OplogApplication::Mode::kRecovering));
+        }
     }
 
     // We may crash before setting appliedThrough. If we have a stable checkpoint, we will recover

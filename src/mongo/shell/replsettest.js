@@ -945,8 +945,9 @@ var ReplSetTest = function(opts) {
                 let val = self.nodeOptions[key];
                 if (typeof(val) === "object" &&
                     (val.hasOwnProperty("shardsvr") ||
-                     // TODO: SERVER-31376
-                     val.hasOwnProperty("binVersion") && val.binVersion != "latest")) {
+                     val.hasOwnProperty("binVersion") &&
+                         // Should not wait for keys if version is less than 3.6
+                         MongoRunner.compareBinVersions(val.binVersion, "3.6") == -1)) {
                     shouldWaitForKeys = false;
                     print("Set shouldWaitForKeys from node options: " + shouldWaitForKeys);
                 }
@@ -955,7 +956,9 @@ var ReplSetTest = function(opts) {
                 let val = self.startOptions;
                 if (typeof(val) === "object" &&
                     (val.hasOwnProperty("shardsvr") ||
-                     val.hasOwnProperty("binVersion") && val.binVersion != "latest")) {
+                     val.hasOwnProperty("binVersion") &&
+                         // Should not wait for keys if version is less than 3.6
+                         MongoRunner.compareBinVersions(val.binVersion, "3.6") == -1)) {
                     shouldWaitForKeys = false;
                     print("Set shouldWaitForKeys from start options: " + shouldWaitForKeys);
                 }
@@ -1284,14 +1287,28 @@ var ReplSetTest = function(opts) {
     };
 
     this.getHashes = function(db) {
+        assert.neq(db, 'local', 'Cannot run getHashes() on the "local" database');
+
         this.getPrimary();
         var res = {};
-        res.master = this.liveNodes.master.getDB(db).runCommand("dbhash");
+
+        // If MapReduce is interrupted by a stepdown, it could still have 'tmp.mr' collections that
+        // it will not be able to delete. Excluding them from dbhash will prevent a mismatch.
+        // TODO SERVER-27147: no need to exclude 'tmp.mr' collections
+        var collections = this.liveNodes.master.getDB(db).getCollectionNames();
+        var colls_excluding_tmp_mr = collections.filter(coll => !coll.startsWith("tmp.mr."));
+        res.master = this.liveNodes.master.getDB(db).runCommand(
+            {dbhash: 1, collections: colls_excluding_tmp_mr});
         res.slaves = [];
         this.liveNodes.slaves.forEach(function(node) {
             var isArbiter = node.getDB('admin').isMaster('admin').arbiterOnly;
             if (!isArbiter) {
-                var slaveRes = node.getDB(db).runCommand("dbhash");
+                collections = node.getDB(db).getCollectionNames();
+                colls_excluding_tmp_mr = collections.filter(coll => {
+                    return !coll.startsWith("tmp.mr.");
+                });
+                var slaveRes =
+                    node.getDB(db).runCommand({dbhash: 1, collections: colls_excluding_tmp_mr});
                 res.slaves.push(slaveRes);
             }
         });
@@ -1538,12 +1555,12 @@ var ReplSetTest = function(opts) {
                     continue;
                 }
 
-                var dbHashes = rst.getHashes(dbName);
-                var primaryDBHash = dbHashes.master;
-                var primaryCollections = Object.keys(primaryDBHash.collections);
-                assert.commandWorked(primaryDBHash);
-
                 try {
+                    var dbHashes = rst.getHashes(dbName);
+                    var primaryDBHash = dbHashes.master;
+                    var primaryCollections = Object.keys(primaryDBHash.collections);
+                    assert.commandWorked(primaryDBHash);
+
                     // Filter only collections that were retrieved by the dbhash. listCollections
                     // may include non-replicated collections like system.profile.
                     var primaryCollInfo =
@@ -1781,6 +1798,46 @@ var ReplSetTest = function(opts) {
             }
         }
     }
+
+    /**
+     * Checks that 'fastCount' matches an iterative count for all collections.
+     */
+    this.checkCollectionCounts = function(msgPrefix = 'checkCollectionCounts') {
+        let success = true;
+        const errPrefix = `${msgPrefix}, counts did not match for collection`;
+
+        function checkCollectionCount(coll) {
+            const itCount = coll.find().itcount();
+            const fastCount = coll.count();
+            if (itCount !== fastCount) {
+                print(`${errPrefix} ${coll.getFullName()} on ${coll.getMongo().host}.` +
+                      ` itcount: ${itCount}, fast count: ${fastCount}`);
+                print("Collection info: " +
+                      tojson(coll.getDB().getCollectionInfos({name: coll.getName()})));
+                print("Collection stats: " + tojson(coll.stats()));
+                success = false;
+            }
+        }
+
+        function checkCollectionCountsForDB(_db) {
+            const res = assert.commandWorked(
+                _db.runCommand({listCollections: 1, includePendingDrops: true}));
+            const collNames = new DBCommandCursor(_db, res).toArray();
+            collNames.forEach(c => checkCollectionCount(_db.getCollection(c.name)));
+        }
+
+        function checkCollectionCountsForNode(node) {
+            const dbNames = node.getDBNames();
+            dbNames.forEach(dbName => checkCollectionCountsForDB(node.getDB(dbName)));
+        }
+
+        function checkCollectionCountsForReplSet(rst) {
+            rst.nodes.forEach(node => checkCollectionCountsForNode(node));
+            assert(success, `Collection counts did not match. search for '${errPrefix}' in logs.`);
+        }
+
+        this.checkReplicaSet(checkCollectionCountsForReplSet, this);
+    };
 
     /**
      * Starts up a server.  Options are saved by default for subsequent starts.

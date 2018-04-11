@@ -247,6 +247,12 @@ error_code("SnapshotUnavailable", 246)
 error_code("ProducerConsumerQueueBatchTooLarge", 247)
 error_code("ProducerConsumerQueueEndClosed", 248)
 error_code("StaleDbVersion", 249, extra="StaleDbRoutingVersion");
+error_code("StaleChunkHistory", 250);
+error_code("NoSuchTransaction", 251)
+error_code("ReentrancyNotAllowed", 252)
+error_code("FreeMonHttpInFlight", 253)
+error_code("FreeMonHttpTemporaryFailure", 254)
+error_code("FreeMonHttpPermanentFailure", 255)
 
 # Error codes 4000-8999 are reserved.
 
@@ -288,7 +294,7 @@ error_class("NotMasterError", [
     "InterruptedDueToReplStateChange",
     "PrimarySteppedDown",
     ])
-error_class("StaleShardingError",
+error_class("StaleShardVersionError",
             ["StaleConfig", "StaleShardVersion", "StaleEpoch"])
 error_class("NeedRetargettingError",
             ["StaleConfig", "StaleShardVersion", "StaleEpoch", "CannotImplicitlyCreateCollection"])
@@ -304,4 +310,4 @@ error_class("ConnectionFatalMessageParseError", ["IllegalOpMsgFlag",
 
 error_class("ExceededTimeLimitError", ["ExceededTimeLimit", "NetworkInterfaceExceededTimeLimit"])
 
-error_class("SnapshotError", ["SnapshotTooOld", "SnapshotUnavailable"])
+error_class("SnapshotError", ["SnapshotTooOld", "SnapshotUnavailable", "StaleChunkHistory"])

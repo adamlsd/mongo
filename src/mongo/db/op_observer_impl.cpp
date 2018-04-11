@@ -481,7 +481,7 @@ void OpObserverImpl::aboutToDelete(OperationContext* opCtx,
                                    BSONObj const& doc) {
     auto& deleteState = getDeleteState(opCtx);
     auto* css = CollectionShardingState::get(opCtx, nss);
-    deleteState = css->makeDeleteState(doc);
+    deleteState = css->makeDeleteState(opCtx, doc);
 }
 
 void OpObserverImpl::onDelete(OperationContext* opCtx,
@@ -754,7 +754,6 @@ repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* const opCtx,
                                                 const NamespaceString& fromCollection,
                                                 const NamespaceString& toCollection,
                                                 OptionalCollectionUUID uuid,
-                                                bool dropTarget,
                                                 OptionalCollectionUUID dropTargetUUID,
                                                 bool stayTemp) {
     const auto cmdNss = fromCollection.getCommandNS();
@@ -765,8 +764,6 @@ repl::OpTime OpObserverImpl::onRenameCollection(OperationContext* const opCtx,
     builder.append("stayTemp", stayTemp);
     if (dropTargetUUID) {
         dropTargetUUID->appendToBuilder(&builder, "dropTarget");
-    } else {
-        builder.append("dropTarget", dropTarget);
     }
 
     const auto cmdObj = builder.done();
@@ -840,8 +837,7 @@ void OpObserverImpl::onTransactionCommit(OperationContext* opCtx) {
     invariant(opCtx->getTxnNumber());
     Session* const session = OperationContextSession::get(opCtx);
     invariant(session);
-    invariant(session->inMultiDocumentTransaction());
-    auto stmts = session->endTransactionAndRetrieveOperations();
+    auto stmts = session->endTransactionAndRetrieveOperations(opCtx);
 
     // It is possible that the transaction resulted in no changes.  In that case, we should
     // not write an empty applyOps entry.

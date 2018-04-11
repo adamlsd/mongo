@@ -627,6 +627,7 @@ void BackgroundSync::_runRollback(OperationContext* opCtx,
 
     auto storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     if (!forceRollbackViaRefetch.load() && storageEngine->supportsRecoverToStableTimestamp()) {
+        log() << "Rollback using 'recoverToStableTimestamp' method.";
         _runRollbackViaRecoverToCheckpoint(
             opCtx, source, &localOplog, storageInterface, getConnection);
     } else {
@@ -646,7 +647,8 @@ void BackgroundSync::_runRollbackViaRecoverToCheckpoint(
     StorageInterface* storageInterface,
     OplogInterfaceRemote::GetConnectionFn getConnection) {
 
-    OplogInterfaceRemote remoteOplog(getConnection, NamespaceString::kRsOplogNamespace.ns());
+    OplogInterfaceRemote remoteOplog(
+        source, getConnection, NamespaceString::kRsOplogNamespace.ns());
 
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);

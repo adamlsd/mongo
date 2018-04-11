@@ -40,12 +40,6 @@ load("jstests/libs/fixture_helpers.js");  // For isMongos and isSharded.
     }
 
     function testExplainAndExpectStage({expectedStages, unexpectedStages, hintIndex}) {
-        explain = coll.explain().find({x: 0}).count();
-        checkPlan(explain.queryPlanner.winningPlan, expectedStages, unexpectedStages);
-
-        explain = coll.explain().find({x: 0, $comment: "hi"}).count();
-        checkPlan(explain.queryPlanner.winningPlan, expectedStages, unexpectedStages);
-
         explain = coll.explain().find({x: 0}).hint(hintIndex).count();
         checkPlan(explain.queryPlanner.winningPlan, expectedStages, unexpectedStages);
 
@@ -63,15 +57,18 @@ load("jstests/libs/fixture_helpers.js");  // For isMongos and isSharded.
     // The remainder of the test is only relevant for sharded clusters.
 
     // Without an index on the shard key, the entire document will have to be fetched.
-    testExplainAndExpectStage(
-        {expectedStages: ["SHARDING_FILTER", "FETCH"], unexpectedStages: [], hintIndex: {x: 1}});
+    testExplainAndExpectStage({
+        expectedStages: ["COUNT", "SHARDING_FILTER", "FETCH"],
+        unexpectedStages: [],
+        hintIndex: {x: 1}
+    });
 
     // Add an index which includes the shard key. This means the FETCH should no longer be necesary
     // since the SHARDING_FILTER can get the shard key straight from the index.
     const kNewIndexSpec = {x: 1, _id: 1};
     assert.commandWorked(coll.ensureIndex(kNewIndexSpec));
     testExplainAndExpectStage({
-        expectedStages: ["SHARDING_FILTER"],
+        expectedStages: ["COUNT", "SHARDING_FILTER"],
         unexpectedStages: ["FETCH"],
         hintIndex: kNewIndexSpec
     });

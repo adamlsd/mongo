@@ -12,26 +12,20 @@ function ChangeStreamTest(_db, name = "ChangeStreamTest") {
     // Prevent accidental usages of the default db.
     const db = null;
 
-    self.oplogProjection = {$project: {"_id": 0}};
-
     /**
      * Starts a change stream cursor with the given pipeline on the given collection. It uses
-     * the 'aggregateOptions' if provided and elides the resume token if 'includeToken' is not set.
-     * This saves the cursor so that it can be cleaned up later.
+     * the 'aggregateOptions' if provided and saves the cursor so that it can be cleaned up later.
      *
      * Returns the cursor returned by the 'aggregate' command.
      */
-    self.startWatchingChanges = function({pipeline, collection, includeToken, aggregateOptions}) {
+    self.startWatchingChanges = function({pipeline, collection, aggregateOptions}) {
         aggregateOptions = aggregateOptions || {};
         aggregateOptions.cursor = aggregateOptions.cursor || {batchSize: 1};
 
-        if (!includeToken) {
-            // Strip the oplog fields we aren't testing.
-            pipeline.push(self.oplogProjection);
-        }
-
-        // The 'collection' argument may be either a collection name or DBCollection object.
-        assert(collection instanceof DBCollection || typeof collection === "string");
+        // The 'collection' argument may be a collection name, DBCollection object, or '1' which
+        // indicates all collections in _db.
+        assert(collection instanceof DBCollection || typeof collection === "string" ||
+               collection === 1);
         const collName = (collection instanceof DBCollection ? collection.getName() : collection);
 
         let res = assert.commandWorked(_db.runCommand(
@@ -82,12 +76,17 @@ function ChangeStreamTest(_db, name = "ChangeStreamTest") {
     /**
      * Asserts that the last observed change was the change we expect to see. This also asserts
      * that if we do not expect the cursor to be invalidated, that we do not see the cursor
-     * invalidated.
+     * invalidated. Omits the observed change's resume token from the comparison, unless the
+     * expected change explicitly lists an _id field to compare against.
      */
     function assertChangeIsExpected(
         expectedChanges, numChangesSeen, observedChanges, expectInvalidate) {
         if (expectedChanges) {
-            assert.docEq(observedChanges[numChangesSeen],
+            const lastObservedChange = Object.assign({}, observedChanges[numChangesSeen]);
+            if (expectedChanges[numChangesSeen]._id == null) {
+                delete lastObservedChange._id;  // Remove the resume token, if present.
+            }
+            assert.docEq(lastObservedChange,
                          expectedChanges[numChangesSeen],
                          "Change did not match expected change. Expected changes: " +
                              tojson(expectedChanges));
@@ -178,10 +177,19 @@ function ChangeStreamTest(_db, name = "ChangeStreamTest") {
      */
     self.cleanUp = function() {
         for (let testCursor of _allCursors) {
-            assert.commandWorked(_db.getSiblingDB(testCursor.db).runCommand({
-                killCursors: testCursor.coll,
-                cursors: [testCursor.cursorId]
-            }));
+            if (typeof testCursor.coll === "string") {
+                assert.commandWorked(_db.getSiblingDB(testCursor.db).runCommand({
+                    killCursors: testCursor.coll,
+                    cursors: [testCursor.cursorId]
+                }));
+            } else if (testCursor.coll == 1) {
+                // Collection '1' indicates that the change stream was opened against an entire
+                // database and is considered 'collectionless'.
+                assert.commandWorked(_db.getSiblingDB(testCursor.db).runCommand({
+                    killCursors: "$cmd.aggregate",
+                    cursors: [testCursor.cursorId]
+                }));
+            }
         }
 
     };
@@ -205,3 +213,22 @@ ChangeStreamTest.assertChangeStreamThrowsCode = function assertChangeStreamThrow
     }
     assert(false, "expected this to be unreachable");
 };
+
+/**
+ * A set of functions to help validate the behaviour of $changeStreams for a given namespace.
+ */
+function assertChangeStreamNssBehaviour(dbName, collName = "test", assertFunc) {
+    const testDb = db.getSiblingDB(dbName);
+    const res =
+        testDb.runCommand({aggregate: collName, pipeline: [{$changeStream: {}}], cursor: {}});
+    return assertFunc(res);
+}
+function assertValidChangeStreamNss(dbName, collName = "test") {
+    const res = assertChangeStreamNssBehaviour(dbName, collName, assert.commandWorked);
+    assert.commandWorked(
+        db.getSiblingDB(dbName).runCommand({killCursors: collName, cursors: [res.cursor.id]}));
+}
+function assertInvalidChangeStreamNss(dbName, collName = "test") {
+    assertChangeStreamNssBehaviour(
+        dbName, collName, (res) => assert.commandFailedWithCode(res, ErrorCodes.InvalidNamespace));
+}

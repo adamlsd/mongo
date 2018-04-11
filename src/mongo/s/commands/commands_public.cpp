@@ -105,7 +105,7 @@ bool nonShardedCollectionCommandPassthrough(OperationContext* opCtx,
 
     uassert(ErrorCodes::IllegalOperation,
             str::stream() << "Can't do command: " << cmdName << " on a sharded collection",
-            !status.isA<ErrorCategory::StaleShardingError>());
+            !status.isA<ErrorCategory::StaleShardVersionError>());
 
     out->appendElementsUnique(CommandHelpers::filterCommandReplyForPassthrough(cmdResponse.data));
     return status.isOK();
@@ -131,9 +131,7 @@ protected:
                 str::stream() << "can't do command: " << getName() << " on sharded collection",
                 !routingInfo.cm());
 
-        const auto primaryShardId = routingInfo.primaryId();
-        const auto primaryShard =
-            uassertStatusOK(Grid::get(opCtx)->shardRegistry()->getShard(opCtx, primaryShardId));
+        const auto primaryShard = routingInfo.db().primary();
 
         // Here, we first filter the command before appending an UNSHARDED shardVersion, because
         // "shardVersion" is one of the fields that gets filtered out.
@@ -150,13 +148,13 @@ protected:
 
         uassert(ErrorCodes::IllegalOperation,
                 str::stream() << "can't do command: " << getName() << " on a sharded collection",
-                !ErrorCodes::isStaleShardingError(commandResponse.commandStatus.code()));
+                !ErrorCodes::isStaleShardVersionError(commandResponse.commandStatus.code()));
 
         uassertStatusOK(commandResponse.commandStatus);
 
         if (!commandResponse.writeConcernStatus.isOK()) {
             appendWriteConcernErrorToCmdResponse(
-                primaryShardId, commandResponse.response["writeConcernError"], result);
+                primaryShard->getId(), commandResponse.response["writeConcernError"], result);
         }
         result.appendElementsUnique(
             CommandHelpers::filterCommandReplyForPassthrough(std::move(commandResponse.response)));
@@ -170,7 +168,7 @@ public:
     RenameCollectionCmd() : BasicCommand("renameCollection") {}
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool adminOnly() const override {
@@ -217,7 +215,7 @@ public:
 
         uassert(13137,
                 "Source and destination collections must be on same shard",
-                fromRoutingInfo.primaryId() == toRoutingInfo.primaryId());
+                fromRoutingInfo.db().primaryId() == toRoutingInfo.db().primaryId());
 
         return nonShardedCollectionCommandPassthrough(
             opCtx,
@@ -439,9 +437,9 @@ public:
         }
 
         Strategy::CommandResult cmdResult;
-        cmdResult.shardTargetId = routingInfo.primaryId();
+        cmdResult.shardTargetId = routingInfo.db().primaryId();
         cmdResult.result = result.done();
-        cmdResult.target = routingInfo.primary()->getConnString();
+        cmdResult.target = routingInfo.db().primary()->getConnString();
 
         return ClusterExplain::buildExplainResult(
             opCtx, {cmdResult}, ClusterExplain::kSingleShard, timer.millis(), out);
@@ -454,7 +452,7 @@ public:
     SplitVectorCmd() : NotAllowedOnShardedCollectionCmd("splitVector") {}
 
     std::string parseNs(const std::string& dbname, const BSONObj& cmdObj) const override {
-        return CommandHelpers::parseNsFullyQualified(dbname, cmdObj);
+        return CommandHelpers::parseNsFullyQualified(cmdObj);
     }
 
     bool supportsWriteConcern(const BSONObj& cmd) const override {
@@ -529,7 +527,7 @@ public:
 
         auto dbInfoStatus = Grid::get(opCtx)->catalogCache()->getDatabase(opCtx, dbName);
         if (!dbInfoStatus.isOK()) {
-            return appendEmptyResultSet(result, dbInfoStatus.getStatus(), nss.ns());
+            return appendEmptyResultSet(opCtx, result, dbInfoStatus.getStatus(), nss.ns());
         }
 
         return cursorCommandPassthrough(

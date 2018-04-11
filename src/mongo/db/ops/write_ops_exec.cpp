@@ -117,7 +117,7 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
         // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
         // this op should be sampled for profiling.
         const bool shouldSample =
-            curOp->completeAndLogOperation(opCtx, logger::LogComponent::kCommand);
+            curOp->completeAndLogOperation(opCtx, MONGO_LOG_DEFAULT_COMPONENT);
 
         // Do not profile individual statements in a write command if we are in a transaction.
         auto session = OperationContextSession::get(opCtx);
@@ -134,7 +134,9 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
 }
 
 /**
- * Sets the Client's LastOp to the system OpTime if needed.
+ * Sets the Client's LastOp to the system OpTime if needed. This is especially helpful for
+ * adjusting the client opTime for cases when batched write performed multiple writes, but
+ * when the last write was a no-op (which will not advance the client opTime).
  */
 class LastOpFixer {
 public:
@@ -182,6 +184,13 @@ void assertCanWrite_inlock(OperationContext* opCtx, const NamespaceString& ns) {
 }
 
 void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
+    auto session = OperationContextSession::get(opCtx);
+    auto inTransaction = session && session->inSnapshotReadOrMultiDocumentTransaction();
+    uassert(ErrorCodes::NamespaceNotFound,
+            str::stream() << "Cannot create namespace " << ns.ns()
+                          << " in multi-document transaction.",
+            !inTransaction);
+
     writeConflictRetry(opCtx, "implicit collection creation", ns.ns(), [&opCtx, &ns] {
         AutoGetOrCreateDb db(opCtx, ns.db(), MODE_X);
         assertCanWrite_inlock(opCtx, ns);
@@ -558,9 +567,11 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::UpdateOpEntry& op) {
+    auto session = OperationContextSession::get(opCtx);
     uassert(ErrorCodes::InvalidOptions,
             "Cannot use (or request) retryable writes with multi=true",
-            !(opCtx->getTxnNumber() && op.getMulti()));
+            (session && session->inMultiDocumentTransaction()) || !opCtx->getTxnNumber() ||
+                !op.getMulti());
 
     globalOpCounters.gotUpdate();
     auto& curOp = *CurOp::get(opCtx);
@@ -718,9 +729,11 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::DeleteOpEntry& op) {
+    auto session = OperationContextSession::get(opCtx);
     uassert(ErrorCodes::InvalidOptions,
             "Cannot use (or request) retryable writes with limit=0",
-            !(opCtx->getTxnNumber() && op.getMulti()));
+            (session && session->inMultiDocumentTransaction()) || !opCtx->getTxnNumber() ||
+                !op.getMulti());
 
     globalOpCounters.gotDelete();
     auto& curOp = *CurOp::get(opCtx);

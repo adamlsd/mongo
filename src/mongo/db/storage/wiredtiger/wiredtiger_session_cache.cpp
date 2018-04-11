@@ -235,14 +235,8 @@ void WiredTigerSessionCache::waitUntilDurable(bool forceCheckpoint, bool stableC
         {
             stdx::unique_lock<stdx::mutex> lk(_journalListenerMutex);
             JournalListener::Token token = _journalListener->getToken();
-            const bool keepOldBehavior = true;
-            if (keepOldBehavior) {
-                invariantWTOK(s->checkpoint(s, nullptr));
-            } else {
-                std::string config =
-                    stableCheckpoint ? "use_timestamp=true" : "use_timestamp=false";
-                invariantWTOK(s->checkpoint(s, config.c_str()));
-            }
+            auto config = stableCheckpoint ? "use_timestamp=true" : "use_timestamp=false";
+            invariantWTOK(s->checkpoint(s, config));
             _journalListener->onDurable(token);
         }
         LOG(4) << "created checkpoint (forced)";
@@ -397,6 +391,11 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
 
     bool returnedToCache = false;
     uint64_t currentEpoch = _epoch.load();
+    bool dropQueuedIdentsAtSessionEnd = session->isDropQueuedIdentsAtSessionEndAllowed();
+
+    // Reset this session's flag for dropping queued idents to default, before returning it to
+    // session cache.
+    session->dropQueuedIdentsAtSessionEndAllowed(true);
 
     if (session->_getEpoch() == currentEpoch) {  // check outside of lock to reduce contention
         stdx::lock_guard<stdx::mutex> lock(_cacheLock);
@@ -410,7 +409,7 @@ void WiredTigerSessionCache::releaseSession(WiredTigerSession* session) {
     if (!returnedToCache)
         delete session;
 
-    if (_engine && _engine->haveDropsQueued())
+    if (dropQueuedIdentsAtSessionEnd && _engine && _engine->haveDropsQueued())
         _engine->dropSomeQueuedIdents();
 }
 

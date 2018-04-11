@@ -51,6 +51,7 @@
 #include "mongo/db/exec/shard_filter.h"
 #include "mongo/db/exec/working_set.h"
 #include "mongo/db/index/index_access_method.h"
+#include "mongo/db/kill_sessions.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/pipeline/document_source.h"
@@ -72,6 +73,7 @@
 #include "mongo/db/s/metadata_manager.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
+#include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/stats/storage_stats.h"
 #include "mongo/db/stats/top.h"
@@ -154,7 +156,7 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> createRandomCursorEx
         if (ShardingState::get(opCtx)->needCollectionMetadata(opCtx, collection->ns().ns())) {
             auto shardFilterStage = stdx::make_unique<ShardFilterStage>(
                 opCtx,
-                CollectionShardingState::get(opCtx, collection->ns())->getMetadata(),
+                CollectionShardingState::get(opCtx, collection->ns())->getMetadata(opCtx),
                 ws.get(),
                 stage.release());
             return PlanExecutor::make(opCtx,
@@ -384,7 +386,7 @@ StatusWith<std::unique_ptr<PlanExecutor, PlanExecutor::Deleter>> PipelineD::prep
         plannerOpts |= QueryPlannerParams::NO_UNCOVERED_PROJECTIONS;
     }
 
-    if (expCtx->needsMerge && expCtx->tailableMode == TailableMode::kTailableAndAwaitData) {
+    if (expCtx->needsMerge && expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
         plannerOpts |= QueryPlannerParams::TRACK_LATEST_OPLOG_TS;
     }
 
@@ -589,7 +591,7 @@ bool PipelineD::MongoDInterface::isSharded(OperationContext* opCtx, const Namesp
     // TODO SERVER-24960: Use CollectionShardingState::collectionIsSharded() to confirm sharding
     // state.
     auto css = CollectionShardingState::get(opCtx, nss);
-    return bool(css->getMetadata());
+    return bool(css->getMetadata(opCtx));
 }
 
 BSONObj PipelineD::MongoDInterface::insert(const boost::intrusive_ptr<ExpressionContext>& expCtx,
@@ -726,7 +728,7 @@ Status PipelineD::MongoDInterface::attachCursorSourceToPipeline(
     auto css = CollectionShardingState::get(expCtx->opCtx, expCtx->ns);
     uassert(4567,
             str::stream() << "from collection (" << expCtx->ns.ns() << ") cannot be sharded",
-            !bool(css->getMetadata()));
+            !bool(css->getMetadata(expCtx->opCtx)));
 
     PipelineD::prepareCursorSource(autoColl->getCollection(), expCtx->ns, nullptr, pipeline);
 
@@ -747,9 +749,9 @@ std::vector<FieldPath> PipelineD::MongoDInterface::collectDocumentKeyFields(
         return {"_id"};  // Nothing is sharded.
     }
 
-    auto scm = [this, opCtx, &nss]() -> ScopedCollectionMetadata {
+    auto scm = [opCtx, &nss]() -> ScopedCollectionMetadata {
         AutoGetCollection autoColl(opCtx, nss, MODE_IS);
-        return CollectionShardingState::get(opCtx, nss)->getMetadata();
+        return CollectionShardingState::get(opCtx, nss)->getMetadata(opCtx);
     }();
 
     if (!scm) {
@@ -823,12 +825,38 @@ BSONObj PipelineD::MongoDInterface::_reportCurrentOpForClient(
 
     // Append lock stats before returning.
     if (auto clientOpCtx = client->getOperationContext()) {
-        Locker::LockerInfo lockerInfo;
-        clientOpCtx->lockState()->getLockerInfo(&lockerInfo);
-        fillLockerInfo(lockerInfo, builder);
+        if (auto lockerInfo = clientOpCtx->lockState()->getLockerInfo()) {
+            fillLockerInfo(*lockerInfo, builder);
+        }
     }
 
     return builder.obj();
+}
+
+void PipelineD::MongoDInterface::_reportCurrentOpsForIdleSessions(OperationContext* opCtx,
+                                                                  CurrentOpUserMode userMode,
+                                                                  std::vector<BSONObj>* ops) const {
+    auto sessionCatalog = SessionCatalog::get(opCtx);
+
+    const bool authEnabled =
+        AuthorizationSession::get(opCtx->getClient())->getAuthorizationManager().isAuthEnabled();
+
+    // If the user is listing only their own ops, we use makeSessionFilterForAuthenticatedUsers to
+    // create a pattern that will match against all authenticated usernames for the current client.
+    // If the user is listing ops for all users, we create an empty pattern; constructing an
+    // instance of SessionKiller::Matcher with this empty pattern will return all sessions.
+    auto sessionFilter = (authEnabled && userMode == CurrentOpUserMode::kExcludeOthers
+                              ? makeSessionFilterForAuthenticatedUsers(opCtx)
+                              : KillAllSessionsByPatternSet{{}});
+
+    sessionCatalog->scanSessions(opCtx,
+                                 {std::move(sessionFilter)},
+                                 [&](OperationContext* opCtx, Session* session) {
+                                     auto op = session->reportStashedState();
+                                     if (!op.isEmpty()) {
+                                         ops->emplace_back(op);
+                                     }
+                                 });
 }
 
 std::unique_ptr<CollatorInterface> PipelineD::MongoDInterface::_getCollectionDefaultCollator(

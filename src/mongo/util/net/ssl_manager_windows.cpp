@@ -373,9 +373,7 @@ SSLConnectionWindows::SSLConnectionWindows(SCHANNEL_CRED* cred,
                                            Socket* sock,
                                            const char* initialBytes,
                                            int len)
-    : _cred(cred), socket(sock), _engine(_cred) {
-
-    // TODO: SNI: _engine.set_server_name(undotted.c_str());
+    : _cred(cred), socket(sock), _engine(_cred, removeFQDNRoot(socket->remoteAddr().hostOrIp())) {
 
     _tempBuffer.resize(17 * 1024);
 
@@ -512,13 +510,15 @@ int SSLManagerWindows::SSL_read(SSLConnectionInterface* connInterface, void* buf
                 // 1. fetch some from the network
                 // 2. give it to ASIO
                 // 3. retry
-                int ret =
-                    recv(conn->socket->rawFD(), reinterpret_cast<char*>(buf), num, portRecvFlags);
+                int ret = recv(conn->socket->rawFD(),
+                               conn->_tempBuffer.data(),
+                               conn->_tempBuffer.size(),
+                               portRecvFlags);
                 if (ret == SOCKET_ERROR) {
                     conn->socket->handleRecvError(ret, num);
                 }
 
-                conn->_engine.put_input(asio::const_buffer(buf, ret));
+                conn->_engine.put_input(asio::const_buffer(conn->_tempBuffer.data(), ret));
 
                 continue;
             }
@@ -578,7 +578,7 @@ int SSLManagerWindows::SSL_write(SSLConnectionInterface* connInterface, const vo
 }
 
 int SSLManagerWindows::SSL_shutdown(SSLConnectionInterface* conn) {
-    invariant(false);
+    MONGO_UNREACHABLE;
     return 0;
 }
 
@@ -1267,6 +1267,10 @@ Status SSLManagerWindows::initSSLContext(SCHANNEL_CRED* cred,
     }
 
     cred->grbitEnabledProtocols = supportedProtocols;
+    if (supportedProtocols == 0) {
+        return {ErrorCodes::InvalidSSLConfiguration,
+                "All supported TLS protocols have been disabled."};
+    }
 
     if (!params.sslCipherConfig.empty()) {
         warning()
@@ -1468,9 +1472,9 @@ Status validatePeerCertificate(const std::string& remoteHost,
         const_cast<LPSTR>(szOID_PKIX_KP_SERVER_AUTH),
     };
 
-    // If remoteHost is empty, then this is running on the server side, and we want to verify the
-    // client cert
-    if (remoteHost.empty()) {
+    // If remoteHost is not empty, then this is running on the client side, and we want to verify
+    // the server cert.
+    if (!remoteHost.empty()) {
         certChainPara.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
         certChainPara.RequestedUsage.Usage.cUsageIdentifier = _countof(usage);
         certChainPara.RequestedUsage.Usage.rgpszUsageIdentifier = usage;
@@ -1505,7 +1509,7 @@ Status validatePeerCertificate(const std::string& remoteHost,
     if (remoteHost.empty()) {
         sslCertChainPolicy.dwAuthType = AUTHTYPE_CLIENT;
     } else {
-        serverName = toNativeString(remoteHost.c_str());
+        serverName = toNativeString(removeFQDNRoot(remoteHost).c_str());
         sslCertChainPolicy.pwszServerName = const_cast<wchar_t*>(serverName.c_str());
         sslCertChainPolicy.dwAuthType = AUTHTYPE_SERVER;
     }

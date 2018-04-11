@@ -35,6 +35,7 @@
 #include "mongo/client/remote_command_targeter.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/write_commands/write_commands_common.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/stats/counters.h"
 #include "mongo/executor/task_executor_pool.h"
@@ -158,18 +159,6 @@ public:
         MONGO_UNREACHABLE;
     }
 
-    Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) const final {
-        Status status = auth::checkAuthForWriteCommand(
-            AuthorizationSession::get(opCtx->getClient()), _writeType, request);
-
-        // TODO: Remove this when we standardize GLE reporting from commands
-        if (!status.isOK()) {
-            LastError::get(opCtx->getClient()).setLastError(status.code(), status.reason());
-        }
-
-        return status;
-    }
-
     Status explainImpl(OperationContext* opCtx,
                        const OpMsgRequest& request,
                        ExplainOptions::Verbosity verbosity,
@@ -227,22 +216,31 @@ public:
         }
 
         // TODO: increase opcounters by more than one
+        auto& debug = CurOp::get(opCtx)->debug();
         if (_writeType == BatchedCommandRequest::BatchType_Insert) {
             for (size_t i = 0; i < numAttempts; ++i) {
                 globalOpCounters.gotInsert();
             }
+            debug.ninserted = response.getN();
         } else if (_writeType == BatchedCommandRequest::BatchType_Update) {
             for (size_t i = 0; i < numAttempts; ++i) {
                 globalOpCounters.gotUpdate();
             }
+            debug.upsert = response.isUpsertDetailsSet();
+            debug.nMatched = response.getN() - (debug.upsert ? response.sizeUpsertDetails() : 0);
+            debug.nModified = response.getNModified();
         } else if (_writeType == BatchedCommandRequest::BatchType_Delete) {
             for (size_t i = 0; i < numAttempts; ++i) {
                 globalOpCounters.gotDelete();
             }
+            debug.ndeleted = response.getN();
         }
 
         // Save the last opTimes written on each shard for this client, to allow GLE to work
         ClusterLastErrorInfo::get(opCtx->getClient())->addHostOpTimes(stats.getWriteOpTimes());
+
+        // Record the number of shards targeted by this write.
+        CurOp::get(opCtx)->debug().nShards = stats.getTargetedShards().size();
 
         result.appendElements(response.toBSON());
         return response.getOk();
@@ -339,7 +337,7 @@ private:
         return dispatchStatus;
     }
 
-    // Type of batch (e.g. insert, update).
+    // Type of batch: insert, update, or delete.
     const BatchedCommandRequest::BatchType _writeType;
 };
 
@@ -386,7 +384,13 @@ private:
     }
 
     void doCheckAuthorization(OperationContext* opCtx) const override {
-        uassertStatusOK(command()->checkAuthForRequest(opCtx, *_request));
+        try {
+            auth::checkAuthForWriteCommand(
+                AuthorizationSession::get(opCtx->getClient()), command()->_writeType, *_request);
+        } catch (const DBException& e) {
+            LastError::get(opCtx->getClient()).setLastError(e.code(), e.reason());
+            throw;
+        }
     }
 
     const ClusterWriteCmd* command() const {
@@ -407,7 +411,7 @@ std::unique_ptr<CommandInvocation> ClusterWriteCmd::parse(OperationContext* opCt
         parseRequest(_writeType, request));
 }
 
-class ClusterCmdInsert : public ClusterWriteCmd {
+class ClusterCmdInsert final : public ClusterWriteCmd {
 public:
     ClusterCmdInsert() : ClusterWriteCmd("insert", BatchedCommandRequest::BatchType_Insert) {}
 
@@ -417,7 +421,7 @@ public:
 
 } clusterInsertCmd;
 
-class ClusterCmdUpdate : public ClusterWriteCmd {
+class ClusterCmdUpdate final : public ClusterWriteCmd {
 public:
     ClusterCmdUpdate() : ClusterWriteCmd("update", BatchedCommandRequest::BatchType_Update) {}
 
@@ -427,7 +431,7 @@ public:
 
 } clusterUpdateCmd;
 
-class ClusterCmdDelete : public ClusterWriteCmd {
+class ClusterCmdDelete final : public ClusterWriteCmd {
 public:
     ClusterCmdDelete() : ClusterWriteCmd("delete", BatchedCommandRequest::BatchType_Delete) {}
 

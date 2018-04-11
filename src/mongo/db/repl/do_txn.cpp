@@ -76,7 +76,7 @@ bool _areOpsCrudOnly(const BSONObj& doTxnCmd) {
         BSONElement& fieldOp = fields[1];
 
         const char* opType = fieldOp.valuestrsafe();
-        const StringData ns = fieldNs.valueStringData();
+        const StringData ns = fieldNs.valuestrsafe();
 
         // All atomic ops have an opType of length 1.
         if (opType[0] == '\0' || opType[1] != '\0')
@@ -312,14 +312,10 @@ Status doTxn(OperationContext* opCtx,
 
         numApplied = 0;
         uassertStatusOK(_doTxn(opCtx, dbName, doTxnCmd, &intermediateResult, &numApplied));
-        auto opObserver = getGlobalServiceContext()->getOpObserver();
-        invariant(opObserver);
-        opObserver->onTransactionCommit(opCtx);
+        session->commitTransaction(opCtx);
         result->appendElements(intermediateResult.obj());
-
-        // Commit the global WUOW if the command succeeds.
-        opCtx->getWriteUnitOfWork()->commit();
     } catch (const DBException& ex) {
+        session->abortActiveTransaction(opCtx);
         BSONArrayBuilder ab;
         ++numApplied;
         for (int j = 0; j < numApplied; j++)

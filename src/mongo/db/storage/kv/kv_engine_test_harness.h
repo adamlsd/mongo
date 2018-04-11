@@ -49,7 +49,7 @@ public:
 
     virtual KVEngine* restartEngine() = 0;
 
-    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<KVHarnessHelper>, create);
+    static MONGO_DECLARE_SHIM(()->std::unique_ptr<KVHarnessHelper>) create;
 };
 
 }  // namespace mongo

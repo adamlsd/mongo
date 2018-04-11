@@ -1,5 +1,3 @@
-// kv_engine_test_harness.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -491,6 +489,6 @@ TEST(KVCatalogTest, RestartForPrefixes) {
 
 }  // namespace
 
-MONGO_DEFINE_STATIC_SHIM(KVHarnessHelper, create);
+MONGO_DEFINE_SHIM(KVHarnessHelper::create);
 
 }  // namespace mongo

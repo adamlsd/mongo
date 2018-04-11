@@ -96,5 +96,5 @@ std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {
     return harness_helper_detail::noexcept_ptr_conversion(std::move(p), target);
 }
 
-constexpr MONGO_DECLARE_SHIM(()->std::unique_ptr<HarnessHelper>)->newHarnessHelper;
+extern MONGO_DECLARE_SHIM(()->std::unique_ptr<HarnessHelper>) newHarnessHelper;
 }  // namespace mongo

@@ -64,7 +64,7 @@ public:
     };
 
 public:
-    static constexpr MONGO_DECLARE_SHIM((PrivateTo<DatabaseHolder>)->std::unique_ptr<Impl>) makeImpl{};
+    static MONGO_DECLARE_SHIM((PrivateTo<DatabaseHolder>)->std::unique_ptr<Impl>) makeImpl;
 
     inline ~DatabaseHolder() = default;
 

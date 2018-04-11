@@ -54,7 +54,7 @@ private:
 };
 }  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)()->std::unique_ptr<KVHarnessHelper> {
+MONGO_REGISTER_SHIM(KVHarnessHelper::create)()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<EphemeralForTestKVHarnessHelper>();
 }
 

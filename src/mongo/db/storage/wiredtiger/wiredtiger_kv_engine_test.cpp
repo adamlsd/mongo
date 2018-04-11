@@ -1,5 +1,3 @@
-// wiredtiger_kv_engine_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -72,7 +70,7 @@ private:
 };
 }  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)
+MONGO_REGISTER_SHIM(KVHarnessHelper::create)
 ()->std::unique_ptr<KVHarnessHelper> {
     return stdx::make_unique<WiredTigerKVHarnessHelper>();
 }

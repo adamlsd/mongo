@@ -26,11 +26,12 @@
  *    it in the license file.
  */
 
+#include <memory>
+
 #include "mongo/base/init.h"
 
 #include "mongo/db/storage/kv/kv_engine_test_harness.h"
 #include "mongo/db/storage/mobile/mobile_kv_engine.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/unittest/temp_dir.h"
 
 namespace mongo {
@@ -57,7 +58,7 @@ private:
 };
 }  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)()->std::unique_ptr<KVHarnessHelper> {
-    return stdx::make_unique<MobileKVHarnessHelper>();
+MONGO_REGISTER_SHIM(KVHarnessHelper::create)()->std::unique_ptr<KVHarnessHelper> {
+    return std::make_unique<MobileKVHarnessHelper>();
 }
 }  // namespace mongo

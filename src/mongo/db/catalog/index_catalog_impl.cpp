@@ -70,7 +70,6 @@
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
-namespace {
 MONGO_REGISTER_SHIM(IndexCatalog::makeImpl)
 (IndexCatalog* const this_,
  Collection* const collection,
@@ -97,7 +96,6 @@ MONGO_REGISTER_SHIM(IndexCatalog::prepareInsertDeleteOptions)
 (OperationContext* opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void {
     return IndexCatalogImpl::prepareInsertDeleteOptions(opCtx, desc, options);
 }
-}  // namespace
 
 using std::unique_ptr;
 using std::endl;

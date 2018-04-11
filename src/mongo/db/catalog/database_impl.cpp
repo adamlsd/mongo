@@ -931,7 +931,7 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
                       << " attempts due to namespace conflicts with existing collections.");
 }
 
-MONGO_REGISTER_STATIC_SHIM(Database, dropDatabase)(OperationContext* opCtx, Database* db)->void {
+MONGO_REGISTER_SHIM(Database::dropDatabase)(OperationContext* opCtx, Database* db)->void {
     return DatabaseImpl::dropDatabase(opCtx, db);
 }
 

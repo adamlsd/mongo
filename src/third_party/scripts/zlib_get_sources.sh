@@ -12,7 +12,7 @@ VERSION=1.2.11
 NAME=zlib
 TARBALL=${NAME}-${VERSION}.tar.gz
 TARBALL_DEST_DIR=${NAME}-${VERSION}
-DEST_DIR=`git rev-parse --show-toplevel`/src/third_party/${NAME}-${VERSION}
+DEST_DIR=$(git rev-parse --show-toplevel)/src/third_party/${NAME}-${VERSION}
 
 echo ${DEST_DIR}
 

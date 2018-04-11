@@ -33,6 +33,7 @@
 #include "mongo/db/session.h"
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
@@ -44,6 +45,7 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/retryable_writes_stats.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/transaction_history_iterator.h"
 #include "mongo/stdx/memory.h"
@@ -480,16 +482,29 @@ void Session::_beginOrContinueTxn(WithLock wl,
     // 'autocommit' field means we interpret this operation as part of a multi-document transaction.
     invariant(txnNumber > _activeTxnNumber);
     if (autocommit) {
+        // Start a multi-document transaction.
         invariant(*autocommit == false);
         uassert(ErrorCodes::NoSuchTransaction,
                 str::stream() << "Given transaction number " << txnNumber
                               << " does not match any in-progress transactions.",
                 startTransaction != boost::none);
 
+        // Check for FCV 4.0. The presence of an autocommit field distiguishes this as a
+        // multi-statement transaction vs a retryable write.
+        uassert(
+            50773,
+            str::stream() << "Transactions are only supported in featureCompatibilityVersion 4.0. "
+                          << "See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << " for more information.",
+            (serverGlobalParams.featureCompatibility.getVersion() ==
+             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40));
+
         _setActiveTxn(wl, txnNumber);
         _txnState = MultiDocumentTransactionState::kInProgress;
         _autocommit = false;
     } else {
+        // Execute a retryable write or snapshot read.
         invariant(startTransaction == boost::none);
         _setActiveTxn(wl, txnNumber);
         _autocommit = true;
@@ -599,7 +614,7 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     _txnResourceStash = TxnResources(opCtx);
 }
 
-void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
+void Session::unstashTransactionResources(OperationContext* opCtx) {
     if (opCtx->getClient()->isInDirectClient()) {
         return;
     }
@@ -629,12 +644,6 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
         uassert(ErrorCodes::NoSuchTransaction,
                 str::stream() << "Transaction " << *opCtx->getTxnNumber() << " has been aborted.",
                 _txnState != MultiDocumentTransactionState::kAborted);
-
-        // Cannot change committed transaction but allow retrying commitTransaction command.
-        uassert(ErrorCodes::TransactionCommitted,
-                str::stream() << "Transaction " << *opCtx->getTxnNumber() << " has been committed.",
-                cmdName == "commitTransaction" ||
-                    _txnState != MultiDocumentTransactionState::kCommitted);
 
         if (_txnResourceStash) {
             // Transaction resources already exist for this transaction.  Transfer them from the
@@ -765,7 +774,8 @@ void Session::commitTransaction(OperationContext* opCtx) {
     // and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    invariant(_txnState != MultiDocumentTransactionState::kCommitted);
+    if (_txnState == MultiDocumentTransactionState::kCommitted)
+        return;
     _commitTransaction(std::move(lk), opCtx);
 }
 

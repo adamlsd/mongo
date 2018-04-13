@@ -140,6 +140,7 @@ void shutdown(ServiceContext* srvContext) {
     // Close all open databases, shutdown storage engine and run all deinitializers.
     auto shutdownOpCtx = serviceContext->makeOperationContext(client);
     {
+        UninterruptibleLockGuard noInterrupt(shutdownOpCtx->lockState());
         Lock::GlobalLock lk(shutdownOpCtx.get(), MODE_X, Date_t::max());
         dbHolder().closeAll(shutdownOpCtx.get(), "shutdown");
 
@@ -167,11 +168,17 @@ void shutdown(ServiceContext* srvContext) {
 }
 
 
-ServiceContext* initialize(int argc, char* argv[], char** envp) {
+ServiceContext* initialize(const char* yaml_config) {
     srand(static_cast<unsigned>(curTimeMicros64()));
 
     setGlobalServiceContext(createServiceContext());
-    Status status = mongo::runGlobalInitializers(argc, argv, envp, getGlobalServiceContext());
+
+    // yaml_config is passed to the options parser through the argc/argv interface that already
+    // existed. If it is nullptr then use 0 count which will be interpreted as empty string.
+    const char* argv[2] = {yaml_config, nullptr};
+
+    Status status =
+        mongo::runGlobalInitializers(yaml_config ? 1 : 0, argv, nullptr, getGlobalServiceContext());
     uassertStatusOKWithContext(status, "Global initilization failed");
 
     Client::initThread("initandlisten");

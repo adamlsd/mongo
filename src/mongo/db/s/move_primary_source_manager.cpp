@@ -36,9 +36,11 @@
 #include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/s/shard_metadata_util.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/s/sharding_statistics.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/s/catalog/type_shard_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/grid.h"
 #include "mongo/util/exit.h"
@@ -46,6 +48,8 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+
+using namespace shardmetadatautil;
 
 MovePrimarySourceManager::MovePrimarySourceManager(OperationContext* opCtx,
                                                    ShardMovePrimary requestArgs,
@@ -116,8 +120,6 @@ Status MovePrimarySourceManager::clone(OperationContext* opCtx) {
             _clonedColls.push_back(NamespaceString(elem.String()));
         }
     }
-    _shardedCollectionsExistOnDb =
-        cloneCommandResponse.getValue().response["shardedCollectionsExistOnDb"].Bool();
 
     _state = kCloneCompleted;
     scopedGuard.Dismiss();
@@ -150,6 +152,25 @@ Status MovePrimarySourceManager::enterCriticalSection(OperationContext* opCtx) {
     }
 
     _state = kCriticalSection;
+
+    // Persist a signal to secondaries that we've entered the critical section. This will cause
+    // secondaries to refresh their routing table when next accessed, which will block behind the
+    // critical section. This ensures causal consistency by preventing a stale mongos with a cluster
+    // time inclusive of the move primary config commit update from accessing secondary data.
+    // Note: this write must occur after the critSec flag is set, to ensure the secondary refresh
+    // will stall behind the flag.
+    Status signalStatus =
+        updateShardDatabasesEntry(opCtx,
+                                  BSON(ShardDatabaseType::name() << getNss().toString()),
+                                  BSONObj(),
+                                  BSON(ShardDatabaseType::enterCriticalSectionCounter() << 1),
+                                  false /*upsert*/);
+    if (!signalStatus.isOK()) {
+        return {
+            ErrorCodes::OperationFailed,
+            str::stream() << "Failed to persist critical section signal for secondaries due to: "
+                          << signalStatus.toString()};
+    }
 
     log() << "movePrimary successfully entered critical section";
 
@@ -254,9 +275,6 @@ Status MovePrimarySourceManager::commitOnConfig(OperationContext* opCtx) {
                                   << "version also failed"));
     }
 
-    // TODO: SERVER-33099
-    // Attempt to force a refresh of database metadata
-
     _state = kCommitted;
 
     _cleanup(opCtx);
@@ -279,34 +297,14 @@ Status MovePrimarySourceManager::cleanStaleData(OperationContext* opCtx) {
     invariant(!opCtx->lockState()->isLocked());
     invariant(_state == kNeedCleanStaleData);
 
+    // Only drop the cloned (unsharded) collections.
     DBDirectClient client(opCtx);
-
-    if (!_shardedCollectionsExistOnDb) {
-        log() << "movePrimary dropping database on " << _fromShard << ", no sharded collections in "
-              << _dbname;
-
-        BSONObj dropDbResult;
-        client.runCommand(_dbname.toString(), BSON("dropDatabase" << 1), dropDbResult);
-
-        Status dropStatus = getStatusFromCommandResult(dropDbResult);
+    for (auto& coll : _clonedColls) {
+        BSONObj dropCollResult;
+        client.runCommand(_dbname.toString(), BSON("drop" << coll.coll()), dropCollResult);
+        Status dropStatus = getStatusFromCommandResult(dropCollResult);
         if (!dropStatus.isOK()) {
-            log() << "movePrimary could not drop the database " << _dbname << " on " << _fromShard;
-            return dropStatus;
-        }
-
-    } else {
-        // Sharded collections exist on the old primary, so drop only the cloned (unsharded)
-        // collections.
-        for (auto& coll : _clonedColls) {
-            log() << "dropping this collection: " << coll;
-            BSONObj dropCollResult;
-            client.runCommand(_dbname.toString(), BSON("drop" << coll.coll()), dropCollResult);
-
-            Status dropStatus = getStatusFromCommandResult(dropCollResult);
-            if (!dropStatus.isOK()) {
-                log() << "movePrimary could not drop the cloned collection" << coll << " on "
-                      << _fromShard;
-            }
+            log() << "failed to drop cloned collection " << coll << causedBy(redact(dropStatus));
         }
     }
 

@@ -594,7 +594,7 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash which sets up a WriteUnitOfWork.
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "find");
     ASSERT_EQUALS(originalLocker, opCtx()->lockState());
     ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
     ASSERT(opCtx()->getWriteUnitOfWork());
@@ -615,7 +615,7 @@ TEST_F(SessionTest, StashAndUnstashResources) {
 
     // Unstash the stashed resources. This restores the original Locker and RecoveryUnit to the
     // OperationContext.
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "find");
     ASSERT_EQUALS(originalLocker, opCtx()->lockState());
     ASSERT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
     ASSERT(opCtx()->getWriteUnitOfWork());
@@ -647,7 +647,7 @@ TEST_F(SessionTest, ReportStashedResources) {
     repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
 
     // Perform initial unstash which sets up a WriteUnitOfWork.
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "find");
     ASSERT(opCtx()->getWriteUnitOfWork());
 
     // Take a lock. This is expected in order to stash resources.
@@ -685,7 +685,7 @@ TEST_F(SessionTest, ReportStashedResources) {
 
     // Unstash the stashed resources. This restores the original Locker and RecoveryUnit to the
     // OperationContext.
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
     ASSERT(opCtx()->getWriteUnitOfWork());
 
     // With the resources unstashed, verify that the Session reports an empty stashed state.
@@ -752,7 +752,15 @@ TEST_F(SessionTest, AutocommitRequiredOnEveryTxnOp) {
     ASSERT(session.getAutocommit());
 
     const TxnNumber txnNum = 100;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
+
+    // We must have stashed transaction resources to do a second operation on the transaction.
+    session.unstashTransactionResources(opCtx(), "insert");
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
+    session.stashTransactionResources(opCtx());
 
     // Autocommit should be set to false
     ASSERT_FALSE(session.getAutocommit());
@@ -780,9 +788,17 @@ TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
     opCtx()->setLogicalSessionId(sessionId);
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
-    WriteUnitOfWork wuow(opCtx());
+
+    // We must have stashed transaction resources to re-open the transaction.
+    session.unstashTransactionResources(opCtx(), "insert");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
+    ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
+    session.stashTransactionResources(opCtx());
+
+    // Check the transaction operations before re-opening the transaction.
     ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
 
     // Re-opening the same transaction should have no effect.
@@ -799,7 +815,7 @@ TEST_F(SessionTest, AbortClearsStoredStatements) {
     opCtx()->setLogicalSessionId(sessionId);
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
     ASSERT_BSONOBJ_EQ(operation.toBSON(), session.transactionOperationsForTest()[0].toBSON());
@@ -822,7 +838,7 @@ TEST_F(SessionTest, EmptyTransactionCommit) {
     opCtx()->setLogicalSessionId(sessionId);
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
     // The transaction machinery cannot store an empty locker.
     Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now());
     session.commitTransaction(opCtx());
@@ -841,7 +857,7 @@ TEST_F(SessionTest, EmptyTransactionAbort) {
     opCtx()->setLogicalSessionId(sessionId);
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "abortTransaction");
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
     session.stashTransactionResources(opCtx());
@@ -863,7 +879,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
     session.abortArbitraryTransaction();
 
     // An unstash after an abort should uassert.
-    ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx()),
+    ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx(), "find"),
                        AssertionException,
                        ErrorCodes::NoSuchTransaction);
 }
@@ -878,7 +894,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
@@ -890,7 +906,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
     bumpTxnNumberFromDifferentOpCtx(&session, higherTxnNum);
 
     // An unstash after a migration that bumps the active transaction number should uassert.
-    ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx()),
+    ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx(), "insert"),
                        AssertionException,
                        ErrorCodes::ConflictingOperationInProgress);
 }
@@ -905,7 +921,7 @@ TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "find");
 
     // The transaction may be aborted without checking out the session.
     session.abortArbitraryTransaction();
@@ -924,7 +940,7 @@ TEST_F(SessionTest, ConcurrencyOfStashAndMigration) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
 
@@ -948,7 +964,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
     session.abortArbitraryTransaction();
@@ -970,7 +986,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndMigration) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "find");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
 
@@ -995,7 +1011,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
     session.abortArbitraryTransaction();
@@ -1016,7 +1032,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
 
@@ -1041,7 +1057,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
 
     // The transaction may be aborted without checking out the session.
     session.abortArbitraryTransaction();
@@ -1061,7 +1077,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
     opCtx()->setTxnNumber(txnNum);
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
-    session.unstashTransactionResources(opCtx());
+    session.unstashTransactionResources(opCtx(), "insert");
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
     session.addTransactionOperation(opCtx(), operation);
 

@@ -11,23 +11,28 @@
 
     const isMongos = db.runCommand({isdbgrid: 1}).isdbgrid;
 
-    // Test that a change stream cannot be opened on the "admin", "config", or "local" databases.
-    assertInvalidChangeStreamNss("admin");
-    assertInvalidChangeStreamNss("config");
+    // Drop and recreate the collections to be used in this set of tests.
+    assertDropAndRecreateCollection(db, "t1");
+    assertDropAndRecreateCollection(db, "t2");
+
+    // Test that a change stream cannot be opened on collections in the "admin", "config", or
+    // "local" databases.
+    assertInvalidChangeStreamNss("admin", "testColl");
+    assertInvalidChangeStreamNss("config", "testColl");
     // Not allowed to access 'local' database through mongos.
     if (!isMongos) {
-        assertInvalidChangeStreamNss("local");
+        assertInvalidChangeStreamNss("local", "testColl");
     }
 
     // Test that a change stream cannot be opened on 'system.' collections.
-    assertInvalidChangeStreamNss("test", "system.users");
-    assertInvalidChangeStreamNss("test", "system.profile");
-    assertInvalidChangeStreamNss("test", "system.version");
+    assertInvalidChangeStreamNss(db.getName(), "system.users");
+    assertInvalidChangeStreamNss(db.getName(), "system.profile");
+    assertInvalidChangeStreamNss(db.getName(), "system.version");
 
     // Test that a change stream can be opened on namespaces with 'system' in the name, but not
     // considered an internal 'system dot' namespace.
-    assertValidChangeStreamNss("test", "systemindexes");
-    assertValidChangeStreamNss("test", "system_users");
+    assertValidChangeStreamNss(db.getName(), "systemindexes");
+    assertValidChangeStreamNss(db.getName(), "system_users");
 
     // Similar test but for DB names that are not considered internal.
     assert.writeOK(db.getSiblingDB("admincustomDB")["test"].insert({}));
@@ -38,8 +43,6 @@
 
     assert.writeOK(db.getSiblingDB("_config_")["test"].insert({}));
     assertValidChangeStreamNss("_config_");
-
-    assertDropAndRecreateCollection(db, "t1");
 
     let cst = new ChangeStreamTest(db);
     let cursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: db.t1});
@@ -128,7 +131,6 @@
     cst.assertNextChangesEqual({cursor: cursor, expectedChanges: [expected]});
 
     jsTestLog("Testing intervening write on another collection");
-    assertDropCollection(db, "t2");
     cursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: db.t1});
     let t2cursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: db.t2});
     assert.writeOK(db.t2.insert({_id: 100, c: 1}));

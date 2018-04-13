@@ -5,6 +5,7 @@
     load("jstests/libs/change_stream_util.js");        // For ChangeStreamTest.
     load('jstests/replsets/libs/two_phase_drops.js');  // For 'TwoPhaseDropCollectionTest'.
     load("jstests/libs/collection_drop_recreate.js");  // For assert[Drop|Create]Collection.
+    load("jstests/libs/fixture_helpers.js");           // For FixtureHelpers.
 
     const testDB = db.getSiblingDB(jsTestName());
     let cst = new ChangeStreamTest(testDB);
@@ -46,18 +47,16 @@
     change = cst.getOneChange(aggCursor, false);
     const resumeToken = change._id;
 
-    // It should not possible to resume a change stream after a collection drop, even if the
-    // invalidate has not been received.
+    // For whole-db streams, it is possible to resume at a point before a collection is dropped,
+    // even if the invalidation has not been received on the original stream yet.
     assertDropCollection(testDB, collAgg.getName());
     // Wait for two-phase drop to complete, so that the UUID no longer exists.
     assert.soon(function() {
         return !TwoPhaseDropCollectionTest.collectionIsPendingDropInDatabase(testDB,
                                                                              collAgg.getName());
     });
-    assert.commandFailedWithCode(
-        testDB.runCommand(
-            {aggregate: 1, pipeline: [{$changeStream: {resumeAfter: resumeToken}}], cursor: {}}),
-        40615);
+    assert.commandWorked(testDB.runCommand(
+        {aggregate: 1, pipeline: [{$changeStream: {resumeAfter: resumeToken}}], cursor: {}}));
 
     // Test that invalidation entries for other databases are filtered out.
     const otherDB = testDB.getSiblingDB("change_stream_whole_db_invalidations_other");
@@ -79,19 +78,27 @@
     assert.eq(change.operationType, "insert", tojson(change));
     assert.eq(change.documentKey._id, 1);
 
+    // Test that renaming a collection will invalidate the change stream. MongoDB does not allow
+    // renaming of sharded collections, so only perform this test if the collection is not sharded.
+    if (!FixtureHelpers.isSharded(coll)) {
+        assertDropCollection(testDB, coll.getName());
+
+        assertCreateCollection(testDB, coll.getName());
+        assertDropCollection(testDB, "renamed_coll");
+        aggCursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: 1});
+        assert.writeOK(coll.renameCollection("renamed_coll"));
+        cst.assertNextChangesEqual({
+            cursor: aggCursor,
+            expectedChanges: [{operationType: "invalidate"}],
+            expectInvalidate: true
+        });
+    }
+
     // Dropping a collection should invalidate the change stream.
     assertDropCollection(testDB, coll.getName());
-    cst.assertNextChangesEqual({
-        cursor: aggCursor,
-        expectedChanges: [{operationType: "invalidate"}],
-        expectInvalidate: true
-    });
-
-    // Renaming a collection should invalidate the change stream.
-    assertCreateCollection(testDB, coll.getName());
-    assertDropCollection(testDB, "renamed_coll");
     aggCursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: 1});
-    assert.writeOK(coll.renameCollection("renamed_coll"));
+    assertCreateCollection(testDB, coll.getName());
+    assertDropCollection(testDB, coll.getName());
     cst.assertNextChangesEqual({
         cursor: aggCursor,
         expectedChanges: [{operationType: "invalidate"}],

@@ -28,6 +28,8 @@ selector:
   - jstests/sharding/safe_secondary_reads_single_migration_waitForDelete.js
   - jstests/sharding/move_primary_basic.js
   - jstests/sharding/movePrimary1.js
+  - jstests/sharding/mongos_validate_writes.js
+  - jstests/sharding/resume_change_stream_on_subset_of_shards.js
   # Requires fix to SERVER-31689
   - jstests/sharding/aggregation_currentop.js
   #### End "Enable when 4.0 becomes last stable"
@@ -38,8 +40,6 @@ selector:
   - jstests/sharding/crash_mongos_against_upgraded_cluster.js
   # New failpoint in v4.0 mongod.
   - jstests/sharding/move_primary_clone_test.js
-  # New failpoint in v4.0 config server.
-  - jstests/sharding/check_db_version_persisted.js
   # New waitForClusterTime
   - jstests/sharding/auth_slaveok_routing.js
   # This test should not be run with a mixed cluster environment.
@@ -55,6 +55,10 @@ selector:
   # New 4.0 feature
   - jstests/sharding/snapshot_aggregate_mongos.js
   - jstests/sharding/snapshot_find_mongos.js
+  - jstests/sharding/change_stream_lookup_single_shard_cluster.js
+  - jstests/sharding/change_streams_unsharded_becomes_sharded.js
+  - jstests/sharding/change_streams_whole_db.js
+  - jstests/sharding/lookup_change_stream_post_image_compound_shard_key.js
   - jstests/sharding/resume_change_stream.js
   # Requires count command to be accurate on sharded clusters, introduced in v4.0.
   - jstests/sharding/accurate_count_with_predicate.js

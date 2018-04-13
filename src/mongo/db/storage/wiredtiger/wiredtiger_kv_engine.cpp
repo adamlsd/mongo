@@ -377,8 +377,9 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     ss << "config_base=false,";
     ss << "statistics=(fast),";
 
-    // We are still using MongoDB's cursor cache, don't double up.
-    ss << "cache_cursors=false,";
+    if (!WiredTigerSessionCache::isEngineCachingCursors()) {
+        ss << "cache_cursors=false,";
+    }
 
     // The setting may have a later setting override it if not using the journal.  We make it
     // unconditional here because even nojournal may need this setting if it is a transition
@@ -435,6 +436,14 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
     log() << "wiredtiger_open config: " << config;
     _wtOpenConfig = config;
     int ret = wiredtiger_open(path.c_str(), &_eventHandler, config.c_str(), &_conn);
+    // Invalid argument (EINVAL) is usually caused by invalid configuration string.
+    // We still fassert() but without a stack trace.
+    if (ret == EINVAL) {
+        fassertFailedNoTrace(28561);
+    } else if (ret != 0) {
+        Status s(wtRCToStatus(ret));
+        msgasserted(28595, s.reason());
+    }
 
     {
         char buf[(2 * 8 /*bytes in hex*/) + 1 /*nul terminator*/];
@@ -444,15 +453,6 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         fassert(50758, parseNumberFromStringWithBase(buf, 16, &tmp));
         _recoveryTimestamp = Timestamp(tmp);
         LOG_FOR_RECOVERY(2) << "WiredTiger recoveryTimestamp. Ts: " << _recoveryTimestamp;
-    }
-
-    // Invalid argument (EINVAL) is usually caused by invalid configuration string.
-    // We still fassert() but without a stack trace.
-    if (ret == EINVAL) {
-        fassertFailedNoTrace(28561);
-    } else if (ret != 0) {
-        Status s(wtRCToStatus(ret));
-        msgasserted(28595, s.reason());
     }
 
     _sessionCache.reset(new WiredTigerSessionCache(this));

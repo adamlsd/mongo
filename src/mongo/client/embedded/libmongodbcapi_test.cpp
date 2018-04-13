@@ -30,6 +30,7 @@
 #include "mongo/client/embedded/libmongodbcapi.h"
 
 #include <set>
+#include <yaml-cpp/yaml.h>
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/json.h"
@@ -70,17 +71,20 @@ protected:
         if (!globalTempDir) {
             globalTempDir = mongo::stdx::make_unique<mongo::unittest::TempDir>("embedded_mongo");
         }
-        const char* argv[] = {"mongo_embedded_capi_test",
-                              "--port",
-                              "0",
-                              "--storageEngine",
-                              "mobile",
-                              "--dbpath",
-                              globalTempDir->path().c_str()};
-        db = libmongodbcapi_db_new(global_lib_handle, 7, argv, nullptr);
-        massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_what(libmongodbcapi_lib_get_status(global_lib_handle)),
-                db != nullptr);
+
+        YAML::Emitter yaml;
+        yaml << YAML::BeginMap;
+
+        yaml << YAML::Key << "storage";
+        yaml << YAML::Value << YAML::BeginMap;
+        yaml << YAML::Key << "dbPath";
+        yaml << YAML::Value << globalTempDir->path();
+        yaml << YAML::EndMap;  // storage
+
+        yaml << YAML::EndMap;
+
+        db = libmongodbcapi_db_new(yaml.c_str());
+        ASSERT(db != nullptr);
     }
 
     void tearDown() {
@@ -428,8 +432,7 @@ TEST_F(MongodbCAPITest, InsertAndUpdate) {
 // This test is temporary to make sure that only one database can be created
 // This restriction may be relaxed at a later time
 TEST_F(MongodbCAPITest, CreateMultipleDBs) {
-    libmongodbcapi_lib* lib = global_lib_handle;
-    libmongodbcapi_db* db2 = libmongodbcapi_db_new(lib, 0, nullptr, nullptr);
+    libmongodbcapi_db* db2 = libmongodbcapi_db_new(nullptr);
     ASSERT(db2 == nullptr);
     ASSERT_EQUALS(libmongodbcapi_status_get_error(libmongodbcapi_lib_get_status(lib)),
                   LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN);
@@ -463,16 +466,52 @@ int main(int argc, char** argv, char** envp) {
     ::mongo::serverGlobalParams.noUnixSocket = true;
     ::mongo::unittest::setupTestLogger();
 
-    global_lib_handle = libmongodbcapi_init(nullptr);
-    massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_what(libmongodbcapi_process_get_status()),
-            global_lib_handle != nullptr);
+    // Check so we can initialize the library without providing init params
+    int init = libmongodbcapi_init(nullptr);
+    if (init != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_init() failed with " << init << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    int fini = libmongodbcapi_fini();
+    if (fini != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with " << fini << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    // Initialize the library with a log callback and test so we receive at least one callback
+    // during the lifetime of the test
+    libmongodbcapi_init_params params;
+    memset(&params, 0, sizeof(params));
+
+    bool receivedCallback = false;
+    params.log_flags = LIBMONGODB_CAPI_LOG_STDOUT | LIBMONGODB_CAPI_LOG_CALLBACK;
+    params.log_callback = [](void* user_data,
+                             const char* message,
+                             const char* component,
+                             const char* context,
+                             int severety) {
+        ASSERT(message);
+        ASSERT(component);
+        *reinterpret_cast<bool*>(user_data) = true;
+    };
+    params.log_user_data = &receivedCallback;
+
+    init = libmongodbcapi_init(&params);
+    if (init != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_init() failed with " << init << std::endl;
+        return EXIT_FAILURE;
+    }
 
     ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
-    massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_what(libmongodbcapi_process_get_status()),
-            libmongodbcapi_fini(global_lib_handle) == LIBMONGODB_CAPI_SUCCESS);
+    fini = libmongodbcapi_fini();
+    if (fini != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with " << fini << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    ASSERT(receivedCallback);
 
     globalTempDir.reset();
 }

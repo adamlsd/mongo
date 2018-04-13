@@ -295,6 +295,7 @@ env.Library(
         'db/commands/mongod_fcv',
         'db/dbdirectclient',
         'db/ftdc/ftdc_mongod',
+        'db/free_mon/free_mon_mongod',
         'db/index_d',
         'db/initialize_snmp',
         'db/keys_collection_client_direct',
@@ -303,6 +304,7 @@ env.Library(
         'db/mongod_options',
         'db/mongodandmongos',
         'db/op_observer_d',
+        'db/periodic_runner_job_abort_expired_transactions',
         'db/query_exec',
         'db/repair_database',
         'db/repair_database_and_check_version',
@@ -371,26 +373,6 @@ else:
 
 # tools
 rewrittenTools = [ "mongodump", "mongorestore", "mongoexport", "mongoimport", "mongostat", "mongotop", "bsondump", "mongofiles" ]
-
-# mongoperf
-mongoperf = env.Program(
-    target="mongoperf",
-    source=[
-        "client/examples/mongoperf.cpp",
-    ] + env.WindowsResourceFile("client/examples/mongoperf.rc"),
-    LIBDEPS=[
-        "base",
-        "db/serveronly",
-        "db/storage/mmap_v1/logfile",
-        "db/storage/mmap_v1/mmap",
-    ],
-    INSTALL_ALIAS=[
-        'tools',
-    ],
-)
-
-if not hygienic:
-    env.Install('#/', mongoperf)
 
 if env.TargetOSIs('windows'):
     generatedServerManifest = env.Substfile(
@@ -632,9 +614,7 @@ if has_option("use-new-tools"):
         installExternalBinary(env, "%s/%s" % (toolsRoot, "mongoreplay"))
 
 # legacy tools
-installBinary(env, "mongoperf")
 if not hygienic:
-    env.Alias("tools", '#/' + add_exe("mongoperf"))
     env.Alias("tools", "#/" + add_exe("mongobridge"))
 
 installBinary( env, "mongod" )

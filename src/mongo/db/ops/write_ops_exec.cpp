@@ -85,6 +85,7 @@ namespace {
 MONGO_FP_DECLARE(failAllInserts);
 MONGO_FP_DECLARE(failAllUpdates);
 MONGO_FP_DECLARE(failAllRemoves);
+MONGO_FP_DECLARE(hangDuringBatchInsert);
 
 void updateRetryStats(OperationContext* opCtx, bool containsRetry) {
     if (containsRetry) {
@@ -119,10 +120,24 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
         const bool shouldSample =
             curOp->completeAndLogOperation(opCtx, MONGO_LOG_DEFAULT_COMPONENT);
 
-        // Do not profile individual statements in a write command if we are in a transaction.
         auto session = OperationContextSession::get(opCtx);
-        if (curOp->shouldDBProfile(shouldSample) &&
-            !(session && session->inSnapshotReadOrMultiDocumentTransaction())) {
+        if (curOp->shouldDBProfile(shouldSample)) {
+            boost::optional<Session::TxnResources> txnResources;
+            if (session && session->inSnapshotReadOrMultiDocumentTransaction()) {
+                // Stash the current transaction so that writes to the profile collection are not
+                // done as part of the transaction. This must be done under the client lock, since
+                // we are modifying 'opCtx'.
+                stdx::lock_guard<Client> clientLock(*opCtx->getClient());
+                txnResources = Session::TxnResources(opCtx);
+            }
+            ON_BLOCK_EXIT([&] {
+                if (txnResources) {
+                    // Restore the transaction state onto 'opCtx'. This must be done under the
+                    // client lock, since we are modifying 'opCtx'.
+                    stdx::lock_guard<Client> clientLock(*opCtx->getClient());
+                    txnResources->release(opCtx);
+                }
+            });
             profile(opCtx, CurOp::get(opCtx)->getNetworkOp());
         }
     } catch (const DBException& ex) {
@@ -368,7 +383,9 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
     boost::optional<AutoGetCollection> collection;
     auto acquireCollection = [&] {
         while (true) {
-            opCtx->checkForInterrupt();
+            if (MONGO_FAIL_POINT(hangDuringBatchInsert)) {
+                MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangDuringBatchInsert);
+            }
 
             if (MONGO_FAIL_POINT(failAllInserts)) {
                 uasserted(ErrorCodes::InternalError, "failAllInserts failpoint active!");
@@ -606,7 +623,6 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
 
     boost::optional<AutoGetCollection> collection;
     while (true) {
-        opCtx->checkForInterrupt();
         if (MONGO_FAIL_POINT(failAllUpdates)) {
             uasserted(ErrorCodes::InternalError, "failAllUpdates failpoint active!");
         }
@@ -761,8 +777,6 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
 
     ParsedDelete parsedDelete(opCtx, &request);
     uassertStatusOK(parsedDelete.parseRequest());
-
-    opCtx->checkForInterrupt();
 
     if (MONGO_FAIL_POINT(failAllRemoves)) {
         uasserted(ErrorCodes::InternalError, "failAllRemoves failpoint active!");

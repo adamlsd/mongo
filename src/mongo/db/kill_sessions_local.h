@@ -30,6 +30,9 @@
 
 #include "mongo/db/session_killer.h"
 
+/**
+ * Mongod local kill session / transaction functionality library.
+ */
 namespace mongo {
 
 /**
@@ -44,5 +47,10 @@ SessionKiller::Result killSessionsLocal(OperationContext* opCtx,
  */
 void killSessionsLocalKillTransactions(OperationContext* opCtx,
                                        const SessionKiller::Matcher& matcher);
+
+/**
+ * Aborts any expired transactions.
+ */
+void killAllExpiredTransactions(OperationContext* opCtx);
 
 }  // namespace mongo

@@ -116,6 +116,27 @@ public:
      */
     void checkForInterrupt();
 
+    /**
+     * Returns true if this is a collectionless aggregation on the specified database.
+     */
+    bool isDBAggregation(StringData dbName) const {
+        return ns.db() == dbName && ns.isCollectionlessAggregateNS();
+    }
+
+    /**
+     * Returns true if this is a collectionless aggregation on the 'admin' database.
+     */
+    bool isClusterAggregation() const {
+        return ns.isAdminDB() && ns.isCollectionlessAggregateNS();
+    }
+
+    /**
+     * Returns true if this aggregation is running on a single, specific namespace.
+     */
+    bool isSingleNamespaceAggregation() const {
+        return !ns.isCollectionlessAggregateNS();
+    }
+
     const CollatorInterface* getCollator() const {
         return _collator;
     }

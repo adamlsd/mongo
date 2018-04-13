@@ -29,7 +29,7 @@
 #define LIBMONGODBCAPI_H
 
 #include <stddef.h>
-#include <string>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +47,21 @@ typedef struct libmongodbcapi_lib libmongodbcapi_lib;
 typedef struct libmongodbcapi_db libmongodbcapi_db;
 typedef struct libmongodbcapi_client libmongodbcapi_client;
 
+/**
+ * Log callback. For details on what the parameters mean,
+ * see the documentation at https://docs.mongodb.com/manual/reference/log-messages/
+ *
+ * Severity values, lower means more severe.
+ * Severe/Fatal = -4
+ * Error = -3
+ * Warning = -2
+ * Info = -1
+ * Log = 0
+ * Debug = 1 to 5
+ */
+typedef void (*libmongodbcapi_log_callback)(
+    void* user_data, const char* message, const char* component, const char* context, int severity);
+
 typedef enum {
     LIBMONGODB_CAPI_ERROR_UNKNOWN = -1,
     LIBMONGODB_CAPI_SUCCESS = 0,
@@ -62,13 +77,56 @@ typedef enum {
 } libmongodbcapi_error;
 
 /**
+ * Allocate an API-return-status buffer.
  * @return Returns a pointer to a newly allocated `libmongodbcapi_status` object which will hold
  * details of any failures of operations to which it was passed.
  * @return `NULL` when construction of a `libmongodbcapi_status` object fails.  `errno` will be set
  * with an appropriate error code, in this case.
+ * @note Allocation of an Embedded MongoDB Status buffer should rarely fail, except for out-of-memory reasons.
  */
 libmongodbcapi_status* libmongodbcapi_allocate_status();
 
+/**
+ * Valid bits for the log_flags bitfield in libmongodbcapi_init_params.
+ */
+typedef enum {
+    /** Placeholder for no logging */
+    LIBMONGODB_CAPI_LOG_NONE = 0,
+
+    /** Logs to stdout */
+    LIBMONGODB_CAPI_LOG_STDOUT = 1,
+
+    /** Logs to stderr (not supported yet) */
+    // LIBMONGODB_CAPI_LOG_STDERR = 2,
+
+    /** Logs via log callback that must be provided when this bit is set. */
+    LIBMONGODB_CAPI_LOG_CALLBACK = 4
+} libmongodbcapi_log_flags;
+
+typedef struct {
+    /**
+     * Optional null-terminated YAML formatted MongoDB configuration string.
+     * See documentation for valid options.
+     */
+    const char* yaml_config;
+
+    /**
+     * Bitfield of log destinations, accepts values from libmongodbcapi_log_flags.
+     * Default is stdout.
+     */
+    uint64_t log_flags;
+
+    /**
+     * Optional log callback to the mongodbcapi library, it is not allowed to reentry the
+     * mongodbcapi library from the callback.
+     */
+    libmongodbcapi_log_callback log_callback;
+
+    /**
+     * Optional user data to be returned in the log callback.
+     */
+    void* log_user_data;
+} libmongodbcapi_init_params;
 
 /**
  * Frees the storage associated with a valid `libmongodbcapi_status` object.
@@ -77,8 +135,8 @@ libmongodbcapi_status* libmongodbcapi_allocate_status();
  * @note This function does not report failures.
  * @note This function exhibits undefined behavior unless is its preconditions are met.
  */
-
 void libmongodbcapi_destroy_status(libmongodbcapi_status* status);
+
 
 /**
  * Get an error code from a `libmongodbcapi_status` object.
@@ -88,7 +146,6 @@ void libmongodbcapi_destroy_status(libmongodbcapi_status* status);
  * `status`, therefore if the failing function returned a `libmongodbcapi_error` value, then calling
  * this function is superfluous.
  */
-
 int libmongodbcapi_status_get_error(const libmongodbcapi_status* status);
 
 /**
@@ -98,7 +155,6 @@ int libmongodbcapi_status_get_error(const libmongodbcapi_status* status);
  * @note For failures where the `libmongodbcapi_error == LIBMONGODB_CAPI_ERROR_EXCEPTION`, this
  * returns a string representation of the exception
  */
-
 const char* libmongodbcapi_status_get_what(const libmongodbcapi_status* status);
 
 /**
@@ -108,15 +164,14 @@ const char* libmongodbcapi_status_get_what(const libmongodbcapi_status* status);
  * exception was of type `mongo::DBException`, this returns the numeric code indicating which
  * specific `mongo::DBException` was thrown
  */
-
 int libmongodbcapi_status_get_code(const libmongodbcapi_status* status);
 
 /**
  * Initializes the mongodbcapi library, required before any other call. Cannot be called again
  * without libmongodbcapi_fini() being called first.
  *
- * @param yaml_config Null-terminated YAML formatted MongoDB configuration. See documentation for
- * valid options.
+ * @param params pointer to libmongodbcapi_init_params containing library initialization parameters.
+ * A default configuration will be used if `params == NULL`.
  * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
  * this function reports a failure.
  *
@@ -125,7 +180,7 @@ int libmongodbcapi_status_get_code(const libmongodbcapi_status* status);
  * @return Returns a pointer to a libmongodbcapi_lib on success.
  * @return `NULL` and modifies `status` on failure.
  */
-libmongodbcapi_lib* libmongodbcapi_init(const char* yaml_config, libmongodbcapi_status* status);
+libmongodbcapi_lib*libmongodbcapi_init(const libmongodbcapi_init_params* params, libmongodbcapi_status* status);
 
 /**
  * Tears down the state of the library, all databases must be closed before calling this.
@@ -154,20 +209,14 @@ int libmongodbcapi_fini(libmongodbcapi_lib* lib, libmongodbcapi_status* status);
 /**
  * Creates an embedded MongoDB instance and returns a handle with the service context.
  *
- * @param argc The number of arguments in `argv`.
- * @param argv The arguments that will be passed to mongod at startup to initialize state.
- * @param envp Environment variables that will be passed to mongod at startup to initilize state.
+ * @param yaml_config A null-terminated YAML formatted MongoDB configuration. See documentation for valid options.
  * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
  * this function reports a failure.
  *
  * @return A pointer to a `libmongdbcapi_db` handle.
  * @return `NULL` and modifies `status` on failure.
 */
-libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib,
-                                         int argc,
-                                         const char** argv,
-                                         const char** envp,
-                                         libmongodbcapi_status* status);
+libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib, const char* yaml_config, libmongodbcapi_status* status);
 
 /**
  * Shuts down an embedded MongoDB instance.

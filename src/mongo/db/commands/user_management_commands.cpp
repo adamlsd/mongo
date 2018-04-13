@@ -666,13 +666,6 @@ Status buildCredentials(BSONObjBuilder* builder, const auth::CreateOrUpdateUserA
     }
 
     if (buildSCRAMSHA256) {
-        const auto swPreppedName = saslPrep(args.userName.getUser());
-        if (!swPreppedName.isOK() || (swPreppedName.getValue() != args.userName.getUser())) {
-            return {
-                ErrorCodes::BadValue,
-                "Username must be normalized according to SASLPREP rules when using SCRAM-SHA-256"};
-        }
-
         // FCV check is deferred till this point so that the suitability checks can be performed
         // regardless.
         const auto fcv = serverGlobalParams.featureCompatibility.getVersion();
@@ -1359,7 +1352,7 @@ public:
             return CommandHelpers::appendCommandStatus(result, status);
         }
 
-        if ((args.allForDB || args.filter) &&
+        if ((args.target != auth::UsersInfoArgs::Target::kExplicitUsers || args.filter) &&
             (args.showPrivileges ||
              args.authenticationRestrictionsFormat == AuthenticationRestrictionsFormat::kShow)) {
             return CommandHelpers::appendCommandStatus(
@@ -1370,8 +1363,9 @@ public:
         }
 
         BSONArrayBuilder usersArrayBuilder;
-        if (args.showPrivileges ||
-            args.authenticationRestrictionsFormat == AuthenticationRestrictionsFormat::kShow) {
+        if (args.target == auth::UsersInfoArgs::Target::kExplicitUsers &&
+            (args.showPrivileges ||
+             args.authenticationRestrictionsFormat == AuthenticationRestrictionsFormat::kShow)) {
             // If you want privileges or restrictions you need to call getUserDescription on each
             // user.
             for (size_t i = 0; i < args.userNames.size(); ++i) {
@@ -1416,7 +1410,9 @@ public:
             // If you don't need privileges, or authenticationRestrictions, you can just do a
             // regular query on system.users
             std::vector<BSONObj> pipeline;
-            if (args.allForDB) {
+            if (args.target == auth::UsersInfoArgs::Target::kGlobal) {
+                // Leave the pipeline unconstrained, we want to return every user.
+            } else if (args.target == auth::UsersInfoArgs::Target::kDB) {
                 pipeline.push_back(
                     BSON("$match" << BSON(AuthorizationManager::USER_DB_FIELD_NAME << dbname)));
             } else {

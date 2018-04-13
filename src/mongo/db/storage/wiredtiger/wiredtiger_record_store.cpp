@@ -782,7 +782,7 @@ int64_t WiredTigerRecordStore::storageSize(OperationContext* opCtx,
     if (_isEphemeral) {
         return dataSize(opCtx);
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn();
     StatusWith<int64_t> result =
         WiredTigerUtil::getStatisticsValueAs<int64_t>(session->getSession(),
                                                       "statistics:" + getURI(),
@@ -923,8 +923,8 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
         checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit());
     invariant(realRecoveryUnit);
     WiredTigerSessionCache* sc = realRecoveryUnit->getSessionCache();
-    OperationContext::RecoveryUnitState const realRUstate =
-        opCtx->setRecoveryUnit(new WiredTigerRecoveryUnit(sc), OperationContext::kNotInUnitOfWork);
+    WriteUnitOfWork::RecoveryUnitState const realRUstate = opCtx->setRecoveryUnit(
+        new WiredTigerRecoveryUnit(sc), WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
 
@@ -1011,11 +1011,17 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
             WiredTigerCursor startWrap(_uri, _tableId, true, opCtx);
             WT_CURSOR* truncateStart = startWrap.get();
 
-            // If we know where the start point is, set it for the truncate
             if (savedFirstKey != 0) {
+                // If we know where the start point is, set it for the truncate
                 setKey(truncateStart, RecordId(savedFirstKey));
             } else {
-                truncateStart = NULL;
+                // Position at the first record.  This is equivalent to
+                // providing a NULL argument to WT_SESSION->truncate, but
+                // in that case, truncate will need to open its own cursor.
+                // Since we already have a cursor, we can use it here to
+                // make the whole operation faster.
+                ret = WT_READ_CHECK(truncateStart->next(truncateStart));
+                invariantWTOK(ret);
             }
             ret = session->truncate(session, NULL, truncateStart, truncateEnd, NULL);
 
@@ -1495,7 +1501,7 @@ void WiredTigerRecordStore::appendCustomStats(OperationContext* opCtx,
         result->appendIntOrLL("sleepCount", _cappedSleep.load());
         result->appendIntOrLL("sleepMS", _cappedSleepMS.load());
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn();
     WT_SESSION* s = session->getSession();
     BSONObjBuilder bob(result->subobjStart(_engineName));
     {

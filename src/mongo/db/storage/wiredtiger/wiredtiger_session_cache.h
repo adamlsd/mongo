@@ -108,6 +108,14 @@ public:
         return _cursorsOut;
     }
 
+    bool isDropQueuedIdentsAtSessionEndAllowed() const {
+        return _dropQueuedIdentsAtSessionEnd;
+    }
+
+    void dropQueuedIdentsAtSessionEndAllowed(bool dropQueuedIdentsAtSessionEnd) {
+        _dropQueuedIdentsAtSessionEnd = dropQueuedIdentsAtSessionEnd;
+    }
+
     static uint64_t genTableId();
 
     /**
@@ -138,6 +146,7 @@ private:
     CursorCache _cursors;            // owned
     uint64_t _cursorGen;
     int _cursorsOut;
+    bool _dropQueuedIdentsAtSessionEnd = true;
 };
 
 /**
@@ -157,6 +166,11 @@ public:
     public:
         void operator()(WiredTigerSession* session) const;
     };
+
+    /**
+     * Indicates that WiredTiger should be configured to cache cursors.
+     */
+    static bool isEngineCachingCursors();
 
     /**
      * Returns a smart pointer to a previously released session for reuse, or creates a new session.

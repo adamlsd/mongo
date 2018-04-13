@@ -33,6 +33,7 @@
 #include "mongo/db/session.h"
 
 #include "mongo/db/catalog/index_catalog.h"
+#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
@@ -44,6 +45,8 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/retryable_writes_stats.h"
+#include "mongo/db/server_options.h"
+#include "mongo/db/server_parameters.h"
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/db/transaction_history_iterator.h"
 #include "mongo/stdx/memory.h"
@@ -54,6 +57,36 @@
 #include "mongo/util/net/sock.h"
 
 namespace mongo {
+
+// Server parameter that dictates the lifetime given to each transaction.
+// Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
+server_parameter_storage_type<int, ServerParameterType::kStartupAndRuntime>::value_type
+    transactionLifetimeLimitSeconds(60);
+
+/**
+ * Implements a validation function for server parameter 'transactionLifetimeLimitSeconds'
+ * instantiated above. 'transactionLifetimeLimitSeconds' can only be set to >= 1.
+ */
+class ExportedTransactionLifetimeLimitSeconds
+    : public ExportedServerParameter<std::int32_t, ServerParameterType::kStartupAndRuntime> {
+public:
+    ExportedTransactionLifetimeLimitSeconds()
+        : ExportedServerParameter<std::int32_t, ServerParameterType::kStartupAndRuntime>(
+              ServerParameterSet::getGlobal(),
+              "transactionLifetimeLimitSeconds",
+              &transactionLifetimeLimitSeconds) {}
+
+    Status validate(const std::int32_t& potentialNewValue) override {
+        if (potentialNewValue < 1) {
+            return Status(ErrorCodes::BadValue,
+                          "transactionLifetimeLimitSeconds must be greater than or equal to 1s");
+        }
+
+        return Status::OK();
+    }
+
+} exportedTransactionLifetimeLimitSeconds;
+
 namespace {
 
 void fassertOnRepeatedExecution(const LogicalSessionId& lsid,
@@ -72,6 +105,7 @@ void fassertOnRepeatedExecution(const LogicalSessionId& lsid,
 struct ActiveTransactionHistory {
     boost::optional<SessionTxnRecord> lastTxnRecord;
     Session::CommittedStatementTimestampMap committedStatements;
+    bool transactionCommitted{false};
     bool hasIncompleteHistory{false};
 };
 
@@ -119,6 +153,12 @@ ActiveTransactionHistory fetchActiveTransactionHistory(OperationContext* opCtx,
                                            *entry.getStatementId(),
                                            existingOpTime,
                                            entry.getOpTime());
+            }
+
+            // applyOps oplog entry marks the commit of a transaction.
+            if (entry.isCommand() &&
+                entry.getCommandType() == repl::OplogEntry::CommandType::kApplyOps) {
+                result.transactionCommitted = true;
             }
         } catch (const DBException& ex) {
             if (ex.code() == ErrorCodes::IncompleteTransactionHistory) {
@@ -258,6 +298,9 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
                 _activeTxnNumber = _lastWrittenSessionRecord->getTxnNum();
                 _activeTxnCommittedStatements = std::move(activeTxnHistory.committedStatements);
                 _hasIncompleteHistory = activeTxnHistory.hasIncompleteHistory;
+                if (activeTxnHistory.transactionCommitted) {
+                    _txnState = MultiDocumentTransactionState::kCommitted;
+                }
             }
 
             break;
@@ -469,6 +512,15 @@ void Session::_beginOrContinueTxn(WithLock wl,
                 ErrorCodes::InvalidOptions,
                 "Must specify autocommit=false on all operations of a multi-statement transaction.",
                 autocommit == boost::optional<bool>(false));
+            if (_txnState == MultiDocumentTransactionState::kInProgress && !_txnResourceStash) {
+                // This indicates that the first command in the transaction failed but did not
+                // implicitly abort the transaction. It is not safe to continue the transaction, in
+                // particular because we have not saved the readConcern from the first statement of
+                // the transaction.
+                _abortTransaction(wl);
+                uasserted(ErrorCodes::NoSuchTransaction,
+                          str::stream() << "Transaction " << txnNumber << " has been aborted.");
+            }
         }
         return;
     }
@@ -480,16 +532,31 @@ void Session::_beginOrContinueTxn(WithLock wl,
     // 'autocommit' field means we interpret this operation as part of a multi-document transaction.
     invariant(txnNumber > _activeTxnNumber);
     if (autocommit) {
+        // Start a multi-document transaction.
         invariant(*autocommit == false);
         uassert(ErrorCodes::NoSuchTransaction,
                 str::stream() << "Given transaction number " << txnNumber
                               << " does not match any in-progress transactions.",
                 startTransaction != boost::none);
 
+        // Check for FCV 4.0. The presence of an autocommit field distiguishes this as a
+        // multi-statement transaction vs a retryable write.
+        uassert(
+            50773,
+            str::stream() << "Transactions are only supported in featureCompatibilityVersion 4.0. "
+                          << "See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << " for more information.",
+            (serverGlobalParams.featureCompatibility.getVersion() ==
+             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40));
+
         _setActiveTxn(wl, txnNumber);
-        _txnState = MultiDocumentTransactionState::kInProgress;
         _autocommit = false;
+        _txnState = MultiDocumentTransactionState::kInProgress;
+        _transactionExpireDate =
+            Date_t::now() + stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()};
     } else {
+        // Execute a retryable write or snapshot read.
         invariant(startTransaction == boost::none);
         _setActiveTxn(wl, txnNumber);
         _autocommit = true;
@@ -510,7 +577,7 @@ void Session::_checkTxnValid(WithLock, TxnNumber txnNumber) const {
 }
 
 Session::TxnResources::TxnResources(OperationContext* opCtx) {
-    opCtx->getWriteUnitOfWork()->release();
+    _ruState = opCtx->getWriteUnitOfWork()->release();
     opCtx->setWriteUnitOfWork(nullptr);
 
     _locker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
@@ -518,7 +585,7 @@ Session::TxnResources::TxnResources(OperationContext* opCtx) {
 
     _recoveryUnit = std::unique_ptr<RecoveryUnit>(opCtx->releaseRecoveryUnit());
     opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
-                           OperationContext::kNotInUnitOfWork);
+                           WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     _readConcernArgs = repl::ReadConcernArgs::get(opCtx);
 }
@@ -536,11 +603,6 @@ Session::TxnResources::~TxnResources() {
 
 void Session::TxnResources::release(OperationContext* opCtx) {
     // Perform operations that can fail the release before marking the TxnResources as released.
-    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    uassert(ErrorCodes::InvalidOptions,
-            "Only the first command in a transaction may specify a readConcern",
-            readConcernArgs.isEmpty());
-
     _locker->reacquireTicket(opCtx);
 
     invariant(!_released);
@@ -553,11 +615,11 @@ void Session::TxnResources::release(OperationContext* opCtx) {
     opCtx->swapLockState(std::move(_locker));
 
     opCtx->setRecoveryUnit(_recoveryUnit.release(),
-                           OperationContext::RecoveryUnitState::kNotInUnitOfWork);
+                           WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
-    opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx));
+    opCtx->setWriteUnitOfWork(WriteUnitOfWork::createForSnapshotResume(opCtx, _ruState));
 
-    // 'readConcernArgs' is a mutable reference to the ReadConcernArgs decoration on opCtx.
+    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
     readConcernArgs = _readConcernArgs;
 }
 
@@ -599,7 +661,7 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     _txnResourceStash = TxnResources(opCtx);
 }
 
-void Session::unstashTransactionResources(OperationContext* opCtx) {
+void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
     if (opCtx->getClient()->isInDirectClient()) {
         return;
     }
@@ -630,10 +692,22 @@ void Session::unstashTransactionResources(OperationContext* opCtx) {
                 str::stream() << "Transaction " << *opCtx->getTxnNumber() << " has been aborted.",
                 _txnState != MultiDocumentTransactionState::kAborted);
 
+        // Cannot change committed transaction but allow retrying commitTransaction command.
+        uassert(ErrorCodes::TransactionCommitted,
+                str::stream() << "Transaction " << *opCtx->getTxnNumber() << " has been committed.",
+                cmdName == "commitTransaction" ||
+                    _txnState != MultiDocumentTransactionState::kCommitted);
+
         if (_txnResourceStash) {
             // Transaction resources already exist for this transaction.  Transfer them from the
             // stash to the operation context.
             invariant(_txnState != MultiDocumentTransactionState::kNone);
+
+            auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+            uassert(ErrorCodes::InvalidOptions,
+                    "Only the first command in a transaction may specify a readConcern",
+                    readConcernArgs.isEmpty());
+
             _txnResourceStash->release(opCtx);
             _txnResourceStash = boost::none;
         } else {
@@ -667,10 +741,23 @@ void Session::unstashTransactionResources(OperationContext* opCtx) {
 
 void Session::abortArbitraryTransaction() {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
-    if (_txnState == MultiDocumentTransactionState::kInProgress ||
-        _txnState == MultiDocumentTransactionState::kInSnapshotRead) {
-        _abortTransaction(lock);
+    _abortArbitraryTransaction(lock);
+}
+
+void Session::abortArbitraryTransactionIfExpired() {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    if (!_transactionExpireDate || _transactionExpireDate >= Date_t::now()) {
+        return;
     }
+    _abortArbitraryTransaction(lock);
+}
+
+void Session::_abortArbitraryTransaction(WithLock lock) {
+    if (_txnState != MultiDocumentTransactionState::kInProgress &&
+        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
+        return;
+    }
+    _abortTransaction(lock);
 }
 
 void Session::abortActiveTransaction(OperationContext* opCtx) {
@@ -759,8 +846,7 @@ void Session::commitTransaction(OperationContext* opCtx) {
     // and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    if (_txnState == MultiDocumentTransactionState::kCommitted)
-        return;
+    invariant(_txnState != MultiDocumentTransactionState::kCommitted);
     _commitTransaction(std::move(lk), opCtx);
 }
 

@@ -35,7 +35,14 @@
 extern "C" {
 #endif
 
+/**
+ * An object which describes the details of the failure of an operation.
+ * @note All `libmongodbcapi` functions which take a `status` object may be passed a null pointer.
+ * In that case the function will not be able to report detailed status information; however, the
+ * function may still be called.
+ */
 typedef struct libmongodbcapi_status libmongodbcapi_status;
+
 typedef struct libmongodbcapi_lib libmongodbcapi_lib;
 typedef struct libmongodbcapi_db libmongodbcapi_db;
 typedef struct libmongodbcapi_client libmongodbcapi_client;
@@ -48,186 +55,198 @@ typedef enum {
     LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED,
     LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
     LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
+    LIBMONGODB_CAPI_ERROR_HAS_DB_HANDLES_OPEN,
     LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN,
     LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN,
     LIBMONGODB_CAPI_ERROR_ENOMEM,
 } libmongodbcapi_error;
 
+/**
+ * @return Returns a pointer to a newly allocated `libmongodbcapi_status` object which will hold
+ * details of any failures of operations to which it was passed.
+ * @return `NULL` when construction of a `libmongodbcapi_status` object fails.  `errno` will be set
+ * with an appropriate error code, in this case.
+ */
+libmongodbcapi_status* libmongodbcapi_allocate_status();
+
 
 /**
-* @return Returns a pointer to the processes libmongodbcapi_status which will hold details of
-* any failures of libmongodbcapi_init() or libmongodbcapi_fini(). See
-* libmongodbcapi_status_get_error(), libmongodbcapi_status_get_code(), and
-* libmongodbcapi_status_get_what().
-*/
+ * Frees the storage associated with a valid `libmongodbcapi_status` object.
+ * @param status The status object to release.
+ * @pre `status` must be a valid `libmongodbcapi_status` object.
+ * @note This function does not report failures.
+ * @note This function exhibits undefined behavior unless is its preconditions are met.
+ */
 
-libmongodbcapi_status* libmongodbcapi_process_get_status();
-
-/**
-* Initializes the mongodbcapi library, required before any other call. Cannot be called again
-* without libmongodbcapi_fini() being called first.
-*
-* @param yaml_config null-terminated YAML formatted MongoDB configuration. See documentation for
-* valid
-* options.
-*
-* @note This function is not thread safe.
-*
-* @return Returns a pointer to a libmongodbcapi_lib on success.
-* @return Returns null on error, and details of the error including a libmongodbcapi_error will be
-* available via libmongodbcapi_process_get_status(). If the library had already been initalized,
-* then the libmongodbcapi_error will be LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED.
-*
-*/
-libmongodbcapi_lib* libmongodbcapi_init(const char* yaml_config);
+void libmongodbcapi_destroy_status(libmongodbcapi_status* status);
 
 /**
-* Tears down the state of the library, all databases must be closed before calling this.
-*
-* @note This function is not thread safe.
-*
-* @return Returns LIBMONGODB_CAPI_SUCCESS on success.
-* @return Returns LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED if libmongodbcapi_init() has not
-* been called previously.
-* @return Returns LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN if there are open databases that haven't been closed
-* with libmongodbcapi_db_destroy().
-* @return Returns LIBMONGODB_CAPI_ERROR_EXCEPTION for errors that resulted in an exception. Details
-* can be retrived via libmongodbcapi_process_get_status().
-*/
-int libmongodbcapi_fini(libmongodbcapi_lib*);
+ * Get an error code from a `libmongodbcapi_status` object.
+ * @param status The `libmongodbcapi_status` object from which to get an associated error code.
+ * @return Returns the `libmongodbcapi_error` code associated with the `status` parameter.
+ * @note This function will report the `libmongodbcapi_error` for the failure associated with
+ * `status`, therefore if the failing function returned a `libmongodbcapi_error` value, then calling
+ * this function is superfluous.
+ */
+
+int libmongodbcapi_status_get_error(const libmongodbcapi_status* status);
 
 /**
-* Starts the database and returns a handle with the service context.
-*
-* @param argc
-*      The number of arguments in argv
-* @param argv
-*      The arguments that will be passed to mongod at startup to initialize state
-* @param envp
-*      Environment variables that will be passed to mongod at startup to initilize state
-*
-* @return A pointer to a db handle or null on error. Details of an error can be retrived via
-* libmongodbcapi_lib_get_status(lib)
+ * Get a descriptive error message from a `libmongodbcapi_status` object.
+ * @param status The `libmongodbcapi_status` object from which to get an associated error message.
+ * @return A null-terminated string containing an error message.
+ * @note For failures where the `libmongodbcapi_error == LIBMONGODB_CAPI_ERROR_EXCEPTION`, this
+ * returns a string representation of the exception
+ */
+
+const char* libmongodbcapi_status_get_what(const libmongodbcapi_status* status);
+
+/**
+ * Get a status code from a `libmongodbcapi_status` object.
+ * @param status The `libmongodbcapi_status` object from which to get an associated status code.
+ * @note For failures where the `libmongodbcapi_error == LIBMONGODB_CAPI_ERROR_EXCEPTION` and the
+ * exception was of type `mongo::DBException`, this returns the numeric code indicating which
+ * specific `mongo::DBException` was thrown
+ */
+
+int libmongodbcapi_status_get_code(const libmongodbcapi_status* status);
+
+/**
+ * Initializes the mongodbcapi library, required before any other call. Cannot be called again
+ * without libmongodbcapi_fini() being called first.
+ *
+ * @param yaml_config Null-terminated YAML formatted MongoDB configuration. See documentation for
+ * valid options.
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @note This function is not thread safe.
+ *
+ * @return Returns a pointer to a libmongodbcapi_lib on success.
+ * @return `NULL` and modifies `status` on failure.
+ */
+libmongodbcapi_lib* libmongodbcapi_init(const char* yaml_config, libmongodbcapi_status* status);
+
+/**
+ * Tears down the state of the library, all databases must be closed before calling this.
+ *
+ * @pre All `libmongodbcapi_db` instances associated with this library handle must be destroyed.
+ *
+ * @param lib A pointer to a `libmongodbcapi_lib` handle which represents this library.
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @note This function is not thread safe.
+ *
+ * @return Returns `LIBMONGODB_CAPI_SUCCESS` on success.
+ * @return Returns `LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED` and modifies `status` if
+ * libmongodbcapi_init() has not been called previously.
+ * @return Returns `LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN` and modifies `status` if there are open
+ * databases that haven't been closed with `libmongodbcapi_db_destroy()`.
+ * @return Returns `LIBMONGODB_CAPI_ERROR_EXCEPTION` and modifies `status` for errors that resulted
+ * in an exception. Details can be retrived via `libmongodbcapi_process_get_status()`.
+ *
+ * @note This function exhibits undefined behavior unless is its preconditions are met.
+ * @note This function may return diagnosic errors for violations of its preconditions, but this behavior is not guaranteed.
+ */
+int libmongodbcapi_fini(libmongodbcapi_lib* lib, libmongodbcapi_status* status);
+
+/**
+ * Creates an embedded MongoDB instance and returns a handle with the service context.
+ *
+ * @param argc The number of arguments in `argv`.
+ * @param argv The arguments that will be passed to mongod at startup to initialize state.
+ * @param envp Environment variables that will be passed to mongod at startup to initilize state.
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @return A pointer to a `libmongdbcapi_db` handle.
+ * @return `NULL` and modifies `status` on failure.
 */
 libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib,
                                          int argc,
                                          const char** argv,
-                                         const char** envp);
+                                         const char** envp,
+                                         libmongodbcapi_status* status);
 
 /**
-* @return Returns pointer to the mongodbcapi_lib's libmongodbcapi_status which will hold details
-* of any failures of creating or destroying libmongodbcapi_db's. See
-* libmongodbcapi_status_get_error(), libmongodbcapi_status_get_code(), and
-* libmongodbcapi_status_get_what().
-* */
-
-libmongodbcapi_status* libmongodbcapi_lib_get_status(libmongodbcapi_lib* lib);
-
-/**
-* Shuts down the database
-*
-* @param
-*       A pointer to a db handle to be destroyed
-*
-* @return Returns LIBMONGODB_CAPI_SUCCESS on success. Returns LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN
-* if there are libmongodbcapi_client's still open attached to the db. Additionally, it can
-* LIBMONGODB_CAPI_ERROR_EXCEPTION, and leave details that can be retrieved via
-* libmongodbcapi_lib_get_status(), using the lib that you passed to libmongodbcapi_db_new().
-*/
-int libmongodbcapi_db_destroy(libmongodbcapi_db* db);
+ * Shuts down an embedded MongoDB instance.
+ *
+ * @pre The `db` must not be `NULL`.
+ * @pre All `libmongodbcapi_client` instances associated with this database must be destroyed.
+ *
+ * @param db A pointer to a valid `libmongodbcapi_db` instance to be destroyed.
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @return Returns `LIBMONGODB_CAPI_SUCCESS` on success.
+ * @return `LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN` and modifies `status` if there are
+ * `libmongodbcapi_client` objects still open attached to the `db`.
+ * @return `LIBMONGODB_CAPI_ERROR_EXCEPTION`and modifies `status` for other unspecified errors.
+ *
+ * @note This function exhibits undefined behavior unless is its preconditions are met.
+ * @note This function may return diagnosic errors for violations of its precondition, but this behavior is not guaranteed.
+ */
+int libmongodbcapi_db_destroy(libmongodbcapi_db* db, libmongodbcapi_status* status);
 
 /**
-* @return Returns pointer to the mongodbcapi_db's libmongodbcapi_status which will hold details
-* of any failures of creating or destroying libmongodbcapi_db's, or from acting directly on the
-* libmongodbcapi_db. See libmongodbcapi_status_get_error(), libmongodbcapi_status_get_code(), and
-* libmongodbcapi_status_get_what().
-* */
-
-libmongodbcapi_status* libmongodbcapi_db_get_status(libmongodbcapi_db* db);
-
-/**
-* Creates a new client and returns it so the caller can do operation
-* A client should be destroyed before the owning db is destroyed
-*
-* @param db
-*      The datadase that will own this client and execute its RPC calls
-*
-* @return A pointer to a client or null on error. LIBMONGODB_CAPI_ERROR_EXCEPTION can be returned,
-* and if so, libmongodbcapi_db_get_status(db) to retrieve details of the failure.
-*/
-libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_db* db);
+ * Creates a new client and returns it.
+ * A client must be destroyed before the owning db is destroyed
+ *
+ * @param db The database that will own this client and execute its RPC calls
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @return A pointer to a client.
+ * @return `NULL` on error, and modifies `status` on failure.
+ */
+libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_db* db,
+                                                 libmongodbcapi_status* status);
 
 /**
-* Destroys a client and removes it from the db context
-*
-* @param client
-*       A pointer to the client to be destroyed
-*
-* @return Returns LIBMONGODB_CAPI_SUCCESS on success, otherwise returns an error code, and details
-* will be available via libmongodbcapi_db_get_status()
-*/
-int libmongodbcapi_client_destroy(libmongodbcapi_client* client);
+ * Destroys a client and removes it from the db context.
+
+ * @pre The `client` must not be `NULL`.
+ *
+ * @param client A pointer to the client to be destroyed
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @return Returns LIBMONGODB_CAPI_SUCCESS on success.
+ * @return An error code and modifies `status` on failure.
+ *
+ * @note This function exhibits undefined behavior unless is its preconditions are met.
+ * @note This function may return diagnosic errors for violations of its precondition, but this behavior is not guaranteed.
+ */
+int libmongodbcapi_client_destroy(libmongodbcapi_client* client, libmongodbcapi_status* status);
 
 /**
-* @param client
-*      The client that that the failure happed on
-*
-* @return Returns pointer to the mongodbcapi_db's libmongodbcapi_status which will hold details
-* of any failures from acting directly on the libmongodbcapi_client
-* */
-libmongodbcapi_status* libmongodbcapi_client_get_status(libmongodbcapi_client* client);
-
-/**
-* Makes an RPC call to the database
-*
-* @param client
-*      The client that will be performing the query on the database
-* @param input
-*      The query to be sent to and then executed by the database
-* @param input_size
-*      The size (number of bytes) of the input query
-* @param output
-*      A pointer to a void * where the database can write the location of the output.
-*      The library will manage the memory pointer to by *output.
-*      @TODO document lifetime of this buffer
-* @param output_size
-*      A pointer to a location where this function will write the size (number of bytes)
-*      of the output
-*
-* @return Returns LIBMONGODB_CAPI_SUCCESS on success, otherwise it returns an error code, and
-* details
-* will be available via libmongodbcapi_db_get_status()
-*/
+ * Makes an RPC call to the database
+ *
+ * @param client The client that will be performing the query on the database
+ * @param input The query to be sent to and then executed by the database
+ * @param input_size The size (number of bytes) of the input query
+ * @param output A pointer to a `void *` where the database can write the location of the output.
+ * The library will manage the memory pointed to by * `output`.
+ * @note The storage associated with `output` will be valid until the next call to
+ * `libmongodbcapi_client_wire_protocol_rpc` on the specified `client` object.
+ * @param output_size A pointer to a location where this function will write the size (number of
+ * bytes) of the `output` buffer.
+ * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
+ * this function reports a failure.
+ *
+ * @return Returns LIBMONGODB_CAPI_SUCCESS on success.
+ * @return An error code and modifies `status` on failure
+ */
 int libmongodbcapi_client_wire_protocol_rpc(libmongodbcapi_client* client,
                                             const void* input,
                                             size_t input_size,
                                             void** output,
-                                            size_t* output_size);
-/**
-* @return Returns the libmongodbcapi_error of the libmongodbcapi_status. If the failing function
-* returns a libmongodbcapi_status, then this is redundant, but if the failing function returns
-* pointer, then this is where you find out the libmongodbcapi_error for the failure.
-*/
-
-int libmongodbcapi_status_get_error(libmongodbcapi_status* status);
-
-/**
-* @return For failures where the libmongodbcapi_error==LIBMONGODB_CAPI_ERROR_EXCEPTION, this
-* returns a string representation of the exception
-*/
-
-const char* libmongodbcapi_status_get_what(libmongodbcapi_status* status);
-
-/**
-* @return For failures where the libmongodbcapi_error==LIBMONGODB_CAPI_ERROR_EXCEPTION and the
-* exception was of type DBException, this returns the numeric code indicating which specific
-* DBException was thrown
-*/
-
-int libmongodbcapi_status_get_code(libmongodbcapi_status* status);
+                                            size_t* output_size,
+                                            libmongodbcapi_status* status);
 
 #ifdef __cplusplus
-}
+} // extern "C"
 #endif
 
 #endif

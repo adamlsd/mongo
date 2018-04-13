@@ -33,8 +33,8 @@
 #include "mongo/db/client.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/s/catalog/sharding_catalog_client.h"
+#include "mongo/s/database_version_helpers.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/versioning.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -42,7 +42,6 @@
 namespace mongo {
 
 using CollectionAndChangedChunks = CatalogCacheLoader::CollectionAndChangedChunks;
-MONGO_FP_DECLARE(callShardServerCallbackFn);
 
 namespace {
 
@@ -198,25 +197,24 @@ std::shared_ptr<Notification<void>> ConfigServerCatalogCacheLoader::getChunksSin
 void ConfigServerCatalogCacheLoader::getDatabase(
     StringData dbName,
     stdx::function<void(OperationContext*, StatusWith<DatabaseType>)> callbackFn) {
+    uassertStatusOK(_threadPool.schedule([ name = dbName.toString(), callbackFn ]() noexcept {
+        auto opCtx = Client::getCurrent()->makeOperationContext();
 
-    if (MONGO_FAIL_POINT(callShardServerCallbackFn)) {
-        uassertStatusOK(_threadPool.schedule([ name = dbName.toString(), callbackFn ]() noexcept {
-            auto opCtx = Client::getCurrent()->makeOperationContext();
+        auto swDbt = [&]() -> StatusWith<DatabaseType> {
+            try {
+                return uassertStatusOK(
+                           Grid::get(opCtx.get())
+                               ->catalogClient()
+                               ->getDatabase(
+                                   opCtx.get(), name, repl::ReadConcernLevel::kMajorityReadConcern))
+                    .value;
+            } catch (const DBException& ex) {
+                return ex.toStatus();
+            }
+        }();
 
-            auto swDbt = [&]() -> StatusWith<DatabaseType> {
-                try {
-
-                    const auto dbVersion = Versioning::newDatabaseVersion();
-                    DatabaseType dbt(std::move(name), ShardId("PrimaryShard"), false, dbVersion);
-                    return dbt;
-                } catch (const DBException& ex) {
-                    return ex.toStatus();
-                }
-            }();
-
-            callbackFn(opCtx.get(), swDbt);
-        }));
-    }
+        callbackFn(opCtx.get(), std::move(swDbt));
+    }));
 }
 
 }  // namespace mongo

@@ -41,8 +41,8 @@
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/shard.h"
+#include "mongo/s/database_version_helpers.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/versioning.h"
 #include "mongo/util/log.h"
 
 namespace mongo {
@@ -123,7 +123,7 @@ DatabaseType ShardingCatalogManager::createDatabase(OperationContext* opCtx,
             ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo40 ||
         serverGlobalParams.featureCompatibility.getVersion() ==
             ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
-        dbVersion = Versioning::newDatabaseVersion();
+        dbVersion = databaseVersion::makeNew();
     }
 
     // Insert an entry for the new database into the sharding catalog.
@@ -240,7 +240,7 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
                           << dbType.toBSON(),
             currentDatabaseVersion != boost::none);
 
-    newDbType.setVersion(Versioning::incrementDatabaseVersion(*currentDatabaseVersion));
+    newDbType.setVersion(databaseVersion::makeIncremented(*currentDatabaseVersion));
 
     auto updateQueryBuilder = BSONObjBuilder(BSON(DatabaseType::name << dbname));
     updateQueryBuilder.append(DatabaseType::version.name(), currentDatabaseVersion->toBSON());

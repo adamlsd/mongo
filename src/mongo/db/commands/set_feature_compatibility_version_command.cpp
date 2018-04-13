@@ -46,8 +46,8 @@
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog/type_collection.h"
 #include "mongo/s/catalog_cache.h"
+#include "mongo/s/database_version_helpers.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/versioning.h"
 #include "mongo/util/exit.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/scopeguard.h"
@@ -177,7 +177,7 @@ public:
 
                 auto clusterTime = LogicalClock::get(opCtx)->getClusterTime().asTimestamp();
                 for (const auto& db : allDbs.value) {
-                    const auto dbVersion = Versioning::newDatabaseVersion();
+                    const auto dbVersion = databaseVersion::makeNew();
 
                     uassertStatusOK(Grid::get(opCtx)->catalogClient()->updateConfigDocument(
                         opCtx,

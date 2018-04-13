@@ -40,8 +40,6 @@
 
 namespace mongo {
 
-MONGO_FP_DECLARE(checkForDbVersionMismatch);
-
 const Database::Decoration<DatabaseShardingState> DatabaseShardingState::get =
     Database::declareDecoration<DatabaseShardingState>();
 
@@ -92,19 +90,12 @@ void DatabaseShardingState::checkDbVersion(OperationContext* opCtx) const {
         return;
     }
 
-    if (!MONGO_FAIL_POINT(checkForDbVersionMismatch)) {
-        // While checking the dbVersion and triggering a cache refresh on StaleDbVersion is under
-        // development, only check for dbVersion mismatch if explicitly asked to.
-        return;
-    }
-
     auto criticalSectionSignal = _critSec.getSignal(opCtx->lockState()->isWriteLocked()
                                                         ? ShardingMigrationCriticalSection::kWrite
                                                         : ShardingMigrationCriticalSection::kRead);
     if (criticalSectionSignal) {
-        // TODO (SERVER-33773): Set movePrimary critical section signal on the
-        // OperationShardingState (so that the operation can wait outside the DBLock for the
-        // movePrimary critical section to end before returning to the client).
+        OperationShardingState::get(opCtx).setMovePrimaryCriticalSectionSignal(
+            criticalSectionSignal);
 
         uasserted(StaleDbRoutingVersion(dbName, *clientDbVersion, boost::none),
                   "movePrimary critical section active");

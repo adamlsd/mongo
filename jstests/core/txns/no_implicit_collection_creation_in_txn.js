@@ -9,7 +9,7 @@
     const testDB = db.getSiblingDB(dbName);
     const testColl = testDB[collName];
 
-    testColl.drop();
+    testDB.runCommand({drop: collName, writeConcern: {w: "majority"}});
 
     let txnNumber = 0;
 
@@ -27,12 +27,12 @@
         documents: [{_id: "doc"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand(
+        {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
     assert.eq({_id: "doc"}, testColl.findOne({_id: "doc"}));
 
     // Insert fails when the collection does not exist.
@@ -42,14 +42,15 @@
         documents: [{_id: "doc"}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }),
                                  ErrorCodes.NamespaceNotFound);
-    assert.commandFailedWithCode(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }),
-                                 ErrorCodes.TransactionAborted);
+    // commitTransaction can only be called on the admin database.
+    assert.commandFailedWithCode(
+        sessionDb.adminCommand(
+            {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}),
+        ErrorCodes.NoSuchTransaction);
     assert.eq(null, testColl.findOne({_id: "doc"}));
 
     jsTest.log("Cannot implicitly create a collection in a transaction using update.");
@@ -62,12 +63,12 @@
         updates: [{q: {_id: "doc"}, u: {$set: {updated: true}}, upsert: true}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand(
+        {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
     assert.eq({_id: "doc", updated: true}, testColl.findOne({_id: "doc"}));
 
     // Update with upsert=true fails when the collection does not exist.
@@ -77,14 +78,15 @@
         updates: [{q: {_id: "doc"}, u: {$set: {updated: true}}, upsert: true}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }),
                                  ErrorCodes.NamespaceNotFound);
-    assert.commandFailedWithCode(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }),
-                                 ErrorCodes.TransactionAborted);
+    // commitTransaction can only be called on the admin database.
+    assert.commandFailedWithCode(
+        sessionDb.adminCommand(
+            {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}),
+        ErrorCodes.NoSuchTransaction);
     assert.eq(null, testColl.findOne({_id: "doc"}));
 
     // Update without upsert=true succeeds when the collection does not exist.
@@ -93,12 +95,12 @@
         updates: [{q: {_id: "doc"}, u: {$set: {updated: true}}}],
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand(
+        {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
     assert.eq(null, testColl.findOne({_id: "doc"}));
 
     jsTest.log("Cannot implicitly create a collection in a transaction using findAndModify.");
@@ -113,12 +115,12 @@
         upsert: true,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand(
+        {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
     assert.eq({_id: "doc", updated: true}, testColl.findOne({_id: "doc"}));
 
     // findAndModify with upsert=true fails when the collection does not exist.
@@ -130,14 +132,15 @@
         upsert: true,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }),
                                  ErrorCodes.NamespaceNotFound);
-    assert.commandFailedWithCode(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }),
-                                 ErrorCodes.TransactionAborted);
+    // commitTransaction can only be called on the admin database.
+    assert.commandFailedWithCode(
+        sessionDb.adminCommand(
+            {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}),
+        ErrorCodes.NoSuchTransaction);
     assert.eq(null, testColl.findOne({_id: "doc"}));
 
     // findAndModify without upsert=true succeeds when the collection does not exist.
@@ -147,12 +150,12 @@
         update: {$set: {updated: true}},
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(++txnNumber),
+        startTransaction: true,
         autocommit: false
     }));
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // commitTransaction can only be called on the admin database.
+    assert.commandWorked(sessionDb.adminCommand(
+        {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
     assert.eq(null, testColl.findOne({_id: "doc"}));
 
     session.endSession();

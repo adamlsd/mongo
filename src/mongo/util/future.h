@@ -369,7 +369,7 @@ public:
 
     void setError(Status statusArg) noexcept {
         invariant(!statusArg.isOK());
-        dassert(state.load() < SSBState::kFinished);
+        dassert(state.load() < SSBState::kFinished, statusArg.toString());
         status = std::move(statusArg);
         transitionToFinished();
     }
@@ -466,7 +466,7 @@ using future_details::Future;
  * order.
  *
  * If the Future has been extracted, but no value or error has been set at the time this Promise is
- * destoyed, a error will be set with ErrorCode::BrokenPromise. This should generally be considered
+ * destroyed, a error will be set with ErrorCode::BrokenPromise. This should generally be considered
  * a programmer error, and should not be relied upon. We may make it debug-fatal in the future.
  *
  * Only one thread can use a given Promise at a time. It is legal to have different threads setting
@@ -651,6 +651,10 @@ public:
 
     Future(const Future&) = delete;
     Future& operator=(const Future&) = delete;
+
+    /* implicit */ Future(T val) : Future(makeReady(std::move(val))) {}
+    /* implicit */ Future(Status status) : Future(makeReady(std::move(status))) {}
+    /* implicit */ Future(StatusWith<T> sw) : Future(makeReady(std::move(sw))) {}
 
     /**
      * Make a ready Future<T> from a value for cases where you don't need to wait asynchronously.
@@ -1144,7 +1148,8 @@ class MONGO_WARN_UNUSED_RESULT_CLASS future_details::Future<void> {
 public:
     using value_type = void;
 
-    Future() = default;
+    /* implicit */ Future() : Future(makeReady()) {}
+    /* implicit */ Future(Status status) : Future(makeReady(std::move(status))) {}
 
     static Future<void> makeReady() {
         return Future<FakeVoid>::makeReady(FakeVoid{});

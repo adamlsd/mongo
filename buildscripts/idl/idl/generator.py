@@ -103,9 +103,8 @@ def _get_bson_type_check(bson_element, ctxt_name, field):
         if not bson_types[0] == 'bindata':
             return '%s.checkAndAssertType(%s, %s)' % (ctxt_name, bson_element,
                                                       bson.cpp_bson_type_name(bson_types[0]))
-        else:
-            return '%s.checkAndAssertBinDataType(%s, %s)' % (
-                ctxt_name, bson_element, bson.cpp_bindata_subtype_type_name(field.bindata_subtype))
+        return '%s.checkAndAssertBinDataType(%s, %s)' % (
+            ctxt_name, bson_element, bson.cpp_bindata_subtype_type_name(field.bindata_subtype))
     else:
         type_list = '{%s}' % (', '.join([bson.cpp_bson_type_name(b) for b in bson_types]))
         return '%s.checkAndAssertTypes(%s, %s)' % (ctxt_name, bson_element, type_list)
@@ -372,11 +371,6 @@ class _CppFileWriterBase(object):
 class _CppHeaderFileWriter(_CppFileWriterBase):
     """C++ .h File writer."""
 
-    def __init__(self, indented_writer):
-        # type: (writer.IndentedTextWriter) -> None
-        """Create a C++ .cpp file code writer."""
-        super(_CppHeaderFileWriter, self).__init__(indented_writer)
-
     def gen_class_declaration_block(self, class_name):
         # type: (unicode) -> writer.IndentedScopedBlock
         """Generate a class declaration block."""
@@ -588,40 +582,23 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
         """Generate comparison operators declarations for the type."""
         # pylint: disable=invalid-name
 
-        template_params = {'class_name': common.title_case(struct.name)}
-
-        with self._with_template(template_params):
-            self._writer.write_template(
-                'friend bool operator==(const ${class_name}& left, const ${class_name}& right);')
-            self._writer.write_template(
-                'friend bool operator!=(const ${class_name}& left, const ${class_name}& right);')
-            self._writer.write_template(
-                'friend bool operator<(const ${class_name}& left, const ${class_name}& right);')
-
-        self.write_empty_line()
-
-    def gen_comparison_operators_definitions(self, struct):
-        # type: (ast.Struct) -> None
-        """Generate comparison operators definitions for the type."""
-        # pylint: disable=invalid-name
-
         sorted_fields = sorted([
             field for field in struct.fields if (not field.ignore) and field.comparison_order != -1
         ], key=lambda f: f.comparison_order)
         fields = [_get_field_member_name(field) for field in sorted_fields]
 
-        for rel_op in ['==', '!=', '<']:
+        with self._block("auto relationalTie() const {", "}"):
+            self._writer.write_line('return std::tie(%s);' % (', '.join(fields)))
+
+        for rel_op in ['==', '!=', '<', '>', '<=', '>=']:
+            self.write_empty_line()
             decl = common.template_args(
-                "inline bool operator${rel_op}(const ${class_name}& left, const ${class_name}& right) {",
+                "friend bool operator${rel_op}(const ${class_name}& left, const ${class_name}& right) {",
                 rel_op=rel_op, class_name=common.title_case(struct.name))
 
             with self._block(decl, "}"):
-                self._writer.write_line('return std::tie(%s) %s std::tie(%s);' %
-                                        (','.join(["left.%s" % (field) for field in fields]),
-                                         rel_op,
-                                         ','.join(["right.%s" % (field) for field in fields])))
-
-            self.write_empty_line()
+                self._writer.write_line('return left.relationalTie() %s right.relationalTie();' %
+                                        (rel_op))
 
         self.write_empty_line()
 
@@ -640,6 +617,7 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
             'boost/optional.hpp',
             'cstdint',
             'string',
+            'tuple',
             'vector',
         ]
 
@@ -739,9 +717,6 @@ class _CppHeaderFileWriter(_CppFileWriterBase):
 
                 self.write_empty_line()
 
-                if struct.generate_comparison_operators:
-                    self.gen_comparison_operators_definitions(struct)
-
 
 class _CppSourceFileWriter(_CppFileWriterBase):
     """C++ .cpp File writer."""
@@ -770,39 +745,37 @@ class _CppSourceFileWriter(_CppFileWriterBase):
         elif field.deserializer and 'BSONElement::' in field.deserializer:
             method_name = writer.get_method_name(field.deserializer)
             return '%s.%s()' % (element_name, method_name)
-        else:
-            # Custom method, call the method on object.
-            bson_cpp_type = cpp_types.get_bson_cpp_type(field)
 
-            if bson_cpp_type:
-                # Call a static class method with the signature:
-                # Class Class::method(StringData value)
-                # or
-                # Class::method(const BSONObj& value)
-                expression = bson_cpp_type.gen_deserializer_expression(self._writer, element_name)
-                if field.deserializer:
-                    method_name = writer.get_method_name_from_qualified_method_name(
-                        field.deserializer)
+        # Custom method, call the method on object.
+        bson_cpp_type = cpp_types.get_bson_cpp_type(field)
 
-                    # For fields which are enums, pass a IDLParserErrorContext
-                    if field.enum_type:
-                        self._writer.write_line('IDLParserErrorContext tempContext(%s, &ctxt);' %
-                                                (_get_field_constant_name(field)))
-                        return common.template_args("${method_name}(tempContext, ${expression})",
-                                                    method_name=method_name, expression=expression)
-                    else:
-                        return common.template_args("${method_name}(${expression})",
-                                                    method_name=method_name, expression=expression)
-                else:
-                    # BSONObjects are allowed to be pass through without deserialization
-                    assert field.bson_serialization_type == ['object']
-                    return expression
-            else:
-                # Call a static class method with the signature:
-                # Class Class::method(const BSONElement& value)
+        if bson_cpp_type:
+            # Call a static class method with the signature:
+            # Class Class::method(StringData value)
+            # or
+            # Class::method(const BSONObj& value)
+            expression = bson_cpp_type.gen_deserializer_expression(self._writer, element_name)
+            if field.deserializer:
                 method_name = writer.get_method_name_from_qualified_method_name(field.deserializer)
 
-                return '%s(%s)' % (method_name, element_name)
+                # For fields which are enums, pass a IDLParserErrorContext
+                if field.enum_type:
+                    self._writer.write_line('IDLParserErrorContext tempContext(%s, &ctxt);' %
+                                            (_get_field_constant_name(field)))
+                    return common.template_args("${method_name}(tempContext, ${expression})",
+                                                method_name=method_name, expression=expression)
+                return common.template_args("${method_name}(${expression})",
+                                            method_name=method_name, expression=expression)
+
+            # BSONObjects are allowed to be pass through without deserialization
+            assert field.bson_serialization_type == ['object']
+            return expression
+
+        # Call a static class method with the signature:
+        # Class Class::method(const BSONElement& value)
+        method_name = writer.get_method_name_from_qualified_method_name(field.deserializer)
+
+        return '%s(%s)' % (method_name, element_name)
 
     def _gen_array_deserializer(self, field, bson_element):
         # type: (ast.Field, unicode) -> None
@@ -1057,7 +1030,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
                     # should ignore regardless of strict mode.
                     command_predicate = None
                     if isinstance(struct, ast.Command):
-                        command_predicate = "!CommandHelpers::isGenericArgument(fieldName)"
+                        command_predicate = "!mongo::isGenericArgument(fieldName)"
 
                     with self._predicate(command_predicate):
                         self._writer.write_line('ctxt.throwUnknownField(fieldName);')
@@ -1510,6 +1483,10 @@ class _CppSourceFileWriter(_CppFileWriterBase):
         """Generate the C++ header to a stream."""
         self.gen_file_header()
 
+        # Include platform/basic.h
+        self.gen_include("mongo/platform/basic.h")
+        self.write_empty_line()
+
         # Generate include for generated header first
         self.gen_include(header_file_name)
         self.write_empty_line()
@@ -1528,6 +1505,7 @@ class _CppSourceFileWriter(_CppFileWriterBase):
         # Generate mongo includes third
         header_list = [
             'mongo/bson/bsonobjbuilder.h',
+            'mongo/db/command_generic_argument.h',
             'mongo/db/commands.h',
         ]
         header_list.sort()

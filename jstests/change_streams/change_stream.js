@@ -6,33 +6,23 @@
     "use strict";
 
     load("jstests/libs/collection_drop_recreate.js");  // For assert[Drop|Create]Collection.
-    load("jstests/libs/change_stream_util.js");        // For ChangeStreamTest.
-
-    function assertValidChangeStreamNss(dbName, collName = "test") {
-        // Verify the DB/collection exists.
-        const testDb = db.getSiblingDB(dbName);
-        const res =
-            testDb.runCommand({aggregate: collName, pipeline: [{$changeStream: {}}], cursor: {}});
-        assert.commandWorked(res);
-        assert.commandWorked(testDb.runCommand({killCursors: "coll", cursors: [res.cursor.id]}));
-    }
+    load("jstests/libs/change_stream_util.js");        // For ChangeStreamTest and
+                                                       // assert[Valid|Invalid]ChangeStreamNss.
 
     const isMongos = db.runCommand({isdbgrid: 1}).isdbgrid;
 
     // Test that a change stream cannot be opened on the "admin", "config", or "local" databases.
-    // TODO SERVER-34040 Should prevent change streams on these databases.
-    assertValidChangeStreamNss("admin");
-    assertValidChangeStreamNss("config");
+    assertInvalidChangeStreamNss("admin");
+    assertInvalidChangeStreamNss("config");
     // Not allowed to access 'local' database through mongos.
     if (!isMongos) {
-        assertValidChangeStreamNss("local");
+        assertInvalidChangeStreamNss("local");
     }
 
     // Test that a change stream cannot be opened on 'system.' collections.
-    // TODO SERVER-34040 Should prevent change streams on these collections.
-    assertValidChangeStreamNss("test", "system.users");
-    assertValidChangeStreamNss("test", "system.profile");
-    assertValidChangeStreamNss("test", "system.version");
+    assertInvalidChangeStreamNss("test", "system.users");
+    assertInvalidChangeStreamNss("test", "system.profile");
+    assertInvalidChangeStreamNss("test", "system.version");
 
     // Test that a change stream can be opened on namespaces with 'system' in the name, but not
     // considered an internal 'system dot' namespace.
@@ -181,8 +171,8 @@
     if (!isMongos) {
         jsTestLog("Ensuring attempt to read with legacy operations fails.");
         db.getMongo().forceReadMode('legacy');
-        const legacyCursor = db.tailable2.aggregate([{$changeStream: {}}, cst.oplogProjection],
-                                                    {cursor: {batchSize: 0}});
+        const legacyCursor =
+            db.tailable2.aggregate([{$changeStream: {}}], {cursor: {batchSize: 0}});
         assert.throws(function() {
             legacyCursor.next();
         }, [], "Legacy getMore expected to fail on changeStream cursor.");
@@ -193,8 +183,8 @@
     assertDropAndRecreateCollection(db, "resume1");
 
     // Note we do not project away 'id.ts' as it is part of the resume token.
-    let resumeCursor = cst.startWatchingChanges(
-        {pipeline: [{$changeStream: {}}], collection: db.resume1, includeToken: true});
+    let resumeCursor =
+        cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: db.resume1});
 
     // Insert a document and save the resulting change stream.
     assert.writeOK(db.resume1.insert({_id: 1}));
@@ -205,7 +195,6 @@
     resumeCursor = cst.startWatchingChanges({
         pipeline: [{$changeStream: {resumeAfter: firstInsertChangeDoc._id}}],
         collection: db.resume1,
-        includeToken: true,
         aggregateOptions: {cursor: {batchSize: 0}},
     });
 
@@ -221,7 +210,6 @@
     resumeCursor = cst.startWatchingChanges({
         pipeline: [{$changeStream: {resumeAfter: firstInsertChangeDoc._id}}],
         collection: db.resume1,
-        includeToken: true,
         aggregateOptions: {cursor: {batchSize: 0}},
     });
     assert.docEq(cst.getOneChange(resumeCursor), secondInsertChangeDoc);
@@ -231,7 +219,6 @@
     resumeCursor = cst.startWatchingChanges({
         pipeline: [{$changeStream: {resumeAfter: secondInsertChangeDoc._id}}],
         collection: db.resume1,
-        includeToken: true,
         aggregateOptions: {cursor: {batchSize: 0}},
     });
     assert.docEq(cst.getOneChange(resumeCursor), thirdInsertChangeDoc);

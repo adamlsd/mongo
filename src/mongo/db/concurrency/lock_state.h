@@ -229,6 +229,14 @@ public:
         return lockComplete(nullptr, resId, mode, deadline, checkDeadlock);
     }
 
+    /**
+     * This function is for unit testing only.
+     */
+    FastMapNoAlloc<ResourceId, LockRequest> getRequestsForTest() const {
+        scoped_spinlock scopedLock(_lock);
+        return _requests;
+    }
+
 private:
     friend class AutoYieldFlushLockForMMAPV1Commit;
 
@@ -297,7 +305,6 @@ private:
     // Delays release of exclusive/intent-exclusive locked resources until the write unit of
     // work completes. Value of 0 means we are not inside a write unit of work.
     int _wuowNestingLevel;
-    std::queue<ResourceId> _resourcesToUnlockAtEndOfUnitOfWork;
 
     // Mode for which the Locker acquired a ticket, or MODE_NONE if no ticket was acquired.
     LockMode _modeForTicket = MODE_NONE;

@@ -509,7 +509,7 @@ try:
         print("version.json does not contain a version string")
         Exit(1)
     if 'githash' not in version_data:
-        version_data['githash'] = utils.getGitVersion()
+        version_data['githash'] = utils.get_git_version()
 
 except IOError as e:
     # If the file error wasn't because the file is missing, error out
@@ -518,8 +518,8 @@ except IOError as e:
         Exit(1)
 
     version_data = {
-        'version': utils.getGitDescribe()[1:],
-        'githash': utils.getGitVersion(),
+        'version': utils.get_git_describe()[1:],
+        'githash': utils.get_git_version(),
     }
 
 except ValueError as e:
@@ -2888,9 +2888,7 @@ def doConfigure(myenv):
 
     ssl_provider = get_option("ssl-provider")
     if ssl_provider == 'auto':
-        # TODO: When native platforms are implemented, make them the default
-        #if conf.env.TargetOSIs('windows', 'darwin', 'macOS'):
-        if conf.env.TargetOSIs('windows'):
+        if conf.env.TargetOSIs('windows', 'darwin', 'macOS'):
             ssl_provider = 'native'
         else:
             ssl_provider = 'openssl'
@@ -2925,6 +2923,7 @@ def doConfigure(myenv):
         # Either crypto engine is native,
         # or it's OpenSSL and has been checked to be working.
         conf.env.SetConfigHeaderDefine("MONGO_CONFIG_SSL")
+        print("Using SSL Provider: {0}".format(ssl_provider))
     else:
         ssl_provider = "none"
 
@@ -3210,8 +3209,8 @@ if incremental_link.exists(env):
 
 def checkErrorCodes():
     import buildscripts.errorcodes as x
-    if x.checkErrorCodes() == False:
-        env.FatalError("next id to use: {0}", x.getNextCode())
+    if x.check_error_codes() == False:
+        env.FatalError("next id to use: {0}", x.get_next_code())
 
 checkErrorCodes()
 

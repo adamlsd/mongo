@@ -1163,7 +1163,7 @@ protected:
 private:
     // Called after _key has been filled in. Must not throw WriteConflictException.
     void _updateIdAndTypeBits() {
-        LOG(3) << "KeyString: [" << _key.toString() << "]";
+        TRACE_INDEX << "KeyString: [" << _key.toString() << "]";
 
         auto keySize = KeyString::getKeySize(
             _key.getBuffer(), _key.getSize(), _idx.ordering(), _key.getTypeBits());
@@ -1194,7 +1194,8 @@ private:
 
         if (!br.atEof()) {
             severe() << "Unique index cursor seeing multiple records for key "
-                     << redact(curr(kWantKey)->key) << " in index " << _idx.indexName();
+                     << redact(curr(kWantKey)->key) << " in index " << _idx.indexName() << " ("
+                     << _idx.uri() << ") belonging to collection " << _idx.collectionNamespace();
             fassertFailed(28608);
         }
     }

@@ -390,6 +390,11 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         ss << "file_manager=(close_idle_time=100000),";  //~28 hours, will put better fix in 3.1.x
         ss << "statistics_log=(wait=" << wiredTigerGlobalOptions.statisticsLogDelaySecs << "),";
         ss << "verbose=(recovery_progress),";
+
+        if (shouldLog(::mongo::logger::LogComponent::kStorageRecovery,
+                      logger::LogSeverity::Debug(2))) {
+            ss << "verbose=(recovery),";
+        }
     }
     ss << WiredTigerCustomizationHooks::get(getGlobalServiceContext())
               ->getTableCreateConfig("system");
@@ -1225,6 +1230,24 @@ boost::optional<Timestamp> WiredTigerKVEngine::getRecoveryTimestamp() const {
     return _recoveryTimestamp;
 }
 
+boost::optional<Timestamp> WiredTigerKVEngine::getLastStableCheckpointTimestamp() const {
+    if (!supportsRecoverToStableTimestamp()) {
+        severe() << "WiredTiger is configured to not support recover to a stable timestamp";
+        fassertFailed(50770);
+    }
+
+    const auto ret = _checkpointThread->getLastStableCheckpointTimestamp();
+    if (ret) {
+        return Timestamp(ret);
+    }
+
+    if (!_recoveryTimestamp.isNull()) {
+        return _recoveryTimestamp;
+    }
+
+    return boost::none;
+}
+
 bool WiredTigerKVEngine::supportsReadConcernSnapshot() const {
     return true;
 }
@@ -1249,10 +1272,6 @@ void WiredTigerKVEngine::haltOplogManager() {
 
 void WiredTigerKVEngine::replicationBatchIsComplete() const {
     _oplogManager->triggerJournalFlush();
-}
-
-Timestamp WiredTigerKVEngine::getLastStableCheckpointTimestamp() const {
-    return Timestamp(_checkpointThread->getLastStableCheckpointTimestamp());
 }
 
 }  // namespace mongo

@@ -15,6 +15,7 @@ var $config = (function() {
             filter: {},
             readConcern: {level: "snapshot"},
             txnNumber: NumberLong(txnNumber),
+            startTransaction: true,
             autocommit: false
         });
         assertWhenOwnColl.commandWorked(res);
@@ -26,6 +27,7 @@ var $config = (function() {
                 getMore: cursorId,
                 collection: collName,
                 txnNumber: NumberLong(txnNumber),
+                autocommit: false
             });
             assertWhenOwnColl.commandWorked(res);
             res.cursor.nextBatch.forEach(function(account) {
@@ -33,8 +35,9 @@ var $config = (function() {
             });
             cursorId = res.cursor.id;
         }
-        assertWhenOwnColl.commandWorked(
-            sessionDb.runCommand({commitTransaction: 1, txnNumber: NumberLong(txnNumber)}));
+        // commitTransaction can only be called on the admin database.
+        assertWhenOwnColl.commandWorked(sessionDb.adminCommand(
+            {commitTransaction: 1, txnNumber: NumberLong(txnNumber), autocommit: false}));
         return total;
     }
 
@@ -64,13 +67,15 @@ var $config = (function() {
                   update: collName,
                   updates: [{q: {_id: transferFrom}, u: {$inc: {balance: -transferAmount}}}],
                   readConcern: {level: "snapshot"},
+                  startTransaction: true,
                   autocommit: false
                 },
                 {
                   update: collName,
-                  updates: [{q: {_id: transferTo}, u: {$inc: {balance: transferAmount}}}]
+                  updates: [{q: {_id: transferTo}, u: {$inc: {balance: transferAmount}}}],
+                  autocommit: false
                 },
-                {commitTransaction: 1}
+                {commitTransaction: 1, autocommit: false}
             ];
 
             let hasWriteConflict;
@@ -79,7 +84,12 @@ var $config = (function() {
                 hasWriteConflict = false;
                 for (let cmd of commands) {
                     cmd["txnNumber"] = NumberLong(this.txnNumber);
-                    let res = this.sessionDb.runCommand(cmd);
+                    let res;
+                    if (cmd.hasOwnProperty("commitTransaction")) {
+                        res = this.sessionDb.adminCommand(cmd);
+                    } else {
+                        res = this.sessionDb.runCommand(cmd);
+                    }
                     if (res.ok === 0) {
                         if (res.code === ErrorCodes.WriteConflict) {
                             hasWriteConflict = true;
@@ -87,6 +97,11 @@ var $config = (function() {
                         } else {
                             assertWhenOwnColl.commandWorked(res, () => tojson(cmd));
                         }
+                    }
+
+                    // For the updates, ensure that exactly one document was updated.
+                    if (res.hasOwnProperty("nModified")) {
+                        assertWhenOwnColl.eq(res.nModified, 1, tojson(res));
                     }
                 }
             } while (hasWriteConflict);
@@ -97,11 +112,12 @@ var $config = (function() {
 
     function setup(db, collName) {
         assertWhenOwnColl.commandWorked(db.runCommand({create: collName}));
+
+        const bulk = db[collName].initializeUnorderedBulkOp();
         for (let i = 0; i < this.numAccounts; ++i) {
-            const res = db[collName].insert({_id: i, balance: this.initialValue});
-            assertWhenOwnColl.writeOK(res);
-            assertWhenOwnColl.eq(1, res.nInserted);
+            bulk.insert({_id: i, balance: this.initialValue});
         }
+        assertWhenOwnColl.commandWorked(bulk.execute({w: "majority"}));
     }
 
     function teardown(db, collName, cluster) {

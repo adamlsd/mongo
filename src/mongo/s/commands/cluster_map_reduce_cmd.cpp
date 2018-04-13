@@ -38,6 +38,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/client/connpool.h"
 #include "mongo/db/catalog/document_validation.h"
+#include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/mr.h"
 #include "mongo/db/query/collation/collation_spec.h"
@@ -93,7 +94,7 @@ BSONObj fixForShards(const BSONObj& orig,
             b.append(e);
         } else if (fn == "out" || fn == "finalize" || fn == "writeConcern") {
             // We don't want to copy these
-        } else if (!CommandHelpers::isGenericArgument(fn)) {
+        } else if (!isGenericArgument(fn)) {
             badShardedField = fn.toString();
             return BSONObj();
         }
@@ -280,9 +281,9 @@ public:
         if (!shardedInput && !shardedOutput && !customOutDB) {
             LOG(1) << "simple MR, just passthrough";
 
-            invariant(inputRoutingInfo.primary());
+            invariant(inputRoutingInfo.db().primary());
 
-            ShardConnection conn(inputRoutingInfo.primary()->getConnString(), "");
+            ShardConnection conn(inputRoutingInfo.db().primary()->getConnString(), "");
 
             BSONObj res;
             bool ok = conn->runCommand(
@@ -294,7 +295,7 @@ public:
 
             if (auto wcErrorElem = res["writeConcernError"]) {
                 appendWriteConcernErrorToCmdResponse(
-                    inputRoutingInfo.primary()->getId(), wcErrorElem, result);
+                    inputRoutingInfo.db().primary()->getId(), wcErrorElem, result);
             }
 
             result.appendElementsUnique(CommandHelpers::filterCommandReplyForPassthrough(res));
@@ -570,7 +571,7 @@ public:
             }
 
             // Do the splitting round
-            catalogCache->onStaleConfigError(std::move(outputRoutingInfo));
+            catalogCache->onStaleShardVersion(std::move(outputRoutingInfo));
             outputRoutingInfo =
                 uassertStatusOK(catalogCache->getCollectionRoutingInfo(opCtx, outputCollNss));
             uassert(34359,

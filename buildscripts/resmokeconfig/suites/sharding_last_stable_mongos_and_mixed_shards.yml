@@ -10,6 +10,7 @@ selector:
   # command to the shards - it'll just return success immediately. 
   - jstests/sharding/max_time_ms_sharded_new_commands.js
   #### Enable when 4.0 becomes last-stable.
+  - jstests/sharding/change_streams_unsharded_becomes_sharded.js
   - jstests/sharding/create_database.js
   - jstests/sharding/database_and_shard_versioning_all_commands.js
   - jstests/sharding/dump_coll_metadata.js
@@ -25,6 +26,8 @@ selector:
   - jstests/sharding/safe_secondary_reads_drop_recreate.js
   - jstests/sharding/safe_secondary_reads_single_migration_suspend_range_deletion.js
   - jstests/sharding/safe_secondary_reads_single_migration_waitForDelete.js
+  - jstests/sharding/move_primary_basic.js
+  - jstests/sharding/movePrimary1.js
   # Requires fix to SERVER-31689
   - jstests/sharding/aggregation_currentop.js
   #### End "Enable when 4.0 becomes last stable"
@@ -51,6 +54,8 @@ selector:
   - jstests/sharding/killop.js
   # New 4.0 feature
   - jstests/sharding/snapshot_aggregate_mongos.js
+  - jstests/sharding/snapshot_find_mongos.js
+  - jstests/sharding/resume_change_stream.js
   # Requires count command to be accurate on sharded clusters, introduced in v4.0.
   - jstests/sharding/accurate_count_with_predicate.js
   # Disabled throughout sharding. See SERVER-31937 for details.

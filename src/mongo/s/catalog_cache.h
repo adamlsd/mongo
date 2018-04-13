@@ -116,12 +116,29 @@ public:
         OperationContext* opCtx, const NamespaceString& nss);
 
     /**
-     * Non-blocking method to be called whenever using the specified routing table has encountered a
-     * stale config exception. Returns immediately and causes the routing table to be refreshed the
-     * next time getCollectionRoutingInfo is called. Does nothing if the routing table has been
-     * refreshed already.
+     * Retuns the routing history table for the collection instead of the chunk manager (the chunk
+     * manager is a part of CachedCollectionRoutingInfo). The chunk manager represents a specific
+     * state at some point in time, on the other hand a routing history table has the whole history.
      */
-    void onStaleConfigError(CachedCollectionRoutingInfo&&);
+    std::shared_ptr<RoutingTableHistory> getCollectionRoutingTableHistoryNoRefresh(
+        const NamespaceString& nss);
+
+    /**
+     * Non-blocking method that marks the current cached database entry as needing refresh if the
+     * entry's databaseVersion matches 'databaseVersion'.
+     *
+     * To be called if routing by a copy of the cached database entry as of 'databaseVersion' caused
+     * a StaleDbVersion to be received.
+     */
+    void onStaleDatabaseVersion(const StringData dbName, const DatabaseVersion& databaseVersion);
+
+    /**
+     * Non-blocking method that marks the current cached collection entry as needing refresh if its
+     * collectionVersion matches the input's ChunkManager's collectionVersion.
+     *
+     * To be called if using the input routing info caused a StaleShardVersion to be received.
+     */
+    void onStaleShardVersion(CachedCollectionRoutingInfo&&);
 
     /**
      * Non-blocking method, which indiscriminately causes the database entry for the specified
@@ -272,29 +289,21 @@ private:
 };
 
 /**
- * Constructed exclusively by the CatalogCache contains a reference to the routing information for
- * the specified collection.
+ * Constructed exclusively by the CatalogCache.
+ *
+ * This RoutingInfo can be considered a "package" of routing info for the database and for the
+ * collection. Once unsharded collections are treated as sharded collections with a single chunk,
+ * they will also have a ChunkManager with a "chunk distribution." At that point, this "package" can
+ * be dismantled: routing for commands that route by database can directly retrieve the
+ * CachedDatabaseInfo, while routing for commands that route by collection can directly retrieve the
+ * ChunkManager.
  */
 class CachedCollectionRoutingInfo {
 public:
-    /**
-     * These serve the same purpose: to route to the primary shard for the collection's database.
-     * Paths that have been updated to attach a databaseVersion use db(). Once all paths have been
-     * updated, primaryId() and primary() can be deleted.
-     */
-    const ShardId& primaryId() const {
-        return _db.primaryId();
-    };
-    std::shared_ptr<Shard> primary() const {
-        return _db.primary();
-    };
     CachedDatabaseInfo db() const {
         return _db;
     };
 
-    /**
-     * If the collection is sharded, returns a chunk manager for it. Otherwise, nullptr.
-     */
     std::shared_ptr<ChunkManager> cm() const {
         return _cm;
     }

@@ -9,7 +9,7 @@
     const testDB = db.getSiblingDB(dbName);
     const testColl = testDB[collName];
 
-    testColl.drop();
+    testDB.runCommand({drop: collName, writeConcern: {w: "majority"}});
 
     assert.commandWorked(
         testDB.createCollection(testColl.getName(), {writeConcern: {w: "majority"}}));
@@ -20,10 +20,12 @@
     let txnNumber = 0;
 
     jsTestLog("Check that abortTransaction accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         abortTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -35,16 +37,19 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
     // The applyOps command is intentionally left out.
 
     jsTestLog("Check that commitTransaction accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
+    // commitTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         commitTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -63,6 +68,7 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -122,6 +128,7 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -131,6 +138,7 @@
         batchSize: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(1),
+        autocommit: false
     }));
 
     jsTestLog("Check that findandmodify accepts a statement ID");
@@ -140,6 +148,7 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -150,14 +159,17 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
     // Abort the transaction to release locks.
-    assert.commandWorked(sessionDb.runCommand({
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         abortTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        autocommit: false
     }));
     jsTestLog("Check that geoNear accepts a statement ID");
     assert.writeOK(testColl.insert({geo: {type: "Point", coordinates: [0, 0]}, a: 0}),
@@ -183,7 +195,7 @@
         spherical: true,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0),
+        stmtId: NumberInt(0)
     }));
 
     jsTestLog("Check that geoSearch accepts a statement ID");
@@ -195,6 +207,8 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
+        autocommit: false
     }));
 
     jsTestLog("Check that group accepts a statement ID");
@@ -209,7 +223,7 @@
         },
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0),
+        stmtId: NumberInt(0)
     }));
 
     jsTestLog("Check that insert accepts a statement ID");
@@ -219,6 +233,7 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -233,7 +248,7 @@
         },
         out: {inline: 1},
         txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0),
+        stmtId: NumberInt(0)
     }));
 
     jsTestLog("Check that parallelCollectionScan accepts a statement ID");
@@ -246,10 +261,12 @@
     }));
 
     jsTestLog("Check that prepareTransaction accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
+    // prepareTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         prepareTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
@@ -262,15 +279,18 @@
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber),
         stmtId: NumberInt(0),
+        startTransaction: true,
         autocommit: false
     }));
 
     // Abort the last transaction because it appears the system stalls during shutdown if
     // a transaction is open.
-    assert.commandWorked(sessionDb.runCommand({
+    // abortTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
         abortTransaction: 1,
         txnNumber: NumberLong(txnNumber++),
         stmtId: NumberInt(1),
+        autocommit: false
     }));
 
     session.endSession();

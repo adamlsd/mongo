@@ -34,6 +34,7 @@
 #include "mongo/db/bson/bson_helper.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/pipeline/change_stream_constants.h"
 #include "mongo/db/pipeline/document_path_support.h"
@@ -237,7 +238,9 @@ DocumentSource::GetNextResult DocumentSourceCloseCursor::getNext() {
 }  // namespace
 
 BSONObj DocumentSourceChangeStream::buildMatchFilter(
-    const boost::intrusive_ptr<ExpressionContext>& expCtx, Timestamp startFrom, bool isResume) {
+    const boost::intrusive_ptr<ExpressionContext>& expCtx,
+    Timestamp startFrom,
+    bool startFromInclusive) {
     auto nss = expCtx->ns;
     auto onEntireDB = nss.isCollectionlessAggregateNS();
     const auto regexAllCollections = R"(\.(?!(\$|system\.)))";
@@ -300,27 +303,22 @@ BSONObj DocumentSourceChangeStream::buildMatchFilter(
     // Match oplog entries after "start" and are either supported (1) commands or (2) operations,
     // excepting those tagged "fromMigrate".
     // Include the resume token, if resuming, so we can verify it was still present in the oplog.
-    return BSON("$and" << BSON_ARRAY(BSON("ts" << (isResume ? GTE : GT) << startFrom)
+    return BSON("$and" << BSON_ARRAY(BSON("ts" << (startFromInclusive ? GTE : GT) << startFrom)
                                      << BSON(OR(opMatch, commandMatch))
                                      << BSON("fromMigrate" << NE << true)));
 }
 
-list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
-    BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
-    // A change stream is a tailable + awaitData cursor.
-    expCtx->tailableMode = TailableMode::kTailableAndAwaitData;
+namespace {
 
-    // Change stream on an entire database is a new 4.0 feature.
-    uassert(ErrorCodes::QueryFeatureNotAllowed,
-            str::stream() << "$changeStream on an entire database is not allowed in the current "
-                             "feature compatibility version. See "
-                          << feature_compatibility_version_documentation::kCompatibilityLink
-                          << " for more information.",
-            !expCtx->ns.isCollectionlessAggregateNS() ||
-                serverGlobalParams.featureCompatibility.getVersion() >=
-                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
-
-    boost::optional<Timestamp> startFrom;
+/**
+ * Parses the resume options in 'spec', optionally populating the resume stage and cluster time to
+ * start from.  Throws an AssertionException if not running on a replica set or multiple resume
+ * options are specified.
+ */
+void parseResumeOptions(const intrusive_ptr<ExpressionContext>& expCtx,
+                        const DocumentSourceChangeStreamSpec& spec,
+                        intrusive_ptr<DocumentSource>* resumeStageOut,
+                        boost::optional<Timestamp>* startFromOut) {
     if (!expCtx->inMongos) {
         auto replCoord = repl::ReplicationCoordinator::get(expCtx->opCtx);
         uassert(40573,
@@ -328,12 +326,9 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
                 replCoord &&
                     replCoord->getReplicationMode() ==
                         repl::ReplicationCoordinator::Mode::modeReplSet);
-        startFrom = replCoord->getMyLastAppliedOpTime().getTimestamp();
+        *startFromOut = replCoord->getMyLastAppliedOpTime().getTimestamp();
     }
 
-    intrusive_ptr<DocumentSource> resumeStage = nullptr;
-    auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserErrorContext("$changeStream"),
-                                                      elem.embeddedObject());
     if (auto resumeAfter = spec.getResumeAfter()) {
         ResumeToken token = resumeAfter.get();
         ResumeTokenData tokenData = token.getData();
@@ -347,24 +342,97 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
                     "The resume token UUID does not exist. Has the collection been dropped?",
                     !resumeNamespace.isEmpty());
         }
-        startFrom = tokenData.clusterTime;
+        *startFromOut = tokenData.clusterTime;
         if (expCtx->needsMerge) {
-            resumeStage = DocumentSourceShardCheckResumability::create(expCtx, std::move(token));
+            *resumeStageOut =
+                DocumentSourceShardCheckResumability::create(expCtx, tokenData.clusterTime);
         } else {
-            resumeStage = DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(token));
+            *resumeStageOut =
+                DocumentSourceEnsureResumeTokenPresent::create(expCtx, std::move(token));
         }
     }
-    if (auto resumeAfterClusterTime = spec.getResumeAfterClusterTime()) {
-        uassert(40674,
-                str::stream() << "Do not specify both "
-                              << DocumentSourceChangeStreamSpec::kResumeAfterFieldName
-                              << " and "
-                              << DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeFieldName
-                              << " in a $changeStream stage.",
-                !resumeStage);
-        startFrom = resumeAfterClusterTime->getTimestamp();
+
+    auto resumeAfterClusterTime = spec.getResumeAfterClusterTimeDeprecated();
+    auto startAtClusterTime = spec.getStartAtClusterTime();
+
+    uassert(40674,
+            "Only one type of resume option is allowed, but multiple were found.",
+            !(*resumeStageOut) || (!resumeAfterClusterTime && !startAtClusterTime));
+
+    if (resumeAfterClusterTime) {
+        if (serverGlobalParams.featureCompatibility.getVersion() >=
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
+            warning() << "The '$_resumeAfterClusterTime' option is deprecated, please use "
+                         "'startAtClusterTime' instead.";
+        }
+        *startFromOut = resumeAfterClusterTime->getTimestamp();
     }
-    const bool changeStreamIsResuming = (resumeStage != nullptr);
+
+    // New field name starting in 4.0 is 'startAtClusterTime'.
+    if (startAtClusterTime) {
+        uassert(ErrorCodes::QueryFeatureNotAllowed,
+                str::stream() << "The startAtClusterTime option is not allowed in the current "
+                                 "feature compatibility version. See "
+                              << feature_compatibility_version_documentation::kCompatibilityLink
+                              << " for more information.",
+                serverGlobalParams.featureCompatibility.getVersion() >=
+                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
+        uassert(50573,
+                str::stream()
+                    << "Do not specify both "
+                    << DocumentSourceChangeStreamSpec::kStartAtClusterTimeFieldName
+                    << " and "
+                    << DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeDeprecatedFieldName
+                    << " in a $changeStream stage.",
+                !resumeAfterClusterTime);
+        *startFromOut = startAtClusterTime->getTimestamp();
+        *resumeStageOut = DocumentSourceShardCheckResumability::create(expCtx, **startFromOut);
+    }
+}
+
+}  // namespace
+
+list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
+    BSONElement elem, const intrusive_ptr<ExpressionContext>& expCtx) {
+    // A change stream is a tailable + awaitData cursor.
+    expCtx->tailableMode = TailableModeEnum::kTailableAndAwaitData;
+
+    // Prevent $changeStream from running on an entire database (or cluster-wide) unless we are in
+    // test mode.
+    // TODO SERVER-34283: remove once whole-database $changeStream is feature-complete.
+    uassert(ErrorCodes::QueryFeatureNotAllowed,
+            "Running $changeStream on an entire database or cluster is not permitted unless the "
+            "deployment is in test mode.",
+            !(expCtx->ns.isCollectionlessAggregateNS() && !getTestCommandsEnabled()));
+
+    // Change stream on an entire database is a new 4.0 feature.
+    uassert(ErrorCodes::QueryFeatureNotAllowed,
+            str::stream() << "$changeStream on an entire database is not allowed in the current "
+                             "feature compatibility version. See "
+                          << feature_compatibility_version_documentation::kCompatibilityLink
+                          << " for more information.",
+            !expCtx->ns.isCollectionlessAggregateNS() ||
+                serverGlobalParams.featureCompatibility.getVersion() >=
+                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
+
+    auto spec = DocumentSourceChangeStreamSpec::parse(IDLParserErrorContext("$changeStream"),
+                                                      elem.embeddedObject());
+
+    // TODO SERVER-34086: $changeStream may run against the 'admin' database iff
+    // 'allChangesForCluster' is true.
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "$changeStream may not be opened on the internal " << expCtx->ns.db()
+                          << " database",
+            !(expCtx->ns.isAdminDB() || expCtx->ns.isLocal() || expCtx->ns.isConfigDB()));
+
+    uassert(ErrorCodes::InvalidNamespace,
+            str::stream() << "$changeStream may not be opened on the internal " << expCtx->ns.ns()
+                          << " collection",
+            !expCtx->ns.isSystem());
+
+    boost::optional<Timestamp> startFrom;
+    intrusive_ptr<DocumentSource> resumeStage = nullptr;
+    parseResumeOptions(expCtx, spec, &resumeStage, &startFrom);
 
     auto fullDocOption = spec.getFullDocument();
     uassert(40575,
@@ -375,12 +443,6 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
                           << "\"",
             fullDocOption == "updateLookup"_sd || fullDocOption == "default"_sd);
 
-    // TODO: SERVER-33820 should add support for 'updateLookup' with a change stream on a whole
-    // database.
-    uassert(50761,
-            "'updateLookup' not supported with a change stream on an entire database.",
-            fullDocOption != "updateLookup"_sd || !expCtx->ns.isCollectionlessAggregateNS());
-
     const bool shouldLookupPostImage = (fullDocOption == "updateLookup"_sd);
 
     list<intrusive_ptr<DocumentSource>> stages;
@@ -389,8 +451,9 @@ list<intrusive_ptr<DocumentSource>> DocumentSourceChangeStream::createFromBson(
     // 'resumeAfter' starting point, or should start from the latest majority committed operation.
     invariant(expCtx->inMongos || static_cast<bool>(startFrom));
     if (startFrom) {
+        const bool startFromInclusive = (resumeStage != nullptr);
         stages.push_back(DocumentSourceOplogMatch::create(
-            buildMatchFilter(expCtx, *startFrom, changeStreamIsResuming), expCtx));
+            buildMatchFilter(expCtx, *startFrom, startFromInclusive), expCtx));
     }
 
     stages.push_back(createTransformationStage(elem.embeddedObject(), expCtx));
@@ -423,9 +486,9 @@ BSONObj DocumentSourceChangeStream::replaceResumeTokenInCommand(const BSONObj or
         pipeline[0][DocumentSourceChangeStream::kStageName].getDocument());
     changeStreamStage[DocumentSourceChangeStreamSpec::kResumeAfterFieldName] = Value(resumeToken);
 
-    // If the command was initially specified with a resumeAfterClusterTime, we need to remove it
+    // If the command was initially specified with a startAtClusterTime, we need to remove it
     // to use the new resume token.
-    changeStreamStage[DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeFieldName] = Value();
+    changeStreamStage[DocumentSourceChangeStreamSpec::kStartAtClusterTimeFieldName] = Value();
     pipeline[0] =
         Value(Document{{DocumentSourceChangeStream::kStageName, changeStreamStage.freeze()}});
     MutableDocument newCmd(originalCmd);
@@ -610,14 +673,22 @@ Document DocumentSourceChangeStream::Transformation::serializeStageOptions(
     // cluster time on the mongos.  This ensures all shards use the same start time.
     if (_expCtx->inMongos &&
         changeStreamOptions[DocumentSourceChangeStreamSpec::kResumeAfterFieldName].missing() &&
-        changeStreamOptions[DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeFieldName]
+        changeStreamOptions
+            [DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeDeprecatedFieldName]
+                .missing() &&
+        changeStreamOptions[DocumentSourceChangeStreamSpec::kStartAtClusterTimeFieldName]
             .missing()) {
         MutableDocument newChangeStreamOptions(changeStreamOptions);
-        newChangeStreamOptions[DocumentSourceChangeStreamSpec::kResumeAfterClusterTimeFieldName]
+
+        // Use the current cluster time plus 1 tick since the oplog query will include all
+        // operations/commands equal to or greater than the 'startAtClusterTime' timestamp. In
+        // particular, avoid including the last operation that went through mongos in an attempt to
+        // match the behavior of a replica set more closely.
+        auto clusterTime = LogicalClock::get(_expCtx->opCtx)->getClusterTime();
+        clusterTime.addTicks(1);
+        newChangeStreamOptions[DocumentSourceChangeStreamSpec::kStartAtClusterTimeFieldName]
                               [ResumeTokenClusterTime::kTimestampFieldName] =
-                                  Value(LogicalClock::get(_expCtx->opCtx)
-                                            ->getClusterTime()
-                                            .asTimestamp());
+                                  Value(clusterTime.asTimestamp());
         changeStreamOptions = newChangeStreamOptions.freeze();
     }
     return changeStreamOptions;

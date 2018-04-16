@@ -66,25 +66,18 @@ typedef enum {
     LIBMONGODB_CAPI_ERROR_UNKNOWN = -1,
     LIBMONGODB_CAPI_SUCCESS = 0,
 
+    LIBMONGODB_CAPI_ERROR_ENOMEM,
     LIBMONGODB_CAPI_ERROR_EXCEPTION,
     LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED,
     LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
+    LIBMONGODB_CAPI_ERROR_INVALID_LIB_HANDLE,
     LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
+    LIBMONGODB_CAPI_ERROR_INVALID_DB_HANDLE,
     LIBMONGODB_CAPI_ERROR_HAS_DB_HANDLES_OPEN,
     LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN,
     LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN,
-    LIBMONGODB_CAPI_ERROR_ENOMEM,
+    LIBMONGODB_CAPI_ERROR_INVALID_CLIENT_HANDLE,
 } libmongodbcapi_error;
-
-/**
- * Allocate an API-return-status buffer.
- * @return Returns a pointer to a newly allocated `libmongodbcapi_status` object which will hold
- * details of any failures of operations to which it was passed.
- * @return `NULL` when construction of a `libmongodbcapi_status` object fails.  `errno` will be set
- * with an appropriate error code, in this case.
- * @note Allocation of an Embedded MongoDB Status buffer should rarely fail, except for out-of-memory reasons.
- */
-libmongodbcapi_status* libmongodbcapi_allocate_status();
 
 /**
  * Valid bits for the log_flags bitfield in libmongodbcapi_init_params.
@@ -129,9 +122,20 @@ typedef struct {
 } libmongodbcapi_init_params;
 
 /**
+ * Allocate an API-return-status buffer.
+ * @return Returns a pointer to a newly allocated `libmongodbcapi_status` object which will hold
+ * details of any failures of operations to which it was passed.
+ * @return `NULL` when construction of a `libmongodbcapi_status` object fails.  `errno` will be set
+ * with an appropriate error code, in this case.
+ * @note Allocation of an Embedded MongoDB Status buffer should rarely fail, except for out-of-memory reasons.
+ */
+libmongodbcapi_status* libmongodbcapi_allocate_status( void );
+
+/**
  * Frees the storage associated with a valid `libmongodbcapi_status` object.
  * @param status The status object to release.
  * @pre `status` must be a valid `libmongodbcapi_status` object.
+ * @pre `status` must not be `NULL`.
  * @note This function does not report failures.
  * @note This function exhibits undefined behavior unless is its preconditions are met.
  */

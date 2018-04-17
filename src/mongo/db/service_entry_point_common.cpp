@@ -40,6 +40,7 @@
 #include "mongo/db/client.h"
 #include "mongo/db/command_can_run_here.h"
 #include "mongo/db/commands.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/concurrency/global_lock_acquisition_tracker.h"
 #include "mongo/db/curop.h"
 #include "mongo/db/curop_metrics.h"
@@ -129,6 +130,23 @@ const StringMap<int> sessionCheckoutWhitelist = {{"abortTransaction", 1},
                                                  {"refreshLogicalSessionCacheNow", 1},
                                                  {"update", 1}};
 
+// The command names that are allowed in a multi-document transaction.
+const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
+                                        {"aggregate", 1},
+                                        {"commitTransaction", 1},
+                                        {"count", 1},
+                                        {"delete", 1},
+                                        {"distinct", 1},
+                                        {"doTxn", 1},
+                                        {"find", 1},
+                                        {"findandmodify", 1},
+                                        {"findAndModify", 1},
+                                        {"geoSearch", 1},
+                                        {"getMore", 1},
+                                        {"insert", 1},
+                                        {"prepareTransaction", 1},
+                                        {"update", 1}};
+
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
                                       CurOp* curop,
@@ -213,6 +231,10 @@ void generateErrorResponse(OperationContext* opCtx,
     replyBuilder->setMetadata(replyMetadata);
 }
 
+bool hasClusterTime(BSONObj metadata) {
+    return metadata.hasField(rpc::LogicalTimeMetadata::fieldName());
+}
+
 /**
  * Guard object for making a good-faith effort to enter maintenance mode and leave it when it
  * goes out of scope.
@@ -255,7 +277,7 @@ void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadat
     const bool isReplSet =
         replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet;
 
-    if (isReplSet) {
+    if (isReplSet && LogicalClock::get(opCtx)->isEnabled()) {
         if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
             // No need to sign cluster times for internal clients.
             SignedLogicalTime currentTime(
@@ -265,8 +287,10 @@ void appendReplyMetadataOnError(OperationContext* opCtx, BSONObjBuilder* metadat
         } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
             auto currentTime =
                 validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-            logicalTimeMetadata.writeToMetadata(metadataBob);
+            if (currentTime.getKeyId() != 0) {
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            }
         }
     }
 
@@ -299,17 +323,22 @@ void appendReplyMetadata(OperationContext* opCtx,
                 .writeToMetadata(metadataBob)
                 .transitional_ignore();
         }
-        if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
-            // No need to sign cluster times for internal clients.
-            SignedLogicalTime currentTime(
-                LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
-            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-            logicalTimeMetadata.writeToMetadata(metadataBob);
-        } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
-            auto currentTime =
-                validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
-            rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
-            logicalTimeMetadata.writeToMetadata(metadataBob);
+        if (LogicalClock::get(opCtx)->isEnabled()) {
+            if (LogicalTimeValidator::isAuthorizedToAdvanceClock(opCtx)) {
+                // No need to sign cluster times for internal clients.
+                SignedLogicalTime currentTime(
+                    LogicalClock::get(opCtx)->getClusterTime(), TimeProofService::TimeProof(), 0);
+                rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                logicalTimeMetadata.writeToMetadata(metadataBob);
+            } else if (auto validator = LogicalTimeValidator::get(opCtx)) {
+                auto currentTime =
+                    validator->trySignLogicalTime(LogicalClock::get(opCtx)->getClusterTime());
+                // Do not add $clusterTime if the signature and keyId is dummy.
+                if (currentTime.getKeyId() != 0) {
+                    rpc::LogicalTimeMetadata logicalTimeMetadata(currentTime);
+                    logicalTimeMetadata.writeToMetadata(metadataBob);
+                }
+            }
         }
 
         if (isShardingAware || isConfig) {
@@ -330,12 +359,20 @@ void appendReplyMetadata(OperationContext* opCtx,
  * if the read concern is not valid for the command.
  */
 StatusWith<repl::ReadConcernArgs> _extractReadConcern(const CommandInvocation* invocation,
-                                                      const BSONObj& cmdObj) {
+                                                      const BSONObj& cmdObj,
+                                                      bool upconvertToSnapshot) {
     repl::ReadConcernArgs readConcernArgs;
 
     auto readConcernParseStatus = readConcernArgs.initialize(cmdObj);
     if (!readConcernParseStatus.isOK()) {
         return readConcernParseStatus;
+    }
+
+    if (upconvertToSnapshot) {
+        auto upconvertToSnapshotStatus = readConcernArgs.upconvertReadConcernLevelToSnapshot();
+        if (!upconvertToSnapshotStatus.isOK()) {
+            return upconvertToSnapshotStatus;
+        }
     }
 
     if (!invocation->supportsReadConcern(readConcernArgs.getLevel())) {
@@ -406,7 +443,7 @@ void invokeInTransaction(OperationContext* opCtx,
         return;
     }
 
-    session->unstashTransactionResources(opCtx);
+    session->unstashTransactionResources(opCtx, invocation->definition()->getName());
     ScopeGuard guard = MakeGuard([session, opCtx]() { session->abortActiveTransaction(opCtx); });
 
     invocation->run(opCtx, replyBuilder);
@@ -447,6 +484,13 @@ bool runCommandImpl(OperationContext* opCtx,
         invokeInTransaction(opCtx, invocation, &crb);
     } else {
         auto wcResult = uassertStatusOK(extractWriteConcern(opCtx, request.body));
+        auto session = OperationContextSession::get(opCtx);
+        uassert(ErrorCodes::InvalidOptions,
+                "writeConcern is not allowed within a multi-statement transaction",
+                wcResult.usedDefault || !session || !session->inMultiDocumentTransaction() ||
+                    invocation->definition()->getName() == "commitTransaction" ||
+                    invocation->definition()->getName() == "abortTransaction" ||
+                    invocation->definition()->getName() == "doTxn");
 
         auto lastOpBeforeRun = repl::ReplClientInfo::forClient(opCtx->getClient()).getLastOp();
 
@@ -455,8 +499,7 @@ bool runCommandImpl(OperationContext* opCtx,
         ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
         opCtx->setWriteConcern(wcResult);
         ON_BLOCK_EXIT([&] {
-            behaviors.waitForWriteConcern(
-                opCtx, invocation->definition()->getName(), lastOpBeforeRun, crb.getBodyBuilder());
+            behaviors.waitForWriteConcern(opCtx, invocation, lastOpBeforeRun, crb.getBodyBuilder());
         });
         invokeInTransaction(opCtx, invocation, &crb);
 
@@ -473,20 +516,22 @@ bool runCommandImpl(OperationContext* opCtx,
     }();
     behaviors.attachCurOpErrInfo(opCtx, crb.getBodyBuilder().asTempObj());
 
-    auto operationTime = computeOperationTime(
-        opCtx, startOperationTime, repl::ReadConcernArgs::get(opCtx).getLevel());
-
-    // An uninitialized operation time means the cluster time is not propagated, so the operation
-    // time should not be attached to the response.
-    if (operationTime != LogicalTime::kUninitialized) {
-        auto body = crb.getBodyBuilder();
-        operationTime.appendAsOperationTime(&body);
-    }
-
     BSONObjBuilder metadataBob;
     appendReplyMetadata(opCtx, request, &metadataBob);
-    replyBuilder->setMetadata(metadataBob.done());
 
+    auto metadata = metadataBob.done();
+
+    if (hasClusterTime(metadata)) {
+        auto operationTime = computeOperationTime(
+            opCtx, startOperationTime, repl::ReadConcernArgs::get(opCtx).getLevel());
+
+        if (operationTime != LogicalTime::kUninitialized) {
+            auto body = crb.getBodyBuilder();
+            operationTime.appendAsOperationTime(&body);
+        }
+    }
+
+    replyBuilder->setMetadata(metadata);
     return ok;
 }
 
@@ -530,17 +575,52 @@ void execCommandDatabase(OperationContext* opCtx,
         const bool shouldCheckoutSession = static_cast<bool>(opCtx->getTxnNumber()) &&
             sessionCheckoutWhitelist.find(command->getName()) != sessionCheckoutWhitelist.cend();
 
+        // Parse the arguments specific to multi-statement transactions.
+        boost::optional<bool> startMultiDocTxn = boost::none;
         boost::optional<bool> autocommitVal = boost::none;
-        if (sessionOptions && sessionOptions->getAutocommit()) {
-            autocommitVal = *sessionOptions->getAutocommit();
-        } else if (sessionOptions && command->getName() == "doTxn") {
-            // Autocommit is overridden specifically for doTxn to get the oplog entry generation
-            // behavior used for multi-document transactions.
-            // The doTxn command still logically behaves as a commit.
-            autocommitVal = false;
+        if (sessionOptions) {
+            startMultiDocTxn = sessionOptions->getStartTransaction();
+            autocommitVal = sessionOptions->getAutocommit();
+            if (command->getName() == "doTxn") {
+                // Autocommit and 'startMultiDocTxn' are overridden for 'doTxn' to get the oplog
+                // entry generation behavior used for multi-document transactions. The 'doTxn'
+                // command still logically behaves as a commit.
+                autocommitVal = false;
+                startMultiDocTxn = true;
+            }
         }
 
-        OperationContextSession sessionTxnState(opCtx, shouldCheckoutSession, autocommitVal);
+        uassert(50767,
+                str::stream() << "Cannot run '" << command->getName()
+                              << "' in a multi-document transaction.",
+                !autocommitVal ||
+                    txnCmdWhitelist.find(command->getName()) != txnCmdWhitelist.cend());
+
+        // Reject commands with 'txnNumber' that do not check out the Session, since no retryable
+        // writes or transaction machinery will be used to execute commands that do not check out
+        // the Session. Do not check this if we are in DBDirectClient because the outer command is
+        // responsible for checking out the Session.
+        if (!opCtx->getClient()->isInDirectClient()) {
+            uassert(50768,
+                    str::stream() << "It is illegal to provide a txnNumber for command "
+                                  << command->getName(),
+                    shouldCheckoutSession || !opCtx->getTxnNumber());
+        }
+
+        // This constructor will check out the session and start a transaction, if necessary. It
+        // handles the appropriate state management for both multi-statement transactions and
+        // retryable writes.
+        OperationContextSession sessionTxnState(
+            opCtx, shouldCheckoutSession, autocommitVal, startMultiDocTxn);
+
+        // If we are in a multi-document transaction, ensure the command is allowed in this context.
+        // We do not check this in DBDirectClient, since 'aggregate' is allowed in transactions, but
+        // 'geoNear' is not, and 'aggregate' can run 'geoNear' in DBDirectClient.
+        if (!opCtx->getClient()->isInDirectClient()) {
+            auto session = OperationContextSession::get(opCtx);
+            invariant(!session || !session->inMultiDocumentTransaction() ||
+                      txnCmdWhitelist.find(command->getName()) != txnCmdWhitelist.cend());
+        }
 
         const auto dbname = request.getDatabase().toString();
         uassert(
@@ -553,7 +633,6 @@ void execCommandDatabase(OperationContext* opCtx,
         BSONElement cmdOptionMaxTimeMSField;
         BSONElement allowImplicitCollectionCreationField;
         BSONElement helpField;
-        BSONElement queryOptionMaxTimeMSField;
 
         StringMap<int> topLevelFields;
         for (auto&& element : request.body) {
@@ -565,7 +644,8 @@ void execCommandDatabase(OperationContext* opCtx,
             } else if (fieldName == CommandHelpers::kHelpFieldName) {
                 helpField = element;
             } else if (fieldName == QueryRequest::queryOptionMaxTimeMS) {
-                queryOptionMaxTimeMSField = element;
+                uasserted(ErrorCodes::InvalidOptions,
+                          "no such command option $maxTimeMs; use maxTimeMS instead");
             }
 
             uassert(ErrorCodes::FailedToParse,
@@ -585,7 +665,7 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         ImpersonationSessionGuard guard(opCtx);
-        uassertStatusOK(Command::checkAuthorization(command, opCtx, request));
+        invocation->checkAuthorization(opCtx, request);
 
         const bool iAmPrimary = replCoord->canAcceptWritesForDatabase_UNSAFE(opCtx, dbname);
 
@@ -638,14 +718,16 @@ void execCommandDatabase(OperationContext* opCtx,
             opCounters->gotCommand();
         }
 
-        // Handle command option maxTimeMS.
-        int maxTimeMS = uassertStatusOK(QueryRequest::parseMaxTimeMS(cmdOptionMaxTimeMSField));
-
-        uassert(ErrorCodes::InvalidOptions,
-                "no such command option $maxTimeMs; use maxTimeMS instead",
-                queryOptionMaxTimeMSField.eoo());
-
-        if (maxTimeMS > 0) {
+        // Parse the 'maxTimeMS' command option, and use it to set a deadline for the operation on
+        // the OperationContext. The 'maxTimeMS' option unfortunately has a different meaning for a
+        // getMore command, where it is used to communicate the maximum time to wait for new inserts
+        // on tailable cursors, not as a deadline for the operation.
+        // TODO SERVER-34277 Remove the special handling for maxTimeMS for getMores. This will
+        // require introducing a new 'max await time' parameter for getMore, and eventually banning
+        // maxTimeMS altogether on a getMore command.
+        const int maxTimeMS =
+            uassertStatusOK(QueryRequest::parseMaxTimeMS(cmdOptionMaxTimeMSField));
+        if (maxTimeMS > 0 && command->getLogicalOp() != LogicalOp::opGetMore) {
             uassert(40119,
                     "Illegal attempt to set operation deadline within DBDirectClient",
                     !opCtx->getClient()->isInDirectClient());
@@ -653,14 +735,38 @@ void execCommandDatabase(OperationContext* opCtx,
         }
 
         auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        readConcernArgs = uassertStatusOK(_extractReadConcern(invocation.get(), request.body));
+        // TODO(SERVER-34113) replace below txnNumber/logicalSessionId checks with
+        // Session::inMultiDocumentTransaction().
+        if (!opCtx->getClient()->isInDirectClient() || !opCtx->getTxnNumber() ||
+            !opCtx->getLogicalSessionId()) {
+            auto session = OperationContextSession::get(opCtx);
+            const bool upconvertToSnapshot = session && session->inMultiDocumentTransaction() &&
+                sessionOptions &&
+                (sessionOptions->getStartTransaction() == boost::optional<bool>(true));
+            readConcernArgs = uassertStatusOK(
+                _extractReadConcern(invocation.get(), request.body, upconvertToSnapshot));
+        }
+
+        if (readConcernArgs.getArgsAtClusterTime()) {
+            uassert(ErrorCodes::InvalidOptions,
+                    "atClusterTime is only used for testing",
+                    getTestCommandsEnabled());
+        }
 
         if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern) {
             uassert(ErrorCodes::InvalidOptions,
-                    "readConcernLevel snapshot requires a session ID",
+                    "readConcern level snapshot is only valid in multi-statement transactions",
+                    // With test commands enabled, a read command with readConcern snapshot is
+                    // a valid snapshot read.
+                    (getTestCommandsEnabled() &&
+                     invocation->definition()->getReadWriteType() ==
+                         BasicCommand::ReadWriteType::kRead) ||
+                        (autocommitVal != boost::none && *autocommitVal == false));
+            uassert(ErrorCodes::InvalidOptions,
+                    "readConcern level snapshot requires a session ID",
                     opCtx->getLogicalSessionId());
             uassert(ErrorCodes::InvalidOptions,
-                    "readConcernLevel snapshot requires a txnNumber",
+                    "readConcern level snapshot requires a txnNumber",
                     opCtx->getTxnNumber());
 
             opCtx->lockState()->setSharedLocksShouldTwoPhaseLock(true);
@@ -721,6 +827,11 @@ void execCommandDatabase(OperationContext* opCtx,
                     opCtx, NamespaceString(sce->getns()), sce->getVersionReceived())
                     .ignore();
             }
+        } else if (auto sce = e.extraInfo<StaleDbRoutingVersion>()) {
+            if (!opCtx->getClient()->isInDirectClient()) {
+                onDbVersionMismatch(
+                    opCtx, sce->getDb(), sce->getVersionReceived(), sce->getVersionWanted());
+            }
         } else if (auto cannotImplicitCreateCollInfo =
                        e.extraInfo<CannotImplicitlyCreateCollectionInfo>()) {
             if (ShardingState::get(opCtx)->enabled()) {
@@ -731,34 +842,37 @@ void execCommandDatabase(OperationContext* opCtx,
 
         BSONObjBuilder metadataBob;
         appendReplyMetadata(opCtx, request, &metadataBob);
-
-        // Note: the read concern may not have been successfully or yet placed on the opCtx, so
-        // parsing it separately here.
-        const std::string db = request.getDatabase().toString();
-        auto readConcernArgsStatus = _extractReadConcern(invocation.get(), request.body);
-        auto operationTime = readConcernArgsStatus.isOK()
-            ? computeOperationTime(
-                  opCtx, startOperationTime, readConcernArgsStatus.getValue().getLevel())
-            : LogicalClock::get(opCtx)->getClusterTime();
-
+        auto metadata = metadataBob.obj();
         // An uninitialized operation time means the cluster time is not propagated, so the
         // operation time should not be attached to the error response.
-        if (operationTime != LogicalTime::kUninitialized) {
+        if (hasClusterTime(metadata)) {
+            // Note: the read concern may not have been successfully or yet placed on the opCtx, so
+            // parsing it separately here.
+            const std::string db = request.getDatabase().toString();
+            auto readConcernArgsStatus = _extractReadConcern(invocation.get(), request.body, false);
+            auto operationTime = readConcernArgsStatus.isOK()
+                ? computeOperationTime(
+                      opCtx, startOperationTime, readConcernArgsStatus.getValue().getLevel())
+                : LogicalClock::get(opCtx)->getClusterTime();
+
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
                    << "with arguments '"
-                   << ServiceEntryPointCommon::getRedactedCopyForLogging(command, request.body)
-                   << "' and operationTime '" << operationTime.toString() << "': " << e.toString();
+                   << redact(
+                          ServiceEntryPointCommon::getRedactedCopyForLogging(command, request.body))
+                   << "' and operationTime '" << operationTime.toString()
+                   << "': " << redact(e.toString());
 
-            generateErrorResponse(opCtx, replyBuilder, e, metadataBob.obj(), operationTime);
+            generateErrorResponse(opCtx, replyBuilder, e, metadata, operationTime);
         } else {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
                    << "with arguments '"
-                   << ServiceEntryPointCommon::getRedactedCopyForLogging(command, request.body)
-                   << "': " << e.toString();
+                   << redact(
+                          ServiceEntryPointCommon::getRedactedCopyForLogging(command, request.body))
+                   << "': " << redact(e.toString());
 
-            generateErrorResponse(opCtx, replyBuilder, e, metadataBob.obj());
+            generateErrorResponse(opCtx, replyBuilder, e, metadata);
         }
     }
 }
@@ -793,14 +907,20 @@ DbResponse runCommands(OperationContext* opCtx,
             if (ErrorCodes::isConnectionFatalMessageParseError(ex.code()))
                 throw;
 
-            auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
             BSONObjBuilder metadataBob;
             appendReplyMetadataOnError(opCtx, &metadataBob);
+            auto metadata = metadataBob.obj();
+
             // Otherwise, reply with the parse error. This is useful for cases where parsing fails
             // due to user-supplied input, such as the document too deep error. Since we failed
             // during parsing, we can't log anything about the command.
             LOG(1) << "assertion while parsing command: " << ex.toString();
-            generateErrorResponse(opCtx, replyBuilder.get(), ex, metadataBob.obj(), operationTime);
+            if (hasClusterTime(metadata)) {
+                auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, operationTime);
+            } else {
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata);
+            }
 
             return;  // From lambda. Don't try executing if parsing failed.
         }
@@ -823,7 +943,7 @@ DbResponse runCommands(OperationContext* opCtx,
             }
 
             LOG(2) << "run command " << request.getDatabase() << ".$cmd" << ' '
-                   << ServiceEntryPointCommon::getRedactedCopyForLogging(c, request.body);
+                   << redact(ServiceEntryPointCommon::getRedactedCopyForLogging(c, request.body));
 
             {
                 // Try to set this as early as possible, as soon as we have figured out the command.
@@ -835,11 +955,17 @@ DbResponse runCommands(OperationContext* opCtx,
         } catch (const DBException& ex) {
             BSONObjBuilder metadataBob;
             appendReplyMetadataOnError(opCtx, &metadataBob);
-            auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
-            LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
-                   << "on database '" << request.getDatabase() << "': " << ex.toString();
+            auto metadata = metadataBob.obj();
 
-            generateErrorResponse(opCtx, replyBuilder.get(), ex, metadataBob.obj(), operationTime);
+            if (hasClusterTime(metadata)) {
+                auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
+                LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
+                       << "on database '" << request.getDatabase() << "': " << ex.toString();
+
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, operationTime);
+            } else {
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata);
+            }
         }
     }();
 
@@ -1151,7 +1277,7 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
                 } else if (op == dbDelete) {
                     receivedDelete(opCtx, nsString, m);
                 } else {
-                    invariant(false);
+                    MONGO_UNREACHABLE;
                 }
             }
         } catch (const AssertionException& ue) {
@@ -1164,11 +1290,8 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
 
     // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
     // this op should be sampled for profiling.
-    const bool shouldSample = currentOp.completeAndLogOperation(opCtx,
-                                                                logger::LogComponent::kCommand,
-                                                                dbresponse.response.size(),
-                                                                slowMsOverride,
-                                                                forceLog);
+    const bool shouldSample = currentOp.completeAndLogOperation(
+        opCtx, MONGO_LOG_DEFAULT_COMPONENT, dbresponse.response.size(), slowMsOverride, forceLog);
 
     Top::get(opCtx->getServiceContext())
         .incrementGlobalLatencyStats(

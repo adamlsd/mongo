@@ -643,7 +643,14 @@ void ReplicationCoordinatorExternalStateImpl::killAllUserOperations(OperationCon
     // Destroy all stashed transaction resources, in order to release locks.
     SessionKiller::Matcher matcherAllSessions(
         KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
-    killSessionsLocalKillTransactions(opCtx, matcherAllSessions);
+    bool killCursors = false;
+    killSessionsLocalKillTransactions(opCtx, matcherAllSessions, killCursors);
+}
+
+void ReplicationCoordinatorExternalStateImpl::killAllTransactionCursors(OperationContext* opCtx) {
+    SessionKiller::Matcher matcherAllSessions(
+        KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
+    killSessionsLocalKillTransactionCursors(opCtx, matcherAllSessions);
 }
 
 void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
@@ -798,6 +805,13 @@ void ReplicationCoordinatorExternalStateImpl::updateCommittedSnapshot(
         manager->setCommittedSnapshot(newCommitPoint.getTimestamp());
     }
     notifyOplogMetadataWaiters(newCommitPoint);
+}
+
+void ReplicationCoordinatorExternalStateImpl::updateLocalSnapshot(const OpTime& optime) {
+    auto manager = _service->getGlobalStorageEngine()->getSnapshotManager();
+    if (manager) {
+        manager->setLocalSnapshot(optime.getTimestamp());
+    }
 }
 
 bool ReplicationCoordinatorExternalStateImpl::snapshotsEnabled() const {

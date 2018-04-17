@@ -94,39 +94,41 @@
 
     // Passthrough tests. There are parts not implemented on mongod and mongos, they are tracked by
     // separate jiras
-    assert.commandWorked(sessionDb.coll.insert({}, {w: 2}));
-    assert.commandWorked(coll.createIndex({geo: "2d"}));
-    assert.commandWorked(coll.createIndex({haystack: "geoHaystack", a: 1}, {bucketSize: 1}));
-
-    // Passthrough tests that are not implemented yet.
-    //
-    // readConcern 'snapshot' is allowed with 'afterClusterTime'.
-    // TODO SERVER-33989: Add support for afterClusterTime for snapshot reads through mongos.
-    assert.commandFailedWithCode(sessionDb.runCommand({
-        find: collName,
-        readConcern: {level: "snapshot", afterClusterTime: clusterTime},
+    assert.commandWorked(sessionDb.runCommand({
+        aggregate: collName,
+        pipeline: [],
+        cursor: {},
+        readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
+    }));
 
     // readConcern 'snapshot' is supported by find on mongos.
     assert.commandWorked(sessionDb.runCommand(
         {find: collName, readConcern: {level: "snapshot"}, txnNumber: NumberLong(txnNumber++)}));
 
-    // TODO SERVER-33709: Add snapshot support for cluster count on mongos.
-    assert.commandFailedWithCode(sessionDb.runCommand({
-        count: collName,
-        readConcern: {level: "snapshot"},
+    // readConcern 'snapshot' is allowed with 'afterClusterTime'.
+    assert.commandWorked(sessionDb.runCommand({
+        find: collName,
+        readConcern: {level: "snapshot", afterClusterTime: clusterTime},
         txnNumber: NumberLong(txnNumber++)
-    }),
-                                 ErrorCodes.InvalidOptions);
-
-    // TODO SERVER-33354: Add snapshot support for aggregate on mongod.
-    // TODO SERVER-33029: Add snapshot support for aggregate on mongos.
-    assert.commandFailedWithCode(sessionDb.runCommand({
+    }));
+    assert.commandWorked(sessionDb.runCommand({
         aggregate: collName,
         pipeline: [],
         cursor: {},
+        readConcern: {level: "snapshot", afterClusterTime: clusterTime},
+        txnNumber: NumberLong(txnNumber++)
+    }));
+
+    assert.commandWorked(sessionDb.coll.insert({}, {w: 2}));
+    assert.commandWorked(coll.createIndex({geo: "2d"}));
+    assert.commandWorked(coll.createIndex({haystack: "geoHaystack", a: 1}, {bucketSize: 1}));
+
+    // Passthrough tests that are not implemented yet.
+
+    // TODO SERVER-33709: Add snapshot support for cluster count on mongos.
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        count: collName,
         readConcern: {level: "snapshot"},
         txnNumber: NumberLong(txnNumber++)
     }),

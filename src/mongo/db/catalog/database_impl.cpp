@@ -219,7 +219,10 @@ Collection* DatabaseImpl::_getOrCreateCollectionInstance(OperationContext* opCtx
     auto uuid = cce->getCollectionOptions(opCtx).uuid;
 
     unique_ptr<RecordStore> rs(_dbEntry->getRecordStore(nss.ns()));
-    invariant(rs.get());  // if cce exists, so should this
+    invariant(
+        rs.get(),
+        str::stream() << "Record store did not exist. Collection: " << nss.ns() << " UUID: "
+                      << (uuid ? uuid->toString() : "none"));  // if cce exists, so should this
 
     // Not registering AddCollectionChange since this is for collections that already exist.
     Collection* coll = new Collection(opCtx, nss.ns(), uuid, cce.release(), rs.release(), _dbEntry);
@@ -820,6 +823,13 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
                     opCtx,
                     !idIndex.isEmpty() ? idIndex
                                        : ic->getDefaultIdIndexSpec(featureCompatibilityVersion)));
+            } else {
+                // autoIndexId: false is only allowed on unreplicated collections.
+                uassert(50001,
+                        str::stream() << "autoIndexId:false is not allowed for collection "
+                                      << nss.ns()
+                                      << " because it can be replicated",
+                        !nss.isReplicated());
             }
         }
 

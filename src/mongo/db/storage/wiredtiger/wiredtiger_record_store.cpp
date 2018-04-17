@@ -30,6 +30,8 @@
  */
 
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
+#define LOG_FOR_RECOVERY(level) \
+    MONGO_LOG_COMPONENT(level, ::mongo::logger::LogComponent::kStorageRecovery)
 
 #include "mongo/platform/basic.h"
 
@@ -45,6 +47,7 @@
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/repl/repl_settings.h"
+#include "mongo/db/server_recovery.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/oplog_hack.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_customization_hooks.h"
@@ -592,9 +595,7 @@ StatusWith<std::string> WiredTigerRecordStore::generateCreateString(
     }
     ss << ")";
 
-    const bool keepOldLoggingSettings = !kDisableJournalForReplicatedCollections;
-    if (keepOldLoggingSettings ||
-        WiredTigerUtil::useTableLogging(NamespaceString(ns),
+    if (WiredTigerUtil::useTableLogging(NamespaceString(ns),
                                         getGlobalReplSettings().usingReplSets())) {
         ss << ",log=(enabled=true)";
     } else {
@@ -656,6 +657,17 @@ WiredTigerRecordStore::WiredTigerRecordStore(WiredTigerKVEngine* kvEngine,
     if (_isOplog) {
         checkOplogFormatVersion(ctx, _uri);
     }
+
+    // Most record stores will not have their size metadata adjusted during replication recovery.
+    // However, if this record store was created during the recovery process, we will need to keep
+    // track of size adjustments for any writes applied to it during recovery.
+    const auto serviceCtx = getGlobalServiceContext();
+    if (inReplicationRecovery(serviceCtx)) {
+        LOG_FOR_RECOVERY(2)
+            << "Marking newly-created record store as needing size adjustment during recovery. ns: "
+            << ns() << ", ident: " << _uri;
+        sizeRecoveryState(serviceCtx).markCollectionAsAlwaysNeedsSizeAdjustment(ns());
+    }
 }
 
 WiredTigerRecordStore::~WiredTigerRecordStore() {
@@ -705,8 +717,18 @@ void WiredTigerRecordStore::postConstructorInit(OperationContext* opCtx) {
             } while ((record = cursor->next()));
         }
     } else {
+        // We found no records in this collection; however, there may actually be documents present
+        // if writes to this collection were not included in the stable checkpoint the last time
+        // this node shut down. We set the data size and the record count to zero, but will adjust
+        // these if writes are played during startup recovery.
+        LOG_FOR_RECOVERY(2) << "Record store was empty; setting count metadata to zero but marking "
+                               "record store as needing size adjustment during recovery. ns: "
+                            << ns() << ", ident: " << _uri;
+        sizeRecoveryState(getGlobalServiceContext())
+            .markCollectionAsAlwaysNeedsSizeAdjustment(ns());
         _dataSize.store(0);
         _numRecords.store(0);
+
         // Need to start at 1 so we are always higher than RecordId::min()
         _nextIdNum.store(1);
         if (_sizeStorer)
@@ -760,7 +782,7 @@ int64_t WiredTigerRecordStore::storageSize(OperationContext* opCtx,
     if (_isEphemeral) {
         return dataSize(opCtx);
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn();
     StatusWith<int64_t> result =
         WiredTigerUtil::getStatisticsValueAs<int64_t>(session->getSession(),
                                                       "statistics:" + getURI(),
@@ -901,8 +923,8 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
         checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit());
     invariant(realRecoveryUnit);
     WiredTigerSessionCache* sc = realRecoveryUnit->getSessionCache();
-    OperationContext::RecoveryUnitState const realRUstate =
-        opCtx->setRecoveryUnit(new WiredTigerRecoveryUnit(sc), OperationContext::kNotInUnitOfWork);
+    WriteUnitOfWork::RecoveryUnitState const realRUstate = opCtx->setRecoveryUnit(
+        new WiredTigerRecoveryUnit(sc), WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
 
@@ -989,11 +1011,17 @@ int64_t WiredTigerRecordStore::cappedDeleteAsNeeded_inlock(OperationContext* opC
             WiredTigerCursor startWrap(_uri, _tableId, true, opCtx);
             WT_CURSOR* truncateStart = startWrap.get();
 
-            // If we know where the start point is, set it for the truncate
             if (savedFirstKey != 0) {
+                // If we know where the start point is, set it for the truncate
                 setKey(truncateStart, RecordId(savedFirstKey));
             } else {
-                truncateStart = NULL;
+                // Position at the first record.  This is equivalent to
+                // providing a NULL argument to WT_SESSION->truncate, but
+                // in that case, truncate will need to open its own cursor.
+                // Since we already have a cursor, we can use it here to
+                // make the whole operation faster.
+                ret = WT_READ_CHECK(truncateStart->next(truncateStart));
+                invariantWTOK(ret);
             }
             ret = session->truncate(session, NULL, truncateStart, truncateEnd, NULL);
 
@@ -1055,8 +1083,24 @@ bool WiredTigerRecordStore::yieldAndAwaitOplogDeletionRequest(OperationContext* 
 }
 
 void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx) {
+    if (!_kvEngine->supportsRecoverToStableTimestamp()) {
+        // For non-RTT storage engines, the oplog can always be truncated.
+        reclaimOplog(opCtx, Timestamp::max());
+        return;
+    }
+    const auto lastStableCheckpointTimestamp = _kvEngine->getLastStableCheckpointTimestamp();
+    reclaimOplog(opCtx,
+                 lastStableCheckpointTimestamp ? *lastStableCheckpointTimestamp : Timestamp::min());
+}
+
+void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx, Timestamp persistedTimestamp) {
     while (auto stone = _oplogStones->peekOldestStoneIfNeeded()) {
         invariant(stone->lastRecord.isNormal());
+
+        if (static_cast<std::uint64_t>(stone->lastRecord.repr()) >= persistedTimestamp.asULL()) {
+            // Do not truncate oplogs needed for replication recovery.
+            return;
+        }
 
         LOG(1) << "Truncating the oplog between " << _oplogStones->firstRecord << " and "
                << stone->lastRecord << " to remove approximately " << stone->records
@@ -1457,7 +1501,7 @@ void WiredTigerRecordStore::appendCustomStats(OperationContext* opCtx,
         result->appendIntOrLL("sleepCount", _cappedSleep.load());
         result->appendIntOrLL("sleepMS", _cappedSleepMS.load());
     }
-    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSession();
+    WiredTigerSession* session = WiredTigerRecoveryUnit::get(opCtx)->getSessionNoTxn();
     WT_SESSION* s = session->getSession();
     BSONObjBuilder bob(result->subobjStart(_engineName));
     {
@@ -1573,6 +1617,10 @@ private:
 };
 
 void WiredTigerRecordStore::_changeNumRecords(OperationContext* opCtx, int64_t diff) {
+    if (!sizeRecoveryState(getGlobalServiceContext()).collectionNeedsSizeAdjustment(ns())) {
+        return;
+    }
+
     opCtx->recoveryUnit()->registerChange(new NumRecordsChange(this, diff));
     if (_numRecords.fetchAndAdd(diff) < 0)
         _numRecords.store(std::max(diff, int64_t(0)));
@@ -1592,6 +1640,10 @@ private:
 };
 
 void WiredTigerRecordStore::_increaseDataSize(OperationContext* opCtx, int64_t amount) {
+    if (!sizeRecoveryState(getGlobalServiceContext()).collectionNeedsSizeAdjustment(ns())) {
+        return;
+    }
+
     if (opCtx)
         opCtx->recoveryUnit()->registerChange(new DataSizeChange(this, amount));
 
@@ -1607,7 +1659,7 @@ void WiredTigerRecordStore::cappedTruncateAfter(OperationContext* opCtx,
                                                 RecordId end,
                                                 bool inclusive) {
     // Only log messages at a lower level here for testing.
-    bool logLevel = getTestCommandsEnabled() ? 0 : 2;
+    int logLevel = getTestCommandsEnabled() ? 0 : 2;
 
     if (_isOplog) {
         // If we are truncating the oplog, we want to make sure that a forward cursor reads all

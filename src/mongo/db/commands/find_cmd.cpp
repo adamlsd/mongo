@@ -35,6 +35,7 @@
 #include "mongo/db/clientcursor.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/run_aggregate.h"
+#include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/exec/working_set_common.h"
 #include "mongo/db/matcher/extensions_callback_real.h"
@@ -329,6 +330,9 @@ public:
             return true;
         }
 
+        CurOpFailpointHelpers::waitWhileFailPointEnabled(
+            &waitInFindBeforeMakingBatch, opCtx, "waitInFindBeforeMakingBatch");
+
         const QueryRequest& originalQR = exec->getCanonicalQuery()->getQueryRequest();
 
         // Stream query results, adding them to a BSONArray as we go.
@@ -394,8 +398,6 @@ public:
                     opCtx->getRemainingMaxTimeMicros());
             }
             pinnedCursor.getCursor()->setPos(numResults);
-
-            opCtx->setStashedCursor();
 
             // Fill out curop based on the results.
             endQueryOp(opCtx, collection, *cursorExec, numResults, cursorId);

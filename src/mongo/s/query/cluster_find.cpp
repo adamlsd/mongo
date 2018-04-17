@@ -42,6 +42,7 @@
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/curop_failpoint_helpers.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/query/canonical_query.h"
 #include "mongo/db/query/find_common.h"
@@ -56,6 +57,7 @@
 #include "mongo/s/query/async_results_merger.h"
 #include "mongo/s/query/cluster_client_cursor_impl.h"
 #include "mongo/s/query/cluster_cursor_manager.h"
+#include "mongo/s/query/cluster_query_knobs.h"
 #include "mongo/s/query/establish_cursors.h"
 #include "mongo/s/query/store_possible_cursor.h"
 #include "mongo/s/stale_exception.h"
@@ -228,11 +230,13 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
     // Determine atClusterTime for snapshot reads. This will be a null time for requests with any
     // other readConcern.
     auto atClusterTime = computeAtClusterTime(opCtx,
-                                              routingInfo,
+                                              false,
                                               shardIds,
+                                              query.nss(),
                                               query.getQueryRequest().getFilter(),
                                               query.getQueryRequest().getCollation());
 
+    invariant(!atClusterTime || *atClusterTime != LogicalTime::kUninitialized);
     // Construct the query and parameters.
 
     ClusterClientCursorParams params(query.nss(), readPref);
@@ -300,6 +304,9 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
 
     // Retrieve enough data from the ClusterClientCursor for the first batch of results.
 
+    CurOpFailpointHelpers::waitWhileFailPointEnabled(
+        &waitInFindBeforeMakingBatch, opCtx, "waitInFindBeforeMakingBatch");
+
     auto cursorState = ClusterCursorManager::CursorState::NotExhausted;
     int bytesBuffered = 0;
 
@@ -338,9 +345,14 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         cursorState = ClusterCursorManager::CursorState::Exhausted;
     }
 
+    // Fill out query exec properties.
+    CurOp::get(opCtx)->debug().nShards = ccc->getNumRemotes();
+    CurOp::get(opCtx)->debug().nreturned = results->size();
+
     // If the cursor is exhausted, then there are no more results to return and we don't need to
     // allocate a cursor id.
     if (cursorState == ClusterCursorManager::CursorState::Exhausted) {
+        CurOp::get(opCtx)->debug().cursorExhausted = true;
         return CursorId(0);
     }
 
@@ -352,8 +364,12 @@ CursorId runQueryWithoutRetrying(OperationContext* opCtx,
         : ClusterCursorManager::CursorLifetime::Mortal;
     auto authUsers = AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames();
 
-    return uassertStatusOK(cursorManager->registerCursor(
+    auto cursorId = uassertStatusOK(cursorManager->registerCursor(
         opCtx, ccc.releaseCursor(), query.nss(), cursorType, cursorLifetime, authUsers));
+
+    // Record the cursorID in CurOp.
+    CurOp::get(opCtx)->debug().cursorid = cursorId;
+    return cursorId;
 }
 
 /**
@@ -368,12 +384,9 @@ Status setUpOperationContextStateForGetMore(OperationContext* opCtx,
     }
 
     if (cursor->isTailableAndAwaitData()) {
-        // A maxTimeMS specified on a tailable, awaitData cursor is special. Instead of imposing a
-        // deadline on the operation, it is used to communicate how long the server should wait for
-        // new results. Here we clear any deadline set during command processing and track the
-        // deadline instead via the 'waitForInsertsDeadline' decoration. This deadline defaults to
-        // 1 second if the user didn't specify a maxTimeMS.
-        opCtx->clearDeadline();
+        // For tailable + awaitData cursors, the request may have indicated a maximum amount of time
+        // to wait for new data. If not, default it to 1 second.  We track the deadline instead via
+        // the 'waitForInsertsDeadline' decoration.
         auto timeout = request.awaitDataTimeout.value_or(Milliseconds{1000});
         awaitDataState(opCtx).waitForInsertsDeadline =
             opCtx->getServiceContext()->getPreciseClockSource()->now() + timeout;
@@ -431,7 +444,7 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
                 ex.addContext(str::stream() << "Failed to run query after " << kMaxRetries
                                             << " retries");
                 throw;
-            } else if (!ErrorCodes::isStaleShardingError(ex.code()) &&
+            } else if (!ErrorCodes::isStaleShardVersionError(ex.code()) &&
                        !ErrorCodes::isSnapshotError(ex.code()) &&
                        ex.code() != ErrorCodes::ShardNotFound) {
                 // Errors other than stale metadata, snapshot unavailable, or from trying to reach a
@@ -447,9 +460,9 @@ CursorId ClusterFind::runQuery(OperationContext* opCtx,
             // Note: there is no need to refresh metadata on snapshot errors since the request
             // failed because atClusterTime was too low, not because the wrong shards were targeted,
             // and subsequent attempts will choose a later atClusterTime.
-            if (ErrorCodes::isStaleShardingError(ex.code()) ||
+            if (ErrorCodes::isStaleShardVersionError(ex.code()) ||
                 ex.code() == ErrorCodes::ShardNotFound) {
-                catalogCache->onStaleConfigError(std::move(routingInfo));
+                catalogCache->onStaleShardVersion(std::move(routingInfo));
             }
         }
     }
@@ -477,14 +490,20 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
 
     // Set the originatingCommand object and the cursorID in CurOp.
     {
+        CurOp::get(opCtx)->debug().nShards = pinnedCursor.getValue().getNumRemotes();
         CurOp::get(opCtx)->debug().cursorid = request.cursorid;
         stdx::lock_guard<Client> lk(*opCtx->getClient());
         CurOp::get(opCtx)->setOriginatingCommand_inlock(
             pinnedCursor.getValue().getOriginatingCommand());
     }
 
-    // If the fail point is enabled, busy wait until it is disabled.
-    while (MONGO_FAIL_POINT(waitAfterPinningCursorBeforeGetMoreBatch)) {
+    // If the 'waitAfterPinningCursorBeforeGetMoreBatch' fail point is enabled, set the 'msg'
+    // field of this operation's CurOp to signal that we've hit this point.
+    if (MONGO_FAIL_POINT(waitAfterPinningCursorBeforeGetMoreBatch)) {
+        CurOpFailpointHelpers::waitWhileFailPointEnabled(
+            &waitAfterPinningCursorBeforeGetMoreBatch,
+            opCtx,
+            "waitAfterPinningCursorBeforeGetMoreBatch");
     }
 
     auto opCtxSetupStatus =
@@ -553,6 +572,18 @@ StatusWith<CursorResponse> ClusterFind::runGetMore(OperationContext* opCtx,
     CursorId idToReturn = (cursorState == ClusterCursorManager::CursorState::Exhausted)
         ? CursorId(0)
         : request.cursorid;
+
+    // Set nReturned and whether the cursor has been exhausted.
+    CurOp::get(opCtx)->debug().cursorExhausted = (idToReturn == 0);
+    CurOp::get(opCtx)->debug().nreturned = batch.size();
+
+    if (MONGO_FAIL_POINT(waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch)) {
+        CurOpFailpointHelpers::waitWhileFailPointEnabled(
+            &waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch,
+            opCtx,
+            "waitBeforeUnpinningOrDeletingCursorAfterGetMoreBatch");
+    }
+
     return CursorResponse(request.nss, idToReturn, std::move(batch), startingFrom);
 }
 

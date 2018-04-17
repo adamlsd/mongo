@@ -65,6 +65,10 @@ public:
     static constexpr StringData kShardConfigCollectionsCollectionName =
         "config.cache.collections"_sd;
 
+    // Name for a shard's databases metadata collection, each document of which indicates the
+    // state of a specific database.
+    static constexpr StringData kShardConfigDatabasesCollectionName = "config.cache.databases"_sd;
+
     // Name for causal consistency's key collection.
     static constexpr StringData kSystemKeysCollectionName = "admin.system.keys"_sd;
 
@@ -211,6 +215,9 @@ public:
     }
     bool isSystem() const {
         return coll().startsWith("system.");
+    }
+    bool isAdminDB() const {
+        return db() == kAdminDb;
     }
     bool isLocal() const {
         return db() == kLocalDb;

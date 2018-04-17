@@ -75,58 +75,59 @@ namespace shim_detail
 
 	template< typename T, typename tag >
 	T storage< T, tag >::data= {};
-}
+}//namespace shim_detail
 
 #define MONGO_SHIM_DEPENDENTS ( "ShimHooks" )
 
 namespace mongo
 {
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
-const bool check_shims_via_tu_hook= true;
+const bool checkShimsViaTuHook= true;
 #define MONGO_SHIM_TU_HOOK( name ) name= {}
 //const bool check_shims_via_tu_hook= false;
 //#define MONGO_SHIM_TU_HOOK( name )
 #else
-const bool check_shims_via_tu_hook= false;
+const bool checkShimsViaTuHook= false;
 #define MONGO_SHIM_TU_HOOK( name )
 #endif
-}
+}//namespace mongo
 
 /**
  * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RETURN_TYPE`, with
  * any arguments.  Declare such constructs in a C++ header.
  */
-#define MONGO_DECLARE_SHIM( FUNCTION_SIGNATURE )  MONGO_DECLARE_SHIM_1(FUNCTION_SIGNATURE,__LINE__)
-#define MONGO_DECLARE_SHIM_1( FUNCTION_SIGNATURE,LN ) MONGO_DECLARE_SHIM_2(FUNCTION_SIGNATURE,LN)
-#define MONGO_DECLARE_SHIM_2( FUNCTION_SIGNATURE, LN ) \
-const struct ShimBasis_##LN\
+#define MONGO_DECLARE_SHIM( ... )  MONGO_DECLARE_SHIM_1(__LINE__,__VA_ARGS__)
+#define MONGO_DECLARE_SHIM_1( LN, ... ) MONGO_DECLARE_SHIM_2(LN,__VA_ARGS__)
+#define MONGO_DECLARE_SHIM_2( LN, ... ) \
+const struct \
 { \
-	template< bool required= mongo::check_shims_via_tu_hook > struct abi_check_t {}; \
-	using abi_check= abi_check_t<>; \
-	template< bool required= mongo::check_shims_via_tu_hook > struct libTUHook_t { libTUHook_t(); }; \
-	using libTUHook= libTUHook_t<>; \
-	template< bool required= mongo::check_shims_via_tu_hook > struct implTUHook_t { implTUHook_t(); }; \
-	using implTUHook= implTUHook_t<>; \
+	template< bool required= mongo::checkShimsViaTuHook > struct AbiCheckType {}; \
+	using AbiCheck= AbiCheckType<>; \
+	template< bool required= mongo::checkShimsViaTuHook > struct LibTUHookType { LibTUHookType(); }; \
+	using LibTUHook= LibTUHookType<>; \
+	template< bool required= mongo::checkShimsViaTuHook > struct ImplTUHookType { ImplTUHookType(); }; \
+	using ImplTUHookType= ImplTUHookType<>; \
  \
-	struct shim_impl \
+	struct ShimImpl \
 	{ \
-		static auto function_type_helper FUNCTION_SIGNATURE; \
-		using function_type= decltype( function_type_helper ); \
+		static auto functionTypeHelper __VA_ARGS__; \
+		using function_type= decltype( functionTypeHelper ); \
 		using return_type= shim_detail::return_type_t< function_type >; \
-		shim_impl *abi( abi_check= {} ) { return this; }\
-		shim_impl *lib( MONGO_SHIM_TU_HOOK( libTUHook ) ) { return this; } \
-		shim_impl *impl( MONGO_SHIM_TU_HOOK( implTUHook ) ) { return this; } \
-		virtual auto implementation FUNCTION_SIGNATURE= 0; \
+		ShimImpl *abi( AbiCheck= {} ) { return this; }\
+		ShimImpl *lib( MONGO_SHIM_TU_HOOK( LibTUHook ) ) { return this; } \
+		ShimImpl *impl( MONGO_SHIM_TU_HOOK( ImplTUHook ) ) { return this; } \
+		virtual auto implementation __VA_ARGS__= 0; \
 	}; \
  \
-	using tag= std::tuple< shim_impl::function_type, abi_check, libTUHook, implTUHook >; \
+	using tag= std::tuple< ShimImpl::function_type, AbiCheck, LibTUHook, ImplTUHook >; \
  \
-	using storage= shim_detail::storage< shim_impl *, tag >; \
+	using storage= shim_detail::storage< ShimImpl *, tag >; \
 	\
 	template< typename... Args > \
 	auto operator()( Args &&... args ) const \
-	noexcept( noexcept( storage::data->implementation( std::forward< Args >( args )... ) ) ) \
-				-> shim_impl::return_type \
+	noexcept( noexcept( storage::data->abi()->lib()->implementation( std::forward< Args >( args )... ) ) ) \
+				-> ShimImpl::return_type \
+	/* TODO: When the dependency graph is fixed, add the `impl()->` call to this chain */ \
 	{ return storage::data->abi()->lib()->implementation( std::forward< Args >( args )... ); } \
 }
 
@@ -135,19 +136,19 @@ const struct ShimBasis_##LN\
  * any arguments.  This shim definition macro should go in the associated C++ file to the header
  * where a SHIM was defined.  This macro does not emit a function definition, only the customization point's machinery.
  */
-#define MONGO_DEFINE_SHIM( SHIM_NAME ) MONGO_DEFINE_SHIM_1( SHIM_NAME, __LINE__ )
-#define MONGO_DEFINE_SHIM_1( SHIM_NAME,LN ) MONGO_DEFINE_SHIM_2(SHIM_NAME, LN )
-#define MONGO_DEFINE_SHIM_2( SHIM_NAME ,LN) \
+#define MONGO_DEFINE_SHIM( ... ) MONGO_DEFINE_SHIM_1( __LINE__, __VA_ARGS__ )
+#define MONGO_DEFINE_SHIM_1( LN,... ) MONGO_DEFINE_SHIM_2(LN, __VA_ARGS__ )
+#define MONGO_DEFINE_SHIM_2( LN,...) \
 namespace \
 {  \
 	namespace shim_namespace##LN \
 	{ \
-		using ShimType= decltype( SHIM_NAME ); \
+		using ShimType= decltype( __VA_ARGS__ ); \
 	}/*namespace shim_namespace*/ \
 }/*namespace*/ \
 template<> \
-shim_namespace##LN::ShimType::libTUHook_t< ::mongo::check_shims_via_tu_hook >::libTUHook_t()= default; \
-shim_namespace##LN::ShimType SHIM_NAME;
+shim_namespace##LN::ShimType::LibTUHookType< ::mongo::checkShimsViaTUHook >::LibTUHookType()= default; \
+shim_namespace##LN::ShimType __VA_ARGS__;
 
 
 /**
@@ -156,30 +157,29 @@ shim_namespace##LN::ShimType SHIM_NAME;
  * implementation file to the header where a SHIM was defined.   Such a file would be a mock implementation
  * or a real implementation, for example
  */
-#define MONGO_REGISTER_SHIM(SHIM_NAME) MONGO_REGISTER_SHIM_1(SHIM_NAME,__LINE__)
-#define MONGO_REGISTER_SHIM_1(SHIM_NAME,LN) MONGO_REGISTER_SHIM_2(SHIM_NAME,LN)
-#define MONGO_REGISTER_SHIM_2(SHIM_NAME,LN) \
+#define MONGO_REGISTER_SHIM(...) MONGO_REGISTER_SHIM_1(__LINE__, __VA_ARGS__)
+#define MONGO_REGISTER_SHIM_1(LN, ...) MONGO_REGISTER_SHIM_2(LN,__VA_ARGS__)
+#define MONGO_REGISTER_SHIM_2(LN, ...) \
 namespace \
 {\
 namespace shim_namespace##LN \
 { \
 	using ShimType= decltype( SHIM_NAME ); \
  \
-	class impl : public ShimType::shim_impl \
+	class Implementation final : public ShimType::ShimImpl \
 	{ \
-		ShimType::shim_impl::function_type implementation; \
+		ShimType::ShimImpl::function_type implementation; /* override */\
 	}; \
  \
-	struct registration_of_impl \
+	MONGO_INITIALIZER( __VA_ARGS__ )( const InitializerContext * ) \
 	{ \
-		registration_of_impl() \
-		{ \
-			static impl impl; \
-			ShimType::storage::data= &impl; \
-		} \
-	} registerImpl; \
+		static Implementation impl; \
+		ShimType::storage::data= &impl; \
+		return Status::OK(); \
+	} \
 }/*namespace shim_namespace*/ \
 }/*namespace*/\
+\
 template<> \
 shim_namespace##LN::ShimType::implTUHook_t< ::mongo::check_shims_via_tu_hook >::implTUHook_t()= default; \
 \

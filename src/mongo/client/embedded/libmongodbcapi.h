@@ -63,6 +63,7 @@ typedef void (*libmongodbcapi_log_callback)(
     void* user_data, const char* message, const char* component, const char* context, int severity);
 
 typedef enum {
+    LIBMONGODB_CAPI_ERROR_IN_REPORTING_ERROR = -2,
     LIBMONGODB_CAPI_ERROR_UNKNOWN = -1,
     LIBMONGODB_CAPI_SUCCESS = 0,
 
@@ -127,9 +128,10 @@ typedef struct {
  * details of any failures of operations to which it was passed.
  * @return `NULL` when construction of a `libmongodbcapi_status` object fails.  `errno` will be set
  * with an appropriate error code, in this case.
- * @note Allocation of an Embedded MongoDB Status buffer should rarely fail, except for out-of-memory reasons.
+ * @note Allocation of an Embedded MongoDB Status buffer should rarely fail, except for
+ * out-of-memory reasons.
  */
-libmongodbcapi_status* libmongodbcapi_allocate_status( void );
+libmongodbcapi_status* libmongodbcapi_allocate_status(void);
 
 /**
  * Frees the storage associated with a valid `libmongodbcapi_status` object.
@@ -184,7 +186,8 @@ int libmongodbcapi_status_get_code(const libmongodbcapi_status* status);
  * @return Returns a pointer to a libmongodbcapi_lib on success.
  * @return `NULL` and modifies `status` on failure.
  */
-libmongodbcapi_lib*libmongodbcapi_init(const libmongodbcapi_init_params* params, libmongodbcapi_status* status);
+libmongodbcapi_lib* libmongodbcapi_init(const libmongodbcapi_init_params* params,
+                                        libmongodbcapi_status* status);
 
 /**
  * Tears down the state of the library, all databases must be closed before calling this.
@@ -206,21 +209,25 @@ libmongodbcapi_lib*libmongodbcapi_init(const libmongodbcapi_init_params* params,
  * in an exception. Details can be retrived via `libmongodbcapi_process_get_status()`.
  *
  * @note This function exhibits undefined behavior unless is its preconditions are met.
- * @note This function may return diagnosic errors for violations of its preconditions, but this behavior is not guaranteed.
+ * @note This function may return diagnosic errors for violations of its preconditions, but this
+ * behavior is not guaranteed.
  */
 int libmongodbcapi_fini(libmongodbcapi_lib* lib, libmongodbcapi_status* status);
 
 /**
  * Creates an embedded MongoDB instance and returns a handle with the service context.
  *
- * @param yaml_config A null-terminated YAML formatted MongoDB configuration. See documentation for valid options.
+ * @param yaml_config A null-terminated YAML formatted MongoDB configuration. See documentation for
+ * valid options.
  * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
  * this function reports a failure.
  *
  * @return A pointer to a `libmongdbcapi_db` handle.
  * @return `NULL` and modifies `status` on failure.
 */
-libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib, const char* yaml_config, libmongodbcapi_status* status);
+libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib,
+                                         const char* yaml_config,
+                                         libmongodbcapi_status* status);
 
 /**
  * Shuts down an embedded MongoDB instance.
@@ -238,7 +245,8 @@ libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib, const char* ya
  * @return `LIBMONGODB_CAPI_ERROR_EXCEPTION`and modifies `status` for other unspecified errors.
  *
  * @note This function exhibits undefined behavior unless is its preconditions are met.
- * @note This function may return diagnosic errors for violations of its precondition, but this behavior is not guaranteed.
+ * @note This function may return diagnosic errors for violations of its precondition, but this
+ * behavior is not guaranteed.
  */
 int libmongodbcapi_db_destroy(libmongodbcapi_db* db, libmongodbcapi_status* status);
 
@@ -269,7 +277,8 @@ libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_db* db,
  * @return An error code and modifies `status` on failure.
  *
  * @note This function exhibits undefined behavior unless is its preconditions are met.
- * @note This function may return diagnosic errors for violations of its precondition, but this behavior is not guaranteed.
+ * @note This function may return diagnosic errors for violations of its precondition, but this
+ behavior is not guaranteed.
  */
 int libmongodbcapi_client_destroy(libmongodbcapi_client* client, libmongodbcapi_status* status);
 
@@ -299,7 +308,7 @@ int libmongodbcapi_client_wire_protocol_rpc(libmongodbcapi_client* client,
                                             libmongodbcapi_status* status);
 
 #ifdef __cplusplus
-} // extern "C"
+}  // extern "C"
 #endif
 
 #endif

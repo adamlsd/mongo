@@ -40,6 +40,7 @@ class DocumentSourceChangeStreamTransform : public DocumentSource {
 public:
     DocumentSourceChangeStreamTransform(const boost::intrusive_ptr<ExpressionContext>& expCtx,
                                         BSONObj changeStreamSpec,
+                                        ServerGlobalParams::FeatureCompatibility::Version fcv,
                                         bool isIndependentOfAnyCollection);
     Document applyTransformation(const Document& input);
     DocumentSource::GetDepsReturn getDependencies(DepsTracker* deps) const final;
@@ -87,14 +88,29 @@ private:
         // Our current place in the 'opArray'.
         size_t pos;
 
+        // The clusterTime of the applyOps.
+        Timestamp clusterTime;
+
         // Fields that were taken from the 'applyOps' oplog entry.
         Document lsid;
         TxnNumber txnNumber;
 
-        TransactionContext(const Value& applyOpsVal, const Document& lsidDoc, TxnNumber n)
-            : opArray(applyOpsVal), arr(opArray.getArray()), pos(0), lsid(lsidDoc), txnNumber(n) {}
+        TransactionContext(const Value& applyOpsVal,
+                           Timestamp ts,
+                           const Document& lsidDoc,
+                           TxnNumber n)
+            : opArray(applyOpsVal),
+              arr(opArray.getArray()),
+              pos(0),
+              clusterTime(ts),
+              lsid(lsidDoc),
+              txnNumber(n) {}
     };
 
+    /**
+     * Helper used for determining what resume token to return.
+     */
+    ResumeTokenData getResumeToken(Value ts, Value uuid, Value documentKey);
     void initializeTransactionContext(const Document& input);
 
     /**
@@ -110,6 +126,8 @@ private:
     bool isDocumentRelevant(const Document& d);
 
     BSONObj _changeStreamSpec;
+
+    ResumeToken::SerializationFormat _resumeTokenFormat;
 
     // Map of collection UUID to document key fields.
     std::map<UUID, DocumentKeyCacheEntry> _documentKeyCache;

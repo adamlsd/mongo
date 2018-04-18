@@ -128,8 +128,9 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
         // This timestamp could be earlier than the timestamp seen when the transaction is opened
         // because it is set asynchonously. This is not problematic because holding the collection
         // lock guarantees no metadata changes will occur in that time.
-        auto lastAppliedTimestamp = boost::make_optional(
-            readAtLastAppliedTimestamp, replCoord->getMyLastAppliedOpTime().getTimestamp());
+        auto lastAppliedTimestamp = readAtLastAppliedTimestamp
+            ? boost::optional<Timestamp>(replCoord->getMyLastAppliedOpTime().getTimestamp())
+            : boost::none;
 
         // Return if there are no conflicting catalog changes on the collection.
         auto minSnapshot = coll->getMinimumVisibleSnapshot();
@@ -366,8 +367,7 @@ LockMode getLockModeForQuery(OperationContext* opCtx) {
     invariant(opCtx);
 
     // Use IX locks for autocommit:false multi-statement transactions; otherwise, use IS locks.
-    auto session = OperationContextSession::get(opCtx);
-    if (session && session->inMultiDocumentTransaction()) {
+    if (Session::TransactionState::get(opCtx).requiresIXReadUpgrade) {
         return MODE_IX;
     }
     return MODE_IS;

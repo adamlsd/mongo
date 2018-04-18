@@ -34,6 +34,7 @@
 
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/commands/feature_compatibility_version_documentation.h"
+#include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
@@ -62,6 +63,12 @@ namespace mongo {
 // Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
 server_parameter_storage_type<int, ServerParameterType::kStartupAndRuntime>::value_type
     transactionLifetimeLimitSeconds(60);
+
+const OperationContext::Decoration<Session::TransactionState> Session::TransactionState::get =
+    OperationContext::declareDecoration<Session::TransactionState>();
+
+Session::CursorKillFunction Session::_cursorKillFunction;
+Session::CursorExistsFunction Session::_cursorExistsFunction;
 
 /**
  * Implements a validation function for server parameter 'transactionLifetimeLimitSeconds'
@@ -316,18 +323,45 @@ void Session::beginOrContinueTxn(OperationContext* opCtx,
         return;
     }
 
+    // If the command specified a read preference that allows it to run on a secondary, and it is
+    // trying to execute an operation on a multi-statement transaction, then we throw an error.
+    // Transactions are only allowed to be run on a primary.
+    if (!getTestCommandsEnabled()) {
+        uassert(50789,
+                "readPreference=primary is the only allowed readPreference for multi-statement "
+                "transactions.",
+                !(autocommit && ReadPreferenceSetting::get(opCtx).canRunOnSecondary()));
+    }
+
     invariant(!opCtx->lockState()->isLocked());
 
-    stdx::lock_guard<stdx::mutex> lg(_mutex);
-    _beginOrContinueTxn(lg, txnNumber, autocommit, startTransaction);
+    TxnNumber txnNumberAtStart;
+    bool canKillCursors = false;
+    {
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
+        _beginOrContinueTxn(lg, opCtx, txnNumber, autocommit, startTransaction, &canKillCursors);
+    }
+
+    if (canKillCursors) {
+        _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
+    }
 }
 
 void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber) {
     invariant(!opCtx->getClient()->isInDirectClient());
     invariant(!opCtx->lockState()->isLocked());
 
-    stdx::lock_guard<stdx::mutex> lg(_mutex);
-    _beginOrContinueTxnOnMigration(lg, txnNumber);
+    TxnNumber txnNumberAtStart;
+    bool canKillCursors = false;
+    {
+        stdx::lock_guard<stdx::mutex> lg(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
+        _beginOrContinueTxnOnMigration(lg, opCtx, txnNumber, &canKillCursors);
+    }
+    if (canKillCursors) {
+        _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
+    }
 }
 
 
@@ -459,9 +493,11 @@ bool Session::checkStatementExecutedNoOplogEntryFetch(TxnNumber txnNumber, StmtI
 }
 
 void Session::_beginOrContinueTxn(WithLock wl,
+                                  OperationContext* opCtx,
                                   TxnNumber txnNumber,
                                   boost::optional<bool> autocommit,
-                                  boost::optional<bool> startTransaction) {
+                                  boost::optional<bool> startTransaction,
+                                  bool* canKillCursors) {
 
     // Check whether the session information needs to be refreshed from disk.
     _checkValid(wl);
@@ -470,18 +506,10 @@ void Session::_beginOrContinueTxn(WithLock wl,
     // be >= the active transaction number.
     _checkTxnValid(wl, txnNumber);
 
-    // Reject argument combinations that are never valid.
-    uassert(ErrorCodes::InvalidOptions,
-            "Specifying autocommit=true is not allowed.",
-            autocommit != boost::optional<bool>(true));
-
-    uassert(ErrorCodes::InvalidOptions,
-            "Specifying startTransaction=false is not allowed.",
-            startTransaction != boost::optional<bool>(false));
-
-    uassert(ErrorCodes::InvalidOptions,
-            "Must specify autocommit=false on all operations of a multi-statement transaction.",
-            !(startTransaction == boost::optional<bool>(true) && autocommit == boost::none));
+    ON_BLOCK_EXIT([this, opCtx] {
+        Session::TransactionState::get(opCtx).requiresIXReadUpgrade =
+            _txnState == MultiDocumentTransactionState::kInProgress;
+    });
 
     //
     // Continue an active transaction.
@@ -517,7 +545,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
                 // implicitly abort the transaction. It is not safe to continue the transaction, in
                 // particular because we have not saved the readConcern from the first statement of
                 // the transaction.
-                _abortTransaction(wl);
+                _abortTransaction(wl, opCtx, canKillCursors);
                 uasserted(ErrorCodes::NoSuchTransaction,
                           str::stream() << "Transaction " << txnNumber << " has been aborted.");
             }
@@ -550,7 +578,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
             (serverGlobalParams.featureCompatibility.getVersion() ==
              ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40));
 
-        _setActiveTxn(wl, txnNumber);
+        _setActiveTxn(wl, opCtx, txnNumber, canKillCursors);
         _autocommit = false;
         _txnState = MultiDocumentTransactionState::kInProgress;
         _transactionExpireDate =
@@ -558,7 +586,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
     } else {
         // Execute a retryable write or snapshot read.
         invariant(startTransaction == boost::none);
-        _setActiveTxn(wl, txnNumber);
+        _setActiveTxn(wl, opCtx, txnNumber, canKillCursors);
         _autocommit = true;
         _txnState = MultiDocumentTransactionState::kNone;
     }
@@ -582,6 +610,7 @@ Session::TxnResources::TxnResources(OperationContext* opCtx) {
 
     _locker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
     _locker->releaseTicket();
+    _locker->unsetThreadId();
 
     _recoveryUnit = std::unique_ptr<RecoveryUnit>(opCtx->releaseRecoveryUnit());
     opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
@@ -613,6 +642,7 @@ void Session::TxnResources::release(OperationContext* opCtx) {
     // operation context's locker and replace it with a new empty locker.
     invariant(opCtx->lockState()->getClientState() == Locker::ClientState::kInactive);
     opCtx->swapLockState(std::move(_locker));
+    opCtx->lockState()->updateThreadIdToCurrentThread();
 
     opCtx->setRecoveryUnit(_recoveryUnit.release(),
                            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
@@ -639,9 +669,9 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     stdx::lock_guard<Client> lk(*opCtx->getClient());
     stdx::unique_lock<stdx::mutex> lg(_mutex);
 
-    // Always check '_activeTxnNumber', since it can be modified by migration, which does not check
-    // out the session. We intentionally do not error if _txnState=kAborted, since we expect this
-    // function to be called at the end of the 'abortTransaction' command.
+    // Always check '_activeTxnNumber', since it can be modified by migration, which does not
+    // check out the session. We intentionally do not error if _txnState=kAborted, since we
+    // expect this function to be called at the end of the 'abortTransaction' command.
     _checkIsActiveTransaction(lg, *opCtx->getTxnNumber(), false);
 
     if (_txnState != MultiDocumentTransactionState::kInProgress &&
@@ -650,15 +680,15 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
         return;
     }
 
-    if (_txnState == MultiDocumentTransactionState::kInSnapshotRead && !opCtx->hasStashedCursor()) {
+    if (_txnState == MultiDocumentTransactionState::kInSnapshotRead &&
+        !_cursorExistsFunction(_sessionId, _activeTxnNumber)) {
         // The snapshot read is complete.
         invariant(opCtx->getWriteUnitOfWork());
         _commitTransaction(std::move(lg), opCtx);
-        return;
+    } else {
+        invariant(!_txnResourceStash);
+        _txnResourceStash = TxnResources(opCtx);
     }
-
-    invariant(!_txnResourceStash);
-    _txnResourceStash = TxnResources(opCtx);
 }
 
 void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
@@ -739,45 +769,85 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
     }
 }
 
-void Session::abortArbitraryTransaction() {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
-    _abortArbitraryTransaction(lock);
-}
-
-void Session::abortArbitraryTransactionIfExpired() {
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
-    if (!_transactionExpireDate || _transactionExpireDate >= Date_t::now()) {
-        return;
+void Session::abortArbitraryTransaction(OperationContext* opCtx, bool shouldKillClientCursors) {
+    TxnNumber txnNumberAtStart;
+    bool canKillCursors = false;
+    {
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
+        _abortArbitraryTransaction(lock, opCtx, &canKillCursors);
     }
-    _abortArbitraryTransaction(lock);
+
+    if (shouldKillClientCursors && canKillCursors) {
+        _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
+    }
 }
 
-void Session::_abortArbitraryTransaction(WithLock lock) {
+void Session::abortArbitraryTransactionIfExpired(OperationContext* opCtx) {
+    TxnNumber txnNumberAtStart;
+    bool canKillCursors = false;
+    {
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        if (!_transactionExpireDate || _transactionExpireDate >= Date_t::now()) {
+            return;
+        }
+        txnNumberAtStart = _activeTxnNumber;
+        _abortArbitraryTransaction(lock, opCtx, &canKillCursors);
+    }
+
+    if (canKillCursors) {
+        _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
+    }
+}
+
+void Session::_abortArbitraryTransaction(WithLock lock,
+                                         OperationContext* opCtx,
+                                         bool* canKillCursors) {
     if (_txnState != MultiDocumentTransactionState::kInProgress &&
         _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
         return;
     }
-    _abortTransaction(lock);
+
+    _abortTransaction(lock, opCtx, canKillCursors);
 }
 
 void Session::abortActiveTransaction(OperationContext* opCtx) {
-    stdx::lock_guard<Client> clientLock(*opCtx->getClient());
-    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    TxnNumber txnNumberAtStart;
+    bool canKillCursors = false;
+    {
+        stdx::unique_lock<Client> clientLock(*opCtx->getClient());
+        stdx::lock_guard<stdx::mutex> lock(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
 
-    if (_txnState != MultiDocumentTransactionState::kInProgress &&
-        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
-        return;
+        if (_txnState != MultiDocumentTransactionState::kInProgress &&
+            _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
+            return;
+        }
+
+        _abortTransaction(lock, opCtx, &canKillCursors);
+
+        // Abort the WUOW. We should be able to abort empty transactions that don't have WUOW.
+        if (opCtx->getWriteUnitOfWork()) {
+            opCtx->setWriteUnitOfWork(nullptr);
+        }
     }
-
-    _abortTransaction(lock);
-
-    // Abort the WUOW. We should be able to abort empty transactions that don't have WUOW.
-    if (opCtx->getWriteUnitOfWork()) {
-        opCtx->setWriteUnitOfWork(nullptr);
+    if (canKillCursors) {
+        _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
     }
 }
 
-void Session::_abortTransaction(WithLock wl) {
+void Session::killTransactionCursors(OperationContext* opCtx) {
+    TxnNumber txnNumberAtStart;
+    {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
+    }
+
+    _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
+}
+
+void Session::_abortTransaction(WithLock wl, OperationContext* opCtx, bool* canKillCursors) {
+    invariant(canKillCursors);
     // TODO SERVER-33432 Disallow aborting committed transaction after we implement implicit abort.
     // A transaction in kCommitting state will either commit or abort for storage-layer reasons; it
     // is too late to abort externally.
@@ -786,11 +856,16 @@ void Session::_abortTransaction(WithLock wl) {
         return;
     }
     _txnResourceStash = boost::none;
+    _transactionOperationBytes = 0;
     _transactionOperations.clear();
     _txnState = MultiDocumentTransactionState::kAborted;
+    *canKillCursors = true;
 }
 
-void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
+void Session::_beginOrContinueTxnOnMigration(WithLock wl,
+                                             OperationContext* opCtx,
+                                             TxnNumber txnNumber,
+                                             bool* canKillCursors) {
     _checkValid(wl);
     _checkTxnValid(wl, txnNumber);
 
@@ -798,14 +873,17 @@ void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
     if (txnNumber == _activeTxnNumber)
         return;
 
-    _setActiveTxn(wl, txnNumber);
+    _setActiveTxn(wl, opCtx, txnNumber, canKillCursors);
 }
 
-void Session::_setActiveTxn(WithLock wl, TxnNumber txnNumber) {
+void Session::_setActiveTxn(WithLock wl,
+                            OperationContext* opCtx,
+                            TxnNumber txnNumber,
+                            bool* canKillCursors) {
     // Abort the existing transaction if it's not committed or aborted.
     if (_txnState == MultiDocumentTransactionState::kInProgress ||
         _txnState == MultiDocumentTransactionState::kInSnapshotRead) {
-        _abortTransaction(wl);
+        _abortTransaction(wl, opCtx, canKillCursors);
     }
     _activeTxnNumber = txnNumber;
     _activeTxnCommittedStatements.clear();
@@ -825,6 +903,17 @@ void Session::addTransactionOperation(OperationContext* opCtx,
     invariant(!_autocommit && _activeTxnNumber != kUninitializedTxnNumber);
     invariant(opCtx->lockState()->inAWriteUnitOfWork());
     _transactionOperations.push_back(operation);
+    _transactionOperationBytes += repl::OplogEntry::getReplOperationSize(operation);
+    // _transactionOperationBytes is based on the in-memory size of the operation.  With overhead,
+    // we expect the BSON size of the operation to be larger, so it's possible to make a transaction
+    // just a bit too large and have it fail only in the commit.  It's still useful to fail early
+    // when possible (e.g. to avoid exhausting server memory).
+    uassert(ErrorCodes::TransactionTooLarge,
+            str::stream() << "Total size of all transaction operations must be less than "
+                          << BSONObjMaxInternalSize
+                          << ". Actual size is "
+                          << _transactionOperationBytes,
+            _transactionOperationBytes <= BSONObjMaxInternalSize);
 }
 
 std::vector<repl::ReplOperation> Session::endTransactionAndRetrieveOperations(
@@ -836,18 +925,24 @@ std::vector<repl::ReplOperation> Session::endTransactionAndRetrieveOperations(
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
     invariant(!_autocommit);
+    _transactionOperationBytes = 0;
     return std::move(_transactionOperations);
 }
 
 void Session::commitTransaction(OperationContext* opCtx) {
-    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    TxnNumber txnNumberAtStart;
+    {
+        stdx::unique_lock<stdx::mutex> lk(_mutex);
+        txnNumberAtStart = _activeTxnNumber;
 
-    // Always check '_activeTxnNumber' and '_txnState', since they can be modified by session kill
-    // and migration, which do not check out the session.
-    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+        // Always check '_activeTxnNumber' and '_txnState', since they can be modified by
+        // session kill and migration, which do not check out the session.
+        _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    invariant(_txnState != MultiDocumentTransactionState::kCommitted);
-    _commitTransaction(std::move(lk), opCtx);
+        invariant(_txnState != MultiDocumentTransactionState::kCommitted);
+        _commitTransaction(std::move(lk), opCtx);
+    }
+    _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
 }
 
 void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) {
@@ -917,6 +1012,19 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
             fillLockerInfo(*lockerInfo, *builder);
         }
     }
+}
+
+// TODO SERVER-34395: Remove opCtx from this interface once no longer required.
+void Session::_killTransactionCursors(OperationContext* opCtx,
+                                      LogicalSessionId lsid,
+                                      TxnNumber txnNumber) {
+    invariant(_cursorKillFunction);
+
+    if (!opCtx) {
+        return;
+    }
+
+    _cursorKillFunction(opCtx, lsid, txnNumber);
 }
 
 void Session::_checkValid(WithLock) const {
@@ -1024,7 +1132,10 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
                 // entry gets invalidated and immediately refreshed while there were no writes for
                 // newTxnNumber yet. In this case _activeTxnNumber will be less than newTxnNumber
                 // and we will fail to update the cache even though the write was successful.
-                _beginOrContinueTxn(lg, newTxnNumber, boost::none, boost::none);
+                OperationContext* opCtx = nullptr;
+                bool ignoredCanKillCursors = false;
+                _beginOrContinueTxn(
+                    lg, opCtx, newTxnNumber, boost::none, boost::none, &ignoredCanKillCursors);
             }
 
             if (newTxnNumber == _activeTxnNumber) {

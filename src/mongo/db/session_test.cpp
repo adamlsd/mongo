@@ -41,6 +41,7 @@
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/net/sock.h"
 
@@ -49,6 +50,7 @@ namespace {
 
 const NamespaceString kNss("TestDB", "TestColl");
 const OptionalCollectionUUID kUUID;
+const bool kKillCursors = true;
 
 /**
  * Creates an OplogEntry with given parameters and preset defaults for this test suite.
@@ -158,6 +160,14 @@ protected:
         Client::releaseCurrent();
         Client::setCurrent(std::move(originalClient));
     }
+};
+
+size_t noopKillCursorFunction(OperationContext*, LogicalSessionId, TxnNumber) {
+    return 0;
+};
+
+bool noopCursorExistsFunction(LogicalSessionId, TxnNumber) {
+    return false;
 };
 
 TEST_F(SessionTest, SessionEntryNotWrittenOnBegin) {
@@ -569,6 +579,21 @@ TEST_F(SessionTest, ErrorOnlyWhenStmtIdBeingCheckedIsNotInCache) {
     ASSERT_THROWS(session.checkStatementExecuted(opCtx(), txnNum, 2), AssertionException);
 }
 
+DEATH_TEST_F(SessionTest, CommitWithoutCursorKillFunctionInvariants, "_cursorKillFunction") {
+    Session::registerCursorKillFunction(nullptr);
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true);
+    session.unstashTransactionResources(opCtx(), "find");
+
+    session.commitTransaction(opCtx());
+}
+
 TEST_F(SessionTest, StashAndUnstashResources) {
     const auto sessionId = makeLogicalSessionIdForTest();
     const TxnNumber txnNum = 20;
@@ -580,10 +605,12 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT(originalLocker);
     ASSERT(originalRecoveryUnit);
 
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
-    session.beginOrContinueTxn(opCtx(), txnNum, boost::none, boost::none);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
     repl::ReadConcernArgs readConcernArgs;
     ASSERT_OK(readConcernArgs.initialize(BSON("find"
@@ -604,7 +631,6 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT(lk.isLocked());
 
     // Stash resources. The original Locker and RecoveryUnit now belong to the stash.
-    opCtx()->setStashedCursor();
     session.stashTransactionResources(opCtx());
     ASSERT_NOT_EQUALS(originalLocker, opCtx()->lockState());
     ASSERT_NOT_EQUALS(originalRecoveryUnit, opCtx()->recoveryUnit());
@@ -625,6 +651,8 @@ TEST_F(SessionTest, StashAndUnstashResources) {
 }
 
 TEST_F(SessionTest, ReportStashedResources) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     const TxnNumber txnNum = 20;
     opCtx()->setLogicalSessionId(sessionId);
@@ -636,7 +664,7 @@ TEST_F(SessionTest, ReportStashedResources) {
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
-    session.beginOrContinueTxn(opCtx(), txnNum, boost::none, boost::none);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
     repl::ReadConcernArgs readConcernArgs;
     ASSERT_OK(readConcernArgs.initialize(BSON("find"
@@ -673,7 +701,6 @@ TEST_F(SessionTest, ReportStashedResources) {
     fillLockerInfo(*lockerInfo, reportBuilder);
 
     // Stash resources. The original Locker and RecoveryUnit now belong to the stash.
-    opCtx()->setStashedCursor();
     session.stashTransactionResources(opCtx());
     ASSERT(!opCtx()->getWriteUnitOfWork());
 
@@ -695,33 +722,9 @@ TEST_F(SessionTest, ReportStashedResources) {
     session.commitTransaction(opCtx());
 }
 
-TEST_F(SessionTest, StartTransactionRequiredToStartTxn) {
-    const auto sessionId = makeLogicalSessionIdForTest();
-    Session session(sessionId);
-    session.refreshFromStorageIfNeeded(opCtx());
-
-    // Autocommit should be true by default.
-    ASSERT(session.getAutocommit());
-
-    const TxnNumber txnNum = 100;
-
-    // Must specify startTransaction=true and autocommit=false to start a transaction.
-    ASSERT_THROWS_CODE(session.beginOrContinueTxn(opCtx(), txnNum, false, false),
-                       AssertionException,
-                       ErrorCodes::InvalidOptions);
-
-    ASSERT_THROWS_CODE(session.beginOrContinueTxn(opCtx(), txnNum, false, boost::none),
-                       AssertionException,
-                       ErrorCodes::NoSuchTransaction);
-
-    session.beginOrContinueTxn(opCtx(), txnNum, false, true);
-
-    // Autocommit should be set to false and we should be in a mult-doc transaction.
-    ASSERT_FALSE(session.getAutocommit());
-    ASSERT_TRUE(session.inSnapshotReadOrMultiDocumentTransaction());
-}
-
 TEST_F(SessionTest, CannotSpecifyStartTransactionOnInProgressTxn) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -779,7 +782,73 @@ TEST_F(SessionTest, AutocommitRequiredOnEveryTxnOp) {
     session.beginOrContinueTxn(opCtx(), txnNum, false, boost::none);
 }
 
+TEST_F(SessionTest, TransactionsOnlyPermitAllowedReadPreferences) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+    TxnNumber txnNum = 1;
+
+    //
+    // Multi-statement transaction operations can only be run with 'readPreference=primary'.
+    //
+
+    auto startTxnWithReadPref = [&](ReadPreference readPref,
+                                    boost::optional<bool> autocommit,
+                                    boost::optional<bool> startTransaction) {
+        txnNum++;
+        ReadPreferenceSetting::get(opCtx()) = ReadPreferenceSetting(readPref);
+        session.beginOrContinueTxn(opCtx(), txnNum, autocommit, startTransaction);
+    };
+
+    // Shouldn't throw.
+    startTxnWithReadPref(ReadPreference::PrimaryOnly, false, true);
+    ASSERT_TRUE(session.inSnapshotReadOrMultiDocumentTransaction());
+
+    // All unsupported read preferences should throw.
+    ASSERT_THROWS_CODE(startTxnWithReadPref(ReadPreference::PrimaryPreferred, false, true),
+                       AssertionException,
+                       50789);
+    ASSERT_THROWS_CODE(startTxnWithReadPref(ReadPreference::SecondaryOnly, false, true),
+                       AssertionException,
+                       50789);
+    ASSERT_THROWS_CODE(startTxnWithReadPref(ReadPreference::SecondaryPreferred, false, true),
+                       AssertionException,
+                       50789);
+    ASSERT_THROWS_CODE(
+        startTxnWithReadPref(ReadPreference::Nearest, false, true), AssertionException, 50789);
+
+    //
+    // Operations that are not on a multi-statement transaction are allowed to specify any
+    // readPreference.
+    //
+
+    auto activeTxnNum = TxnNumber{-1};
+
+    // None of these should throw. Each should start a transaction with a new, higher, transaction
+    // number.
+    startTxnWithReadPref(ReadPreference::PrimaryOnly, boost::none, boost::none);
+    ASSERT_GT(session.getActiveTxnNumberForTest(), activeTxnNum);
+    activeTxnNum = session.getActiveTxnNumberForTest();
+
+    startTxnWithReadPref(ReadPreference::PrimaryPreferred, boost::none, boost::none);
+    ASSERT_GT(session.getActiveTxnNumberForTest(), activeTxnNum);
+    activeTxnNum = session.getActiveTxnNumberForTest();
+
+    startTxnWithReadPref(ReadPreference::SecondaryOnly, boost::none, boost::none);
+    ASSERT_GT(session.getActiveTxnNumberForTest(), activeTxnNum);
+    activeTxnNum = session.getActiveTxnNumberForTest();
+
+    startTxnWithReadPref(ReadPreference::SecondaryPreferred, boost::none, boost::none);
+    ASSERT_GT(session.getActiveTxnNumberForTest(), activeTxnNum);
+    activeTxnNum = session.getActiveTxnNumberForTest();
+
+    startTxnWithReadPref(ReadPreference::Nearest, boost::none, boost::none);
+    ASSERT_GT(session.getActiveTxnNumberForTest(), activeTxnNum);
+}
+
 TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -807,6 +876,8 @@ TEST_F(SessionTest, SameTransactionPreservesStoredStatements) {
 }
 
 TEST_F(SessionTest, AbortClearsStoredStatements) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -822,7 +893,7 @@ TEST_F(SessionTest, AbortClearsStoredStatements) {
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
     session.stashTransactionResources(opCtx());
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
     ASSERT_TRUE(session.transactionOperationsForTest().empty());
     ASSERT_TRUE(session.transactionIsAborted());
 }
@@ -830,6 +901,8 @@ TEST_F(SessionTest, AbortClearsStoredStatements) {
 // This test makes sure the commit machinery works even when no operations are done on the
 // transaction.
 TEST_F(SessionTest, EmptyTransactionCommit) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -849,6 +922,8 @@ TEST_F(SessionTest, EmptyTransactionCommit) {
 // This test makes sure the abort machinery works even when no operations are done on the
 // transaction.
 TEST_F(SessionTest, EmptyTransactionAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -861,11 +936,13 @@ TEST_F(SessionTest, EmptyTransactionAbort) {
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now()); }
     session.stashTransactionResources(opCtx());
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
     ASSERT_TRUE(session.transactionIsAborted());
 }
 
 TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -876,7 +953,7 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
     session.beginOrContinueTxn(opCtx(), txnNum, false, true);
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
 
     // An unstash after an abort should uassert.
     ASSERT_THROWS_CODE(session.unstashTransactionResources(opCtx(), "find"),
@@ -885,6 +962,8 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndAbort) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -912,6 +991,8 @@ TEST_F(SessionTest, ConcurrencyOfUnstashAndMigration) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -924,13 +1005,15 @@ TEST_F(SessionTest, ConcurrencyOfStashAndAbort) {
     session.unstashTransactionResources(opCtx(), "find");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
 
     // A stash after an abort should be a noop.
     session.stashTransactionResources(opCtx());
 }
 
 TEST_F(SessionTest, ConcurrencyOfStashAndMigration) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -955,6 +1038,8 @@ TEST_F(SessionTest, ConcurrencyOfStashAndMigration) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -967,7 +1052,7 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
     session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
 
     // An addTransactionOperation() after an abort should uassert.
     auto operation = repl::OplogEntry::makeInsertOperation(kNss, kUUID, BSON("TestValue" << 0));
@@ -977,6 +1062,8 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndAbort) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndMigration) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -1002,6 +1089,8 @@ TEST_F(SessionTest, ConcurrencyOfAddTransactionOperationAndMigration) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -1014,7 +1103,7 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
     session.unstashTransactionResources(opCtx(), "insert");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
 
     // An endTransactionAndRetrieveOperations() after an abort should uassert.
     ASSERT_THROWS_CODE(session.endTransactionAndRetrieveOperations(opCtx()),
@@ -1023,6 +1112,8 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndAbort) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -1048,6 +1139,8 @@ TEST_F(SessionTest, ConcurrencyOfEndTransactionAndRetrieveOperationsAndMigration
 }
 
 TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -1060,7 +1153,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
     session.unstashTransactionResources(opCtx(), "commitTransaction");
 
     // The transaction may be aborted without checking out the session.
-    session.abortArbitraryTransaction();
+    session.abortArbitraryTransaction(opCtx(), kKillCursors);
 
     // An commitTransaction() after an abort should uassert.
     ASSERT_THROWS_CODE(
@@ -1068,6 +1161,8 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
 }
 
 TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
+    Session::registerCursorKillFunction(noopKillCursorFunction);
+    Session::registerCursorExistsFunction(noopCursorExistsFunction);
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
@@ -1090,6 +1185,33 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
     ASSERT_THROWS_CODE(session.commitTransaction(opCtx()),
                        AssertionException,
                        ErrorCodes::ConflictingOperationInProgress);
+}
+
+// Tests that a transaction aborts if it becomes too large before trying to commit it.
+TEST_F(SessionTest, TransactionTooLargeWhileBuilding) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 28;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true);
+
+    session.unstashTransactionResources(opCtx(), "insert");
+
+    // Two 6MB operations should succeed; three 6MB operations should fail.
+    constexpr size_t kBigDataSize = 6 * 1024 * 1024;
+    std::unique_ptr<uint8_t[]> bigData(new uint8_t[kBigDataSize]());
+    auto operation = repl::OplogEntry::makeInsertOperation(
+        kNss,
+        kUUID,
+        BSON("_id" << 0 << "data" << BSONBinData(bigData.get(), kBigDataSize, BinDataGeneral)));
+    session.addTransactionOperation(opCtx(), operation);
+    session.addTransactionOperation(opCtx(), operation);
+    ASSERT_THROWS_CODE(session.addTransactionOperation(opCtx(), operation),
+                       AssertionException,
+                       ErrorCodes::TransactionTooLarge);
 }
 
 }  // namespace

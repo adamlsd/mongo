@@ -41,7 +41,6 @@
 #include "mongo/db/service_context.h"
 #include "mongo/logger/logger.h"
 #include "mongo/logger/message_event_utf8_encoder.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/transport/service_entry_point.h"
 #include "mongo/transport/transport_layer_mock.h"
@@ -91,7 +90,7 @@ public:
         return this->get();
     }
 };
-}
+}  // namespace
 
 namespace mongo {
 namespace {
@@ -141,17 +140,23 @@ std::nullptr_t handleException(libmongodbcapi_status& status) noexcept {
             if (status.what.capacity() < sizeof(severeErrorMessage)) {
                 status.what = severeErrorMessage;
             }
-        } catch (...) { /* Ignore any errors at this point. */
+        } catch (...) /* Ignore any errors at this point. */
+        {
         }
     }
     return nullptr;
 }
-}
-}
+
+}  // namespace
+}  // namespace mongo
 
 struct libmongodbcapi_lib {
     ~libmongodbcapi_lib() {
         invariant(this->databaseCount == 0);
+
+        using mongo::logger::globalLogDomain;
+        globalLogDomain()->detachAppender(this->logCallbackHandle);
+        this->logCallbackHandle.reset();
     }
 
     libmongodbcapi_lib() = default;
@@ -161,10 +166,9 @@ struct libmongodbcapi_lib {
 
     std::atomic<int> databaseCount = {};
 
-    bool guaranteedStatusSent = false;
-    libmongodbcapi_status guaranteedStatus;
-    std::unique_ptr<libmongodbcapi_db> onlyDB;
     mongo::logger::ComponentMessageLogDomain::AppenderHandle logCallbackHandle;
+
+    std::unique_ptr<libmongodbcapi_db> onlyDB;
 };
 
 namespace mongo {
@@ -185,19 +189,28 @@ struct libmongodbcapi_db {
         invariant(this->clientCount == 0);
     }
 
-    libmongodbcapi_db(libmongodbcapi_lib* const p) : parent_lib(p) {
+    explicit libmongodbcapi_db(libmongodbcapi_lib* const p, const char* const yaml_config)
+        : parent_lib(p),
+          serviceContext(::mongo::embedded::initialize(yaml_config)),
+          // creating mock transport layer to be able to create sessions
+          transportLayer(std::make_unique<mongo::transport::TransportLayerMock>()) {
+        if (!this->serviceContext) {
+            throw ::mongo::MobileException{
+                LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
+                "The MongoDB Embedded Library Failed to initialize the Service Context"};
+        }
+
         ++this->parent_lib->databaseCount;
     }
-
 
     libmongodbcapi_db(const libmongodbcapi_db&) = delete;
     libmongodbcapi_db& operator=(const libmongodbcapi_db&) = delete;
 
-    mongo::EmbeddedServiceContextPtr serviceContext;
-    std::unique_ptr<mongo::transport::TransportLayerMock> transportLayer;
-
     libmongodbcapi_lib* parent_lib;
     std::atomic<int> clientCount = {};
+
+    mongo::EmbeddedServiceContextPtr serviceContext;
+    std::unique_ptr<mongo::transport::TransportLayerMock> transportLayer;
 };
 
 struct libmongodbcapi_client {
@@ -205,19 +218,20 @@ struct libmongodbcapi_client {
         --this->parent_db->clientCount;
     }
 
-    libmongodbcapi_client(libmongodbcapi_db* const db) : parent_db(db) {
+    explicit libmongodbcapi_client(libmongodbcapi_db* const db)
+        : parent_db(db),
+          client(db->serviceContext->makeClient("embedded", db->transportLayer->createSession())) {
         ++this->parent_db->clientCount;
     }
 
     libmongodbcapi_client(const libmongodbcapi_client&) = delete;
     libmongodbcapi_client& operator=(const libmongodbcapi_client&) = delete;
 
-    void* client_handle = nullptr;
-    std::vector<unsigned char> output;
-    mongo::ServiceContext::UniqueClient client;
-    mongo::DbResponse response;
-
     libmongodbcapi_db* const parent_db;
+    mongo::ServiceContext::UniqueClient client;
+
+    std::vector<unsigned char> output;
+    mongo::DbResponse response;
 };
 
 namespace mongo {
@@ -225,7 +239,6 @@ namespace {
 
 thread_local int callEntryDepth = 0;
 std::unique_ptr<libmongodbcapi_lib> library;
-
 
 class ReentrancyGuard {
 public:
@@ -256,13 +269,6 @@ void register_log_callback(libmongodbcapi_lib* const lib,
             log_callback, log_user_data, std::make_unique<MessageEventUnadornedEncoder>()));
 }
 
-void unregister_log_callback(libmongodbcapi_lib* const lib) {
-    using logger::globalLogDomain;
-
-    globalLogDomain()->detachAppender(lib->logCallbackHandle);
-    lib->logCallbackHandle.reset();
-}
-
 libmongodbcapi_lib* capi_lib_init(libmongodbcapi_init_params const* params,
                                   libmongodbcapi_status& status,
                                   const ReentrancyGuard& = {}) noexcept try {
@@ -274,7 +280,7 @@ libmongodbcapi_lib* capi_lib_init(libmongodbcapi_init_params const* params,
 
     auto lib = std::make_unique<libmongodbcapi_lib>();
 
-
+    // TODO(adam.martin): Fold all of thislog initialization into the ctor of lib.
     if (params) {
         using logger::globalLogManager;
         // The standard console log appender may or may not be installed here, depending if this is
@@ -326,6 +332,7 @@ void capi_lib_fini(libmongodbcapi_lib* const lib,
         throw MobileException{LIBMONGODB_CAPI_ERROR_INVALID_LIB_HANDLE,
                               "Invalid MongoDB Embedded Library handle."};
     }
+
     // This check is not possible to 100% guarantee.  It is a best effort.  The documentation of
     // this API says that the behavior of closing a `lib` with open handles is undefined, but may
     // provide diagnostic errors in some circumstances.
@@ -335,9 +342,7 @@ void capi_lib_fini(libmongodbcapi_lib* const lib,
             "Cannot close the MongoDB Embedded Library when it has database handles still open."};
     }
 
-    unregister_log_callback(lib);
-
-    library.reset();
+    library = nullptr;
 } catch (...) {
     handleException(status);
 }
@@ -364,20 +369,7 @@ libmongodbcapi_db* db_new(libmongodbcapi_lib* const lib,
                               "Embedded Library have been opened."};
     }
 
-    auto newDb = std::make_unique<libmongodbcapi_db>(lib);
-
-    newDb->serviceContext.reset(embedded::initialize(yaml_config));
-
-    if (!newDb->serviceContext) {
-        throw MobileException{
-            LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
-            "The MongoDB Embedded Library Failed to initialize the Service Context"};
-    }
-
-    // creating mock transport layer to be able to create sessions
-    newDb->transportLayer = std::make_unique<transport::TransportLayerMock>();
-
-    lib->onlyDB = std::move(newDb);
+    lib->onlyDB = std::make_unique<libmongodbcapi_db>(lib, yaml_config);
 
     return lib->onlyDB.get();
 } catch (...) {
@@ -422,6 +414,7 @@ libmongodbcapi_client* client_new(libmongodbcapi_db* const db,
                               "Cannot create a new client handle when the MongoDB Embedded Library "
                               "is not yet initialized."};
     }
+
     if (!db) {
         throw MobileException{LIBMONGODB_CAPI_ERROR_INVALID_DB_HANDLE,
                               "Cannot use a `NULL` pointer referencing a MongoDB Embedded Database "
@@ -434,12 +427,7 @@ libmongodbcapi_client* client_new(libmongodbcapi_db* const db,
                               "create a new client because it is invalid."};
     }
 
-    auto rv = stdx::make_unique<libmongodbcapi_client>(db);
-
-    auto session = db->transportLayer->createSession();
-    rv->client = db->serviceContext->makeClient("embedded", std::move(session));
-
-    return rv.release();
+    return new libmongodbcapi_client(db);
 } catch (...) {
     return handleException(status);
 }
@@ -540,7 +528,7 @@ int libmongodbcapi_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status* co
 libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib,
                                          const char* const yaml_config,
                                          libmongodbcapi_status* const statusPtr) {
-    return mongo::db_new(lib, yaml_config, StatusGuard(status));
+    return mongo::db_new(lib, yaml_config, StatusGuard(statusPtr));
 }
 
 int libmongodbcapi_db_destroy(libmongodbcapi_db* const db, libmongodbcapi_status* const statusPtr) {
@@ -551,7 +539,7 @@ int libmongodbcapi_db_destroy(libmongodbcapi_db* const db, libmongodbcapi_status
 
 libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_db* const db,
                                                  libmongodbcapi_status* const statusPtr) {
-    return mongo::client_new(db, StatusGuard(status));
+    return mongo::client_new(db, StatusGuard(statusPtr));
 }
 
 int libmongodbcapi_client_destroy(libmongodbcapi_client* const client,
@@ -571,7 +559,6 @@ int libmongodbcapi_client_wire_protocol_rpc(libmongodbcapi_client* const client,
     mongo::client_wire_protocol_rpc(client, input, input_size, output, output_size, status);
     return status.get().error;
 }
-
 
 int libmongodbcapi_status_get_error(const libmongodbcapi_status* const status) {
     return mongo::capi_status_get_error(status);

@@ -526,7 +526,7 @@ int main(const int argc, const char*const*const argv) {
         return EXIT_FAILURE;
     }
 
-    if ( libmongodbcapi_fini( nullptr, status.get() ) != LIBMONGODB_CAPI_SUCCESS) {
+    if ( libmongodbcapi_fini( lib, status.get() ) != LIBMONGODB_CAPI_SUCCESS) {
         std::cerr << "libmongodbcapi_fini() failed with " << libmongodbcapi_status_get_error( status.get() )
                 << ": " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
         return EXIT_FAILURE;

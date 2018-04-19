@@ -4,52 +4,40 @@
  * Creates several bank accounts. On each iteration, each thread:
  *  - chooses two accounts and amount of money being transfer
  *  - or checks the balance of each account
+ *
  * @tags: [uses_transactions]
  */
+
+// For withTxnAndAutoRetryOnWriteConflict.
+load('jstests/concurrency/fsm_workload_helpers/auto_retry_transaction.js');
+
 var $config = (function() {
 
-    function _calcTotalMoneyBalances(sessionDb, txnNumber, collName) {
-        let res = sessionDb.runCommand({
-            find: collName,
-            batchSize: 0,
-            filter: {},
-            readConcern: {level: "snapshot"},
-            txnNumber: NumberLong(txnNumber),
-            autocommit: false
-        });
-        assertWhenOwnColl.commandWorked(res);
-        let cursorId = res.cursor.id;
-
-        let total = 0;
-        while (bsonWoCompare({_: cursorId}, {_: 0}) !== 0) {
-            res = sessionDb.runCommand({
-                getMore: cursorId,
-                collection: collName,
-                txnNumber: NumberLong(txnNumber),
-            });
-            assertWhenOwnColl.commandWorked(res);
-            res.cursor.nextBatch.forEach(function(account) {
-                total += account.balance;
-            });
-            cursorId = res.cursor.id;
-        }
-        assertWhenOwnColl.commandWorked(
-            sessionDb.runCommand({commitTransaction: 1, txnNumber: NumberLong(txnNumber)}));
-        return total;
+    function computeTotalOfAllBalances(documents) {
+        return documents.reduce((total, account) => total + account.balance, 0);
     }
 
     var states = (function() {
 
+        function getAllDocuments(collection, numDocs) {
+            collection.getDB().getSession().startTransaction();
+            const documents = collection.find().readConcern('snapshot').toArray();
+            collection.getDB().getSession().commitTransaction();
+
+            assertWhenOwnColl.eq(numDocs, documents.length, () => tojson(documents));
+            return documents;
+        }
+
         function init(db, collName) {
-            const session = db.getMongo().startSession({causalConsistency: false});
-            this.sessionDb = session.getDatabase(db.getName());
-            this.txnNumber = 0;
+            this.session = db.getMongo().startSession({causalConsistency: false});
         }
 
         function checkMoneyBalance(db, collName) {
-            this.txnNumber++;
-            assertWhenOwnColl.eq(_calcTotalMoneyBalances(this.sessionDb, this.txnNumber, collName),
-                                 this.numAccounts * this.initialValue);
+            const collection = this.session.getDatabase(db.getName()).getCollection(collName);
+            const documents = getAllDocuments(collection, this.numAccounts);
+            assertWhenOwnColl.eq(this.numAccounts * this.initialValue,
+                                 computeTotalOfAllBalances(documents),
+                                 () => tojson(documents));
         }
 
         function transferMoney(db, collName) {
@@ -58,38 +46,29 @@ var $config = (function() {
             while (transferFrom === transferTo) {
                 transferTo = Random.randInt(this.numAccounts);
             }
-            const transferAmount = Random.randInt(this.initialValue / 10);
-            const commands = [
-                {
-                  update: collName,
-                  updates: [{q: {_id: transferFrom}, u: {$inc: {balance: -transferAmount}}}],
-                  readConcern: {level: "snapshot"},
-                  autocommit: false
-                },
-                {
-                  update: collName,
-                  updates: [{q: {_id: transferTo}, u: {$inc: {balance: transferAmount}}}]
-                },
-                {commitTransaction: 1}
-            ];
 
-            let hasWriteConflict;
-            do {
-                this.txnNumber++;
-                hasWriteConflict = false;
-                for (let cmd of commands) {
-                    cmd["txnNumber"] = NumberLong(this.txnNumber);
-                    let res = this.sessionDb.runCommand(cmd);
-                    if (res.ok === 0) {
-                        if (res.code === ErrorCodes.WriteConflict) {
-                            hasWriteConflict = true;
-                            break;
-                        } else {
-                            assertWhenOwnColl.commandWorked(res, () => tojson(cmd));
-                        }
-                    }
-                }
-            } while (hasWriteConflict);
+            // We make 'transferAmount' non-zero in order to guarantee that the documents matched by
+            // the update operations are modified.
+            const transferAmount = Random.randInt(this.initialValue / 10) + 1;
+
+            const collection = this.session.getDatabase(db.getName()).getCollection(collName);
+            withTxnAndAutoRetryOnWriteConflict(this.session, () => {
+                let res = collection.runCommand('update', {
+                    updates: [{q: {_id: transferFrom}, u: {$inc: {balance: -transferAmount}}}],
+                });
+
+                assertAlways.commandWorked(res);
+                assertWhenOwnColl.eq(res.n, 1, () => tojson(res));
+                assertWhenOwnColl.eq(res.nModified, 1, () => tojson(res));
+
+                res = collection.runCommand('update', {
+                    updates: [{q: {_id: transferTo}, u: {$inc: {balance: transferAmount}}}],
+                });
+
+                assertAlways.commandWorked(res);
+                assertWhenOwnColl.eq(res.n, 1, () => tojson(res));
+                assertWhenOwnColl.eq(res.nModified, 1, () => tojson(res));
+            });
         }
 
         return {init: init, transferMoney: transferMoney, checkMoneyBalance: checkMoneyBalance};
@@ -97,18 +76,22 @@ var $config = (function() {
 
     function setup(db, collName) {
         assertWhenOwnColl.commandWorked(db.runCommand({create: collName}));
+
+        const bulk = db[collName].initializeUnorderedBulkOp();
         for (let i = 0; i < this.numAccounts; ++i) {
-            const res = db[collName].insert({_id: i, balance: this.initialValue});
-            assertWhenOwnColl.writeOK(res);
-            assertWhenOwnColl.eq(1, res.nInserted);
+            bulk.insert({_id: i, balance: this.initialValue});
         }
+
+        const res = bulk.execute({w: 'majority'});
+        assertWhenOwnColl.commandWorked(res);
+        assertWhenOwnColl.eq(this.numAccounts, res.nInserted);
     }
 
     function teardown(db, collName, cluster) {
-        const session = db.getMongo().startSession({causalConsistency: false});
-        assertWhenOwnColl.eq(
-            _calcTotalMoneyBalances(session.getDatabase(db.getName()), NumberLong(0), collName),
-            this.numAccounts * this.initialValue);
+        const documents = db[collName].find().toArray();
+        assertWhenOwnColl.eq(this.numAccounts * this.initialValue,
+                             computeTotalOfAllBalances(documents),
+                             () => tojson(documents));
     }
 
     var transitions = {
@@ -125,8 +108,8 @@ var $config = (function() {
     };
 
     return {
-        threadCount: 4,
-        iterations: 20,
+        threadCount: 10,
+        iterations: 100,
         startState: 'init',
         states: states,
         transitions: transitions,

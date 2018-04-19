@@ -129,6 +129,10 @@ WriteConcernOptions ReplicationCoordinatorEmbedded::populateUnsetWriteConcernOpt
     return writeConcern;
 }
 
+bool ReplicationCoordinatorEmbedded::buildsIndexes() {
+    return true;
+}
+
 OpTime ReplicationCoordinatorEmbedded::getCurrentCommittedSnapshotOpTime() const {
     UASSERT_NOT_IMPLEMENTED;
 }
@@ -328,10 +332,6 @@ Status ReplicationCoordinatorEmbedded::processReplSetUpdatePosition(const Update
     UASSERT_NOT_IMPLEMENTED;
 }
 
-bool ReplicationCoordinatorEmbedded::buildsIndexes() {
-    UASSERT_NOT_IMPLEMENTED;
-}
-
 std::vector<HostAndPort> ReplicationCoordinatorEmbedded::getHostsWrittenTo(const OpTime&, bool) {
     UASSERT_NOT_IMPLEMENTED;
 }
@@ -346,7 +346,7 @@ Status ReplicationCoordinatorEmbedded::checkIfWriteConcernCanBeSatisfied(
 }
 
 Status ReplicationCoordinatorEmbedded::checkReplEnabledForCommand(BSONObjBuilder*) {
-    UASSERT_NOT_IMPLEMENTED;
+    return Status(ErrorCodes::NoReplicationEnabled, "no replication on embedded");
 }
 
 HostAndPort ReplicationCoordinatorEmbedded::chooseNewSyncSource(const OpTime&) {
@@ -434,6 +434,10 @@ ReplSettings::IndexPrefetchConfig ReplicationCoordinatorEmbedded::getIndexPrefet
 
 void ReplicationCoordinatorEmbedded::setIndexPrefetchConfig(
     const ReplSettings::IndexPrefetchConfig) {
+    UASSERT_NOT_IMPLEMENTED;
+}
+
+void ReplicationCoordinatorEmbedded::signalDropPendingCollectionsRemovedFromStorage() {
     UASSERT_NOT_IMPLEMENTED;
 }
 

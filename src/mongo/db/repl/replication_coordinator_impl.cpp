@@ -44,6 +44,7 @@
 #include "mongo/db/index/index_descriptor.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/logical_time.h"
+#include "mongo/db/logical_time_validator.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/repl/check_quorum_for_config_change.h"
 #include "mongo/db/repl/data_replicator_external_state_initial_sync.h"
@@ -562,6 +563,13 @@ void ReplicationCoordinatorImpl::_finishLoadLocalConfig(
                       << lastOpTimeStatus.getStatus();
         } else {
             lastOpTime = lastOpTimeStatus.getValue();
+        }
+    } else {
+        // The node is an arbiter hence will not need logical clock for external operations.
+        LogicalClock::get(getServiceContext())->setEnabled(false);
+        auto validator = LogicalTimeValidator::get(getServiceContext());
+        if (validator) {
+            validator->resetKeyManager();
         }
     }
 
@@ -1091,6 +1099,11 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTime_inlock(const OpTime& op
         return;
     }
 
+    // Update the local snapshot before updating the stable timestamp on the storage engine. New
+    // transactions reading from the local snapshot should start before the oldest timestamp is
+    // advanced to avoid races.
+    _externalState->updateLocalSnapshot(opTime);
+
     // Add the new applied optime to the list of stable optime candidates and then set the last
     // stable optime. Stable optimes are used to determine the last optime that it is safe to revert
     // the database to, in the event of a rollback via the 'recover to timestamp' method. If we are
@@ -1397,6 +1410,22 @@ bool ReplicationCoordinatorImpl::_doneWaitingForReplication_inlock(
 
             // Fallthrough to wait for "majority" write concern.
         }
+
+        // Wait for all drop pending collections with drop optime before and at 'opTime' to be
+        // removed from storage.
+        if (auto dropOpTime = _externalState->getEarliestDropPendingOpTime()) {
+            if (*dropOpTime <= opTime) {
+                LOG(1) << "Unable to satisfy the requested majority write concern at "
+                          "'committed' optime "
+                       << opTime
+                       << ". There are still drop pending collections (earliest drop optime: "
+                       << *dropOpTime << ") that have to be removed from storage before we can "
+                                         "satisfy the write concern "
+                       << writeConcern.toBSON();
+                return false;
+            }
+        }
+
         // Continue and wait for replication to the majority (of voters).
         // *** Needed for J:True, writeConcernMajorityShouldJournal:False (appliedOpTime snapshot).
         patternName = ReplSetConfig::kMajorityWriteConcernModeName;
@@ -1569,6 +1598,10 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
                 "Could not acquire the global shared lock within the amount of time "
                 "specified that we should step down for"};
     }
+
+    // TODO SERVER-34395: Remove this method and kill cursors as part of killAllUserOperations call
+    // when the CursorManager no longer requires collection locks to kill cursors.
+    _externalState->killAllTransactionCursors(opCtx);
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
@@ -1887,7 +1920,8 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
             _replExecutor->now(),
             static_cast<unsigned>(time(0) - serverGlobalParams.started),
             _getCurrentCommittedSnapshotOpTime_inlock(),
-            initialSyncProgress},
+            initialSyncProgress,
+            _storage->getLastStableCheckpointTimestamp(_service)},
         response,
         &result);
     return result;
@@ -2129,8 +2163,7 @@ Status ReplicationCoordinatorImpl::processReplSetReconfig(OperationContext* opCt
         newConfigObj = incrementConfigVersionByRandom(newConfigObj);
     }
 
-    Status status = newConfig.initialize(
-        newConfigObj, oldConfig.getProtocolVersion() == 1, oldConfig.getReplicaSetId());
+    Status status = newConfig.initialize(newConfigObj, oldConfig.getReplicaSetId());
     if (!status.isOK()) {
         error() << "replSetReconfig got " << status << " while parsing " << newConfigObj;
         return Status(ErrorCodes::InvalidReplicaSetConfig, status.reason());
@@ -2257,7 +2290,7 @@ Status ReplicationCoordinatorImpl::processReplSetInitiate(OperationContext* opCt
     lk.unlock();
 
     ReplSetConfig newConfig;
-    Status status = newConfig.initializeForInitiate(configObj, true);
+    Status status = newConfig.initializeForInitiate(configObj);
     if (!status.isOK()) {
         error() << "replSet initiate got " << status << " while parsing " << configObj;
         return Status(ErrorCodes::InvalidReplicaSetConfig, status.reason());
@@ -2652,6 +2685,11 @@ Status ReplicationCoordinatorImpl::abortCatchupIfNeeded() {
         return Status::OK();
     }
     return Status(ErrorCodes::IllegalOperation, "The node is not in catch-up mode.");
+}
+
+void ReplicationCoordinatorImpl::signalDropPendingCollectionsRemovedFromStorage() {
+    stdx::lock_guard<stdx::mutex> lock(_mutex);
+    _wakeReadyWaiters_inlock();
 }
 
 void ReplicationCoordinatorImpl::_enterDrainMode_inlock() {

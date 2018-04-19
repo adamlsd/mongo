@@ -30,9 +30,12 @@
 
 #include "mongo/platform/basic.h"
 
+#include <boost/optional.hpp>
+
 #include "mongo/s/commands/cluster_commands_helpers.h"
 
 #include "mongo/db/commands.h"
+#include "mongo/db/curop.h"
 #include "mongo/db/logical_clock.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/cursor_response.h"
@@ -109,7 +112,7 @@ std::vector<AsyncRequestsSender::Request> buildUnversionedRequestsForShards(
 std::vector<AsyncRequestsSender::Request> buildUnversionedRequestsForAllShards(
     OperationContext* opCtx, const BSONObj& cmdObj) {
     std::vector<ShardId> shardIds;
-    Grid::get(opCtx)->shardRegistry()->getAllShardIds(&shardIds);
+    Grid::get(opCtx)->shardRegistry()->getAllShardIdsNoReload(&shardIds);
     return buildUnversionedRequestsForShards(std::move(shardIds), cmdObj);
 }
 
@@ -190,12 +193,19 @@ std::vector<AsyncRequestsSender::Response> gatherResponses(
             }
 
             // Failing to establish a consistent shardVersion means no results should be examined.
-            if (ErrorCodes::isStaleShardingError(status.code())) {
+            if (ErrorCodes::isStaleShardVersionError(status.code())) {
                 uassertStatusOK(status.withContext(str::stream()
                                                    << "got stale shardVersion response from shard "
                                                    << response.shardId
                                                    << " at host "
                                                    << response.shardHostAndPort->toString()));
+            }
+            if (ErrorCodes::StaleDbVersion == status) {
+                uassertStatusOK(status.withContext(
+                    str::stream() << "got stale databaseVersion response from shard "
+                                  << response.shardId
+                                  << " at host "
+                                  << response.shardHostAndPort->toString()));
             }
 
             // In the case a read is performed against a view, the server can return an error
@@ -466,8 +476,14 @@ int getUniqueCodeFromCommandResults(const std::vector<Strategy::CommandResult>& 
     return commonErrCode;
 }
 
-bool appendEmptyResultSet(BSONObjBuilder& result, Status status, const std::string& ns) {
+bool appendEmptyResultSet(OperationContext* opCtx,
+                          BSONObjBuilder& result,
+                          Status status,
+                          const std::string& ns) {
     invariant(!status.isOK());
+
+    CurOp::get(opCtx)->debug().nreturned = 0;
+    CurOp::get(opCtx)->debug().nShards = 0;
 
     if (status == ErrorCodes::NamespaceNotFound) {
         // Old style reply
@@ -520,13 +536,20 @@ BSONObj appendAtClusterTime(BSONObj cmdObj, LogicalTime atClusterTime) {
         if (el.fieldNameStringData() == repl::ReadConcernArgs::kReadConcernFieldName) {
             BSONObjBuilder readConcernBob =
                 cmdAtClusterTimeBob.subobjStart(repl::ReadConcernArgs::kReadConcernFieldName);
-            readConcernBob.appendElements(el.Obj());
+            for (auto&& elem : el.Obj()) {
+                // afterClusterTime cannot be specified with atClusterTime.
+                if (elem.fieldNameStringData() !=
+                    repl::ReadConcernArgs::kAfterClusterTimeFieldName) {
+                    readConcernBob.append(elem);
+                }
+            }
             readConcernBob.append(repl::ReadConcernArgs::kAtClusterTimeFieldName,
                                   atClusterTime.asTimestamp());
         } else {
             cmdAtClusterTimeBob.append(el);
         }
     }
+
     return cmdAtClusterTimeBob.obj();
 }
 
@@ -534,25 +557,68 @@ BSONObj appendAtClusterTimeToReadConcern(BSONObj readConcernObj, LogicalTime atC
     invariant(readConcernObj[repl::ReadConcernArgs::kAtClusterTimeFieldName].eoo());
 
     BSONObjBuilder readConcernBob;
-    readConcernBob.appendElements(readConcernObj);
+    for (auto&& elem : readConcernObj) {
+        // afterClusterTime cannot be specified with atClusterTime.
+        if (elem.fieldNameStringData() != repl::ReadConcernArgs::kAfterClusterTimeFieldName) {
+            readConcernBob.append(elem);
+        }
+    }
+
     readConcernBob.append(repl::ReadConcernArgs::kAtClusterTimeFieldName,
                           atClusterTime.asTimestamp());
+
     return readConcernBob.obj();
 }
 
-LogicalTime computeAtClusterTimeForShards(OperationContext* opCtx,
-                                          const std::set<ShardId>& shardIds) {
+boost::optional<LogicalTime> computeAtClusterTimeForOneShard(OperationContext* opCtx,
+                                                             const ShardId& shardId) {
+
+    if (repl::ReadConcernArgs::get(opCtx).getLevel() !=
+        repl::ReadConcernLevel::kSnapshotReadConcern) {
+        return boost::none;
+    }
+
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
     invariant(shardRegistry);
-    LogicalTime highestTime;
-    for (const auto& shardId : shardIds) {
-        auto lastCommittedOpTime =
-            shardRegistry->getShardNoReload(shardId)->getLastCommittedOpTime();
-        if (lastCommittedOpTime > highestTime) {
-            highestTime = lastCommittedOpTime;
-        }
+    return shardRegistry->getShardNoReload(shardId)->getLastCommittedOpTime();
+}
+
+namespace {
+
+LogicalTime _computeAtClusterTime(OperationContext* opCtx,
+                                  bool mustRunOnAll,
+                                  const std::set<ShardId>& shardIds,
+                                  const NamespaceString& nss,
+                                  const BSONObj query,
+                                  const BSONObj collation) {
+    // TODO: SERVER-31767
+    return LogicalClock::get(opCtx)->getClusterTime();
+}
+
+}  // namespace
+
+boost::optional<LogicalTime> computeAtClusterTime(OperationContext* opCtx,
+                                                  bool mustRunOnAll,
+                                                  const std::set<ShardId>& shardIds,
+                                                  const NamespaceString& nss,
+                                                  const BSONObj query,
+                                                  const BSONObj collation) {
+
+    if (repl::ReadConcernArgs::get(opCtx).getLevel() !=
+        repl::ReadConcernLevel::kSnapshotReadConcern) {
+        return boost::none;
     }
-    return highestTime;
+
+    auto atClusterTime =
+        _computeAtClusterTime(opCtx, mustRunOnAll, shardIds, nss, query, collation);
+
+    // If the user passed afterClusterTime, atClusterTime must be greater than or equal to it.
+    const auto afterClusterTime = repl::ReadConcernArgs::get(opCtx).getArgsAfterClusterTime();
+    if (afterClusterTime && *afterClusterTime > atClusterTime) {
+        return afterClusterTime;
+    }
+
+    return atClusterTime;
 }
 
 std::set<ShardId> getTargetedShardsForQuery(OperationContext* opCtx,
@@ -568,21 +634,7 @@ std::set<ShardId> getTargetedShardsForQuery(OperationContext* opCtx,
     }
 
     // The collection is unsharded. Target only the primary shard for the database.
-    return {routingInfo.primaryId()};
-}
-
-boost::optional<LogicalTime> computeAtClusterTime(OperationContext* opCtx,
-                                                  const CachedCollectionRoutingInfo& routingInfo,
-                                                  const std::set<ShardId>& shardIds,
-                                                  const BSONObj& query,
-                                                  const BSONObj& collation) {
-    if (repl::ReadConcernArgs::get(opCtx).getLevel() !=
-        repl::ReadConcernLevel::kSnapshotReadConcern) {
-        return boost::none;
-    }
-
-    // TODO SERVER-33767: Integrate multi-versioned routing table into atClusterTime selection.
-    return LogicalClock::get(opCtx)->getClusterTime();
+    return {routingInfo.db().primaryId()};
 }
 
 }  // namespace mongo

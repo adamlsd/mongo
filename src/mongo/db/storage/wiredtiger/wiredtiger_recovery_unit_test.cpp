@@ -91,6 +91,7 @@ public:
         params.cappedMaxDocs = -1;
         params.cappedCallback = nullptr;
         params.sizeStorer = nullptr;
+        params.isReadOnly = false;
 
         auto ret = stdx::make_unique<StandardWiredTigerRecordStore>(&_engine, opCtx, params);
         ret->postConstructorInit(opCtx);
@@ -114,7 +115,7 @@ public:
         auto client = sc->makeClient(clientName);
         auto opCtx = client->makeOperationContext();
         opCtx->setRecoveryUnit(harnessHelper->newRecoveryUnit().release(),
-                               OperationContext::kNotInUnitOfWork);
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
         return std::make_pair(std::move(client), std::move(opCtx));
     }
 
@@ -169,7 +170,7 @@ TEST_F(WiredTigerRecoveryUnitTestFixture,
 }
 
 TEST_F(WiredTigerRecoveryUnitTestFixture,
-       availableReadOnADocumentBeingPreparedDoesNotTriggerPrepareConflict) {
+       AvailableReadOnADocumentBeingPreparedDoesNotTriggerPrepareConflict) {
     // Prepare but don't commit a transaction
     ru1->setReadConcernLevelAndReplicationMode(repl::ReadConcernLevel::kLocalReadConcern,
                                                repl::ReplicationCoordinator::modeNone);

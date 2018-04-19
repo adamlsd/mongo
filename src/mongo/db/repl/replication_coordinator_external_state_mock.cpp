@@ -201,6 +201,8 @@ void ReplicationCoordinatorExternalStateMock::closeConnections() {
 
 void ReplicationCoordinatorExternalStateMock::killAllUserOperations(OperationContext* opCtx) {}
 
+void ReplicationCoordinatorExternalStateMock::killAllTransactionCursors(OperationContext* opCtx) {}
+
 void ReplicationCoordinatorExternalStateMock::shardingOnStepDownHook() {}
 
 void ReplicationCoordinatorExternalStateMock::signalApplierToChooseNewSyncSource() {}
@@ -214,6 +216,8 @@ void ReplicationCoordinatorExternalStateMock::dropAllSnapshots() {}
 void ReplicationCoordinatorExternalStateMock::updateCommittedSnapshot(
     const OpTime& newCommitPoint) {}
 
+void ReplicationCoordinatorExternalStateMock::updateLocalSnapshot(const OpTime& optime) {}
+
 bool ReplicationCoordinatorExternalStateMock::snapshotsEnabled() const {
     return _areSnapshotsEnabled;
 }
@@ -224,6 +228,11 @@ void ReplicationCoordinatorExternalStateMock::setAreSnapshotsEnabled(bool val) {
 
 void ReplicationCoordinatorExternalStateMock::notifyOplogMetadataWaiters(
     const OpTime& committedOpTime) {}
+
+boost::optional<OpTime> ReplicationCoordinatorExternalStateMock::getEarliestDropPendingOpTime()
+    const {
+    return {};
+}
 
 double ReplicationCoordinatorExternalStateMock::getElectionTimeoutOffsetLimitFraction() const {
     return 0.15;

@@ -77,11 +77,11 @@ public:
             virtual IndexCatalogEntry* catalogEntry(const IndexDescriptor* desc) = 0;
         };
 
-        static constexpr MONGO_DECLARE_SHIM((OperationContext * opCtx,
+        static MONGO_DECLARE_SHIM((OperationContext * opCtx,
                                              const IndexCatalog* cat,
                                              bool includeUnfinishedIndexes,
                                              PrivateTo<IndexIterator>)
-                                                ->std::unique_ptr<Impl>) makeImpl{};
+                                                ->std::unique_ptr<Impl>) makeImpl;
 
     private:
         explicit inline IndexIterator(OperationContext* const opCtx,

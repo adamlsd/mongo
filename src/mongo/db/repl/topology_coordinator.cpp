@@ -85,7 +85,7 @@ std::string TopologyCoordinator::roleToString(TopologyCoordinator::Role role) {
         case TopologyCoordinator::Role::kCandidate:
             return "candidate";
     }
-    invariant(false);
+    MONGO_UNREACHABLE;
 }
 
 TopologyCoordinator::~TopologyCoordinator() {}
@@ -1900,12 +1900,12 @@ void TopologyCoordinator::changeMemberState_forTest(const MemberState& newMember
             break;
         default:
             severe() << "Cannot switch to state " << newMemberState;
-            invariant(false);
+            MONGO_UNREACHABLE;
     }
     if (getMemberState() != newMemberState.s) {
         severe() << "Expected to enter state " << newMemberState << " but am now in "
                  << getMemberState();
-        invariant(false);
+        MONGO_UNREACHABLE;
     }
     log() << newMemberState;
 }
@@ -1949,6 +1949,8 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
     const OpTime lastOpApplied = getMyLastAppliedOpTime();
     const OpTime lastOpDurable = getMyLastDurableOpTime();
     const BSONObj& initialSyncStatus = rsStatusArgs.initialSyncStatus;
+    const boost::optional<Timestamp>& lastStableCheckpointTimestamp =
+        rsStatusArgs.lastStableCheckpointTimestamp;
 
     if (_selfIndex == -1) {
         // We're REMOVED or have an invalid config
@@ -1963,9 +1965,10 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
         if (_maintenanceModeCalls) {
             response->append("maintenanceMode", _maintenanceModeCalls);
         }
-        std::string s = _getHbmsg(now);
-        if (!s.empty())
-            response->append("infoMessage", s);
+        response->append("lastHeartbeatMessage", "");
+        response->append("syncingTo", "");
+
+        response->append("infoMessage", _getHbmsg(now));
         *result = Status(ErrorCodes::InvalidReplicaSetConfig,
                          "Our replica set config is invalid or we are not a member of it");
         return;
@@ -1991,15 +1994,15 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
 
             if (!_syncSource.empty() && !_iAmPrimary()) {
                 bb.append("syncingTo", _syncSource.toString());
+            } else {
+                bb.append("syncingTo", "");
             }
 
             if (_maintenanceModeCalls) {
                 bb.append("maintenanceMode", _maintenanceModeCalls);
             }
 
-            std::string s = _getHbmsg(now);
-            if (!s.empty())
-                bb.append("infoMessage", s);
+            bb.append("infoMessage", _getHbmsg(now));
 
             if (myState.primary()) {
                 bb.append("electionTime", _electionTime);
@@ -2008,6 +2011,7 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
             }
             bb.appendIntOrLL("configVersion", _rsConfig.getConfigVersion());
             bb.append("self", true);
+            bb.append("lastHeartbeatMessage", "");
             membersOut.push_back(bb.obj());
         } else {
             // add non-self member
@@ -2049,16 +2053,18 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
             bb.appendDate("lastHeartbeatRecv", it->getLastHeartbeatRecv());
             Milliseconds ping = _getPing(itConfig.getHostAndPort());
             bb.append("pingMs", durationCount<Milliseconds>(ping));
-            std::string s = it->getLastHeartbeatMsg();
-            if (!s.empty())
-                bb.append("lastHeartbeatMessage", s);
+            bb.append("lastHeartbeatMessage", it->getLastHeartbeatMsg());
             if (it->hasAuthIssue()) {
                 bb.append("authenticated", false);
             }
             const HostAndPort& syncSource = it->getSyncSource();
             if (!syncSource.empty() && !state.primary()) {
                 bb.append("syncingTo", syncSource.toString());
+            } else {
+                bb.append("syncingTo", "");
             }
+
+            bb.append("infoMessage", "");
 
             if (state == MemberState::RS_PRIMARY) {
                 bb.append("electionTime", it->getElectionTime());
@@ -2082,6 +2088,8 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
     // Add sync source info
     if (!_syncSource.empty() && !myState.primary() && !myState.removed()) {
         response->append("syncingTo", _syncSource.toString());
+    } else {
+        response->append("syncingTo", "");
     }
 
     if (_rsConfig.isConfigServer()) {
@@ -2101,6 +2109,10 @@ void TopologyCoordinator::prepareStatusResponse(const ReplSetStatusArgs& rsStatu
     appendOpTime(&optimes, "appliedOpTime", lastOpApplied, _rsConfig.getProtocolVersion());
     appendOpTime(&optimes, "durableOpTime", lastOpDurable, _rsConfig.getProtocolVersion());
     response->append("optimes", optimes.obj());
+    if (lastStableCheckpointTimestamp) {
+        // Make sure to omit if the storage engine does not support recovering to a timestamp.
+        response->append("lastStableCheckpointTimestamp", *lastStableCheckpointTimestamp);
+    }
 
     if (!initialSyncStatus.isEmpty()) {
         response->append("initialSyncStatus", initialSyncStatus);
@@ -2874,7 +2886,7 @@ void TopologyCoordinator::setFollowerMode(MemberState::MS newMode) {
             _followerMode = newMode;
             break;
         default:
-            invariant(false);
+            MONGO_UNREACHABLE;
     }
 
     if (_followerMode != MemberState::RS_SECONDARY) {

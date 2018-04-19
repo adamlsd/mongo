@@ -85,6 +85,7 @@ namespace {
 MONGO_FP_DECLARE(failAllInserts);
 MONGO_FP_DECLARE(failAllUpdates);
 MONGO_FP_DECLARE(failAllRemoves);
+MONGO_FP_DECLARE(hangDuringBatchInsert);
 
 void updateRetryStats(OperationContext* opCtx, bool containsRetry) {
     if (containsRetry) {
@@ -117,12 +118,26 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
         // Mark the op as complete, and log it if appropriate. Returns a boolean indicating whether
         // this op should be sampled for profiling.
         const bool shouldSample =
-            curOp->completeAndLogOperation(opCtx, logger::LogComponent::kCommand);
+            curOp->completeAndLogOperation(opCtx, MONGO_LOG_DEFAULT_COMPONENT);
 
-        // Do not profile individual statements in a write command if we are in a transaction.
         auto session = OperationContextSession::get(opCtx);
-        if (curOp->shouldDBProfile(shouldSample) &&
-            !(session && session->inSnapshotReadOrMultiDocumentTransaction())) {
+        if (curOp->shouldDBProfile(shouldSample)) {
+            boost::optional<Session::TxnResources> txnResources;
+            if (session && session->inSnapshotReadOrMultiDocumentTransaction()) {
+                // Stash the current transaction so that writes to the profile collection are not
+                // done as part of the transaction. This must be done under the client lock, since
+                // we are modifying 'opCtx'.
+                stdx::lock_guard<Client> clientLock(*opCtx->getClient());
+                txnResources = Session::TxnResources(opCtx);
+            }
+            ON_BLOCK_EXIT([&] {
+                if (txnResources) {
+                    // Restore the transaction state onto 'opCtx'. This must be done under the
+                    // client lock, since we are modifying 'opCtx'.
+                    stdx::lock_guard<Client> clientLock(*opCtx->getClient());
+                    txnResources->release(opCtx);
+                }
+            });
             profile(opCtx, CurOp::get(opCtx)->getNetworkOp());
         }
     } catch (const DBException& ex) {
@@ -134,7 +149,9 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
 }
 
 /**
- * Sets the Client's LastOp to the system OpTime if needed.
+ * Sets the Client's LastOp to the system OpTime if needed. This is especially helpful for
+ * adjusting the client opTime for cases when batched write performed multiple writes, but
+ * when the last write was a no-op (which will not advance the client opTime).
  */
 class LastOpFixer {
 public:
@@ -182,6 +199,13 @@ void assertCanWrite_inlock(OperationContext* opCtx, const NamespaceString& ns) {
 }
 
 void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
+    auto session = OperationContextSession::get(opCtx);
+    auto inTransaction = session && session->inSnapshotReadOrMultiDocumentTransaction();
+    uassert(ErrorCodes::NamespaceNotFound,
+            str::stream() << "Cannot create namespace " << ns.ns()
+                          << " in multi-document transaction.",
+            !inTransaction);
+
     writeConflictRetry(opCtx, "implicit collection creation", ns.ns(), [&opCtx, &ns] {
         AutoGetOrCreateDb db(opCtx, ns.db(), MODE_X);
         assertCanWrite_inlock(opCtx, ns);
@@ -359,7 +383,9 @@ bool insertBatchAndHandleErrors(OperationContext* opCtx,
     boost::optional<AutoGetCollection> collection;
     auto acquireCollection = [&] {
         while (true) {
-            opCtx->checkForInterrupt();
+            if (MONGO_FAIL_POINT(hangDuringBatchInsert)) {
+                MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangDuringBatchInsert);
+            }
 
             if (MONGO_FAIL_POINT(failAllInserts)) {
                 uasserted(ErrorCodes::InternalError, "failAllInserts failpoint active!");
@@ -558,9 +584,11 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::UpdateOpEntry& op) {
+    auto session = OperationContextSession::get(opCtx);
     uassert(ErrorCodes::InvalidOptions,
             "Cannot use (or request) retryable writes with multi=true",
-            !(opCtx->getTxnNumber() && op.getMulti()));
+            (session && session->inMultiDocumentTransaction()) || !opCtx->getTxnNumber() ||
+                !op.getMulti());
 
     globalOpCounters.gotUpdate();
     auto& curOp = *CurOp::get(opCtx);
@@ -595,7 +623,6 @@ static SingleWriteResult performSingleUpdateOp(OperationContext* opCtx,
 
     boost::optional<AutoGetCollection> collection;
     while (true) {
-        opCtx->checkForInterrupt();
         if (MONGO_FAIL_POINT(failAllUpdates)) {
             uasserted(ErrorCodes::InternalError, "failAllUpdates failpoint active!");
         }
@@ -718,9 +745,11 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
                                                const NamespaceString& ns,
                                                StmtId stmtId,
                                                const write_ops::DeleteOpEntry& op) {
+    auto session = OperationContextSession::get(opCtx);
     uassert(ErrorCodes::InvalidOptions,
             "Cannot use (or request) retryable writes with limit=0",
-            !(opCtx->getTxnNumber() && op.getMulti()));
+            (session && session->inMultiDocumentTransaction()) || !opCtx->getTxnNumber() ||
+                !op.getMulti());
 
     globalOpCounters.gotDelete();
     auto& curOp = *CurOp::get(opCtx);
@@ -748,8 +777,6 @@ static SingleWriteResult performSingleDeleteOp(OperationContext* opCtx,
 
     ParsedDelete parsedDelete(opCtx, &request);
     uassertStatusOK(parsedDelete.parseRequest());
-
-    opCtx->checkForInterrupt();
 
     if (MONGO_FAIL_POINT(failAllRemoves)) {
         uasserted(ErrorCodes::InternalError, "failAllRemoves failpoint active!");

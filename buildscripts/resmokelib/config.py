@@ -1,6 +1,4 @@
-"""
-Configuration options for resmoke.py.
-"""
+"""Configuration options for resmoke.py."""
 
 from __future__ import absolute_import
 
@@ -9,7 +7,6 @@ import datetime
 import itertools
 import os.path
 import time
-
 
 # Subdirectory under the dbpath prefix that contains directories with data files of mongod's started
 # by resmoke.py.
@@ -114,19 +111,16 @@ _SuiteOptions = collections.namedtuple("_SuiteOptions", [
 
 
 class SuiteOptions(_SuiteOptions):
-    """
-    A class for representing top-level options to resmoke.py that can also be set at the
-    suite-level.
-    """
+    """Represent top-level options to resmoke.py that can also be set at the suite-level."""
 
     INHERIT = object()
     ALL_INHERITED = None
 
     @classmethod
     def combine(cls, *suite_options_list):
-        """
-        Returns a SuiteOptions instance representing the combination of all SuiteOptions in
-        'suite_options_list'.
+        """Return SuiteOptions instance.
+
+        This object represents the combination of all SuiteOptions in 'suite_options_list'.
         """
 
         combined_options = cls.ALL_INHERITED._asdict()
@@ -159,21 +153,23 @@ class SuiteOptions(_SuiteOptions):
         return cls(**combined_options)
 
     def resolve(self):
-        """
-        Returns a SuiteOptions instance representing the options overridden at the suite-level and
+        """Return a SuiteOptions instance.
+
+        This represents the options overridden at the suite-level and
         the inherited options from the top-level.
         """
 
         description = None
         include_tags = None
-        parent = dict(zip(SuiteOptions._fields, [
-            description,
-            FAIL_FAST,
-            include_tags,
-            JOBS,
-            REPEAT,
-            REPORT_FAILURE_STATUS,
-        ]))
+        parent = dict(
+            zip(SuiteOptions._fields, [
+                description,
+                FAIL_FAST,
+                include_tags,
+                JOBS,
+                REPEAT,
+                REPORT_FAILURE_STATUS,
+            ]))
 
         options = self._asdict()
         for field in SuiteOptions._fields:
@@ -183,8 +179,8 @@ class SuiteOptions(_SuiteOptions):
         return SuiteOptions(**options)
 
 
-SuiteOptions.ALL_INHERITED = SuiteOptions(**dict(zip(SuiteOptions._fields,
-                                                     itertools.repeat(SuiteOptions.INHERIT))))
+SuiteOptions.ALL_INHERITED = SuiteOptions(  # type: ignore
+    **dict(zip(SuiteOptions._fields, itertools.repeat(SuiteOptions.INHERIT))))
 
 ##
 # Variables that are set by the user at the command line or with --options.
@@ -380,7 +376,5 @@ DEFAULT_INTEGRATION_TEST_LIST = "build/integration_tests.txt"
 
 # External files or executables, used as suite selectors, that are created during the build and
 # therefore might not be available when creating a test membership map.
-EXTERNAL_SUITE_SELECTORS = (DEFAULT_BENCHMARK_TEST_LIST,
-                            DEFAULT_UNIT_TEST_LIST,
-                            DEFAULT_INTEGRATION_TEST_LIST,
-                            DEFAULT_DBTEST_EXECUTABLE)
+EXTERNAL_SUITE_SELECTORS = (DEFAULT_BENCHMARK_TEST_LIST, DEFAULT_UNIT_TEST_LIST,
+                            DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE)

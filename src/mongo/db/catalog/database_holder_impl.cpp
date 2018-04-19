@@ -49,16 +49,29 @@
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+namespace {
+std::unique_ptr<DatabaseHolder> dbHolderStorage;
+
+GlobalInitializerRegisterer dbHolderImplInitializer("InitializeDbHolderimpl",
+                                                    [](InitializerContext* const) {
+                                                        dbHolderStorage =
+                                                            std::make_unique<DatabaseHolder>();
+                                                        return Status::OK();
+                                                    },
+                                                    [](DeinitializerContext* const) {
+                                                        dbHolderStorage = nullptr;
+                                                        return Status::OK();
+                                                    });
+}  // namespace
 
 MONGO_REGISTER_SHIM(dbHolder)
 ()->DatabaseHolder& {
-    static DatabaseHolder _dbHolder;
-    return _dbHolder;
+    return *dbHolderStorage;
 }
 
 MONGO_REGISTER_SHIM(DatabaseHolder::makeImpl)
 (PrivateTo<DatabaseHolder>)->std::unique_ptr<DatabaseHolder::Impl> {
-    return stdx::make_unique<DatabaseHolderImpl>();
+    return std::make_unique<DatabaseHolderImpl>();
 }
 
 using std::set;

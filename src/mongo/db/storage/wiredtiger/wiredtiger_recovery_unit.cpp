@@ -173,9 +173,19 @@ void WiredTigerRecoveryUnit::_ensureSession() {
 
 bool WiredTigerRecoveryUnit::waitUntilDurable() {
     invariant(!_inUnitOfWork);
-    // _session may be nullptr. We cannot _ensureSession() here as that needs shutdown protection.
     const bool forceCheckpoint = false;
     const bool stableCheckpoint = false;
+    _sessionCache->waitUntilDurable(forceCheckpoint, stableCheckpoint);
+    return true;
+}
+
+bool WiredTigerRecoveryUnit::waitUntilUnjournaledWritesDurable() {
+    invariant(!_inUnitOfWork);
+    const bool forceCheckpoint = true;
+    const bool stableCheckpoint = true;
+    // Calling `waitUntilDurable` with `forceCheckpoint` set to false only performs a log
+    // (journal) flush, and thus has no effect on unjournaled writes. Setting `forceCheckpoint` to
+    // true will lock in stable writes to unjournaled tables.
     _sessionCache->waitUntilDurable(forceCheckpoint, stableCheckpoint);
     return true;
 }
@@ -198,7 +208,12 @@ WiredTigerSession* WiredTigerRecoveryUnit::getSession() {
 
 WiredTigerSession* WiredTigerRecoveryUnit::getSessionNoTxn() {
     _ensureSession();
-    return _session.get();
+    WiredTigerSession* session = _session.get();
+
+    // Handling queued drops can be slow, which is not desired for internal operations like FTDC
+    // sampling. Disable handling of queued drops for such sessions.
+    session->dropQueuedIdentsAtSessionEndAllowed(false);
+    return session;
 }
 
 void WiredTigerRecoveryUnit::abandonSnapshot() {
@@ -304,33 +319,44 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     }
     WT_SESSION* session = _session->getSession();
 
+    auto ignorePrepare = _readConcernLevel == repl::ReadConcernLevel::kAvailableReadConcern;
     // '_readAtTimestamp' is available outside of a check for readConcern level 'snapshot' to
     // accommodate unit testing. Note that the order of this if/else chain below is important for
     // correctness. Also, note that we use the '_readAtTimestamp' to work around an oplog visibility
     // issue in cappedTruncateAfter by setting the timestamp to the maximum value.
     if (_readAtTimestamp != Timestamp::min()) {
+        invariantWTOK(session->begin_transaction(session, NULL));
+        auto rollbacker =
+            MakeGuard([&] { invariant(session->rollback_transaction(session, nullptr) == 0); });
         auto status =
-            _sessionCache->snapshotManager().beginTransactionAtTimestamp(_readAtTimestamp, session);
+            _sessionCache->snapshotManager().setTransactionReadTimestamp(_readAtTimestamp, session);
+
         if (!status.isOK() && status.code() == ErrorCodes::BadValue) {
             uasserted(ErrorCodes::SnapshotTooOld,
                       str::stream() << "Read timestamp " << _readAtTimestamp.toString()
                                     << " is older than the oldest available timestamp.");
         }
         uassertStatusOK(status);
+        rollbacker.Dismiss();
     } else if (_isReadingFromPointInTime()) {
         // We reset _majorityCommittedSnapshot to the actual read timestamp used when the
         // transaction was started.
         _majorityCommittedSnapshot =
             _sessionCache->snapshotManager().beginTransactionOnCommittedSnapshot(session);
     } else if (_isOplogReader) {
+        invariant(!_shouldReadAtLastAppliedTimestamp);
         _sessionCache->snapshotManager().beginTransactionOnOplog(
             _sessionCache->getKVEngine()->getOplogManager(), session);
+
+    } else if (_shouldReadAtLastAppliedTimestamp &&
+               _sessionCache->snapshotManager().getLocalSnapshot()) {
+        // Read from the last applied timestamp (tracked globally by the SnapshotManager), which is
+        // the timestamp of the most recent completed replication batch operation. This should only
+        // be true for local or available readConcern on secondaries.
+        _sessionCache->snapshotManager().beginTransactionOnLocalSnapshot(session, ignorePrepare);
     } else {
-        invariantWTOK(session->begin_transaction(
-            session,
-            _readConcernLevel == repl::ReadConcernLevel::kAvailableReadConcern
-                ? "ignore_prepare=true"
-                : nullptr));
+        invariantWTOK(
+            session->begin_transaction(session, ignorePrepare ? "ignore_prepare=true" : nullptr));
     }
 
     LOG(3) << "WT begin_transaction for snapshot id " << _mySnapshotId;

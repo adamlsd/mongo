@@ -83,6 +83,7 @@ public:
 
     WriteConcernOptions populateUnsetWriteConcernOptionsSyncMode(WriteConcernOptions wc) override;
 
+    bool buildsIndexes() override;
 
     // Not implemented members that should not be called. Will assert or invariant.
 
@@ -176,8 +177,6 @@ public:
 
     Status processReplSetUpdatePosition(const repl::UpdatePositionArgs&, long long*) override;
 
-    bool buildsIndexes() override;
-
     std::vector<HostAndPort> getHostsWrittenTo(const repl::OpTime&, bool) override;
 
     std::vector<HostAndPort> getOtherNodesInReplSet() const override;
@@ -234,6 +233,8 @@ public:
     Status stepUpIfEligible() override;
 
     Status abortCatchupIfNeeded() override;
+
+    void signalDropPendingCollectionsRemovedFromStorage() final;
 
 private:
     // Back pointer to the ServiceContext that has started the instance.

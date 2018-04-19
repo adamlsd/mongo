@@ -55,38 +55,32 @@ namespace {
 
 std::unique_ptr<mongo::unittest::TempDir> globalTempDir;
 
-struct StatusDestructor
-{
-    void
-    operator()( libmongodbcapi_status *const p ) const noexcept
-    {
-        if( p ) libmongodbcapi_destroy_status( p );
+struct StatusDestructor {
+    void operator()(libmongodbcapi_status* const p) const noexcept {
+        if (p)
+            libmongodbcapi_destroy_status(p);
     }
 };
 
-using CapiStatusPtr= std::unique_ptr< libmongodbcapi_status, StatusDestructor >;
+using CapiStatusPtr = std::unique_ptr<libmongodbcapi_status, StatusDestructor>;
 
-CapiStatusPtr
-makeStatusPtr()
-{
-    return CapiStatusPtr{ libmongodbcapi_allocate_status() };
+CapiStatusPtr makeStatusPtr() {
+    return CapiStatusPtr{libmongodbcapi_allocate_status()};
 }
 
-struct ClientDestructor
-{
-    void
-    operator()(libmongodbcapi_client* const p) const noexcept
-    {
-        if( !p ) return;
+struct ClientDestructor {
+    void operator()(libmongodbcapi_client* const p) const noexcept {
+        if (!p)
+            return;
 
-        auto status= makeStatusPtr();
-        if( libmongodbcapi_client_destroy(p, status.get()) != LIBMONGODB_CAPI_SUCCESS )
-        {
+        auto status = makeStatusPtr();
+        if (libmongodbcapi_client_destroy(p, status.get()) != LIBMONGODB_CAPI_SUCCESS) {
             std::cerr << "libmongodb_capi_client_destroy failed." << std::endl;
-            if( status )
-            {
-                std::cerr << "Error code: " << libmongodbcapi_status_get_error( status.get() ) << std::endl;
-                std::cerr << "Error message: " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
+            if (status) {
+                std::cerr << "Error code: " << libmongodbcapi_status_get_error(status.get())
+                          << std::endl;
+                std::cerr << "Error message: " << libmongodbcapi_status_get_what(status.get())
+                          << std::endl;
             }
         }
     }
@@ -105,9 +99,9 @@ protected:
         }
 
         libmongodbcapi_init_params params;
-        params.log_flags= 0;
-        params.log_callback= nullptr;
-        params.log_user_data= nullptr;
+        params.log_flags = 0;
+        params.log_callback = nullptr;
+        params.log_user_data = nullptr;
 
         YAML::Emitter yaml;
         yaml << YAML::BeginMap;
@@ -120,12 +114,12 @@ protected:
 
         yaml << YAML::EndMap;
 
-        params.yaml_config= yaml.c_str();
+        params.yaml_config = yaml.c_str();
 
-        lib= libmongodbcapi_init( &params, status );
-        ASSERT( lib != nullptr );
+        lib = libmongodbcapi_init(&params, status);
+        ASSERT(lib != nullptr);
 
-        db = libmongodbcapi_db_new( lib, yaml.c_str(), status );
+        db = libmongodbcapi_db_new(lib, yaml.c_str(), status);
         ASSERT(db != nullptr);
     }
 
@@ -480,7 +474,7 @@ TEST_F(MongodbCAPITest, InsertAndUpdate) {
 // This test is temporary to make sure that only one database can be created
 // This restriction may be relaxed at a later time
 TEST_F(MongodbCAPITest, CreateMultipleDBs) {
-    auto status= makeStatusPtr();
+    auto status = makeStatusPtr();
     ASSERT(status.get());
     libmongodbcapi_db* db2 = libmongodbcapi_db_new(lib, nullptr, status.get());
     ASSERT(db2 == nullptr);
@@ -492,7 +486,7 @@ TEST_F(MongodbCAPITest, CreateMultipleDBs) {
 // These test functions cannot use the main() defined for unittests because they
 // call runGlobalInitializers(). The embedded C API calls mongoDbMain() which
 // calls runGlobalInitializers().
-int main(const int argc, const char*const*const argv) {
+int main(const int argc, const char* const* const argv) {
     moe::Environment environment;
     moe::OptionSection options;
 
@@ -500,7 +494,8 @@ int main(const int argc, const char*const*const argv) {
         "tempPath", "tempPath", moe::String, "directory to place mongo::TempDir subdirectories");
 
     std::map<std::string, std::string> env;
-    mongo::Status ret= moe::OptionsParser().run(options, std::vector< std::string >( argv, argv + argc ), env, &environment);
+    mongo::Status ret = moe::OptionsParser().run(
+        options, std::vector<std::string>(argv, argv + argc), env, &environment);
     if (!ret.isOK()) {
         std::cerr << options.helpString();
         return EXIT_FAILURE;
@@ -515,20 +510,21 @@ int main(const int argc, const char*const*const argv) {
     ::mongo::unittest::setupTestLogger();
 
     // Allocate an error descriptor for use in non-configured tests
-    const auto status= makeStatusPtr();
+    const auto status = makeStatusPtr();
 
     // Check so we can initialize the library without providing init params
-    libmongodbcapi_lib *lib= libmongodbcapi_init(nullptr, status.get() );
-    if ( lib == nullptr )
-    {
-        std::cerr << "libmongodbcapi_init() failed with " << libmongodbcapi_status_get_error( status.get() )
-                << ": " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
+    libmongodbcapi_lib* lib = libmongodbcapi_init(nullptr, status.get());
+    if (lib == nullptr) {
+        std::cerr << "libmongodbcapi_init() failed with "
+                  << libmongodbcapi_status_get_error(status.get()) << ": "
+                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
-    if ( libmongodbcapi_fini( lib, status.get() ) != LIBMONGODB_CAPI_SUCCESS) {
-        std::cerr << "libmongodbcapi_fini() failed with " << libmongodbcapi_status_get_error( status.get() )
-                << ": " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
+    if (libmongodbcapi_fini(lib, status.get()) != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with "
+                  << libmongodbcapi_status_get_error(status.get()) << ": "
+                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -549,20 +545,20 @@ int main(const int argc, const char*const*const argv) {
     };
     params.log_user_data = &receivedCallback;
 
-    lib= libmongodbcapi_init(&params, nullptr);
-    if ( lib == nullptr )
-    {
-        std::cerr << "libmongodbcapi_init() failed with " << libmongodbcapi_status_get_error( status.get() )
-                << ": " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
+    lib = libmongodbcapi_init(&params, nullptr);
+    if (lib == nullptr) {
+        std::cerr << "libmongodbcapi_init() failed with "
+                  << libmongodbcapi_status_get_error(status.get()) << ": "
+                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
     ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
-    if ( libmongodbcapi_fini(lib, nullptr) != LIBMONGODB_CAPI_SUCCESS )
-    {
-        std::cerr << "libmongodbcapi_fini() failed with " << libmongodbcapi_status_get_error( status.get() )
-                << ": " << libmongodbcapi_status_get_what( status.get() ) << std::endl;
+    if (libmongodbcapi_fini(lib, nullptr) != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "libmongodbcapi_fini() failed with "
+                  << libmongodbcapi_status_get_error(status.get()) << ": "
+                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 

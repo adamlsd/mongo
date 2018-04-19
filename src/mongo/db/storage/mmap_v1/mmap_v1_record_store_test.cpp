@@ -1,3 +1,5 @@
+// mmap_v1_record_store_test.cpp
+
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -92,9 +94,14 @@ public:
 private:
     DummyExtentManager _em;
 };
-}  // namespace
 
-MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<MyHarnessHelper>();
 }
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+}  // namespace
 }  // namespace mongo

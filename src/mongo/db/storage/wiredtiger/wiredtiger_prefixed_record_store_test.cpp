@@ -187,6 +187,15 @@ private:
     std::unique_ptr<WiredTigerKVEngine> _engine;
 };
 
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+    return stdx::make_unique<PrefixedWiredTigerHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+
 TEST(WiredTigerRecordStoreTest, PrefixedTableScan) {
     unique_ptr<RecordStoreHarnessHelper> harnessHelper = newRecordStoreHarnessHelper();
     unique_ptr<RecordStore> rs = harnessHelper->newNonCappedRecordStore("a.b");
@@ -240,10 +249,6 @@ TEST(WiredTigerRecordStoreTest, PrefixedSeekingCursor) {
     }
     ASSERT(!cursor->seekExact(RecordId(startRecordId.repr() + numDocs)));
 }
+
 }  // namespace
-
-MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
-    return stdx::make_unique<PrefixedWiredTigerHarnessHelper>();
-}
-
-}  // namespace mongo
+}  // mongo

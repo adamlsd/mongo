@@ -32,7 +32,6 @@
 
 #include <memory>
 
-#include "mongo/base/shim.h"
 #include "mongo/db/storage/kv/kv_engine.h"
 #include "mongo/stdx/functional.h"
 
@@ -49,7 +48,8 @@ public:
 
     virtual KVEngine* restartEngine() = 0;
 
-    static MONGO_DECLARE_SHIM(()->std::unique_ptr<KVHarnessHelper>) create;
+    static std::unique_ptr<KVHarnessHelper> create();
+    static void registerFactory(stdx::function<std::unique_ptr<KVHarnessHelper>()> factory);
 };
 
 }  // namespace mongo

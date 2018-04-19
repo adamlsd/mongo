@@ -32,7 +32,6 @@
 #include <initializer_list>
 #include <memory>
 
-#include "mongo/base/shim.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/record_id.h"
@@ -88,6 +87,8 @@ std::unique_ptr<Target> noexcept_ptr_conversion(std::unique_ptr<Current>&& p, Ta
 }
 }  // namespace harness_helper_detail
 
+extern void registerHarnessHelperFactory(stdx::function<std::unique_ptr<HarnessHelper>()> factory);
+
 template <typename Target, typename Current>
 std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {
     if (!p) {
@@ -97,5 +98,5 @@ std::unique_ptr<Target> dynamic_ptr_cast(std::unique_ptr<Current>&& p) {
     return harness_helper_detail::noexcept_ptr_conversion(std::move(p), target);
 }
 
-extern MONGO_DECLARE_SHIM(()->std::unique_ptr<HarnessHelper>) newHarnessHelper;
+std::unique_ptr<HarnessHelper> newHarnessHelper();
 }  // namespace mongo

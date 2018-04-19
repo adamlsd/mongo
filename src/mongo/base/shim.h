@@ -59,25 +59,6 @@ public:
 }  // namespace mongo
 
 namespace shim_detail {
-struct get_type {};
-template <typename Function>
-struct function_decompose;
-
-template <typename ReturnType, typename... Args>
-struct function_decompose<ReturnType(Args...)> {
-    static const std::size_t function_args_count = sizeof...(Args);
-    using return_type = ReturnType;
-    using args_tuple_type = std::tuple<Args...>;
-};
-
-template <typename Function>
-struct return_type {
-    using type = typename function_decompose<Function>::return_type;
-};
-
-template <typename Function>
-using return_type_t = typename return_type<Function>::type;
-
 template <typename T, typename tag = void>
 struct storage {
     static T data;
@@ -124,8 +105,8 @@ const bool checkShimsViaTUHook = false;
                                                                                                    \
         struct MongoShimImplGuts {                                                                 \
             static auto functionTypeHelper __VA_ARGS__;                                            \
-            using function_type = decltype(functionTypeHelper);                                    \
-            using return_type = shim_detail::return_type_t<function_type>;                         \
+            using function_type = std::function<decltype(&MongoShimImplGuts::functionTypeHelper)>; \
+            using return_type = typename function_type::result_type;                               \
             MongoShimImplGuts* abi(AbiCheck = {}) {                                                \
                 return this;                                                                       \
             }                                                                                      \
@@ -169,7 +150,7 @@ const bool checkShimsViaTUHook = false;
     template <>                                                                                  \
     shim_namespace##LN::ShimType::LibTUHookType<::mongo::checkShimsViaTUHook>::LibTUHookType() = \
         default;                                                                                 \
-    shim_namespace##LN::ShimType __VA_ARGS__;
+    shim_namespace##LN::ShimType __VA_ARGS__{};
 
 #define MONGO_SHIM_EVIL_STRINGIFY_(args) #args
 

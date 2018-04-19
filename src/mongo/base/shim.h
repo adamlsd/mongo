@@ -93,8 +93,6 @@ namespace mongo {
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
 const bool checkShimsViaTUHook = true;
 #define MONGO_SHIM_TU_HOOK(name) name = {}
-// const bool check_shims_via_tu_hook= false;
-//#define MONGO_SHIM_TU_HOOK( name )
 #else
 const bool checkShimsViaTUHook = false;
 #define MONGO_SHIM_TU_HOOK(name)
@@ -146,9 +144,8 @@ const bool checkShimsViaTUHook = false;
         template <typename... Args>                                                                \
         auto operator()(Args&&... args) const noexcept(                                            \
             noexcept(storage::data->abi()->lib()->implementation(std::forward<Args>(args)...)))    \
-            -> MongoShimImplGuts::                                                                 \
-                return_type /* TODO: When the dependency graph is fixed, add the `impl()->` call   \
-                               to this chain */                                                    \
+            -> MongoShimImplGuts::return_type /* TODO: When the dependency graph is fixed, add the \
+                                                 `impl()->` call to this chain */                  \
         {                                                                                          \
             return storage::data->abi()->lib()->implementation(std::forward<Args>(args)...);       \
         }                                                                                          \
@@ -179,10 +176,8 @@ const bool checkShimsViaTUHook = false;
 /**
  * Define an implementation of a shimmable function with name `SHIM_NAME`.  The compiler will check
  * supplied parameters for correctness.  This shim registration macro should go in the associated
- * C++
- * implementation file to the header where a SHIM was defined.   Such a file would be a mock
- * implementation
- * or a real implementation, for example
+ * C++ implementation file to the header where a SHIM was defined.   Such a file would be a mock
+ * implementation or a real implementation, for example
  */
 #define MONGO_REGISTER_SHIM(/*SHIM_NAME*/...) MONGO_REGISTER_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_REGISTER_SHIM_1(LN, ...) MONGO_REGISTER_SHIM_2(LN, __VA_ARGS__)
@@ -191,13 +186,13 @@ const bool checkShimsViaTUHook = false;
     namespace shim_namespace##LN {                                                                 \
         using ShimType = decltype(__VA_ARGS__);                                                    \
                                                                                                    \
-        class Implementation final : public ShimType::MongoShimImplGuts {                                   \
+        class Implementation final : public ShimType::MongoShimImplGuts {                          \
             ShimType::MongoShimImplGuts::function_type implementation; /* override */              \
         };                                                                                         \
                                                                                                    \
         ::mongo::Status createInitializerRegistration(::mongo::InitializerContext* const) {        \
             static Implementation impl;                                                            \
-            ShimType::storage::data = &impl;                                              \
+            ShimType::storage::data = &impl;                                                       \
             return Status::OK();                                                                   \
         }                                                                                          \
                                                                                                    \

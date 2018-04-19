@@ -50,10 +50,9 @@
 
 namespace mongo {
 namespace {
-std::unique_ptr<DatabaseHolder> _dbHolder;
+std::unique_ptr<DatabaseHolder> dbHolderStorage;
 
 GlobalInitializerRegisterer dbHolderImplInitializer("InitializeDbHolderimpl",
-                                                    {"ShimHooks"},
                                                     [](InitializerContext* const) {
                                                         dbHolderStorage =
                                                             std::make_unique<DatabaseHolder>();
@@ -67,12 +66,12 @@ GlobalInitializerRegisterer dbHolderImplInitializer("InitializeDbHolderimpl",
 
 MONGO_REGISTER_SHIM(dbHolder)
 ()->DatabaseHolder& {
-    return _dbHolder;
+    return *dbHolderStorage;
 }
 
 MONGO_REGISTER_SHIM(DatabaseHolder::makeImpl)
 (PrivateTo<DatabaseHolder>)->std::unique_ptr<DatabaseHolder::Impl> {
-    return stdx::make_unique<DatabaseHolderImpl>();
+    return std::make_unique<DatabaseHolderImpl>();
 }
 
 using std::set;

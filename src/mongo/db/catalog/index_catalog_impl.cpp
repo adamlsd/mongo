@@ -76,7 +76,7 @@ MONGO_REGISTER_SHIM(IndexCatalog::makeImpl)
  const int maxNumIndexesAllowed,
  PrivateTo<IndexCatalog>)
     ->std::unique_ptr<IndexCatalog::Impl> {
-    return stdx::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
+    return std::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
 }
 
 MONGO_REGISTER_SHIM(IndexCatalog::IndexIterator::makeImpl)
@@ -85,7 +85,7 @@ MONGO_REGISTER_SHIM(IndexCatalog::IndexIterator::makeImpl)
  const bool includeUnfinishedIndexes,
  PrivateTo<IndexCatalog::IndexIterator>)
     ->std::unique_ptr<IndexCatalog::IndexIterator::Impl> {
-    return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
+    return std::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
         opCtx, cat, includeUnfinishedIndexes);
 }
 MONGO_REGISTER_SHIM(IndexCatalog::fixIndexKey)(const BSONObj& key)->BSONObj {

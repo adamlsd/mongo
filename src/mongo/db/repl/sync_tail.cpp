@@ -361,6 +361,10 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                 OldClientContext ctx(opCtx, autoColl.getNss().ns(), db);
                 return applyOp(ctx.db());
             } catch (ExceptionFor<ErrorCodes::NamespaceNotFound>& ex) {
+                if (oplogApplicationMode == OplogApplication::Mode::kRecovering) {
+                    return Status::OK();
+                }
+
                 // Delete operations on non-existent namespaces can be treated as successful for
                 // idempotency reasons.
                 // During RECOVERING mode, we ignore NamespaceNotFound for all CRUD ops since
@@ -369,6 +373,7 @@ Status SyncTail::syncApply(OperationContext* opCtx,
                     oplogApplicationMode == OplogApplication::Mode::kRecovering) {
                     return Status::OK();
                 }
+
                 ex.addContext(str::stream() << "Failed to apply operation: " << redact(op));
                 throw;
             }
@@ -1261,9 +1266,9 @@ Status multiInitialSyncApply(OperationContext* opCtx,
                     SyncTail::syncApply(opCtx, entry.raw, OplogApplication::Mode::kInitialSync);
                 if (!s.isOK()) {
                     // In initial sync, update operations can cause documents to be missed during
-                    // collection cloning. As a result, it is possible that a document that we need
-                    // to update is not present locally. In that case we fetch the document from the
-                    // sync source.
+                    // collection cloning. As a result, it is possible that a document that we
+                    // need to update is not present locally. In that case we fetch the document
+                    // from the sync source.
                     if (s != ErrorCodes::UpdateOperationFailed) {
                         error() << "Error applying operation: " << redact(s) << " ("
                                 << redact(entry.toBSON()) << ")";
@@ -1298,27 +1303,11 @@ Status multiInitialSyncApply(OperationContext* opCtx,
 }
 
 StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::Operations ops) {
-    auto workerPool = _writerPool;
-
-    if (!opCtx) {
-        return {ErrorCodes::BadValue, "invalid operation context"};
-    }
-
-    if (!workerPool) {
-        return {ErrorCodes::BadValue, "invalid worker pool"};
-    }
-
-    if (ops.empty()) {
-        return {ErrorCodes::EmptyArrayOperation, "no operations provided to multiApply"};
-    }
-
-    if (!_applyFunc) {
-        return {ErrorCodes::BadValue, "invalid apply operation function"};
-    }
+    invariant(!ops.empty());
 
     if (isMMAPV1()) {
         // Use a ThreadPool to prefetch all the operations in a batch.
-        prefetchOps(ops, workerPool);
+        prefetchOps(ops, _writerPool);
     }
 
     auto consistencyMarkers = ReplicationProcess::get(opCtx)->getConsistencyMarkers();
@@ -1335,18 +1324,18 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
                 "attempting to replicate ops while primary"};
     }
 
-    std::vector<WorkerMultikeyPathInfo> multikeyVector(workerPool->getStats().numThreads);
+    std::vector<WorkerMultikeyPathInfo> multikeyVector(_writerPool->getStats().numThreads);
     {
         // Each node records cumulative batch application stats for itself using this timer.
         TimerHolder timer(&applyBatchStats);
 
         // We must wait for the all work we've dispatched to complete before leaving this block
         // because the spawned threads refer to objects on the stack
-        ON_BLOCK_EXIT([&] { workerPool->waitForIdle(); });
+        ON_BLOCK_EXIT([&] { _writerPool->waitForIdle(); });
 
         // Write batch of ops into oplog.
         consistencyMarkers->setOplogTruncateAfterPoint(opCtx, ops.front().getTimestamp());
-        scheduleWritesToOplog(opCtx, workerPool, ops);
+        scheduleWritesToOplog(opCtx, _writerPool, ops);
 
         // Holds extracted applyOps operations. Keep in scope until all operations in 'ops' and
         // 'applyOpsOperations' have been applied.
@@ -1359,20 +1348,20 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
         // oplog.rs collection.
         auto opsWithTxnUpdates = Session::addOpsForReplicatingTxnTable(ops);
 
-        std::vector<MultiApplier::OperationPtrs> writerVectors(workerPool->getStats().numThreads);
+        std::vector<MultiApplier::OperationPtrs> writerVectors(_writerPool->getStats().numThreads);
         fillWriterVectors(opCtx, &opsWithTxnUpdates, &writerVectors, &applyOpsOperations);
 
         // Wait for writes to finish before applying ops.
-        workerPool->waitForIdle();
+        _writerPool->waitForIdle();
 
         // Reset consistency markers in case the node fails while applying ops.
         consistencyMarkers->setOplogTruncateAfterPoint(opCtx, Timestamp());
         consistencyMarkers->setMinValidToAtLeast(opCtx, ops.back().getOpTime());
 
         {
-            std::vector<Status> statusVector(workerPool->getStats().numThreads, Status::OK());
-            applyOps(writerVectors, workerPool, _applyFunc, this, &statusVector, &multikeyVector);
-            workerPool->waitForIdle();
+            std::vector<Status> statusVector(_writerPool->getStats().numThreads, Status::OK());
+            applyOps(writerVectors, _writerPool, _applyFunc, this, &statusVector, &multikeyVector);
+            _writerPool->waitForIdle();
 
             // If any of the statuses is not ok, return error.
             for (auto it = statusVector.cbegin(); it != statusVector.cend(); ++it) {

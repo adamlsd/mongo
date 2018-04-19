@@ -49,6 +49,7 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/database_sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
@@ -152,6 +153,9 @@ Status renameCollectionCommon(OperationContext* opCtx,
     }
 
     Database* const sourceDB = dbHolder().get(opCtx, source.db());
+    if (sourceDB) {
+        DatabaseShardingState::get(sourceDB).checkDbVersion(opCtx);
+    }
     Collection* const sourceColl = sourceDB ? sourceDB->getCollection(opCtx, source) : nullptr;
     if (!sourceColl) {
         if (sourceDB && sourceDB->getViewCatalog()->lookup(opCtx, source.ns()))
@@ -161,7 +165,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
     }
 
     // Make sure the source collection is not sharded.
-    if (CollectionShardingState::get(opCtx, source)->getMetadata()) {
+    if (CollectionShardingState::get(opCtx, source)->getMetadata(opCtx)) {
         return {ErrorCodes::IllegalOperation, "source namespace cannot be sharded"};
     }
 
@@ -189,7 +193,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
             invariant(source == target);
             return Status::OK();
         }
-        if (CollectionShardingState::get(opCtx, target)->getMetadata()) {
+        if (CollectionShardingState::get(opCtx, target)->getMetadata(opCtx)) {
             return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
         }
 
@@ -242,8 +246,10 @@ Status renameCollectionCommon(OperationContext* opCtx,
                         return status;
                     }
                 }
-                opObserver->onRenameCollection(
-                    opCtx, source, target, sourceUUID, options.dropTarget, {}, stayTemp);
+                // We have to override the provided 'dropTarget' setting for idempotency reasons to
+                // avoid unintentionally removing a collection on a secondary with the same name as
+                // the target.
+                opObserver->onRenameCollection(opCtx, source, target, sourceUUID, {}, stayTemp);
                 wunit.commit();
                 return Status::OK();
             }
@@ -251,8 +257,9 @@ Status renameCollectionCommon(OperationContext* opCtx,
             // Target collection exists - drop it.
             invariant(options.dropTarget);
             auto dropTargetUUID = targetColl->uuid();
+            invariant(dropTargetUUID);
             auto renameOpTime = opObserver->onRenameCollection(
-                opCtx, source, target, sourceUUID, true, dropTargetUUID, options.stayTemp);
+                opCtx, source, target, sourceUUID, dropTargetUUID, options.stayTemp);
 
             if (!renameOpTimeFromApplyOps.isNull()) {
                 // 'renameOpTime' must be null because a valid 'renameOpTimeFromApplyOps' implies
@@ -329,6 +336,9 @@ Status renameCollectionCommon(OperationContext* opCtx,
 
     // Dismissed on success
     auto tmpCollectionDropper = MakeGuard([&] {
+        // Ensure that we don't trigger an exception when attempting to take locks.
+        UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+
         BSONObjBuilder unusedResult;
         auto status =
             dropCollection(opCtx,

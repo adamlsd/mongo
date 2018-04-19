@@ -127,13 +127,12 @@ public:
     };
 
 public:
-    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<Impl>,
-                              makeImpl,
-                              Database* this_,
-                              OperationContext* opCtx,
-                              StringData name,
-                              DatabaseCatalogEntry*,
-                              PrivateTo<Database>);
+    static MONGO_DECLARE_SHIM((Database * this_,
+                               OperationContext* opCtx,
+                               StringData name,
+                               DatabaseCatalogEntry*,
+                               PrivateTo<Database>)
+                                  ->std::unique_ptr<Impl>) makeImpl;
 
     /**
      * Iterating over a Database yields Collection* pointers.
@@ -336,7 +335,7 @@ public:
      *
      * Must be called with the specified database locked in X mode.
      */
-    MONGO_DECLARE_STATIC_SHIM(void, dropDatabase, OperationContext* opCtx, Database* db);
+    static MONGO_DECLARE_SHIM((OperationContext * opCtx, Database* db)->void) dropDatabase;
 
     inline const NamespaceString& getSystemIndexesName() const {
         return this->_impl().getSystemIndexesName();
@@ -387,7 +386,7 @@ private:
     std::unique_ptr<Impl> _pimpl;
 };
 
-MONGO_DECLARE_SHIM(void, dropAllDatabasesExceptLocal, OperationContext* opCtx);
+extern MONGO_DECLARE_SHIM((OperationContext * opCtx)->void) dropAllDatabasesExceptLocal;
 
 /**
  * Creates the namespace 'ns' in the database 'db' according to 'options'. If 'createDefaultIndexes'
@@ -395,13 +394,13 @@ MONGO_DECLARE_SHIM(void, dropAllDatabasesExceptLocal, OperationContext* opCtx);
  * collections). Creates the collection's _id index according to 'idIndex', if it is non-empty. When
  * 'idIndex' is empty, creates the default _id index.
  */
-MONGO_DECLARE_SHIM(Status,
-                   userCreateNS,
-                   OperationContext* opCtx,
-                   Database* db,
-                   StringData ns,
-                   BSONObj options,
-                   CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
-                   bool createDefaultIndexes = true,
-                   const BSONObj& idIndex = BSONObj());
+extern MONGO_DECLARE_SHIM(
+    (OperationContext * opCtx,
+     Database* db,
+     StringData ns,
+     BSONObj options,
+     CollectionOptions::ParseKind parseKind = CollectionOptions::parseForCommand,
+     bool createDefaultIndexes = true,
+     const BSONObj& idIndex = BSONObj())
+        ->Status) userCreateNS;
 }  // namespace mongo

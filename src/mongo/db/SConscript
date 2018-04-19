@@ -20,6 +20,7 @@ env.SConscript(
         'commands',
         'concurrency',
         'exec',
+        'free_mon',
         'fts',
         'ftdc',
         'geo',
@@ -207,6 +208,17 @@ env.Library(
         '$BUILD_DIR/mongo/util/fail_point',
         '$BUILD_DIR/mongo/util/net/network',
         '$BUILD_DIR/mongo/util/progress_meter',
+    ],
+)
+
+env.Library(
+    target='curop_failpoint_helpers',
+    source=[
+        'curop_failpoint_helpers.cpp',
+    ],
+    LIBDEPS=[
+        'curop',
+        '$BUILD_DIR/mongo/util/fail_point',
     ],
 )
 
@@ -470,6 +482,8 @@ env.Library(
         'operation_context_group.cpp',
         'service_context.cpp',
         'service_context_noop.cpp',
+        'service_context_registrar.cpp',
+        'server_recovery.cpp',
         'unclean_shutdown.cpp',
     ],
     LIBDEPS=[
@@ -520,16 +534,22 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/bson/mutable/mutable_bson',
-        '$BUILD_DIR/mongo/db/auth/authcore',
-        '$BUILD_DIR/mongo/db/wire_version',
-        '$BUILD_DIR/mongo/rpc/command_status',
+    ],
+    LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/rpc/rpc',
         'audit',
-        'auth/authcore',
-        'command_can_run_here',
+        'command_generic_argument',
         'commands/server_status_core',
-        'service_context',
+    ],
+)
+
+env.Library(
+    target='command_generic_argument',
+    source=[
+        'command_generic_argument.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
     ],
 )
 
@@ -551,8 +571,10 @@ env.CppUnitTest(
     target="commands_test",
     source=[
         "commands_test.cpp",
+        env.Idlc('commands_test_example.idl')[0],
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/idl/idl_parser',
         "commands",
         "service_context_noop_init",
         "auth/authmocks",
@@ -588,6 +610,7 @@ env.Library(
         env.Idlc('transactions_stats.idl')[0],
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/stats/fill_locker_info',
         '$BUILD_DIR/mongo/idl/idl_parser',
         'catalog/collection',
         'catalog/database',
@@ -602,6 +625,7 @@ env.Library(
         'repl/oplog_entry',
         's/sharding_api_d',
         'views/views',
+        '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
     ],
     LIBDEPS_PRIVATE=[
         'commands/server_status',
@@ -618,6 +642,7 @@ env.CppUnitTest(
         'catalog/database_holder_mock',
         'catalog_raii',
         'service_context_noop_init',
+        'stats/fill_locker_info',
     ],
 )
 
@@ -771,9 +796,10 @@ env.Library(
     source=[
         "curop_metrics.cpp",
     ],
-    LIBDEPS=[
+    LIBDEPS_PRIVATE=[
+        "commands/server_status_core",
         "curop",
-    ],
+    ]
 )
 
 env.Library(
@@ -946,6 +972,7 @@ env.Library(
         '$BUILD_DIR/mongo/util/background_job',
         '$BUILD_DIR/mongo/util/elapsed_tracker',
         '$BUILD_DIR/third_party/s2/s2',
+        'audit',
         'background',
         'bson/dotted_path_support',
         'catalog/collection',
@@ -1003,6 +1030,7 @@ env.Library(
         "catalog/catalog_impl",
         "catalog/collection_options",
         "catalog/document_validation",
+        "catalog/index_create_impl_servers",
         "catalog/index_key_validate",
         "cloner",
         "collection_index_usage_tracker",
@@ -1420,6 +1448,17 @@ env.Library(
 )
 
 env.Library(
+    target='periodic_runner_job_abort_expired_transactions',
+    source=[
+        'periodic_runner_job_abort_expired_transactions.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/util/periodic_runner',
+        'kill_sessions_local',
+    ],
+)
+
+env.Library(
     target='signed_logical_time',
     source=[
         'signed_logical_time.cpp',
@@ -1741,6 +1780,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'query_exec',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
+        '$BUILD_DIR/mongo/client/read_preference'
     ],
 )
 

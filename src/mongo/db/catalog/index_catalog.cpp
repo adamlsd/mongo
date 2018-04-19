@@ -37,7 +37,7 @@
 namespace mongo {
 IndexCatalog::Impl::~Impl() = default;
 
-MONGO_DEFINE_STATIC_SHIM(IndexCatalog, makeImpl)
+MONGO_DEFINE_SHIM(IndexCatalog::makeImpl);
 
 void IndexCatalog::TUHook::hook() noexcept {}
 
@@ -51,11 +51,11 @@ IndexCatalogEntry* IndexCatalog::_setupInMemoryStructures(
 
 IndexCatalog::IndexIterator::Impl::~Impl() = default;
 
-MONGO_DEFINE_STATIC_SHIM(IndexCatalog::IndexIterator, makeImpl);
+MONGO_DEFINE_SHIM(IndexCatalog::IndexIterator::makeImpl);
 
 void IndexCatalog::IndexIterator::TUHook::hook() noexcept {}
 
-MONGO_DEFINE_STATIC_SHIM(IndexCatalog, fixIndexKey);
+MONGO_DEFINE_SHIM(IndexCatalog::fixIndexKey);
 
 std::string::size_type IndexCatalog::getLongestIndexNameLength(OperationContext* opCtx) const {
     IndexCatalog::IndexIterator it = getIndexIterator(opCtx, true);
@@ -68,5 +68,5 @@ std::string::size_type IndexCatalog::getLongestIndexNameLength(OperationContext*
     return longestIndexNameLength;
 }
 
-MONGO_DEFINE_STATIC_SHIM(IndexCatalog, prepareInsertDeleteOptions);
+MONGO_DEFINE_SHIM(IndexCatalog::prepareInsertDeleteOptions);
 }  // namespace mongo

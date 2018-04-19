@@ -73,9 +73,14 @@ public:
 
     std::shared_ptr<void> data;
 };
-}  // namespace
 
-MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<EphemeralForTestHarnessHelper>();
 }
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+}  // namespace
 }  // namespace mongo

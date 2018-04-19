@@ -70,29 +70,29 @@
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, makeImpl)
+MONGO_REGISTER_SHIM(IndexCatalog::makeImpl)
 (IndexCatalog* const this_,
  Collection* const collection,
  const int maxNumIndexesAllowed,
  PrivateTo<IndexCatalog>)
     ->std::unique_ptr<IndexCatalog::Impl> {
-    return stdx::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
+    return std::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
 }
 
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog::IndexIterator, makeImpl)
+MONGO_REGISTER_SHIM(IndexCatalog::IndexIterator::makeImpl)
 (OperationContext* const opCtx,
  const IndexCatalog* const cat,
  const bool includeUnfinishedIndexes,
  PrivateTo<IndexCatalog::IndexIterator>)
     ->std::unique_ptr<IndexCatalog::IndexIterator::Impl> {
-    return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
+    return std::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
         opCtx, cat, includeUnfinishedIndexes);
 }
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, fixIndexKey)(const BSONObj& key)->BSONObj {
+MONGO_REGISTER_SHIM(IndexCatalog::fixIndexKey)(const BSONObj& key)->BSONObj {
     return IndexCatalogImpl::fixIndexKey(key);
 }
 
-MONGO_REGISTER_STATIC_SHIM(IndexCatalog, prepareInsertDeleteOptions)
+MONGO_REGISTER_SHIM(IndexCatalog::prepareInsertDeleteOptions)
 (OperationContext* opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void {
     return IndexCatalogImpl::prepareInsertDeleteOptions(opCtx, desc, options);
 }
@@ -331,7 +331,12 @@ StatusWith<BSONObj> IndexCatalogImpl::prepareSpecForCreate(OperationContext* opC
 StatusWith<BSONObj> IndexCatalogImpl::createIndexOnEmptyCollection(OperationContext* opCtx,
                                                                    BSONObj spec) {
     invariant(opCtx->lockState()->isCollectionLockedForMode(_collection->ns().toString(), MODE_X));
-    invariant(_collection->numRecords(opCtx) == 0);
+    invariant(_collection->numRecords(opCtx) == 0,
+              str::stream() << "Collection must be empty. Collection: " << _collection->ns().ns()
+                            << " UUID: "
+                            << _collection->uuid()
+                            << " Count: "
+                            << _collection->numRecords(opCtx));
 
     _checkMagic();
     Status status = checkUnfinished();
@@ -399,8 +404,6 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
     _indexName = descriptor->indexName();
     _indexNamespace = descriptor->indexNamespace();
 
-    /// ----------   setup on disk structures ----------------
-
     bool isBackgroundSecondaryBuild = false;
     if (auto replCoord = repl::ReplicationCoordinator::get(_opCtx)) {
         isBackgroundSecondaryBuild =
@@ -408,13 +411,22 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
             replCoord->getMemberState().secondary() && _spec["background"].trueValue();
     }
 
+    // Setup on-disk structures.
     Status status = _collection->getCatalogEntry()->prepareForIndexBuild(
         _opCtx, descriptor.get(), isBackgroundSecondaryBuild);
     if (!status.isOK())
         return status;
 
+    if (isBackgroundSecondaryBuild) {
+        _opCtx->recoveryUnit()->onCommit([&] {
+            auto commitTs = _opCtx->recoveryUnit()->getCommitTimestamp();
+            if (!commitTs.isNull()) {
+                _collection->setMinimumVisibleSnapshot(commitTs);
+            }
+        });
+    }
+
     auto* const descriptorPtr = descriptor.get();
-    /// ----------   setup in memory structures  ----------------
     const bool initFromDisk = false;
     _entry = IndexCatalogImpl::_setupInMemoryStructures(
         _catalog, _opCtx, std::move(descriptor), initFromDisk);
@@ -451,6 +463,7 @@ void IndexCatalogImpl::IndexBuildBlock::success() {
     invariant(_opCtx->lockState()->inAWriteUnitOfWork());
 
     Collection* collection = _catalog->_getCollection();
+
     fassert(17207, collection->ok());
     NamespaceString ns(_indexNamespace);
     invariant(_opCtx->lockState()->isDbLockedForMode(ns.db(), MODE_X));

@@ -39,6 +39,7 @@
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/client.h"
+#include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -51,6 +52,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
+#include "mongo/db/s/database_sharding_state.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/s/shard_key_pattern.h"
@@ -128,8 +130,7 @@ StatusWith<std::vector<BSONObj>> parseAndValidateIndexSpecs(
             }
 
             hasIndexesField = true;
-        } else if (kCommandName == cmdElemFieldName ||
-                   CommandHelpers::isGenericArgument(cmdElemFieldName)) {
+        } else if (kCommandName == cmdElemFieldName || isGenericArgument(cmdElemFieldName)) {
             continue;
         } else {
             return {ErrorCodes::BadValue,
@@ -259,7 +260,7 @@ public:
         UninterruptibleLockGuard noInterrupt(opCtx->lockState());
 
         // now we know we have to create index(es)
-        // Note: createIndexes command does not currently respect shard versioning.
+        // Do not use AutoGetOrCreateDb because we may relock the DbLock in mode IX.
         Lock::DBLock dbLock(opCtx, ns.db(), MODE_X);
         if (!repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns)) {
             return CommandHelpers::appendCommandStatus(
@@ -272,6 +273,7 @@ public:
         if (!db) {
             db = dbHolder().openDb(opCtx, ns.db());
         }
+        DatabaseShardingState::get(db).checkDbVersion(opCtx);
 
         Collection* collection = db->getCollection(opCtx, ns);
         if (collection) {
@@ -392,6 +394,10 @@ public:
                     repl::ReplicationCoordinator::get(opCtx)->canAcceptWritesFor(opCtx, ns));
 
             Database* db = dbHolder().get(opCtx, ns.db());
+            if (db) {
+                DatabaseShardingState::get(db).checkDbVersion(opCtx);
+            }
+
             uassert(28551, "database dropped during index build", db);
             uassert(28552, "collection dropped during index build", db->getCollection(opCtx, ns));
         }
@@ -420,7 +426,7 @@ private:
                                               const BSONObj& newIdxKey) {
         invariant(opCtx->lockState()->isCollectionLockedForMode(nss.ns(), MODE_X));
 
-        auto metadata(CollectionShardingState::get(opCtx, nss)->getMetadata());
+        auto metadata(CollectionShardingState::get(opCtx, nss)->getMetadata(opCtx));
         if (metadata) {
             ShardKeyPattern shardKeyPattern(metadata->getKeyPattern());
             if (!shardKeyPattern.isUniqueIndexCompatible(newIdxKey)) {

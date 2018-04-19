@@ -2,214 +2,189 @@
 // @tags: [uses_transactions]
 (function() {
     "use strict";
-    load('jstests/libs/uuid_util.js');
 
     const dbName = "test";
     const collName = "multi_statement_transaction";
     const testDB = db.getSiblingDB(dbName);
     const testColl = testDB[collName];
 
-    testColl.drop();
+    testDB.runCommand({drop: collName, writeConcern: {w: "majority"}});
 
     assert.commandWorked(
         testDB.createCollection(testColl.getName(), {writeConcern: {w: "majority"}}));
-    let txnNumber = 0;
 
     const sessionOptions = {causalConsistency: false};
     const session = db.getMongo().startSession(sessionOptions);
     const sessionDb = session.getDatabase(dbName);
+    const sessionColl = sessionDb[collName];
+
+    /***********************************************************************************************
+     * Insert two documents in a transaction.
+     **********************************************************************************************/
+
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
 
     jsTest.log("Insert two documents in a transaction");
 
-    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
+    session.startTransaction();
+
     // Insert a doc within the transaction.
-    assert.commandWorked(sessionDb.runCommand({
-        insert: collName,
-        documents: [{_id: "insert-1"}],
-        readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber),
-        // Only the first write in a transaction has autocommit flag.
-        autocommit: false
-    }));
+    assert.commandWorked(sessionColl.insert({_id: "insert-1"}));
 
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "insert-1"}));
     // But read in the same transaction returns the doc.
-    let res = sessionDb.runCommand(
-        {find: collName, filter: {_id: "insert-1"}, txnNumber: NumberLong(txnNumber)});
-    assert.commandWorked(res);
-    assert.docEq([{_id: "insert-1"}], res.cursor.firstBatch);
+    assert.docEq({_id: "insert-1"}, sessionColl.findOne());
+
+    // Read with aggregation also returns the document.
+    let res = sessionColl.aggregate([{$match: {_id: "insert-1"}}]);
+    assert.docEq([{_id: "insert-1"}], res.toArray());
 
     // Insert a doc within a transaction.
-    assert.commandWorked(sessionDb.runCommand({
-        insert: collName,
-        documents: [{_id: "insert-2"}],
-        txnNumber: NumberLong(txnNumber),
-    }));
+    assert.commandWorked(sessionColl.insert({_id: "insert-2"}));
 
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "insert-1"}));
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "insert-2"}));
 
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // Commit the transaction.
+    session.commitTransaction();
 
     // Read with default read concern sees the committed transaction.
     assert.eq({_id: "insert-1"}, testColl.findOne({_id: "insert-1"}));
     assert.eq({_id: "insert-2"}, testColl.findOne({_id: "insert-2"}));
 
-    // Oplog has the "applyOps" entry that includes two insert ops.
-    const insertOps = [
-        {op: 'i', ns: testColl.getFullName(), o: {_id: "insert-1"}},
-        {op: 'i', ns: testColl.getFullName(), o: {_id: "insert-2"}},
-    ];
+    /***********************************************************************************************
+     * Update documents in a transaction.
+     **********************************************************************************************/
+
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
 
     jsTest.log("Update documents in a transaction");
 
-    testColl.remove({}, {writeConcern: {w: "majority"}});
     // Insert the docs to be updated.
-    assert.commandWorked(sessionDb[collName].insert(
-        [{_id: "update-1", a: 0}, {_id: "update-2", a: 0}], {writeConcern: {w: "majority"}}));
+    assert.commandWorked(sessionColl.insert([{_id: "update-1", a: 0}, {_id: "update-2", a: 0}],
+                                            {writeConcern: {w: "majority"}}));
+
     // Update the docs in a new transaction.
-    txnNumber++;
-    assert.commandWorked(sessionDb.runCommand({
-        update: collName,
-        updates: [{q: {_id: "update-1"}, u: {$inc: {a: 1}}}],
-        readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber),
-        // Only the first write in a transaction has autocommmit flag.
-        autocommit: false
-    }));
+    session.startTransaction();
+
+    assert.commandWorked(sessionColl.update({_id: "update-1"}, {$inc: {a: 1}}));
+
     // Batch update in transaction.
-    assert.commandWorked(sessionDb.runCommand({
-        update: collName,
-        updates:
-            [{q: {_id: "update-1"}, u: {$inc: {a: 1}}}, {q: {_id: "update-2"}, u: {$inc: {a: 1}}}],
-        txnNumber: NumberLong(txnNumber),
-    }));
+    let bulk = sessionColl.initializeUnorderedBulkOp();
+    bulk.find({_id: "update-1"}).updateOne({$inc: {a: 1}});
+    bulk.find({_id: "update-2"}).updateOne({$inc: {a: 1}});
+    assert.commandWorked(bulk.execute());
+
     // Cannot read with default read concern.
     assert.eq({_id: "update-1", a: 0}, testColl.findOne({_id: "update-1"}));
     assert.eq({_id: "update-2", a: 0}, testColl.findOne({_id: "update-2"}));
 
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
-    // Read with default read concern sees the commmitted transaction.
+    // Commit the transaction.
+    session.commitTransaction();
+
+    // Read with default read concern sees the committed transaction.
     assert.eq({_id: "update-1", a: 2}, testColl.findOne({_id: "update-1"}));
     assert.eq({_id: "update-2", a: 1}, testColl.findOne({_id: "update-2"}));
 
-    // Oplog has the "applyOps" entry that includes two update ops.
-    const updateOps = [
-        {op: 'u', ns: testColl.getFullName(), o: {$v: 1, $set: {a: 1}}, o2: {_id: "update-1"}},
-        {op: 'u', ns: testColl.getFullName(), o: {$v: 1, $set: {a: 2}}, o2: {_id: "update-1"}},
-        {op: 'u', ns: testColl.getFullName(), o: {$v: 1, $set: {a: 1}}, o2: {_id: "update-2"}},
-    ];
+    /***********************************************************************************************
+     * Insert, update and read documents in a transaction.
+     **********************************************************************************************/
+
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
 
     jsTest.log("Insert, update and read documents in a transaction");
 
-    testColl.remove({}, {writeConcern: {w: "majority"}});
-    txnNumber++;
-    assert.commandWorked(sessionDb.runCommand({
-        insert: collName,
-        documents: [{_id: "doc-1"}, {_id: "doc-2"}],
-        readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber),
-        // Only the first write in a transaction has autocommit flag.
-        autocommit: false
-    }));
+    session.startTransaction();
+    assert.commandWorked(sessionColl.insert([{_id: "doc-1"}, {_id: "doc-2"}]));
 
     // Update the two docs in transaction.
-    assert.commandWorked(sessionDb.runCommand({
-        update: collName,
-        updates: [{q: {_id: "doc-1"}, u: {$inc: {a: 1}}}],
-        txnNumber: NumberLong(txnNumber),
-    }));
-    assert.commandWorked(sessionDb.runCommand({
-        update: collName,
-        updates: [{q: {_id: "doc-2"}, u: {$inc: {a: 1}}}],
-        txnNumber: NumberLong(txnNumber),
-    }));
+    assert.commandWorked(sessionColl.update({_id: "doc-1"}, {$inc: {a: 1}}));
+    assert.commandWorked(sessionColl.update({_id: "doc-2"}, {$inc: {a: 1}}));
+
     // Cannot read with default read concern.
     assert.eq(null, testColl.findOne({_id: "doc-1"}));
     assert.eq(null, testColl.findOne({_id: "doc-2"}));
 
     // But read in the same transaction returns the docs.
-    res = sessionDb.runCommand({
-        find: collName,
-        filter: {$or: [{_id: "doc-1"}, {_id: "doc-2"}]},
-        txnNumber: NumberLong(txnNumber)
-    });
-    assert.commandWorked(res);
-    assert.docEq([{_id: "doc-1", a: 1}, {_id: "doc-2", a: 1}], res.cursor.firstBatch);
+    res = sessionColl.find({$or: [{_id: "doc-1"}, {_id: "doc-2"}]});
+    assert.docEq([{_id: "doc-1", a: 1}, {_id: "doc-2", a: 1}], res.toArray());
 
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
-    // Read with default read concern sees the commmitted transaction.
+    // Commit the transaction.
+    session.commitTransaction();
+
+    // Read with default read concern sees the committed transaction.
     assert.eq({_id: "doc-1", a: 1}, testColl.findOne({_id: "doc-1"}));
     assert.eq({_id: "doc-2", a: 1}, testColl.findOne({_id: "doc-2"}));
 
-    // Oplog has the "applyOps" entry that includes two update ops.
-    const insertUpdateOps = [
-        {op: 'i', ns: testColl.getFullName(), o: {_id: "doc-1"}},
-        {op: 'i', ns: testColl.getFullName(), o: {_id: "doc-2"}},
-        {op: 'u', ns: testColl.getFullName(), o: {$v: 1, $set: {a: 1}}, o2: {_id: "doc-1"}},
-        {op: 'u', ns: testColl.getFullName(), o: {$v: 1, $set: {a: 1}}, o2: {_id: "doc-2"}},
-    ];
-
     jsTest.log("Insert and delete documents in a transaction");
 
-    testColl.remove({}, {writeConcern: {w: "majority"}});
-    testColl.insert([{_id: "doc-1"}, {_id: "doc-2"}], {writeConcern: {w: "majority"}});
-    txnNumber++;
-    assert.commandWorked(sessionDb.runCommand({
-        insert: collName,
-        documents: [{_id: "doc-3"}],
-        readConcern: {level: "snapshot"},
-        txnNumber: NumberLong(txnNumber),
-        // Only the first write in a transaction has autocommit flag.
-        autocommit: false
-    }));
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
+
+    assert.commandWorked(
+        testColl.insert([{_id: "doc-1"}, {_id: "doc-2"}], {writeConcern: {w: "majority"}}));
+
+    session.startTransaction();
+    assert.commandWorked(sessionColl.insert({_id: "doc-3"}));
 
     // Remove three docs in transaction.
-    assert.commandWorked(sessionDb.runCommand({
-        delete: collName,
-        deletes: [{q: {_id: "doc-1"}, limit: 1}],
-        txnNumber: NumberLong(txnNumber),
-    }));
+    assert.commandWorked(sessionColl.remove({_id: "doc-1"}));
+
     // Batch delete.
-    assert.commandWorked(sessionDb.runCommand({
-        delete: collName,
-        deletes: [{q: {_id: "doc-2"}, limit: 1}, {q: {_id: "doc-3"}, limit: 1}],
-        txnNumber: NumberLong(txnNumber),
-    }));
+    bulk = sessionColl.initializeUnorderedBulkOp();
+    bulk.find({_id: "doc-2"}).removeOne();
+    bulk.find({_id: "doc-3"}).removeOne();
+    assert.commandWorked(bulk.execute());
+
     // Cannot read the new doc and still see the to-be removed docs with default read concern.
     assert.eq({_id: "doc-1"}, testColl.findOne({_id: "doc-1"}));
     assert.eq({_id: "doc-2"}, testColl.findOne({_id: "doc-2"}));
     assert.eq(null, testColl.findOne({_id: "doc-3"}));
 
     // But read in the same transaction sees the docs get deleted.
-    res = sessionDb.runCommand({
-        find: collName,
-        filter: {$or: [{_id: "doc-1"}, {_id: "doc-2"}, {_id: "doc-3"}]},
-        txnNumber: NumberLong(txnNumber)
-    });
-    assert.commandWorked(res);
-    assert.docEq([], res.cursor.firstBatch);
+    res = sessionColl.find({$or: [{_id: "doc-1"}, {_id: "doc-2"}, {_id: "doc-3"}]});
+    assert.docEq([], res.toArray());
 
-    assert.commandWorked(sessionDb.runCommand({
-        commitTransaction: 1,
-        txnNumber: NumberLong(txnNumber),
-    }));
+    // Commit the transaction.
+    session.commitTransaction();
+
     // Read with default read concern sees the commmitted transaction.
     assert.eq(null, testColl.findOne({_id: "doc-1"}));
     assert.eq(null, testColl.findOne({_id: "doc-2"}));
     assert.eq(null, testColl.findOne({_id: "doc-3"}));
+
+    // Open a client cursor under a new transaction.
+    assert.commandWorked(testColl.remove({}, {writeConcern: {w: "majority"}}));
+
+    assert.commandWorked(
+        testColl.insert([{_id: "doc-1"}, {_id: "doc-2"}], {writeConcern: {w: "majority"}}));
+
+    session.startTransaction();
+
+    res = sessionDb.runCommand({
+        find: collName,
+        batchSize: 0,
+    });
+    assert.commandWorked(res);
+    assert(res.hasOwnProperty("cursor"));
+    assert(res.cursor.hasOwnProperty("firstBatch"));
+    assert.eq(0, res.cursor.firstBatch.length);
+    assert(res.cursor.hasOwnProperty("id"));
+    const cursorId = res.cursor.id;
+    assert.neq(0, cursorId);
+
+    // Commit the transaction.
+    session.commitTransaction();
+
+    // Perform a getMore using the previous transaction's open cursorId. We expect to receive
+    // CursorNotFound if the cursor was properly closed on commit.
+    assert.commandFailedWithCode(testDB.runCommand({
+        getMore: cursorId,
+        collection: collName,
+    }),
+                                 ErrorCodes.CursorNotFound);
 
     session.endSession();
 }());

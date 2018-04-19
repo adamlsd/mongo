@@ -127,7 +127,7 @@ env.Library(
         '$BUILD_DIR/mongo/bson/util/bson_extract',
         '$BUILD_DIR/mongo/executor/remote_command',
         'sasl_client'
-    ]
+    ],
 )
 
 env.CppUnitTest(
@@ -209,6 +209,26 @@ env.CppIntegrationTest(
 )
 
 env.Library(
+    target='async_client',
+    source=[
+        'async_client.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authcommon',
+        '$BUILD_DIR/mongo/db/wire_version',
+        '$BUILD_DIR/mongo/rpc/command_status',
+        '$BUILD_DIR/mongo/rpc/rpc',
+        '$BUILD_DIR/mongo/transport/transport_layer_common',
+        'authentication',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
+        '$BUILD_DIR/mongo/executor/egress_tag_closer_manager',
+        '$BUILD_DIR/mongo/transport/message_compressor',
+    ],
+)
+
+env.Library(
     target='connection_pool',
     source=[
         'connection_pool.cpp',
@@ -272,22 +292,6 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'clientdriver',
-    ],
-)
-
-env.CppUnitTest(
-    target='scoped_db_conn_test',
-    source=[
-        'scoped_db_conn_test.cpp',
-    ],
-    LIBDEPS=[
-        'clientdriver',
-        '$BUILD_DIR/mongo/db/auth/authmocks',
-        '$BUILD_DIR/mongo/db/service_context_noop_init',
-        '$BUILD_DIR/mongo/transport/transport_layer',
-        '$BUILD_DIR/mongo/transport/transport_layer_egress_init',
-        '$BUILD_DIR/mongo/util/net/network',
-        '$BUILD_DIR/mongo/util/version_impl',
     ],
 )
 

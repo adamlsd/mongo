@@ -69,6 +69,8 @@ public:
 
     BSONObj getOriginatingCommand() const final;
 
+    std::size_t getNumRemotes() const final;
+
     long long getNumReturnedSoFar() const final;
 
     void queueResult(const ClusterQueryResult& result) final;

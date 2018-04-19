@@ -429,11 +429,10 @@ Status rollback_internal::updateFixUpInfoFromLocalOplogEntry(FixUpInfo& fixUpInf
                     return Status(ErrorCodes::UnrecoverableRollbackError, message);
                 }
 
-                // Checks if dropTarget is false. If it has a UUID value, we need to
+                // Checks if dropTarget is present. If it has a UUID value, we need to
                 // make sure to un-drop the collection that was dropped in the process
                 // of renaming.
-                auto dropTarget = obj.getField("dropTarget");
-                if (dropTarget.type() != Bool) {
+                if (auto dropTarget = obj.getField("dropTarget")) {
                     auto status =
                         fixUpInfo.recordDropTargetInfo(dropTarget, obj, oplogEntry.getOpTime());
                     if (!status.isOK()) {
@@ -729,7 +728,7 @@ void rollbackDropIndexes(OperationContext* opCtx,
         log() << "Creating index in rollback for collection: " << nss << ", UUID: " << uuid
               << ", index: " << indexName;
 
-        createIndexForApplyOps(opCtx, indexSpec, nss, {});
+        createIndexForApplyOps(opCtx, indexSpec, nss, {}, OplogApplication::Mode::kRecovering);
 
         LOG(1) << "Created index in rollback for collection: " << nss << ", UUID: " << uuid
                << ", index: " << indexName;
@@ -918,8 +917,8 @@ Status _syncRollback(OperationContext* opCtx,
             }
         }
 
-        how.commonPoint = res.getValue().first;             // OpTime
-        how.commonPointOurDiskloc = res.getValue().second;  // RecordID
+        how.commonPoint = res.getValue().getOpTime();
+        how.commonPointOurDiskloc = res.getValue().getRecordId();
         how.removeRedundantOperations();
     } catch (const RSFatalException& e) {
         return Status(ErrorCodes::UnrecoverableRollbackError,

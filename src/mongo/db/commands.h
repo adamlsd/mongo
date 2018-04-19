@@ -63,7 +63,7 @@ class Document;
 struct CommandHelpers {
     // The type of the first field in 'cmdObj' must be mongo::String. The first field is
     // interpreted as a collection name.
-    static std::string parseNsFullyQualified(StringData dbname, const BSONObj& cmdObj);
+    static std::string parseNsFullyQualified(const BSONObj& cmdObj);
 
     // The type of the first field in 'cmdObj' must be mongo::String or Symbol.
     // The first field is interpreted as a collection name.
@@ -142,13 +142,9 @@ struct CommandHelpers {
             arg == "lsid" ||                             //
             arg == "txnNumber" ||                        //
             arg == "autocommit" ||                       //
+            arg == "startTransaction" ||                 //
             false;  // These comments tell clang-format to keep this line-oriented.
     }
-
-    /**
-     * This function checks if a command is a user management command by name.
-     */
-    static bool isUserManagementCommand(const std::string& name);
 
     /**
      * Rewrites cmdObj into a format safe to blindly forward to shards.
@@ -259,6 +255,14 @@ public:
     }
 
     /**
+     * Return true for "user management commands", a distinction that affects
+     * backward compatible output formatting.
+     */
+    virtual bool isUserManagementCommand() const {
+        return false;
+    }
+
+    /**
      * Return true if only the admin ns has privileges to run this command.
      */
     virtual bool adminOnly() const {
@@ -299,13 +303,6 @@ public:
     virtual std::string help() const {
         return "no help defined";
     }
-
-    /**
-     * Checks if the client associated with the given OperationContext is authorized to run this
-     * command.
-     */
-    virtual Status checkAuthForRequest(OperationContext* opCtx,
-                                       const OpMsgRequest& request) const = 0;
 
     /**
      * Redacts "cmdObj" in-place to a form suitable for writing to logs.
@@ -374,18 +371,6 @@ public:
                                      rpc::ReplyBuilderInterface* replyBuilder,
                                      const Command& command);
 
-    /**
-     * Checks to see if the client executing "opCtx" is authorized to run the given command with the
-     * given parameters on the given named database.
-     *
-     * Returns Status::OK() if the command is authorized.  Most likely returns
-     * ErrorCodes::Unauthorized otherwise, but any return other than Status::OK implies not
-     * authorized.
-     */
-    static Status checkAuthorization(Command* c,
-                                     OperationContext* opCtx,
-                                     const OpMsgRequest& request);
-
 private:
     // Counters for how many times this command has been executed and failed
     Counter64 _commandsExecuted;
@@ -417,6 +402,50 @@ public:
 
     void reset();
 
+    /**
+     * Appends a key:object field to this reply.
+     */
+    template <typename T>
+    void append(StringData key, const T& object) {
+        getBodyBuilder() << key << object;
+    }
+
+    /**
+     * Write the specified 'status' and associated fields into this reply body, as with
+     * CommandHelpers::appendCommandStatus. Appends the "ok" and related fields if they
+     * haven't already been set.
+     *  - If 'status' is not OK, this reply is reset before adding result.
+     *  - Otherwise, any data previously written to the body is left in place.
+     */
+    void fillFrom(const Status& status);
+
+    /**
+     * The specified 'object' must be BSON-serializable.
+     * Appends the "ok" and related fields if they haven't already been set.
+     *
+     * BSONSerializable 'x' means 'x.serialize(bob)' appends a representation of 'x'
+     * into 'BSONObjBuilder* bob'.
+     */
+    template <typename T>
+    void fillFrom(const T& object) {
+        auto bob = getBodyBuilder();
+        object.serialize(&bob);
+        CommandHelpers::appendCommandStatus(bob, Status::OK());
+    }
+
+    /**
+     * Equivalent to calling fillFrom with sw.getValue() or sw.getStatus(), whichever
+     * 'sw' is holding.
+     */
+    template <typename T>
+    void fillFrom(const StatusWith<T>& sw) {
+        if (sw.isOK()) {
+            fillFrom(sw.getValue());
+        } else {
+            fillFrom(sw.getStatus());
+        }
+    }
+
 private:
     BufBuilder* const _bodyBuf;
     const std::size_t _bodyOffset;
@@ -442,7 +471,10 @@ public:
 
     virtual void explain(OperationContext* opCtx,
                          ExplainOptions::Verbosity verbosity,
-                         BSONObjBuilder* result) = 0;
+                         BSONObjBuilder* result) {
+        uasserted(ErrorCodes::IllegalOperation,
+                  str::stream() << "Cannot explain cmd: " << definition()->getName());
+    }
 
     /**
      * The primary namespace on which this command operates. May just be the db.
@@ -495,8 +527,9 @@ public:
      * the client executing "opCtx" is authorized to run the given command
      * with the given parameters on the given named database.
      * Note: nonvirtual.
+     * The 'request' must outlive this CommandInvocation.
      */
-    void checkAuthorization(OperationContext* opCtx) const;
+    void checkAuthorization(OperationContext* opCtx, const OpMsgRequest& request) const;
 
 protected:
     ResourcePattern resourcePattern() const;
@@ -507,6 +540,8 @@ private:
      * Throws unless `opCtx`'s client is authorized to `run()` this.
      */
     virtual void doCheckAuthorization(OperationContext* opCtx) const = 0;
+
+    Status _checkAuthorizationImpl(OperationContext* opCtx, const OpMsgRequest& request) const;
 
     const Command* const _definition;
 };
@@ -623,15 +658,6 @@ private:
         // The default implementation of addRequiredPrivileges should never be hit.
         fassertFailed(16940);
     }
-
-    //
-    // Methods provided for subclasses if they implement above interface.
-    //
-
-    /**
-     * Calls checkAuthForOperation.
-     */
-    Status checkAuthForRequest(OperationContext* opCtx, const OpMsgRequest& request) const final;
 };
 
 /**
@@ -651,7 +677,150 @@ class ErrmsgCommandDeprecated : public BasicCommand {
                            BSONObjBuilder& result) = 0;
 };
 
-// See the 'globalCommandRegistry()' singleton accessor.
+/**
+ * A CRTP base class for typed commands, which simplifies writing commands that
+ * accept requests generated by IDL. Derive from it as follows:
+ *
+ *     class MyCommand : public TypedCommand<MyCommand> {...};
+ *
+ * The 'Derived' type paramter must have:
+ *
+ *   - 'Request' naming a usable request type.
+ *     A usable Request type must have:
+ *
+ *      - a static member factory function 'parse', callable as:
+ *
+ *         const IDLParserErrorContext& idlCtx = ...;
+ *         const OpMsgRequest& opMsgRequest = ...;
+ *         Request r = Request::parse(idlCtx, opMsgRequest);
+ *
+ *      which enables it to be parsed as an IDL command.
+ *
+ *      - a 'constexpr StringData kCommandName' member.
+ *
+ *     Any type generated by the "commands:" section in the IDL syntax meets these
+ *     requirements.  Note that IDL "structs:" will not. This is the recommended way to
+ *     provide this Derived::Request type rather than writing it by hand.
+ *
+ *   - 'Invocation' - names a type derived from either of the nested invocation
+ *     base classes provided: InvocationBase or MinimalInvocationBase.
+ */
+template <typename Derived>
+class TypedCommand : public Command {
+public:
+    std::unique_ptr<CommandInvocation> parse(OperationContext* opCtx,
+                                             const OpMsgRequest& opMsgRequest) final;
+
+protected:
+    class InvocationBase;
+
+    // Used instead of InvocationBase when a command must customize the 'run()' member.
+    class MinimalInvocationBase;
+
+    // Commands that only have a single name don't need to define any constructors.
+    TypedCommand() : TypedCommand(Derived::Request::kCommandName) {}
+    explicit TypedCommand(StringData name) : TypedCommand(name, {}) {}
+    TypedCommand(StringData name, StringData altName) : Command(name, altName) {}
+
+private:
+    class InvocationBaseInternal;
+};
+
+template <typename Derived>
+class TypedCommand<Derived>::InvocationBaseInternal : public CommandInvocation {
+public:
+    using RequestType = typename Derived::Request;
+
+    InvocationBaseInternal(OperationContext*,
+                           const Command* command,
+                           const OpMsgRequest& opMsgRequest)
+        : CommandInvocation(command), _request{_parseRequest(command->getName(), opMsgRequest)} {}
+
+protected:
+    const RequestType& request() const {
+        return _request;
+    }
+
+private:
+    static RequestType _parseRequest(StringData name, const OpMsgRequest& opMsgRequest) {
+        return RequestType::parse(IDLParserErrorContext(name), opMsgRequest);
+    }
+
+    RequestType _request;
+};
+
+template <typename Derived>
+class TypedCommand<Derived>::MinimalInvocationBase : public InvocationBaseInternal {
+    // Implemented as just a strong typedef for InvocationBaseInternal.
+    using InvocationBaseInternal::InvocationBaseInternal;
+};
+
+/*
+ * Classes derived from TypedCommand::InvocationBase must:
+ *
+ *   - inherit constructors with 'using InvocationBase::InvocationBase;'.
+ *
+ *   - define a 'typedRun' method like:
+ *
+ *       R typedRun(OperationContext* opCtx);
+ *
+ *     where R is either void or usable as an argument to 'CommandReplyBuilder::fillFrom'.
+ *     So it's one of:
+ *        - void
+ *        - mongo::Status
+ *        - T, where T is usable with fillFrom.
+ *        - mongo::StatusWith<T>, where T usable with fillFrom.
+ *
+ *     Note: a void typedRun produces a "pass-fail" command. If it runs to completion
+ *     the result will be considered and formatted as an "ok".
+ *
+ *  If the TypedCommand's Request type was specified with the IDL attribute:
+ *
+ *     namespace: concatenate_with_db
+ *
+ *  then the ns() method of its Invocation class method should be:
+ *
+ *     NamespaceString ns() const override {
+ *         return request.getNamespace();
+ *     }
+ */
+template <typename Derived>
+class TypedCommand<Derived>::InvocationBase : public InvocationBaseInternal {
+public:
+    using InvocationBaseInternal::InvocationBaseInternal;
+
+private:
+    using Invocation = typename Derived::Invocation;
+
+    /**
+     * _callTypedRun and _runImpl implement the tagged dispatch from 'run'.
+     */
+    decltype(auto) _callTypedRun(OperationContext* opCtx) {
+        return static_cast<Invocation*>(this)->typedRun(opCtx);
+    }
+    void _runImpl(std::true_type, OperationContext* opCtx, CommandReplyBuilder*) {
+        _callTypedRun(opCtx);
+    }
+    void _runImpl(std::false_type, OperationContext* opCtx, CommandReplyBuilder* reply) {
+        reply->fillFrom(_callTypedRun(opCtx));
+    }
+
+    void run(OperationContext* opCtx, CommandReplyBuilder* reply) final {
+        using VoidResultTag = std::is_void<decltype(_callTypedRun(opCtx))>;
+        _runImpl(VoidResultTag{}, opCtx, reply);
+    }
+};
+
+template <typename Derived>
+std::unique_ptr<CommandInvocation> TypedCommand<Derived>::parse(OperationContext* opCtx,
+                                                                const OpMsgRequest& opMsgRequest) {
+    return std::make_unique<typename Derived::Invocation>(opCtx, this, opMsgRequest);
+}
+
+
+/**
+ * See the 'globalCommandRegistry()' singleton accessor.
+ */
 class CommandRegistry {
 public:
     using CommandMap = Command::CommandMap;
@@ -680,7 +849,9 @@ private:
     CommandMap _commands;
 };
 
-// Accessor to the command registry, an always-valid singleton.
+/**
+ * Accessor to the command registry, an always-valid singleton.
+ */
 CommandRegistry* globalCommandRegistry();
 
 }  // namespace mongo

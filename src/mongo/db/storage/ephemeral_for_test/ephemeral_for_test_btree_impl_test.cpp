@@ -1,5 +1,3 @@
-// ephemeral_for_test_btree_impl_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -58,9 +56,14 @@ private:
     std::shared_ptr<void> _data;  // used by EphemeralForTestBtreeImpl
     Ordering _order;
 };
-}  // namespace
 
-MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
     return stdx::make_unique<EphemeralForBtreeImplTestHarnessHelper>();
 }
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+}  // namespace
 }  // namespace mongo

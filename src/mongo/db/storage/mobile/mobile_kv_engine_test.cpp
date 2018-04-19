@@ -55,9 +55,15 @@ private:
     std::unique_ptr<MobileKVEngine> _engine;
     unittest::TempDir _dbPath;
 };
-}  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(KVHarnessHelper, create)()->std::unique_ptr<KVHarnessHelper> {
+std::unique_ptr<KVHarnessHelper> makeHelper() {
     return stdx::make_unique<MobileKVHarnessHelper>();
 }
+
+MONGO_INITIALIZER(RegisterKVHarnessFactory)(InitializerContext*) {
+    KVHarnessHelper::registerFactory(makeHelper);
+    return Status::OK();
+}
+
+}  // namespace
 }  // namespace mongo

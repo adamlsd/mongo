@@ -90,11 +90,25 @@ public:
     }
 
     /**
-     * Waits until all commits that happened before this call are durable. Returns true, unless the
-     * storage engine cannot guarantee durability, which should never happen when isDurable()
-     * returned true. This cannot be called from inside a unit of work, and should fail if it is.
+     * Waits until all commits that happened before this call are durable in the journal. Returns
+     * true, unless the storage engine cannot guarantee durability, which should never happen when
+     * isDurable() returned true. This cannot be called from inside a unit of work, and should
+     * fail if it is.
      */
     virtual bool waitUntilDurable() = 0;
+
+    /**
+     * Unlike `waitUntilDurable`, this method takes a stable checkpoint, making durable any writes
+     * on unjournaled tables that are behind the current stable timestamp. If the storage engine
+     * is starting from an "unstable" checkpoint, this method call will turn into an unstable
+     * checkpoint.
+     *
+     * This must not be called by a system taking user writes until after a stable timestamp is
+     * passed to the storage engine.
+     */
+    virtual bool waitUntilUnjournaledWritesDurable() {
+        return waitUntilDurable();
+    }
 
     /**
      * When this is called, if there is an open transaction, it is closed. On return no
@@ -144,6 +158,17 @@ public:
      */
     repl::ReadConcernLevel getReadConcernLevel() const {
         return _readConcernLevel;
+    }
+
+    /**
+     * Tells the recovery unit to read at the last applied timestamp, tracked by the SnapshotManger.
+     * This should only be set to true for local and available read concerns. This should be used to
+     * read from a consistent state on a secondary while replicated batches are being applied.
+     */
+    void setShouldReadAtLastAppliedTimestamp(bool value) {
+        invariant(!value || _readConcernLevel == repl::ReadConcernLevel::kLocalReadConcern ||
+                  _readConcernLevel == repl::ReadConcernLevel::kAvailableReadConcern);
+        _shouldReadAtLastAppliedTimestamp = value;
     }
 
     /**
@@ -339,6 +364,7 @@ protected:
     RecoveryUnit() {}
     repl::ReplicationCoordinator::Mode _replicationMode = repl::ReplicationCoordinator::modeNone;
     repl::ReadConcernLevel _readConcernLevel = repl::ReadConcernLevel::kLocalReadConcern;
+    bool _shouldReadAtLastAppliedTimestamp = false;
 };
 
 }  // namespace mongo

@@ -91,18 +91,23 @@ AuthorizationManager* getGlobalAuthorizationManager() {
 
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(startupAuthSchemaValidation, bool, true);
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(CreateAuthorizationManager,
-                                     ("SetupInternalSecurityUser",
-                                      "OIDGeneration",
-                                      "SetGlobalEnvironment",
-                                      "EndStartupOptionStorage"))
-(InitializerContext* context) {
-    auto authzManager = AuthorizationManager::create();
-    authzManager->setAuthEnabled(serverGlobalParams.authState ==
-                                 ServerGlobalParams::AuthState::kEnabled);
-    authzManager->setShouldValidateAuthSchemaOnStartup(startupAuthSchemaValidation);
-    AuthorizationManager::set(getGlobalServiceContext(), std::move(authzManager));
-    return Status::OK();
-}
+GlobalInitializerRegisterer authorizationManagerInitializer(
+    "CreateAuthorizationManager",
+    {"SetupInternalSecurityUser",
+     "OIDGeneration",
+     "CreateAuthorizationExternalStateFactory",
+     "EndStartupOptionStorage"},
+    [](InitializerContext* context) {
+        auto authzManager = AuthorizationManager::create();
+        authzManager->setAuthEnabled(serverGlobalParams.authState ==
+                                     ServerGlobalParams::AuthState::kEnabled);
+        authzManager->setShouldValidateAuthSchemaOnStartup(startupAuthSchemaValidation);
+        AuthorizationManager::set(context->serviceContext(), std::move(authzManager));
+        return Status::OK();
+    },
+    [](DeinitializerContext* context) {
+        AuthorizationManager::set(context->serviceContext(), nullptr);
+        return Status::OK();
+    });
 
 }  // namespace mongo

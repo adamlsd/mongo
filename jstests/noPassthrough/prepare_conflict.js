@@ -12,7 +12,6 @@
     let replSet = new ReplSetTest({
         name: "prepareReadConflicts",
         nodes: 3,
-        nodeOptions: {"setParameter": "disableJournalForReplicatedCollections=1"}
     });
 
     replSet.startSet();
@@ -38,10 +37,10 @@
         command += "assert.commandWorked(sessionDB.runCommand({" + "update: '" + collName + "'," +
             "updates: [{q: " + JSON.stringify(query) + ", u: " + JSON.stringify(update) + "}]," +
             "txnNumber: NumberLong(" + txn + ")," + "readConcern: {level: 'snapshot'}," +
-            "autocommit: false" + "}));";
+            "autocommit: false," + "startTransaction: true" + "}));";
         // Run prepare, which blocks until the failpoint is unset.
-        command += "assert.commandWorked(sessionDB.runCommand(" +
-            "{prepareTransaction: 1, txnNumber: NumberLong(" + txn + ")}))";
+        command += "assert.commandWorked(sessionDB.adminCommand(" +
+            "{prepareTransaction: 1, txnNumber: NumberLong(" + txn + "), autocommit: false}))";
 
         return startParallelShell(command, conn.port);
     }

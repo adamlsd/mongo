@@ -107,6 +107,7 @@ const bool checkShimsViaTUHook = false;
 #define MONGO_DECLARE_SHIM_1(LN, ...) MONGO_DECLARE_SHIM_2(LN, __VA_ARGS__)
 #define MONGO_DECLARE_SHIM_2(LN, ...)                                                              \
     const struct ShimBasis_##LN {                                                                  \
+        ShimBasis_##LN() = default;                                                                \
         template <bool required = mongo::checkShimsViaTUHook>                                      \
         struct AbiCheckType {};                                                                    \
         using AbiCheck = AbiCheckType<>;                                                           \

@@ -78,10 +78,10 @@ public:
         };
 
         static MONGO_DECLARE_SHIM((OperationContext * opCtx,
-                                             const IndexCatalog* cat,
-                                             bool includeUnfinishedIndexes,
-                                             PrivateTo<IndexIterator>)
-                                                ->std::unique_ptr<Impl>) makeImpl;
+                                   const IndexCatalog* cat,
+                                   bool includeUnfinishedIndexes,
+                                   PrivateTo<IndexIterator>)
+                                      ->std::unique_ptr<Impl>) makeImpl;
 
     private:
         explicit inline IndexIterator(OperationContext* const opCtx,
@@ -258,11 +258,11 @@ public:
     };
 
 public:
-    static constexpr MONGO_DECLARE_SHIM((IndexCatalog * this_,
-                                         Collection* collection,
-                                         int maxNumIndexesAllowed,
-                                         PrivateTo<IndexCatalog>)
-                                            ->std::unique_ptr<Impl>) makeImpl{};
+    static MONGO_DECLARE_SHIM((IndexCatalog * this_,
+                               Collection* collection,
+                               int maxNumIndexesAllowed,
+                               PrivateTo<IndexCatalog>)
+                                  ->std::unique_ptr<Impl>) makeImpl;
 
     inline ~IndexCatalog() = default;
 
@@ -539,15 +539,15 @@ public:
 
     // public static helpers
 
-    static constexpr MONGO_DECLARE_SHIM((const BSONObj& key)->BSONObj) fixIndexKey{};
+    static MONGO_DECLARE_SHIM((const BSONObj& key)->BSONObj) fixIndexKey;
 
     /**
      * Fills out 'options' in order to indicate whether to allow dups or relax
      * index constraints, as needed by replication.
      */
-    static constexpr MONGO_DECLARE_SHIM(
+    static MONGO_DECLARE_SHIM(
         (OperationContext * opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void)
-        prepareInsertDeleteOptions{};
+        prepareInsertDeleteOptions;
 
 private:
     inline const Collection* _getCollection() const {

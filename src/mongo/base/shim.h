@@ -105,8 +105,7 @@ const bool checkShimsViaTUHook = false;
                                                                                                    \
         struct MongoShimImplGuts {                                                                 \
             static auto functionTypeHelper __VA_ARGS__;                                            \
-            using function_type = std::function<decltype(MongoShimImplGuts::functionTypeHelper)>; \
-            using return_type = typename function_type::result_type;                               \
+            using function_type = decltype(MongoShimImplGuts::functionTypeHelper);                 \
             MongoShimImplGuts* abi(AbiCheck = {}) {                                                \
                 return this;                                                                       \
             }                                                                                      \
@@ -123,12 +122,12 @@ const bool checkShimsViaTUHook = false;
                                                                                                    \
         using storage = shim_detail::storage<MongoShimImplGuts*, tag>;                             \
                                                                                                    \
+        /* TODO: When the dependency graph is fixed, add the `impl()->` call to the call chain */  \
         template <typename... Args>                                                                \
         auto operator()(Args&&... args) const noexcept(                                            \
             noexcept(storage::data->abi()->lib()->implementation(std::forward<Args>(args)...)))    \
-            -> MongoShimImplGuts::return_type /* TODO: When the dependency graph is fixed, add the \
-                                                 `impl()->` call to this chain */                  \
-        {                                                                                          \
+            -> decltype(                                                                           \
+                storage::data->abi()->lib()->implementation(std::forward<Args>(args)...)) {        \
             return storage::data->abi()->lib()->implementation(std::forward<Args>(args)...);       \
         }                                                                                          \
     }

@@ -105,7 +105,7 @@ const bool checkShimsViaTUHook = false;
                                                                                                    \
         struct MongoShimImplGuts {                                                                 \
             static auto functionTypeHelper __VA_ARGS__;                                            \
-            using function_type = std::function<decltype(&MongoShimImplGuts::functionTypeHelper)>; \
+            using function_type = std::function<decltype(MongoShimImplGuts::functionTypeHelper)>; \
             using return_type = typename function_type::result_type;                               \
             MongoShimImplGuts* abi(AbiCheck = {}) {                                                \
                 return this;                                                                       \

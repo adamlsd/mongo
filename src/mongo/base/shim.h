@@ -73,7 +73,8 @@ T storage<T, tag>::data = {};
 namespace mongo {
 #ifdef MONGO_CONFIG_CHECK_SHIM_DEPENDENCIES
 const bool checkShimsViaTUHook = true;
-#define MONGO_SHIM_TU_HOOK(name) name = {}
+#define MONGO_SHIM_TU_HOOK(name) \
+    name {}
 #else
 const bool checkShimsViaTUHook = false;
 #define MONGO_SHIM_TU_HOOK(name)
@@ -86,50 +87,59 @@ const bool checkShimsViaTUHook = false;
  */
 #define MONGO_DECLARE_SHIM(/*SHIM_NAME*/...) MONGO_DECLARE_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_DECLARE_SHIM_1(LN, ...) MONGO_DECLARE_SHIM_2(LN, __VA_ARGS__)
-#define MONGO_DECLARE_SHIM_2(LN, ...)                                                              \
-    const struct ShimBasis_##LN {                                                                  \
-        ShimBasis_##LN() = default;                                                                \
-        template <bool required = mongo::checkShimsViaTUHook>                                      \
-        struct AbiCheckType {};                                                                    \
-        using AbiCheck = AbiCheckType<>;                                                           \
-        template <bool required = mongo::checkShimsViaTUHook>                                      \
-        struct LibTUHookType {                                                                     \
-            LibTUHookType();                                                                       \
-        };                                                                                         \
-        using LibTUHook = LibTUHookType<>;                                                         \
-        template <bool required = mongo::checkShimsViaTUHook>                                      \
-        struct ImplTUHookType {                                                                    \
-            ImplTUHookType();                                                                      \
-        };                                                                                         \
-        using ImplTUHook = ImplTUHookType<>;                                                       \
-                                                                                                   \
-        struct MongoShimImplGuts {                                                                 \
-            static auto functionTypeHelper __VA_ARGS__;                                            \
-            using function_type = decltype(MongoShimImplGuts::functionTypeHelper);                 \
-            MongoShimImplGuts* abi(AbiCheck = {}) {                                                \
-                return this;                                                                       \
-            }                                                                                      \
-            MongoShimImplGuts* lib(MONGO_SHIM_TU_HOOK(LibTUHook)) {                                \
-                return this;                                                                       \
-            }                                                                                      \
-            MongoShimImplGuts* impl(MONGO_SHIM_TU_HOOK(ImplTUHook)) {                              \
-                return this;                                                                       \
-            }                                                                                      \
-            virtual auto implementation __VA_ARGS__ = 0;                                           \
-        };                                                                                         \
-                                                                                                   \
-        using tag = std::tuple<MongoShimImplGuts::function_type, AbiCheck, LibTUHook, ImplTUHook>; \
-                                                                                                   \
-        using storage = shim_detail::storage<MongoShimImplGuts*, tag>;                             \
-                                                                                                   \
-        /* TODO: When the dependency graph is fixed, add the `impl()->` call to the call chain */  \
-        template <typename... Args>                                                                \
-        auto operator()(Args&&... args) const noexcept(                                            \
-            noexcept(storage::data->abi()->lib()->implementation(std::forward<Args>(args)...)))    \
-            -> decltype(                                                                           \
-                storage::data->abi()->lib()->implementation(std::forward<Args>(args)...)) {        \
-            return storage::data->abi()->lib()->implementation(std::forward<Args>(args)...);       \
-        }                                                                                          \
+#define MONGO_DECLARE_SHIM_2(LN, ...)                                                             \
+    const struct ShimBasis_##LN {                                                                 \
+        ShimBasis_##LN() = default;                                                               \
+        struct MongoShimImplGuts {                                                                \
+            template <bool required = mongo::checkShimsViaTUHook>                                 \
+            struct AbiCheckType {                                                                 \
+                AbiCheckType() = default;                                                         \
+            };                                                                                    \
+            using AbiCheck = AbiCheckType<>;                                                      \
+            struct LibTUHookTypeBase {                                                            \
+                LibTUHookTypeBase();                                                              \
+            };                                                                                    \
+            template <bool required = mongo::checkShimsViaTUHook>                                 \
+            struct LibTUHookType : LibTUHookTypeBase {};                                          \
+            using LibTUHook = LibTUHookType<>;                                                    \
+            struct ImplTUHookTypeBase {                                                           \
+                ImplTUHookTypeBase();                                                             \
+            };                                                                                    \
+            template <bool required = mongo::checkShimsViaTUHook>                                 \
+            struct ImplTUHookType : ImplTUHookTypeBase {};                                        \
+            using ImplTUHook = ImplTUHookType<>;                                                  \
+                                                                                                  \
+            static auto functionTypeHelper __VA_ARGS__;                                           \
+            using function_type = decltype(MongoShimImplGuts::functionTypeHelper);                \
+            MongoShimImplGuts* abi(const AbiCheck* const) {                                       \
+                return this;                                                                      \
+            }                                                                                     \
+            MongoShimImplGuts* lib(const LibTUHook* const) {                                      \
+                MONGO_SHIM_TU_HOOK(LibTUHook);                                                    \
+                return this;                                                                      \
+            }                                                                                     \
+            MongoShimImplGuts* impl(const ImplTUHook* const) {                                    \
+                MONGO_SHIM_TU_HOOK(ImplTUHook);                                                   \
+                return this;                                                                      \
+            }                                                                                     \
+            virtual auto implementation __VA_ARGS__ = 0;                                          \
+                                                                                                  \
+            using tag =                                                                           \
+                std::tuple<MongoShimImplGuts::function_type, AbiCheck, LibTUHook, ImplTUHook>;    \
+        };                                                                                        \
+                                                                                                  \
+        using storage = shim_detail::storage<MongoShimImplGuts*, MongoShimImplGuts::tag>;         \
+                                                                                                  \
+        /* TODO: When the dependency graph is fixed, add the `impl()->` call to the call chain */ \
+        template <typename... Args>                                                               \
+        auto operator()(Args&&... args) const                                                     \
+            noexcept(noexcept(storage::data->abi(nullptr)->lib(nullptr)->implementation(          \
+                std::forward<Args>(args)...)))                                                    \
+                -> decltype(storage::data->abi(nullptr)->lib(nullptr)->implementation(            \
+                    std::forward<Args>(args)...)) {                                               \
+            return storage::data->abi(nullptr)->lib(nullptr)->implementation(                     \
+                std::forward<Args>(args)...);                                                     \
+        }                                                                                         \
     }
 
 /**
@@ -140,15 +150,14 @@ const bool checkShimsViaTUHook = false;
  */
 #define MONGO_DEFINE_SHIM(/*SHIM_NAME*/...) MONGO_DEFINE_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_DEFINE_SHIM_1(LN, ...) MONGO_DEFINE_SHIM_2(LN, __VA_ARGS__)
-#define MONGO_DEFINE_SHIM_2(LN, ...)                                                             \
-    namespace {                                                                                  \
-    namespace shim_namespace##LN {                                                               \
-        using ShimType = decltype(__VA_ARGS__);                                                  \
-    } /*namespace shim_namespace*/                                                               \
-    } /*namespace*/                                                                              \
-    template <>                                                                                  \
-    shim_namespace##LN::ShimType::LibTUHookType<::mongo::checkShimsViaTUHook>::LibTUHookType() = \
-        default;                                                                                 \
+#define MONGO_DEFINE_SHIM_2(LN, ...)                                                          \
+    namespace {                                                                               \
+    namespace shim_namespace##LN {                                                            \
+        using ShimType = decltype(__VA_ARGS__);                                               \
+    } /*namespace shim_namespace*/                                                            \
+    } /*namespace*/                                                                           \
+    shim_namespace##LN::ShimType::MongoShimImplGuts::LibTUHookTypeBase::LibTUHookTypeBase() = \
+        default;                                                                              \
     shim_namespace##LN::ShimType __VA_ARGS__{};
 
 #define MONGO_SHIM_EVIL_STRINGIFY_(args) #args
@@ -162,35 +171,34 @@ const bool checkShimsViaTUHook = false;
  */
 #define MONGO_REGISTER_SHIM(/*SHIM_NAME*/...) MONGO_REGISTER_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_REGISTER_SHIM_1(LN, ...) MONGO_REGISTER_SHIM_2(LN, __VA_ARGS__)
-#define MONGO_REGISTER_SHIM_2(LN, ...)                                                             \
-    namespace {                                                                                    \
-    namespace shim_namespace##LN {                                                                 \
-        using ShimType = decltype(__VA_ARGS__);                                                    \
-                                                                                                   \
-        class Implementation final : public ShimType::MongoShimImplGuts {                          \
-            ShimType::MongoShimImplGuts::function_type implementation; /* override */              \
-        };                                                                                         \
-                                                                                                   \
-        ::mongo::Status createInitializerRegistration(::mongo::InitializerContext* const) {        \
-            static Implementation impl;                                                            \
-            ShimType::storage::data = &impl;                                                       \
-            return Status::OK();                                                                   \
-        }                                                                                          \
-                                                                                                   \
-        const ::mongo::GlobalInitializerRegisterer registrationHook{                               \
-            std::string(MONGO_SHIM_EVIL_STRINGIFY_((__VA_ARGS__))),                                \
-            {},                                                                                    \
-            {MONGO_SHIM_DEPENDENTS},                                                               \
-            mongo::InitializerFunction(createInitializerRegistration)};                            \
-    } /*namespace shim_namespace*/                                                                 \
-    } /*namespace*/                                                                                \
-                                                                                                   \
-    template <>                                                                                    \
-    shim_namespace##LN::ShimType::ImplTUHookType<::mongo::checkShimsViaTUHook>::ImplTUHookType() = \
-        default;                                                                                   \
-                                                                                                   \
-    auto shim_namespace##LN::Implementation::implementation /* After this point someone just       \
-                                                               writes the signature's arguments    \
-                                                               and return value (using arrow       \
-                                                               notation).  Then they write the     \
+#define MONGO_REGISTER_SHIM_2(LN, ...)                                                          \
+    namespace {                                                                                 \
+    namespace shim_namespace##LN {                                                              \
+        using ShimType = decltype(__VA_ARGS__);                                                 \
+                                                                                                \
+        class Implementation final : public ShimType::MongoShimImplGuts {                       \
+            ShimType::MongoShimImplGuts::function_type implementation; /* override */           \
+        };                                                                                      \
+                                                                                                \
+        ::mongo::Status createInitializerRegistration(::mongo::InitializerContext* const) {     \
+            static Implementation impl;                                                         \
+            ShimType::storage::data = &impl;                                                    \
+            return Status::OK();                                                                \
+        }                                                                                       \
+                                                                                                \
+        const ::mongo::GlobalInitializerRegisterer registrationHook{                            \
+            std::string(MONGO_SHIM_EVIL_STRINGIFY_((__VA_ARGS__))),                             \
+            {},                                                                                 \
+            {MONGO_SHIM_DEPENDENTS},                                                            \
+            mongo::InitializerFunction(createInitializerRegistration)};                         \
+    } /*namespace shim_namespace*/                                                              \
+    } /*namespace*/                                                                             \
+                                                                                                \
+    shim_namespace##LN::ShimType::MongoShimImplGuts::ImplTUHookTypeBase::ImplTUHookTypeBase() = \
+        default;                                                                                \
+                                                                                                \
+    auto shim_namespace##LN::Implementation::implementation /* After this point someone just    \
+                                                               writes the signature's arguments \
+                                                               and return value (using arrow    \
+                                                               notation).  Then they write the  \
                                                                body. */

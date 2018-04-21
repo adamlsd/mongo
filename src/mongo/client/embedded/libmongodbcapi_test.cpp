@@ -160,7 +160,7 @@ protected:
         size_t outputSize;
 
         // call the wire protocol
-        int err = libmongodbcapi_client_wire_protocol_rpc(
+        int err = libmongodbcapi_client_invoke(
             client.get(), inputMessage.buf(), inputMessage.size(), &output, &outputSize, status);
         ASSERT_EQUALS(err, LIBMONGODB_CAPI_SUCCESS);
 

@@ -230,8 +230,4 @@ TEST_F(WiredTigerRecoveryUnitTestFixture, WriteOnADocumentBeingPreparedTriggersW
 }
 
 }  // namespace
-
-MONGO_REGISTER_SHIM(newHarnessHelper)()->std::unique_ptr<HarnessHelper> {
-    return stdx::make_unique<WiredTigerRecoveryUnitHarnessHelper>();
-}
 }  // namespace mongo

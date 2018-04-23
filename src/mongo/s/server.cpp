@@ -610,7 +610,7 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
 }
 }  // namespace
 
-MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
+MONGO_REGISTER_SHIM(AuthzManagerExternalState::create)
 ()->std::unique_ptr<AuthzManagerExternalState> {
     return stdx::make_unique<AuthzManagerExternalStateMongos>();
 }

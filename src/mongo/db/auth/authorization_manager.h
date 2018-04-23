@@ -92,7 +92,7 @@ public:
 
     AuthorizationManager() = default;
 
-    MONGO_DECLARE_STATIC_SHIM(std::unique_ptr<AuthorizationManager>, create);
+    static MONGO_DECLARE_SHIM(()->std::unique_ptr<AuthorizationManager>) create;
 
     static const std::string USER_NAME_FIELD_NAME;
     static const std::string USER_DB_FIELD_NAME;

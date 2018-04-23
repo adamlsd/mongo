@@ -114,7 +114,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOpti
 }  // namespace
 
 
-MONGO_REGISTER_STATIC_SHIM(AuthorizationManager, create)()->std::unique_ptr<AuthorizationManager> {
+MONGO_REGISTER_SHIM(AuthorizationManager::create)()->std::unique_ptr<AuthorizationManager> {
     return std::make_unique<AuthorizationManagerImpl>();
 }
 

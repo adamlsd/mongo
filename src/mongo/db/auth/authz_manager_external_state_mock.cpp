@@ -48,7 +48,7 @@
 
 namespace mongo {
 
-MONGO_REGISTER_STATIC_SHIM(AuthzManagerExternalState, create)
+MONGO_REGISTER_SHIM(AuthzManagerExternalState::create)
 ()->std::unique_ptr<AuthzManagerExternalState> {
     return std::make_unique<AuthzManagerExternalStateMock>();
 }

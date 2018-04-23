@@ -102,6 +102,15 @@ private:
     WiredTigerKVEngine _engine;
 };
 
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+    return std::make_unique<WiredTigerRecoveryUnitHarnessHelper>();
+}
+
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+
 class WiredTigerRecoveryUnitTestFixture : public unittest::Test {
 public:
     typedef std::pair<ServiceContext::UniqueClient, ServiceContext::UniqueOperationContext>

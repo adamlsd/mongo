@@ -35,7 +35,7 @@
 
 namespace mongo {
 
-MONGO_DEFINE_STATIC_SHIM( AuthzManagerExternalState, create );
+MONGO_DEFINE_SHIM(AuthzManagerExternalState::create);
 
 AuthzManagerExternalState::AuthzManagerExternalState() = default;
 AuthzManagerExternalState::~AuthzManagerExternalState() = default;

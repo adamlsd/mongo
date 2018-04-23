@@ -45,6 +45,6 @@ AuthorizationManager& AuthzSessionExternalState::getAuthorizationManager() {
     return *_authzManager;
 }
 
-MONGO_DEFINE_STATIC_SHIM(AuthzSessionExternalState, create);
+MONGO_DEFINE_SHIM(AuthzSessionExternalState::create);
 
 }  // namespace mongo

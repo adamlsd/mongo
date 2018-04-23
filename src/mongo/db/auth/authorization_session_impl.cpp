@@ -60,8 +60,10 @@ namespace mongo {
 namespace dps = ::mongo::dotted_path_support;
 using std::vector;
 
-MONGO_REGISTER_STATIC_SHIM(AuthorizationSession, create)(AuthorizationManager *authzManager)->std::unique_ptr<AuthorizationSession> {
-    return std::make_unique<AuthorizationSessionImpl>(AuthzSessionExternalState::create(authzManager));
+MONGO_REGISTER_SHIM(AuthorizationSession::create)
+(AuthorizationManager* authzManager)->std::unique_ptr<AuthorizationSession> {
+    return std::make_unique<AuthorizationSessionImpl>(
+        AuthzSessionExternalState::create(authzManager));
 }
 
 namespace {

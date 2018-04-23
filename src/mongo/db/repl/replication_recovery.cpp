@@ -33,6 +33,7 @@
 
 #include "mongo/db/repl/replication_recovery.h"
 
+#include "mongo/db/catalog/document_validation.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/namespace_string.h"
@@ -225,6 +226,7 @@ void ReplicationRecoveryImpl::_applyToEndOfOplog(OperationContext* opCtx,
 
     // Apply remaining ops one at at time, but don't log them because they are already logged.
     UnreplicatedWritesBlock uwb(opCtx);
+    DisableDocumentValidation validationDisabler(opCtx);
 
     BSONObj entry;
     while (cursor->more()) {

@@ -110,7 +110,11 @@ const bool checkShimsViaTUHook = false;
             using ImplTUHook = ImplTUHookType<>;                                                  \
                                                                                                   \
             static auto functionTypeHelper __VA_ARGS__;                                           \
-            using function_type = decltype(MongoShimImplGuts::functionTypeHelper);                \
+            /* Workaround for Microsoft -- by taking the address of this function pointer, we     \
+             * avoid the problems that their compiler has with default arguments in * deduced     \
+             * typedefs. */                                                                       \
+            using function_type_pointer = decltype(&MongoShimImplGuts::functionTypeHelper);       \
+            using function_type = std::remove_pointer_t<function_type_pointer>;                   \
             MongoShimImplGuts* abi(const AbiCheck* const) {                                       \
                 return this;                                                                      \
             }                                                                                     \

@@ -181,13 +181,13 @@ void incrementChunkOnInsertOrUpdate(OperationContext* opCtx,
     // Note that we can assume the simple collation, because shard keys do not support non-simple
     // collations.
     auto chunk = chunkManager.findIntersectingChunkWithSimpleCollation(shardKey);
-    chunk->addBytesWritten(dataWritten);
+    chunk.addBytesWritten(dataWritten);
 
     // If the chunk becomes too large, then we call the ChunkSplitter to schedule a split. Then, we
     // reset the tracking for that chunk to 0.
-    if (shouldSplitChunk(opCtx, shardKeyPattern, *chunk)) {
+    if (shouldSplitChunk(opCtx, shardKeyPattern, chunk)) {
         // TODO: call ChunkSplitter here
-        chunk->clearBytesWritten();
+        chunk.clearBytesWritten();
     }
 }
 
@@ -270,7 +270,8 @@ void ShardServerOpObserver::onUpdate(OperationContext* opCtx, const OplogUpdateE
             // Need the WUOW to retain the lock for CollectionVersionLogOpHandler::commit()
             AutoGetCollection autoColl(opCtx, updatedNss, MODE_IX);
 
-            if (setField.hasField(ShardCollectionType::lastRefreshedCollectionVersion.name())) {
+            if (setField.hasField(ShardCollectionType::refreshing.name()) &&
+                !setField.getBoolField("refreshing")) {
                 opCtx->recoveryUnit()->registerChange(
                     new CollectionVersionLogOpHandler(opCtx, updatedNss));
             }

@@ -34,7 +34,7 @@
 
 namespace mongo {
 
-MONGO_REGISTER_SHIM(dbHolder)()->DatabaseHolder& {
+MONGO_REGISTER_SHIM(DatabaseHolder::getDatabaseHolder)()->DatabaseHolder& {
     static DatabaseHolder _dbHolder;
     return _dbHolder;
 }

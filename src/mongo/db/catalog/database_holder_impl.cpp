@@ -64,7 +64,7 @@ GlobalInitializerRegisterer dbHolderImplInitializer("InitializeDbHolderimpl",
                                                     });
 }  // namespace
 
-MONGO_REGISTER_SHIM(dbHolder)
+MONGO_REGISTER_SHIM(DatabaseHolder::getDatabaseHolder)
 ()->DatabaseHolder& {
     return *dbHolderStorage;
 }

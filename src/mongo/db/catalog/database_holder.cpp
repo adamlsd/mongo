@@ -39,6 +39,6 @@ DatabaseHolder::Impl::~Impl() = default;
 void DatabaseHolder::TUHook::hook() noexcept {}
 
 MONGO_DEFINE_SHIM(DatabaseHolder::makeImpl);
-MONGO_DEFINE_SHIM(dbHolder);
+MONGO_DEFINE_SHIM(DatabaseHolder::getDatabaseHolder);
 
 }  // namespace mongo

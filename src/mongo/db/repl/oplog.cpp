@@ -227,7 +227,7 @@ void createIndexForApplyOps(OperationContext* opCtx,
                             IncrementOpsAppliedStatsFn incrementOpsAppliedStats,
                             OplogApplication::Mode mode) {
     // Check if collection exists.
-    Database* db = dbHolder().get(opCtx, indexNss.ns());
+    Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, indexNss.ns());
     auto indexCollection = db ? db->getCollection(opCtx, indexNss) : nullptr;
     uassert(ErrorCodes::NamespaceNotFound,
             str::stream() << "Failed to create index due to missing collection: " << indexNss.ns(),
@@ -1144,7 +1144,7 @@ Status applyOperation_inlock(OperationContext* opCtx,
     //    the individual operations will not contain a `ts` field. The caller is responsible for
     //    setting the timestamp before committing. Assigning a competing timestamp in this
     //    codepath would break that atomicity. Sharding is a consumer of this use-case.
-    const bool assignOperationTimestamp = [opCtx, haveWrappingWriteUnitOfWork] {
+    const bool assignOperationTimestamp = [opCtx, haveWrappingWriteUnitOfWork, mode] {
         const auto replMode = ReplicationCoordinator::get(opCtx)->getReplicationMode();
         if (opCtx->writesAreReplicated()) {
             // We do not assign timestamps on replicated writes since they will get their oplog
@@ -1163,8 +1163,9 @@ Status applyOperation_inlock(OperationContext* opCtx,
                     break;
                 }
                 case ReplicationCoordinator::modeNone: {
-                    // We do not assign timestamps on standalones.
-                    return false;
+                    // Only assign timestamps on standalones during replication recovery when
+                    // started with 'recoverFromOplogAsStandalone'.
+                    return mode == OplogApplication::Mode::kRecovering;
                 }
             }
         }
@@ -1515,7 +1516,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
         return {ErrorCodes::InvalidNamespace, "invalid ns: " + std::string(nss.ns())};
     }
     {
-        Database* db = dbHolder().get(opCtx, nss.ns());
+        Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, nss.ns());
         if (db && !db->getCollection(opCtx, nss) && db->getViewCatalog()->lookup(opCtx, nss.ns())) {
             return {ErrorCodes::CommandNotSupportedOnView,
                     str::stream() << "applyOps not supported on view:" << nss.ns()};
@@ -1553,7 +1554,7 @@ Status applyCommand_inlock(OperationContext* opCtx,
         }
     }
 
-    const bool assignCommandTimestamp = [opCtx] {
+    const bool assignCommandTimestamp = [opCtx, mode] {
         const auto replMode = ReplicationCoordinator::get(opCtx)->getReplicationMode();
         if (opCtx->writesAreReplicated()) {
             // We do not assign timestamps on replicated writes since they will get their oplog
@@ -1570,8 +1571,9 @@ Status applyCommand_inlock(OperationContext* opCtx,
                     return true;
                 }
                 case ReplicationCoordinator::modeNone: {
-                    // We do not assign timestamps on standalones.
-                    return false;
+                    // Only assign timestamps on standalones during replication recovery when
+                    // started with 'recoverFromOplogAsStandalone'.
+                    return mode == OplogApplication::Mode::kRecovering;
                 }
             }
             MONGO_UNREACHABLE;

@@ -816,13 +816,9 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
                 optionsWithUUID.autoIndexId == CollectionOptions::DEFAULT) {
                 // createCollection() may be called before the in-memory fCV parameter is
                 // initialized, so use the unsafe fCV getter here.
-                const auto featureCompatibilityVersion =
-                    serverGlobalParams.featureCompatibility.getVersionUnsafe();
                 IndexCatalog* ic = collection->getIndexCatalog();
                 fullIdIndexSpec = uassertStatusOK(ic->createIndexOnEmptyCollection(
-                    opCtx,
-                    !idIndex.isEmpty() ? idIndex
-                                       : ic->getDefaultIdIndexSpec(featureCompatibilityVersion)));
+                    opCtx, !idIndex.isEmpty() ? idIndex : ic->getDefaultIdIndexSpec()));
             } else {
                 // autoIndexId: false is only allowed on unreplicated collections.
                 uassert(50001,
@@ -870,7 +866,7 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
         Top::get(serviceContext).collectionDropped(coll->ns().ns(), true);
     }
 
-    dbHolder().close(opCtx, name, "database dropped");
+    DatabaseHolder::getDatabaseHolder().close(opCtx, name, "database dropped");
 
     auto const storageEngine = serviceContext->getGlobalStorageEngine();
     writeConflictRetry(opCtx, "dropDatabase", name, [&] {
@@ -901,7 +897,7 @@ StatusWith<NamespaceString> DatabaseImpl::makeUniqueCollectionNamespace(
     if (!_uniqueCollectionNamespacePseudoRandom) {
         Timestamp ts;
         _uniqueCollectionNamespacePseudoRandom =
-            stdx::make_unique<PseudoRandom>(Date_t::now().asInt64());
+            std::make_unique<PseudoRandom>(Date_t::now().asInt64());
     }
 
     const auto charsToChooseFrom =
@@ -945,7 +941,7 @@ MONGO_REGISTER_SHIM(Database::dropDatabase)(OperationContext* opCtx, Database* d
     return DatabaseImpl::dropDatabase(opCtx, db);
 }
 
-MONGO_REGISTER_SHIM(userCreateNS)
+MONGO_REGISTER_SHIM(Database::userCreateNS)
 (OperationContext* opCtx,
  Database* db,
  StringData ns,
@@ -1053,7 +1049,7 @@ MONGO_REGISTER_SHIM(userCreateNS)
     return Status::OK();
 }
 
-MONGO_REGISTER_SHIM(dropAllDatabasesExceptLocal)(OperationContext* opCtx)->void {
+MONGO_REGISTER_SHIM(Database::dropAllDatabasesExceptLocal)(OperationContext* opCtx)->void {
     Lock::GlobalWrite lk(opCtx);
 
     vector<string> n;
@@ -1069,7 +1065,7 @@ MONGO_REGISTER_SHIM(dropAllDatabasesExceptLocal)(OperationContext* opCtx)->void 
     for (const auto& dbName : n) {
         if (dbName != "local") {
             writeConflictRetry(opCtx, "dropAllDatabasesExceptLocal", dbName, [&opCtx, &dbName] {
-                Database* db = dbHolder().get(opCtx, dbName);
+                Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, dbName);
 
                 // This is needed since dropDatabase can't be rolled back.
                 // This is safe be replaced by "invariant(db);dropDatabase(opCtx, db);" once fixed

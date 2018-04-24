@@ -84,18 +84,11 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
         topOfOplogSW.getStatus() == ErrorCodes::NamespaceNotFound) {
         // Oplog is empty. There are no oplog entries to apply, so we exit recovery and go into
         // initial sync.
-        log() << "No oplog entries to apply for recovery. Oplog is empty. Entering initial sync.";
+        log() << "No oplog entries to apply for recovery. Oplog is empty.";
         return;
     }
     fassert(40290, topOfOplogSW);
     const auto topOfOplog = topOfOplogSW.getValue();
-
-    const auto appliedThrough = _consistencyMarkers->getAppliedThrough(opCtx);
-    invariant(!stableTimestamp || appliedThrough.isNull() ||
-                  *stableTimestamp == appliedThrough.getTimestamp(),
-              str::stream() << "Stable timestamp " << stableTimestamp->toString()
-                            << " does not equal appliedThrough timestamp "
-                            << appliedThrough.toString());
 
     // If we were passed in a stable timestamp, we are in rollback recovery and should recover from
     // that stable timestamp. Otherwise, we're recovering at startup. If this storage engine
@@ -108,6 +101,13 @@ void ReplicationRecoveryImpl::recoverFromOplog(OperationContext* opCtx,
     if (!stableTimestamp && supportsRecoverToStableTimestamp) {
         stableTimestamp = _storageInterface->getRecoveryTimestamp(opCtx->getServiceContext());
     }
+
+    const auto appliedThrough = _consistencyMarkers->getAppliedThrough(opCtx);
+    invariant(!stableTimestamp || appliedThrough.isNull() ||
+                  *stableTimestamp == appliedThrough.getTimestamp(),
+              str::stream() << "Stable timestamp " << stableTimestamp->toString()
+                            << " does not equal appliedThrough timestamp "
+                            << appliedThrough.toString());
 
     if (stableTimestamp) {
         invariant(supportsRecoverToStableTimestamp);

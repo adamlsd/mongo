@@ -162,8 +162,7 @@ public:
 
         virtual bool haveIdIndex(OperationContext* opCtx) const = 0;
 
-        virtual BSONObj getDefaultIdIndexSpec(ServerGlobalParams::FeatureCompatibility::Version
-                                                  featureCompatibilityVersion) const = 0;
+        virtual BSONObj getDefaultIdIndexSpec() const = 0;
 
         virtual IndexDescriptor* findIdIndex(OperationContext* opCtx) const = 0;
 
@@ -311,9 +310,8 @@ public:
     /**
      * Returns the spec for the id index to create by default for this collection.
      */
-    inline BSONObj getDefaultIdIndexSpec(
-        const ServerGlobalParams::FeatureCompatibility::Version featureCompatibilityVersion) const {
-        return this->_impl().getDefaultIdIndexSpec(featureCompatibilityVersion);
+    inline BSONObj getDefaultIdIndexSpec() const {
+        return this->_impl().getDefaultIdIndexSpec();
     }
 
     inline IndexDescriptor* findIdIndex(OperationContext* const opCtx) const {

@@ -42,7 +42,7 @@ void Database::TUHook::hook() noexcept {}
 
 MONGO_DEFINE_SHIM(Database::dropDatabase);
 
-MONGO_DEFINE_SHIM(userCreateNS);
+MONGO_DEFINE_SHIM(Database::userCreateNS);
 
-MONGO_DEFINE_SHIM(dropAllDatabasesExceptLocal);
+MONGO_DEFINE_SHIM(Database::dropAllDatabasesExceptLocal);
 }  // namespace mongo

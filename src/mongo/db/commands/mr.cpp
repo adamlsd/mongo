@@ -393,7 +393,8 @@ void State::dropTempCollections() {
 
         writeConflictRetry(_opCtx, "M/R dropTempCollections", _config.incLong.ns(), [this] {
             Lock::DBLock lk(_opCtx, _config.incLong.db(), MODE_X);
-            if (Database* db = DatabaseHolder::getDatabaseHolder().get(_opCtx, _config.incLong.ns())) {
+            if (Database* db =
+                    DatabaseHolder::getDatabaseHolder().get(_opCtx, _config.incLong.ns())) {
                 WriteUnitOfWork wunit(_opCtx);
                 uassertStatusOK(db->dropCollection(_opCtx, _config.incLong.ns()));
                 wunit.commit();

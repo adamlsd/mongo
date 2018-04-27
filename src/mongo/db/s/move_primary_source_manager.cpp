@@ -266,6 +266,9 @@ Status MovePrimarySourceManager::commitOnConfig(OperationContext* opCtx) {
             }
         }
 
+        // We would not be able to guarantee our next database refresh would pick up the write for
+        // the movePrimary commit (if it happened), because we were unable to get the latest config
+        // OpTime.
         fassert(50762,
                 validateStatus.withContext(
                     str::stream() << "Failed to commit movePrimary for database " << getNss().ns()
@@ -273,6 +276,9 @@ Status MovePrimarySourceManager::commitOnConfig(OperationContext* opCtx) {
                                   << redact(commitStatus)
                                   << ". Updating the optime with a write before clearing the "
                                   << "version also failed"));
+
+        // If we can validate but the commit still failed, return the status.
+        return commitStatus;
     }
 
     _state = kCommitted;
@@ -318,14 +324,14 @@ void MovePrimarySourceManager::cleanupOnError(OperationContext* opCtx) {
         return;
     }
 
-    uassertStatusOK(Grid::get(opCtx)->catalogClient()->logChange(
-        opCtx,
-        "movePrimary.error",
-        _dbname.toString(),
-        _buildMoveLogEntry(_dbname.toString(), _fromShard.toString(), _toShard.toString()),
-        ShardingCatalogClient::kMajorityWriteConcern));
-
     try {
+        uassertStatusOK(Grid::get(opCtx)->catalogClient()->logChange(
+            opCtx,
+            "movePrimary.error",
+            _dbname.toString(),
+            _buildMoveLogEntry(_dbname.toString(), _fromShard.toString(), _toShard.toString()),
+            ShardingCatalogClient::kMajorityWriteConcern));
+
         _cleanup(opCtx);
     } catch (const ExceptionForCat<ErrorCategory::NotMasterError>& ex) {
         BSONObjBuilder requestArgsBSON;

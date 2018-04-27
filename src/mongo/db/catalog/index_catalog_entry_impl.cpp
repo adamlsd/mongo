@@ -59,7 +59,8 @@ MONGO_REGISTER_SHIM(IndexCatalogEntry::makeImpl)
  const StringData ns,
  CollectionCatalogEntry* const collection,
  std::unique_ptr<IndexDescriptor> descriptor,
- CollectionInfoCache* const infoCache,PrivateTo<IndexCatalogEntry>)
+ CollectionInfoCache* const infoCache,
+ PrivateTo<IndexCatalogEntry>)
     ->std::unique_ptr<IndexCatalogEntry::Impl> {
     return std::make_unique<IndexCatalogEntryImpl>(
         this_, opCtx, ns, collection, std::move(descriptor), infoCache);

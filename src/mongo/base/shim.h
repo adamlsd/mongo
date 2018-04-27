@@ -32,11 +32,48 @@
 
 #include "mongo/base/init.h"
 
+/**
+ * The `SHIM` mechanism allows for the creation of "weak-symbol-like" functions which can have their
+ * actual implementation injected in the final binary without creating a link dependency upon any
+ * actual implementation.  One uses it like this:
+ *
+ * In a header:
+ * ```
+ * class MyClass {
+ *   public:
+ *     static MONGO_DECLARE_SHIM((int)->std::string) helloWorldFunction;
+ * };
+ * ```
+ *
+ * In the corresponding C++ file (which is a link dependency):
+ * ```
+ * MONGO_DEFINE_SHIM(MyClass::helloWorldFunction);
+ * ```
+ *
+ * And in any number of implementation files:
+ * ```
+ * MONGO_REGISTER_SHIM(MyClass::helloWorldFunction)(int value)->std::string {
+ *     if (value == 42) {
+ *         return "Hello World";
+ *     } else {
+ *         return "No way!";
+ *     }
+ * }
+ * ```
+ *
+ * This can be useful for making auto-registering and auto-constructing mock and release class
+ * factories, among other useful things
+ */
 
 namespace mongo {
 template <typename T>
 struct PrivateCall;
 
+/**
+ * When declaring shim functions that should be private, they really need to be public; however,
+ * this type can be used as a parameter to permit the function to only be called by the type
+ * specified in the template parameter.
+ */
 template <typename T>
 struct PrivateTo {
 private:
@@ -45,6 +82,11 @@ private:
     PrivateTo() = default;
 };
 
+/**
+ * When calling shim functions that should be private, you pass an immediately created instance of
+ * the type `PrivateCall< T >`, where `T` is the type that `PrivateTo` requires as a template
+ * parameter.
+ */
 template <typename T>
 struct PrivateCall {
 private:
@@ -59,6 +101,10 @@ public:
 }  // namespace mongo
 
 namespace shim_detail {
+/**
+ * This type, `storage`, is used as a workaround for needing C++17 `inline` variables.  The template
+ * static member is effectively `inline` already.
+ */
 template <typename T, typename tag = void>
 struct storage {
     static T data;
@@ -82,10 +128,10 @@ const bool checkShimsViaTUHook = false;
 }  // namespace mongo
 
 /**
- * Declare a shimmable function with name `SHIM_NAME`, returning a value of type `RETURN_TYPE`, with
- * any arguments.  Declare such constructs in a C++ header.
+ * Declare a shimmable function with signature `SHIM_SIGNATURE`.  Declare such constructs in a C++
+ * header as static members of a class.
  */
-#define MONGO_DECLARE_SHIM(/*SHIM_NAME*/...) MONGO_DECLARE_SHIM_1(__LINE__, __VA_ARGS__)
+#define MONGO_DECLARE_SHIM(/*SHIM_SIGNATURE*/...) MONGO_DECLARE_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_DECLARE_SHIM_1(LN, ...) MONGO_DECLARE_SHIM_2(LN, __VA_ARGS__)
 #define MONGO_DECLARE_SHIM_2(LN, ...)                                                             \
     const struct ShimBasis_##LN {                                                                 \
@@ -111,7 +157,7 @@ const bool checkShimsViaTUHook = false;
                                                                                                   \
             static auto functionTypeHelper __VA_ARGS__;                                           \
             /* Workaround for Microsoft -- by taking the address of this function pointer, we     \
-             * avoid the problems that their compiler has with default arguments in * deduced     \
+             * avoid the problems that their compiler has with default * arguments in deduced     \
              * typedefs. */                                                                       \
             using function_type_pointer = decltype(&MongoShimImplGuts::functionTypeHelper);       \
             using function_type = std::remove_pointer_t<function_type_pointer>;                   \
@@ -181,6 +227,8 @@ const bool checkShimsViaTUHook = false;
         using ShimType = decltype(__VA_ARGS__);                                                 \
                                                                                                 \
         class Implementation final : public ShimType::MongoShimImplGuts {                       \
+            /* Some compilers don't work well with the trailing `override` in this kind of      \
+             * function declaration. */                                                         \
             ShimType::MongoShimImplGuts::function_type implementation; /* override */           \
         };                                                                                      \
                                                                                                 \

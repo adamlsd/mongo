@@ -139,7 +139,7 @@ struct libmongodbcapi_lib {
 
     mongo::logger::ComponentMessageLogDomain::AppenderHandle logCallbackHandle;
 
-    std::unique_ptr<libmongodbcapi_db> onlyDB;
+    std::unique_ptr<libmongodbcapi_instance> onlyDB;
 };
 
 namespace mongo {
@@ -154,13 +154,13 @@ using EmbeddedServiceContextPtr = std::unique_ptr<mongo::ServiceContext, Service
 }  // namespace
 }  // namespace mongo
 
-struct libmongodbcapi_db {
-    ~libmongodbcapi_db() {
+struct libmongodbcapi_instance {
+    ~libmongodbcapi_instance() {
         --this->parent_lib->databaseCount;
         invariant(this->clientCount == 0);
     }
 
-    explicit libmongodbcapi_db(libmongodbcapi_lib* const p, const char* const yaml_config)
+    explicit libmongodbcapi_instance(libmongodbcapi_lib* const p, const char* const yaml_config)
         : parent_lib(p),
           serviceContext(::mongo::embedded::initialize(yaml_config)),
           // creating mock transport layer to be able to create sessions
@@ -174,8 +174,8 @@ struct libmongodbcapi_db {
         ++this->parent_lib->databaseCount;
     }
 
-    libmongodbcapi_db(const libmongodbcapi_db&) = delete;
-    libmongodbcapi_db& operator=(const libmongodbcapi_db&) = delete;
+    libmongodbcapi_instance(const libmongodbcapi_instance&) = delete;
+    libmongodbcapi_instance& operator=(const libmongodbcapi_instance&) = delete;
 
     libmongodbcapi_lib* parent_lib;
     std::atomic<int> clientCount = {};
@@ -189,7 +189,7 @@ struct libmongodbcapi_client {
         --this->parent_db->clientCount;
     }
 
-    explicit libmongodbcapi_client(libmongodbcapi_db* const db)
+    explicit libmongodbcapi_client(libmongodbcapi_instance* const db)
         : parent_db(db),
           client(db->serviceContext->makeClient("embedded", db->transportLayer->createSession())) {
         ++this->parent_db->clientCount;
@@ -198,7 +198,7 @@ struct libmongodbcapi_client {
     libmongodbcapi_client(const libmongodbcapi_client&) = delete;
     libmongodbcapi_client& operator=(const libmongodbcapi_client&) = delete;
 
-    libmongodbcapi_db* const parent_db;
+    libmongodbcapi_instance* const parent_db;
     mongo::ServiceContext::UniqueClient client;
 
     std::vector<unsigned char> output;
@@ -212,13 +212,13 @@ std::unique_ptr<libmongodbcapi_lib> library;
 
 class ReentrancyGuard {
 private:
-    thread_local static bool inLibrary = false;
+    thread_local static bool inLibrary;
 
 public:
     explicit ReentrancyGuard() {
         uassert(ErrorCodes::ReentrancyNotAllowed,
                 str::stream() << "Reentry into libmongodbcapi is not allowed",
-                !linLibrary);
+                !inLibrary);
         inLibrary = true;
     }
 
@@ -229,7 +229,8 @@ public:
     ReentrancyGuard(ReentrancyGuard const&) = delete;
     ReentrancyGuard& operator=(ReentrancyGuard const&) = delete;
 };
-bool ReentrancyGuard::inLibrary;
+
+thread_local bool ReentrancyGuard::inLibrary = false;
 
 void register_log_callback(libmongodbcapi_lib* const lib,
                            const libmongodbcapi_log_callback log_callback,
@@ -316,9 +317,9 @@ void capi_lib_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status& status)
     library = nullptr;
 }
 
-libmongodbcapi_db* db_new(libmongodbcapi_lib* const lib,
-                          const char* const yaml_config,
-                          libmongodbcapi_status& status) {
+libmongodbcapi_instance* instance_new(libmongodbcapi_lib* const lib,
+                                      const char* const yaml_config,
+                                      libmongodbcapi_status& status) {
     if (!library) {
         throw MobileException{LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
                               "Cannot create a new database handle when the MongoDB Embedded "
@@ -337,12 +338,12 @@ libmongodbcapi_db* db_new(libmongodbcapi_lib* const lib,
                               "Embedded Library have been opened."};
     }
 
-    lib->onlyDB = std::make_unique<libmongodbcapi_db>(lib, yaml_config);
+    lib->onlyDB = std::make_unique<libmongodbcapi_instance>(lib, yaml_config);
 
     return lib->onlyDB.get();
 }
 
-void db_destroy(libmongodbcapi_db* const db, libmongodbcapi_status& status) {
+void instance_destroy(libmongodbcapi_instance* const db, libmongodbcapi_status& status) {
     if (!library) {
         throw MobileException{LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
                               "Cannot destroy a database handle when the MongoDB Embedded Library "
@@ -370,7 +371,8 @@ void db_destroy(libmongodbcapi_db* const db, libmongodbcapi_status& status) {
     library->onlyDB = nullptr;
 }
 
-libmongodbcapi_client* client_new(libmongodbcapi_db* const db, libmongodbcapi_status& status) {
+libmongodbcapi_client* client_new(libmongodbcapi_instance* const db,
+                                  libmongodbcapi_status& status) {
     if (!library) {
         throw MobileException{LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
                               "Cannot create a new client handle when the MongoDB Embedded Library "
@@ -549,28 +551,29 @@ auto enterCXX(libmongodbcapi_status* const statusPtr, Callable&& c) noexcept
 }  // namespace
 
 extern "C" {
-libmongodbcapi_lib* libmongodbcapi_init(const libmongodbcapi_init_params* const params,
-                                        libmongodbcapi_status* const statusPtr) {
+libmongodbcapi_lib* libmongodbcapi_lib_init(const libmongodbcapi_init_params* const params,
+                                            libmongodbcapi_status* const statusPtr) {
     return enterCXX(statusPtr, [&](auto& status) { return mongo::capi_lib_init(params, status); });
 }
 
-int libmongodbcapi_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status* const statusPtr) {
+int libmongodbcapi_lib_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status* const statusPtr) {
     return enterCXX(statusPtr, [&](auto& status) { return mongo::capi_lib_fini(lib, status); });
 }
 
-libmongodbcapi_db* libmongodbcapi_db_new(libmongodbcapi_lib* lib,
-                                         const char* const yaml_config,
-                                         libmongodbcapi_status* const statusPtr) {
+libmongodbcapi_instance* libmongodbcapi_instance_create(libmongodbcapi_lib* lib,
+                                                        const char* const yaml_config,
+                                                        libmongodbcapi_status* const statusPtr) {
     return enterCXX(statusPtr,
-                    [&](auto& status) { return mongo::db_new(lib, yaml_config, status); });
+                    [&](auto& status) { return mongo::instance_new(lib, yaml_config, status); });
 }
 
-int libmongodbcapi_db_destroy(libmongodbcapi_db* const db, libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::db_destroy(db, status); });
+int libmongodbcapi_instance_destroy(libmongodbcapi_instance* const db,
+                                    libmongodbcapi_status* const statusPtr) {
+    return enterCXX(statusPtr, [&](auto& status) { return mongo::instance_destroy(db, status); });
 }
 
-libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_db* const db,
-                                                 libmongodbcapi_status* const statusPtr) {
+libmongodbcapi_client* libmongodbcapi_client_create(libmongodbcapi_instance* const db,
+                                                    libmongodbcapi_status* const statusPtr) {
     return enterCXX(statusPtr, [&](auto& status) { return mongo::client_new(db, status); });
 }
 
@@ -595,7 +598,7 @@ int libmongodbcapi_status_get_error(const libmongodbcapi_status* const status) {
     return mongo::capi_status_get_error(status);
 }
 
-const char* libmongodbcapi_status_get_what(const libmongodbcapi_status* const status) {
+const char* libmongodbcapi_status_get_explanation(const libmongodbcapi_status* const status) {
     return mongo::capi_status_get_what(status);
 }
 
@@ -603,11 +606,11 @@ int libmongodbcapi_status_get_code(const libmongodbcapi_status* const status) {
     return mongo::capi_status_get_code(status);
 }
 
-libmongodbcapi_status* libmongodbcapi_allocate_status(void) {
+libmongodbcapi_status* libmongodbcapi_status_create(void) {
     return new libmongodbcapi_status;
 }
 
-void libmongodbcapi_destroy_status(libmongodbcapi_status* const status) {
+void libmongodbcapi_status_destroy(libmongodbcapi_status* const status) {
     delete status;
 }
 

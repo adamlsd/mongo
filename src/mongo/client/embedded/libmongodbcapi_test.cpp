@@ -58,14 +58,14 @@ std::unique_ptr<mongo::unittest::TempDir> globalTempDir;
 struct StatusDestructor {
     void operator()(libmongodbcapi_status* const p) const noexcept {
         if (p)
-            libmongodbcapi_destroy_status(p);
+            libmongodbcapi_status_destroy(p);
     }
 };
 
 using CapiStatusPtr = std::unique_ptr<libmongodbcapi_status, StatusDestructor>;
 
 CapiStatusPtr makeStatusPtr() {
-    return CapiStatusPtr{libmongodbcapi_allocate_status()};
+    return CapiStatusPtr{libmongodbcapi_status_create()};
 }
 
 struct ClientDestructor {
@@ -79,8 +79,8 @@ struct ClientDestructor {
             if (status) {
                 std::cerr << "Error code: " << libmongodbcapi_status_get_error(status.get())
                           << std::endl;
-                std::cerr << "Error message: " << libmongodbcapi_status_get_what(status.get())
-                          << std::endl;
+                std::cerr << "Error message: "
+                          << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
             }
         }
     }
@@ -91,7 +91,7 @@ using MongoDBCAPIClientPtr = std::unique_ptr<libmongodbcapi_client, ClientDestru
 class MongodbCAPITest : public mongo::unittest::Test {
 protected:
     void setUp() {
-        status = libmongodbcapi_allocate_status();
+        status = libmongodbcapi_status_create();
         ASSERT(status != nullptr);
 
         if (!globalTempDir) {
@@ -116,31 +116,31 @@ protected:
 
         params.yaml_config = yaml.c_str();
 
-        lib = libmongodbcapi_init(&params, status);
+        lib = libmongodbcapi_lib_init(&params, status);
         ASSERT(lib != nullptr);
 
-        db = libmongodbcapi_db_new(lib, yaml.c_str(), status);
+        db = libmongodbcapi_instance_create(lib, yaml.c_str(), status);
         ASSERT(db != nullptr);
     }
 
     void tearDown() {
         massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_what(status),
-                libmongodbcapi_db_destroy(db, status) == LIBMONGODB_CAPI_SUCCESS);
+                libmongodbcapi_status_get_explanation(status),
+                libmongodbcapi_instance_destroy(db, status) == LIBMONGODB_CAPI_SUCCESS);
         massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_what(status),
-                libmongodbcapi_fini(lib, status) == LIBMONGODB_CAPI_SUCCESS);
-        libmongodbcapi_destroy_status(status);
+                libmongodbcapi_status_get_explanation(status),
+                libmongodbcapi_lib_fini(lib, status) == LIBMONGODB_CAPI_SUCCESS);
+        libmongodbcapi_status_destroy(status);
     }
 
-    libmongodbcapi_db* getDB() const {
+    libmongodbcapi_instance* getDB() const {
         return db;
     }
 
     MongoDBCAPIClientPtr createClient() const {
-        MongoDBCAPIClientPtr client(libmongodbcapi_client_new(db, status));
+        MongoDBCAPIClientPtr client(libmongodbcapi_client_create(db, status));
         massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_what(status),
+                libmongodbcapi_status_get_explanation(status),
                 client != nullptr);
         return client;
     }
@@ -178,7 +178,7 @@ protected:
 
 protected:
     libmongodbcapi_lib* lib;
-    libmongodbcapi_db* db;
+    libmongodbcapi_instance* db;
     libmongodbcapi_status* status;
 };
 
@@ -193,7 +193,7 @@ TEST_F(MongodbCAPITest, CreateAndDestroyDBAndClient) {
 // This test is to make sure that destroying the db will fail if there's remaining clients left.
 TEST_F(MongodbCAPITest, DoNotDestroyClient) {
     auto client = createClient();
-    ASSERT(libmongodbcapi_db_destroy(getDB(), nullptr) != LIBMONGODB_CAPI_SUCCESS);
+    ASSERT(libmongodbcapi_instance_destroy(getDB(), nullptr) != LIBMONGODB_CAPI_SUCCESS);
 }
 
 TEST_F(MongodbCAPITest, CreateMultipleClients) {
@@ -476,7 +476,7 @@ TEST_F(MongodbCAPITest, InsertAndUpdate) {
 TEST_F(MongodbCAPITest, CreateMultipleDBs) {
     auto status = makeStatusPtr();
     ASSERT(status.get());
-    libmongodbcapi_db* db2 = libmongodbcapi_db_new(lib, nullptr, status.get());
+    libmongodbcapi_instance* db2 = libmongodbcapi_instance_create(lib, nullptr, status.get());
     ASSERT(db2 == nullptr);
     ASSERT_EQUALS(libmongodbcapi_status_get_error(status.get()), LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN);
 }
@@ -513,18 +513,18 @@ int main(const int argc, const char* const* const argv) {
     const auto status = makeStatusPtr();
 
     // Check so we can initialize the library without providing init params
-    libmongodbcapi_lib* lib = libmongodbcapi_init(nullptr, status.get());
+    libmongodbcapi_lib* lib = libmongodbcapi_lib_init(nullptr, status.get());
     if (lib == nullptr) {
         std::cerr << "libmongodbcapi_init() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
-                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
+                  << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
-    if (libmongodbcapi_fini(lib, status.get()) != LIBMONGODB_CAPI_SUCCESS) {
+    if (libmongodbcapi_lib_fini(lib, status.get()) != LIBMONGODB_CAPI_SUCCESS) {
         std::cerr << "libmongodbcapi_fini() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
-                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
+                  << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -545,20 +545,20 @@ int main(const int argc, const char* const* const argv) {
     };
     params.log_user_data = &receivedCallback;
 
-    lib = libmongodbcapi_init(&params, nullptr);
+    lib = libmongodbcapi_lib_init(&params, nullptr);
     if (lib == nullptr) {
         std::cerr << "libmongodbcapi_init() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
-                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
+                  << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 
     ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
-    if (libmongodbcapi_fini(lib, nullptr) != LIBMONGODB_CAPI_SUCCESS) {
+    if (libmongodbcapi_lib_fini(lib, nullptr) != LIBMONGODB_CAPI_SUCCESS) {
         std::cerr << "libmongodbcapi_fini() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
-                  << libmongodbcapi_status_get_what(status.get()) << std::endl;
+                  << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
         return EXIT_FAILURE;
     }
 

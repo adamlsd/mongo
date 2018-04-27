@@ -7,11 +7,11 @@
  *
  *    This program is distributed in the hope that it will be useful,
  *    but WITHOUT ANY WARRANTY; without even the implied warranty of
- *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  *    GNU Affero General Public License for more details.
  *
  *    You should have received a copy of the GNU Affero General Public License
- *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *    along with this program. If not, see <http://www.gnu.org/licenses/>.
  *
  *    As a special exception, the copyright holders give permission to link the
  *    code of portions of this program with the OpenSSL library under certain
@@ -40,9 +40,9 @@
  * are met.
  *
  * We define "Thread Safety" to mean that a program will not exhibit undefined behavior in multiple
- * concurrent execution contexts over this library.  Please note, however, that values returned from
+ * concurrent execution contexts over this library. Please note, however, that values returned from
  * a function may be stale, if the parameter objects passed to that function are subsequently passed
- * to any function in another thread.  Although the library will not exhibit undefined behavior, the
+ * to any function in another thread. Although the library will not exhibit undefined behavior, the
  * program may not function as desired.
  *
  * @note The definition of "undefined behavior" with respect to this library includes any
@@ -52,14 +52,14 @@
  * not occur.
  * @note Some functions provide runtime diagnostics for some violations of their preconditions --
  * this behavior is not guaranteed and is provided as a convenience for both debugging and
- * protection of data integrity.  Some of these diagnostics are documented in the return-value
+ * protection of data integrity. Some of these diagnostics are documented in the return-value
  * specifications for these functions; however, if such a return value would be returned as the
  * result of a violation of a precondition, then this return value is not guaranteed in this or any
  * future release.
  */
 namespace LibMongoDBCAPI {
 // Doxygen requires a namespace when processing global scope functions, in order to generate
-// documentation.  We also use it as a hook to provide library-wide documentation.
+// documentation. We also use it as a hook to provide library-wide documentation.
 #endif
 
 #ifdef __cplusplus
@@ -72,22 +72,22 @@ extern "C" {
  * The Embedded MongoDB Library (most `libmongodbcapi_` prefixed functions) uses allocated objects
  * of this type to report the details of any failure, when an operation cannot be completed.
  * Several `libmongodbcapi_status` functions are provided which permit observing the details of
- * these failures.  Further a construction function and a destruction function for these objects are
+ * these failures. Further a construction function and a destruction function for these objects are
  * also provided.
  *
  * @invariant The use of `libmongodbcapi_status` objects from multiple threads is not threadsafe
  * unless all of the threads accessing a single `libmongodbcapi_status` object are passing that
- * object as a const-qualified (`const libmongodbcapi_status *`) pointer.  If a single thread is
+ * object as a const-qualified (`const libmongodbcapi_status *`) pointer. If a single thread is
  * passing a `libmongodbcapi_status` object a function taking it by non-const-qualified
  * (`libmongodbcapi_status *`) pointer, then no other thread may access the `libmongodbcapi_status`
  * object.
  *
  * @note All `libmongodbcapi_` functions which take a `status` object may be passed a `NULL`
- * pointer.  In that case the function will not be able to report detailed status information;
+ * pointer. In that case the function will not be able to report detailed status information;
  * however, that function may still be called.
  *
  * @note All `libmongodbcapi_status` functions can be used before the `libmongodbcapi` library is
- * initialized.  This facilitates detailed error reporting from all library functions.
+ * initialized. This facilitates detailed error reporting from all library functions.
  */
 typedef struct libmongodbcapi_status libmongodbcapi_status;
 
@@ -95,8 +95,8 @@ typedef struct libmongodbcapi_status libmongodbcapi_status;
  * Allocate and construct an API-return-status buffer object of type `libmongodbcapi_status`.
  *
  * All `libmongodbcapi_` functions outside of the `libmongodbcapi_status` family accept pointers to
- * these objects (specifically a parameter of type `libmongodbcapi_status *`).  These functions use
- * that output-parameter as a mechanism for detailed error reporting.  If a `NULL` pointer is
+ * these objects (specifically a parameter of type `libmongodbcapi_status *`). These functions use
+ * that output-parameter as a mechanism for detailed error reporting. If a `NULL` pointer is
  * passed, then these functions will not be able to report the details of their error.
  *
  * @pre None.
@@ -120,8 +120,8 @@ libmongodbcapi_status* libmongodbcapi_status_create(void);
 /**
  * Destroys a valid `libmongodbcapi_status` object.
  *
- * Frees the storage associated with a valid `libmongodbcapi_status` object and including all shared
- * observable storage, such as strings.  The only way that a `libmongodbcapi_status` can be validly
+ * Frees the storage associated with a valid `libmongodbcapi_status` object including all shared
+ * observable storage, such as strings. The only way that a `libmongodbcapi_status` can be validly
  * created is via `libmongodbcapi_status_create`, therefore the object being destroyed must have
  * been created using that function.
  *
@@ -130,8 +130,8 @@ libmongodbcapi_status* libmongodbcapi_status_create(void);
  *
  * @param status The `libmongodbcapi_status` object to release.
  *
- * @invariant This function not threadsafe unless the specified `status` object is not passed
- * concurrently to any other function.  It is safe to destroy distinct `libmongodbcapi_status`
+ * @invariant This function is not threadsafe unless the specified `status` object is not passed
+ * concurrently to any other function. It is safe to destroy distinct `libmongodbcapi_status`
  * objects on distinct threads.
  *
  * @note This function does not report failures.
@@ -150,7 +150,7 @@ void libmongodbcapi_status_destroy(libmongodbcapi_status* status);
  * by this enum.
  *
  * When a `limbongdbcapi` function fails (and it has been documented report errors) it will report
- * that error in the form of an `int` status code.  That status code will always be returned as the
+ * that error in the form of an `int` status code. That status code will always be returned as the
  * type `int`; however, the values in this enum can be used to classify the failure.
  */
 typedef enum {
@@ -158,21 +158,18 @@ typedef enum {
     LIBMONGODB_CAPI_ERROR_UNKNOWN = -1,
     LIBMONGODB_CAPI_SUCCESS = 0,
 
-    // Note to maintainers: Do not re-order the names in this list.  The value of each error is part
-    // of the abi and its position determines its value.
-
-    LIBMONGODB_CAPI_ERROR_ENOMEM,
-    LIBMONGODB_CAPI_ERROR_EXCEPTION,
-    LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED,
-    LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED,
-    LIBMONGODB_CAPI_ERROR_INVALID_LIB_HANDLE,
-    LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED,
-    LIBMONGODB_CAPI_ERROR_INVALID_DB_HANDLE,
-    LIBMONGODB_CAPI_ERROR_HAS_DB_HANDLES_OPEN,
-    LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN,
-    LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN,
-    LIBMONGODB_CAPI_ERROR_INVALID_CLIENT_HANDLE,
-    LIBMONGODB_CAPI_ERROR_REENTRANCY_NOT_ALLOWED,
+    LIBMONGODB_CAPI_ERROR_ENOMEM = 1,
+    LIBMONGODB_CAPI_ERROR_EXCEPTION = 2,
+    LIBMONGODB_CAPI_ERROR_LIBRARY_ALREADY_INITIALIZED = 3,
+    LIBMONGODB_CAPI_ERROR_LIBRARY_NOT_INITIALIZED = 4,
+    LIBMONGODB_CAPI_ERROR_INVALID_LIB_HANDLE = 5,
+    LIBMONGODB_CAPI_ERROR_DB_INITIALIZATION_FAILED = 6,
+    LIBMONGODB_CAPI_ERROR_INVALID_DB_HANDLE = 7,
+    LIBMONGODB_CAPI_ERROR_HAS_DB_HANDLES_OPEN = 8,
+    LIBMONGODB_CAPI_ERROR_DB_MAX_OPEN = 9,
+    LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN = 10,
+    LIBMONGODB_CAPI_ERROR_INVALID_CLIENT_HANDLE = 11,
+    LIBMONGODB_CAPI_ERROR_REENTRANCY_NOT_ALLOWED = 12,
 } libmongodbcapi_error;
 
 /**
@@ -180,8 +177,8 @@ typedef enum {
  *
  * When a `libmongodbcapi` function fails (and it has been documented to report errors) it will
  * report its error in the form of an `int` status code which is stored into a supplied
- * `libmongodbcapi_status` object, if provided.  Some of these functions may also report extra
- * information, which will be reported by other observer functions.  Every `libmongodbcapi` function
+ * `libmongodbcapi_status` object, if provided. Some of these functions may also report extra
+ * information, which will be reported by other observer functions. Every `libmongodbcapi` function
  * which reports errors will always update the `Error` code stored in a `libmongodbcapi_status`
  * object, even upon success.
  *
@@ -211,7 +208,7 @@ int libmongodbcapi_status_get_error(const libmongodbcapi_status* status);
  *
  * Any `libmongodbcapi` function which reports failure must, when it fails, update the specified
  * `libmongodbcapi_status` object, if it exists, to contain a string indicating a user-readable
- * description of the failure.  This error message string is dependent upon the kind of error
+ * description of the failure. This error message string is dependent upon the kind of error
  * encountered and may contain dynamically generated information describing the specifics of the
  * failure.
  *
@@ -223,13 +220,13 @@ int libmongodbcapi_status_get_error(const libmongodbcapi_status* status);
  *
  * @param status The `libmongodbcapi_status` object from which to get an associated error message.
  *
- * @returns A null-terminated string containing an error message.  This string will be valid until
+ * @returns A null-terminated string containing an error message. This string will be valid until
  * the next time that the specified `status` is passed to any other `libmongodbcapi` function
  * (including those in the `libmongodbcapi_status` family).
  *
  * @invariant This function is thread-safe, if the thread safety requirements specified by
  * `libmongodbcapi_status`'s invariants are met; however, the pointer returned by this function is
- * considered to be part of the specified `status` object for the purposes of thread safety.  If the
+ * considered to be part of the specified `status` object for the purposes of thread safety. If the
  * `libmongodbcapi_status` is changed, by any thread, it will invalidate the string returned by this
  * function.
  *
@@ -251,7 +248,7 @@ const char* libmongodbcapi_status_get_explanation(const libmongodbcapi_status* s
  *
  * Any `libmongodbcapi` function which reports failure must, when it fails, update the specified
  * `libmongodbcapi_status` object, if it exists, to contain a numeric code indicating a sub-category
- * of failure.  This error code is one specified by the normal MongoDB Driver interface, if
+ * of failure. This error code is one specified by the normal MongoDB Driver interface, if
  * `libmongodbcapi_error == LIBMONGODB_CAPI_ERROR_EXCEPTION`.
  *
  * @pre The specified `status` must not be `NULL`.
@@ -285,9 +282,9 @@ int libmongodbcapi_status_get_code(const libmongodbcapi_status* status);
  * An object which describes the runtime state of the Embedded MongoDB Library.
  *
  * The `libmongodbcapi` library uses allocated objects of this type to indicate the present state of
- * the library.  Some operations which the library provides need access to this object.  Further a
- * construction function and a destruction function for these objects are also provided.  No more
- * than a single object instance of this type will exist at any given time.
+ * the library. Some operations which the library provides need access to this object. Further a
+ * construction function and a destruction function for these objects are also provided. No more
+ * than a single object instance of this type may exist at any given time.
  *
  * @invariant The use of `libmongodbcapi_lib` objects from multiple threads is not threadsafe unless
  * all of the threads accessing a single `libmongodbcapi_lib` object are not destroying this object.
@@ -368,9 +365,9 @@ struct libmongodbcapi_init_params {
 /**
  * Initializes the mongodbcapi library, required before any other call.
  *
- * The Embedded MongoDB Library must be initialized before it can be used.  However, it is
+ * The Embedded MongoDB Library must be initialized before it can be used. However, it is
  * permissible to create and destroy `libmongodbcapi_status` objects without the library having been
- * initialized.  Initializing the library sets up internal state for all Embedded MongoDB Library
+ * initialized. Initializing the library sets up internal state for all Embedded MongoDB Library
  * operations, including creating embedded "server-like" instances and creating clients.
  *
  * @pre The specified `params` object must either be a valid `libmongodbcapi_lib_params` object (in
@@ -384,7 +381,7 @@ struct libmongodbcapi_init_params {
  * @pre No valid `libmongodbcapi_lib` must exist.
  *
  * @param params A pointer to libmongodbcapi_init_params containing library initialization
- * parameters.  A default configuration will be used if `params == NULL`.
+ * parameters. A default configuration will be used if `params == NULL`.
  *
  * @param status A pointer to a `libmongodbcapi_status` object which will not be modified unless
  * this function reports a failure.
@@ -394,7 +391,7 @@ struct libmongodbcapi_init_params {
  * @returns A pointer to a `libmongodbcapi_lib` object on success.
  * @returns `NULL` and modifies `status` on failure.
  *
- * @invariant This function is not thread safe.  It must be called and have completed before any
+ * @invariant This function is not thread safe. It must be called and have completed before any
  * other non-`limbongodbcapi_status` operations can be called on any thread.
  *
  * @note This function exhibits undefined behavior unless its preconditions are met.
@@ -408,9 +405,9 @@ libmongodbcapi_lib* libmongodbcapi_lib_init(const libmongodbcapi_init_params* pa
  * Tears down the state of the library, all databases must be closed before calling this.
  *
  * The Embedded MongoDB Library must be quiesced before the containg process can be safely
- * terminated.  Dataloss is not a risk; however, some database repair routines may be executed at
- * next initialization if the library is not properly quiesced.  It is permissible to create and
- * destroy `libmongodbcapi_status` objects after the library has been quiesced.  The library may be
+ * terminated. Dataloss is not a risk; however, some database repair routines may be executed at
+ * next initialization if the library is not properly quiesced. It is permissible to create and
+ * destroy `libmongodbcapi_status` objects after the library has been quiesced. The library may be
  * re-initialized with a potentially different configuration after it has been queisced.
  *
  * @pre All `libmongodbcapi_instance` objects associated with this library handle must be destroyed.
@@ -434,7 +431,7 @@ libmongodbcapi_lib* libmongodbcapi_lib_init(const libmongodbcapi_init_params* pa
  * @returns Returns `LIBMONGODB_CAPI_ERROR_EXCEPTION` and modifies `status` for errors that resulted
  * in an exception. Details can be retrived via `libmongodbcapi_process_get_status()`.
  *
- * @invariant This function is not thread safe.  It cannot be called concurrently with any other
+ * @invariant This function is not thread safe. It cannot be called concurrently with any other
  * non-`libmongodbcapi_status` operation.
  *
  * @note This function exhibits undefined behavior unless its preconditions are met.
@@ -447,14 +444,14 @@ int libmongodbcapi_lib_fini(libmongodbcapi_lib* lib, libmongodbcapi_status* stat
  * An object which represents an instance of an Embedded MongoDB Server.
  *
  * The Embedded MongoDB Library uses allocated objects of this type (`limbongodbcapi_instance`) to
- * indicate the present state of a single "server-like" MongoDB instance.  Some operations which the
- * library provides need access to this object.  Further a construction function and a destruction
- * function for these objects are also provided.  No more than a single object instance of this type
- * will exist at any given time.
+ * indicate the present state of a single "server-like" MongoDB instance. Some operations which the
+ * library provides need access to this object. Further a construction function and a destruction
+ * function for these objects are also provided. No more than a single object instance of this type
+ * may exist at any given time.
  *
  * @invariant The use of `libmongodbcapi_instance` objects from multiple threads is not threadsafe
  * unless all of the threads accessing a single `libmongodbcapi_instance` object are not destroying
- * this object.  If a single thread is passing a `libmongodbcapi_instance` to its destruction
+ * this object. If a single thread is passing a `libmongodbcapi_instance` to its destruction
  * function, then no other thread may access the `libmongodbcapi_instance` object.
  */
 typedef struct libmongodbcapi_instance libmongodbcapi_instance;
@@ -463,7 +460,7 @@ typedef struct libmongodbcapi_instance libmongodbcapi_instance;
  * Creates an embedded MongoDB instance and returns a handle with the service context.
  *
  * A `libmongodbcapi_instance` object which represents a single embedded "server-like" context is
- * created and returned by this function.  At present, only a single server-like instance is
+ * created and returned by this function. At present, only a single server-like instance is
  * supported; however, multiple concurrent "server-like" instances may be permissible in future
  * releases.
  *
@@ -494,9 +491,9 @@ typedef struct libmongodbcapi_instance libmongodbcapi_instance;
  * @note This function may return diagnosic errors for violations of its preconditions, but this
  * behavior is not guaranteed.
  */
-libmongodbcapi_instance* libmongodbcapi_instance_new(libmongodbcapi_lib* lib,
-                                                     const char* yaml_config,
-                                                     libmongodbcapi_status* status);
+libmongodbcapi_instance* libmongodbcapi_instance_create(libmongodbcapi_lib* lib,
+                                                        const char* yaml_config,
+                                                        libmongodbcapi_status* status);
 
 /**
  * Shuts down an embedded MongoDB instance.
@@ -524,8 +521,8 @@ libmongodbcapi_instance* libmongodbcapi_instance_new(libmongodbcapi_lib* lib,
  * `libmongodbcapi_client` objects still open attached to the `instance`.
  * @returns `LIBMONGODB_CAPI_ERROR_EXCEPTION`and modifies `status` for other unspecified errors.
  *
- * @invariant This function not threadsafe unless the specified `db` object is not passed
- * concurrently to any other function.  It is safe to destroy distinct `libmongodbcapi_instance`
+ * @invariant This function is not threadsafe unless the specified `db` object is not passed
+ * concurrently to any other function. It is safe to destroy distinct `libmongodbcapi_instance`
  * objects on distinct threads.
  *
  * @note This function exhibits undefined behavior unless its preconditions are met.
@@ -539,11 +536,11 @@ int libmongodbcapi_instance_destroy(libmongodbcapi_instance* instance,
  * An object which represents "client connection" to an Embedded MongoDB Server.
  *
  * A `libmongodbcapi_client` connection object is necessary to perform most database operations,
- * such as queries.  Some operations which the library provides need access to this object.  Further
- * a construction function and a destruction function for these objects are also provided.  Multiple
+ * such as queries. Some operations which the library provides need access to this object. Further
+ * a construction function and a destruction function for these objects are also provided. Multiple
  * object instances of this type may exist at any given time.
  *
- * @invariant The use of `libmongodbcapi_capi` objects from multiple threads is not threadsafe.
+ * @invariant The use of `libmongodbcapi_client` objects from multiple threads is not threadsafe.
  */
 typedef struct libmongodbcapi_client libmongodbcapi_client;
 
@@ -570,14 +567,14 @@ typedef struct libmongodbcapi_client libmongodbcapi_client;
  *
  * @invariant This function is completely threadsafe, as long as its preconditions are met.
  */
-libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_instance* instance,
-                                                 libmongodbcapi_status* status);
+libmongodbcapi_client* libmongodbcapi_client_create(libmongodbcapi_instance* instance,
+                                                    libmongodbcapi_status* status);
 
 /**
  * Destroys an Embedded MongoDB Client.
  *
- * A client must be destroyed before the owning db is destroyed.  Database clients must be destroyed
- * before the instance associated with them can be destroyed.  Further, any resources associated
+ * A client must be destroyed before the owning db is destroyed. Database clients must be destroyed
+ * before the instance associated with them can be destroyed. Further, any resources associated
  * with client requests will be relinquished after this call completes.
  *
  * @pre The specified `client` object must not be `NULL`.
@@ -596,8 +593,8 @@ libmongodbcapi_client* libmongodbcapi_client_new(libmongodbcapi_instance* instan
  * @returns `LIBMONGODB_CAPI_SUCCESS` on success.
  * @returns An error code and modifies the specified `status` object on failure.
  *
- * @invariant This function not threadsafe unless the specified `client` object is not passed
- * concurrently to any other function.  It is safe to destroy distinct `libmongodbcapi_client`
+ * @invariant This function is not threadsafe unless the specified `client` object is not passed
+ * concurrently to any other function. It is safe to destroy distinct `libmongodbcapi_client`
  * objects on distinct threads.
  *
  * @note This function exhibits undefined behavior unless its preconditions are met.

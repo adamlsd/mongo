@@ -1,6 +1,6 @@
 # -*- mode: python -*-
 Import("env")
-Import("get_option")
+Import("free_monitoring")
 
 env = env.Clone()
 
@@ -28,7 +28,7 @@ fmEnv.Library(
     ],
 )
 
-if get_option("enable-free-mon") == "on":
+if free_monitoring == "on":
     fmEnv.Library(
         target='free_mon_mongod',
         source=[
@@ -66,7 +66,7 @@ else:
     )
 
 
-env.CppUnitTest(
+fmEnv.CppUnitTest(
     target='free_mon_test',
     source=[
         'free_mon_controller_test.cpp',

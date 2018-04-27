@@ -88,13 +88,6 @@ std::string RefreshState::toString() const {
                          << lastRefreshedCollectionVersion.toString();
 }
 
-Status setPersistedRefreshFlags(OperationContext* opCtx, const NamespaceString& nss) {
-    // Set 'refreshing' to true.
-    BSONObj update = BSON(ShardCollectionType::refreshing() << true);
-    return updateShardCollectionsEntry(
-        opCtx, BSON(ShardCollectionType::ns() << nss.ns()), update, BSONObj(), false /*upsert*/);
-}
-
 Status unsetPersistedRefreshFlags(OperationContext* opCtx,
                                   const NamespaceString& nss,
                                   const ChunkVersion& refreshedVersion) {
@@ -149,11 +142,11 @@ StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCt
     try {
         DBDirectClient client(opCtx);
         std::unique_ptr<DBClientCursor> cursor =
-            client.query(ShardCollectionType::ConfigNS.ns(), fullQuery, 1);
+            client.query(NamespaceString::kShardConfigCollectionsNamespace.ns(), fullQuery, 1);
         if (!cursor) {
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "Failed to establish a cursor for reading "
-                                        << ShardCollectionType::ConfigNS.ns()
+                                        << NamespaceString::kShardConfigCollectionsNamespace.ns()
                                         << " from local storage");
         }
 
@@ -182,11 +175,11 @@ StatusWith<ShardDatabaseType> readShardDatabasesEntry(OperationContext* opCtx, S
     try {
         DBDirectClient client(opCtx);
         std::unique_ptr<DBClientCursor> cursor =
-            client.query(ShardDatabaseType::ConfigNS.ns(), fullQuery, 1);
+            client.query(NamespaceString::kShardConfigDatabasesNamespace.ns(), fullQuery, 1);
         if (!cursor) {
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "Failed to establish a cursor for reading "
-                                        << ShardDatabaseType::ConfigNS.ns()
+                                        << NamespaceString::kShardConfigDatabasesNamespace.ns()
                                         << " from local storage");
         }
 
@@ -218,7 +211,6 @@ Status updateShardCollectionsEntry(OperationContext* opCtx,
     if (upsert) {
         // If upserting, this should be an update from the config server that does not have shard
         // refresh / migration inc signal information.
-        invariant(!update.hasField(ShardCollectionType::refreshing()));
         invariant(!update.hasField(ShardCollectionType::lastRefreshedCollectionVersion()));
         invariant(inc.isEmpty());
     }
@@ -236,7 +228,7 @@ Status updateShardCollectionsEntry(OperationContext* opCtx,
         }
 
         auto commandResponse = client.runCommand([&] {
-            write_ops::Update updateOp(NamespaceString{ShardCollectionType::ConfigNS});
+            write_ops::Update updateOp(NamespaceString::kShardConfigCollectionsNamespace);
             updateOp.setUpdates({[&] {
                 write_ops::UpdateOpEntry entry;
                 entry.setQ(query);
@@ -279,7 +271,7 @@ Status updateShardDatabasesEntry(OperationContext* opCtx,
         }
 
         auto commandResponse = client.runCommand([&] {
-            write_ops::Update updateOp(NamespaceString{ShardDatabaseType::ConfigNS});
+            write_ops::Update updateOp(NamespaceString::kShardConfigDatabasesNamespace);
             updateOp.setUpdates({[&] {
                 write_ops::UpdateOpEntry entry;
                 entry.setQ(query);
@@ -415,8 +407,7 @@ Status dropChunksAndDeleteCollectionsEntry(OperationContext* opCtx, const Namesp
         DBDirectClient client(opCtx);
 
         auto deleteCommandResponse = client.runCommand([&] {
-            write_ops::Delete deleteOp(
-                NamespaceString{NamespaceString::kShardConfigCollectionsCollectionName});
+            write_ops::Delete deleteOp(NamespaceString::kShardConfigCollectionsNamespace);
             deleteOp.setDeletes({[&] {
                 write_ops::DeleteOpEntry entry;
                 entry.setQ(BSON(ShardCollectionType::ns << nss.ns()));
@@ -450,8 +441,7 @@ Status deleteDatabasesEntry(OperationContext* opCtx, StringData dbName) {
         DBDirectClient client(opCtx);
 
         auto deleteCommandResponse = client.runCommand([&] {
-            write_ops::Delete deleteOp(
-                NamespaceString{NamespaceString::kShardConfigDatabasesCollectionName});
+            write_ops::Delete deleteOp(NamespaceString::kShardConfigDatabasesNamespace);
             deleteOp.setDeletes({[&] {
                 write_ops::DeleteOpEntry entry;
                 entry.setQ(BSON(ShardDatabaseType::name << dbName.toString()));

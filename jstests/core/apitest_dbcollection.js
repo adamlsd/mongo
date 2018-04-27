@@ -3,8 +3,10 @@
  *
  * @tags: [
  *  requires_fastcount,
+ *  requires_collstats,
  *
- *  # indexDetails result is not correct with mobile storage engine
+ *  # indexDetails result is not correct with mobile storage engine.
+ *  # TODO SERVER-34579
  *  incompatible_with_embedded_todo_investigate,
  * ]
  */

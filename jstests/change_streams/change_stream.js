@@ -6,14 +6,26 @@
     "use strict";
 
     load("jstests/libs/collection_drop_recreate.js");  // For assert[Drop|Create]Collection.
+    load("jstests/libs/fixture_helpers.js");           // For FixtureHelpers.
     load("jstests/libs/change_stream_util.js");        // For ChangeStreamTest and
                                                        // assert[Valid|Invalid]ChangeStreamNss.
 
-    const isMongos = db.runCommand({isdbgrid: 1}).isdbgrid;
+    const isMongos = FixtureHelpers.isMongos(db);
 
     // Drop and recreate the collections to be used in this set of tests.
     assertDropAndRecreateCollection(db, "t1");
     assertDropAndRecreateCollection(db, "t2");
+
+    // Test that $changeStream only accepts an object as its argument.
+    function checkArgFails(arg) {
+        assert.commandFailedWithCode(
+            db.runCommand({aggregate: "t1", pipeline: [{$changeStream: arg}], cursor: {}}), 50808);
+    }
+
+    checkArgFails(1);
+    checkArgFails("invalid");
+    checkArgFails(false);
+    checkArgFails([1, 2, "invalid", {x: 1}]);
 
     // Test that a change stream cannot be opened on collections in the "admin", "config", or
     // "local" databases.
@@ -149,7 +161,7 @@
     // Should still see the previous change from t2, shouldn't see anything about 'dropping'.
 
     // Test collection renaming. Sharded collections cannot be renamed.
-    if (!db.t2.stats().sharded) {
+    if (!FixtureHelpers.isSharded(db.t2)) {
         jsTestLog("Testing rename");
         assertDropCollection(db, "t3");
         t2cursor = cst.startWatchingChanges({pipeline: [{$changeStream: {}}], collection: db.t2});

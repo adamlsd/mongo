@@ -176,11 +176,15 @@ Status RollbackImpl::runRollback(OperationContext* opCtx) {
     }
     _rollbackStats.rollbackId = _replicationProcess->getRollbackID();
 
-    // Write a rollback file for each namespace that has documents that would be deleted by
-    // rollback.
-    status = _writeRollbackFiles(opCtx);
-    if (!status.isOK()) {
-        return status;
+    if (shouldCreateDataFiles()) {
+        // Write a rollback file for each namespace that has documents that would be deleted by
+        // rollback.
+        status = _writeRollbackFiles(opCtx);
+        if (!status.isOK()) {
+            return status;
+        }
+    } else {
+        log() << "Not writing rollback files. 'createRollbackDataFiles' set to false.";
     }
 
     // Recover to the stable timestamp.
@@ -693,7 +697,7 @@ Timestamp RollbackImpl::_findTruncateTimestamp(
     // Check that we've found the right document for the common point.
     invariant(commonPointRecord);
     auto commonPointTime = OpTime::parseFromOplogEntry(commonPointRecord->data.releaseToBson());
-    invariantOK(commonPointTime.getStatus());
+    invariant(commonPointTime.getStatus());
     invariant(commonPointTime.getValue() == commonPointOpTime,
               str::stream() << "Common point: " << commonPointOpTime.toString()
                             << ", record found: "
@@ -703,7 +707,7 @@ Timestamp RollbackImpl::_findTruncateTimestamp(
     auto truncatePointRecord = oplogCursor->next();
     invariant(truncatePointRecord);
     auto truncatePointTime = OpTime::parseFromOplogEntry(truncatePointRecord->data.releaseToBson());
-    invariantOK(truncatePointTime.getStatus());
+    invariant(truncatePointTime.getStatus());
 
     log() << "Marking to truncate all oplog entries with timestamps greater than or equal to "
           << truncatePointTime.getValue();

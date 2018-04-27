@@ -454,7 +454,7 @@ Status DatabaseImpl::dropCollection(OperationContext* opCtx,
                                   "turn off profiling before dropping system.profile collection");
             } else if (!(nss.isSystemDotViews() || nss.isHealthlog() ||
                          nss == SessionsCollection::kSessionsNamespaceString ||
-                         nss.ns() == NamespaceString::kSystemKeysCollectionName)) {
+                         nss == NamespaceString::kSystemKeysNamespace)) {
                 return Status(ErrorCodes::IllegalOperation,
                               str::stream() << "can't drop system collection " << fullns);
             }
@@ -815,13 +815,9 @@ Collection* DatabaseImpl::createCollection(OperationContext* opCtx,
                 optionsWithUUID.autoIndexId == CollectionOptions::DEFAULT) {
                 // createCollection() may be called before the in-memory fCV parameter is
                 // initialized, so use the unsafe fCV getter here.
-                const auto featureCompatibilityVersion =
-                    serverGlobalParams.featureCompatibility.getVersionUnsafe();
                 IndexCatalog* ic = collection->getIndexCatalog();
                 fullIdIndexSpec = uassertStatusOK(ic->createIndexOnEmptyCollection(
-                    opCtx,
-                    !idIndex.isEmpty() ? idIndex
-                                       : ic->getDefaultIdIndexSpec(featureCompatibilityVersion)));
+                    opCtx, !idIndex.isEmpty() ? idIndex : ic->getDefaultIdIndexSpec()));
             } else {
                 // autoIndexId: false is only allowed on unreplicated collections.
                 uassert(50001,

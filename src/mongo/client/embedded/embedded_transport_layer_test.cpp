@@ -56,7 +56,7 @@ class MongodbEmbeddedTransportLayerTest : public mongo::unittest::Test {
 protected:
     void setUp() {
         if (!globalTempDir) {
-            globalTempDir = mongo::stdx::make_unique<mongo::unittest::TempDir>("embedded_mongo");
+            globalTempDir = std::make_unique<mongo::unittest::TempDir>("embedded_mongo");
         }
 
         YAML::Emitter yaml;
@@ -70,7 +70,7 @@ protected:
 
         yaml << YAML::EndMap;
 
-        db_handle = libmongodbcapi_db_new(yaml.c_str());
+        db_handle = libmongodbcapi_instance_create(global_lib_handle, yaml.c_str(), nullptr);
 
         cd_client = embedded_mongoc_client_new(db_handle);
         mongoc_client_set_error_api(cd_client, 2);
@@ -79,7 +79,7 @@ protected:
     }
 
     void tearDown() {
-        mongoc_collection_drop(cd_collection, NULL);
+        mongoc_collection_drop(cd_collection, nullptr);
         if (cd_collection) {
             mongoc_collection_destroy(cd_collection);
         }
@@ -92,10 +92,10 @@ protected:
             mongoc_client_destroy(cd_client);
         }
 
-        libmongodbcapi_db_destroy(db_handle);
+        libmongodbcapi_instance_destroy(db_handle, nullptr);
     }
 
-    libmongodbcapi_db* getDBHandle() {
+    libmongodbcapi_instance* getDBHandle() {
         return db_handle;
     }
 
@@ -111,7 +111,7 @@ protected:
 
 
 private:
-    libmongodbcapi_db* db_handle;
+    libmongodbcapi_instance* db_handle;
     mongoc_database_t* cd_db;
     mongoc_client_t* cd_client;
     mongoc_collection_t* cd_collection;
@@ -165,6 +165,15 @@ TEST_F(MongodbEmbeddedTransportLayerTest, InsertAndDelete) {
     ASSERT(0 == mongoc_collection_count(collection, MONGOC_QUERY_NONE, nullptr, 0, 0, NULL, &err));
     bson_destroy(doc);
 }
+
+struct StatusDestroy {
+    void operator()(libmongodbcapi_status* const ptr) {
+        if (!ptr) {
+            libmongodbcapi_status_destroy(ptr);
+        }
+    }
+};
+using StatusPtr = std::unique_ptr<libmongodbcapi_status, StatusDestroy>;
 }  // namespace
 
 // Define main function as an entry to these tests.
@@ -195,18 +204,19 @@ int main(int argc, char** argv, char** envp) {
     ::mongo::serverGlobalParams.noUnixSocket = true;
     ::mongo::unittest::setupTestLogger();
 
+    StatusPtr status(libmongodbcapi_status_create());
     mongoc_init();
 
-    global_lib_handle = libmongodbcapi_init(nullptr);
+    global_lib_handle = libmongodbcapi_lib_init(nullptr, status.get());
     massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_what(libmongodbcapi_process_get_status()),
+            libmongodbcapi_status_get_explanation(status.get()),
             global_lib_handle != nullptr);
 
     auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
     massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_what(libmongodbcapi_process_get_status()),
-            libmongodbcapi_fini(global_lib_handle) == LIBMONGODB_CAPI_SUCCESS);
+            libmongodbcapi_status_get_explanation(status.get()),
+            libmongodbcapi_lib_fini(global_lib_handle, status.get()) == LIBMONGODB_CAPI_SUCCESS);
 
     mongoc_cleanup();
 

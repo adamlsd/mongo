@@ -3603,6 +3603,17 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: change_streams_mongos_sessions_passthrough
+  depends_on:
+  - name: change_streams
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=change_streams_mongos_sessions_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: change_streams_mongos_passthrough
   depends_on:
   - name: change_streams
@@ -4226,14 +4237,20 @@ tasks:
       resmoke_args: --suites=concurrency_replication --storageEngine=wiredTiger
 
 - <<: *task_template
-  name: concurrency_sharded
-  exec_timeout_secs: 43200 # 12 hour timeout for the task overall
+  name: concurrency_sharded_replication
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
-      resmoke_args: --suites=concurrency_sharded --storageEngine=wiredTiger
+      resmoke_args: --suites=concurrency_sharded_replication --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: concurrency_sharded_replication_with_balancer
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_sharded_replication_with_balancer --storageEngine=wiredTiger
 
 - <<: *task_template
   name: concurrency_sharded_causal_consistency
@@ -6523,6 +6540,7 @@ buildvariants:
   - name: auth
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -6570,7 +6588,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: read_concern_linearizable_passthrough
   - name: read_concern_majority_passthrough
@@ -6622,7 +6641,8 @@ buildvariants:
   - name: parallel
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
 
 - &linux-64-debug-template
@@ -6711,6 +6731,7 @@ buildvariants:
   - name: causally_consistent_jscore_passthrough_auth
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -6720,7 +6741,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -6969,7 +6991,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7082,7 +7105,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7170,7 +7194,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - ubuntu1604-arm64-small
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - ubuntu1604-arm64-small
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - ubuntu1604-arm64-small
   - name: concurrency_simultaneous
@@ -7290,7 +7317,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7351,7 +7379,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -7552,7 +7581,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7724,7 +7754,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7792,6 +7823,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -7826,7 +7858,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - windows-64-vs2015-large
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - windows-64-vs2015-large
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - windows-64-vs2015-large
   - name: concurrency_sharded_causal_consistency
@@ -8390,7 +8425,8 @@ buildvariants:
     distros:
     - windows-64-vs2015-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: jsCore
   - name: jsCore_auth
@@ -8458,7 +8494,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_wiredtiger
@@ -8602,6 +8639,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -8611,7 +8649,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -9224,6 +9263,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -9236,7 +9276,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -9759,6 +9800,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -9771,7 +9813,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -9995,7 +10038,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -10084,7 +10128,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - rhel70
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - rhel70
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel70
   - name: concurrency_simultaneous
@@ -10153,7 +10200,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10259,7 +10307,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10362,7 +10411,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10681,7 +10731,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10809,7 +10860,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11007,7 +11059,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11094,7 +11147,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11240,7 +11294,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11305,6 +11360,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -11316,7 +11372,8 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -11640,7 +11697,8 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: failpoints
@@ -11723,7 +11781,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: failpoints
@@ -11805,7 +11864,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - rhel72-zseries-build
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - rhel72-zseries-build
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel72-zseries-build
   - name: concurrency_simultaneous
@@ -11930,6 +11992,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -11942,7 +12005,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -12102,6 +12166,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -12114,7 +12179,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -12257,7 +12323,8 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_wiredtiger
@@ -12392,7 +12459,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_simultaneous
@@ -12511,7 +12579,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - windows-64-vs2015-large
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - windows-64-vs2015-large
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - windows-64-vs2015-large
   - name: concurrency_sharded_causal_consistency
@@ -12619,7 +12690,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_simultaneous
@@ -12705,7 +12777,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_mmapv1

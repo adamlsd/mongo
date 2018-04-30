@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2008-2014 MongoDB Inc.
+ *    Copyright (C) 2018 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,19 +26,11 @@
  *    it in the license file.
  */
 
-#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kCommand
-
-#include "mongo/platform/basic.h"
-
-#include "mongo/base/init.h"
-#include "mongo/db/auth/authz_manager_external_state_d.h"
-#include "mongo/stdx/memory.h"
+#include "mongo/db/auth/authz_session_external_state_mock.h"
 
 namespace mongo {
-
-MONGO_REGISTER_SHIM(AuthzManagerExternalState::create)
-()->std::unique_ptr<AuthzManagerExternalState> {
-    return std::make_unique<AuthzManagerExternalStateMongod>();
+MONGO_REGISTER_SHIM(AuthzSessionExternalState::create)
+(AuthorizationManager* const authzManager)->std::unique_ptr<AuthzSessionExternalState> {
+    return std::make_unique<AuthzSessionExternalStateMock>(authzManager);
 }
-
 }  // namespace mongo

@@ -340,6 +340,13 @@ public:
     // called.
     virtual bool isImpersonating() const = 0;
 
+    // Returns a status encoding whether the current session in the specified `opCtx` has privilege
+    // to access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`,
+    // when the session is accessible.  Returns a `mongo::Status` with information regarding the
+    // nature of session inaccessibility when the session is not accessible.
+    virtual Status checkCursorSessionPrivilege(
+        OperationContext* const opCtx, boost::optional<LogicalSessionId> cursorSessionId) = 0;
+
 protected:
     virtual std::tuple<std::vector<UserName>*, std::vector<RoleName>*> _getImpersonations() = 0;
 };
@@ -348,6 +355,13 @@ protected:
 // access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`, when the
 // session is accessible.  Returns a `mongo::Status` with information regarding the nature of
 // session inaccessibility when the session is not accessible.
-Status checkCursorSessionPrivilege(OperationContext* const opCtx,
-                                   const boost::optional<LogicalSessionId> cursorSessionId);
+inline Status checkCursorSessionPrivilege(OperationContext* const opCtx,
+                                          const boost::optional<LogicalSessionId> cursorSessionId) {
+    if (!AuthorizationSession::exists(opCtx->getClient())) {
+        return Status::OK();
+    }
+    auto* const authSession = AuthorizationSession::get(opCtx->getClient());
+    return authSession->checkCursorSessionPrivilege(opCtx, cursorSessionId);
+}
+
 }  // namespace mongo

@@ -265,9 +265,9 @@ public:
     // Clears the data for impersonated users.
     void clearImpersonatedUserData() override;
 
-    // Returns true if the session and 'opClient's AuthorizationSession share an
-    // authenticated user. If either object has impersonated users,
-    // those users will be considered as 'authenticated' for the purpose of this check.
+    // Returns true if the session and 'opClient's AuthorizationSession share an authenticated user.
+    // If either object has impersonated users, those users will be considered as 'authenticated'
+    // for the purpose of this check.
     //
     // The existence of 'opClient' must be guaranteed through locks taken by the caller.
     bool isCoauthorizedWithClient(Client* opClient) override;
@@ -281,6 +281,13 @@ public:
     // setImpersonatedUserData is called and cleared when clearImpersonatedUserData is
     // called.
     bool isImpersonating() const override;
+
+    // Returns a status encoding whether the current session in the specified `opCtx` has privilege
+    // to access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`,
+    // when the session is accessible.  Returns a `mongo::Status` with information regarding the
+    // nature of session inaccessibility when the session is not accessible.
+    Status checkCursorSessionPrivilege(OperationContext* const opCtx,
+                                       boost::optional<LogicalSessionId> cursorSessionId) override;
 
 protected:
     // Builds a vector of all roles held by users who are authenticated on this connection. The
@@ -319,11 +326,4 @@ private:
     std::vector<RoleName> _impersonatedRoleNames;
     bool _impersonationFlag;
 };
-
-// Returns a status encoding whether the current session in the specified `opCtx` has privilege to
-// access a cursor in the specified `cursorSessionId` parameter.  Returns `Status::OK()`, when the
-// session is accessible.  Returns a `mongo::Status` with information regarding the nature of
-// session inaccessibility when the session is not accessible.
-//Status checkCursorSessionPrivilege(OperationContext* const opCtx,
- //                                  const boost::optional<LogicalSessionId> cursorSessionId);
 }  // namespace mongo

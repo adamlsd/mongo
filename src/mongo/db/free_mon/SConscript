@@ -60,7 +60,7 @@ else:
             'free_mon',
             '$BUILD_DIR/mongo/base',
             '$BUILD_DIR/mongo/db/commands',
-            '$BUILD_DIR/mongo/db/auth/authcore',
+            '$BUILD_DIR/mongo/db/auth/auth',
             '$BUILD_DIR/mongo/db/auth/authprivilege',
         ],
     )

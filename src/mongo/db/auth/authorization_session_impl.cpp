@@ -1004,26 +1004,19 @@ bool AuthorizationSessionImpl::isImpersonating() const {
     return _impersonationFlag;
 }
 
-}  // namespace mongo
-
-auto mongo::checkCursorSessionPrivilege(OperationContext* const opCtx,
-                                        const boost::optional<LogicalSessionId> cursorSessionId)
+auto AuthorizationSessionImpl::checkCursorSessionPrivilege(
+    OperationContext* const opCtx, const boost::optional<LogicalSessionId> cursorSessionId)
     -> Status {
-    if (!AuthorizationSession::exists(opCtx->getClient())) {
-        return Status::OK();
-    }
-    auto* const authSession = AuthorizationSession::get(opCtx->getClient());
-
-    auto nobodyIsLoggedIn = [authSession] {
+    auto nobodyIsLoggedIn = [authSession = this] {
         return !authSession->getAuthenticatedUserNames().more();
     };
 
-    auto authHasImpersonatePrivilege = [authSession] {
+    auto authHasImpersonatePrivilege = [authSession = this] {
         return authSession->isAuthorizedForPrivilege(
             Privilege(ResourcePattern::forClusterResource(), ActionType::impersonate));
     };
 
-    auto authIsOn = [authSession] {
+    auto authIsOn = [authSession = this] {
         return authSession->getAuthorizationManager().isAuthEnabled();
     };
 
@@ -1061,3 +1054,5 @@ auto mongo::checkCursorSessionPrivilege(OperationContext* const opCtx,
 
     return Status::OK();
 }
+
+}  // namespace mongo

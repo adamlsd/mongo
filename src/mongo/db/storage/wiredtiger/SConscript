@@ -167,7 +167,7 @@ if wiredtiger:
     )
 
     # All of these tests fail to compile under undefined behavior
-    # sanitizer due to unexpressed circular dependency edges. In particualr
+    # sanitizer due to unexpressed circular dependency edges. In particular
     # they all need a definition from the 'catalog'.
     if not using_ubsan:
         wtEnv.CppUnitTest(

@@ -36,7 +36,8 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/auth',
+        '$BUILD_DIR/mongo/db/auth/authprivilege',
         '$BUILD_DIR/mongo/db/stats/counters',
         '$BUILD_DIR/mongo/transport/message_compressor',
         '$BUILD_DIR/mongo/transport/service_executor',
@@ -52,7 +53,7 @@ env.Library(
         "write_commands/write_commands_common.cpp",
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/auth',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/auth/authprivilege',
         '$BUILD_DIR/mongo/db/commands',
@@ -86,7 +87,7 @@ env.Library(
         "rename_collection_common.cpp",
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/auth',
         '$BUILD_DIR/mongo/db/auth/authprivilege',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
@@ -349,7 +350,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands',
     ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/auth/authcore',
+        '$BUILD_DIR/mongo/db/auth/auth',
     ],
 )
 

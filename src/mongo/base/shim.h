@@ -31,6 +31,7 @@
 #include <functional>
 
 #include "mongo/base/init.h"
+#include "mongo/config.h"
 
 /**
  * The `SHIM` mechanism allows for the creation of "weak-symbol-like" functions which can have their

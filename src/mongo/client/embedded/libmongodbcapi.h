@@ -149,7 +149,7 @@ void libmongodbcapi_status_destroy(libmongodbcapi_status* status);
  * The error codes reported by `libmongodbcapi` functions will be given the symbolic names as mapped
  * by this enum.
  *
- * When a `limbongdbcapi` function fails (and it has been documented report errors) it will report
+ * When a `libmongdbcapi` function fails (and it has been documented report errors) it will report
  * that error in the form of an `int` status code. That status code will always be returned as the
  * type `int`; however, the values in this enum can be used to classify the failure.
  */
@@ -374,9 +374,9 @@ struct libmongodbcapi_init_params {
  * a valid state) or `NULL`.
  * @pre The specified `status` object must either be a valid `libmongodbcapi_status` object or
  * `NULL`.
- * @pre Either `limbongodbcapi_fini` must have never been called in this process, or it was called
+ * @pre Either `libmongodbcapi_fini` must have never been called in this process, or it was called
  * and returned success and `libmongodbcapi_lib_init` was not called after this.
- * @pre Either `limbongodbcapi_init` must have never been called in this process, or it was called
+ * @pre Either `libmongodbcapi_init` must have never been called in this process, or it was called
  * and then the embedded library was terminated by a successful call to `libmongodbcapi_lib_fini`.
  * @pre No valid `libmongodbcapi_lib` must exist.
  *
@@ -392,7 +392,7 @@ struct libmongodbcapi_init_params {
  * @returns `NULL` and modifies `status` on failure.
  *
  * @invariant This function is not thread safe. It must be called and have completed before any
- * other non-`limbongodbcapi_status` operations can be called on any thread.
+ * other non-`libmongodbcapi_status` operations can be called on any thread.
  *
  * @note This function exhibits undefined behavior unless its preconditions are met.
  * @note This function may return diagnosic errors for violations of its preconditions, but this
@@ -443,7 +443,7 @@ int libmongodbcapi_lib_fini(libmongodbcapi_lib* lib, libmongodbcapi_status* stat
 /**
  * An object which represents an instance of an Embedded MongoDB Server.
  *
- * The Embedded MongoDB Library uses allocated objects of this type (`limbongodbcapi_instance`) to
+ * The Embedded MongoDB Library uses allocated objects of this type (`libmongodbcapi_instance`) to
  * indicate the present state of a single "server-like" MongoDB instance. Some operations which the
  * library provides need access to this object. Further a construction function and a destruction
  * function for these objects are also provided. No more than a single object instance of this type

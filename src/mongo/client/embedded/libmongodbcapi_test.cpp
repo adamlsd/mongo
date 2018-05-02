@@ -119,10 +119,10 @@ protected:
         params.yaml_config = yaml.c_str();
 
         lib = libmongodbcapi_lib_init(&params, status);
-        ASSERT(lib != nullptr);
+        ASSERT(lib != nullptr) << libmongodbcapi_status_get_explanation( status );
 
         db = libmongodbcapi_instance_create(lib, yaml.c_str(), status);
-        ASSERT(db != nullptr);
+        ASSERT(db != nullptr) << libmongodbcapi_status_get_explanation( status );
     }
 
     void tearDown() {
@@ -603,19 +603,17 @@ int main(const int argc, const char* const* const argv) {
         std::cerr << "libmongodbcapi_init() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
                   << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
-        return EXIT_FAILURE;
     }
-
-    ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
     if (libmongodbcapi_lib_fini(lib, nullptr) != LIBMONGODB_CAPI_SUCCESS) {
         std::cerr << "libmongodbcapi_fini() failed with "
                   << libmongodbcapi_status_get_error(status.get()) << ": "
                   << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
-        return EXIT_FAILURE;
     }
 
-    ASSERT(receivedCallback);
+    if(!receivedCallback){ std::cerr << "Did not get a log callback." << std::endl; }
+
+    ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
     globalTempDir.reset();
 }

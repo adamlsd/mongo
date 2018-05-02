@@ -51,35 +51,36 @@
 
 struct libmongodbcapi_status {
     libmongodbcapi_status() noexcept = default;
-    libmongodbcapi_status(const int e, const int ec, std::string w)
+    libmongodbcapi_status(const libmongodbcapi_error e, const int ec, std::string w)
         : error(e), exception_code(ec), what(std::move(w)) {}
-
-    int error = LIBMONGODB_CAPI_SUCCESS;
-    int exception_code = 0;
-    std::string what;
 
     void clean() noexcept {
         error = LIBMONGODB_CAPI_SUCCESS;
     }
+
+    libmongodbcapi_error error = LIBMONGODB_CAPI_SUCCESS;
+    int exception_code = 0;
+    std::string what;
 };
 
 namespace mongo {
 namespace {
 class MobileException : public std::exception {
-private:
-    std::string _mesg;
-    int _code;
-
 public:
-    explicit MobileException(const int code, std::string m) : _mesg(std::move(m)), _code(code) {}
+    explicit MobileException(const libmongodbcapi_error code, std::string m)
+        : _mesg(std::move(m)), _code(code) {}
 
-    virtual int mobileCode() const noexcept {
+    libmongodbcapi_error mobileCode() const noexcept {
         return this->_code;
     }
 
     const char* what() const noexcept final {
         return this->_mesg.c_str();
     }
+
+private:
+    std::string _mesg;
+    libmongodbcapi_error _code;
 };
 
 libmongodbcapi_status translateException() try { throw; } catch (const MobileException& ex) {
@@ -92,12 +93,16 @@ libmongodbcapi_status translateException() try { throw; } catch (const MobileExc
     return {LIBMONGODB_CAPI_ERROR_ENOMEM, mongo::ErrorCodes::InternalError, ex.what()};
 } catch (const std::exception& ex) {
     return {LIBMONGODB_CAPI_ERROR_EXCEPTION, mongo::ErrorCodes::InternalError, ex.what()};
+} catch (...) {
+    return {LIBMONGODB_CAPI_ERROR_UNKNOWN,
+            mongo::ErrorCodes::InternalError,
+            "Unknown error encountered in performing requested libmongodbcapi operation"};
 }
 
 std::nullptr_t handleException(libmongodbcapi_status& status) noexcept {
     try {
         status = translateException();
-    } catch (const std::exception& ex) {
+    } catch (...) {
         status.error = LIBMONGODB_CAPI_ERROR_IN_REPORTING_ERROR;
 
         try {
@@ -125,15 +130,17 @@ struct libmongodbcapi_lib {
     ~libmongodbcapi_lib() {
         invariant(this->databaseCount == 0);
 
-        using mongo::logger::globalLogDomain;
-        globalLogDomain()->detachAppender(this->logCallbackHandle);
-        this->logCallbackHandle.reset();
+        if (this->logCallbackHandle) {
+            using mongo::logger::globalLogDomain;
+            globalLogDomain()->detachAppender(this->logCallbackHandle);
+            this->logCallbackHandle.reset();
+        }
     }
-
-    libmongodbcapi_lib() = default;
 
     libmongodbcapi_lib(const libmongodbcapi_lib&) = delete;
     void operator=(const libmongodbcapi_lib) = delete;
+
+    libmongodbcapi_lib() = default;
 
     std::atomic<int> databaseCount = {};
 
@@ -156,12 +163,15 @@ using EmbeddedServiceContextPtr = std::unique_ptr<mongo::ServiceContext, Service
 
 struct libmongodbcapi_instance {
     ~libmongodbcapi_instance() {
-        --this->parent_lib->databaseCount;
         invariant(this->clientCount == 0);
+        --this->parentLib->databaseCount;
     }
 
+    libmongodbcapi_instance(const libmongodbcapi_instance&) = delete;
+    libmongodbcapi_instance& operator=(const libmongodbcapi_instance&) = delete;
+
     explicit libmongodbcapi_instance(libmongodbcapi_lib* const p, const char* const yaml_config)
-        : parent_lib(p),
+        : parentLib(p),
           serviceContext(::mongo::embedded::initialize(yaml_config)),
           // creating mock transport layer to be able to create sessions
           transportLayer(std::make_unique<mongo::transport::TransportLayerMock>()) {
@@ -171,13 +181,10 @@ struct libmongodbcapi_instance {
                 "The MongoDB Embedded Library Failed to initialize the Service Context"};
         }
 
-        ++this->parent_lib->databaseCount;
+        ++this->parentLib->databaseCount;
     }
 
-    libmongodbcapi_instance(const libmongodbcapi_instance&) = delete;
-    libmongodbcapi_instance& operator=(const libmongodbcapi_instance&) = delete;
-
-    libmongodbcapi_lib* parent_lib;
+    libmongodbcapi_lib* parentLib;
     std::atomic<int> clientCount = {};
 
     mongo::EmbeddedServiceContextPtr serviceContext;
@@ -232,16 +239,16 @@ public:
 
 thread_local bool ReentrancyGuard::inLibrary = false;
 
-void register_log_callback(libmongodbcapi_lib* const lib,
-                           const libmongodbcapi_log_callback log_callback,
-                           void* const log_user_data) {
+void registerLogCallback(libmongodbcapi_lib* const lib,
+                         const libmongodbcapi_log_callback logCallback,
+                         void* const logUserData) {
     using logger::globalLogDomain;
     using logger::MessageEventEphemeral;
     using logger::MessageEventUnadornedEncoder;
 
     lib->logCallbackHandle = globalLogDomain()->attachAppender(
         std::make_unique<embedded::EmbeddedLogAppender<MessageEventEphemeral>>(
-            log_callback, log_user_data, std::make_unique<MessageEventUnadornedEncoder>()));
+            logCallback, logUserData, std::make_unique<MessageEventUnadornedEncoder>()));
 }
 
 libmongodbcapi_lib* capi_lib_init(libmongodbcapi_init_params const* params,
@@ -254,7 +261,7 @@ libmongodbcapi_lib* capi_lib_init(libmongodbcapi_init_params const* params,
 
     auto lib = std::make_unique<libmongodbcapi_lib>();
 
-    // TODO(adam.martin): Fold all of thislog initialization into the ctor of lib.
+    // TODO(adam.martin): Fold all of this log initialization into the ctor of lib.
     if (params) {
         using logger::globalLogManager;
         // The standard console log appender may or may not be installed here, depending if this is
@@ -268,7 +275,7 @@ libmongodbcapi_lib* capi_lib_init(libmongodbcapi_init_params const* params,
         }
 
         if ((params->log_flags & LIBMONGODB_CAPI_LOG_CALLBACK) && params->log_callback) {
-            register_log_callback(lib.get(), params->log_callback, params->log_user_data);
+            registerLogCallback(lib.get(), params->log_callback, params->log_user_data);
         }
     }
 
@@ -404,7 +411,7 @@ void client_destroy(libmongodbcapi_client* const client, libmongodbcapi_status& 
     if (!client) {
         throw MobileException{
             LIBMONGODB_CAPI_ERROR_INVALID_CLIENT_HANDLE,
-            "Cannot close a `NULL` pointer referencing a MongoDB Embedded Database Client"};
+            "Cannot destroy a `NULL` pointer referencing a MongoDB Embedded Database Client"};
     }
 
     delete client;

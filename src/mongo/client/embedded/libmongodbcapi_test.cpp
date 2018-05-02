@@ -139,7 +139,7 @@ protected:
 
     MongoDBCAPIClientPtr createClient() const {
         MongoDBCAPIClientPtr client(libmongodbcapi_client_create(db, status));
-        ASSERT_NOT_EQUAL(client, nullptr) << libmongodbcapi_status_get_explanation(status);
+        ASSERT_NE(client, nullptr) << libmongodbcapi_status_get_explanation(status);
         return client;
     }
 

@@ -291,7 +291,6 @@ env.Library(
         "db/db.cpp",
     ],
     LIBDEPS_PRIVATE=[
-        'db/auth/authmongod',
         'db/catalog/health_log',
         'db/commands/mongod',
         'db/commands/mongod_fcv',
@@ -358,6 +357,7 @@ mongod = env.Program(
     LIBDEPS=[
         'base',
         'mongodmain',
+        '$BUILD_DIR/mongo/db/auth/authmongod',
     ],
     INSTALL_ALIAS=[
         'core',

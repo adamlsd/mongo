@@ -564,33 +564,43 @@ auto enterCXX(libmongodbcapi_status* const statusPtr, Callable&& c) noexcept
 extern "C" {
 libmongodbcapi_lib* libmongodbcapi_lib_init(const libmongodbcapi_init_params* const params,
                                             libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::capi_lib_init(params, status); });
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
+        return mongo::capi_lib_init(params, status);
+    });
 }
 
 int libmongodbcapi_lib_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::capi_lib_fini(lib, status); });
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
+        return mongo::capi_lib_fini(lib, status);
+    });
 }
 
 libmongodbcapi_instance* libmongodbcapi_instance_create(libmongodbcapi_lib* lib,
                                                         const char* const yaml_config,
                                                         libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr,
-                    [&](auto& status) { return mongo::instance_new(lib, yaml_config, status); });
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
+        return mongo::instance_new(lib, yaml_config, status);
+    });
 }
 
 int libmongodbcapi_instance_destroy(libmongodbcapi_instance* const db,
                                     libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::instance_destroy(db, status); });
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
+        return mongo::instance_destroy(db, status);
+    });
 }
 
 libmongodbcapi_client* libmongodbcapi_client_create(libmongodbcapi_instance* const db,
                                                     libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::client_new(db, status); });
+    return enterCXX(statusPtr,
+                    [&](libmongodbcapi_status& status) { return mongo::client_new(db, status); });
 }
 
 int libmongodbcapi_client_destroy(libmongodbcapi_client* const client,
                                   libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) { return mongo::client_destroy(client, status); });
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
+        return mongo::client_destroy(client, status);
+    });
 }
 
 int libmongodbcapi_client_invoke(libmongodbcapi_client* const client,
@@ -599,7 +609,7 @@ int libmongodbcapi_client_invoke(libmongodbcapi_client* const client,
                                  void** const output,
                                  size_t* const output_size,
                                  libmongodbcapi_status* const statusPtr) {
-    return enterCXX(statusPtr, [&](auto& status) {
+    return enterCXX(statusPtr, [&](libmongodbcapi_status& status) {
         return mongo::client_wire_protocol_rpc(
             client, input, input_size, output, output_size, status);
     });

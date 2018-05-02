@@ -371,6 +371,21 @@ tasks:
         # Disabling --ycsb-throughput-analysis until BF-7153 fixed
         # script_flags: --ycsb-throughput-analysis reports
 
+- name: industry_benchmarks_secondary_reads_WT
+  depends_on:
+    - name: compile_proxy
+  priority: 5
+  commands:
+    - func: "prepare environment"
+      vars:
+        storageEngine: "wiredTiger"
+        test: "ycsb-secondary-reads"
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+      vars:
+        script_flags: --ycsb-throughput-analysis reports
+
 - name: industry_benchmarks_MMAPv1
   priority: 5
   depends_on:
@@ -565,6 +580,20 @@ tasks:
       vars:
         storageEngine: "wiredTiger"
         test: "snapshot_reads"
+        authentication: disabled
+    - func: "deploy cluster"
+    - func: "run test"
+    - func: "analyze"
+
+- name: secondary_reads_WT
+  priority: 5
+  depends_on:
+    - name: compile_proxy
+  commands:
+    - func: "prepare environment"
+      vars:
+        storageEngine: "wiredTiger"
+        test: "secondary_reads"
         authentication: disabled
     - func: "deploy cluster"
     - func: "run test"
@@ -1035,6 +1064,7 @@ buildvariants:
       distros:
         - rhel70
     - name: industry_benchmarks_WT
+    - name: industry_benchmarks_secondary_reads_WT
     - name: crud_workloads_WT
     - name: mixed_workloads_WT
     - name: misc_workloads_WT
@@ -1059,6 +1089,7 @@ buildvariants:
     - name: change_streams_throughput
     - name: change_streams_latency
     - name: snapshot_reads_WT
+    - name: secondary_reads_WT
 
 - name: linux-3-node-replSet-initialsync
   display_name: Linux 3-Node ReplSet Initial Sync

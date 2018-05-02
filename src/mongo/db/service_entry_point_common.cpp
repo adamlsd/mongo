@@ -34,6 +34,7 @@
 
 #include "mongo/base/checked_cast.h"
 #include "mongo/bson/mutable/document.h"
+#include "mongo/bson/util/bson_extract.h"
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/impersonation_session.h"
@@ -92,6 +93,7 @@
 
 namespace mongo {
 
+MONGO_FP_DECLARE(failCommand);
 MONGO_FP_DECLARE(rsStopGetMore);
 MONGO_FP_DECLARE(respondWithNotPrimaryInCommandDispatch);
 MONGO_FP_DECLARE(skipCheckingForNotMasterInCommandDispatch);
@@ -146,6 +148,10 @@ const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
                                         {"insert", 1},
                                         {"prepareTransaction", 1},
                                         {"update", 1}};
+
+// The command names that are ignored by the 'failCommand' failpoint.
+const StringMap<int> failCommandIgnoreList = {
+    {"buildInfo", 1}, {"configureFailPoint", 1}, {"isMaster", 1}, {"ping", 1}};
 
 void generateLegacyQueryErrorResponse(const AssertionException* exception,
                                       const QueryMessage& queryMessage,
@@ -206,28 +212,21 @@ void registerError(OperationContext* opCtx, const DBException& exception) {
 void generateErrorResponse(OperationContext* opCtx,
                            rpc::ReplyBuilderInterface* replyBuilder,
                            const DBException& exception,
-                           const BSONObj& replyMetadata) {
-    registerError(opCtx, exception);
-
-    // We could have thrown an exception after setting fields in the builder,
-    // so we need to reset it to a clean state just to be sure.
-    replyBuilder->reset();
-    replyBuilder->setCommandReply(exception.toStatus());
-    replyBuilder->setMetadata(replyMetadata);
-}
-
-void generateErrorResponse(OperationContext* opCtx,
-                           rpc::ReplyBuilderInterface* replyBuilder,
-                           const DBException& exception,
                            const BSONObj& replyMetadata,
-                           LogicalTime operationTime) {
+                           BSONObj extraFields = {},
+                           boost::optional<LogicalTime> operationTime = {}) {
     registerError(opCtx, exception);
+
+    if (operationTime) {
+        BSONObjBuilder bb(std::move(extraFields));
+        bb.append("operationTime", operationTime->asTimestamp());
+        extraFields = bb.obj();
+    }
 
     // We could have thrown an exception after setting fields in the builder,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
-    replyBuilder->setCommandReply(exception.toStatus(),
-                                  BSON("operationTime" << operationTime.asTimestamp()));
+    replyBuilder->setCommandReply(exception.toStatus(), extraFields);
     replyBuilder->setMetadata(replyMetadata);
 }
 
@@ -465,7 +464,8 @@ bool runCommandImpl(OperationContext* opCtx,
                     const OpMsgRequest& request,
                     rpc::ReplyBuilderInterface* replyBuilder,
                     LogicalTime startOperationTime,
-                    const ServiceEntryPointCommon::Hooks& behaviors) {
+                    const ServiceEntryPointCommon::Hooks& behaviors,
+                    BSONObj* writeConcernErrorObj) {
     const Command* command = invocation->definition();
     auto bytesToReserve = command->reserveBytesForReply();
 
@@ -498,10 +498,18 @@ bool runCommandImpl(OperationContext* opCtx,
         const auto oldWC = opCtx->getWriteConcern();
         ON_BLOCK_EXIT([&] { opCtx->setWriteConcern(oldWC); });
         opCtx->setWriteConcern(wcResult);
-        ON_BLOCK_EXIT([&] {
-            behaviors.waitForWriteConcern(opCtx, invocation, lastOpBeforeRun, crb.getBodyBuilder());
-        });
-        invokeInTransaction(opCtx, invocation, &crb);
+
+        try {
+            invokeInTransaction(opCtx, invocation, &crb);
+        } catch (const DBException&) {
+            BSONObjBuilder bb;
+            behaviors.waitForWriteConcern(opCtx, invocation, lastOpBeforeRun, bb);
+            *writeConcernErrorObj = bb.obj();
+            throw;
+        }
+
+        auto bb = crb.getBodyBuilder();
+        behaviors.waitForWriteConcern(opCtx, invocation, lastOpBeforeRun, bb);
 
         // Nothing in run() should change the writeConcern.
         dassert(SimpleBSONObjComparator::kInstance.evaluate(opCtx->getWriteConcern().toBSON() ==
@@ -536,6 +544,29 @@ bool runCommandImpl(OperationContext* opCtx,
 }
 
 /**
+ * Maybe uassert according to the 'failCommand' fail point.
+ */
+void evaluateFailCommandFailPoint(OperationContext* opCtx, StringData commandName) {
+    if (failCommandIgnoreList.find(commandName) != failCommandIgnoreList.cend()) {
+        return;  // Early return to keep tidy fail point stats.
+    }
+    MONGO_FAIL_POINT_BLOCK(failCommand, data) {
+        bool closeConnection;
+        if (bsonExtractBooleanField(data.getData(), "closeConnection", &closeConnection).isOK() &&
+            closeConnection) {
+            opCtx->getClient()->session()->end();
+            uasserted(50838, "Failing command due to 'failCommand' failpoint");
+        }
+
+        long long errorCode;
+        if (bsonExtractIntegerField(data.getData(), "errorCode", &errorCode).isOK()) {
+            uasserted(ErrorCodes::Error(errorCode),
+                      "Failing command due to 'failCommand' failpoint");
+        }
+    }
+}
+
+/**
  * Executes a command after stripping metadata, performing authorization checks,
  * handling audit impersonation, and (potentially) setting maintenance mode. This method
  * also checks that the command is permissible to run on the node given its current
@@ -547,6 +578,7 @@ void execCommandDatabase(OperationContext* opCtx,
                          const OpMsgRequest& request,
                          rpc::ReplyBuilderInterface* replyBuilder,
                          const ServiceEntryPointCommon::Hooks& behaviors) {
+    BSONObj writeConcernErrorObj;
     auto startOperationTime = getClientOperationTime(opCtx);
     auto invocation = command->parse(opCtx, request);
     try {
@@ -559,6 +591,8 @@ void execCommandDatabase(OperationContext* opCtx,
         // see SERVER-18515 for details.
         rpc::readRequestMetadata(opCtx, request.body);
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
+
+        evaluateFailCommandFailPoint(opCtx, command->getName());
 
         auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
         auto sessionOptions = initializeOperationSessionInfo(
@@ -778,8 +812,7 @@ void execCommandDatabase(OperationContext* opCtx,
             readConcernArgs.getLevel() != repl::ReadConcernLevel::kAvailableReadConcern &&
             (iAmPrimary ||
              (readConcernArgs.hasLevel() || readConcernArgs.getArgsAfterClusterTime()))) {
-            oss.initializeClientRoutingVersions(
-                NamespaceString(command->parseNs(dbname, request.body)), request.body);
+            oss.initializeClientRoutingVersions(invocation->ns(), request.body);
 
             auto const shardingState = ShardingState::get(opCtx);
             if (oss.hasShardVersion() || oss.hasDbVersion()) {
@@ -815,7 +848,8 @@ void execCommandDatabase(OperationContext* opCtx,
                                 request,
                                 replyBuilder,
                                 startOperationTime,
-                                behaviors)) {
+                                behaviors,
+                                &writeConcernErrorObj)) {
                 command->incrementCommandsFailed();
             }
         } catch (DBException&) {
@@ -868,7 +902,8 @@ void execCommandDatabase(OperationContext* opCtx,
                    << "' and operationTime '" << operationTime.toString()
                    << "': " << redact(e.toString());
 
-            generateErrorResponse(opCtx, replyBuilder, e, metadata, operationTime);
+            generateErrorResponse(
+                opCtx, replyBuilder, e, metadata, writeConcernErrorObj, operationTime);
         } else {
             LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                    << "on database '" << request.getDatabase() << "' "
@@ -877,7 +912,7 @@ void execCommandDatabase(OperationContext* opCtx,
                           ServiceEntryPointCommon::getRedactedCopyForLogging(command, request.body))
                    << "': " << redact(e.toString());
 
-            generateErrorResponse(opCtx, replyBuilder, e, metadata);
+            generateErrorResponse(opCtx, replyBuilder, e, metadata, writeConcernErrorObj);
         }
     }
 }
@@ -922,7 +957,7 @@ DbResponse runCommands(OperationContext* opCtx,
             LOG(1) << "assertion while parsing command: " << ex.toString();
             if (hasClusterTime(metadata)) {
                 auto operationTime = LogicalClock::get(opCtx)->getClusterTime();
-                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, operationTime);
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, {}, operationTime);
             } else {
                 generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata);
             }
@@ -967,7 +1002,7 @@ DbResponse runCommands(OperationContext* opCtx,
                 LOG(1) << "assertion while executing command '" << request.getCommandName() << "' "
                        << "on database '" << request.getDatabase() << "': " << ex.toString();
 
-                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, operationTime);
+                generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata, {}, operationTime);
             } else {
                 generateErrorResponse(opCtx, replyBuilder.get(), ex, metadata);
             }

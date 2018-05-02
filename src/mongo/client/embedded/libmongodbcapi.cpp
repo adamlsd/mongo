@@ -92,7 +92,7 @@ libmongodbcapi_status translateException() try { throw; } catch (const MobileExc
 } catch (const std::bad_alloc& ex) {
     return {LIBMONGODB_CAPI_ERROR_ENOMEM, mongo::ErrorCodes::InternalError, ex.what()};
 } catch (const std::exception& ex) {
-    return {LIBMONGODB_CAPI_ERROR_EXCEPTION, mongo::ErrorCodes::InternalError, ex.what()};
+    return {LIBMONGODB_CAPI_ERROR_UNKNOWN, mongo::ErrorCodes::InternalError, ex.what()};
 } catch (...) {
     return {LIBMONGODB_CAPI_ERROR_UNKNOWN,
             mongo::ErrorCodes::InternalError,

@@ -289,7 +289,7 @@ Status AuthorizationSessionImpl::checkAuthForAggregate(const NamespaceString& ns
     }
 
     // We require at least one authenticated user when running aggregate with auth enabled.
-    if (!getAuthenticatedUserNames().more()) {
+    if (!isAuthenticated()) {
         return Status(ErrorCodes::Unauthorized, "unauthorized");
     }
 
@@ -371,7 +371,7 @@ Status AuthorizationSessionImpl::checkAuthForGetMore(const NamespaceString& ns,
                                                      bool hasTerm) {
     // Since users can only getMore their own cursors, we verify that a user either is authenticated
     // or does not need to be.
-    if (!_externalState->shouldIgnoreAuthChecks() && !getAuthenticatedUserNames().more()) {
+    if (!_externalState->shouldIgnoreAuthChecks() && !isAuthenticated()) {
         return Status(ErrorCodes::Unauthorized,
                       str::stream() << "not authorized for getMore on " << ns.db());
     }
@@ -800,6 +800,10 @@ bool AuthorizationSessionImpl::isAuthenticatedAsUserWithRole(const RoleName& rol
     return false;
 }
 
+bool AuthorizationSessionImpl::isAuthenticated() {
+    return _authenticatedUsers.begin() != _authenticatedUsers.end();
+}
+
 void AuthorizationSessionImpl::_refreshUserInfoAsNeeded(OperationContext* opCtx) {
     AuthorizationManager& authMan = getAuthorizationManager();
     UserSet::iterator it = _authenticatedUsers.begin();
@@ -963,7 +967,7 @@ bool AuthorizationSessionImpl::isCoauthorizedWith(UserNameIterator userNameIter)
     if (!getAuthorizationManager().isAuthEnabled()) {
         return true;
     }
-    if (!userNameIter.more() && !getAuthenticatedUserNames().more()) {
+    if (!userNameIter.more() && !isAuthenticated()) {
         return true;
     }
 
@@ -1008,7 +1012,7 @@ auto AuthorizationSessionImpl::checkCursorSessionPrivilege(
     OperationContext* const opCtx, const boost::optional<LogicalSessionId> cursorSessionId)
     -> Status {
     auto nobodyIsLoggedIn = [authSession = this] {
-        return !authSession->getAuthenticatedUserNames().more();
+        return !authSession->isAuthenticated();
     };
 
     auto authHasImpersonatePrivilege = [authSession = this] {

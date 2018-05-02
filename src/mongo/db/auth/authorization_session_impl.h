@@ -93,6 +93,9 @@ public:
     // and ownership of the user stays with the AuthorizationManager
     User* lookupUser(const UserName& name) override;
 
+    // Is authenticated as at least one user.
+    bool isAuthenticated() override;
+
     // Returns the single user on this auth session. If no user is authenticated, or if
     // multiple users are authenticated, this method will throw an exception.
     User* getSingleUser() override;

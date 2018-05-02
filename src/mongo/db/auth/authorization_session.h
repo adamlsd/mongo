@@ -154,6 +154,9 @@ public:
     // multiple users are authenticated, this method will throw an exception.
     virtual User* getSingleUser() = 0;
 
+    // Is authenticated as at least one user.
+    virtual bool isAuthenticated() = 0;
+
     // Gets an iterator over the names of all authenticated users stored in this manager.
     virtual UserNameIterator getAuthenticatedUserNames() = 0;
 

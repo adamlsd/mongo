@@ -326,7 +326,7 @@ protected:
             _setMyLastOptime(opTime, consistency);
         };
         options.resetOptimes = [this]() { _myLastOpTime = OpTime(); };
-        options.getSlaveDelay = [this]() { return Seconds(0); };
+        options.getSlaveDelay = []() { return Seconds(0); };
         options.syncSourceSelector = this;
 
         _options = options;
@@ -3988,6 +3988,72 @@ TEST_F(InitialSyncerTest, GetInitialSyncProgressReturnsCorrectProgress) {
     ASSERT_EQUALS(attempt1["durationMillis"].type(), NumberInt) << attempt1;
     ASSERT_EQUALS(attempt1.getStringField("syncSource"), std::string("localhost:27017"))
         << attempt1;
+}
+
+TEST_F(InitialSyncerTest, GetInitialSyncProgressOmitsClonerStatsIfClonerStatsExceedBsonLimit) {
+    auto initialSyncer = &getInitialSyncer();
+    auto opCtx = makeOpCtx();
+
+    _syncSourceSelector->setChooseNewSyncSourceResult_forTest(HostAndPort("localhost", 27017));
+    ASSERT_OK(initialSyncer->startup(opCtx.get(), 2U));
+
+    const std::size_t numCollections = 200000U;
+
+    auto net = getNet();
+    int baseRollbackId = 1;
+    {
+        executor::NetworkInterfaceMock::InNetworkGuard guard(net);
+
+        // Base rollback ID.
+        net->scheduleSuccessfulResponse(makeRollbackCheckerResponse(baseRollbackId));
+        net->runReadyNetworkOperations();
+
+        // Last oplog entry.
+        processSuccessfulLastOplogEntryFetcherResponse({makeOplogEntryObj(1)});
+
+        // Feature Compatibility Version.
+        processSuccessfulFCVFetcherResponse36();
+
+        // listDatabases
+        NamespaceString nss("a.a");
+        auto request =
+            net->scheduleSuccessfulResponse(makeListDatabasesResponse({nss.db().toString()}));
+        assertRemoteCommandNameEquals("listDatabases", request);
+        net->runReadyNetworkOperations();
+
+        // Ignore oplog tailing query.
+        request = net->scheduleSuccessfulResponse(
+            makeCursorResponse(1LL, _options.localOplogNS, {makeOplogEntryObj(1)}));
+        assertRemoteCommandNameEquals("find", request);
+        ASSERT_TRUE(request.cmdObj.getBoolField("oplogReplay"));
+        net->runReadyNetworkOperations();
+
+        // listCollections for "a"
+        std::vector<BSONObj> collectionInfos;
+        for (std::size_t i = 0; i < numCollections; ++i) {
+            const std::string collName = str::stream() << "coll-" << i;
+            collectionInfos.push_back(BSON("name" << collName << "options" << BSONObj()));
+        }
+        request = net->scheduleSuccessfulResponse(
+            makeCursorResponse(0LL, nss.getCommandNS(), collectionInfos));
+        assertRemoteCommandNameEquals("listCollections", request);
+        net->runReadyNetworkOperations();
+    }
+
+    // This returns a valid document because we omit the cloner stats when they do not fit in a
+    // BSON document.
+    auto progress = initialSyncer->getInitialSyncProgress();
+    ASSERT_EQUALS(progress["initialSyncStart"].type(), Date) << progress;
+    ASSERT_FALSE(progress.hasField("databases")) << progress;
+
+    // Initial sync will attempt to log stats again at shutdown in a callback, where it should not
+    // terminate because we now return a valid stats document.
+    ASSERT_OK(initialSyncer->shutdown());
+
+    // Deliver cancellation signal to callbacks.
+    executor::NetworkInterfaceMock::InNetworkGuard(net)->runReadyNetworkOperations();
+
+    initialSyncer->join();
 }
 
 }  // namespace

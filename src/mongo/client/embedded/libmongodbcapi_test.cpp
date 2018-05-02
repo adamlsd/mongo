@@ -29,6 +29,7 @@
 
 #include "mongo/client/embedded/libmongodbcapi.h"
 
+#include <memory>
 #include <set>
 #include <yaml-cpp/yaml.h>
 
@@ -36,7 +37,6 @@
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/json.h"
 #include "mongo/db/server_options.h"
-#include "mongo/stdx/memory.h"
 #include "mongo/stdx/thread.h"
 #include "mongo/unittest/temp_dir.h"
 #include "mongo/unittest/unittest.h"
@@ -119,19 +119,17 @@ protected:
         params.yaml_config = yaml.c_str();
 
         lib = libmongodbcapi_lib_init(&params, status);
-        ASSERT(lib != nullptr) << libmongodbcapi_status_get_explanation( status );
+        ASSERT(lib != nullptr) << libmongodbcapi_status_get_explanation(status);
 
         db = libmongodbcapi_instance_create(lib, yaml.c_str(), status);
-        ASSERT(db != nullptr) << libmongodbcapi_status_get_explanation( status );
+        ASSERT(db != nullptr) << libmongodbcapi_status_get_explanation(status);
     }
 
     void tearDown() {
-        massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_explanation(status),
-                libmongodbcapi_instance_destroy(db, status) == LIBMONGODB_CAPI_SUCCESS);
-        massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_explanation(status),
-                libmongodbcapi_lib_fini(lib, status) == LIBMONGODB_CAPI_SUCCESS);
+        ASSERT_EQUALS(libmongodbcapi_instance_destroy(db, status), LIBMONGODB_CAPI_SUCCESS)
+            << libmongodbcapi_status_get_explanation(status);
+        ASSERT_EQUALS(libmongodbcapi_lib_fini(lib, status), LIBMONGODB_CAPI_SUCCESS)
+            << libmongodbcapi_status_get_explanation(status);
         libmongodbcapi_status_destroy(status);
     }
 
@@ -141,9 +139,7 @@ protected:
 
     MongoDBCAPIClientPtr createClient() const {
         MongoDBCAPIClientPtr client(libmongodbcapi_client_create(db, status));
-        massert(mongo::ErrorCodes::InternalError,
-                libmongodbcapi_status_get_explanation(status),
-                client != nullptr);
+        ASSERT_NOT_EQUAL(client, nullptr) << libmongodbcapi_status_get_explanation(status);
         return client;
     }
 
@@ -611,7 +607,9 @@ int main(const int argc, const char* const* const argv) {
                   << libmongodbcapi_status_get_explanation(status.get()) << std::endl;
     }
 
-    if(!receivedCallback){ std::cerr << "Did not get a log callback." << std::endl; }
+    if (!receivedCallback) {
+        std::cerr << "Did not get a log callback." << std::endl;
+    }
 
     ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 

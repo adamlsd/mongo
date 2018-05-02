@@ -208,15 +208,17 @@ int main(int argc, char** argv, char** envp) {
     mongoc_init();
 
     global_lib_handle = libmongodbcapi_lib_init(nullptr, status.get());
-    massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_explanation(status.get()),
-            global_lib_handle != nullptr);
+    if (global_lib_handle == nullptr) {
+        std::cerr << "Error: " << libmongodbcapi_status_get_explanation(status.get());
+        return EXIT_FAILURE;
+    }
 
     auto result = ::mongo::unittest::Suite::run(std::vector<std::string>(), "", 1);
 
-    massert(mongo::ErrorCodes::InternalError,
-            libmongodbcapi_status_get_explanation(status.get()),
-            libmongodbcapi_lib_fini(global_lib_handle, status.get()) == LIBMONGODB_CAPI_SUCCESS);
+    if (libmongodbcapi_lib_fini(global_lib_handle, status.get()) != LIBMONGODB_CAPI_SUCCESS) {
+        std::cerr << "Error: " << libmongodbcapi_status_get_explanation(status.get());
+        return EXIT_FAILURE;
+    }
 
     mongoc_cleanup();
 

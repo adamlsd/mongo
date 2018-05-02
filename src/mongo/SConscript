@@ -292,7 +292,6 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         'db/auth/authmongod',
-        'db/authz_manager_external_state_factory_d',
         'db/catalog/health_log',
         'db/commands/mongod',
         'db/commands/mongod_fcv',
@@ -463,8 +462,9 @@ if not has_option('noshell') and usemozjs:
                     "shell/shell_utils_launcher.cpp",
                 ],
                 LIBDEPS=[
-                    'db/logical_session_id_helpers',
                     'db/catalog/index_key_validate',
+                    'db/mongohasher',
+                    'db/logical_session_id_helpers',
                     'db/query/command_request_response',
                     'db/query/query_request',
                     'db/server_options_core',

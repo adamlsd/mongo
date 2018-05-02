@@ -64,6 +64,8 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 
+mongo::AuthInfo mongo::internalSecurity;
+
 namespace mongo {
 
 const std::string AuthorizationManager::USER_NAME_FIELD_NAME = "user";

@@ -95,7 +95,7 @@ GlobalInitializerRegisterer authorizationManagerInitializer(
     "CreateAuthorizationManager",
     {"SetupInternalSecurityUser",
      "OIDGeneration",
-     "CreateAuthorizationExternalStateFactory",
+     "ShimHooks",
      "EndStartupOptionStorage"},
     [](InitializerContext* context) {
         auto authzManager = AuthorizationManager::create();

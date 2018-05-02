@@ -64,4 +64,4 @@ public:
 private:
     AtomicInt64 _counter;
 };
-}//namespace mongo
+}  // namespace mongo

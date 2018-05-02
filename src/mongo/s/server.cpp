@@ -608,12 +608,8 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
         return EXIT_UNCAUGHT;
     }
 }
-}  // namespace
 
-MONGO_REGISTER_SHIM(AuthzManagerExternalState::create)
-()->std::unique_ptr<AuthzManagerExternalState> {
-    return stdx::make_unique<AuthzManagerExternalStateMongos>();
-}
+}  // namespace
 }  // namespace mongo
 
 #if defined(_WIN32)

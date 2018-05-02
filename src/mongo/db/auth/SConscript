@@ -77,18 +77,26 @@ env.Library(
 )
 
 env.Library(
+    target='auth_impl_internal_local',
+    source=[
+        'authz_manager_external_state_local.cpp',
+    ],
+    LIBDEPS=[
+        'auth_impl_internal',
+    ],
+)
+
+env.Library(
     target='auth_impl_internal',
     source=[
         'authorization_manager_impl.cpp',
         'authorization_session_impl.cpp',
         'authz_manager_external_state.cpp',
-        'authz_manager_external_state_local.cpp',
         'authz_session_external_state.cpp',
         'role_graph.cpp',
         'role_graph_update.cpp',
         'role_graph_builtin_roles.cpp',
         'user_document_parser.cpp',
-        'user_management_commands_parser.cpp',
         'user_set.cpp',
     ],
     LIBDEPS=[
@@ -123,9 +131,11 @@ env.Library(
         'privilege.cpp',
         'privilege_parser.cpp',
         'resource_pattern.cpp',
+        'user_management_commands_parser.cpp',
     ],
     LIBDEPS=[
         'auth',
+        'address_restriction',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/common',
     ]
@@ -163,6 +173,7 @@ env.Library(
     LIBDEPS=[
         'auth',
         'authcommon',
+        'auth_impl_internal',
         'authorization_manager_global',
         'saslauth',
         'security_file',
@@ -231,6 +242,7 @@ env.Library('authmongod',
             ],
             LIBDEPS=[
                 'authservercommon',
+                'auth_impl_internal_local',
                 '$BUILD_DIR/mongo/db/db_raii',
                 '$BUILD_DIR/mongo/db/dbdirectclient',
                 '$BUILD_DIR/mongo/db/dbhelpers',
@@ -261,7 +273,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/update/update_driver',
         'auth',
-        'auth_impl_internal',
+        'auth_impl_internal_local',
     ]
 )
 

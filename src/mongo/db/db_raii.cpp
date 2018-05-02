@@ -134,8 +134,7 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
 
         // Return if there are no conflicting catalog changes on the collection.
         auto minSnapshot = coll->getMinimumVisibleSnapshot();
-        if (!_conflictingCatalogChanges(
-                opCtx, readConcernLevel, minSnapshot, lastAppliedTimestamp)) {
+        if (!_conflictingCatalogChanges(opCtx, minSnapshot, lastAppliedTimestamp)) {
             return;
         }
 
@@ -217,7 +216,6 @@ bool AutoGetCollectionForRead::_shouldReadAtLastAppliedTimestamp(
 
 bool AutoGetCollectionForRead::_conflictingCatalogChanges(
     OperationContext* opCtx,
-    repl::ReadConcernLevel readConcernLevel,
     boost::optional<Timestamp> minSnapshot,
     boost::optional<Timestamp> lastAppliedTimestamp) const {
     // This is the timestamp of the most recent catalog changes to this collection. If this is
@@ -246,16 +244,6 @@ bool AutoGetCollectionForRead::_conflictingCatalogChanges(
         return false;
     }
 
-    // Snapshot readConcern can't yield its locks when there are catalog changes.
-    if (readConcernLevel == repl::ReadConcernLevel::kSnapshotReadConcern) {
-        uasserted(
-            ErrorCodes::SnapshotUnavailable,
-            str::stream() << "Unable to read from a snapshot due to pending collection catalog "
-                             "changes; please retry the operation. Snapshot timestamp is "
-                          << mySnapshot->toString()
-                          << ". Collection minimum is "
-                          << minSnapshot->toString());
-    }
     return true;
 }
 
@@ -281,7 +269,8 @@ AutoGetCollectionForReadCommand::AutoGetCollectionForReadCommand(
 }
 
 OldClientContext::OldClientContext(OperationContext* opCtx, const std::string& ns, bool doVersion)
-    : OldClientContext(opCtx, ns, doVersion, dbHolder().get(opCtx, ns), false) {}
+    : OldClientContext(
+          opCtx, ns, doVersion, DatabaseHolder::getDatabaseHolder().get(opCtx, ns), false) {}
 
 OldClientContext::OldClientContext(
     OperationContext* opCtx, const std::string& ns, bool doVersion, Database* db, bool justCreated)
@@ -289,7 +278,7 @@ OldClientContext::OldClientContext(
     if (!_db) {
         const auto dbName = nsToDatabaseSubstring(ns);
         invariant(_opCtx->lockState()->isDbLockedForMode(dbName, MODE_X));
-        _db = dbHolder().openDb(_opCtx, dbName, &_justCreated);
+        _db = DatabaseHolder::getDatabaseHolder().openDb(_opCtx, dbName, &_justCreated);
         invariant(_db);
     }
 

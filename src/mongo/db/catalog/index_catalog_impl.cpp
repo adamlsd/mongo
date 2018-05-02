@@ -70,37 +70,32 @@
 #include "mongo/util/represent_as.h"
 
 namespace mongo {
-namespace {
-MONGO_INITIALIZER(InitializeIndexCatalogFactory)(InitializerContext* const) {
-    IndexCatalog::registerFactory([](
-        IndexCatalog* const this_, Collection* const collection, const int maxNumIndexesAllowed) {
-        return stdx::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
-    });
-    return Status::OK();
+MONGO_REGISTER_SHIM(IndexCatalog::makeImpl)
+(IndexCatalog* const this_,
+ Collection* const collection,
+ const int maxNumIndexesAllowed,
+ PrivateTo<IndexCatalog>)
+    ->std::unique_ptr<IndexCatalog::Impl> {
+    return std::make_unique<IndexCatalogImpl>(this_, collection, maxNumIndexesAllowed);
 }
 
-MONGO_INITIALIZER(InitializeIndexCatalogIndexIteratorFactory)(InitializerContext* const) {
-    IndexCatalog::IndexIterator::registerFactory([](OperationContext* const opCtx,
-                                                    const IndexCatalog* const cat,
-                                                    const bool includeUnfinishedIndexes) {
-        return stdx::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
-            opCtx, cat, includeUnfinishedIndexes);
-    });
-    return Status::OK();
+MONGO_REGISTER_SHIM(IndexCatalog::IndexIterator::makeImpl)
+(OperationContext* const opCtx,
+ const IndexCatalog* const cat,
+ const bool includeUnfinishedIndexes,
+ PrivateTo<IndexCatalog::IndexIterator>)
+    ->std::unique_ptr<IndexCatalog::IndexIterator::Impl> {
+    return std::make_unique<IndexCatalogImpl::IndexIteratorImpl>(
+        opCtx, cat, includeUnfinishedIndexes);
+}
+MONGO_REGISTER_SHIM(IndexCatalog::fixIndexKey)(const BSONObj& key)->BSONObj {
+    return IndexCatalogImpl::fixIndexKey(key);
 }
 
-MONGO_INITIALIZER(InitializeFixIndexKeyImpl)(InitializerContext* const) {
-    IndexCatalog::registerFixIndexKeyImpl(&IndexCatalogImpl::fixIndexKey);
-    return Status::OK();
+MONGO_REGISTER_SHIM(IndexCatalog::prepareInsertDeleteOptions)
+(OperationContext* opCtx, const IndexDescriptor* desc, InsertDeleteOptions* options)->void {
+    return IndexCatalogImpl::prepareInsertDeleteOptions(opCtx, desc, options);
 }
-
-MONGO_INITIALIZER(InitializePrepareInsertDeleteOptionsImpl)(InitializerContext* const) {
-    IndexCatalog::registerPrepareInsertDeleteOptionsImpl(
-        &IndexCatalogImpl::prepareInsertDeleteOptions);
-    return Status::OK();
-}
-
-}  // namespace
 
 using std::unique_ptr;
 using std::endl;
@@ -423,20 +418,21 @@ Status IndexCatalogImpl::IndexBuildBlock::init() {
     if (!status.isOK())
         return status;
 
-    if (isBackgroundIndex) {
-        _opCtx->recoveryUnit()->onCommit([&] {
-            // This will prevent the unfinished index from being visible on index iterators.
-            auto minVisible =
-                repl::ReplicationCoordinator::get(_opCtx)->getMinimumVisibleSnapshot(_opCtx);
-            _entry->setMinimumVisibleSnapshot(minVisible);
-            _collection->setMinimumVisibleSnapshot(minVisible);
-        });
-    }
-
     auto* const descriptorPtr = descriptor.get();
     const bool initFromDisk = false;
     _entry = IndexCatalogImpl::_setupInMemoryStructures(
         _catalog, _opCtx, std::move(descriptor), initFromDisk);
+
+    if (isBackgroundIndex) {
+        _opCtx->recoveryUnit()->onCommit(
+            [ opCtx = _opCtx, entry = _entry, collection = _collection ] {
+                // This will prevent the unfinished index from being visible on index iterators.
+                auto minVisible =
+                    repl::ReplicationCoordinator::get(opCtx)->getMinimumVisibleSnapshot(opCtx);
+                entry->setMinimumVisibleSnapshot(minVisible);
+                collection->setMinimumVisibleSnapshot(minVisible);
+            });
+    }
 
     // Register this index with the CollectionInfoCache to regenerate the cache. This way, updates
     // occurring while an index is being build in the background will be aware of whether or not

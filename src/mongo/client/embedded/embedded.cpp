@@ -146,8 +146,8 @@ void shutdown(ServiceContext* srvContext) {
     auto shutdownOpCtx = serviceContext->makeOperationContext(client);
     {
         UninterruptibleLockGuard noInterrupt(shutdownOpCtx->lockState());
-        Lock::GlobalLock lk(shutdownOpCtx.get(), MODE_X, Date_t::max());
-        dbHolder().closeAll(shutdownOpCtx.get(), "shutdown");
+        Lock::GlobalLock lk(shutdownOpCtx.get(), MODE_X);
+        DatabaseHolder::getDatabaseHolder().closeAll(shutdownOpCtx.get(), "shutdown");
 
         // Shut down the background periodic task runner
         if (auto runner = serviceContext->getPeriodicRunner()) {

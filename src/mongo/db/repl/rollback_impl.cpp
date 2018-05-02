@@ -302,7 +302,7 @@ Status RollbackImpl::_awaitBgIndexCompletion(OperationContext* opCtx) {
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     std::vector<std::string> dbs;
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
+        Lock::GlobalLock lk(opCtx, MODE_IS);
         storageEngine->listDatabases(&dbs);
     }
 
@@ -857,7 +857,7 @@ void RollbackImpl::_resetDropPendingState(OperationContext* opCtx) {
     opCtx->getServiceContext()->getGlobalStorageEngine()->listDatabases(&dbNames);
     for (const auto& dbName : dbNames) {
         Lock::DBLock dbLock(opCtx, dbName, MODE_X);
-        Database* db = dbHolder().openDb(opCtx, dbName);
+        Database* db = DatabaseHolder::getDatabaseHolder().openDb(opCtx, dbName);
         checkForIdIndexesAndDropPendingCollections(opCtx, db);
     }
 }

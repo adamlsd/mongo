@@ -222,7 +222,7 @@ void logStartup(OperationContext* opCtx) {
     if (!collection) {
         BSONObj options = BSON("capped" << true << "size" << 10 * 1024 * 1024);
         repl::UnreplicatedWritesBlock uwb(opCtx);
-        uassertStatusOK(userCreateNS(opCtx, db, startupLogCollectionName.ns(), options));
+        uassertStatusOK(Database::userCreateNS(opCtx, db, startupLogCollectionName.ns(), options));
         collection = db->getCollection(opCtx, startupLogCollectionName);
     }
     invariant(collection);
@@ -282,6 +282,8 @@ ExitCode _initAndListen(int listenPort) {
     } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
         opObserverRegistry->addObserver(stdx::make_unique<ConfigServerOpObserver>());
     }
+    setupFreeMonitoringOpObserver(opObserverRegistry.get());
+
 
     serviceContext->setOpObserver(std::move(opObserverRegistry));
 
@@ -767,8 +769,7 @@ auto makeReplicationExecutor(ServiceContext* serviceContext) {
     hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(serviceContext));
     return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
         stdx::make_unique<ThreadPool>(tpOptions),
-        executor::makeNetworkInterface(
-            "NetworkInterfaceASIO-Replication", nullptr, std::move(hookList)));
+        executor::makeNetworkInterface("Replication", nullptr, std::move(hookList)));
 }
 
 MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager, ("SSLManager", "default"))

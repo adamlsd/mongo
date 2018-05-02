@@ -87,7 +87,7 @@ public:
              const std::string& db,
              const BSONObj& cmdObj,
              BSONObjBuilder& result) final {
-        Lock::GlobalLock global(opCtx, MODE_X, Date_t::max());
+        Lock::GlobalLock global(opCtx, MODE_X);
 
         // This command will fail without modifying the catalog if there are any databases that are
         // marked drop-pending. (Otherwise, the Database object will be reconstructed when
@@ -95,7 +95,7 @@ public:
         std::vector<std::string> allDbs;
         getGlobalServiceContext()->getGlobalStorageEngine()->listDatabases(&allDbs);
         for (auto&& dbName : allDbs) {
-            const auto db = dbHolder().get(opCtx, dbName);
+            const auto db = DatabaseHolder::getDatabaseHolder().get(opCtx, dbName);
             if (db->isDropPending(opCtx)) {
                 return CommandHelpers::appendCommandStatus(
                     result,

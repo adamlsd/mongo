@@ -48,6 +48,7 @@
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/dbhelpers.h"
+#include "mongo/db/free_mon/free_mon_mongod.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/kill_sessions_local.h"
 #include "mongo/db/logical_time_metadata_hook.h"
@@ -168,7 +169,7 @@ auto makeTaskExecutor(ServiceContext* service, const std::string& poolName) {
     hookList->addHook(stdx::make_unique<rpc::LogicalTimeMetadataHook>(service));
     return stdx::make_unique<executor::ThreadPoolTaskExecutor>(
         makeThreadPool(poolName),
-        executor::makeNetworkInterface("NetworkInterfaceASIO-RS", nullptr, std::move(hookList)));
+        executor::makeNetworkInterface("RS", nullptr, std::move(hookList)));
 }
 
 /**
@@ -238,6 +239,8 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
                                                     _oplogBuffer.get(),
                                                     _bgSync.get(),
                                                     replCoord,
+                                                    _replicationProcess->getConsistencyMarkers(),
+                                                    _storageInterface,
                                                     OplogApplier::Options(),
                                                     _writerPool.get());
     _oplogApplierShutdownFuture = _oplogApplier->startup();
@@ -394,7 +397,7 @@ Status ReplicationCoordinatorExternalStateImpl::runRepairOnLocalDB(OperationCont
         Status status = repairDatabase(opCtx, engine, localDbName, false, false);
 
         // Open database before returning
-        dbHolder().openDb(opCtx, localDbName);
+        DatabaseHolder::getDatabaseHolder().openDb(opCtx, localDbName);
     } catch (const DBException& ex) {
         return ex.toStatus();
     }
@@ -753,6 +756,8 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
     }
 
     SessionCatalog::get(_service)->onStepUp(opCtx);
+
+    notifyFreeMonitoringOnTransitionToPrimary();
 }
 
 void ReplicationCoordinatorExternalStateImpl::signalApplierToChooseNewSyncSource() {
@@ -787,7 +792,7 @@ void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationC
         if (*it == "local")
             continue;
         LOG(2) << "Removing temporary collections from " << *it;
-        Database* db = dbHolder().get(opCtx, *it);
+        Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, *it);
         // Since we must be holding the global lock during this function, if listDatabases
         // returned this dbname, we should be able to get a reference to it - it can't have
         // been dropped.

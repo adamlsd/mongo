@@ -442,7 +442,6 @@ Status _collModInternal(OperationContext* opCtx,
                                         << nss.ns());
         }
         coll->refreshUUID(opCtx);
-        opCtx->recoveryUnit()->onRollback([coll, opCtx]() { coll->refreshUUID(opCtx); });
     }
 
     // Only observe non-view collMods, as view operations are observed as operations on the
@@ -561,7 +560,7 @@ void addCollectionUUIDs(OperationContext* opCtx) {
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
     {
-        Lock::GlobalLock lk(opCtx, MODE_IS, Date_t::max());
+        Lock::GlobalLock lk(opCtx, MODE_IS);
         storageEngine->listDatabases(&dbNames);
     }
 

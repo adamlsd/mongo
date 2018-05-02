@@ -452,6 +452,10 @@ void client_wire_protocol_rpc(libmongodbcapi_client* const client,
 
     client->response = sep->handleRequest(opCtx.get(), msg);
 
+    MsgData::View outMessage(client->response.response.buf());
+    outMessage.setId(nextMessageId());
+    outMessage.setResponseToMsgId(msg.header().getId());
+
     // The results of the computations used to fill out-parameters need to be captured and processed
     // before setting the output parameters themselves, in order to maintain the strong-guarantee
     // part of the contract of this function.

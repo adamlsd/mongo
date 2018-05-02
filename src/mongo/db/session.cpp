@@ -323,16 +323,6 @@ void Session::beginOrContinueTxn(OperationContext* opCtx,
         return;
     }
 
-    // If the command specified a read preference that allows it to run on a secondary, and it is
-    // trying to execute an operation on a multi-statement transaction, then we throw an error.
-    // Transactions are only allowed to be run on a primary.
-    if (!getTestCommandsEnabled()) {
-        uassert(50789,
-                "readPreference=primary is the only allowed readPreference for multi-statement "
-                "transactions.",
-                !(autocommit && ReadPreferenceSetting::get(opCtx).canRunOnSecondary()));
-    }
-
     invariant(!opCtx->lockState()->isLocked());
 
     TxnNumber txnNumberAtStart;
@@ -831,6 +821,11 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
         if (opCtx->getWriteUnitOfWork()) {
             opCtx->setWriteUnitOfWork(nullptr);
         }
+        // We must clear the recovery unit so any post-transaction writes can run without
+        // transactional settings such as a read timestamp.
+        opCtx->setRecoveryUnit(
+            opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
     }
     if (canKillCursors) {
         _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
@@ -979,6 +974,11 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
                 _txnState = MultiDocumentTransactionState::kAborted;
             }
         }
+        // We must clear the recovery unit so any post-transaction writes can run without
+        // transactional settings such as a read timestamp.
+        opCtx->setRecoveryUnit(
+            opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
         _commitcv.notify_all();
     });
     lk.unlock();

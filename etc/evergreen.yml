@@ -99,14 +99,14 @@ variables:
   resmoke_args: --help # resmoke_args needs to be overridden to specify one of the jstestfuzz suites
   should_shuffle: false
   continue_on_failure: false
-
-- &run_jstestfuzz_tests
-  func: "run tests"
   # Terminate the function when there has been no output to stdout for 30 minutes. E.g. when something is stuck in an infinite loop.
   # resmoke.py writes the test output to logkeeper and only writes to stdout when starting the next test.
   # resmoke.py not producing output on stdout means that the test is still running and presumably not going to finish.
   # Note that timeout_secs is different from exec_timeout_secs, which applies to a task and times out regardless of whether output has been written to stdout.
   timeout_secs: 1800
+
+- &run_jstestfuzz_tests
+  func: "run tests"
   vars:
     <<: *jstestfuzz_config_vars
 
@@ -715,6 +715,33 @@ functions:
           fi
         fi
 
+  "determine task timeout" : &determine_task_timeout
+    command: shell.exec
+    params:
+      working_dir: src
+      shell: bash
+      script: |
+        set -o verbose
+        set -o errexit
+
+        ${activate_virtualenv}
+        $python buildscripts/evergreen_task_timeout.py \
+          --task-name ${task_name}                     \
+          --build-variant ${build_variant}             \
+          --timeout ${timeout_secs|0}                  \
+          --out-file task_timeout_expansions.yml
+
+  "update task timeout expansions" : &update_task_timeout_expansions
+    command: expansions.update
+    params:
+      ignore_missing_file: true
+      file: src/task_timeout_expansions.yml
+
+  "update task timeout" : &update_task_timeout
+    command: timeout.update
+    params:
+      timeout_secs: ${timeout_secs}
+
   "update bypass expansions" : &update_bypass_expansions
     command: expansions.update
     params:
@@ -789,6 +816,9 @@ functions:
           virtualenv --python "$python3_loc" --system-site-packages "${workdir}/venv_3"
 
   "run tests" :
+    - *determine_task_timeout
+    - *update_task_timeout_expansions
+    - *update_task_timeout
     - command: expansions.update
       params:
         updates:
@@ -969,9 +999,9 @@ functions:
         rm -rf ${install_directory|/data/mongo-install-directory}
 
         extra_args=""
-        if [ "${reduce_scons_compile_jobs_available|false}" = "true" ] && [ -n "${num_scons_compile_jobs_available|}" ]; then
-          echo "Changing SCons to run with --jobs=${num_scons_compile_jobs_available|}"
-          extra_args="$extra_args --jobs=${num_scons_compile_jobs_available|}"
+        if [ -n "${num_scons_link_jobs_available|}" ]; then
+          echo "Changing SCons to run with --jlink=${num_scons_link_jobs_available|}"
+          extra_args="$extra_args --jlink=${num_scons_link_jobs_available|}"
         fi
 
         ${activate_virtualenv}
@@ -2849,7 +2879,6 @@ tasks:
     - func: "scons compile"
       vars:
         targets: all
-        reduce_scons_compile_jobs_available: true
         task_compile_flags: >-
           --use-new-tools
           --build-mongoreplay="${build_mongoreplay}"
@@ -2872,7 +2901,6 @@ tasks:
     - func: "scons compile"
       vars:
         targets: unittests
-        reduce_scons_compile_jobs_available: true
         task_compile_flags: >-
           --detect-odr-violations
 
@@ -3603,6 +3631,17 @@ tasks:
       run_multiple_jobs: true
 
 - <<: *task_template
+  name: change_streams_mongos_sessions_passthrough
+  depends_on:
+  - name: change_streams
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=change_streams_mongos_sessions_passthrough --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
   name: change_streams_mongos_passthrough
   depends_on:
   - name: change_streams
@@ -4212,73 +4251,79 @@ tasks:
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout
     vars:
       resmoke_args: --suites=concurrency --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout
 
 - <<: *task_template
   name: concurrency_replication
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout
     vars:
       resmoke_args: --suites=concurrency_replication --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout
 
 - <<: *task_template
-  name: concurrency_sharded
-  exec_timeout_secs: 43200 # 12 hour timeout for the task overall
+  name: concurrency_sharded_replication
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
-      resmoke_args: --suites=concurrency_sharded --storageEngine=wiredTiger
+      resmoke_args: --suites=concurrency_sharded_replication --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: concurrency_sharded_replication_with_balancer
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_sharded_replication_with_balancer --storageEngine=wiredTiger
 
 - <<: *task_template
   name: concurrency_sharded_causal_consistency
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
       resmoke_args: --suites=concurrency_sharded_causal_consistency --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_sharded_causal_consistency_and_balancer
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
       resmoke_args: --suites=concurrency_sharded_causal_consistency_and_balancer --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_sharded_with_stepdowns
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
       resmoke_args: --suites=concurrency_sharded_with_stepdowns --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_sharded_with_stepdowns_and_balancer
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout for each test
     vars:
       resmoke_args: --suites=concurrency_sharded_with_stepdowns_and_balancer --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_simultaneous
   commands:
   - func: "do setup"
   - func: "run tests"
-    timeout_secs: 21600 # 6 hour timeout
     vars:
       resmoke_args: --suites=concurrency_simultaneous --storageEngine=wiredTiger
+      timeout_secs: 21600 # 6 hour timeout
 
 - <<: *task_template
   name: rlp
@@ -6523,6 +6568,7 @@ buildvariants:
   - name: auth
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -6570,7 +6616,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: read_concern_linearizable_passthrough
   - name: read_concern_majority_passthrough
@@ -6622,7 +6669,8 @@ buildvariants:
   - name: parallel
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
 
 - &linux-64-debug-template
@@ -6711,6 +6759,7 @@ buildvariants:
   - name: causally_consistent_jscore_passthrough_auth
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -6720,7 +6769,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -6969,16 +7019,16 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
   - name: powercycle
   - name: powercycle_fcv3.6
-# SERVER-34075: Re-enable once powercycle_replication* can test against recoverable rollback changes.
-#  - name: powercycle_replication
-#  - name: powercycle_replication_smalloplog
+  - name: powercycle_replication
+  - name: powercycle_replication_smalloplog
   - name: powercycle_syncdelay
   - name: powercycle_write_concern_majority
   - name: sharding
@@ -7082,7 +7132,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7170,7 +7221,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - ubuntu1604-arm64-small
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - ubuntu1604-arm64-small
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - ubuntu1604-arm64-small
   - name: concurrency_simultaneous
@@ -7290,7 +7344,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7351,7 +7406,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -7552,7 +7608,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7592,7 +7649,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=amazon2 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
     packager_script: packager_enterprise.py
@@ -7669,7 +7726,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=amazon2 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     multiversion_platform: amazon
     multiversion_edition: targeted
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
@@ -7724,7 +7781,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -7767,7 +7825,7 @@ buildvariants:
     compile_flags: --dbg=on --opt=on --win-version-min=ws08r2 -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) MONGO_DISTMOD=2008plus
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     ext: zip
     use_scons_cache: true
@@ -7792,6 +7850,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -7826,7 +7885,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - windows-64-vs2015-large
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - windows-64-vs2015-large
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - windows-64-vs2015-large
   - name: concurrency_sharded_causal_consistency
@@ -7905,7 +7967,7 @@ buildvariants:
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8277,7 +8339,7 @@ buildvariants:
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8301,7 +8363,7 @@ buildvariants:
     compile_flags: --release --ssl --ssl-provider=openssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8330,7 +8392,7 @@ buildvariants:
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8366,7 +8428,7 @@ buildvariants:
     compile_flags: --release --ssl MONGO_DISTMOD=windows-64 CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --storageEngine=inMemory --excludeWithAnyTags=requires_persistence,requires_journaling,requires_mmapv1
@@ -8390,7 +8452,8 @@ buildvariants:
     distros:
     - windows-64-vs2015-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: jsCore
   - name: jsCore_auth
@@ -8435,7 +8498,7 @@ buildvariants:
     compile_flags: --release --ssl MONGO_DISTMOD=2008plus-ssl CPPPATH="c:/openssl/include" LIBPATH="c:/openssl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8458,7 +8521,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_wiredtiger
@@ -8500,8 +8564,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: powercycle
   - name: powercycle_fcv3.6
-# SERVER-34075: Re-enable once powercycle_replication* can test against recoverable rollback changes.
-#  - name: powercycle_replication
+  - name: powercycle_replication
   - name: powercycle_syncdelay
   - name: read_concern_linearizable_passthrough
   - name: read_concern_majority_passthrough
@@ -8546,7 +8609,7 @@ buildvariants:
     compile_flags: --dbg=on --opt=off --ssl MONGO_DISTMOD=2008plus CPPPATH="c:/openssl/include c:/sasl/include c:/snmp/include c:/curl/include" LIBPATH="c:/openssl/lib c:/sasl/lib c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows --win-version-min=ws08r2
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -8574,7 +8637,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
-    test_flags: --excludeWithAnyTags=requires_mmapv1
+    test_flags: --excludeWithAnyTags=requires_mmapv1,requires_ssl_mongo_tools
     push_path: osx
     push_bucket: downloads.mongodb.org
     push_name: osx-ssl
@@ -8602,6 +8665,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -8611,7 +8675,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -8716,7 +8781,7 @@ buildvariants:
   - macos-1012
   batchtime: 1440 # 1 day
   expansions:
-    test_flags: --excludeWithAnyTags=requires_mmapv1
+    test_flags: --excludeWithAnyTags=requires_mmapv1,requires_ssl_mongo_tools
     push_path: osx
     push_bucket: downloads.10gen.com
     push_name: osx
@@ -8759,7 +8824,7 @@ buildvariants:
   name: enterprise-osx-1010-openssl
   display_name: Enterprise OS X 10.10 OpenSSL
   expansions:
-    test_flags: --excludeWithAnyTags=requires_mmapv1
+    test_flags: --excludeWithAnyTags=requires_mmapv1,requires_ssl_mongo_tools
     push_path: osx
     push_bucket: downloads.10gen.com
     push_name: osx
@@ -9224,6 +9289,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -9236,7 +9302,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -9759,6 +9826,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -9771,7 +9839,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -9995,7 +10064,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -10084,7 +10154,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - rhel70
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - rhel70
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel70
   - name: concurrency_simultaneous
@@ -10153,7 +10226,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10259,7 +10333,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10362,7 +10437,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10681,7 +10757,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: ese
@@ -10809,7 +10886,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11007,7 +11085,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11068,6 +11147,7 @@ buildvariants:
   - name: disk_wiredtiger
   - name: failpoints
   - name: failpoints_auth
+  - name: free_monitoring
   - name: gle_auth
   - name: gle_auth_write_cmd
   - name: gle_auth_basics_passthrough
@@ -11094,7 +11174,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11132,7 +11213,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=debian92 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     has_packages: true
     packager_script: packager_enterprise.py
@@ -11187,7 +11268,7 @@ buildvariants:
     compile_flags: --ssl MONGO_DISTMOD=debian92 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
     # We invoke SCons using --jobs = (# of CPUs / 4) to avoid causing out of memory errors due to
     # spawning a large number of linker processes.
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     multiversion_platform: debian92
     multiversion_edition: targeted
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
@@ -11214,6 +11295,7 @@ buildvariants:
   - name: disk_wiredtiger
   - name: failpoints
   - name: failpoints_auth
+  - name: free_monitoring
   - name: gle_auth
   - name: gle_auth_write_cmd
   - name: gle_auth_basics_passthrough
@@ -11240,7 +11322,8 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: replica_sets
   - name: replica_sets_auth
@@ -11305,6 +11388,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
   - name: change_streams_whole_db_mongos_passthrough
@@ -11316,7 +11400,8 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -11561,7 +11646,7 @@ buildvariants:
     # mobile storage engine.
     test_flags: >-
       --storageEngine=mobile
-      --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_replication,requires_sharding,uses_transactions
+      --excludeWithAnyTags=requires_mmapv1,requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_ssl_mongo_tools
       --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-32993,SERVER-32997
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: >-
@@ -11640,7 +11725,8 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: failpoints
@@ -11723,7 +11809,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: failpoints
@@ -11805,7 +11892,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - rhel72-zseries-build
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - rhel72-zseries-build
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - rhel72-zseries-build
   - name: concurrency_simultaneous
@@ -11930,6 +12020,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -11942,7 +12033,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -12102,6 +12194,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: change_streams
   - name: change_streams_mongos_passthrough
+  - name: change_streams_mongos_sessions_passthrough
   - name: change_streams_secondary_reads
   - name: change_streams_sharded_collections_passthrough
   - name: change_streams_whole_db_passthrough
@@ -12114,7 +12207,8 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_sharded_with_stepdowns
@@ -12257,7 +12351,8 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_wiredtiger
@@ -12392,7 +12487,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_simultaneous
@@ -12492,7 +12588,7 @@ buildvariants:
       c:/sasl/include c:/snmp/include c:/curl/include"  LIBPATH="c:/openssl/lib c:/sasl/lib
       c:/snmp/lib c:/curl/lib" -j$(( $(grep -c ^processor /proc/cpuinfo) / 2 )) --dynamic-windows
       --win-version-min=ws08r2
-    num_scons_compile_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
+    num_scons_link_jobs_available: $(( $(grep -c ^processor /proc/cpuinfo) / 4 ))
     python: python
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     ext: zip
@@ -12511,7 +12607,10 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - windows-64-vs2015-large
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+    distros:
+    - windows-64-vs2015-large
+  - name: concurrency_sharded_replication_with_balancer
     distros:
     - windows-64-vs2015-large
   - name: concurrency_sharded_causal_consistency
@@ -12598,7 +12697,7 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     # Transactions are not supported on the MMAPv1 storage engine.
-    test_flags: --storageEngine=mmapv1 --excludeWithAnyTags=requires_wiredtiger,uses_transactions
+    test_flags: --storageEngine=mmapv1 --excludeWithAnyTags=requires_wiredtiger,uses_transactions,requires_ssl_mongo_tools
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: >-
       --ssl -j$(sysctl -n hw.logicalcpu) --release --libc++ CCFLAGS="-mmacosx-version-min=10.10"
@@ -12619,7 +12718,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
   - name: concurrency_sharded_causal_consistency_and_balancer
   - name: concurrency_simultaneous
@@ -12705,7 +12805,8 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
-  - name: concurrency_sharded
+  - name: concurrency_sharded_replication
+  - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
   - name: dbtest
   - name: disk_mmapv1

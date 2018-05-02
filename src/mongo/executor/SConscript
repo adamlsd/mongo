@@ -144,6 +144,7 @@ env.Library(target='network_test_env',
             source=['network_test_env.cpp',],
             LIBDEPS=[
                 '$BUILD_DIR/mongo/db/commands',
+                '$BUILD_DIR/mongo/db/query/command_request_response',
                 'network_interface_mock',
                 'task_executor_interface',
             ])

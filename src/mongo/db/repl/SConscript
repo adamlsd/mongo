@@ -15,6 +15,7 @@ env.Library(
     LIBDEPS_PRIVATE=[
         'dbcheck',
         'repl_coordinator_interface',
+        'repl_settings',
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/background',
         '$BUILD_DIR/mongo/db/catalog/catalog_helpers',
@@ -639,6 +640,7 @@ env.Library(
         'oplog_entry',
         'oplogreader',
         'repl_coordinator_interface',
+        'repl_settings',
         'storage_interface',
     ],
     LIBDEPS_PRIVATE=[
@@ -1556,6 +1558,7 @@ env.Library(
         'oplog',
         'oplogreader',
         'repl_coordinator_interface',
+        'repl_settings',
         'replica_set_messages',
     ],
     LIBDEPS_PRIVATE=[

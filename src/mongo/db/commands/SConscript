@@ -124,6 +124,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/audit',
+        '$BUILD_DIR/mongo/db/auth/sasl_options',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
         '$BUILD_DIR/mongo/db/common',
@@ -322,6 +323,7 @@ env.Library(
         'kill_op_cmd_base.cpp'
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authprivilege',
         '$BUILD_DIR/mongo/db/audit',
         '$BUILD_DIR/mongo/db/commands',
         '$BUILD_DIR/mongo/db/auth/authorization_manager_global',

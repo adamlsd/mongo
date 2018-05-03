@@ -1144,7 +1144,7 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTime_inlock(const OpTime& op
         // The oplog application phase of initial sync starts timestamping writes, causing
         // WiredTiger to pin this data in memory. Advancing the oldest timestamp in step with the
         // last applied optime here will permit WiredTiger to evict this data as it sees fit.
-        _service->getGlobalStorageEngine()->setOldestTimestamp(opTime.getTimestamp());
+        _service->getStorageEngine()->setOldestTimestamp(opTime.getTimestamp());
     }
 }
 
@@ -2779,7 +2779,7 @@ ReplicationCoordinatorImpl::_setCurrentRSConfig_inlock(OperationContext* opCtx,
     }
 
     // Warn if running --nojournal and writeConcernMajorityJournalDefault = false
-    StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+    StorageEngine* storageEngine = opCtx->getServiceContext()->getStorageEngine();
     if (storageEngine && !storageEngine->isDurable() &&
         (newConfig.getWriteConcernMajorityShouldJournal() &&
          (!oldConfig.isInitialized() || !oldConfig.getWriteConcernMajorityShouldJournal()))) {
@@ -3356,27 +3356,6 @@ EventHandle ReplicationCoordinatorImpl::_updateTerm_inlock(
         }
     }
     return EventHandle();
-}
-
-Timestamp ReplicationCoordinatorImpl::getMinimumVisibleSnapshot(OperationContext* opCtx) {
-    Timestamp reservedName;
-    if (getReplicationMode() == Mode::modeReplSet) {
-        invariant(opCtx->lockState()->isLocked());
-        if (getMemberState().primary() || opCtx->recoveryUnit()->getCommitTimestamp().isNull()) {
-            // Use the current optime on the node, for primary nodes. Additionally, completion of
-            // background index builds on secondaries will not have a `commit time` and must also
-            // use the current optime.
-            reservedName = LogicalClock::get(getServiceContext())->getClusterTime().asTimestamp();
-        } else {
-            // This function is only called when applying command operations on secondaries.
-            // We ask the RecoveryUnit what timestamp it will assign to this write.
-            reservedName = opCtx->recoveryUnit()->getCommitTimestamp();
-        }
-    } else {
-        // All snapshots are the same for a standalone node.
-        reservedName = Timestamp();
-    }
-    return reservedName;
 }
 
 void ReplicationCoordinatorImpl::waitUntilSnapshotCommitted(OperationContext* opCtx,

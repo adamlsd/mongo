@@ -77,6 +77,11 @@ WiredTigerRecoveryUnit::~WiredTigerRecoveryUnit() {
 }
 
 void WiredTigerRecoveryUnit::_commit() {
+    // Since we cannot have both a _lastTimestampSet and a _commitTimestamp, we set the
+    // commit time as whichever is non-empty. If both are empty, then _lastTimestampSet will
+    // be boost::none and we'll set the commit time to that.
+    auto commitTime = _commitTimestamp.isNull() ? _lastTimestampSet : _commitTimestamp;
+
     try {
         bool notifyDone = !_prepareTimestamp.isNull();
         if (_session && _active) {
@@ -92,7 +97,7 @@ void WiredTigerRecoveryUnit::_commit() {
         }
 
         for (Changes::const_iterator it = _changes.begin(), end = _changes.end(); it != end; ++it) {
-            (*it)->commit();
+            (*it)->commit(commitTime);
         }
         _changes.clear();
 
@@ -273,6 +278,18 @@ void WiredTigerRecoveryUnit::_txnClose(bool commit) {
     }
     invariantWTOK(wtRet);
 
+    invariant(!_lastTimestampSet || _commitTimestamp.isNull(),
+              str::stream() << "Cannot have both a _lastTimestampSet and a "
+                               "_commitTimestamp. _lastTimestampSet: "
+                            << _lastTimestampSet->toString()
+                            << ". _commitTimestamp: "
+                            << _commitTimestamp.toString());
+
+    // We reset the _lastTimestampSet between transactions. Since it is legal for one
+    // transaction on a RecoveryUnit to call setTimestamp() and another to call
+    // setCommitTimestamp().
+    _lastTimestampSet = boost::none;
+
     _active = false;
     _prepareTimestamp = Timestamp();
     _mySnapshotId = nextSnapshotId.fetchAndAdd(1);
@@ -338,7 +355,7 @@ void WiredTigerRecoveryUnit::_txnOpen() {
         }
         uassertStatusOK(status);
         rollbacker.Dismiss();
-    } else if (_isReadingFromPointInTime()) {
+    } else if (_isReadingFromPointInTime() && !_shouldReadAtLastAppliedTimestamp) {
         // We reset _majorityCommittedSnapshot to the actual read timestamp used when the
         // transaction was started.
         _majorityCommittedSnapshot =
@@ -346,13 +363,22 @@ void WiredTigerRecoveryUnit::_txnOpen() {
     } else if (_shouldReadAtLastAppliedTimestamp &&
                _sessionCache->snapshotManager().getLocalSnapshot()) {
         // Read from the last applied timestamp (tracked globally by the SnapshotManager), which is
-        // the timestamp of the most recent completed replication batch operation. This should only
-        // be true for local or available readConcern on secondaries.
-        _sessionCache->snapshotManager().beginTransactionOnLocalSnapshot(session, ignorePrepare);
+        // the timestamp of the most recent completed replication batch operation. This should
+        // be true for local or available readConcern on secondaries, or for speculative snapshot
+        // reads in multi-document transactions.
+        auto localSnapshot = _sessionCache->snapshotManager().beginTransactionOnLocalSnapshot(
+            session, ignorePrepare);
+        // Record the local timestamp actually used.
+        if (_isReadingFromPointInTime()) {
+            _readAtTimestamp = localSnapshot;
+        }
     } else if (_isOplogReader) {
         _sessionCache->snapshotManager().beginTransactionOnOplog(
             _sessionCache->getKVEngine()->getOplogManager(), session);
     } else {
+        uassert(ErrorCodes::SnapshotUnavailable,
+                "No local snapshot available for snapshot read.",
+                !_isReadingFromPointInTime());
         invariantWTOK(
             session->begin_transaction(session, ignorePrepare ? "ignore_prepare=true" : nullptr));
     }
@@ -373,6 +399,8 @@ Status WiredTigerRecoveryUnit::setTimestamp(Timestamp timestamp) {
                             << " and trying to set WUOW timestamp to "
                             << timestamp.toString());
 
+    _lastTimestampSet = timestamp;
+
     // Starts the WT transaction associated with this session.
     getSession();
 
@@ -390,6 +418,12 @@ void WiredTigerRecoveryUnit::setCommitTimestamp(Timestamp timestamp) {
               str::stream() << "Commit timestamp set to " << _commitTimestamp.toString()
                             << " and trying to set it to "
                             << timestamp.toString());
+    invariant(!_lastTimestampSet,
+              str::stream() << "Last timestamp set is " << _lastTimestampSet->toString()
+                            << " and trying to set commit timestamp to "
+                            << timestamp.toString());
+    invariant(!_isTimestamped);
+
     _commitTimestamp = timestamp;
 }
 
@@ -400,6 +434,11 @@ Timestamp WiredTigerRecoveryUnit::getCommitTimestamp() {
 void WiredTigerRecoveryUnit::clearCommitTimestamp() {
     invariant(!_inUnitOfWork);
     invariant(!_commitTimestamp.isNull());
+    invariant(!_lastTimestampSet,
+              str::stream() << "Last timestamp set is " << _lastTimestampSet->toString()
+                            << " and trying to clear commit timestamp.");
+    invariant(!_isTimestamped);
+
     _commitTimestamp = Timestamp();
 }
 

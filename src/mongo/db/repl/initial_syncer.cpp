@@ -364,13 +364,7 @@ BSONObj InitialSyncer::_getInitialSyncProgress_inlock() const {
                 dbsBuilder.doneFast();
             }
         }
-        // In 3.4, BSONObjBuilder::obj() does not check the validity of the document it returns so
-        // we check it explicitly here.
-        auto obj = bob.obj();
-        uassert(ErrorCodes::InvalidBSON,
-                str::stream() << "Invalid BSONObj size: " << obj.objsize(),
-                obj.isValid());
-        return obj;
+        return bob.obj();
     } catch (const DBException& e) {
         log() << "Error creating initial sync progress object: " << e.toString();
     }
@@ -972,14 +966,8 @@ void InitialSyncer::_getNextApplierBatchCallback(
     const auto& ops = batchResult.getValue();
     if (!ops.empty()) {
         _fetchCount.store(0);
-        MultiApplier::ApplyOperationFn applyOperationsForEachReplicationWorkerThreadFn =
-            [](OperationContext*, MultiApplier::OperationPtrs*, WorkerMultikeyPathInfo*) {
-                return Status::OK();
-            };
         MultiApplier::MultiApplyFn applyBatchOfOperationsFn =
-            [ =, source = _syncSource ](OperationContext * opCtx,
-                                        MultiApplier::Operations ops,
-                                        MultiApplier::ApplyOperationFn apply) {
+            [ =, source = _syncSource ](OperationContext * opCtx, MultiApplier::Operations ops) {
             InitialSyncApplyObserver observer(&_fetchCount);
             return _dataReplicatorExternalState->_multiApply(
                 opCtx, ops, &observer, source, _writerPool);
@@ -992,11 +980,7 @@ void InitialSyncer::_getNextApplierBatchCallback(
         };
 
         _applier = stdx::make_unique<MultiApplier>(
-            _exec,
-            ops,
-            std::move(applyOperationsForEachReplicationWorkerThreadFn),
-            std::move(applyBatchOfOperationsFn),
-            std::move(onCompletionFn));
+            _exec, ops, std::move(applyBatchOfOperationsFn), std::move(onCompletionFn));
         status = _startupComponent_inlock(_applier);
         if (!status.isOK()) {
             onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, status);

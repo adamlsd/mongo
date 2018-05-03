@@ -128,7 +128,7 @@ std::nullptr_t handleException(libmongodbcapi_status& status) noexcept {
 
 struct libmongodbcapi_lib {
     ~libmongodbcapi_lib() {
-        invariant(this->databaseCount == 0);
+        invariant(this->databaseCount.load() == 0);
 
         if (this->logCallbackHandle) {
             using mongo::logger::globalLogDomain;
@@ -142,7 +142,7 @@ struct libmongodbcapi_lib {
 
     libmongodbcapi_lib() = default;
 
-    std::atomic<int> databaseCount = {};
+    mongo::AtomicWord<int> databaseCount;
 
     mongo::logger::ComponentMessageLogDomain::AppenderHandle logCallbackHandle;
 
@@ -163,8 +163,8 @@ using EmbeddedServiceContextPtr = std::unique_ptr<mongo::ServiceContext, Service
 
 struct libmongodbcapi_instance {
     ~libmongodbcapi_instance() {
-        invariant(this->clientCount == 0);
-        --this->parentLib->databaseCount;
+        invariant(this->clientCount.load() == 0);
+        this->parentLib->databaseCount.subtractAndFetch(1);
     }
 
     libmongodbcapi_instance(const libmongodbcapi_instance&) = delete;
@@ -181,11 +181,11 @@ struct libmongodbcapi_instance {
                 "The MongoDB Embedded Library Failed to initialize the Service Context"};
         }
 
-        ++this->parentLib->databaseCount;
+        this->parentLib->databaseCount.addAndFetch(1);
     }
 
     libmongodbcapi_lib* parentLib;
-    std::atomic<int> clientCount = {};
+    mongo::AtomicWord<int> clientCount;
 
     mongo::EmbeddedServiceContextPtr serviceContext;
     std::unique_ptr<mongo::transport::TransportLayerMock> transportLayer;
@@ -193,13 +193,13 @@ struct libmongodbcapi_instance {
 
 struct libmongodbcapi_client {
     ~libmongodbcapi_client() {
-        --this->parent_db->clientCount;
+        this->parent_db->clientCount.subtractAndFetch(1);
     }
 
     explicit libmongodbcapi_client(libmongodbcapi_instance* const db)
         : parent_db(db),
           client(db->serviceContext->makeClient("embedded", db->transportLayer->createSession())) {
-        ++this->parent_db->clientCount;
+        this->parent_db->clientCount.addAndFetch(1);
     }
 
     libmongodbcapi_client(const libmongodbcapi_client&) = delete;
@@ -315,7 +315,7 @@ void capi_lib_fini(libmongodbcapi_lib* const lib, libmongodbcapi_status& status)
     // This check is not possible to 100% guarantee.  It is a best effort.  The documentation of
     // this API says that the behavior of closing a `lib` with open handles is undefined, but may
     // provide diagnostic errors in some circumstances.
-    if (lib->databaseCount > 0) {
+    if (lib->databaseCount.load() > 0) {
         throw MobileException{
             LIBMONGODB_CAPI_ERROR_HAS_DB_HANDLES_OPEN,
             "Cannot close the MongoDB Embedded Library when it has database handles still open."};
@@ -369,7 +369,7 @@ void instance_destroy(libmongodbcapi_instance* const db, libmongodbcapi_status& 
             "Cannot close the specified MongoDB Embedded Database, as it is not a valid instance."};
     }
 
-    if (db->clientCount > 0) {
+    if (db->clientCount.load() > 0) {
         throw MobileException{
             LIBMONGODB_CAPI_ERROR_DB_CLIENTS_OPEN,
             "Cannot close a MongoDB Embedded Database instance while it has open clients"};

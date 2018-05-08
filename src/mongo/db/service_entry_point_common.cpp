@@ -74,6 +74,7 @@
 #include "mongo/db/stats/top.h"
 #include "mongo/rpc/factory.h"
 #include "mongo/rpc/get_status_from_command_result.h"
+#include "mongo/rpc/message.h"
 #include "mongo/rpc/metadata.h"
 #include "mongo/rpc/metadata/config_server_metadata.h"
 #include "mongo/rpc/metadata/logical_time_metadata.h"
@@ -81,14 +82,13 @@
 #include "mongo/rpc/metadata/repl_set_metadata.h"
 #include "mongo/rpc/metadata/sharding_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
+#include "mongo/rpc/op_msg.h"
 #include "mongo/rpc/reply_builder_interface.h"
 #include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/s/grid.h"
 #include "mongo/s/stale_exception.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/message.h"
-#include "mongo/util/net/op_msg.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
@@ -348,7 +348,7 @@ void appendReplyMetadata(OperationContext* opCtx,
 
     // If we're a shard other than the config shard, attach the last configOpTime we know about.
     if (isShardingAware && !isConfig) {
-        auto opTime = grid.configOpTime();
+        auto opTime = Grid::get(opCtx)->configOpTime();
         rpc::ConfigServerMetadata(opTime).writeToMetadata(metadataBob);
     }
 }
@@ -600,7 +600,7 @@ void execCommandDatabase(OperationContext* opCtx,
             request.body,
             command->requiresAuth(),
             replCoord->getReplicationMode() == repl::ReplicationCoordinator::modeReplSet,
-            opCtx->getServiceContext()->getGlobalStorageEngine()->supportsDocLocking());
+            opCtx->getServiceContext()->getStorageEngine()->supportsDocLocking());
 
         // Session ids are forwarded in requests, so commands that require roundtrips between
         // servers may result in a deadlock when a server tries to check out a session it is already
@@ -978,8 +978,7 @@ DbResponse runCommands(OperationContext* opCtx,
                 std::string msg = str::stream() << "no such command: '" << request.getCommandName()
                                                 << "'";
                 LOG(2) << msg;
-                uasserted(ErrorCodes::CommandNotFound,
-                          str::stream() << msg << ", bad cmd: '" << redact(request.body) << "'");
+                uasserted(ErrorCodes::CommandNotFound, str::stream() << msg);
             }
 
             LOG(2) << "run command " << request.getDatabase() << ".$cmd" << ' '

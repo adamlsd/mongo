@@ -40,7 +40,6 @@
 #include <signal.h>
 #include <string>
 
-#include "mongo/base/checked_cast.h"
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
 #include "mongo/base/status.h"
@@ -129,6 +128,7 @@
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/system_index.h"
 #include "mongo/db/ttl.h"
@@ -158,7 +158,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/fast_clock_source_factory.h"
 #include "mongo/util/log.h"
-#include "mongo/util/net/sock.h"
+#include "mongo/util/net/socket_utils.h"
 #include "mongo/util/net/ssl_manager.h"
 #include "mongo/util/ntservice.h"
 #include "mongo/util/options_parser/startup_options.h"
@@ -209,7 +209,7 @@ void logStartup(OperationContext* opCtx) {
 
     BSONObjBuilder buildinfo(toLog.subobjStart("buildinfo"));
     VersionInfoInterface::instance().appendBuildInfo(&buildinfo);
-    appendStorageEngineList(&buildinfo);
+    appendStorageEngineList(opCtx->getServiceContext(), &buildinfo);
     buildinfo.doneFast();
 
     BSONObj o = toLog.obj();
@@ -270,7 +270,7 @@ ExitCode _initAndListen(int listenPort) {
     Client::initThread("initandlisten");
 
     initWireSpec();
-    auto serviceContext = checked_cast<ServiceContextMongoD*>(getGlobalServiceContext());
+    auto serviceContext = getGlobalServiceContext();
 
     serviceContext->setFastClockSource(FastClockSourceFactory::create(Milliseconds(10)));
     auto opObserverRegistry = stdx::make_unique<OpObserverRegistry>();
@@ -312,7 +312,7 @@ ExitCode _initAndListen(int listenPort) {
 
     logProcessDetails();
 
-    serviceContext->createLockFile();
+    createLockFile(serviceContext);
 
     serviceContext->setServiceEntryPoint(
         stdx::make_unique<ServiceEntryPointMongod>(serviceContext));
@@ -328,7 +328,7 @@ ExitCode _initAndListen(int listenPort) {
         serviceContext->setTransportLayer(std::move(tl));
     }
 
-    serviceContext->initializeGlobalStorageEngine();
+    initializeStorageEngine(serviceContext);
 
 #ifdef MONGO_CONFIG_WIREDTIGER_ENABLED
     if (EncryptionHooks::get(serviceContext)->restartRequired()) {
@@ -348,7 +348,7 @@ ExitCode _initAndListen(int listenPort) {
             }
 
             // Warn if field name matches non-active registered storage engine.
-            if (serviceContext->isRegisteredStorageEngine(e.fieldName())) {
+            if (isRegisteredStorageEngine(serviceContext, e.fieldName())) {
                 warning() << "Detected configuration for non-active storage engine "
                           << e.fieldName() << " when current storage engine is "
                           << storageGlobalParams.engine;
@@ -586,7 +586,7 @@ ExitCode _initAndListen(int listenPort) {
     // Start up a background task to periodically check for and kill expired transactions.
     // Only do this on storage engines supporting snapshot reads, which hold resources we wish to
     // release periodically in order to avoid storage cache pressure build up.
-    auto storageEngine = serviceContext->getGlobalStorageEngine();
+    auto storageEngine = serviceContext->getStorageEngine();
     invariant(storageEngine);
     if (storageEngine->supportsReadConcernSnapshot()) {
         startPeriodicThreadToAbortExpiredTransactions(serviceContext);
@@ -844,7 +844,7 @@ void shutdownTask() {
     // Shut down the global dbclient pool so callers stop waiting for connections.
     globalConnPool.shutdown();
 
-    if (serviceContext->getGlobalStorageEngine()) {
+    if (serviceContext->getStorageEngine()) {
         ServiceContext::UniqueOperationContext uniqueOpCtx;
         OperationContext* opCtx = client->getOperationContext();
         if (!opCtx) {
@@ -930,8 +930,8 @@ void shutdownTask() {
     invariant(LOCK_OK == result);
 
     // Global storage engine may not be started in all cases before we exit
-    if (serviceContext->getGlobalStorageEngine()) {
-        serviceContext->shutdownGlobalStorageEngineCleanly();
+    if (serviceContext->getStorageEngine()) {
+        shutdownGlobalStorageEngineCleanly(serviceContext);
     }
 
     // We drop the scope cache because leak sanitizer can't see across the

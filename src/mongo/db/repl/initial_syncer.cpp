@@ -205,7 +205,6 @@ InitialSyncer::InitialSyncer(
     uassert(ErrorCodes::BadValue, "invalid getMyLastOptime function", _opts.getMyLastOptime);
     uassert(ErrorCodes::BadValue, "invalid setMyLastOptime function", _opts.setMyLastOptime);
     uassert(ErrorCodes::BadValue, "invalid resetOptimes function", _opts.resetOptimes);
-    uassert(ErrorCodes::BadValue, "invalid getSlaveDelay function", _opts.getSlaveDelay);
     uassert(ErrorCodes::BadValue, "invalid sync source selector", _opts.syncSourceSelector);
     uassert(ErrorCodes::BadValue, "callback function cannot be null", _onCompletion);
 }
@@ -364,13 +363,7 @@ BSONObj InitialSyncer::_getInitialSyncProgress_inlock() const {
                 dbsBuilder.doneFast();
             }
         }
-        // In 3.4, BSONObjBuilder::obj() does not check the validity of the document it returns so
-        // we check it explicitly here.
-        auto obj = bob.obj();
-        uassert(ErrorCodes::InvalidBSON,
-                str::stream() << "Invalid BSONObj size: " << obj.objsize(),
-                obj.isValid());
-        return obj;
+        return bob.obj();
     } catch (const DBException& e) {
         log() << "Error creating initial sync progress object: " << e.toString();
     }
@@ -972,14 +965,8 @@ void InitialSyncer::_getNextApplierBatchCallback(
     const auto& ops = batchResult.getValue();
     if (!ops.empty()) {
         _fetchCount.store(0);
-        MultiApplier::ApplyOperationFn applyOperationsForEachReplicationWorkerThreadFn =
-            [](OperationContext*, MultiApplier::OperationPtrs*, WorkerMultikeyPathInfo*) {
-                return Status::OK();
-            };
         MultiApplier::MultiApplyFn applyBatchOfOperationsFn =
-            [ =, source = _syncSource ](OperationContext * opCtx,
-                                        MultiApplier::Operations ops,
-                                        MultiApplier::ApplyOperationFn apply) {
+            [ =, source = _syncSource ](OperationContext * opCtx, MultiApplier::Operations ops) {
             InitialSyncApplyObserver observer(&_fetchCount);
             return _dataReplicatorExternalState->_multiApply(
                 opCtx, ops, &observer, source, _writerPool);
@@ -992,11 +979,7 @@ void InitialSyncer::_getNextApplierBatchCallback(
         };
 
         _applier = stdx::make_unique<MultiApplier>(
-            _exec,
-            ops,
-            std::move(applyOperationsForEachReplicationWorkerThreadFn),
-            std::move(applyBatchOfOperationsFn),
-            std::move(onCompletionFn));
+            _exec, ops, std::move(applyBatchOfOperationsFn), std::move(onCompletionFn));
         status = _startupComponent_inlock(_applier);
         if (!status.isOK()) {
             onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, status);
@@ -1462,8 +1445,6 @@ StatusWith<Operations> InitialSyncer::_getNextApplierBatch_inlock() {
         return Operations();
     }
 
-    const int slaveDelaySecs = durationCount<Seconds>(_opts.getSlaveDelay());
-
     std::uint32_t totalBytes = 0;
     Operations ops;
     BSONObj op;
@@ -1508,21 +1489,6 @@ StatusWith<Operations> InitialSyncer::_getNextApplierBatch_inlock() {
         }
         if (totalBytes + entry.getRawObjSizeBytes() >= _opts.replBatchLimitBytes) {
             return std::move(ops);
-        }
-
-        // Check slaveDelay boundary.
-        if (slaveDelaySecs > 0) {
-            const auto opTimestampSecs = entry.getTimestamp().getSecs();
-            const unsigned int slaveDelayBoundary =
-                static_cast<unsigned int>(time(0) - slaveDelaySecs);
-
-            // Stop the batch as the lastOp is too new to be applied. If we continue
-            // on, we can get ops that are way ahead of the delay and this will
-            // make this thread sleep longer when handleSlaveDelay is called
-            // and apply ops much sooner than we like.
-            if (opTimestampSecs > slaveDelayBoundary) {
-                return std::move(ops);
-            }
         }
 
         // Add op to buffer.

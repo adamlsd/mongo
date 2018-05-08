@@ -71,22 +71,6 @@ public:
                               WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
 
     /**
-     *
-     * Constructs a SyncTail.
-     * During steady state replication, oplogApplication() obtains batches of operations to apply
-     * from 'observer'. It is not required to provide 'observer' at construction if we do not plan
-     * on using oplogApplication(). During the oplog application phase, the batch of operations is
-     * distributed across writer threads in 'writerPool'. Each writer thread applies its own vector
-     * of operations using 'func'. The writer thread pool is not owned by us.
-     */
-    SyncTail(OplogApplier::Observer* observer,
-             ReplicationConsistencyMarkers* consistencyMarkers,
-             StorageInterface* storageInterface,
-             MultiSyncApplyFunc func,
-             ThreadPool* writerPool);
-    virtual ~SyncTail();
-
-    /**
      * Creates thread pool for writer tasks.
      */
     static std::unique_ptr<ThreadPool> makeWriterPool();
@@ -100,6 +84,33 @@ public:
     static Status syncApply(OperationContext* opCtx,
                             const BSONObj& o,
                             OplogApplication::Mode oplogApplicationMode);
+
+    /**
+     *
+     * Constructs a SyncTail.
+     * During steady state replication, oplogApplication() obtains batches of operations to apply
+     * from 'observer'. It is not required to provide 'observer' at construction if we do not plan
+     * on using oplogApplication(). During the oplog application phase, the batch of operations is
+     * distributed across writer threads in 'writerPool'. Each writer thread applies its own vector
+     * of operations using 'func'. The writer thread pool is not owned by us.
+     */
+    SyncTail(OplogApplier::Observer* observer,
+             ReplicationConsistencyMarkers* consistencyMarkers,
+             StorageInterface* storageInterface,
+             MultiSyncApplyFunc func,
+             ThreadPool* writerPool,
+             const OplogApplier::Options& options);
+    SyncTail(OplogApplier::Observer* observer,
+             ReplicationConsistencyMarkers* consistencyMarkers,
+             StorageInterface* storageInterface,
+             MultiSyncApplyFunc func,
+             ThreadPool* writerPool);
+    virtual ~SyncTail();
+
+    /**
+     * Returns options for oplog application.
+     */
+    const OplogApplier::Options& getOptions() const;
 
     /**
      * Runs oplog application in a loop until shutdown() is called.
@@ -263,6 +274,9 @@ private:
     // Pool of worker threads for writing ops to the databases.
     // Not owned by us.
     ThreadPool* const _writerPool;
+
+    // Used to configure multiApply() behavior.
+    const OplogApplier::Options _options;
 
     // Protects member data of SyncTail.
     mutable stdx::mutex _mutex;

@@ -67,6 +67,7 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/repl_set_config.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/session_update_tracker.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session.h"
@@ -274,19 +275,6 @@ NamespaceStringOrUUID getNsOrUUID(const NamespaceString& nss, const BSONObj& op)
 
 }  // namespace
 
-SyncTail::SyncTail(OplogApplier::Observer* observer,
-                   ReplicationConsistencyMarkers* consistencyMarkers,
-                   StorageInterface* storageInterface,
-                   MultiSyncApplyFunc func,
-                   ThreadPool* writerPool)
-    : _observer(observer),
-      _consistencyMarkers(consistencyMarkers),
-      _storageInterface(storageInterface),
-      _applyFunc(func),
-      _writerPool(writerPool) {}
-
-SyncTail::~SyncTail() {}
-
 std::unique_ptr<ThreadPool> SyncTail::makeWriterPool() {
     return makeWriterPool(replWriterThreadCount);
 }
@@ -400,6 +388,32 @@ Status SyncTail::syncApply(OperationContext* opCtx,
     MONGO_UNREACHABLE;
 }
 
+SyncTail::SyncTail(OplogApplier::Observer* observer,
+                   ReplicationConsistencyMarkers* consistencyMarkers,
+                   StorageInterface* storageInterface,
+                   MultiSyncApplyFunc func,
+                   ThreadPool* writerPool,
+                   const OplogApplier::Options& options)
+    : _observer(observer),
+      _consistencyMarkers(consistencyMarkers),
+      _storageInterface(storageInterface),
+      _applyFunc(func),
+      _writerPool(writerPool),
+      _options(options) {}
+
+SyncTail::SyncTail(OplogApplier::Observer* observer,
+                   ReplicationConsistencyMarkers* consistencyMarkers,
+                   StorageInterface* storageInterface,
+                   MultiSyncApplyFunc func,
+                   ThreadPool* writerPool)
+    : SyncTail(observer, consistencyMarkers, storageInterface, func, writerPool, {}) {}
+
+SyncTail::~SyncTail() {}
+
+const OplogApplier::Options& SyncTail::getOptions() const {
+    return _options;
+}
+
 namespace {
 
 // The pool threads call this to prefetch each op
@@ -503,7 +517,7 @@ void scheduleWritesToOplog(OperationContext* opCtx,
     // there would be no way to take advantage of multiple threads if a storage engine doesn't
     // support document locking.
     if (!enoughToMultiThread ||
-        !opCtx->getServiceContext()->getGlobalStorageEngine()->supportsDocLocking()) {
+        !opCtx->getServiceContext()->getStorageEngine()->supportsDocLocking()) {
 
         invariant(threadPool->schedule(makeOplogWriterForRange(0, ops.size())));
         return;
@@ -569,14 +583,17 @@ private:
  * ops - This only modifies the isForCappedCollection field on each op. It does not alter the ops
  *      vector in any other way.
  * writerVectors - Set of operations for each worker thread to apply.
- * applyOpsOperations - If provided, stores extracted applyOps operations.
+ * derivedOps - If provided, this function inserts a decomposition of applyOps operations
+ *      and instructions for updating the transactions table.
+ * sessionUpdateTracker - if provided, keeps track of session info from ops.
  */
 void fillWriterVectors(OperationContext* opCtx,
                        MultiApplier::Operations* ops,
                        std::vector<MultiApplier::OperationPtrs>* writerVectors,
-                       std::vector<MultiApplier::Operations>* applyOpsOperations) {
+                       std::vector<MultiApplier::Operations>* derivedOps,
+                       SessionUpdateTracker* sessionUpdateTracker) {
     const auto serviceContext = opCtx->getServiceContext();
-    const auto storageEngine = serviceContext->getGlobalStorageEngine();
+    const auto storageEngine = serviceContext->getStorageEngine();
 
     const bool supportsDocLocking = storageEngine->supportsDocLocking();
     const uint32_t numWriters = writerVectors->size();
@@ -586,6 +603,15 @@ void fillWriterVectors(OperationContext* opCtx,
     for (auto&& op : *ops) {
         StringMapTraits::HashedKey hashedNs(op.getNamespace().ns());
         uint32_t hash = hashedNs.hash();
+
+        // We need to track all types of ops, including type 'n' (these are generated from chunk
+        // migrations).
+        if (sessionUpdateTracker) {
+            if (auto newOplogWrites = sessionUpdateTracker->updateOrFlush(op)) {
+                derivedOps->emplace_back(std::move(*newOplogWrites));
+                fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
+            }
+        }
 
         if (op.isCrudOpType()) {
             auto collProperties = collPropertiesCache.getCollectionProperties(opCtx, hashedNs);
@@ -614,9 +640,9 @@ void fillWriterVectors(OperationContext* opCtx,
         // function.
         if (op.isCommand() && op.getCommandType() == OplogEntry::CommandType::kApplyOps) {
             try {
-                applyOpsOperations->emplace_back(ApplyOps::extractOperations(op));
+                derivedOps->emplace_back(ApplyOps::extractOperations(op));
                 fillWriterVectors(
-                    opCtx, &applyOpsOperations->back(), writerVectors, applyOpsOperations);
+                    opCtx, &derivedOps->back(), writerVectors, derivedOps, sessionUpdateTracker);
             } catch (...) {
                 fassertFailedWithStatusNoTrace(
                     50711,
@@ -632,6 +658,20 @@ void fillWriterVectors(OperationContext* opCtx,
             writer.reserve(8);  // Skip a few growth rounds
         }
         writer.push_back(&op);
+    }
+}
+
+void fillWriterVectors(OperationContext* opCtx,
+                       MultiApplier::Operations* ops,
+                       std::vector<MultiApplier::OperationPtrs>* writerVectors,
+                       std::vector<MultiApplier::Operations>* derivedOps) {
+    SessionUpdateTracker sessionUpdateTracker;
+    fillWriterVectors(opCtx, ops, writerVectors, derivedOps, &sessionUpdateTracker);
+
+    auto newOplogWrites = sessionUpdateTracker.flushAll();
+    if (!newOplogWrites.empty()) {
+        derivedOps->emplace_back(std::move(newOplogWrites));
+        fillWriterVectors(opCtx, &derivedOps->back(), writerVectors, derivedOps, nullptr);
     }
 }
 
@@ -812,7 +852,7 @@ void SyncTail::oplogApplication(OplogBuffer* oplogBuffer, ReplicationCoordinator
     OpQueueBatcher batcher(this, _storageInterface, oplogBuffer);
 
     std::unique_ptr<ApplyBatchFinalizer> finalizer{
-        getGlobalServiceContext()->getGlobalStorageEngine()->isDurable()
+        getGlobalServiceContext()->getStorageEngine()->isDurable()
             ? new ApplyBatchFinalizerForJournal(replCoord)
             : new ApplyBatchFinalizer(replCoord)};
 
@@ -1200,16 +1240,19 @@ Status multiSyncApply(OperationContext* opCtx,
                       MultiApplier::OperationPtrs* ops,
                       SyncTail* st,
                       WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
+    invariant(st);
+
     UnreplicatedWritesBlock uwb(opCtx);
     DisableDocumentValidation validationDisabler(opCtx);
     ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(opCtx->lockState());
 
     ApplierHelpers::stableSortByNamespace(ops);
 
-    // This function is only called in steady state replication.
-    // TODO: This function can be called when we're in recovering as well as secondary. Set this
-    // mode correctly.
-    const OplogApplication::Mode oplogApplicationMode = OplogApplication::Mode::kSecondary;
+    // This function is only called in steady state replication and recovering.
+    // Assume we are recovering if oplog writes are disabled in the options.
+    const auto oplogApplicationMode = st->getOptions().skipWritesToOplog
+        ? OplogApplication::Mode::kRecovering
+        : OplogApplication::Mode::kSecondary;
 
     ApplierHelpers::InsertGroup insertGroup(ops, opCtx, oplogApplicationMode);
 
@@ -1238,6 +1281,13 @@ Status multiSyncApply(OperationContext* opCtx,
                     return status;
                 }
             } catch (const DBException& e) {
+                // SERVER-24927 If we have a NamespaceNotFound exception, then this document will be
+                // dropped before initial sync or recovery ends anyways and we should ignore it.
+                if (e.code() == ErrorCodes::NamespaceNotFound && entry.isCrudOpType() &&
+                    st->getOptions().allowNamespaceNotFoundErrorsOnCrudOps) {
+                    continue;
+                }
+
                 severe() << "writer worker caught exception: " << redact(e)
                          << " on: " << redact(entry.toBSON());
                 return e.toStatus();
@@ -1259,6 +1309,8 @@ Status multiInitialSyncApply(OperationContext* opCtx,
                              MultiApplier::OperationPtrs* ops,
                              SyncTail* st,
                              WorkerMultikeyPathInfo* workerMultikeyPathInfo) {
+    invariant(st);
+
     UnreplicatedWritesBlock uwb(opCtx);
     DisableDocumentValidation validationDisabler(opCtx);
     ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(opCtx->lockState());
@@ -1340,29 +1392,31 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
         ON_BLOCK_EXIT([&] { _writerPool->waitForIdle(); });
 
         // Write batch of ops into oplog.
-        _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, ops.front().getTimestamp());
-        scheduleWritesToOplog(opCtx, _storageInterface, _writerPool, ops);
+        if (!_options.skipWritesToOplog) {
+            _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, ops.front().getTimestamp());
+            scheduleWritesToOplog(opCtx, _storageInterface, _writerPool, ops);
+        }
 
-        // Holds extracted applyOps operations. Keep in scope until all operations in 'ops' and
-        // 'applyOpsOperations' have been applied.
-        std::vector<MultiApplier::Operations> applyOpsOperations;
-
-        // Normal writes to config.transactions in the primary don't create an oplog entry.
-        // Reconstruct these ops so config.transactions will be replicated correctly.
-        // Need to create a new copy of ops vector because the workerPool is also concurrently
-        // reading it and we don't want the new oplog entries to get written to the actual
-        // oplog.rs collection.
-        auto opsWithTxnUpdates = Session::addOpsForReplicatingTxnTable(ops);
+        // Holds 'pseudo operations' generated by secondaries to aid in replication.
+        // Keep in scope until all operations in 'ops' and 'derivedOps' have been applied.
+        // Pseudo operations include:
+        // - applyOps operations expanded to individual ops.
+        // - ops to update config.transactions. Normal writes to config.transactions in the
+        //   primary don't create an oplog entry, so extract info from writes with transactions
+        //   and create a pseudo oplog.
+        std::vector<MultiApplier::Operations> derivedOps;
 
         std::vector<MultiApplier::OperationPtrs> writerVectors(_writerPool->getStats().numThreads);
-        fillWriterVectors(opCtx, &opsWithTxnUpdates, &writerVectors, &applyOpsOperations);
+        fillWriterVectors(opCtx, &ops, &writerVectors, &derivedOps);
 
         // Wait for writes to finish before applying ops.
         _writerPool->waitForIdle();
 
         // Reset consistency markers in case the node fails while applying ops.
-        _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, Timestamp());
-        _consistencyMarkers->setMinValidToAtLeast(opCtx, ops.back().getOpTime());
+        if (!_options.skipWritesToOplog) {
+            _consistencyMarkers->setOplogTruncateAfterPoint(opCtx, Timestamp());
+            _consistencyMarkers->setMinValidToAtLeast(opCtx, ops.back().getOpTime());
+        }
 
         {
             std::vector<Status> statusVector(_writerPool->getStats().numThreads, Status::OK());
@@ -1388,7 +1442,7 @@ StatusWith<OpTime> SyncTail::multiApply(OperationContext* opCtx, MultiApplier::O
         // This means that all the writes associated with the oplog entries in the batch are
         // finished and no new writes with timestamps associated with those oplog entries will show
         // up in the future.
-        const auto storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+        const auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
         storageEngine->replicationBatchIsComplete();
     }
 

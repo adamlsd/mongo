@@ -514,7 +514,8 @@ TEST_F(SyncTailTest, MultiSyncApplyUsesSyncApplyToApplyOperation) {
 
     MultiApplier::OperationPtrs ops = {&op};
     WorkerMultikeyPathInfo pathInfo;
-    ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, nullptr, &pathInfo));
+    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
+    ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, &syncTail, &pathInfo));
     // Collection should be created after SyncTail::syncApply() processes operation.
     ASSERT_TRUE(AutoGetCollectionForReadCommand(_opCtx.get(), nss).getCollection());
 }
@@ -522,9 +523,10 @@ TEST_F(SyncTailTest, MultiSyncApplyUsesSyncApplyToApplyOperation) {
 void testWorkerMultikeyPaths(OperationContext* opCtx,
                              const OplogEntry& op,
                              unsigned long numPaths) {
+    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
     WorkerMultikeyPathInfo pathInfo;
     MultiApplier::OperationPtrs ops = {&op};
-    ASSERT_OK(multiSyncApply(opCtx, &ops, nullptr, &pathInfo));
+    ASSERT_OK(multiSyncApply(opCtx, &ops, &syncTail, &pathInfo));
     ASSERT_EQ(pathInfo.size(), numPaths);
 }
 
@@ -577,9 +579,10 @@ TEST_F(SyncTailTest, MultiSyncApplyAddsMultipleWorkerMultikeyPathInfo) {
         auto opA = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, docA);
         auto docB = BSON("_id" << 2 << "b" << BSON_ARRAY(6 << 7));
         auto opB = makeInsertDocumentOplogEntry({Timestamp(Seconds(5), 0), 1LL}, nss, docB);
+        SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
         WorkerMultikeyPathInfo pathInfo;
         MultiApplier::OperationPtrs ops = {&opA, &opB};
-        ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, nullptr, &pathInfo));
+        ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, &syncTail, &pathInfo));
         ASSERT_EQ(pathInfo.size(), 2UL);
     }
 }
@@ -618,8 +621,10 @@ TEST_F(SyncTailTest, MultiSyncApplyFailsWhenCollectionCreationTriesToMakeUUID) {
     NamespaceString nss("foo." + _agent.getSuiteName() + "_" + _agent.getTestName());
 
     auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
+    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
     MultiApplier::OperationPtrs ops = {&op};
-    ASSERT_EQUALS(ErrorCodes::InvalidOptions, multiSyncApply(_opCtx.get(), &ops, nullptr, nullptr));
+    ASSERT_EQUALS(ErrorCodes::InvalidOptions,
+                  multiSyncApply(_opCtx.get(), &ops, &syncTail, nullptr));
 }
 
 TEST_F(SyncTailTest, MultiInitialSyncApplyFailsWhenCollectionCreationTriesToMakeUUID) {
@@ -628,9 +633,10 @@ TEST_F(SyncTailTest, MultiInitialSyncApplyFailsWhenCollectionCreationTriesToMake
 
     auto op = makeCreateCollectionOplogEntry({Timestamp(Seconds(1), 0), 1LL}, nss);
 
+    SyncTail syncTail(nullptr, nullptr, nullptr, {}, nullptr);
     MultiApplier::OperationPtrs ops = {&op};
     ASSERT_EQUALS(ErrorCodes::InvalidOptions,
-                  multiInitialSyncApply(_opCtx.get(), &ops, nullptr, nullptr));
+                  multiInitialSyncApply(_opCtx.get(), &ops, &syncTail, nullptr));
 }
 
 TEST_F(SyncTailTest, MultiSyncApplyDisablesDocumentValidationWhileApplyingOperations) {
@@ -1665,7 +1671,7 @@ TEST_F(SyncTailTxnTableTest, WriteWithTxnMixedWithDirectWriteToTxnTable) {
     ASSERT_TRUE(result.isEmpty());
 }
 
-TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectWriteToTxnTable) {
+TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectDeleteToTxnTable) {
     const auto sessionId = makeLogicalSessionIdForTest();
     OperationSessionInfo sessionInfo;
     sessionInfo.setSessionId(sessionId);
@@ -1704,6 +1710,38 @@ TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectWriteToTxnTab
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, deleteOp, insertOp2}));
 
     checkTxnTable(sessionInfo, {Timestamp(3, 0), 2}, date);
+}
+
+TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectUpdateToTxnTable) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    OperationSessionInfo sessionInfo;
+    sessionInfo.setSessionId(sessionId);
+    sessionInfo.setTxnNumber(3);
+    auto date = Date_t::now();
+
+    auto insertOp = makeOplogEntry(nss(),
+                                   {Timestamp(1, 0), 1},
+                                   repl::OpTypeEnum::kInsert,
+                                   BSON("_id" << 1),
+                                   boost::none,
+                                   sessionInfo,
+                                   date);
+
+    repl::OpTime newWriteOpTime(Timestamp(2, 0), 1);
+    auto updateOp = makeOplogEntry(NamespaceString::kSessionTransactionsTableNamespace,
+                                   {Timestamp(4, 0), 1},
+                                   repl::OpTypeEnum::kUpdate,
+                                   BSON("$set" << BSON("lastWriteOpTime" << newWriteOpTime)),
+                                   BSON("_id" << sessionInfo.getSessionId()->toBSON()),
+                                   {},
+                                   Date_t::now());
+
+    auto writerPool = SyncTail::makeWriterPool();
+    SyncTail syncTail(
+        nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
+    ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, updateOp}));
+
+    checkTxnTable(sessionInfo, newWriteOpTime, date);
 }
 
 TEST_F(SyncTailTxnTableTest, MultiApplyUpdatesTheTransactionTable) {

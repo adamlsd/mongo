@@ -360,6 +360,15 @@ add_option('use-system-intel_decimal128',
     nargs=0,
 )
 
+add_option('use-system-mongo-c',
+    choices=['on', 'off', 'auto'],
+    const='on',
+    default="auto",
+    help="use system version of the mongo-c-driver (auto will use it if it's found)",
+    nargs='?',
+    type='choice',
+)
+
 add_option('use-system-all',
     help='use all system libraries',
     nargs=0,
@@ -2793,28 +2802,11 @@ def doConfigure(myenv):
         sslLinkDependencies = ["crypto", "dl"]
         if conf.env.TargetOSIs('freebsd'):
             sslLinkDependencies = ["crypto"]
+
         if conf.env.TargetOSIs('windows'):
             sslLibName = "ssleay32"
             cryptoLibName = "libeay32"
             sslLinkDependencies = ["libeay32"]
-
-            # Add the SSL binaries to the zip file distribution
-            def addOpenSslLibraryToDistArchive(file_name):
-                openssl_bin_path = os.path.normpath(env['WINDOWS_OPENSSL_BIN'].lower())
-                full_file_name = os.path.join(openssl_bin_path, file_name)
-                if os.path.exists(full_file_name):
-                    env.Append(ARCHIVE_ADDITIONS=[full_file_name])
-                    env.Append(ARCHIVE_ADDITION_DIR_MAP={
-                            openssl_bin_path: "bin"
-                            })
-                    return True
-                else:
-                    return False
-
-            files = ['ssleay32.dll', 'libeay32.dll']
-            for extra_file in files:
-                if not addOpenSslLibraryToDistArchive(extra_file):
-                    print("WARNING: Cannot find SSL library '%s'" % extra_file)
 
         # Used to import system certificate keychains
         if conf.env.TargetOSIs('darwin'):
@@ -2982,6 +2974,29 @@ def doConfigure(myenv):
         print("Using SSL Provider: {0}".format(ssl_provider))
     else:
         ssl_provider = "none"
+
+    # The Windows build needs the openssl binaries if it targets openssl or includes the tools
+    # since the tools link against openssl
+    if conf.env.TargetOSIs('windows') and (ssl_provider == "openssl" or has_option("use-new-tools")):
+        # Add the SSL binaries to the zip file distribution
+        def addOpenSslLibraryToDistArchive(file_name):
+            openssl_bin_path = os.path.normpath(env['WINDOWS_OPENSSL_BIN'].lower())
+            full_file_name = os.path.join(openssl_bin_path, file_name)
+            if os.path.exists(full_file_name):
+                env.Append(ARCHIVE_ADDITIONS=[full_file_name])
+                env.Append(ARCHIVE_ADDITION_DIR_MAP={
+                        openssl_bin_path: "bin"
+                        })
+                return True
+            else:
+                return False
+
+        files = ['ssleay32.dll', 'libeay32.dll']
+        for extra_file in files:
+            if not addOpenSslLibraryToDistArchive(extra_file):
+                print("WARNING: Cannot find SSL library '%s'" % extra_file)
+
+
 
     if free_monitoring == "auto":
         if "enterprise" not in env['MONGO_MODULES']:
@@ -3209,15 +3224,76 @@ def doConfigure(myenv):
             conf.env.SetConfigHeaderDefine("MONGO_CONFIG_MAX_EXTENDED_ALIGNMENT", size)
             break
  
-    conf.env['MONGO_HAVE_LIBMONGOC'] = conf.CheckLibWithHeader(
-            ["mongoc-1.0"],
-            ["mongoc.h"],
-            "C",
-            "mongoc_get_major_version();",
-            autoadd=False )
+    mongoc_mode = get_option('use-system-mongo-c')
+    if mongoc_mode != 'off':
+        conf.env['MONGO_HAVE_LIBMONGOC'] = conf.CheckLibWithHeader(
+                ["mongoc-1.0"],
+                ["mongoc.h"],
+                "C",
+                "mongoc_get_major_version();",
+                autoadd=False )
+        if not conf.env['MONGO_HAVE_LIBMONGOC'] and mongoc_mode == 'on':
+            myenv.ConfError("Failed to find the required C driver headers")
 
     # ask each module to configure itself and the build environment.
     moduleconfig.configure_modules(mongo_modules, conf)
+
+    if env['TARGET_ARCH'] == "ppc64le":
+        # This checks for an altivec optimization we use in full text search.
+        # Different versions of gcc appear to put output bytes in different
+        # parts of the output vector produced by vec_vbpermq.  This configure
+        # check looks to see which format the compiler produces.
+        #
+        # NOTE: This breaks cross compiles, as it relies on checking runtime functionality for the
+        # environment we're in.  A flag to choose the index, or the possibility that we don't have
+        # multiple versions to support (after a compiler upgrade) could solve the problem if we
+        # eventually need them.
+        def CheckAltivecVbpermqOutput(context, index):
+            test_body = """
+                #include <altivec.h>
+                #include <cstring>
+                #include <cstdint>
+                #include <cstdlib>
+
+                int main() {{
+                    using Native = __vector signed char;
+                    const size_t size = sizeof(Native);
+                    const Native bits = {{ 120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0 }};
+
+                    uint8_t inputBuf[size];
+                    std::memset(inputBuf, 0xFF, sizeof(inputBuf));
+
+                    for (size_t offset = 0; offset <= size; offset++) {{
+                        Native vec = vec_vsx_ld(0, reinterpret_cast<const Native*>(inputBuf));
+
+                        uint64_t mask = vec_extract(vec_vbpermq(vec, bits), {0});
+
+                        size_t initialZeros = (mask == 0 ? size : __builtin_ctzll(mask));
+                        if (initialZeros != offset) {{
+			    return 1;
+                        }}
+
+                        if (offset < size) {{
+                            inputBuf[offset] = 0;  // Add an initial 0 for the next loop.
+                        }}
+                    }}
+
+		    return 0;
+                }}
+            """.format(index)
+
+            context.Message('Checking for vec_vbperm output in index {0}... '.format(index))
+            ret = context.TryRun(textwrap.dedent(test_body), ".cpp")
+            context.Result(ret[0])
+            return ret[0]
+
+        conf.AddTest('CheckAltivecVbpermqOutput', CheckAltivecVbpermqOutput)
+
+        outputIndex = next((idx for idx in [0,1] if conf.CheckAltivecVbpermqOutput(idx)), None)
+        if outputIndex is not None:
+	    conf.env.SetConfigHeaderDefine("MONGO_CONFIG_ALTIVEC_VEC_VBPERMQ_OUTPUT_INDEX", outputIndex)
+        else:
+            myenv.ConfError("Running on ppc64le, but can't find a correct vec_vbpermq output index.  Compiler or platform not supported")
 
     return conf.Finish()
 

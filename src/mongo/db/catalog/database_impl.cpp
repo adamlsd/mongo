@@ -67,6 +67,7 @@
 #include "mongo/db/stats/top.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/db/storage/storage_engine.h"
+#include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_options.h"
 #include "mongo/db/system_index.h"
 #include "mongo/db/views/view_catalog.h"
@@ -92,12 +93,12 @@ namespace {
 MONGO_FP_DECLARE(hangBeforeLoggingCreateCollection);
 }  // namespace
 
-using std::unique_ptr;
 using std::endl;
 using std::list;
 using std::set;
 using std::string;
 using std::stringstream;
+using std::unique_ptr;
 using std::vector;
 
 void uassertNamespaceNotIndex(StringData ns, StringData caller) {
@@ -111,16 +112,16 @@ public:
     AddCollectionChange(OperationContext* opCtx, DatabaseImpl* db, StringData ns)
         : _opCtx(opCtx), _db(db), _ns(ns.toString()) {}
 
-    virtual void commit() {
+    virtual void commit(boost::optional<Timestamp> commitTime) {
         CollectionMap::const_iterator it = _db->_collections.find(_ns);
 
         if (it == _db->_collections.end())
             return;
 
         // Ban reading from this collection on committed reads on snapshots before now.
-        auto replCoord = repl::ReplicationCoordinator::get(_opCtx);
-        auto snapshotName = replCoord->getMinimumVisibleSnapshot(_opCtx);
-        it->second->setMinimumVisibleSnapshot(snapshotName);
+        if (commitTime) {
+            it->second->setMinimumVisibleSnapshot(commitTime.get());
+        }
     }
 
     virtual void rollback() {
@@ -143,7 +144,7 @@ public:
     // Takes ownership of coll (but not db).
     RemoveCollectionChange(DatabaseImpl* db, Collection* coll) : _db(db), _coll(coll) {}
 
-    virtual void commit() {
+    virtual void commit(boost::optional<Timestamp>) {
         delete _coll;
     }
 
@@ -410,7 +411,7 @@ void DatabaseImpl::getStats(OperationContext* opCtx, BSONObjBuilder* output, dou
 
     _dbEntry->appendExtraStats(opCtx, output, scale);
 
-    if (!opCtx->getServiceContext()->getGlobalStorageEngine()->isEphemeral()) {
+    if (!opCtx->getServiceContext()->getStorageEngine()->isEphemeral()) {
         boost::filesystem::path dbpath(storageGlobalParams.dbpath);
         if (storageGlobalParams.directoryperdb) {
             dbpath /= _name;
@@ -868,7 +869,7 @@ void DatabaseImpl::dropDatabase(OperationContext* opCtx, Database* db) {
 
     DatabaseHolder::getDatabaseHolder().close(opCtx, name, "database dropped");
 
-    auto const storageEngine = serviceContext->getGlobalStorageEngine();
+    auto const storageEngine = serviceContext->getStorageEngine();
     writeConflictRetry(opCtx, "dropDatabase", name, [&] {
         storageEngine->dropDatabase(opCtx, name).transitional_ignore();
     });
@@ -1019,18 +1020,19 @@ MONGO_REGISTER_SHIM(Database::userCreateNS)
         }
     }
 
-    status =
-        validateStorageOptions(collectionOptions.storageEngine, [](const auto& x, const auto& y) {
-            return x->validateCollectionStorageOptions(y);
-        });
+    status = validateStorageOptions(
+        opCtx->getServiceContext(),
+        collectionOptions.storageEngine,
+        [](const auto& x, const auto& y) { return x->validateCollectionStorageOptions(y); });
 
     if (!status.isOK())
         return status;
 
     if (auto indexOptions = collectionOptions.indexOptionDefaults["storageEngine"]) {
-        status = validateStorageOptions(indexOptions.Obj(), [](const auto& x, const auto& y) {
-            return x->validateIndexStorageOptions(y);
-        });
+        status = validateStorageOptions(
+            opCtx->getServiceContext(), indexOptions.Obj(), [](const auto& x, const auto& y) {
+                return x->validateIndexStorageOptions(y);
+            });
 
         if (!status.isOK()) {
             return status;
@@ -1052,7 +1054,7 @@ MONGO_REGISTER_SHIM(Database::dropAllDatabasesExceptLocal)(OperationContext* opC
     Lock::GlobalWrite lk(opCtx);
 
     vector<string> n;
-    StorageEngine* storageEngine = opCtx->getServiceContext()->getGlobalStorageEngine();
+    StorageEngine* storageEngine = opCtx->getServiceContext()->getStorageEngine();
     storageEngine->listDatabases(&n);
 
     if (n.size() == 0)

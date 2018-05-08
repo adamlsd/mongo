@@ -45,6 +45,7 @@
 #include "mongo/db/ops/update.h"
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/repl/read_concern_args.h"
+#include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/retryable_writes_stats.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -55,7 +56,7 @@
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
-#include "mongo/util/net/sock.h"
+#include "mongo/util/net/socket_utils.h"
 
 namespace mongo {
 
@@ -354,6 +355,18 @@ void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber t
     }
 }
 
+void Session::setSpeculativeTransactionOpTimeToLastApplied(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+    repl::ReplicationCoordinator* replCoord =
+        repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
+    opCtx->recoveryUnit()->setShouldReadAtLastAppliedTimestamp(true);
+    opCtx->recoveryUnit()->preallocateSnapshot();
+    auto readTimestamp = opCtx->recoveryUnit()->getPointInTimeReadTimestamp();
+    invariant(readTimestamp);
+    // Transactions do not survive term changes, so combining "getTerm" here with the
+    // recovery unit timestamp does not cause races.
+    _speculativeTransactionReadOpTime = {*readTimestamp, replCoord->getTerm()};
+}
 
 void Session::onWriteOpCompletedOnPrimary(OperationContext* opCtx,
                                           TxnNumber txnNumber,
@@ -441,6 +454,7 @@ void Session::invalidate() {
 
     _activeTxnNumber = kUninitializedTxnNumber;
     _activeTxnCommittedStatements.clear();
+    _speculativeTransactionReadOpTime = repl::OpTime();
     _hasIncompleteHistory = false;
 }
 
@@ -604,7 +618,7 @@ Session::TxnResources::TxnResources(OperationContext* opCtx) {
     _locker->unsetThreadId();
 
     _recoveryUnit = std::unique_ptr<RecoveryUnit>(opCtx->releaseRecoveryUnit());
-    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
+    opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
                            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     _readConcernArgs = repl::ReadConcernArgs::get(opCtx);
@@ -823,9 +837,8 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
         }
         // We must clear the recovery unit so any post-transaction writes can run without
         // transactional settings such as a read timestamp.
-        opCtx->setRecoveryUnit(
-            opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
-            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
     }
     if (canKillCursors) {
         _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
@@ -855,6 +868,7 @@ void Session::_abortTransaction(WithLock wl, OperationContext* opCtx, bool* canK
     _transactionOperationBytes = 0;
     _transactionOperations.clear();
     _txnState = MultiDocumentTransactionState::kAborted;
+    _speculativeTransactionReadOpTime = repl::OpTime();
     *canKillCursors = true;
 }
 
@@ -885,6 +899,7 @@ void Session::_setActiveTxn(WithLock wl,
     _activeTxnCommittedStatements.clear();
     _hasIncompleteHistory = false;
     _txnState = MultiDocumentTransactionState::kNone;
+    _speculativeTransactionReadOpTime = repl::OpTime();
 }
 
 void Session::addTransactionOperation(OperationContext* opCtx,
@@ -976,9 +991,8 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
         }
         // We must clear the recovery unit so any post-transaction writes can run without
         // transactional settings such as a read timestamp.
-        opCtx->setRecoveryUnit(
-            opCtx->getServiceContext()->getGlobalStorageEngine()->newRecoveryUnit(),
-            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
         _commitcv.notify_all();
     });
     lk.unlock();
@@ -986,6 +1000,16 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
     opCtx->setWriteUnitOfWork(nullptr);
     committed = true;
     lk.lock();
+    auto& clientInfo = repl::ReplClientInfo::forClient(opCtx->getClient());
+    // If no writes have been done and the original read concern was at least "majority", set
+    // the client op time forward to the read timestamp so waiting for write concern will
+    // ensure all read data was committed.
+    auto originalReadConcernLevel = repl::ReadConcernArgs::get(opCtx).getOriginalLevel();
+    if (_speculativeTransactionReadOpTime > clientInfo.getLastOp() &&
+        (originalReadConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern ||
+         originalReadConcernLevel == repl::ReadConcernLevel::kSnapshotReadConcern)) {
+        clientInfo.setLastOp(_speculativeTransactionReadOpTime);
+    }
     _txnState = MultiDocumentTransactionState::kCommitted;
 }
 
@@ -1102,7 +1126,8 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
                                            std::vector<StmtId> stmtIdsWritten,
                                            const repl::OpTime& lastStmtIdWriteOpTime) {
     opCtx->recoveryUnit()->onCommit(
-        [ this, newTxnNumber, stmtIdsWritten = std::move(stmtIdsWritten), lastStmtIdWriteOpTime ] {
+        [ this, newTxnNumber, stmtIdsWritten = std::move(stmtIdsWritten), lastStmtIdWriteOpTime ](
+            boost::optional<Timestamp>) {
             RetryableWritesStats::get(getGlobalServiceContext())
                 ->incrementTransactionsCollectionWriteCount();
 
@@ -1176,21 +1201,6 @@ void Session::_registerUpdateCacheOnCommit(OperationContext* opCtx,
                                     << " due to failpoint. The write must not be reflected.");
         }
     }
-}
-
-std::vector<repl::OplogEntry> Session::addOpsForReplicatingTxnTable(
-    const std::vector<repl::OplogEntry>& ops) {
-    std::vector<repl::OplogEntry> newOps;
-
-    for (auto&& op : ops) {
-        newOps.push_back(op);
-
-        if (auto updateTxnTableOp = createMatchingTransactionTableUpdate(op)) {
-            newOps.push_back(*updateTxnTableOp);
-        }
-    }
-
-    return newOps;
 }
 
 boost::optional<repl::OplogEntry> Session::createMatchingTransactionTableUpdate(

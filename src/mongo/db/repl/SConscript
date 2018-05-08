@@ -53,6 +53,7 @@ env.CppUnitTest(
         'oplog_entry',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
         '$BUILD_DIR/mongo/rpc/command_status',
     ],
@@ -64,6 +65,7 @@ env.CppUnitTest(
         'oplog_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
         '$BUILD_DIR/mongo/unittest/concurrency',
         '$BUILD_DIR/mongo/util/concurrency/thread_pool',
@@ -84,6 +86,7 @@ env.CppUnitTest(
         'oplog_entry',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
         '$BUILD_DIR/mongo/rpc/command_status',
     ],
@@ -264,6 +267,7 @@ env.CppUnitTest(
         'oplog_interface_local',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -302,6 +306,7 @@ env.CppUnitTest(
         'replication_consistency_markers_impl',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -329,6 +334,7 @@ env.CppUnitTest(
         'replmocks',
         'replication_recovery',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -357,6 +363,7 @@ env.CppUnitTest(
         'replication_process',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -384,6 +391,7 @@ env.CppUnitTest(
         'drop_pending_collection_reaper',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
     ],
 )
@@ -443,6 +451,7 @@ env.CppUnitTest(
         'oplog_interface_local',
         'replmocks',
         'storage_interface_impl',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
         '$BUILD_DIR/mongo/unittest/concurrency',
     ],
@@ -562,6 +571,7 @@ env.CppUnitTest(
         'rs_rollback_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         'oplog_interface_local',
         'rollback_test_fixture',
         'rs_rollback',
@@ -599,6 +609,7 @@ env.CppUnitTest(
         'rollback_impl',
         'rollback_test_fixture',
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
     ],
 )
 
@@ -654,7 +665,8 @@ env.Library(
         'idempotency_test_fixture.cpp',
     ],
     LIBDEPS=[
-        'sync_tail_test_fixture'
+        'sync_tail_test_fixture',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
     ],
 )
 
@@ -679,6 +691,7 @@ env.CppUnitTest(
         'sync_tail_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/dbdirectclient',
         '$BUILD_DIR/mongo/db/commands/mongod_fcv',
         'idempotency_test_fixture',

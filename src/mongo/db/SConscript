@@ -133,6 +133,7 @@ env.CppUnitTest(
         'common',
         'op_observer_d',
         'service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/repl/replmocks',
     ],
 )
@@ -1605,6 +1606,7 @@ env.CppUnitTest(
         'logical_time_validator_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/s/catalog/dist_lock_manager_mock',
         '$BUILD_DIR/mongo/s/config_server_test_fixture',
         'keys_collection_manager',
@@ -1632,6 +1634,7 @@ env.Library(
     LIBDEPS= [
         'logical_clock',
         'signed_logical_time',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/s/sharding_mongod_test_fixture',
         '$BUILD_DIR/mongo/util/clock_source_mock'
     ],
@@ -1655,6 +1658,7 @@ env.CppUnitTest(
         'keys_collection_manager_sharding_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/s/catalog/dist_lock_manager_mock',
         '$BUILD_DIR/mongo/s/config_server_test_fixture',
         'keys_collection_manager',
@@ -1777,6 +1781,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'query_exec',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
         '$BUILD_DIR/mongo/client/read_preference'
     ],
@@ -1788,6 +1793,7 @@ env.CppUnitTest(
         'transaction_history_iterator_test.cpp',
     ],
     LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
         'query_exec',
         'service_context_d',

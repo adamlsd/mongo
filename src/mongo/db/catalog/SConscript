@@ -34,6 +34,7 @@ env.CppUnitTest(
     source = 'collection_test.cpp',
     LIBDEPS=[
         'catalog_helpers',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
@@ -142,6 +143,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'database',
         'index_create',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
@@ -326,6 +328,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'catalog_helpers',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
@@ -343,6 +346,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'catalog_helpers',
         'uuid_catalog',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
@@ -360,6 +364,7 @@ env.CppUnitTest(
     LIBDEPS=[
         'catalog_helpers',
         'index_create',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/drop_pending_collection_reaper',
@@ -378,6 +383,7 @@ env.CppUnitTest(
     ],
     LIBDEPS=[
         'catalog_helpers',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/namespace_string',
         '$BUILD_DIR/mongo/db/repl/drop_pending_collection_reaper',

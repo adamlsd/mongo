@@ -94,7 +94,7 @@ public:
         if (!waitForWCStatus.isOK() && invocation->definition()->isUserManagementCommand()) {
             BSONObj temp = commandResponseBuilder.asTempObj().copy();
             commandResponseBuilder.resetToEmpty();
-            CommandHelpers::appendCommandStatus(commandResponseBuilder, waitForWCStatus);
+            CommandHelpers::appendCommandStatusNoThrow(commandResponseBuilder, waitForWCStatus);
             commandResponseBuilder.appendElementsUnique(temp);
         }
     }
@@ -110,7 +110,7 @@ public:
 
     void uassertCommandDoesNotSpecifyWriteConcern(const BSONObj& cmd) const override {
         if (commandSpecifiesWriteConcern(cmd)) {
-            uassertStatusOK({ErrorCodes::InvalidOptions, "Command does not support writeConcern"});
+            uasserted(ErrorCodes::InvalidOptions, "Command does not support writeConcern");
         }
     }
 

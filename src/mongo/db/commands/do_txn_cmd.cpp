@@ -145,9 +145,7 @@ public:
             maybeDisableValidation.emplace(opCtx);
 
         auto status = OplogApplicationChecks::checkOperationArray(cmdObj.firstElement());
-        if (!status.isOK()) {
-            return CommandHelpers::appendCommandStatus(result, status);
-        }
+        uassertStatusOK(status);
 
         // TODO (SERVER-30217): When a write concern is provided to the doTxn command, we
         // normally wait on the OpTime of whichever operation successfully completed last. This is
@@ -159,8 +157,8 @@ public:
         // was acknowledged. To fix this, we should wait for replication of the node’s last applied
         // OpTime if the last write operation was a no-op write.
 
-        auto doTxnStatus =
-            CommandHelpers::appendCommandStatus(result, doTxn(opCtx, dbname, cmdObj, &result));
+        auto doTxnStatus = CommandHelpers::appendCommandStatusNoThrow(
+            result, doTxn(opCtx, dbname, cmdObj, &result));
 
         return doTxnStatus;
     }

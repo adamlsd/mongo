@@ -38,6 +38,7 @@
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_manager.h"
+#include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authorization_session_for_test.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
@@ -76,25 +77,31 @@ public:
         session = transportLayer.createSession();
         client = serviceContext.makeClient("testClient", session);
         RestrictionEnvironment::set(
-            session, stdx::make_unique<RestrictionEnvironment>(SockAddr(), SockAddr()));
+            session, std::make_unique<RestrictionEnvironment>(SockAddr(), SockAddr()));
         _opCtx = client->makeOperationContext();
-        AuthorizationManager::set(&serviceContext, AuthorizationManager::create());
+        auto localManagerState = std::make_unique<AuthzManagerExternalStateMock>();
+        managerState = localManagerState.get();
+        managerState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
+        auto uniqueAuthzManager = std::make_unique<AuthorizationManagerImpl>(
+            std::move(localManagerState), AuthorizationManagerImpl::TestingMock{});
+        authzManager = uniqueAuthzManager.get();
+        AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
         auto localSessionState = std::make_unique<AuthzSessionExternalStateMock>(authzManager);
         sessionState = localSessionState.get();
 
         auto localauthzSession =
-            stdx::make_unique<AuthorizationSessionForTest>(std::move(localSessionState));
+            std::make_unique<AuthorizationSessionForTest>(std::move(localSessionState));
         authzSession = localauthzSession.get();
 
         AuthorizationSession::set(client.get(), std::move(localauthzSession));
         authzManager->setAuthEnabled(true);
 
         auto localServiceLiason =
-            stdx::make_unique<MockServiceLiason>(std::make_shared<MockServiceLiasonImpl>());
+            std::make_unique<MockServiceLiason>(std::make_shared<MockServiceLiasonImpl>());
         auto localSessionsCollection = stdx::make_unique<MockSessionsCollection>(
             std::make_shared<MockSessionsCollectionImpl>());
 
-        auto localLogicalSessionCache = stdx::make_unique<LogicalSessionCacheImpl>(
+        auto localLogicalSessionCache = std::make_unique<LogicalSessionCacheImpl>(
             std::move(localServiceLiason), std::move(localSessionsCollection), nullptr);
 
         LogicalSessionCache::set(&serviceContext, std::move(localLogicalSessionCache));

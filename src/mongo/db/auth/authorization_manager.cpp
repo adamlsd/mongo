@@ -89,7 +89,8 @@ const NamespaceString AuthorizationManager::defaultTempRolesCollectionNamespace(
 const Status AuthorizationManager::authenticationFailedStatus(ErrorCodes::AuthenticationFailed,
                                                               "Authentication failed.");
 
-const BSONObj AuthorizationManager::versionDocumentQuery = BSON("_id" << "authSchema");
+const BSONObj AuthorizationManager::versionDocumentQuery = BSON("_id"
+                                                                << "authSchema");
 
 const std::string AuthorizationManager::schemaVersionFieldName = "currentVersion";
 

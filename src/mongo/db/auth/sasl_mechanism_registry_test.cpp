@@ -26,11 +26,11 @@
  *    it in the license file.
  */
 
+#include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
-#include "mongo/db/auth/sasl_mechanism_registry.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/db/service_context_noop.h"
 #include "mongo/unittest/unittest.h"

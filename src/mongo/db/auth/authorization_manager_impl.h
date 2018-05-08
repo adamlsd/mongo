@@ -48,287 +48,288 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/server_options.h"
-#include "mongo/stdx/unordered_map.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/stdx/unordered_map.h"
 
-namespace mongo
-{
-    class AuthorizationSession;
-    class AuthzManagerExternalState;
-    class OperationContext;
-    class ServiceContext;
-    class UserDocumentParser;
+namespace mongo {
+class AuthorizationSession;
+class AuthzManagerExternalState;
+class OperationContext;
+class ServiceContext;
+class UserDocumentParser;
+
+/**
+ * Contains server/cluster-wide information about Authorization.
+ */
+class AuthorizationManagerImpl : public AuthorizationManager {
+public:
+    ~AuthorizationManagerImpl() override;
+
+    AuthorizationManagerImpl();
+
+    struct TestingMock {
+        explicit TestingMock() = default;
+    };
+    AuthorizationManagerImpl(std::unique_ptr<AuthzManagerExternalState> externalState, TestingMock);
 
     /**
-     * Contains server/cluster-wide information about Authorization.
+     * Returns a new AuthorizationSession for use with this AuthorizationManager.
      */
-    class AuthorizationManagerImpl
-        : public AuthorizationManager
-    {
-        public:
-            ~AuthorizationManagerImpl() override;
+    std::unique_ptr<AuthorizationSession> makeAuthorizationSession() override;
 
-            AuthorizationManagerImpl();
+    /**
+     * Sets whether or not startup AuthSchema validation checks should be applied in this manager.
+     */
+    void setShouldValidateAuthSchemaOnStartup(bool validate) override;
 
-			struct TestingMock { explicit TestingMock()= default; };
-			AuthorizationManagerImpl( std::unique_ptr< AuthzManagerExternalState > externalState, TestingMock );
+    /**
+     * Returns true if startup AuthSchema validation checks should be applied in this manager.
+     */
+    bool shouldValidateAuthSchemaOnStartup() override;
 
-            /**
-             * Returns a new AuthorizationSession for use with this AuthorizationManager.
-             */
-            std::unique_ptr< AuthorizationSession > makeAuthorizationSession() override;
+    /**
+     * Sets whether or not access control enforcement is enabled for this manager.
+     */
+    void setAuthEnabled(bool enabled) override;
 
-            /**
-             * Sets whether or not startup AuthSchema validation checks should be applied in this manager.
-             */
-            void setShouldValidateAuthSchemaOnStartup( bool validate ) override;
+    /**
+     * Returns true if access control is enabled for this manager .
+     */
+    bool isAuthEnabled() const override;
 
-            /**
-             * Returns true if startup AuthSchema validation checks should be applied in this manager.
-             */
-            bool shouldValidateAuthSchemaOnStartup() override;
+    /**
+     * Returns via the output parameter "version" the version number of the authorization
+     * system.  Returns Status::OK() if it was able to successfully fetch the current
+     * authorization version.  If it has problems fetching the most up to date version it
+     * returns a non-OK status.  When returning a non-OK status, *version will be set to
+     * schemaVersionInvalid (0).
+     */
+    Status getAuthorizationVersion(OperationContext* opCtx, int* version) override;
 
-            /**
-             * Sets whether or not access control enforcement is enabled for this manager.
-             */
-            void setAuthEnabled( bool enabled ) override;
+    /**
+     * Returns the user cache generation identifier.
+     */
+    OID getCacheGeneration() override;
 
-            /**
-             * Returns true if access control is enabled for this manager .
-             */
-            bool isAuthEnabled() const override;
+    /**
+     * Returns true if there exists at least one privilege document in the system.
+     * Used by the AuthorizationSession to determine whether localhost connections should be
+     * granted special access to bootstrap the system.
+     * NOTE: If this method ever returns true, the result is cached in _privilegeDocsExist,
+     * meaning that once this method returns true it will continue to return true for the
+     * lifetime of this process, even if all users are subsequently dropped from the system.
+     */
+    bool hasAnyPrivilegeDocuments(OperationContext* opCtx) override;
 
-            /**
-             * Returns via the output parameter "version" the version number of the authorization
-             * system.  Returns Status::OK() if it was able to successfully fetch the current
-             * authorization version.  If it has problems fetching the most up to date version it
-             * returns a non-OK status.  When returning a non-OK status, *version will be set to
-             * schemaVersionInvalid (0).
-             */
-            Status getAuthorizationVersion( OperationContext *opCtx, int *version ) override;
+    /**
+     * Delegates method call to the underlying AuthzManagerExternalState.
+     */
+    Status getUserDescription(OperationContext* opCtx,
+                              const UserName& userName,
+                              BSONObj* result) override;
 
-            /**
-             * Returns the user cache generation identifier.
-             */
-            OID getCacheGeneration() override;
+    /**
+     * Delegates method call to the underlying AuthzManagerExternalState.
+     */
+    Status getRoleDescription(OperationContext* opCtx,
+                              const RoleName& roleName,
+                              PrivilegeFormat privilegeFormat,
+                              AuthenticationRestrictionsFormat,
+                              BSONObj* result) override;
 
-            /**
-             * Returns true if there exists at least one privilege document in the system.
-             * Used by the AuthorizationSession to determine whether localhost connections should be
-             * granted special access to bootstrap the system.
-             * NOTE: If this method ever returns true, the result is cached in _privilegeDocsExist,
-             * meaning that once this method returns true it will continue to return true for the
-             * lifetime of this process, even if all users are subsequently dropped from the system.
-             */
-            bool hasAnyPrivilegeDocuments( OperationContext *opCtx ) override;
+    /**
+     * Convenience wrapper for getRoleDescription() defaulting formats to kOmit.
+     */
+    Status getRoleDescription(OperationContext* ctx, const RoleName& roleName, BSONObj* result) {
+        return getRoleDescription(
+            ctx, roleName, PrivilegeFormat::kOmit, AuthenticationRestrictionsFormat::kOmit, result);
+    }
 
-            /**
-             * Delegates method call to the underlying AuthzManagerExternalState.
-             */
-            Status getUserDescription( OperationContext *opCtx, const UserName &userName, BSONObj *result ) override;
+    /**
+     * Delegates method call to the underlying AuthzManagerExternalState.
+     */
+    Status getRolesDescription(OperationContext* opCtx,
+                               const std::vector<RoleName>& roleName,
+                               PrivilegeFormat privilegeFormat,
+                               AuthenticationRestrictionsFormat,
+                               BSONObj* result) override;
 
-            /**
-             * Delegates method call to the underlying AuthzManagerExternalState.
-             */
-            Status getRoleDescription( OperationContext *opCtx,
-                    const RoleName &roleName,
-                    PrivilegeFormat privilegeFormat,
-                    AuthenticationRestrictionsFormat,
-                    BSONObj *result ) override;
+    /**
+     * Delegates method call to the underlying AuthzManagerExternalState.
+     */
+    Status getRoleDescriptionsForDB(OperationContext* opCtx,
+                                    const std::string dbname,
+                                    PrivilegeFormat privilegeFormat,
+                                    AuthenticationRestrictionsFormat,
+                                    bool showBuiltinRoles,
+                                    std::vector<BSONObj>* result) override;
 
-            /**
-             * Convenience wrapper for getRoleDescription() defaulting formats to kOmit.
-             */
-            Status
-            getRoleDescription( OperationContext *ctx, const RoleName &roleName, BSONObj *result )
-            {
-                return getRoleDescription(
-                    ctx, roleName, PrivilegeFormat::kOmit, AuthenticationRestrictionsFormat::kOmit, result );
-            }
+    /**
+     *  Returns the User object for the given userName in the out parameter "acquiredUser".
+     *  If the user cache already has a user object for this user, it increments the refcount
+     *  on that object and gives out a pointer to it.  If no user object for this user name
+     *  exists yet in the cache, reads the user's privilege document from disk, builds up
+     *  a User object, sets the refcount to 1, and gives that out.  The returned user may
+     *  be invalid by the time the caller gets access to it.
+     *  The AuthorizationManager retains ownership of the returned User object.
+     *  On non-OK Status return values, acquiredUser will not be modified.
+     */
+    Status acquireUser(OperationContext* opCtx,
+                       const UserName& userName,
+                       User** acquiredUser) override;
 
-            /**
-             * Delegates method call to the underlying AuthzManagerExternalState.
-             */
-            Status getRolesDescription( OperationContext *opCtx,
-                    const std::vector< RoleName >&roleName,
-                    PrivilegeFormat privilegeFormat,
-                    AuthenticationRestrictionsFormat,
-                    BSONObj *result ) override;
+    /**
+     * Decrements the refcount of the given User object.  If the refcount has gone to zero,
+     * deletes the User.  Caller must stop using its pointer to "user" after calling this.
+     */
+    void releaseUser(User* user) override;
 
-            /**
-             * Delegates method call to the underlying AuthzManagerExternalState.
-             */
-            Status getRoleDescriptionsForDB( OperationContext *opCtx,
-                    const std::string dbname,
-                    PrivilegeFormat privilegeFormat,
-                    AuthenticationRestrictionsFormat,
-                    bool showBuiltinRoles,
-                    std::vector< BSONObj > *result ) override;
+    /**
+     * Marks the given user as invalid and removes it from the user cache.
+     */
+    void invalidateUserByName(const UserName& user) override;
 
-            /**
-             *  Returns the User object for the given userName in the out parameter "acquiredUser".
-             *  If the user cache already has a user object for this user, it increments the refcount
-             *  on that object and gives out a pointer to it.  If no user object for this user name
-             *  exists yet in the cache, reads the user's privilege document from disk, builds up
-             *  a User object, sets the refcount to 1, and gives that out.  The returned user may
-             *  be invalid by the time the caller gets access to it.
-             *  The AuthorizationManager retains ownership of the returned User object.
-             *  On non-OK Status return values, acquiredUser will not be modified.
-             */
-            Status acquireUser( OperationContext *opCtx, const UserName &userName, User **acquiredUser ) override;
+    /**
+     * Invalidates all users who's source is "dbname" and removes them from the user cache.
+     */
+    void invalidateUsersFromDB(const std::string& dbname) override;
 
-            /**
-             * Decrements the refcount of the given User object.  If the refcount has gone to zero,
-             * deletes the User.  Caller must stop using its pointer to "user" after calling this.
-             */
-            void releaseUser( User *user ) override;
+    /**
+     * Initializes the authorization manager.  Depending on what version the authorization
+     * system is at, this may involve building up the user cache and/or the roles graph.
+     * Call this function at startup and after resynchronizing a slave/secondary.
+     */
+    Status initialize(OperationContext* opCtx) override;
 
-            /**
-             * Marks the given user as invalid and removes it from the user cache.
-             */
-            void invalidateUserByName( const UserName &user ) override;
+    /**
+     * Invalidates all of the contents of the user cache.
+     */
+    void invalidateUserCache() override;
 
-            /**
-             * Invalidates all users who's source is "dbname" and removes them from the user cache.
-             */
-            void invalidateUsersFromDB( const std::string &dbname ) override;
+    /**
+     * Parses privDoc and fully initializes the user object (credentials, roles, and privileges)
+     * with the information extracted from the privilege document.
+     * This should never be called from outside the AuthorizationManager - the only reason it's
+     * public instead of private is so it can be unit tested.
+     */
+    Status _initializeUserFromPrivilegeDocument(User* user, const BSONObj& privDoc) override;
 
-            /**
-             * Initializes the authorization manager.  Depending on what version the authorization
-             * system is at, this may involve building up the user cache and/or the roles graph.
-             * Call this function at startup and after resynchronizing a slave/secondary.
-             */
-            Status initialize( OperationContext *opCtx ) override;
+    /**
+     * Hook called by replication code to let the AuthorizationManager observe changes
+     * to relevant collections.
+     */
+    void logOp(OperationContext* opCtx,
+               const char* opstr,
+               const NamespaceString& nss,
+               const BSONObj& obj,
+               const BSONObj* patt) override;
 
-            /**
-             * Invalidates all of the contents of the user cache.
-             */
-            void invalidateUserCache() override;
+private:
+    /**
+     * Type used to guard accesses and updates to the user cache.
+     */
+    class CacheGuard;
+    friend class AuthorizationManagerImpl::CacheGuard;
 
-            /**
-             * Parses privDoc and fully initializes the user object (credentials, roles, and privileges)
-             * with the information extracted from the privilege document.
-             * This should never be called from outside the AuthorizationManager - the only reason it's
-             * public instead of private is so it can be unit tested.
-             */
-            Status _initializeUserFromPrivilegeDocument( User *user, const BSONObj &privDoc ) override;
+    /**
+     * Invalidates all User objects in the cache and removes them from the cache.
+     * Should only be called when already holding _cacheMutex.
+     */
+    void _invalidateUserCache_inlock();
 
-            /**
-             * Hook called by replication code to let the AuthorizationManager observe changes
-             * to relevant collections.
-             */
-            void logOp( OperationContext *opCtx,
-                    const char *opstr,
-                    const NamespaceString &nss,
-                    const BSONObj &obj,
-                    const BSONObj *patt ) override;
+    /**
+     * Given the objects describing an oplog entry that affects authorization data, invalidates
+     * the portion of the user cache that is affected by that operation.  Should only be called
+     * with oplog entries that have been pre-verified to actually affect authorization data.
+     */
+    void _invalidateRelevantCacheData(const char* op,
+                                      const NamespaceString& ns,
+                                      const BSONObj& o,
+                                      const BSONObj* o2);
 
-        private:
-            /**
-             * Type used to guard accesses and updates to the user cache.
-             */
-            class CacheGuard;
-            friend class AuthorizationManagerImpl::CacheGuard;
+    /**
+     * Updates _cacheGeneration to a new OID
+     */
+    void _updateCacheGeneration_inlock();
 
-            /**
-             * Invalidates all User objects in the cache and removes them from the cache.
-             * Should only be called when already holding _cacheMutex.
-             */
-            void _invalidateUserCache_inlock();
+    /**
+     * Fetches user information from a v2-schema user document for the named user,
+     * and stores a pointer to a new user object into *acquiredUser on success.
+     */
+    Status _fetchUserV2(OperationContext* opCtx,
+                        const UserName& userName,
+                        std::unique_ptr<User>* acquiredUser);
 
-            /**
-             * Given the objects describing an oplog entry that affects authorization data, invalidates
-             * the portion of the user cache that is affected by that operation.  Should only be called
-             * with oplog entries that have been pre-verified to actually affect authorization data.
-             */
-            void _invalidateRelevantCacheData( const char *op,
-                    const NamespaceString &ns,
-                    const BSONObj &o,
-                    const BSONObj *o2 );
+    /**
+     * True if AuthSchema startup checks should be applied in this AuthorizationManager.
+     *
+     * Defaults to true.  Changes to its value are not synchronized, so it should only be set
+     * at initalization-time.
+     */
+    bool _startupAuthSchemaValidation;
 
-            /**
-             * Updates _cacheGeneration to a new OID
-             */
-            void _updateCacheGeneration_inlock();
+    /**
+     * True if access control enforcement is enabled in this AuthorizationManager.
+     *
+     * Defaults to false.  Changes to its value are not synchronized, so it should only be set
+     * at initalization-time.
+     */
+    bool _authEnabled;
 
-            /**
-             * Fetches user information from a v2-schema user document for the named user,
-             * and stores a pointer to a new user object into *acquiredUser on success.
-             */
-            Status _fetchUserV2( OperationContext *opCtx,
-                    const UserName &userName,
-                    std::unique_ptr< User > *acquiredUser );
+    /**
+     * A cache of whether there are any users set up for the cluster.
+     */
+    bool _privilegeDocsExist;
 
-            /**
-             * True if AuthSchema startup checks should be applied in this AuthorizationManager.
-             *
-             * Defaults to true.  Changes to its value are not synchronized, so it should only be set
-             * at initalization-time.
-             */
-            bool _startupAuthSchemaValidation;
+    // Protects _privilegeDocsExist
+    mutable stdx::mutex _privilegeDocsExistMutex;
 
-            /**
-             * True if access control enforcement is enabled in this AuthorizationManager.
-             *
-             * Defaults to false.  Changes to its value are not synchronized, so it should only be set
-             * at initalization-time.
-             */
-            bool _authEnabled;
+    std::unique_ptr<AuthzManagerExternalState> _externalState;
 
-            /**
-             * A cache of whether there are any users set up for the cluster.
-             */
-            bool _privilegeDocsExist;
+    /**
+     * Cached value of the authorization schema version.
+     *
+     * May be set by acquireUser() and getAuthorizationVersion().  Invalidated by
+     * invalidateUserCache().
+     *
+     * Reads and writes guarded by CacheGuard.
+     */
+    int _version;
 
-            // Protects _privilegeDocsExist
-            mutable stdx::mutex _privilegeDocsExistMutex;
+    /**
+     * Caches User objects with information about user privileges, to avoid the need to
+     * go to disk to read user privilege documents whenever possible.  Every User object
+     * has a reference count - the AuthorizationManager must not delete a User object in the
+     * cache unless its reference count is zero.
+     */
+    stdx::unordered_map<UserName, User*> _userCache;
 
-            std::unique_ptr< AuthzManagerExternalState > _externalState;
+    /**
+     * Current generation of cached data.  Updated every time part of the cache gets
+     * invalidated.  Protected by CacheGuard.
+     */
+    OID _cacheGeneration;
 
-            /**
-             * Cached value of the authorization schema version.
-             *
-             * May be set by acquireUser() and getAuthorizationVersion().  Invalidated by
-             * invalidateUserCache().
-             *
-             * Reads and writes guarded by CacheGuard.
-             */
-            int _version;
+    /**
+     * True if there is an update to the _userCache in progress, and that update is currently in
+     * the "fetch phase", during which it does not hold the _cacheMutex.
+     *
+     * Manipulated via CacheGuard.
+     */
+    bool _isFetchPhaseBusy;
 
-            /**
-             * Caches User objects with information about user privileges, to avoid the need to
-             * go to disk to read user privilege documents whenever possible.  Every User object
-             * has a reference count - the AuthorizationManager must not delete a User object in the
-             * cache unless its reference count is zero.
-             */
-            stdx::unordered_map< UserName, User * > _userCache;
+    /**
+     * Protects _userCache, _cacheGeneration, _version and _isFetchPhaseBusy.  Manipulated
+     * via CacheGuard.
+     */
+    stdx::mutex _cacheMutex;
 
-            /**
-             * Current generation of cached data.  Updated every time part of the cache gets
-             * invalidated.  Protected by CacheGuard.
-             */
-            OID _cacheGeneration;
-
-            /**
-             * True if there is an update to the _userCache in progress, and that update is currently in
-             * the "fetch phase", during which it does not hold the _cacheMutex.
-             *
-             * Manipulated via CacheGuard.
-             */
-            bool _isFetchPhaseBusy;
-
-            /**
-             * Protects _userCache, _cacheGeneration, _version and _isFetchPhaseBusy.  Manipulated
-             * via CacheGuard.
-             */
-            stdx::mutex _cacheMutex;
-
-            /**
-             * Condition used to signal that it is OK for another CacheGuard to enter a fetch phase.
-             * Manipulated via CacheGuard.
-             */
-            stdx::condition_variable _fetchPhaseIsReady;
-    };
+    /**
+     * Condition used to signal that it is OK for another CacheGuard to enter a fetch phase.
+     * Manipulated via CacheGuard.
+     */
+    stdx::condition_variable _fetchPhaseIsReady;
+};
 }  // namespace mongo

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <boost/optional.hpp>
 #include <vector>
 
 #include "mongo/base/disallow_copying.h"
@@ -63,6 +64,21 @@ public:
         bool allowNamespaceNotFoundErrorsOnCrudOps = false;
         bool relaxUniqueIndexConstraints = false;
         bool skipWritesToOplog = false;
+    };
+
+    /**
+     * Controls what can popped from the oplog buffer into a single batch of operations that can be
+     * applied using multiApply().
+     */
+    class BatchLimits {
+    public:
+        size_t bytes = 0;
+        size_t ops = 0;
+
+        // If provided, the batch will not include any operations with timestamps after this point.
+        // This is intended for implementing slaveDelay, so it should be some number of seconds
+        // before now.
+        boost::optional<Date_t> slaveDelayLatestTimestamp = {};
     };
 
     // Used to report oplog application progress.
@@ -101,6 +117,16 @@ public:
      */
     void enqueue(const Operations& operations);
 
+    /**
+     * Returns a new batch of ops to apply.
+     * A batch may consist of:
+     *     at most "BatchLimits::ops" OplogEntries
+     *     at most "BatchLimits::bytes" worth of OplogEntries
+     *     only OplogEntries from before the "BatchLimits::slaveDelayLatestTimestamp" point
+     *     a single command OplogEntry (excluding applyOps, which are grouped with CRUD ops)
+     */
+    StatusWith<Operations> getNextApplierBatch(OperationContext* opCtx,
+                                               const BatchLimits& batchLimits);
 
 private:
     // Used to schedule task for oplog application loop.

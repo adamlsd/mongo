@@ -102,11 +102,6 @@ public:
                               AuthenticationRestrictionsFormat,
                               BSONObj* result) override;
 
-    Status getRoleDescription(OperationContext* ctx, const RoleName& roleName, BSONObj* result) {
-        return getRoleDescription(
-            ctx, roleName, PrivilegeFormat::kOmit, AuthenticationRestrictionsFormat::kOmit, result);
-    }
-
     Status getRolesDescription(OperationContext* opCtx,
                                const std::vector<RoleName>& roleName,
                                PrivilegeFormat privilegeFormat,

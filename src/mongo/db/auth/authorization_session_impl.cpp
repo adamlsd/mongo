@@ -63,7 +63,8 @@ using std::vector;
 MONGO_REGISTER_SHIM(AuthorizationSession::create)
 (AuthorizationManager* authzManager)->std::unique_ptr<AuthorizationSession> {
     return std::make_unique<AuthorizationSessionImpl>(
-        AuthzSessionExternalState::create(authzManager));
+        AuthzSessionExternalState::create(authzManager),
+        AuthorizationSessionImpl::InstallMockForTestingOrAuthImpl{});
 }
 
 namespace {
@@ -124,7 +125,7 @@ using UserHolder = std::unique_ptr<User, UserReleaser>;
 }  // namespace
 
 AuthorizationSessionImpl::AuthorizationSessionImpl(
-    std::unique_ptr<AuthzSessionExternalState> externalState)
+    std::unique_ptr<AuthzSessionExternalState> externalState, InstallMockForTestingOrAuthImpl)
     : _externalState(std::move(externalState)), _impersonationFlag(false) {}
 
 AuthorizationSessionImpl::~AuthorizationSessionImpl() {

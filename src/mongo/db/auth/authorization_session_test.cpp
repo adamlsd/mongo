@@ -107,12 +107,15 @@ public:
         managerState = localManagerState.get();
         managerState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
         auto uniqueAuthzManager = std::make_unique<AuthorizationManagerImpl>(
-            std::move(localManagerState), AuthorizationManagerImpl::TestingMock{});
+            std::move(localManagerState),
+            AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{});
         authzManager = uniqueAuthzManager.get();
         AuthorizationManager::set(&serviceContext, std::move(uniqueAuthzManager));
         auto localSessionState = std::make_unique<AuthzSessionExternalStateMock>(authzManager);
         sessionState = localSessionState.get();
-        authzSession = std::make_unique<AuthorizationSessionForTest>(std::move(localSessionState));
+        authzSession = std::make_unique<AuthorizationSessionForTest>(
+            std::move(localSessionState),
+            AuthorizationSessionImpl::InstallMockForTestingOrAuthImpl{});
         authzManager->setAuthEnabled(true);
 
         credentials =

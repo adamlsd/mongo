@@ -69,7 +69,11 @@ class Client;
  */
 class AuthorizationSessionImpl : public AuthorizationSession {
 public:
-    explicit AuthorizationSessionImpl(std::unique_ptr<AuthzSessionExternalState> externalState);
+    struct InstallMockForTestingOrAuthImpl {
+        explicit InstallMockForTestingOrAuthImpl() = default;
+    };
+    explicit AuthorizationSessionImpl(std::unique_ptr<AuthzSessionExternalState> externalState,
+                                      InstallMockForTestingOrAuthImpl);
 
     ~AuthorizationSessionImpl() override;
 

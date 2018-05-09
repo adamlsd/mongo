@@ -249,10 +249,11 @@ private:
 };
 
 AuthorizationManagerImpl::AuthorizationManagerImpl()
-    : AuthorizationManagerImpl(AuthzManagerExternalState::create(), TestingMock{}) {}
+    : AuthorizationManagerImpl(AuthzManagerExternalState::create(),
+                               InstallMockForTestingOrAuthImpl{}) {}
 
 AuthorizationManagerImpl::AuthorizationManagerImpl(
-    std::unique_ptr<AuthzManagerExternalState> externalState, TestingMock)
+    std::unique_ptr<AuthzManagerExternalState> externalState, InstallMockForTestingOrAuthImpl)
     : _authEnabled(false),
       _privilegeDocsExist(false),
       _externalState(std::move(externalState)),
@@ -271,8 +272,9 @@ AuthorizationManagerImpl::~AuthorizationManagerImpl() {
 }
 
 std::unique_ptr<AuthorizationSession> AuthorizationManagerImpl::makeAuthorizationSession() {
-    return stdx::make_unique<AuthorizationSessionImpl>(
-        _externalState->makeAuthzSessionExternalState(this));
+    return std::make_unique<AuthorizationSessionImpl>(
+        _externalState->makeAuthzSessionExternalState(this),
+        AuthorizationSessionImpl::InstallMockForTestingOrAuthImpl{});
 }
 
 void AuthorizationManagerImpl::setShouldValidateAuthSchemaOnStartup(bool validate) {

@@ -69,10 +69,12 @@ public:
 
     AuthorizationManagerImpl();
 
-    struct TestingMock {
-        explicit TestingMock() = default;
+    struct InstallMockForTestingOrAuthImpl {
+        explicit InstallMockForTestingOrAuthImpl() = default;
     };
-    AuthorizationManagerImpl(std::unique_ptr<AuthzManagerExternalState> externalState, TestingMock);
+
+    AuthorizationManagerImpl(std::unique_ptr<AuthzManagerExternalState> externalState,
+                             InstallMockForTestingOrAuthImpl);
 
     std::unique_ptr<AuthorizationSession> makeAuthorizationSession() override;
 

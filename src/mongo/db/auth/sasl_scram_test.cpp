@@ -191,17 +191,18 @@ protected:
         opCtx = serviceContext->makeOperationContext(client.get());
 
         auto uniqueAuthzManagerExternalStateMock =
-            stdx::make_unique<AuthzManagerExternalStateMock>();
+            std::make_unique<AuthzManagerExternalStateMock>();
         authzManagerExternalState = uniqueAuthzManagerExternalStateMock.get();
         auto newManager = std::make_unique<AuthorizationManagerImpl>(
             std::move(uniqueAuthzManagerExternalStateMock),
-            AuthorizationManagerImpl::TestingMock{});
+            AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{});
         authzSession = std::make_unique<AuthorizationSessionImpl>(
-            stdx::make_unique<AuthzSessionExternalStateMock>(newManager.get()));
+            std::make_unique<AuthzSessionExternalStateMock>(newManager.get()),
+            AuthorizationSessionImpl::InstallMockForTestingOrAuthImpl{});
         authzManager = newManager.get();
         AuthorizationManager::set(serviceContext.get(), std::move(newManager));
 
-        saslClientSession = stdx::make_unique<NativeSaslClientSession>();
+        saslClientSession = std::make_unique<NativeSaslClientSession>();
         saslClientSession->setParameter(NativeSaslClientSession::parameterMechanism,
                                         saslServerSession->mechanismName());
         saslClientSession->setParameter(NativeSaslClientSession::parameterServiceName, "mongodb");

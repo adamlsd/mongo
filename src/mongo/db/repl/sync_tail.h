@@ -71,6 +71,24 @@ public:
                               WorkerMultikeyPathInfo* workerMultikeyPathInfo)>;
 
     /**
+     * Maximum number of operations in each batch that can be applied using multiApply().
+     */
+    static AtomicInt32 replBatchLimitOperations;
+
+    /**
+     * Lower bound of batch limit size (in bytes) returned by calculateBatchLimitBytes().
+     */
+    static const unsigned int replBatchLimitBytes = 100 * 1024 * 1024;
+
+    /**
+     * Calculates batch limit size (in bytes) using the maximum capped collection size of the oplog
+     * size.
+     * Batches are limited to 10% of the oplog.
+     */
+    static std::size_t calculateBatchLimitBytes(OperationContext* opCtx,
+                                                StorageInterface* storageInterface);
+
+    /**
      * Creates thread pool for writer tasks.
      */
     static std::unique_ptr<ThreadPool> makeWriterPool();
@@ -196,9 +214,13 @@ public:
         bool _mustShutdown = false;
     };
 
+    /**
+     * Batch settings used when retrieving operations from an OplogBuffer.
+     * Set in SyncTail::OpQueueBatcher thread.
+     */
     struct BatchLimits {
-        size_t bytes = replBatchLimitBytes;
-        size_t ops = replBatchLimitOperations.load();
+        size_t bytes = 0;
+        size_t ops = 0;
 
         // If provided, the batch will not include any operations with timestamps after this point.
         // This is intended for implementing slaveDelay, so it should be some number of seconds
@@ -233,8 +255,6 @@ public:
 
     void setHostname(const std::string& hostname);
 
-    static AtomicInt32 replBatchLimitOperations;
-
     /**
      * Applies a batch of oplog entries by writing the oplog entries to the local oplog and then
      * using a set of threads to apply the operations.
@@ -248,10 +268,6 @@ public:
      * to the last optime of this batch, it will not be updated.
      */
     StatusWith<OpTime> multiApply(OperationContext* opCtx, MultiApplier::Operations ops);
-
-protected:
-    static const unsigned int replBatchLimitBytes = 100 * 1024 * 1024;
-    static const int replBatchLimitSeconds = 1;
 
 private:
     /**

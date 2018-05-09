@@ -465,8 +465,8 @@ if not has_option('noshell') and usemozjs:
                 ],
                 LIBDEPS=[
                     'db/catalog/index_key_validate',
-                    'db/mongohasher',
                     'db/logical_session_id_helpers',
+                    'db/mongohasher',
                     'db/query/command_request_response',
                     'db/query/query_request',
                     'db/server_options_core',

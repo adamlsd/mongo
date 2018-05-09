@@ -17,20 +17,20 @@ env.Library('auth_rolename', ['role_name.cpp'],
 )
 
 env.Library(
-    target = 'authentication_restriction',
-    source = [
+    target='authentication_restriction',
+    source=[
         'restriction_environment.cpp',
     ],
-    LIBDEPS = [
+    LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/util/net/network',
     ],
 )
 
 env.CppUnitTest(
-    target = 'restriction_test',
-    source = 'restriction_test.cpp',
-    LIBDEPS = [
+    target='restriction_test',
+    source='restriction_test.cpp',
+    LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         'authentication_restriction',
     ],

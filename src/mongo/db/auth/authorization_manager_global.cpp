@@ -95,7 +95,6 @@ GlobalInitializerRegisterer authorizationManagerInitializer(
     "CreateAuthorizationManager",
     {"SetupInternalSecurityUser",
      "OIDGeneration",
-     "ShimHooks",
      "EndStartupOptionStorage",
      "ServiceContext"},
     [](InitializerContext* context) {

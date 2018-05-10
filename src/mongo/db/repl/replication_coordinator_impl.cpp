@@ -70,7 +70,6 @@
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/session_catalog.h"
-#include "mongo/db/storage/mmap_v1/dur.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/db/write_concern_options.h"
 #include "mongo/executor/connection_pool_stats.h"
@@ -318,8 +317,7 @@ InitialSyncerOptions createInitialSyncerOptions(
     };
     options.resetOptimes = [replCoord]() { replCoord->resetMyLastOpTimes(); };
     options.syncSourceSelector = replCoord;
-    options.batchLimits.bytes = dur::UncommittedBytesLimit;
-    options.batchLimits.ops = 5000U;
+    options.batchLimits = externalState->getInitialSyncBatchLimits();
     options.oplogFetcherMaxFetcherRestarts = externalState->getOplogFetcherMaxFetcherRestarts();
     return options;
 }
@@ -738,7 +736,7 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
 
 void ReplicationCoordinatorImpl::startup(OperationContext* opCtx) {
     if (!isReplEnabled()) {
-        if (_settings.getShouldRecoverFromOplogAsStandalone()) {
+        if (ReplSettings::shouldRecoverFromOplogAsStandalone()) {
             if (!_storage->supportsRecoverToStableTimestamp(opCtx->getServiceContext())) {
                 severe() << "Cannot use 'recoverFromOplogAsStandalone' with a storage engine that "
                             "does not support recover to stable timestamp.";
@@ -765,7 +763,7 @@ void ReplicationCoordinatorImpl::startup(OperationContext* opCtx) {
         return;
     }
     invariant(_settings.usingReplSets());
-    invariant(!_settings.getShouldRecoverFromOplogAsStandalone());
+    invariant(!ReplSettings::shouldRecoverFromOplogAsStandalone());
 
     {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
@@ -1233,6 +1231,11 @@ Status ReplicationCoordinatorImpl::waitUntilOpTimeForReadUntil(OperationContext*
         // sets.
         return {ErrorCodes::NotAReplicaSet,
                 "node needs to be a replica set member to use read concern"};
+    }
+
+    if (_rsConfigState == kConfigUninitialized || _rsConfigState == kConfigInitiating) {
+        return {ErrorCodes::NotYetInitialized,
+                "Cannot use non-local read concern until replica set is finished initializing."};
     }
 
     if (readConcern.getArgsAfterClusterTime() || readConcern.getArgsAtClusterTime()) {
@@ -3362,6 +3365,9 @@ void ReplicationCoordinatorImpl::waitUntilSnapshotCommitted(OperationContext* op
                                                             const Timestamp& untilSnapshot) {
     stdx::unique_lock<stdx::mutex> lock(_mutex);
 
+    uassert(ErrorCodes::NotYetInitialized,
+            "Cannot use snapshots until replica set is finished initializing.",
+            _rsConfigState != kConfigUninitialized && _rsConfigState != kConfigInitiating);
     while (!_currentCommittedSnapshot ||
            _currentCommittedSnapshot->getTimestamp() < untilSnapshot) {
         opCtx->waitForConditionOrInterrupt(_currentCommittedSnapshotCond, lock);

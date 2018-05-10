@@ -796,7 +796,7 @@ void ReplicationCoordinatorExternalStateImpl::_dropAllTempCollections(OperationC
         // Since we must be holding the global lock during this function, if listDatabases
         // returned this dbname, we should be able to get a reference to it - it can't have
         // been dropped.
-        invariant(db);
+        invariant(db, str::stream() << "Unable to get reference to database " << *it);
         db->clearTmpCollections(opCtx);
     }
 }
@@ -881,6 +881,14 @@ bool ReplicationCoordinatorExternalStateImpl::isReadConcernSnapshotSupportedBySt
 
 std::size_t ReplicationCoordinatorExternalStateImpl::getOplogFetcherMaxFetcherRestarts() const {
     return oplogFetcherMaxFetcherRestarts.load();
+}
+
+OplogApplier::BatchLimits ReplicationCoordinatorExternalStateImpl::getInitialSyncBatchLimits()
+    const {
+    OplogApplier::BatchLimits batchLimits;
+    batchLimits.bytes = SyncTail::replBatchLimitBytes;
+    batchLimits.ops = std::size_t(SyncTail::replBatchLimitOperations.load());
+    return batchLimits;
 }
 
 JournalListener::Token ReplicationCoordinatorExternalStateImpl::getToken() {

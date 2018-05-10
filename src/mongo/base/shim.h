@@ -188,6 +188,7 @@ const bool checkShimsViaTUHook = false;
                 std::forward<Args>(args)...)))                                                    \
                 -> decltype(storage::data->abi(nullptr)->lib(nullptr)->implementation(            \
                     std::forward<Args>(args)...)) {                                               \
+            invariant(storage::data); /*Check that there actually is an implementation */         \
             return storage::data->abi(nullptr)->lib(nullptr)->implementation(                     \
                 std::forward<Args>(args)...);                                                     \
         }                                                                                         \
@@ -211,6 +212,13 @@ const bool checkShimsViaTUHook = false;
         default;                                                                              \
     shim_namespace##LN::ShimType __VA_ARGS__{};
 
+
+/**
+ * Evaluates to a string which represents the `MONGO_INITIALIZER` step name in which this specific
+ * shim is registered.  This can be useful to make sure that some initializers depend upon a shim's
+ * execution and presence in a binary.
+ */
+#define MONGO_SHIM_DEPENDENCY(...) MONGO_SHIM_EVIL_STRINGIFY_((__VA_ARGS__))
 #define MONGO_SHIM_EVIL_STRINGIFY_(args) #args
 
 
@@ -218,7 +226,7 @@ const bool checkShimsViaTUHook = false;
  * Define an implementation of a shimmable function with name `SHIM_NAME`.  The compiler will check
  * supplied parameters for correctness.  This shim registration macro should go in the associated
  * C++ implementation file to the header where a SHIM was defined.   Such a file would be a mock
- * implementation or a real implementation, for example
+ * implementation or a real implementation, for example.
  */
 #define MONGO_REGISTER_SHIM(/*SHIM_NAME*/...) MONGO_REGISTER_SHIM_1(__LINE__, __VA_ARGS__)
 #define MONGO_REGISTER_SHIM_1(LN, ...) MONGO_REGISTER_SHIM_2(LN, __VA_ARGS__)
@@ -240,7 +248,7 @@ const bool checkShimsViaTUHook = false;
         }                                                                                       \
                                                                                                 \
         const ::mongo::GlobalInitializerRegisterer registrationHook{                            \
-            std::string(MONGO_SHIM_EVIL_STRINGIFY_((__VA_ARGS__))),                             \
+            std::string(MONGO_SHIM_DEPENDENCY(__VA_ARGS__)),                                    \
             {},                                                                                 \
             {MONGO_SHIM_DEPENDENTS},                                                            \
             mongo::InitializerFunction(createInitializerRegistration)};                         \
@@ -255,3 +263,41 @@ const bool checkShimsViaTUHook = false;
                                                                and return value (using arrow    \
                                                                notation).  Then they write the  \
                                                                body. */
+
+/**
+ * Define an overriding implementation of a shimmable function with `SHIM_NAME`.  The compiler will
+ * check the supplied parameters for correctness.  This shim override macro should go in the
+ * associated C++ implementation file to the header where a SHIM was defined.  Such a file
+ * specifying an override would be a C++ implementation used by a mongodb extension module.
+ * This creates a runtime dependency upon the original registration being linked in.
+ */
+#define MONGO_OVERRIDE_SHIM(/*SHIM_NAME*/...) MONGO_OVERRIDE_SHIM_1(__LINE__, __VA_ARGS__)
+#define MONGO_OVERRIDE_SHIM_1(LN, ...) MONGO_OVERRIDE_SHIM_2(LN, __VA_ARGS__)
+#define MONGO_OVERRIDE_SHIM_2(LN, ...)                                                            \
+    namespace {                                                                                   \
+    namespace shim_namespace##LN {                                                                \
+        using ShimType = decltype(__VA_ARGS__);                                                   \
+                                                                                                  \
+        class OverrideImplementation final : public ShimType::MongoShimImplGuts {                 \
+            /* Some compilers don't work well with the trailing `override` in this kind of        \
+             * function declaration. */                                                           \
+            ShimType::MongoShimImplGuts::function_type implementation; /* override */             \
+        };                                                                                        \
+                                                                                                  \
+        ::mongo::Status createInitializerOverride(::mongo::InitializerContext* const) {           \
+            static OverrideImplementation overrideImpl;                                           \
+            ShimType::storage::data = &overrideImpl;                                              \
+            return Status::OK();                                                                  \
+        }                                                                                         \
+                                                                                                  \
+        const ::mongo::GlobalInitializerRegisterer overrideHook{                                  \
+            std::string("OverrideFor:" MONGO_SHIM_DEPENDENCY(__VA_ARGS__)),                       \
+            {MONGO_SHIM_DEPENDENCY(__VA_ARGS__)}, /* Override happens after first registration */ \
+            {MONGO_SHIM_DEPENDENTS},              /* Still a shim registration */                 \
+            mongo::InitializerFunction(createInitializerOverride)};                               \
+    } /*namespace shim_namespace*/                                                                \
+    } /*namespace*/                                                                               \
+                                                                                                  \
+    auto shim_namespace##LN::OverrideImplementation::                                             \
+        implementation /* After this point someone just writes the signature's arguments and      \
+                          return value (using arrow notation).  Then they write the body. */

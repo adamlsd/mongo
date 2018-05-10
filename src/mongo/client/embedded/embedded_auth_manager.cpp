@@ -42,7 +42,7 @@ namespace mongo
                 public:
                     std::unique_ptr< AuthorizationSession > makeAuthorizationSession() override
                     {
-                        return makeEmbeddedAuthorizationSession();
+                        return AuthorizationSession::create( this );
                     }
 
                     void setShouldValidateAuthSchemaOnStartup(bool ) override { abort(); }

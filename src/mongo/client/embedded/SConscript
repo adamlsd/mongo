@@ -74,6 +74,7 @@ env.Library(
     target="embedded_auth",
     source=[
         'embedded_auth_manager.cpp',
+        'embedded_auth_session.cpp',
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/auth/auth',

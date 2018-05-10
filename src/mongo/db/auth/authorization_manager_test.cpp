@@ -176,7 +176,8 @@ public:
         auto localExternalState = stdx::make_unique<AuthzManagerExternalStateMock>();
         externalState = localExternalState.get();
         authzManager = stdx::make_unique<AuthorizationManagerImpl>(
-            std::move(localExternalState), AuthorizationManagerImpl::TestingMock{});
+            std::move(localExternalState),
+            AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{});
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);
 
@@ -372,7 +373,8 @@ public:
         externalState = localExternalState.get();
         externalState->setAuthzVersion(AuthorizationManager::schemaVersion26Final);
         authzManager = stdx::make_unique<AuthorizationManagerImpl>(
-            std::move(localExternalState), AuthorizationManagerImpl::TestingMock{});
+            std::move(localExternalState),
+            AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{});
         externalState->setAuthorizationManager(authzManager.get());
         authzManager->setAuthEnabled(true);
     }

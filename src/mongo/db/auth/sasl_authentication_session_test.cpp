@@ -71,7 +71,7 @@ SaslConversation::SaslConversation(std::string mech)
       authManagerExternalState(new AuthzManagerExternalStateMock),
       authManager(new AuthorizationManagerImpl(
           std::unique_ptr<AuthzManagerExternalState>(authManagerExternalState),
-          AuthorizationManagerImpl::TestingMock{})),
+          AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{})),
       authSession(authManager->makeAuthorizationSession()),
       mechanism(mech) {
 

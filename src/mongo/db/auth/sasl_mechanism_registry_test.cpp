@@ -138,7 +138,7 @@ public:
           authManagerExternalState(new AuthzManagerExternalStateMock()),
           authManager(new AuthorizationManagerImpl(
               std::unique_ptr<AuthzManagerExternalStateMock>(authManagerExternalState),
-              AuthorizationManagerImpl::TestingMock{})) {
+              AuthorizationManagerImpl::InstallMockForTestingOrAuthImpl{})) {
         AuthorizationManager::set(&serviceContext,
                                   std::unique_ptr<AuthorizationManager>(authManager));
 

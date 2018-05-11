@@ -188,7 +188,7 @@ const bool checkShimsViaTUHook = false;
                 std::forward<Args>(args)...)))                                                    \
                 -> decltype(storage::data->abi(nullptr)->lib(nullptr)->implementation(            \
                     std::forward<Args>(args)...)) {                                               \
-            invariant(storage::data); /*Check that there actually is an implementation */         \
+            invariant(storage::data); /* Check that there actually is an implementation */        \
             return storage::data->abi(nullptr)->lib(nullptr)->implementation(                     \
                 std::forward<Args>(args)...);                                                     \
         }                                                                                         \

@@ -633,6 +633,7 @@ env.Library(
     ],
     LIBDEPS_PRIVATE=[
         'commands/server_status',
+        'update/update_driver',
     ]
 )
 
@@ -821,6 +822,9 @@ env.Library(
         '$BUILD_DIR/mongo/db/catalog/index_catalog',
         '$BUILD_DIR/mongo/db/catalog/index_create',
     ],
+    LIBDEPS_PRIVATE=[
+        "logical_clock",
+    ],
 )
 
 env.Library(
@@ -980,6 +984,7 @@ env.Library(
         'commands',
         'concurrency/write_conflict_exception',
         'curop',
+        'curop_failpoint_helpers',
         'cursor_server_params',
         'db_raii',
         'dbdirectclient',
@@ -1747,7 +1752,7 @@ asioEnv.CppIntegrationTest(
         'nesting_depth_test.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/executor/network_interface_asio_fixture',
+        '$BUILD_DIR/mongo/executor/network_interface_fixture',
     ],
 )
 

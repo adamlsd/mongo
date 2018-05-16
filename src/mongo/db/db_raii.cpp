@@ -87,6 +87,8 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
                                                    const NamespaceStringOrUUID& nsOrUUID,
                                                    AutoGetCollection::ViewMode viewMode,
                                                    Date_t deadline) {
+    bool optedOutOfPbwmLock = !opCtx->lockState()->shouldConflictWithSecondaryBatchApplication();
+
     // Don't take the ParallelBatchWriterMode lock when the server parameter is set and our
     // storage engine supports snapshot reads.
     if (allowSecondaryReadsDuringBatchApplication.load() &&
@@ -97,7 +99,13 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
     _autoColl.emplace(opCtx, nsOrUUID, collectionLockMode, viewMode, deadline);
 
     repl::ReplicationCoordinator* const replCoord = repl::ReplicationCoordinator::get(opCtx);
-    const auto readConcernLevel = opCtx->recoveryUnit()->getReadConcernLevel();
+    const auto readConcernLevel = repl::ReadConcernArgs::get(opCtx).getLevel();
+
+    // Readers that opted-out of the PBWM lock before entering this function are either using
+    // unenforced nesting of AutoGetCollectionForRead or are implicitly willing to read without a
+    // timestamp, like internal operations such as rollback.
+    if (optedOutOfPbwmLock && readConcernLevel == repl::ReadConcernLevel::kLocalReadConcern)
+        return;
 
     // If the collection doesn't exist or disappears after releasing locks and waiting, there is no
     // need to check for pending catalog changes.
@@ -118,12 +126,12 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
 
         const NamespaceString& nss = coll->ns();
 
-        // Read at the last applied timestamp if we don't have the PBWM lock and correct conditions
-        // are met.
         bool readAtLastAppliedTimestamp =
             _shouldReadAtLastAppliedTimestamp(opCtx, nss, readConcernLevel);
 
-        opCtx->recoveryUnit()->setShouldReadAtLastAppliedTimestamp(readAtLastAppliedTimestamp);
+        if (readAtLastAppliedTimestamp) {
+            opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kLastApplied);
+        }
 
         // This timestamp could be earlier than the timestamp seen when the transaction is opened
         // because it is set asynchonously. This is not problematic because holding the collection
@@ -132,35 +140,35 @@ AutoGetCollectionForRead::AutoGetCollectionForRead(OperationContext* opCtx,
             ? boost::optional<Timestamp>(replCoord->getMyLastAppliedOpTime().getTimestamp())
             : boost::none;
 
-        // Return if there are no conflicting catalog changes on the collection.
         auto minSnapshot = coll->getMinimumVisibleSnapshot();
         if (!_conflictingCatalogChanges(opCtx, minSnapshot, lastAppliedTimestamp)) {
             return;
         }
 
+        auto readSource = opCtx->recoveryUnit()->getTimestampReadSource();
         invariant(lastAppliedTimestamp ||
-                  readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern);
+                  readSource == RecoveryUnit::ReadSource::kMajorityCommitted);
+        invariant(readConcernLevel != repl::ReadConcernLevel::kSnapshotReadConcern);
 
         // Yield locks in order to do the blocking call below.
-        // This should only be called if we are doing a snapshot read at the last applied time or
-        // majority commit point.
         _autoColl = boost::none;
 
         // If there are pending catalog changes, we should conflict with any in-progress batches (by
         // taking the PBWM lock) and choose not to read from the last applied timestamp by unsetting
         // _shouldNotConflictWithSecondaryBatchApplicationBlock. Index builds on secondaries can
-        // complete at timestamps later than the lastAppliedTimestamp during initial sync
-        // (SERVER-34343). After initial sync finishes, if we waited instead of retrying, readers
-        // would block indefinitely waiting for the lastAppliedTimestamp to move forward. Instead we
-        // force the reader take the PBWM lock and retry.
+        // complete at timestamps later than the lastAppliedTimestamp during initial sync. After
+        // initial sync finishes, if we waited instead of retrying, readers would block indefinitely
+        // waiting for the lastAppliedTimestamp to move forward. Instead we force the reader take
+        // the PBWM lock and retry.
         if (lastAppliedTimestamp) {
             LOG(2) << "Tried reading at last-applied time: " << *lastAppliedTimestamp
                    << " on nss: " << nss.ns() << ", but future catalog changes are pending at time "
                    << *minSnapshot << ". Trying again without reading at last-applied time.";
             _shouldNotConflictWithSecondaryBatchApplicationBlock = boost::none;
+            opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNone);
         }
 
-        if (readConcernLevel == repl::ReadConcernLevel::kMajorityReadConcern) {
+        if (readSource == RecoveryUnit::ReadSource::kMajorityCommitted) {
             replCoord->waitUntilSnapshotCommitted(opCtx, *minSnapshot);
             uassertStatusOK(opCtx->recoveryUnit()->obtainMajorityCommittedSnapshot());
         }
@@ -202,12 +210,6 @@ bool AutoGetCollectionForRead::_shouldReadAtLastAppliedTimestamp(
     // written by the replication system.  However, the oplog is special, as it *is* written by the
     // replication system.
     if (!nss.isReplicated() && !nss.isOplog()) {
-        return false;
-    }
-
-    // Not being able to read from the lastApplied with non-network clients is tracked by
-    // SERVER-34440.  After SERVER-34440 is fixed, this code can be removed.
-    if (!opCtx->getClient()->isFromUserConnection()) {
         return false;
     }
 

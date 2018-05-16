@@ -135,6 +135,14 @@ public:
 
             uassertStatusOK(status);
             return true;
+        } else if (cmdObj.hasElement("getLastStableCheckpointTimestamp")) {
+            boost::optional<Timestamp> ts =
+                StorageInterface::get(getGlobalServiceContext())
+                    ->getLastStableCheckpointTimestamp(getGlobalServiceContext());
+            if (ts) {
+                result.append("lastStableCheckpointTimestamp", ts.get());
+            }
+            return true;
         }
 
         Status status = replCoord->checkReplEnabledForCommand(&result);
@@ -143,13 +151,7 @@ public:
     }
 };
 
-MONGO_INITIALIZER(RegisterReplSetTestCmd)(InitializerContext* context) {
-    if (getTestCommandsEnabled()) {
-        // Leaked intentionally: a Command registers itself when constructed.
-        new CmdReplSetTest();
-    }
-    return Status::OK();
-}
+MONGO_REGISTER_TEST_COMMAND(CmdReplSetTest);
 
 /** get rollback id.  used to check if a rollback happened during some interval of time.
     as consumed, the rollback id is not in any particular order, it simply changes on each rollback.

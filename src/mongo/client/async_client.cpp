@@ -135,7 +135,7 @@ Future<void> AsyncDBClient::authenticate(const BSONObj& params) {
     std::string clientName;
 #ifdef MONGO_CONFIG_SSL
     if (getSSLManager()) {
-        clientName = getSSLManager()->getSSLConfiguration().clientSubjectName;
+        clientName = getSSLManager()->getSSLConfiguration().clientSubjectName.toString();
     }
 #endif
 
@@ -184,7 +184,7 @@ Future<void> AsyncDBClient::initWireVersion(const std::string& appName,
         if (hook) {
             auto millis = duration_cast<Milliseconds>(clkSource->now() - start);
             executor::RemoteCommandResponse cmdResp(*cmdReply, millis);
-            uassertStatusOK(hook->validateHost(_peer, std::move(cmdResp)));
+            uassertStatusOK(hook->validateHost(_peer, requestObj, std::move(cmdResp)));
         }
         _parseIsMasterResponse(requestObj, cmdReply);
     });

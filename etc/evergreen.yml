@@ -171,7 +171,7 @@ variables:
   client_options: --numCrudClients=20 --numFsmClients=20
   mongodb_options: --rootDir=${remote_dir}-${task_id} --mongodbBinDir=${remote_dir}
   mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path}
-  mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1\"
+  mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}'\"
 
 - &replica_sets_auth
   name: replica_sets_auth
@@ -6006,7 +6006,7 @@ tasks:
     timeout_secs: 1800 # 30 minute timeout for no output
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
+      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}' --storageEngine wiredTiger\"
 
 - name: powercycle_fcv3.6
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -6028,7 +6028,7 @@ tasks:
       <<: *powercycle_test
       client_options: --numCrudClients=20 --numFsmClients=20
       mongod_options: --mongodUsablePorts ${standard_port} ${secret_port} --dbPath=${db_path} --logPath=${log_path} --fcv=3.6
-      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
+      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1  --setParameter logComponentVerbosity='{storage:{recovery:2}}' --storageEngine wiredTiger\"
 
 - name: powercycle_replication
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -6048,7 +6048,7 @@ tasks:
     timeout_secs: 1800 # 30 minute timeout for no output
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
+      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}' --storageEngine wiredTiger\"
 
 - name: powercycle_replication_smalloplog
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -6068,7 +6068,7 @@ tasks:
     timeout_secs: 1800 # 30 minute timeout for no output
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --oplogSize 20 --storageEngine wiredTiger\"
+      mongod_extra_options: --replSet=powercycle --mongodOptions=\"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}' --oplogSize 20 --storageEngine wiredTiger\"
 
 - name: powercycle_syncdelay
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -6088,7 +6088,7 @@ tasks:
     timeout_secs: 1800 # 30 minute timeout for no output
     vars:
       <<: *powercycle_test
-      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --syncdelay 10 --storageEngine wiredTiger\"
+      mongod_extra_options: --mongodOptions=\"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}' --syncdelay 10 --storageEngine wiredTiger\"
 
 - name: powercycle_write_concern_majority
   exec_timeout_secs: 7200 # 2 hour timeout for the task overall
@@ -6109,7 +6109,7 @@ tasks:
     vars:
       <<: *powercycle_test
       client_options: "--numCrudClients=20 --numFsmClients=20 --writeConcern='{\"w\": \"majority\"}'"
-      mongod_extra_options: --mongodOptions \"--setParameter enableTestCommands=1 --storageEngine wiredTiger\"
+      mongod_extra_options: --mongodOptions \"--setParameter enableTestCommands=1 --setParameter logComponentVerbosity='{storage:{recovery:2}}' --storageEngine wiredTiger\"
 
 - name: idl_tests
   depends_on:
@@ -6817,7 +6817,7 @@ buildvariants:
   batchtime: 1440 # 1 day
   expansions:
     test_flags: --excludeWithAnyTags=requires_mmapv1
-    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off 
+    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     test_flags: --repeat=10 --shuffle
     scons_cache_scope: shared
@@ -6855,7 +6855,7 @@ buildvariants:
     push_name: linux-debug
     push_arch: x86_64
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
-    compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off 
+    compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off
     scons_cache_scope: shared
     shared_scons_pruning: true
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
@@ -6993,7 +6993,7 @@ buildvariants:
   expansions:
     use_wt_develop: true
     num_jobs_available: $(($(grep -c ^processor /proc/cpuinfo) / 2)) # Avoid starting too many mongod's
-    compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off 
+    compile_flags: --dbg=on --opt=on -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off
     use_scons_cache: true
     build_mongoreplay: true
 
@@ -7007,7 +7007,7 @@ buildvariants:
     push_bucket: downloads.mongodb.org
     push_name: linux-duroff
     push_arch: x86_64
-    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off 
+    compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars --enable-free-mon=off
     num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
     # Running WiredTiger with --nojournal in a replica set is no longer supported, so this variant
     # does not include replica set tests. Since transactions are only supported on replica sets, we
@@ -10668,8 +10668,8 @@ buildvariants:
   - name: push
 
 
-- name: enterprise-ubuntu1604-clang-3.8-libcxx
-  display_name: "! Enterprise Ubuntu 16.04 (Clang 3.8)"
+- name: enterprise-ubuntu-dynamic-1604-clang-3.8-libcxx
+  display_name: "! Shared Library Enterprise Ubuntu 16.04 (Clang 3.8)"
   modules:
   - enterprise
   run_on:
@@ -10688,6 +10688,27 @@ buildvariants:
   - name: compile_all_run_unittests_TG
     distros:
     - ubuntu1604-build
+  - name: buildscripts_test
+
+- name: ubuntu-dynamic-1604-clang-3.8-libcxx
+  display_name: "* Shared Library Ubuntu 16.04 (Clang 3.8)"
+  run_on:
+   - ubuntu1604-test
+  expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1
+    lang_environment: LANG=C
+    compile_flags: --link-model=dynamic --ssl CC=/usr/bin/clang-3.8 CXX=/usr/bin/clang++-3.8 -j$(grep -c ^processor /proc/cpuinfo) CPPPATH=/usr/include/libcxxabi/
+    scons_cache_scope: shared
+    gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
+    tooltags: ""
+    build_mongoreplay: true
+  display_tasks:
+  - *unittests
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - ubuntu1604-build
+  - name: buildscripts_test
 
 ###########################################
 #          SUSE buildvariants             #
@@ -10945,61 +10966,6 @@ buildvariants:
 #          Debian buildvariants           #
 ###########################################
 
-- name: enterprise-debian71-64
-  display_name: Enterprise Debian 7.1
-  modules:
-  - enterprise
-  run_on:
-  - debian71-test
-  batchtime: 1440 # 1 day
-  expansions:
-    test_flags: --excludeWithAnyTags=requires_mmapv1
-    push_path: linux
-    push_bucket: downloads.10gen.com
-    push_name: linux
-    push_arch: x86_64-enterprise-debian71
-    compile_flags: --ssl MONGO_DISTMOD=debian71 --release -j$(grep -c ^processor /proc/cpuinfo) --variables-files=etc/scons/mongodbtoolchain_gcc.vars
-    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    has_packages: true
-    packager_script: packager_enterprise.py
-    packager_arch: x86_64
-    packager_distro: debian71
-    repo_edition: enterprise
-    scons_cache_scope: shared
-    gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
-    tooltags: "-tags 'ssl sasl'"
-    build_mongoreplay: true
-  display_tasks:
-  - *unittests
-  tasks:
-  - name: compile_all_run_unittests_TG
-    distros:
-    - debian71-build
-  - name: audit
-  - name: dbtest
-  - name: ese
-  - name: jsCore
-  - name: jsCore_auth
-  - name: jsCore_txns
-  - name: aggregation_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
-  - name: replica_sets_auth
-  - name: sasl
-  - name: sharding_auth
-  - name: snmp
-  - name: ssl
-  - name: sslSpecial
-  - name: package
-    distros:
-    - ubuntu1604-packer
-  - name: push
-
-
 - name: enterprise-debian81-64
   display_name: Enterprise Debian 8.1
   modules:
@@ -11049,95 +11015,6 @@ buildvariants:
   - name: snmp
   - name: ssl
   - name: sslSpecial
-  - name: package
-    distros:
-    - ubuntu1604-packer
-  - name: push
-
-
-- name: debian71
-  display_name: SSL Debian 7.1
-  run_on:
-  - debian71-test
-  batchtime: 1440 # 1 day
-  expansions:
-    test_flags: --excludeWithAnyTags=requires_mmapv1
-    push_path: linux
-    push_bucket: downloads.mongodb.org
-    push_name: linux
-    push_arch: x86_64-debian71
-    compile_flags: --ssl MONGO_DISTMOD=debian71 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
-    multiversion_platform: debian71
-    multiversion_edition: targeted
-    num_jobs_available: $(grep -c ^processor /proc/cpuinfo)
-    has_packages: true
-    packager_script: packager.py
-    packager_arch: x86_64
-    packager_distro: debian71
-    repo_edition: org
-    scons_cache_scope: shared
-    shared_scons_pruning: true
-    gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
-    tooltags: "-tags 'ssl'"
-    build_mongoreplay: true
-  display_tasks:
-  - *unittests
-  tasks:
-  - name: compile_all_run_unittests_TG
-    distros:
-    - debian71-build
-  - name: aggregation
-  - name: aggregation_auth
-  - name: auth
-  - name: dbtest
-  - name: disk_wiredtiger
-  - name: failpoints
-  - name: failpoints_auth
-  - name: free_monitoring
-  - name: gle_auth
-  - name: gle_auth_write_cmd
-  - name: gle_auth_basics_passthrough
-  - name: gle_auth_basics_passthrough_write_cmd
-  - name: sharding_gle_auth_basics_passthrough
-  - name: sharding_gle_auth_basics_passthrough_write_cmd
-  - name: jsCore
-  - name: jsCore_auth
-  - name: jsCore_compatibility
-  - name: jsCore_txns
-  - name: aggregation_fuzzer
-  - name: jstestfuzz
-  - name: jstestfuzz_concurrent
-  - name: jstestfuzz_concurrent_replication
-  - name: jstestfuzz_concurrent_sharded
-  - name: jstestfuzz_replication
-  - name: jstestfuzz_sharded
-  - name: mongosTest
-  - name: multiversion
-  - name: noPassthrough
-  - name: noPassthroughWithMongod
-  - name: bulk_gle_passthrough
-  - name: parallel
-  - name: parallel_compatibility
-  - name: concurrency
-  - name: concurrency_replication
-  - name: concurrency_sharded_replication
-  - name: concurrency_sharded_replication_with_balancer
-  - name: concurrency_simultaneous
-  - name: replica_sets
-  - name: replica_sets_auth
-  - name: replica_sets_jscore_passthrough
-  - name: sharding
-  - name: sharding_auth
-  - name: sharding_last_stable_mongos_and_mixed_shards
-  - name: slow1
-  - name: serial_run
-  - name: sharded_collections_jscore_passthrough
-  - name: sharding_jscore_passthrough
-  - name: sharding_jscore_op_query_passthrough
-  - name: sharding_jscore_passthrough_wire_ops
-  - name: ssl
-  - name: sslSpecial
-  - name: tool
   - name: package
     distros:
     - ubuntu1604-packer
@@ -11987,7 +11864,7 @@ buildvariants:
   - rocksdb
   run_on:
   - ubuntu1404-test
-  batchtime: 1440 # 1 day
+  batchtime: 120960 # 12 weeks
   expansions:
     build_rocksdb: true
     compile_flags: -j$(grep -c ^processor /proc/cpuinfo) --dbg=off --opt=on CPPPATH=$(readlink -f ../rocksdb/include/) LIBPATH=$(readlink -f ../rocksdb/) LIBS=rocksdb --variables-files=etc/scons/mongodbtoolchain_gcc.vars --runtime-hardening=off

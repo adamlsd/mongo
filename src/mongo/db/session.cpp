@@ -952,6 +952,7 @@ void Session::_setActiveTxn(WithLock wl,
     _hasIncompleteHistory = false;
     _txnState = MultiDocumentTransactionState::kNone;
     _speculativeTransactionReadOpTime = repl::OpTime();
+    _multikeyPathInfo.clear();
 }
 
 void Session::addTransactionOperation(OperationContext* opCtx,
@@ -1083,7 +1084,8 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
                 BSONObjBuilder lsid(builder->subobjStart("lsid"));
                 getSessionId().serialize(&lsid);
             }
-            builder->append("txnNumber", _activeTxnNumber);
+            builder->append("transaction",
+                            BSON("parameters" << BSON("txnNumber" << _activeTxnNumber)));
             builder->append("waitingForLock", false);
             builder->append("active", false);
             fillLockerInfo(*lockerInfo, *builder);

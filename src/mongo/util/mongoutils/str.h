@@ -1,3 +1,5 @@
+// @file str.h
+
 /*    Copyright 2010 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -78,11 +80,6 @@ public:
      */
     template <typename R, typename... Args>
     stream& operator<<(R (*val)(Args...)) = delete;
-
-    friend std::ostream& operator<<(std::ostream& os, const stream& str) {
-        mongo::StringData stringData = str;
-        return os << stringData;
-    }
 };
 
 inline bool startsWith(const char* str, const char* prefix) {

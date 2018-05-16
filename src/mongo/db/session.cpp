@@ -60,6 +60,17 @@
 
 namespace mongo {
 
+// Server parameter that dictates the max number of milliseconds that any transaction lock request
+// will wait for lock acquisition. If an operation provides a greater timeout in a lock request,
+// maxTransactionLockRequestTimeoutMillis will override it. If this is set to a negative value, it
+// is inactive and nothing will be overridden.
+//
+// The default of 0 milliseconds will ensure that transaction operations will immediately give up
+// trying to take any lock if it is not immediately available. This prevents deadlocks between
+// transactions. Setting a non-zero, positive value will also help obviate deadlocks, but won't
+// abort a deadlocked transaction operation to eliminate the deadlock for however long has been set.
+MONGO_EXPORT_SERVER_PARAMETER(maxTransactionLockRequestTimeoutMillis, int, 0);
+
 const OperationContext::Decoration<Session::TransactionState> Session::TransactionState::get =
     OperationContext::declareDecoration<Session::TransactionState>();
 
@@ -68,8 +79,8 @@ Session::CursorExistsFunction Session::_cursorExistsFunction;
 
 // Server parameter that dictates the lifetime given to each transaction.
 // Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
-MONGO_EXPORT_SERVER_PARAMETER_WITH_VALIDATOR(
-    transactionLifetimeLimitSeconds, std::int32_t, 60, [](const auto& potentialNewValue) {
+MONGO_EXPORT_SERVER_PARAMETER(transactionLifetimeLimitSeconds, std::int32_t, 60)
+    ->withValidator([](const auto& potentialNewValue) {
         if (potentialNewValue < 1) {
             return Status(ErrorCodes::BadValue,
                           "transactionLifetimeLimitSeconds must be greater than or equal to 1s");
@@ -95,6 +106,7 @@ const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
                                         {"geoSearch", 1},
                                         {"getMore", 1},
                                         {"insert", 1},
+                                        {"killCursors", 1},
                                         {"prepareTransaction", 1},
                                         {"update", 1}};
 
@@ -374,10 +386,19 @@ void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber t
 }
 
 void Session::setSpeculativeTransactionOpTimeToLastApplied(OperationContext* opCtx) {
+    // TODO: This check can be removed once SERVER-34113 is completed. Certain commands that use
+    // DBDirectClient can use snapshot readConcern, but are not supported in transactions. These
+    // commands are only allowed when test commands are enabled, but violate an invariant that the
+    // read timestamp cannot be changed on a RecoveryUnit while it is active.
+    if (opCtx->getClient()->isInDirectClient() &&
+        opCtx->recoveryUnit()->getTimestampReadSource() != RecoveryUnit::ReadSource::kNone) {
+        return;
+    }
+
     stdx::lock_guard<stdx::mutex> lg(_mutex);
     repl::ReplicationCoordinator* replCoord =
         repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
-    opCtx->recoveryUnit()->setShouldReadAtLastAppliedTimestamp(true);
+    opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kLastAppliedSnapshot);
     opCtx->recoveryUnit()->preallocateSnapshot();
     auto readTimestamp = opCtx->recoveryUnit()->getPointInTimeReadTimestamp();
     invariant(readTimestamp);
@@ -778,6 +799,18 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
                 opCtx->recoveryUnit()->preallocateSnapshot();
                 snapshotPreallocated = true;
 
+                if (_txnState == MultiDocumentTransactionState::kInProgress) {
+                    // If maxTransactionLockRequestTimeoutMillis is set, then we will ensure no
+                    // future lock request waits longer than maxTransactionLockRequestTimeoutMillis
+                    // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
+                    // operation performance degradations.
+                    auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
+                    if (maxTransactionLockMillis >= 0) {
+                        opCtx->lockState()->setMaxLockTimeout(
+                            Milliseconds(maxTransactionLockMillis));
+                    }
+                }
+
                 if (_txnState != MultiDocumentTransactionState::kInProgress) {
                     _txnState = MultiDocumentTransactionState::kInSnapshotRead;
                 }
@@ -853,10 +886,11 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
         if (opCtx->getWriteUnitOfWork()) {
             opCtx->setWriteUnitOfWork(nullptr);
         }
-        // We must clear the recovery unit so any post-transaction writes can run without
+        // We must clear the recovery unit and locker so any post-transaction writes can run without
         // transactional settings such as a read timestamp.
         opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
                                WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->lockState()->unsetMaxLockTimeout();
     }
     if (canKillCursors) {
         _killTransactionCursors(opCtx, _sessionId, txnNumberAtStart);
@@ -1007,10 +1041,11 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
                 _txnState = MultiDocumentTransactionState::kAborted;
             }
         }
-        // We must clear the recovery unit so any post-transaction writes can run without
+        // We must clear the recovery unit and locker so any post-transaction writes can run without
         // transactional settings such as a read timestamp.
         opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
                                WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+        opCtx->lockState()->unsetMaxLockTimeout();
         _commitcv.notify_all();
     });
     lk.unlock();

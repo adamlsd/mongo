@@ -218,19 +218,16 @@ const bool checkShimsViaTUHook = false;
         ::mongo::Status initializerGroupStartup(::mongo::InitializerContext*) {               \
             return Status::OK();                                                              \
         }                                                                                     \
-    } /*namespace shim_namespace*/                                                            \
-    } /*namespace*/                                                                           \
-    shim_namespace##LN::ShimType::MongoShimImplGuts::LibTUHookTypeBase::LibTUHookTypeBase() = \
-        default;                                                                              \
-    shim_namespace##LN::ShimType __VA_ARGS__{};
-
-#if 0
         ::mongo::GlobalInitializerRegisterer _mongoInitializerRegisterer(                     \
             std::string(ShimHook##LN),                                                        \
             MONGO_NO_PREREQUISITIES,                                                          \
             (MONGO_SHIM_DEPENDENCY(__VA_ARGS__)),                                             \
             mongo::InitializerFunction(initializerGroupStartup));                             \
-#endif
+    } /*namespace shim_namespace*/                                                            \
+    } /*namespace*/                                                                           \
+    shim_namespace##LN::ShimType::MongoShimImplGuts::LibTUHookTypeBase::LibTUHookTypeBase() = \
+        default;                                                                              \
+    shim_namespace##LN::ShimType __VA_ARGS__{};
 
 /**
  * Define an implementation of a shimmable function with name `SHIM_NAME`.  The compiler will check

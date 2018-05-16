@@ -219,7 +219,7 @@ const bool checkShimsViaTUHook = false;
             return Status::OK();                                                              \
         }                                                                                     \
         ::mongo::GlobalInitializerRegisterer _mongoInitializerRegisterer(                     \
-            std::string(ShimHook##LN),                                                        \
+            "basisFor_" MONGO_SHIM_DEPENDENCY(__VA_ARGS__),                                   \
             MONGO_NO_PREREQUISITIES,                                                          \
             (MONGO_SHIM_DEPENDENCY(__VA_ARGS__)),                                             \
             mongo::InitializerFunction(initializerGroupStartup));                             \

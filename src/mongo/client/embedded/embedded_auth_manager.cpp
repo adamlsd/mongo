@@ -28,87 +28,118 @@
 
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
+#include "mongo/util/assert_util.h"
 
-namespace mongo
-{
-	namespace embedded
-	{
-        std::unique_ptr< mongo::AuthorizationSession > makeEmbeddedAuthorizationSession();
+#define UASSERT_NOT_IMPLEMENTED           \
+    uasserted(ErrorCodes::NotImplemented, \
+              str::stream() << "Not implemented for embedded: " << __FUNCTION__)
 
-        namespace
-        {
-            class AuthorizationManager : public mongo::AuthorizationManager
-            {
-                public:
-                    std::unique_ptr< AuthorizationSession > makeAuthorizationSession() override
-                    {
-                        return AuthorizationSession::create( this );
-                    }
 
-                    void setShouldValidateAuthSchemaOnStartup(bool ) override { abort(); }
-                    bool shouldValidateAuthSchemaOnStartup() override{ abort(); }
-                    void setAuthEnabled(bool ) override { abort(); }
+namespace mongo {
+namespace embedded {
+std::unique_ptr<mongo::AuthorizationSession> makeEmbeddedAuthorizationSession();
 
-                    bool isAuthEnabled() const override{return false; }
-
-                    Status getAuthorizationVersion(OperationContext*,int*)override{abort();}
-
-                    OID getCacheGeneration() override { abort(); }
-
-     bool hasAnyPrivilegeDocuments(OperationContext* ) override{ abort(); }
-
-    Status getUserDescription(OperationContext* ,
-                                      const UserName& ,
-                                      BSONObj* ) override{abort();}
-
-    Status getRoleDescription(OperationContext* ,
-                                      const RoleName& ,
-                                      PrivilegeFormat ,
-                                      AuthenticationRestrictionsFormat,
-                                      BSONObj* ) override { abort(); }
-
-    Status getRolesDescription(OperationContext* ,
-                                       const std::vector<RoleName>& ,
-                                       PrivilegeFormat ,
-                                       AuthenticationRestrictionsFormat,
-                                       BSONObj* ) override { abort(); }
-
-    Status getRoleDescriptionsForDB(OperationContext* ,
-                                            std::string ,
-                                            PrivilegeFormat ,
-                                            AuthenticationRestrictionsFormat,
-                                            bool ,
-                                            std::vector<BSONObj>* ) override { abort(); }
-
-    Status acquireUser(OperationContext* ,
-                               const UserName& ,
-                               User** ) override { abort(); }
-
-    void releaseUser(User* user) override { abort(); }
-
-    void invalidateUserByName(const UserName& user) override { abort(); }
-
-    void invalidateUsersFromDB(const std::string& dbname) override { abort(); }
-
-    Status initialize(OperationContext* opCtx) override { abort(); }
-
-    void invalidateUserCache() override { abort(); }
-
-    Status _initializeUserFromPrivilegeDocument(User* , const BSONObj& ) override
-{ abort(); }
-
-    void logOp(OperationContext* ,
-                       const char* ,
-                       const NamespaceString& ,
-                       const BSONObj& ,
-                       const BSONObj* ) override { /* do nothing*/ }
-            };
-        }//namespace
-	}//namespace embedded
-
-    MONGO_REGISTER_SHIM( AuthorizationManager::create )()
-            -> std::unique_ptr< AuthorizationManager >
-    {
-        return std::make_unique< embedded::AuthorizationManager >();
+namespace {
+class AuthorizationManager : public mongo::AuthorizationManager {
+public:
+    std::unique_ptr<AuthorizationSession> makeAuthorizationSession() override {
+        return AuthorizationSession::create(this);
     }
-} // namespace mongo
+
+    void setShouldValidateAuthSchemaOnStartup(bool) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+    bool shouldValidateAuthSchemaOnStartup() override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+    void setAuthEnabled(bool) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool isAuthEnabled() const override {
+        return false;
+    }
+
+    Status getAuthorizationVersion(OperationContext*, int*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    OID getCacheGeneration() override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    bool hasAnyPrivilegeDocuments(OperationContext*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status getUserDescription(OperationContext*, const UserName&, BSONObj*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status getRoleDescription(OperationContext*,
+                              const RoleName&,
+                              PrivilegeFormat,
+                              AuthenticationRestrictionsFormat,
+                              BSONObj*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status getRolesDescription(OperationContext*,
+                               const std::vector<RoleName>&,
+                               PrivilegeFormat,
+                               AuthenticationRestrictionsFormat,
+                               BSONObj*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status getRoleDescriptionsForDB(OperationContext*,
+                                    std::string,
+                                    PrivilegeFormat,
+                                    AuthenticationRestrictionsFormat,
+                                    bool,
+                                    std::vector<BSONObj>*) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status acquireUser(OperationContext*, const UserName&, User**) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void releaseUser(User* user) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void invalidateUserByName(const UserName& user) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void invalidateUsersFromDB(const std::string& dbname) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status initialize(OperationContext* opCtx) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void invalidateUserCache() override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Status _initializeUserFromPrivilegeDocument(User*, const BSONObj&) override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    void logOp(OperationContext*,
+               const char*,
+               const NamespaceString&,
+               const BSONObj&,
+               const BSONObj*) override { /* do nothing*/
+    }
+};
+}  // namespace
+}  // namespace embedded
+
+MONGO_REGISTER_SHIM(AuthorizationManager::create)()->std::unique_ptr<AuthorizationManager> {
+    return std::make_unique<embedded::AuthorizationManager>();
+}
+}  // namespace mongo

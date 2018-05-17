@@ -31,6 +31,7 @@
 #include "mongo/util/assert_util.h"
 
 #define UASSERT_NOT_IMPLEMENTED           \
+    abort();                              \
     uasserted(ErrorCodes::NotImplemented, \
               str::stream() << "Not implemented for embedded: " << __FUNCTION__)
 
@@ -46,14 +47,14 @@ public:
         return AuthorizationSession::create(this);
     }
 
-    void setShouldValidateAuthSchemaOnStartup(bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+    void setShouldValidateAuthSchemaOnStartup(const bool check) override {
+        _shouldValidate = check;
     }
     bool shouldValidateAuthSchemaOnStartup() override {
-        UASSERT_NOT_IMPLEMENTED;
+        return _shouldValidate;
     }
-    void setAuthEnabled(bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+    void setAuthEnabled(const bool state) override {
+        invariant(!state);
     }
 
     bool isAuthEnabled() const override {
@@ -135,6 +136,9 @@ public:
                const BSONObj&,
                const BSONObj*) override { /* do nothing*/
     }
+
+private:
+    bool _shouldValidate = false;
 };
 }  // namespace
 }  // namespace embedded

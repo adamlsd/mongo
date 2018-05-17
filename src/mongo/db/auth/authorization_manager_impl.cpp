@@ -78,7 +78,9 @@ using std::string;
 using std::vector;
 
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetupInternalSecurityUser, ("EndStartupOptionStorage"))
+MONGO_INITIALIZER_GENERAL(SetupInternalSecurityUser,
+                          ("EndStartupOptionStorage"),
+                          ("CreateAuthorizationManager"))
 (InitializerContext* const context) try {
     User* user = new User(UserName("__system", "local"));
 

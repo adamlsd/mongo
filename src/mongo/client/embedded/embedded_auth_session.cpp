@@ -31,23 +31,42 @@
 #include "mongo/util/assert_util.h"
 
 #define UASSERT_NOT_IMPLEMENTED           \
+    abort();                              \
     uasserted(ErrorCodes::NotImplemented, \
               str::stream() << "Not implemented for embedded: " << __FUNCTION__)
 
 namespace mongo {
 namespace embedded {
 namespace {
+class Impl : public UserNameIterator::Impl {
+    bool more() const override {
+        return false;
+    }
+    const UserName& get() const override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    const UserName& next() override {
+        UASSERT_NOT_IMPLEMENTED;
+    }
+
+    Impl* doClone() const override {
+        return new Impl(*this);
+    }
+};
+
+
 class AuthorizationSession : public mongo::AuthorizationSession {
 public:
     explicit AuthorizationSession(AuthorizationManager* const authzManager)
         : _authzManager(authzManager) {}
 
     AuthorizationManager& getAuthorizationManager() override {
-        UASSERT_NOT_IMPLEMENTED;
+        return *_authzManager;
     }
 
     void startRequest(OperationContext*) override {
-        UASSERT_NOT_IMPLEMENTED;
+        // It is always okay to start a request in embedded.
     }
 
     Status addAndAuthorizeUser(OperationContext*, const UserName&) override {
@@ -67,7 +86,7 @@ public:
     }
 
     UserNameIterator getAuthenticatedUserNames() override {
-        UASSERT_NOT_IMPLEMENTED;
+        return UserNameIterator(std::make_unique<Impl>());
     }
 
     RoleNameIterator getAuthenticatedRoleNames() override {
@@ -79,7 +98,7 @@ public:
     }
 
     void grantInternalAuthorization() override {
-        UASSERT_NOT_IMPLEMENTED;
+        // Always okay to do something, on embedded.
     }
 
     void logoutDatabase(const std::string&) override {
@@ -136,7 +155,7 @@ public:
     }
 
     bool isUsingLocalhostBypass() override {
-        UASSERT_NOT_IMPLEMENTED;
+        return false;
     }
 
     bool isAuthorizedToParseNamespaceElement(const BSONElement&) override {
@@ -184,11 +203,11 @@ public:
     }
 
     bool isAuthorizedForActionsOnResource(const ResourcePattern&, ActionType) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForActionsOnResource(const ResourcePattern&, const ActionSet&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForActionsOnNamespace(const NamespaceString&, ActionType) override {

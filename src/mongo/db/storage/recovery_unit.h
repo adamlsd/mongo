@@ -83,10 +83,12 @@ public:
                   "This storage engine does not support prepared transactions");
     }
 
-    virtual void setIgnorePrepared(bool ignore) {
-        uasserted(ErrorCodes::CommandNotSupported,
-                  "This storage engine does not support prepared transactions");
-    }
+
+    /**
+     * Sets whether or not to ignore prepared transactions if supported by this storage engine. When
+     * 'ignore' is true, allows reading data in prepared, but uncommitted transactions.
+     */
+    virtual void setIgnorePrepared(bool ignore) {}
 
     /**
      * Waits until all commits that happened before this call are durable in the journal. Returns
@@ -149,6 +151,8 @@ public:
      *  - when using ReadSource::kProvided, the timestamp provided.
      *  - when using ReadSource::kLastAppliedSnapshot, the timestamp chosen using the storage
      * engine's last applied timestamp.
+     *  - when using ReadSource::kLastApplied, the last applied timestamp at which the current
+     * storage transaction was opened, if one is open.
      *  - when using ReadSource::kMajorityCommitted, the majority committed timestamp chosen by the
      * storage engine after a transaction has been opened or after a call to
      * obtainMajorityCommittedSnapshot().

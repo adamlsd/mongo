@@ -81,6 +81,7 @@ selector:
   # TODO SERVER-33229: Remove these exclusions
   - jstests/core/compact_keeps_indexes.js
   - jstests/core/find_and_modify_concurrent_update.js
+  - jstests/core/shellstartparallel.js
 
   exclude_with_any_tags:
   ##

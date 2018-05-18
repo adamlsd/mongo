@@ -36,6 +36,7 @@
 
 #include "mongo/bson/bsonobjbuilder.h"
 #include "mongo/db/server_options.h"
+#include "mongo/db/storage/wiredtiger/wiredtiger_begin_transaction_block.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_kv_engine.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_prepare_conflict.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
@@ -320,6 +321,10 @@ boost::optional<Timestamp> WiredTigerRecoveryUnit::getPointInTimeReadTimestamp()
         return _readAtTimestamp;
     }
 
+    if (_timestampReadSource == ReadSource::kLastApplied && !_readAtTimestamp.isNull()) {
+        return _readAtTimestamp;
+    }
+
     if (_timestampReadSource == ReadSource::kMajorityCommitted) {
         invariant(!_majorityCommittedSnapshot.isNull());
         return _majorityCommittedSnapshot;
@@ -343,8 +348,9 @@ void WiredTigerRecoveryUnit::_txnOpen() {
             WiredTigerBeginTxnBlock txnOpen(session, _ignorePrepared);
 
             if (_isOplogReader) {
-                auto status = txnOpen.setTimestamp(
-                    Timestamp(_oplogManager->getOplogReadTimestamp()), true /* roundToOldest */);
+                auto status =
+                    txnOpen.setTimestamp(Timestamp(_oplogManager->getOplogReadTimestamp()),
+                                         WiredTigerBeginTxnBlock::RoundToOldest::kRound);
                 fassert(50771, status);
             }
             txnOpen.done();
@@ -359,8 +365,8 @@ void WiredTigerRecoveryUnit::_txnOpen() {
         }
         case ReadSource::kLastApplied: {
             if (_sessionCache->snapshotManager().getLocalSnapshot()) {
-                _sessionCache->snapshotManager().beginTransactionOnLocalSnapshot(session,
-                                                                                 _ignorePrepared);
+                _readAtTimestamp = _sessionCache->snapshotManager().beginTransactionOnLocalSnapshot(
+                    session, _ignorePrepared);
             } else {
                 WiredTigerBeginTxnBlock(session, _ignorePrepared).done();
             }
@@ -378,7 +384,7 @@ void WiredTigerRecoveryUnit::_txnOpen() {
         }
         case ReadSource::kProvided: {
             WiredTigerBeginTxnBlock txnOpen(session, _ignorePrepared);
-            auto status = txnOpen.setTimestamp(_readAtTimestamp, session);
+            auto status = txnOpen.setTimestamp(_readAtTimestamp);
 
             if (!status.isOK() && status.code() == ErrorCodes::BadValue) {
                 uasserted(ErrorCodes::SnapshotTooOld,
@@ -459,7 +465,8 @@ void WiredTigerRecoveryUnit::setPrepareTimestamp(Timestamp timestamp) {
 }
 
 void WiredTigerRecoveryUnit::setIgnorePrepared(bool value) {
-    _ignorePrepared = value;
+    _ignorePrepared = (value) ? WiredTigerBeginTxnBlock::IgnorePrepared::kIgnore
+                              : WiredTigerBeginTxnBlock::IgnorePrepared::kNoIgnore;
 }
 
 void WiredTigerRecoveryUnit::setTimestampReadSource(ReadSource readSource,

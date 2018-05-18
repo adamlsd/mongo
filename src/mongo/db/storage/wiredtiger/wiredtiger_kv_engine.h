@@ -54,6 +54,14 @@ class WiredTigerRecordStore;
 class WiredTigerSessionCache;
 class WiredTigerSizeStorer;
 
+struct WiredTigerFileVersion {
+    enum class StartupVersion { IS_34, IS_36, IS_40 };
+
+    StartupVersion _startupVersion;
+    bool shouldDowngrade(bool readOnly, bool repairMode, bool hasRecoveryTimestamp);
+    std::string getDowngradeString();
+};
+
 class WiredTigerKVEngine final : public KVEngine {
 public:
     static const int kDefaultJournalDelayMillis;
@@ -135,6 +143,10 @@ public:
                                                                KVPrefix prefix);
 
     virtual Status dropIdent(OperationContext* opCtx, StringData ident);
+
+    virtual void alterIdentMetadata(OperationContext* opCtx,
+                                    StringData ident,
+                                    const IndexDescriptor* desc);
 
     virtual Status okToRename(OperationContext* opCtx,
                               StringData fromNS,
@@ -306,5 +318,6 @@ private:
 
     std::unique_ptr<WiredTigerSession> _backupSession;
     Timestamp _recoveryTimestamp;
+    WiredTigerFileVersion _fileVersion;
 };
 }

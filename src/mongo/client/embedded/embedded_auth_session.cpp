@@ -28,13 +28,10 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/client/embedded/not_implemented.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/util/assert_util.h"
-
-#define UASSERT_NOT_IMPLEMENTED           \
-    uasserted(ErrorCodes::NotImplemented, \
-              str::stream() << "Not implemented for embedded: " << __FUNCTION__)
 
 namespace mongo {
 namespace embedded {
@@ -236,11 +233,11 @@ public:
     }
 
     bool isCoauthorizedWithClient(Client*) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isCoauthorizedWith(UserNameIterator) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isImpersonating() const override {
@@ -249,7 +246,7 @@ public:
 
     Status checkCursorSessionPrivilege(OperationContext*,
                                        boost::optional<LogicalSessionId>) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     bool isAuthorizedForAnyActionOnAnyResourceInDB(StringData) override {

@@ -26,12 +26,13 @@
  *    then also delete it in the license file.
  */
 
+#include "mongo/platform/basic.h"
+
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/util/assert_util.h"
 
 #define UASSERT_NOT_IMPLEMENTED           \
-    abort();                              \
     uasserted(ErrorCodes::NotImplemented, \
               str::stream() << "Not implemented for embedded: " << __FUNCTION__)
 

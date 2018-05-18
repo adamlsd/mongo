@@ -122,8 +122,8 @@ public:
         virtual Impl* doClone() const = 0;
     };
 
-    explicit UserNameIterator(std::unique_ptr<Impl> impl) : _impl(std::move(impl)) {}
     UserNameIterator() = default;
+    explicit UserNameIterator(std::unique_ptr<Impl> impl) : _impl(std::move(impl)) {}
 
     bool more() const {
         return _impl.get() && _impl->more();
@@ -153,17 +153,17 @@ class UserNameContainerIteratorImpl : public UserNameIterator::Impl {
 public:
     UserNameContainerIteratorImpl(const ContainerIterator& begin, const ContainerIterator& end)
         : _curr(begin), _end(end) {}
-    virtual ~UserNameContainerIteratorImpl() {}
-    virtual bool more() const {
+    ~UserNameContainerIteratorImpl() override {}
+    bool more() const override {
         return _curr != _end;
     }
-    virtual const UserName& next() {
+    const UserName& next() override {
         return *(_curr++);
     }
-    virtual const UserName& get() const {
+    const UserName& get() const override {
         return *_curr;
     }
-    virtual UserNameIterator::Impl* doClone() const {
+    UserNameIterator::Impl* doClone() const override {
         return new UserNameContainerIteratorImpl(*this);
     }
 

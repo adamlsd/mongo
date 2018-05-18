@@ -94,10 +94,10 @@ MONGO_INITIALIZER_GENERAL(SetupInternalSecurityUser,
     if (mongodGlobalParams.whitelistedClusterNetwork) {
         const auto& whitelist = *mongodGlobalParams.whitelistedClusterNetwork;
 
-        auto restriction = stdx::make_unique<ClientSourceRestriction>(whitelist);
-        auto restrictionSet = stdx::make_unique<RestrictionSet<>>(std::move(restriction));
+        auto restriction = std::make_unique<ClientSourceRestriction>(whitelist);
+        auto restrictionSet = std::make_unique<RestrictionSet<>>(std::move(restriction));
         auto restrictionDocument =
-            stdx::make_unique<RestrictionDocument<>>(std::move(restrictionSet));
+            std::make_unique<RestrictionDocument<>>(std::move(restrictionSet));
 
         RestrictionDocuments clusterWhiteList(std::move(restrictionDocument));
 

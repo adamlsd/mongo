@@ -39,8 +39,6 @@
 
 namespace mongo {
 namespace embedded {
-std::unique_ptr<mongo::AuthorizationSession> makeEmbeddedAuthorizationSession();
-
 namespace {
 class AuthorizationManager : public mongo::AuthorizationManager {
 public:

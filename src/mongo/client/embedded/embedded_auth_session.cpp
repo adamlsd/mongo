@@ -250,11 +250,11 @@ public:
     }
 
     bool isAuthorizedForAnyActionOnAnyResourceInDB(StringData) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForAnyActionOnResource(const ResourcePattern&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
 protected:

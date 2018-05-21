@@ -193,11 +193,11 @@ public:
     }
 
     bool isAuthorizedForPrivilege(const Privilege&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForPrivileges(const std::vector<Privilege>&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForActionsOnResource(const ResourcePattern&, ActionType) override {

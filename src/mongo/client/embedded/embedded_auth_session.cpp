@@ -108,7 +108,7 @@ public:
     }
 
     Status checkAuthForFind(const NamespaceString&, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK;
     }
 
     Status checkAuthForGetMore(const NamespaceString&, long long, bool) override {

@@ -108,48 +108,48 @@ public:
     }
 
     Status checkAuthForFind(const NamespaceString&, bool) override {
-        return Status::OK;
+        return Status::OK();
     }
 
     Status checkAuthForGetMore(const NamespaceString&, long long, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForUpdate(
         OperationContext*, const NamespaceString&, const BSONObj&, const BSONObj&, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForInsert(OperationContext*, const NamespaceString&, const BSONObj&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForDelete(OperationContext*, const NamespaceString&, const BSONObj&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForKillCursors(const NamespaceString&, UserNameIterator) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForAggregate(const NamespaceString&, const BSONObj&, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForCreate(const NamespaceString&, const BSONObj&, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthForCollMod(const NamespaceString&, const BSONObj&, bool) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthorizedToGrantPrivilege(const Privilege&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     Status checkAuthorizedToRevokePrivilege(const Privilege&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return Status::OK();
     }
 
     bool isUsingLocalhostBypass() override {
@@ -157,39 +157,39 @@ public:
     }
 
     bool isAuthorizedToParseNamespaceElement(const BSONElement&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToCreateRole(const auth::CreateOrUpdateRoleArgs&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToGrantRole(const RoleName&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToRevokeRole(const RoleName&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToChangeAsUser(const UserName&, ActionType) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToChangeOwnPasswordAsUser(const UserName&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToListCollections(StringData, const BSONObj&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedToChangeOwnCustomDataAsUser(const UserName&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthenticatedAsUserWithRole(const RoleName&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForPrivilege(const Privilege&) override {
@@ -209,11 +209,11 @@ public:
     }
 
     bool isAuthorizedForActionsOnNamespace(const NamespaceString&, ActionType) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     bool isAuthorizedForActionsOnNamespace(const NamespaceString&, const ActionSet&) override {
-        UASSERT_NOT_IMPLEMENTED;
+        return true;
     }
 
     void setImpersonatedUserData(std::vector<UserName>, std::vector<RoleName>) override {

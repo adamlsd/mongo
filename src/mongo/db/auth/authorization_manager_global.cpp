@@ -94,7 +94,6 @@ MONGO_EXPORT_STARTUP_SERVER_PARAMETER(startupAuthSchemaValidation, bool, true);
 GlobalInitializerRegisterer authorizationManagerInitializer(
     "CreateAuthorizationManager",
     {MONGO_SHIM_DEPENDENCY(AuthorizationManager::create),
-     "SetupInternalSecurityUser",
      "OIDGeneration",
      "EndStartupOptionStorage",
      "ServiceContext"},

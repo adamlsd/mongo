@@ -1450,8 +1450,8 @@ functions:
             ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_transport_test" --tempPath /data
         elif [ ${enable_embedded_tests|false} = "android_emulator" ]; then
             # strip because the binaries with debug symbols are too big for the default storage on the emulator
-            find build/mongo-embedded-sdk-${version}/bin -type f | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android-strip
-            find build/mongo-embedded-sdk-${version}/lib -type f -name "*.so" | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android-strip
+            find build/mongo-embedded-sdk-${version}/bin -type f | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android*-strip
+            find build/mongo-embedded-sdk-${version}/lib -type f -name "*.so" | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android*-strip
             ${compile_env|} buildscripts/runandroidsim.sh $(dirname $(pwd))/android_sdk ${android_toolchain_system_image_arch} "build/mongo-embedded-sdk-${version}" "bin/mongo_embedded_capi_test" --tempPath /data
             ${compile_env|} buildscripts/runandroidsim.sh $(dirname $(pwd))/android_sdk ${android_toolchain_system_image_arch} "build/mongo-embedded-sdk-${version}" "bin/mongo_embedded_transport_test" --tempPath /data
         elif [ ${enable_embedded_tests|false} = "native" ]; then
@@ -3102,7 +3102,6 @@ tasks:
           --link-model=dynamic
           --prefix='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION'
           CPPPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libbson-1.0 $BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/include/libmongoc-1.0'
-          LIBPATH='$BUILD_ROOT/mongo-embedded-sdk-$MONGO_VERSION/lib'
 
     # Need to sign artifacts on iOS-ish.
     - command: shell.exec
@@ -4445,6 +4444,14 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=concurrency_replication --storageEngine=wiredTiger
+
+- <<: *task_template
+  name: concurrency_replication_causal_consistency
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=concurrency_replication_causal_consistency --storageEngine=wiredTiger
 
 - <<: *task_template
   name: concurrency_sharded_replication
@@ -6796,6 +6803,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -6849,6 +6857,9 @@ buildvariants:
   - name: parallel
   - name: concurrency
   - name: concurrency_replication
+  # TODO: SERVER-35057 Disable temporarily since the test suite cannot finish in
+  # 6 hours right now.
+  # - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -6901,6 +6912,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -7152,6 +7164,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -7265,6 +7278,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -7352,6 +7366,9 @@ buildvariants:
     # hosts from the ubuntu1604-arm64-small pool to work around this issue.
     - ubuntu1604-arm64-small
   - name: concurrency_replication
+    distros:
+    - ubuntu1604-arm64-small
+  - name: concurrency_replication_causal_consistency
     distros:
     - ubuntu1604-arm64-small
   - name: concurrency_sharded_replication
@@ -7477,6 +7494,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -7539,6 +7557,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -7741,6 +7760,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -7914,6 +7934,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -8018,6 +8039,9 @@ buildvariants:
     distros:
     - windows-64-vs2015-large
   - name: concurrency_replication
+    distros:
+    - windows-64-vs2015-large
+  - name: concurrency_replication_causal_consistency
     distros:
     - windows-64-vs2015-large
   - name: concurrency_sharded_replication
@@ -8504,6 +8528,7 @@ buildvariants:
     distros:
     - windows-64-vs2015-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -8573,6 +8598,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -8727,6 +8753,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -8917,6 +8944,7 @@ buildvariants:
       --enable-free-mon=off
       --variables-files=etc/scons/xcode_macos.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DTHREADS_PTHREAD_ARG=2
         -DCMAKE_SYSTEM_NAME=Darwin
@@ -8962,6 +8990,7 @@ buildvariants:
       --enable-free-mon=off
       --variables-files=etc/scons/xcode_ios.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DTHREADS_PTHREAD_ARG=2
         -DCMAKE_SYSTEM_NAME=Darwin
@@ -9006,6 +9035,7 @@ buildvariants:
       --enable-free-mon=off
       --variables-files=etc/scons/xcode_ios_sim.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DTHREADS_PTHREAD_ARG=2
         -DCMAKE_SYSTEM_NAME=Darwin
@@ -9052,6 +9082,7 @@ buildvariants:
       --enable-free-mon=off
       --variables-files=etc/scons/xcode_tvos.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DTHREADS_PTHREAD_ARG=2
         -DCMAKE_SYSTEM_NAME=Darwin
@@ -9095,6 +9126,7 @@ buildvariants:
       --enable-free-mon=off
       --variables-files=etc/scons/xcode_tvos_sim.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DTHREADS_PTHREAD_ARG=2
         -DCMAKE_SYSTEM_NAME=Darwin
@@ -9141,6 +9173,7 @@ buildvariants:
       --variables-files=etc/scons/mongodbtoolchain_gcc.vars
       --allocator=system
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags:
         -DCMAKE_C_COMPILER=/opt/mongodbtoolchain/v2/bin/gcc
         -DCMAKE_CXX_COMPILER=/opt/mongodbtoolchain/v2/bin/g++
@@ -9153,6 +9186,57 @@ buildvariants:
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     disable_unit_tests: true
     enable_embedded_tests: native
+  tasks:
+  - name: compile_mobile
+
+- name: embedded-sdk-android-arm32
+  display_name: "Embedded SDK - Android arm32"
+  run_on:
+  - ubuntu1604-build
+  batchtime: 1440 # 1 day
+  expansions:
+    test_flags: --excludeWithAnyTags=requires_mmapv1,uses_transactions
+    build_cdriver: true
+    compile_env: JAVA_HOME=/opt/java/jdk8/
+    compile_flags: >-
+      -j$(grep -c ^processor /proc/cpuinfo)
+      --dbg=off
+      --opt=size
+      --enable-free-mon=off
+      --android-toolchain-path=$(dirname $(pwd))/android_toolchain
+      --variables-files=etc/scons/android_toolchain.vars
+      --use-system-mongo-c=on
+      LIBS=clang_rt.builtins-arm-android
+      LIBPATH="$(dirname $($(dirname $(pwd))/android_toolchain/bin/clang -print-file-name=libclang_rt.builtins-arm-android.a)) \$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
+    libbson_cmake_flags: >-
+        -DANDROID_NATIVE_API_LEVEL=24
+        -DANDROID_ABI=armeabi-v7a
+        -DTHREADS_PTHREAD_ARG=2
+        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
+        -DCMAKE_FIND_ROOT_PATH=$WORKDIR/android_toolchain
+        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
+        -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
+    cdriver_cmake_flags: >-
+        -DANDROID_NATIVE_API_LEVEL=24
+        -DANDROID_ABI=armeabi-v7a
+        -DTHREADS_PTHREAD_ARG=2
+        -DCMAKE_TOOLCHAIN_FILE=$WORKDIR/android_sdk/ndk-bundle/build/cmake/android.toolchain.cmake
+        -DCMAKE_FIND_ROOT_PATH="$WORKDIR/android_toolchain;$WORKDIR/src/build/mongo-embedded-sdk-$VERSION-tmp"
+        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
+        -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
+        -DCMAKE_INSTALL_RPATH=\$ORIGIN/../lib
+    test_flags: --excludeWithAnyTags=requires_mmapv1
+    compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
+    disable_unit_tests: true
+    enable_embedded_tests: android_emulator
+    setup_android_toolchain: true
+    android_toolchain_system_image_arch: "armeabi-v7a"
+    android_toolchain_target_arch: "arm"
   tasks:
   - name: compile_mobile
 
@@ -9173,6 +9257,7 @@ buildvariants:
       --android-toolchain-path=$(dirname $(pwd))/android_toolchain
       --variables-files=etc/scons/android_toolchain.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DANDROID_NATIVE_API_LEVEL=24
         -DANDROID_ABI=arm64-v8a
@@ -9222,6 +9307,7 @@ buildvariants:
       --android-toolchain-path=$(dirname $(pwd))/android_toolchain
       --variables-files=etc/scons/android_toolchain.vars
       --use-system-mongo-c=on
+      LIBPATH="\$BUILD_ROOT/mongo-embedded-sdk-\$MONGO_VERSION/lib"
     libbson_cmake_flags: >-
         -DANDROID_NATIVE_API_LEVEL=24
         -DANDROID_ABI=x86_64
@@ -9347,6 +9433,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -9887,6 +9974,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -10113,6 +10201,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -10203,6 +10292,9 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - rhel70
+  - name: concurrency_replication_causal_consistency
+    distros:
+    - rhel70
   - name: concurrency_sharded_replication
     distros:
     - rhel70
@@ -10275,6 +10367,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -10382,6 +10475,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -10486,6 +10580,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -10827,6 +10922,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -10956,6 +11052,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -11034,7 +11131,6 @@ buildvariants:
     - ubuntu1604-packer
   - name: push
 
-
 - name: debian81
   display_name: SSL Debian 8.1
   run_on:
@@ -11100,6 +11196,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -11248,6 +11345,7 @@ buildvariants:
   - name: parallel_compatibility
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -11326,6 +11424,7 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -11651,6 +11750,7 @@ buildvariants:
     distros:
     - rhel62-large  # Some workloads require a lot of memory, use a bigger machine for this suite.
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -11735,6 +11835,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -11816,6 +11917,9 @@ buildvariants:
     distros:
     - rhel72-zseries-build
   - name: concurrency_replication
+    distros:
+    - rhel72-zseries-build
+  - name: concurrency_replication_causal_consistency
     distros:
     - rhel72-zseries-build
   - name: concurrency_sharded_replication
@@ -11961,6 +12065,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -12138,6 +12243,7 @@ buildvariants:
   - name: change_streams_whole_cluster_sharded_collections_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -12284,6 +12390,7 @@ buildvariants:
   - name: sharded_causally_consistent_jscore_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous
@@ -12420,6 +12527,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -12540,6 +12648,9 @@ buildvariants:
   - name: concurrency_replication
     distros:
     - windows-64-vs2015-large
+  - name: concurrency_replication_causal_consistency
+    distros:
+    - windows-64-vs2015-large
   - name: concurrency_sharded_replication
     distros:
     - windows-64-vs2015-large
@@ -12651,6 +12762,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_sharded_causal_consistency
@@ -12738,6 +12850,7 @@ buildvariants:
   - name: bulk_gle_passthrough
   - name: concurrency
   - name: concurrency_replication
+  - name: concurrency_replication_causal_consistency
   - name: concurrency_sharded_replication
   - name: concurrency_sharded_replication_with_balancer
   - name: concurrency_simultaneous

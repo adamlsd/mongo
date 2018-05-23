@@ -218,9 +218,9 @@ const bool checkShimsViaTUHook = false;
             return Status::OK();                                                              \
         }                                                                                     \
         ::mongo::GlobalInitializerRegisterer _mongoInitializerRegisterer(                     \
-            std::string(MONGO_SHIM_DEPENDENCY(__VA_ARGS__) "_basis"),                         \
+            std::string(MONGO_SHIM_DEPENDENCY(__VA_ARGS__)),                                  \
             {},                                                                               \
-            {MONGO_SHIM_DEPENDENCY(__VA_ARGS__), MONGO_SHIM_DEPENDENTS},                      \
+            {MONGO_SHIM_DEPENDENTS},                                                          \
             mongo::InitializerFunction(initializerGroupStartup));                             \
     } /*namespace shim_namespace*/                                                            \
     } /*namespace*/                                                                           \

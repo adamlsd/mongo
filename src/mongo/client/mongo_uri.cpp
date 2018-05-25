@@ -255,7 +255,7 @@ bool isWithinDomain(std::string hostname, std::string domain) {
 MongoURI MongoURI::parseImpl(const std::string& url) {
     const StringData urlSD(url);
 
-    // 1. Validate and remove the scheme prefix mongodb://
+    // 1. Validate and remove the scheme prefix `mongodb://` or `mongodb+srv://`
     const bool isSeedlist = urlSD.startsWith(kURISRVPrefix);
     if (!(urlSD.startsWith(kURIPrefix) || isSeedlist)) {
         return MongoURI(uassertStatusOK(ConnectionString::parse(url)));

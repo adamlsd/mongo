@@ -29,255 +29,231 @@
 
 #include "mongo/util/dns_name.h"
 
-#include "mongo/unittest/unittest.h"
 #include "mongo/stdx/utility.h"
+#include "mongo/unittest/unittest.h"
 
 using namespace std::literals::string_literals;
 
-namespace mongo
-{
-    namespace
-    {
-        TEST( DNSNameTest, CorrectParsing )
-        {
-            enum FQDNBool : bool { kIsFQDN= true, kNotFQDN= false };
-            const struct
-            {
-                std::string input;
-                std::vector< std::string > parsedDomains;
-                FQDNBool isFQDN;
-            }
-            tests[]=
-            {
-                { "com."s, { "com"s }, kIsFQDN },
-                { "com"s, { "com"s }, kNotFQDN },
-                { "mongodb.com."s, { "com"s, "mongodb"s }, kIsFQDN },
-                { "mongodb.com"s, { "com"s, "mongodb"s }, kNotFQDN },
-                { "atlas.mongodb.com."s, { "com"s, "mongodb"s, "atlas"s }, kIsFQDN },
-                { "atlas.mongodb.com"s, { "com"s, "mongodb"s, "atlas"s }, kNotFQDN },
-                { "server.atlas.mongodb.com."s, { "com"s, "mongodb"s, "atlas"s, "server"s }, kIsFQDN },
-                { "server.atlas.mongodb.com"s, { "com"s, "mongodb"s, "atlas"s, "server"s }, kNotFQDN },
-            };
+namespace mongo {
+namespace {
+TEST(DNSNameTest, CorrectParsing) {
+    enum FQDNBool : bool { kIsFQDN = true, kNotFQDN = false };
+    const struct {
+        std::string input;
+        std::vector<std::string> parsedDomains;
+        FQDNBool isFQDN;
+    } tests[] = {
+        {"com."s, {"com"s}, kIsFQDN},
+        {"com"s, {"com"s}, kNotFQDN},
+        {"mongodb.com."s, {"com"s, "mongodb"s}, kIsFQDN},
+        {"mongodb.com"s, {"com"s, "mongodb"s}, kNotFQDN},
+        {"atlas.mongodb.com."s, {"com"s, "mongodb"s, "atlas"s}, kIsFQDN},
+        {"atlas.mongodb.com"s, {"com"s, "mongodb"s, "atlas"s}, kNotFQDN},
+        {"server.atlas.mongodb.com."s, {"com"s, "mongodb"s, "atlas"s, "server"s}, kIsFQDN},
+        {"server.atlas.mongodb.com"s, {"com"s, "mongodb"s, "atlas"s, "server"s}, kNotFQDN},
+    };
 
-            for( const auto &test: tests )
-            {
-                const ::mongo::dns::HostName host( test.input );
+    for (const auto& test : tests) {
+        const ::mongo::dns::HostName host(test.input);
 
-                ASSERT_EQ( host.nameComponents().size(), test.parsedDomains.size() );
-                for( std::size_t i= 0; i < host.nameComponents().size(); ++i )
-                {
-                    ASSERT_EQ( host.nameComponents()[ i ], test.parsedDomains[ i ] );
+        ASSERT_EQ(host.nameComponents().size(), test.parsedDomains.size());
+        for (std::size_t i = 0; i < host.nameComponents().size(); ++i) {
+            ASSERT_EQ(host.nameComponents()[i], test.parsedDomains[i]);
+        }
+        ASSERT(host.isFQDN() == test.isFQDN);
+    }
+}
+
+TEST(DNSNameTest, CanonicalName) {
+    const struct {
+        std::string input;
+        std::string result;
+    } tests[] = {
+        {"com."s, "com."s},
+        {"com"s, "com"s},
+        {"mongodb.com."s, "mongodb.com."s},
+        {"mongodb.com"s, "mongodb.com"s},
+        {"atlas.mongodb.com."s, "atlas.mongodb.com."s},
+        {"atlas.mongodb.com"s, "atlas.mongodb.com"s},
+        {"server.atlas.mongodb.com."s, "server.atlas.mongodb.com."s},
+        {"server.atlas.mongodb.com"s, "server.atlas.mongodb.com"s},
+    };
+
+    for (const auto& test : tests) {
+        const ::mongo::dns::HostName host(test.input);
+
+        ASSERT_EQ(host.canonicalName(), test.result);
+    }
+}
+
+TEST(DNSNameTest, SSLName) {
+    const struct {
+        std::string input;
+        std::string result;
+    } tests[] = {
+        {"com."s, "com"s},
+        {"com"s, "com"s},
+        {"mongodb.com."s, "mongodb.com"s},
+        {"mongodb.com"s, "mongodb.com"s},
+        {"atlas.mongodb.com."s, "atlas.mongodb.com"s},
+        {"atlas.mongodb.com"s, "atlas.mongodb.com"s},
+        {"server.atlas.mongodb.com."s, "server.atlas.mongodb.com"s},
+        {"server.atlas.mongodb.com"s, "server.atlas.mongodb.com"s},
+    };
+
+    for (const auto& test : tests) {
+        const ::mongo::dns::HostName host(test.input);
+
+        ASSERT_EQ(host.sslName(), test.result);
+    }
+}
+
+TEST(DNSNameTest, Contains) {
+    enum IsSubdomain : bool { kIsSubdomain = true, kNotSubdomain = false };
+    const struct {
+        std::string domain;
+        std::string subdomain;
+        IsSubdomain isSubdomain;
+    } tests[] = {
+        {"com."s, "mongodb.com."s, kIsSubdomain},
+        {"com"s, "mongodb.com"s, kIsSubdomain},
+        {"com."s, "mongodb.com"s, kNotSubdomain},
+        {"com"s, "mongodb.com."s, kNotSubdomain},
+
+        {"com."s, "atlas.mongodb.com."s, kIsSubdomain},
+        {"com"s, "atlas.mongodb.com"s, kIsSubdomain},
+        {"com."s, "atlas.mongodb.com"s, kNotSubdomain},
+        {"com"s, "atlas.mongodb.com."s, kNotSubdomain},
+
+        {"org."s, "atlas.mongodb.com."s, kNotSubdomain},
+        {"org"s, "atlas.mongodb.com"s, kNotSubdomain},
+        {"org."s, "atlas.mongodb.com"s, kNotSubdomain},
+        {"org"s, "atlas.mongodb.com."s, kNotSubdomain},
+
+        {"com."s, "com."s, kNotSubdomain},
+        {"com"s, "com."s, kNotSubdomain},
+        {"com."s, "com"s, kNotSubdomain},
+        {"com"s, "com"s, kNotSubdomain},
+
+        {"mongodb.com."s, "mongodb.com."s, kNotSubdomain},
+        {"mongodb.com."s, "mongodb.com"s, kNotSubdomain},
+        {"mongodb.com"s, "mongodb.com."s, kNotSubdomain},
+        {"mongodb.com"s, "mongodb.com"s, kNotSubdomain},
+
+        {"mongodb.com."s, "atlas.mongodb.com."s, kIsSubdomain},
+        {"mongodb.com"s, "atlas.mongodb.com"s, kIsSubdomain},
+        {"mongodb.com."s, "atlas.mongodb.com"s, kNotSubdomain},
+        {"mongodb.com"s, "atlas.mongodb.com."s, kNotSubdomain},
+
+        {"mongodb.com."s, "server.atlas.mongodb.com."s, kIsSubdomain},
+        {"mongodb.com"s, "server.atlas.mongodb.com"s, kIsSubdomain},
+        {"mongodb.com."s, "server.atlas.mongodb.com"s, kNotSubdomain},
+        {"mongodb.com"s, "server.atlas.mongodb.com."s, kNotSubdomain},
+
+        {"mongodb.org."s, "server.atlas.mongodb.com."s, kNotSubdomain},
+        {"mongodb.org"s, "server.atlas.mongodb.com"s, kNotSubdomain},
+        {"mongodb.org."s, "server.atlas.mongodb.com"s, kNotSubdomain},
+        {"mongodb.org"s, "server.atlas.mongodb.com."s, kNotSubdomain},
+    };
+
+    for (const auto& test : tests) {
+        const ::mongo::dns::HostName domain(test.domain);
+        const ::mongo::dns::HostName subdomain(test.subdomain);
+
+        ASSERT(test.isSubdomain == domain.contains(subdomain));
+    }
+}
+
+TEST(DNSNameTest, Resolution) {
+    enum Failure : bool { kFails = true, kSucceeds = false };
+    enum FQDNBool : bool { kIsFQDN = true, kNotFQDN = false };
+    const struct {
+        std::string domain;
+        std::string subdomain;
+        std::string result;
+
+        Failure fails;
+        FQDNBool isFQDN;
+    } tests[] = {
+        {"mongodb.com."s, "atlas"s, "atlas.mongodb.com."s, kSucceeds, kIsFQDN},
+        {"mongodb.com"s, "atlas"s, "atlas.mongodb.com"s, kSucceeds, kNotFQDN},
+
+        {"mongodb.com."s, "server.atlas"s, "server.atlas.mongodb.com."s, kSucceeds, kIsFQDN},
+        {"mongodb.com"s, "server.atlas"s, "server.atlas.mongodb.com"s, kSucceeds, kNotFQDN},
+
+        {"mongodb.com."s, "atlas."s, "FAILS"s, kFails, kNotFQDN},
+        {"mongodb.com"s, "atlas."s, "FAILS"s, kFails, kNotFQDN},
+    };
+
+    for (const auto& test : tests)
+        try {
+            const ::mongo::dns::HostName domain(test.domain);
+            const ::mongo::dns::HostName subdomain(test.subdomain);
+            const ::mongo::dns::HostName resolved = [&] {
+                try {
+                    const ::mongo::dns::HostName rv = subdomain.resolvedIn(domain);
+                    return rv;
+                } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+                    ASSERT(test.fails);
+                    throw;
                 }
-                ASSERT( host.isFQDN() == test.isFQDN );
-            }
+            }();
+            ASSERT(!test.fails);
+
+            ASSERT_EQ(test.result, resolved.canonicalName());
+            ASSERT(test.isFQDN == resolved.isFQDN());
+        } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+            ASSERT(test.fails);
         }
+}
 
-        TEST( DNSNameTest, CanonicalName )
-        {
-            const struct
-            {
-                std::string input;
-                std::string result;
-            }
-            tests[]=
-            {
-                { "com."s, "com."s },
-                { "com"s, "com"s },
-                { "mongodb.com."s, "mongodb.com."s },
-                { "mongodb.com"s, "mongodb.com"s },
-                { "atlas.mongodb.com."s, "atlas.mongodb.com."s },
-                { "atlas.mongodb.com"s, "atlas.mongodb.com"s },
-                { "server.atlas.mongodb.com."s, "server.atlas.mongodb.com."s },
-                { "server.atlas.mongodb.com"s, "server.atlas.mongodb.com"s },
-            };
+TEST(DNSNameTest, ForceQualification) {
+    enum FQDNBool : bool { kIsFQDN = true, kNotFQDN = false };
+    using Qualification = ::mongo::dns::HostName::Qualification;
+    const struct {
+        std::string domain;
+        FQDNBool startedFQDN;
+        ::mongo::dns::HostName::Qualification forced;
+        FQDNBool becameFQDN;
+        std::string becameCanonical;
+    } tests[] = {
+        {"mongodb.com."s, kIsFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s},
+        {"mongodb.com"s, kNotFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s},
 
-            for( const auto &test: tests )
-            {
-                const ::mongo::dns::HostName host( test.input );
+        {"atlas.mongodb.com."s,
+         kIsFQDN,
+         Qualification::FullyQualified,
+         kIsFQDN,
+         "atlas.mongodb.com."s},
+        {"atlas.mongodb.com"s,
+         kNotFQDN,
+         Qualification::FullyQualified,
+         kIsFQDN,
+         "atlas.mongodb.com."s},
 
-                ASSERT_EQ( host.canonicalName(), test.result );
-            }
-        }
+        {"mongodb.com."s, kIsFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s},
+        {"mongodb.com"s, kNotFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s},
 
-        TEST( DNSNameTest, SSLName )
-        {
-            const struct
-            {
-                std::string input;
-                std::string result;
-            }
-            tests[]=
-            {
-                { "com."s, "com"s },
-                { "com"s, "com"s },
-                { "mongodb.com."s, "mongodb.com"s },
-                { "mongodb.com"s, "mongodb.com"s },
-                { "atlas.mongodb.com."s, "atlas.mongodb.com"s },
-                { "atlas.mongodb.com"s, "atlas.mongodb.com"s },
-                { "server.atlas.mongodb.com."s, "server.atlas.mongodb.com"s },
-                { "server.atlas.mongodb.com"s, "server.atlas.mongodb.com"s },
-            };
+        {"atlas.mongodb.com."s,
+         kIsFQDN,
+         Qualification::RelativeName,
+         kNotFQDN,
+         "atlas.mongodb.com"s},
+        {"atlas.mongodb.com"s,
+         kNotFQDN,
+         Qualification::RelativeName,
+         kNotFQDN,
+         "atlas.mongodb.com"s},
+    };
 
-            for( const auto &test: tests )
-            {
-                const ::mongo::dns::HostName host( test.input );
+    for (const auto& test : tests) {
+        ::mongo::dns::HostName domain(test.domain);
+        ASSERT(stdx::as_const(domain).isFQDN() == test.startedFQDN);
+        domain.forceQualification(test.forced);
+        ASSERT(stdx::as_const(domain).isFQDN() == test.becameFQDN);
 
-                ASSERT_EQ( host.sslName(), test.result );
-            }
-        }
-
-        TEST( DNSNameTest, Contains )
-        {
-            enum IsSubdomain : bool { kIsSubdomain= true, kNotSubdomain= false };
-            const struct
-            {
-                std::string domain;
-                std::string subdomain;
-                IsSubdomain isSubdomain;
-            }
-            tests[]=
-            {
-                { "com."s, "mongodb.com."s, kIsSubdomain },
-                { "com"s, "mongodb.com"s, kIsSubdomain },
-                { "com."s, "mongodb.com"s, kNotSubdomain },
-                { "com"s, "mongodb.com."s, kNotSubdomain },
-
-                { "com."s, "atlas.mongodb.com."s, kIsSubdomain },
-                { "com"s, "atlas.mongodb.com"s, kIsSubdomain },
-                { "com."s, "atlas.mongodb.com"s, kNotSubdomain },
-                { "com"s, "atlas.mongodb.com."s, kNotSubdomain },
-
-                { "org."s, "atlas.mongodb.com."s, kNotSubdomain },
-                { "org"s, "atlas.mongodb.com"s, kNotSubdomain },
-                { "org."s, "atlas.mongodb.com"s, kNotSubdomain },
-                { "org"s, "atlas.mongodb.com."s, kNotSubdomain },
-
-                { "com."s, "com."s, kNotSubdomain },
-                { "com"s, "com."s, kNotSubdomain },
-                { "com."s, "com"s, kNotSubdomain },
-                { "com"s, "com"s, kNotSubdomain },
-
-                { "mongodb.com."s, "mongodb.com."s, kNotSubdomain },
-                { "mongodb.com."s, "mongodb.com"s, kNotSubdomain },
-                { "mongodb.com"s, "mongodb.com."s, kNotSubdomain },
-                { "mongodb.com"s, "mongodb.com"s, kNotSubdomain },
-
-                { "mongodb.com."s, "atlas.mongodb.com."s, kIsSubdomain },
-                { "mongodb.com"s, "atlas.mongodb.com"s, kIsSubdomain },
-                { "mongodb.com."s, "atlas.mongodb.com"s, kNotSubdomain },
-                { "mongodb.com"s, "atlas.mongodb.com."s, kNotSubdomain },
-
-                { "mongodb.com."s, "server.atlas.mongodb.com."s, kIsSubdomain },
-                { "mongodb.com"s, "server.atlas.mongodb.com"s, kIsSubdomain },
-                { "mongodb.com."s, "server.atlas.mongodb.com"s, kNotSubdomain },
-                { "mongodb.com"s, "server.atlas.mongodb.com."s, kNotSubdomain },
-
-                { "mongodb.org."s, "server.atlas.mongodb.com."s, kNotSubdomain },
-                { "mongodb.org"s, "server.atlas.mongodb.com"s, kNotSubdomain },
-                { "mongodb.org."s, "server.atlas.mongodb.com"s, kNotSubdomain },
-                { "mongodb.org"s, "server.atlas.mongodb.com."s, kNotSubdomain },
-            };
-
-            for( const auto &test: tests )
-            {
-                const ::mongo::dns::HostName domain( test.domain );
-                const ::mongo::dns::HostName subdomain( test.subdomain );
-
-                ASSERT( test.isSubdomain == domain.contains( subdomain ) );
-            }
-        }
-
-        TEST( DNSNameTest, Resolution )
-        {
-            enum Failure : bool { kFails= true, kSucceeds= false };
-            enum FQDNBool : bool { kIsFQDN= true, kNotFQDN= false };
-            const struct
-            {
-                std::string domain;
-                std::string subdomain;
-                std::string result;
-
-                Failure fails;
-                FQDNBool isFQDN;
-            }
-            tests[]=
-            {
-                { "mongodb.com."s, "atlas"s, "atlas.mongodb.com."s, kSucceeds, kIsFQDN },
-                { "mongodb.com"s, "atlas"s, "atlas.mongodb.com"s, kSucceeds, kNotFQDN },
-
-                { "mongodb.com."s, "server.atlas"s, "server.atlas.mongodb.com."s, kSucceeds, kIsFQDN },
-                { "mongodb.com"s, "server.atlas"s, "server.atlas.mongodb.com"s, kSucceeds, kNotFQDN },
-
-                { "mongodb.com."s, "atlas."s, "FAILS"s, kFails, kNotFQDN },
-                { "mongodb.com"s, "atlas."s, "FAILS"s, kFails, kNotFQDN },
-            };
-
-            for( const auto &test: tests )
-            try
-            {
-                const ::mongo::dns::HostName domain( test.domain );
-                const ::mongo::dns::HostName subdomain( test.subdomain );
-                const ::mongo::dns::HostName resolved=
-                [&]
-                {
-                    try
-                    {
-                        const ::mongo::dns::HostName rv= subdomain.resolvedIn( domain );
-                        return rv;
-                    }
-                    catch( const ExceptionFor< ErrorCodes::DNSRecordTypeMismatch > & )
-                    {
-                        ASSERT( test.fails );
-                        throw;
-                    }
-                }();
-                ASSERT( !test.fails );
-
-                ASSERT_EQ( test.result, resolved.canonicalName() );
-                ASSERT( test.isFQDN == resolved.isFQDN() );
-            }
-            catch( const ExceptionFor< ErrorCodes::DNSRecordTypeMismatch > & )
-            {
-                ASSERT( test.fails );
-            }
-        }
-
-        TEST( DNSNameTest, ForceQualification )
-        {
-            enum FQDNBool : bool { kIsFQDN= true, kNotFQDN= false };
-            using Qualification= ::mongo::dns::HostName::Qualification;
-            const struct
-            {
-                std::string domain;
-                FQDNBool startedFQDN;
-                ::mongo::dns::HostName::Qualification forced;
-                FQDNBool becameFQDN;
-                std::string becameCanonical;
-            }
-            tests[]=
-            {
-                { "mongodb.com."s, kIsFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s },
-                { "mongodb.com"s, kNotFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s },
-
-                { "atlas.mongodb.com."s, kIsFQDN, Qualification::FullyQualified, kIsFQDN, "atlas.mongodb.com."s },
-                { "atlas.mongodb.com"s, kNotFQDN, Qualification::FullyQualified, kIsFQDN, "atlas.mongodb.com."s },
-
-                { "mongodb.com."s, kIsFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s },
-                { "mongodb.com"s, kNotFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s },
-
-                { "atlas.mongodb.com."s, kIsFQDN, Qualification::RelativeName, kNotFQDN, "atlas.mongodb.com"s },
-                { "atlas.mongodb.com"s, kNotFQDN, Qualification::RelativeName, kNotFQDN, "atlas.mongodb.com"s },
-            };
-
-            for( const auto &test: tests )
-            {
-                ::mongo::dns::HostName domain( test.domain );
-                ASSERT( stdx::as_const( domain ).isFQDN() == test.startedFQDN );
-                domain.forceQualification( test.forced );
-                ASSERT( stdx::as_const( domain ).isFQDN() == test.becameFQDN );
-
-                ASSERT_EQ( stdx::as_const( domain ).canonicalName(), test.becameCanonical );
-            }
-        }
-    }//namespace
-}//namespace mongo
+        ASSERT_EQ(stdx::as_const(domain).canonicalName(), test.becameCanonical);
+    }
+}
+}  // namespace
+}  // namespace mongo

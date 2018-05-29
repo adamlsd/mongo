@@ -28,11 +28,16 @@
 
 #pragma once
 
-#include <iostream>
 #include <vector>
 #include <iterator>
-#include <tuple>
 #include <algorithm>
+#include <iostream>
+#include <sstream>
+#include <tuple>
+
+#include "mongo/base/string_data.h"
+#include "mongo/base/error_codes.h"
+#include "mongo/util/assert_util.h"
 
 namespace mongo
 {
@@ -45,27 +50,27 @@ namespace mongo
 
 			private:
 				// Hostname components are stored in hierarchy order (reverse from how read by humans in text)
-				std::vector< std::string > nameComponents;
+				std::vector< std::string > _nameComponents;
 				Qualification fullyQualified;
 
 				auto
 				make_equality_lens() const
 				{
-					return std::tie( fullyQualified, nameComponents );
+					return std::tie( fullyQualified, _nameComponents );
 				}
 
 				void
 				streamQualified( std::ostream &os ) const
 				{
 					invariant( fullyQualified );
-					std::copy( rbegin( hostName.nameComponents ), rend( hostname.nameComponents ),
+					std::copy( rbegin( _nameComponents ), rend( _nameComponents ),
 							std::ostream_iterator< std::string >( os, "." ) );
 				}
 
 				void
 				streamUnqualified( std::ostream &os ) const
 				{
-					std::for_each( rbegin( hostname.nameComponents ), rend( hostname.nameComponents ),
+					std::for_each( rbegin( _nameComponents ), rend( _nameComponents ),
 							[ first= true, &os ] ( const auto &component ) mutable
 							{
 								if( !first ) os << '.';
@@ -78,7 +83,7 @@ namespace mongo
 				void
 				checkForValidForm() const
 				{
-					for( const auto &name: nameComponents )
+					for( const auto &name: _nameComponents )
 					{
 						if( !isalpha( name[ 0 ] ) ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name subdomain must start with a letter" );
 					}
@@ -88,9 +93,9 @@ namespace mongo
 			public:
 				template< typename StringIter >
 				HostName( const StringIter first, const StringIter second, const Qualification qualification= RelativeName )
-						: nameComponents( first, second ), fullyQualified( qualification )
+						: _nameComponents( first, second ), fullyQualified( qualification )
 				{
-					if( nameComponents.empty() ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have zero name elements" );
+					if( _nameComponents.empty() ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have zero name elements" );
 					checkForValidForm();
 				}
 
@@ -99,9 +104,9 @@ namespace mongo
 				{
 					if( dnsName.empty() ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have zero characters" );
 
-					if( dnsName[ 0 ] ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot start with a '.' character." );
+					if( dnsName[ 0 ] == '.' ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot start with a '.' character." );
 
-					enum ParserState { NonPeriod, Period }
+					enum ParserState { NonPeriod= 1, Period= 2 };
 					ParserState parserState= NonPeriod;
 
 					std::string name;
@@ -111,7 +116,7 @@ namespace mongo
 						{
 							if( parserState == Period ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have two adjacent '.' characters" );
 							parserState= Period;
-							nameComponents.push_back( std::move( name ) );
+							_nameComponents.push_back( std::move( name ) );
 							name.clear();
 							continue;
 						}
@@ -120,16 +125,19 @@ namespace mongo
 						name.push_back( ch );
 					}
 
-					if( nameComponents.empty() ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have zero name elements" );
-
-					if( parserState == NonPeriod ) fullyQualified= FullyQualified;
+					if( parserState == Period ) fullyQualified= FullyQualified;
 					else 
 					{
 						fullyQualified= RelativeName;
-						nameComponents.push_back( std::move( name ) );
+						_nameComponents.push_back( std::move( name ) );
 					}
 
+					if( _nameComponents.empty() ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot have zero name elements" );
+
 					checkForValidForm();
+
+					// Reverse all the names, once we've parsed them all in.
+					std::reverse( begin( _nameComponents ), end( _nameComponents ) );
 				}
 
 				bool isFQDN() const { return fullyQualified; }
@@ -145,7 +153,7 @@ namespace mongo
 				{
 					std::ostringstream oss;
 					oss << *this;
-					return std::move( oss.str() );
+					return oss.str();
 				}
 
 				std::string
@@ -153,33 +161,35 @@ namespace mongo
 				{
 					std::ostringstream oss;
 					streamUnqualified( oss );
-					return std::move( oss.str() );
+					return oss.str();
 				}
 
 				bool
 				contains( const HostName &candidate ) const
 				{
 					return ( fullyQualified == candidate.fullyQualified )
-							&& ( nameComponents.size() < candidate.nameComponents.size() )
-							&& std::equal( begin( nameComponents ), end( nameComponents ), begin( candidate.nameComponents ) );
+							&& ( _nameComponents.size() < candidate._nameComponents.size() )
+							&& std::equal( begin( _nameComponents ), end( _nameComponents ), begin( candidate._nameComponents ) );
 				}
 
 				HostName
 				resolvedIn( const HostName &rhs ) const
 				{
-					if( fullyQualified ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A fully qualified Domain Name cannot be resolved within another domain name."
-					HostName result= *this;
-					result.nameComponents.append( end( result ), begin( rhs.nameComponents ), end( rhs.nameComponents ) );
+					using std::begin;  using std::end;
 
-					result.fullyQualified= rhs.fullyQualified;
+					if( this->fullyQualified ) uasserted( ErrorCodes::DNSRecordTypeMismatch, "A fully qualified Domain Name cannot be resolved within another domain name." );
+					HostName result= rhs;
+					result._nameComponents.insert( end( result._nameComponents ), begin( this->_nameComponents ), end( this->_nameComponents ) );
 
 					return result;
 				}
 
+				const std::vector< std::string > &nameComponents() const { return this->_nameComponents; }
+
 				friend bool
 				operator == ( const HostName &lhs, const HostName &rhs )
 				{
-					return make_equality_lens( lhs ) == make_equality_lens( rhs );
+					return lhs.make_equality_lens() == rhs.make_equality_lens();
 				}
 
 				friend bool
@@ -191,13 +201,13 @@ namespace mongo
 				friend std::ostream &
 				operator << ( std::ostream &os, const HostName &hostName )
 				{
-					if( fullyQualified )
+					if( hostName.fullyQualified )
 					{
 						hostName.streamQualified( os );
 					}
 					else
 					{
-						hostname.streamUnqualified( os );
+						hostName.streamUnqualified( os );
 					}
 
 					return os;

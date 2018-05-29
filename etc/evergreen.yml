@@ -128,7 +128,6 @@ variables:
   aws_key_remote: ${powercycle_aws_key}
   aws_secret_remote: ${powercycle_aws_secret}
 
-# TODO: Remove psutil from virtualenv_requirements when BUILD-3083 is done
 - &powercycle_ec2_instance
   aws_ec2_yml: aws_ec2.yml
   expire_hours: "3"
@@ -144,7 +143,6 @@ variables:
   ssh_key_id: ${powercycle_ssh_key_id}
   standard_port: "20000"
   virtualenv_dir: venv_powercycle
-  virtualenv_requirements: psutil
   windows_crash_cmd: \"notmyfault/notmyfaultc64.exe -accepteula crash 1\"
   windows_crash_dl: https://download.sysinternals.com/files/NotMyFault.zip
   windows_crash_dir: notmyfault
@@ -1461,18 +1459,6 @@ functions:
 
   "run powercycle test" :
     - command: shell.exec
-      params:
-        working_dir: src
-        script: |
-          set -o verbose
-          set -o errexit
-
-          if [ ! -z "${virtualenv_requirements}" ]; then
-            ${activate_virtualenv}
-            pip install -r pytests/requirements.txt
-          fi
-
-    - command: shell.exec
       type: test
       params:
         working_dir: src
@@ -1898,8 +1884,8 @@ functions:
         working_dir: src
         script: |
           set -o errexit
-          # Copy buildscripts and mongoDB executables to the remote host.
-          file_param="--file buildscripts"
+          # Copy buildscripts, pytests and mongoDB executables to the remote host.
+          file_param="--file buildscripts --file pytests"
           mongo_executables="mongo mongod mongos"
           for executable in $mongo_executables
           do
@@ -1924,14 +1910,12 @@ functions:
           set -o errexit
           # Set up virtualenv on remote.
           cmds="python_loc=\$(which \${python|/opt/mongodbtoolchain/v2/bin/python2})"
-          cmds="$cmds; if [ \"Windows_NT\" = \"$OS\" ]; then python_loc=\$(cygpath -w \$python_loc); fi"
+          cmds="$cmds; remote_dir=${remote_dir|.}"
+          cmds="$cmds; if [ \"Windows_NT\" = \"$OS\" ]; then python_loc=\$(cygpath -w \$python_loc); remote_dir=\$(cygpath -w \$remote_dir); fi"
           cmds="$cmds; virtualenv --python \$python_loc --system-site-packages ${virtualenv_dir|venv}"
           cmds="$cmds; activate=\$(find ${virtualenv_dir|venv} -name 'activate')"
           cmds="$cmds; . \$activate"
-          # Install python modules on remote, if required.
-          if [ ! -z "${virtualenv_requirements}" ]; then
-            cmds="$cmds; pip install ${virtualenv_requirements}"
-          fi
+          cmds="$cmds; pip install -r \$remote_dir/pytests/requirements.txt"
           ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
           ${activate_virtualenv}
           $python buildscripts/remote_operations.py          \
@@ -10072,13 +10056,14 @@ buildvariants:
   - name: write_concern_majority_passthrough
   - name: secondary_reads_passthrough
 
-- name: enterprise-rhel-70-64-bit
+- &enterprise-rhel-70-64-bit-template
+  name: enterprise-rhel-70-64-bit
   display_name: "* Enterprise RHEL 7.0"
   modules:
   - enterprise
   run_on:
   - rhel70-small
-  expansions:
+  expansions: &enterprise-rhel-70-64-bit-expansions-template
     test_flags: --excludeWithAnyTags=requires_mmapv1
     push_path: linux
     push_bucket: downloads.10gen.com
@@ -10133,6 +10118,23 @@ buildvariants:
     distros:
     - ubuntu1604-packer
   - name: push
+
+# This variant is to intentionally test uncommon features nightly
+- <<: *enterprise-rhel-70-64-bit-template
+  name: enterprise-rhel-70-64-bit-kitchen-sink
+  display_name: "~ Enterprise RHEL 7.0 (Dagger, gperftools)"
+  expansions:
+    <<: *enterprise-rhel-70-64-bit-expansions-template
+    compile_flags: --ssl --use-cpu-profiler MONGO_DISTMOD=rhel70 -j$(grep -c ^processor /proc/cpuinfo) --release --variables-files=etc/scons/mongodbtoolchain_gcc.vars
+    additional_targets: dagger
+  tasks:
+  - name: compile_all_run_unittests_TG
+    distros:
+    - rhel70
+  - name: compile_benchmarks
+    distros:
+    - rhel70
+  - name: jsCore
 
 - name: ubuntu1604-debug
   display_name: "* Ubuntu 16.04 DEBUG"
@@ -10721,7 +10723,7 @@ buildvariants:
 
 
 - name: enterprise-ubuntu1604-64
-  display_name: Enterprise Ubuntu 16.04 (+Dagger)
+  display_name: Enterprise Ubuntu 16.04 (GCC 5.4)
   modules:
   - enterprise
   run_on:
@@ -10745,7 +10747,6 @@ buildvariants:
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
     tooltags: "-tags 'ssl sasl'"
     build_mongoreplay: true
-    additional_targets: dagger
   display_tasks:
   - *unittests
   tasks:

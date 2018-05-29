@@ -362,6 +362,8 @@ public:
             static_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine())
                 ->getCatalog();
 
+        AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS, LockMode::MODE_IS);
+
         // getCollectionIdent() returns the ident for the given namespace in the KVCatalog.
         // getAllIdents() actually looks in the RecordStore for a list of all idents, and is thus
         // versioned by timestamp. These tests do not do any renames, so we can expect the
@@ -1703,6 +1705,8 @@ public:
         std::string sysProfileIndexIdent;
         for (auto& tuple : {std::tie(nss, collIdent, indexIdent),
                             std::tie(sysProfile, sysProfileIdent, sysProfileIndexIdent)}) {
+            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_X);
+
             // Save the pre-state idents so we can capture the specific idents related to collection
             // creation.
             std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
@@ -1717,8 +1721,6 @@ public:
             } else {
                 reset(nss);
             }
-
-            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_X);
 
             // Bind the local values to the variables in the parent scope.
             auto& collIdent = std::get<1>(tuple);
@@ -1999,14 +2001,14 @@ public:
 
         // Returns true when the batch has started, meaning the applier is holding the PBWM lock.
         // Will return false if the lock was not held.
-        Promise<bool> batchInProgressPromise;
+        auto batchInProgress = makePromiseFuture<bool>();
         // Attempt to read when in the middle of a batch.
         stdx::packaged_task<bool()> task([&] {
             Client::initThread(getThreadName());
             auto readOp = cc().makeOperationContext();
 
             // Wait for the batch to start or fail.
-            if (!batchInProgressPromise.getFuture().get()) {
+            if (!batchInProgress.future.get()) {
                 return false;
             }
             AutoGetCollectionForRead autoColl(readOp.get(), ns);
@@ -2017,7 +2019,7 @@ public:
         stdx::thread taskThread{std::move(task)};
 
         auto joinGuard = MakeGuard([&] {
-            batchInProgressPromise.emplaceValue(false);
+            batchInProgress.promise.emplaceValue(false);
             taskThread.join();
         });
 
@@ -2040,7 +2042,7 @@ public:
             }
 
             // Signals the reader to acquire a collection read lock.
-            batchInProgressPromise.emplaceValue(true);
+            batchInProgress.promise.emplaceValue(true);
 
             // Block while holding the PBWM lock until the reader is done.
             if (!taskFuture.get()) {
@@ -2139,7 +2141,11 @@ public:
             auto kvStorageEngine =
                 dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
             KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
-            std::vector<std::string> origIdents = kvCatalog->getAllIdents(_opCtx);
+            std::vector<std::string> origIdents;
+            {
+                AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS, LockMode::MODE_IS);
+                origIdents = kvCatalog->getAllIdents(_opCtx);
+            }
 
             auto indexSpec = BSON("createIndexes" << nss.coll() << "ns" << nss.ns() << "v"
                                                   << static_cast<int>(kIndexVersion)
@@ -2162,6 +2168,7 @@ public:
 
             ASSERT_OK(doAtomicApplyOps(nss.db().toString(), {createIndexOp}));
 
+            AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_IS, LockMode::MODE_IS);
             const std::string indexIdent = getNewIndexIdent(kvCatalog, origIdents);
             assertIdentsMissingAtTimestamp(
                 kvCatalog, "", indexIdent, beforeBuildTime.asTimestamp());

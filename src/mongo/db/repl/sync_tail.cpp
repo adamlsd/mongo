@@ -1082,10 +1082,6 @@ bool SyncTail::inShutdown() const {
     return _inShutdown;
 }
 
-void SyncTail::setHostname(const std::string& hostname) {
-    _hostname = hostname;
-}
-
 BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplogEntry) {
     OplogReader missingObjReader;  // why are we using OplogReader to run a non-oplog query?
 
@@ -1097,6 +1093,9 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
         }
     }
 
+    auto source = _options.missingDocumentSourceForInitialSync;
+    invariant(source);
+
     const int retryMax = 3;
     for (int retryCount = 1; retryCount <= retryMax; ++retryCount) {
         if (retryCount != 1) {
@@ -1104,7 +1103,7 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
             sleepsecs(retryCount * retryCount);
         }
         try {
-            bool ok = missingObjReader.connect(HostAndPort(_hostname));
+            bool ok = missingObjReader.connect(*source);
             if (!ok) {
                 warning() << "network problem detected while connecting to the "
                           << "sync source, attempt " << retryCount << " of " << retryMax << endl;
@@ -1151,7 +1150,8 @@ BSONObj SyncTail::getMissingDoc(OperationContext* opCtx, const OplogEntry& oplog
     }
     // retry count exceeded
     msgasserted(15916,
-                str::stream() << "Can no longer connect to initial sync source: " << _hostname);
+                str::stream() << "Can no longer connect to initial sync source: "
+                              << source->toString());
 }
 
 bool SyncTail::fetchAndInsertMissingDocument(OperationContext* opCtx,
@@ -1312,24 +1312,39 @@ Status multiInitialSyncApply(OperationContext* opCtx,
     DisableDocumentValidation validationDisabler(opCtx);
     ShouldNotConflictWithSecondaryBatchApplicationBlock shouldNotConflictBlock(opCtx->lockState());
 
+    ApplierHelpers::stableSortByNamespace(ops);
+
+    const auto oplogApplicationMode = OplogApplication::Mode::kInitialSync;
+
+    ApplierHelpers::InsertGroup insertGroup(ops, opCtx, oplogApplicationMode);
+
     {  // Ensure that the MultikeyPathTracker stops tracking paths.
         ON_BLOCK_EXIT([opCtx] { MultikeyPathTracker::get(opCtx).stopTrackingMultikeyPathInfo(); });
         MultikeyPathTracker::get(opCtx).startTrackingMultikeyPathInfo();
 
-        for (auto it = ops->begin(); it != ops->end(); ++it) {
-            auto& entry = **it;
+        for (auto it = ops->cbegin(); it != ops->cend(); ++it) {
+            const auto& entry = **it;
+
+            // If we are successful in grouping and applying inserts, advance the current iterator
+            // past the end of the inserted group of entries.
+            auto groupResult = insertGroup.groupAndApplyInserts(it);
+            if (groupResult.isOK()) {
+                it = groupResult.getValue();
+                continue;
+            }
+
+            // If we didn't create a group, try to apply the op individually.
             try {
-                const Status s =
-                    SyncTail::syncApply(opCtx, entry.raw, OplogApplication::Mode::kInitialSync);
-                if (!s.isOK()) {
+                const Status status = SyncTail::syncApply(opCtx, entry.raw, oplogApplicationMode);
+                if (!status.isOK()) {
                     // In initial sync, update operations can cause documents to be missed during
                     // collection cloning. As a result, it is possible that a document that we
                     // need to update is not present locally. In that case we fetch the document
                     // from the sync source.
-                    if (s != ErrorCodes::UpdateOperationFailed) {
-                        error() << "Error applying operation: " << redact(s) << " ("
+                    if (status != ErrorCodes::UpdateOperationFailed) {
+                        error() << "Error applying operation: " << redact(status) << " ("
                                 << redact(entry.toBSON()) << ")";
-                        return s;
+                        return status;
                     }
 
                     // We might need to fetch the missing docs from the sync source.

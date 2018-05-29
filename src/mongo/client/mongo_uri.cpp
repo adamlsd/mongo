@@ -45,6 +45,7 @@
 #include "mongo/client/sasl_client_authenticate.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/stdx/utility.h"
+#include "mongo/util/dns_name.h"
 #include "mongo/util/dns_query.h"
 #include "mongo/util/hex.h"
 #include "mongo/util/mongoutils/str.h"
@@ -365,26 +366,35 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
             uasserted(ErrorCodes::FailedToParse,
                       "Only a single server may be specified with a mongo+srv:// url.");
         }
-        const int dots = std::count(begin(canonicalHost), end(canonicalHost), '.');
-        const int requiredDots = (canonicalHost.back() == '.') + 2;
-        if (dots < requiredDots) {
+
+        const mongo::dns::HostName host(canonicalHost);
+
+        if (host.nameComponents().size() < 3) {
             uasserted(ErrorCodes::FailedToParse,
                       "A server specified with a mongo+srv:// url must have at least 3 hostname "
                       "components separated by dots ('.')");
         }
-        const auto domain = stripHost(canonicalHost);
-        auto srvEntries = dns::lookupSRVRecords("_mongodb._tcp." + canonicalHost);
+
+        const mongo::dns::HostName srvSubdomain("_mongodb._tcp");
+
+        const auto srvEntries =
+            dns::lookupSRVRecords(srvSubdomain.resolvedIn(host).canonicalName());
+
+        const mongo::dns::HostName domain = host.stripSubdomain();
         servers.clear();
         std::transform(std::make_move_iterator(begin(srvEntries)),
                        std::make_move_iterator(end(srvEntries)),
                        back_inserter(servers),
-                       [&domain](auto&& srv) {
-                           if (!isWithinDomain(srv.host, domain)) {
-                               uasserted(ErrorCodes::FailedToParse,
-                                         "Hostname "s + srv.host + " is not within the domain "s +
-                                             domain);
+                       [& domain = stdx::as_const(domain)](auto&& srv) {
+                           const dns::HostName target(srv.host);
+
+                           if (!domain.contains(target)) {
+                               std::ostringstream oss;
+                               oss << "Hostname " << target << " is not within the domain "
+                                   << domain;
+                               uasserted(ErrorCodes::FailedToParse, oss.str());
                            }
-                           return HostAndPort(std::move(srv.host), srv.port);
+                           return HostAndPort(target.canonicalName(), srv.port);
                        });
     }
 

@@ -164,6 +164,15 @@ namespace mongo
 					return oss.str();
 				}
 
+				HostName
+				stripSubdomain() const
+				{
+					if( this->_nameComponents.size() == 1 ) { uasserted( ErrorCodes::DNSRecordTypeMismatch, "A top level domain has no subdomains in its name" );}
+					HostName result= *this;
+					result._nameComponents.pop_back();
+					return result;
+				}
+
 				bool
 				contains( const HostName &candidate ) const
 				{

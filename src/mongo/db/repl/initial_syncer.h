@@ -59,17 +59,17 @@ namespace repl {
 
 // TODO: Remove forward declares once we remove rs_initialsync.cpp and other dependents.
 // Failpoint which fails initial sync and leaves an oplog entry in the buffer.
-MONGO_FP_FORWARD_DECLARE(failInitSyncWithBufferedEntriesLeft);
+MONGO_FAIL_POINT_DECLARE(failInitSyncWithBufferedEntriesLeft);
 
 // Failpoint which causes the initial sync function to hang before copying databases.
-MONGO_FP_FORWARD_DECLARE(initialSyncHangBeforeCopyingDatabases);
+MONGO_FAIL_POINT_DECLARE(initialSyncHangBeforeCopyingDatabases);
 
 // Failpoint which causes the initial sync function to hang before calling shouldRetry on a failed
 // operation.
-MONGO_FP_FORWARD_DECLARE(initialSyncHangBeforeGettingMissingDocument);
+MONGO_FAIL_POINT_DECLARE(initialSyncHangBeforeGettingMissingDocument);
 
 // Failpoint which stops the applier.
-MONGO_FP_FORWARD_DECLARE(rsSyncApplyStop);
+MONGO_FAIL_POINT_DECLARE(rsSyncApplyStop);
 
 struct InitialSyncState;
 struct MemberState;
@@ -436,7 +436,7 @@ private:
     /**
      * Callback for third '_lastOplogEntryFetcher' callback. This is scheduled after MultiApplier
      * completed successfully and missing documents were fetched from the sync source while
-     * DataReplicatorExternalState::_multiInitialSyncApply() was processing operations.
+     * DataReplicatorExternalState::_multiApply() was processing operations.
      * This callback will update InitialSyncState::stopTimestamp on success.
      */
     void _lastOplogEntryFetcherCallbackAfterFetchingMissingDocuments(

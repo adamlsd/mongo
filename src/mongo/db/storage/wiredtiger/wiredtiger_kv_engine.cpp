@@ -498,7 +498,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
         ss << "verbose=(recovery_progress),";
 
         if (shouldLog(::mongo::logger::LogComponent::kStorageRecovery,
-                      logger::LogSeverity::Debug(2))) {
+                      logger::LogSeverity::Debug(3))) {
             ss << "verbose=(recovery),";
         }
     }
@@ -1156,7 +1156,7 @@ bool WiredTigerKVEngine::initRsOplogBackgroundThread(StringData ns) {
 
 namespace {
 
-MONGO_FP_DECLARE(WTPreserveSnapshotHistoryIndefinitely);
+MONGO_FAIL_POINT_DEFINE(WTPreserveSnapshotHistoryIndefinitely);
 
 }  // namespace
 

@@ -31,9 +31,9 @@
 #include "mongo/platform/basic.h"
 
 #include "mongo/base/init.h"
-#include "mongo/client/embedded/embedded.h"
 #include "mongo/db/mongod_options.h"
 #include "mongo/db/service_context.h"
+#include "mongo/embedded/embedded.h"
 #include "mongo/transport/transport_layer.h"
 #include "mongo/transport/transport_layer_manager.h"
 #include "mongo/util/exit.h"
@@ -57,7 +57,7 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(SignalProcessingStartup, ("ThreadNameInitia
     return Status::OK();
 }
 
-int mongoeMain(int argc, char* argv[], char** envp) {
+int mongoedMain(int argc, char* argv[], char** envp) {
     ServiceContext* serviceContext = nullptr;
 
     registerShutdownTask([&]() {
@@ -127,10 +127,10 @@ int mongoeMain(int argc, char* argv[], char** envp) {
 // to process UTF-8 encoded arguments and environment variables without regard to platform.
 int wmain(int argc, wchar_t* argvW[], wchar_t* envpW[]) {
     mongo::WindowsCommandLine wcl(argc, argvW, envpW);
-    return mongo::mongoeMain(argc, wcl.argv(), wcl.envp());
+    return mongo::mongoedMain(argc, wcl.argv(), wcl.envp());
 }
 #else
 int main(int argc, char* argv[], char** envp) {
-    return mongo::mongoeMain(argc, argv, envp);
+    return mongo::mongoedMain(argc, argv, envp);
 }
 #endif

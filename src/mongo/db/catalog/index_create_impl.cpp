@@ -66,10 +66,10 @@ using std::unique_ptr;
 using std::string;
 using std::endl;
 
-MONGO_FP_DECLARE(crashAfterStartingIndexBuild);
-MONGO_FP_DECLARE(hangAfterStartingIndexBuild);
-MONGO_FP_DECLARE(hangAfterStartingIndexBuildUnlocked);
-MONGO_FP_DECLARE(slowBackgroundIndexBuild);
+MONGO_FAIL_POINT_DEFINE(crashAfterStartingIndexBuild);
+MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuild);
+MONGO_FAIL_POINT_DEFINE(hangAfterStartingIndexBuildUnlocked);
+MONGO_FAIL_POINT_DEFINE(slowBackgroundIndexBuild);
 
 AtomicInt32 maxIndexBuildMemoryUsageMegabytes(500);
 
@@ -506,7 +506,7 @@ void MultiIndexBlockImpl::abortWithoutCleanup() {
     _needToCleanup = false;
 }
 
-void MultiIndexBlockImpl::commit() {
+void MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCreateFn) {
     // Do not interfere with writing multikey information when committing index builds.
     auto restartTracker =
         MakeGuard([this] { MultikeyPathTracker::get(_opCtx).startTrackingMultikeyPathInfo(); });
@@ -516,6 +516,10 @@ void MultiIndexBlockImpl::commit() {
     MultikeyPathTracker::get(_opCtx).stopTrackingMultikeyPathInfo();
 
     for (size_t i = 0; i < _indexes.size(); i++) {
+        if (onCreateFn) {
+            onCreateFn(_indexes[i].block->getSpec());
+        }
+
         _indexes[i].block->success();
 
         // The bulk builder will track multikey information itself. Non-bulk builders re-use the

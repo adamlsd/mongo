@@ -417,7 +417,7 @@ env.Library(
         "server_options_init.cpp",
     ],
     LIBDEPS=[
-        "$BUILD_DIR/mongo/client/clientdriver",
+        "$BUILD_DIR/mongo/client/clientdriver_network",
         "$BUILD_DIR/mongo/db/auth/auth",
         "$BUILD_DIR/mongo/rpc/command_reply",
         "$BUILD_DIR/mongo/rpc/command_request",
@@ -661,7 +661,7 @@ env.Library(
         'dbdirectclient.cpp',
     ],
     LIBDEPS=[
-        '$BUILD_DIR/mongo/client/clientdriver',
+        '$BUILD_DIR/mongo/client/clientdriver_minimal',
         'curop',
         'lasterror',
     ],
@@ -927,7 +927,6 @@ env.Library(
         'exec/eof.cpp',
         'exec/fetch.cpp',
         'exec/geo_near.cpp',
-        'exec/group.cpp',
         'exec/idhack.cpp',
         'exec/index_iterator.cpp',
         'exec/index_scan.cpp',
@@ -1234,7 +1233,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/client/clientdriver',
+        '$BUILD_DIR/mongo/client/clientdriver_minimal',
         '$BUILD_DIR/mongo/s/write_ops/batch_write_types',
         'logical_session_id',
     ],

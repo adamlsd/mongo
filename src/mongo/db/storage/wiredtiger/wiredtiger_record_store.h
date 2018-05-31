@@ -299,6 +299,16 @@ private:
     RecordData _getData(const WiredTigerCursor& cursor) const;
 
     /**
+     * Position the cursor at the first key. The previously known first key is
+     * provided, as well as an indicator that this is being positioned for
+     * use by a truncate call.
+     */
+    void _positionAtFirstRecordId(OperationContext* opCtx,
+                                  WT_CURSOR* cursor,
+                                  const RecordId& firstKey,
+                                  bool forTruncate) const;
+
+    /**
      * Adjusts the record count and data size metadata for this record store, respectively. These
      * functions consult the SizeRecoveryState to determine whether or not to actually change the
      * size metadata if the server is undergoing recovery.
@@ -505,11 +515,11 @@ private:
 
 
 // WT failpoint to throw write conflict exceptions randomly
-MONGO_FP_FORWARD_DECLARE(WTWriteConflictException);
-MONGO_FP_FORWARD_DECLARE(WTWriteConflictExceptionForReads);
+MONGO_FAIL_POINT_DECLARE(WTWriteConflictException);
+MONGO_FAIL_POINT_DECLARE(WTWriteConflictExceptionForReads);
 
 // Prevents oplog writes from being considered durable on the primary. Once activated, new writes
 // will not be considered durable until deactivated. It is unspecified whether writes that commit
 // before activation will become visible while active.
-MONGO_FP_FORWARD_DECLARE(WTPausePrimaryOplogDurabilityLoop);
+MONGO_FAIL_POINT_DECLARE(WTPausePrimaryOplogDurabilityLoop);
 }

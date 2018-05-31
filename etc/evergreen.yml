@@ -788,7 +788,8 @@ functions:
         set -o verbose
 
         if [ "${scons_cache_scope}" = "shared" ]; then
-            sudo umount /efs || umount /efs || true
+            ${set_sudo}
+            $sudo umount /efs || true
         fi
 
   "build cdriver" :
@@ -967,14 +968,15 @@ functions:
 
           python_loc=$(which ${python|/opt/mongodbtoolchain/v2/bin/python2})
           python3_loc=$(which ${python|/opt/mongodbtoolchain/v2/bin/python3})
+          virtualenv_loc=$(which ${virtualenv|virtualenv})
           if [ "Windows_NT" = "$OS" ]; then
             python_loc=$(cygpath -w $python_loc)
             python3_loc=$(cygpath -w c:/python/Python36/python.exe)
           fi
           # Set up virtualenv in ${workdir}
-          virtualenv --python "$python_loc" --system-site-packages "${workdir}/venv"
+          "$virtualenv_loc" --python "$python_loc" --system-site-packages "${workdir}/venv"
           # Add virtualenv for python3 in ${workdir}
-          virtualenv --python "$python3_loc" --system-site-packages "${workdir}/venv_3"
+          "$virtualenv_loc" --python "$python3_loc" --system-site-packages "${workdir}/venv_3"
 
   "run tests" :
     - *determine_task_timeout
@@ -1216,7 +1218,8 @@ functions:
               echo "Shared cache is already mounted"
             else
               echo "Shared cache - mounting file system"
-              sudo mount /efs || mount /efs
+              ${set_sudo}
+              $sudo mount /efs
             fi
             set -o errexit
           fi
@@ -1445,16 +1448,16 @@ functions:
         ${activate_virtualenv}
         if [ ${enable_embedded_tests|false} = "ios_tvos_simulator" ]; then
             ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_capi_test" --tempPath /data
-            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_transport_test" --tempPath /data
+            ${compile_env|} buildscripts/runiossim.sh ${ios_sim_device} ${ios_sim_runtime} "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_mongoc_client_test" --tempPath /data
         elif [ ${enable_embedded_tests|false} = "android_emulator" ]; then
             # strip because the binaries with debug symbols are too big for the default storage on the emulator
             find build/mongo-embedded-sdk-${version}/bin -type f | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android*-strip
             find build/mongo-embedded-sdk-${version}/lib -type f -name "*.so" | xargs $(dirname $(pwd))/android_toolchain/bin/*-linux-android*-strip
             ${compile_env|} buildscripts/runandroidsim.sh $(dirname $(pwd))/android_sdk ${android_toolchain_system_image_arch} "build/mongo-embedded-sdk-${version}" "bin/mongo_embedded_capi_test" --tempPath /data
-            ${compile_env|} buildscripts/runandroidsim.sh $(dirname $(pwd))/android_sdk ${android_toolchain_system_image_arch} "build/mongo-embedded-sdk-${version}" "bin/mongo_embedded_transport_test" --tempPath /data
+            ${compile_env|} buildscripts/runandroidsim.sh $(dirname $(pwd))/android_sdk ${android_toolchain_system_image_arch} "build/mongo-embedded-sdk-${version}" "bin/mongo_embedded_mongoc_client_test" --tempPath /data
         elif [ ${enable_embedded_tests|false} = "native" ]; then
           "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_capi_test"
-          "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_transport_test"
+          "build/mongo-embedded-sdk-${version}/bin/mongo_embedded_mongoc_client_test"
         fi
 
   "run powercycle test" :
@@ -1841,7 +1844,7 @@ functions:
           user_group="$USER:$group"
           script_opts="$script_opts -u $user_group"
           data_db=/data/db
-          cmds="$sudo bash mount_drives.sh $script_opts; ls -ld $data_db $log; df; mount"
+          cmds="$sudo bash mount_drives.sh $script_opts; mount; ls -ld $data_db $log; df"
           ssh_connection_options="${ssh_identity} ${ssh_connection_options}"
           ${activate_virtualenv}
           $python buildscripts/remote_operations.py          \
@@ -2941,7 +2944,7 @@ tasks:
           - "./test*"
           - "./dbtest*"
           - "./mongobridge*"
-          - "./mongoe*"
+          - "./mongoed*"
           - "buildscripts/**"
           - "*Example"
           - "*Test"
@@ -4120,7 +4123,7 @@ tasks:
   - func: "do setup"
   - func: "run tests"
     vars:
-      resmoke_args: --suites=core --mongod=./mongoe --excludeWithAnyTags=requires_scripting,requires_auth,requires_sharding,does_not_support_stepdowns,requires_eval_command,requires_background_index,incompatible_with_embedded,incompatible_with_embedded_todo_investigate,requires_replication,SERVER-32997
+      resmoke_args: --suites=core --mongod=./mongoed --excludeWithAnyTags=requires_scripting,requires_auth,requires_sharding,does_not_support_stepdowns,requires_eval_command,requires_background_index,incompatible_with_embedded,incompatible_with_embedded_todo_investigate,requires_replication,SERVER-32997
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -4185,6 +4188,15 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=core_txns --storageEngine=wiredTiger
+      run_multiple_jobs: true
+
+- <<: *task_template
+  name: causally_consistent_jscore_txns_passthrough
+  commands:
+  - func: "do setup"
+  - func: "run tests"
+    vars:
+      resmoke_args: --suites=causally_consistent_jscore_txns_passthrough --storageEngine=wiredTiger
       run_multiple_jobs: true
 
 - <<: *task_template
@@ -4487,7 +4499,6 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=concurrency_sharded_with_stepdowns --storageEngine=wiredTiger
-      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_sharded_with_stepdowns_and_balancer
@@ -4496,7 +4507,6 @@ tasks:
   - func: "run tests"
     vars:
       resmoke_args: --suites=concurrency_sharded_with_stepdowns_and_balancer --storageEngine=wiredTiger
-      timeout_secs: 21600 # 6 hour timeout for each test
 
 - <<: *task_template
   name: concurrency_simultaneous
@@ -6780,6 +6790,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -6927,6 +6938,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: mongosTest
   - name: noPassthrough
@@ -7056,6 +7068,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7144,6 +7157,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7258,6 +7272,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7342,6 +7357,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7475,6 +7491,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7574,6 +7591,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7640,6 +7658,7 @@ buildvariants:
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
     tooltags: "-tags 'ssl sasl'"
     build_mongoreplay: true
+    virtualenv: /opt/mongodbtoolchain/v2/bin/virtualenv
   display_tasks:
   - *unittests
   tasks:
@@ -7659,6 +7678,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7715,6 +7735,7 @@ buildvariants:
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
     tooltags: "-tags 'ssl'"
     build_mongoreplay: true
+    virtualenv: /opt/mongodbtoolchain/v2/bin/virtualenv
   display_tasks:
   - *unittests
   tasks:
@@ -7740,6 +7761,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7828,6 +7850,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -7914,6 +7937,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -8019,6 +8043,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: mongosTest
   - name: noPassthrough
@@ -8168,6 +8193,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -8536,6 +8562,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -8615,6 +8642,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: aggregation_fuzzer
   - name: jstestfuzz
@@ -8774,6 +8802,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -8850,6 +8879,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: replica_sets
   - name: tool
@@ -8887,6 +8917,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -9463,6 +9494,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: aggregation_fuzzer
   - name: jstestfuzz
@@ -10008,6 +10040,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion
@@ -10099,6 +10132,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10210,6 +10244,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10297,6 +10332,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_decimal
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10413,6 +10449,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10521,6 +10558,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10627,6 +10665,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: noPassthroughWithMongod
   - name: noPassthrough
@@ -10703,6 +10742,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10780,6 +10820,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10883,6 +10924,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -10967,6 +11009,7 @@ buildvariants:
   - name: jsCore_decimal
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11060,6 +11103,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11137,6 +11181,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11204,6 +11249,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11283,6 +11329,7 @@ buildvariants:
   - name: jsCore
   - name: jsCore_auth
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11353,6 +11400,7 @@ buildvariants:
   - name: jsCore_auth
   - name: jsCore_compatibility
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: aggregation_fuzzer
   - name: jstestfuzz
   - name: jstestfuzz_concurrent
@@ -11471,6 +11519,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jstestfuzz_concurrent_sharded_continuous_stepdown
   - name: jstestfuzz_sharded_continuous_stepdown
   - name: aggregation_fuzzer
@@ -11553,7 +11602,7 @@ buildvariants:
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
     tooltags: "-tags 'ssl sasl'"
     build_mongoreplay: true
-    additional_targets: mongoe
+    additional_targets: mongoed
   display_tasks:
   - *unittests
   tasks:
@@ -11620,7 +11669,7 @@ buildvariants:
     gorootvars: 'PATH="/opt/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/opt/go1.8/go'
     tooltags: -gccgoflags "$(pkg-config --libs --cflags libssl libcrypto libsasl2)" -tags 'sasl ssl'
     build_mongoreplay: true
-    additional_targets: mongoe
+    additional_targets: mongoed
   display_tasks:
   - *unittests
   tasks:
@@ -11711,7 +11760,7 @@ buildvariants:
     gorootvars: 'PATH="/usr/local/go1.8/go/bin:/opt/mongodbtoolchain/v2/bin/:$PATH" GOROOT=/usr/local/go1.8/go CGO_CPPFLAGS=-I/opt/mongodbtoolchain/v2/include CGO_CFLAGS=-mmacosx-version-min=10.10 CGO_LDFLAGS=-mmacosx-version-min=10.10'
     tooltags: "-tags 'ssl sasl openssl_pre_1.0'"
     build_mongoreplay: true
-    additional_targets: mongoe
+    additional_targets: mongoed
   display_tasks:
   - *unittests
   tasks:
@@ -11878,6 +11927,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -11970,6 +12020,7 @@ buildvariants:
   - name: jsCore_compatibility
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: noPassthrough
   - name: noPassthroughWithMongod
@@ -12117,6 +12168,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: mongosTest
   - name: multiversion_auth
@@ -12297,6 +12349,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: jsonSchema
   - name: mongosTest
   - name: multiversion_auth
@@ -12374,6 +12427,7 @@ buildvariants:
   - name: dbtest
   - name: jsCore
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: watchdog_wiredtiger
 
 - name: ubuntu1604-debug-aubsan-async
@@ -12440,6 +12494,7 @@ buildvariants:
   - name: jsCore_minimum_batch_size
   - name: jsCore_op_query
   - name: jsCore_txns
+  - name: causally_consistent_jscore_txns_passthrough
   - name: mongosTest
   - name: multiversion_auth
   - name: multiversion

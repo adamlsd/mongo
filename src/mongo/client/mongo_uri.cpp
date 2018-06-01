@@ -368,20 +368,24 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
         servers.clear();
         using std::begin;
         using std::end;
-        std::transform(std::make_move_iterator(begin(srvEntries)),
-                       std::make_move_iterator(end(srvEntries)),
-                       back_inserter(servers),
-                       [&domain](auto&& srv) {
-                           const dns::HostName target(srv.host);
+        std::transform(
+            std::make_move_iterator(begin(srvEntries)),
+            std::make_move_iterator(end(srvEntries)),
+            back_inserter(servers),
+            [&domain](auto&& srv) {
+                dns::HostName preTarget(srv.host);
+                preTarget.forceQualification(domain.isFQDN() ? dns::HostName::FullyQualified
+                                                             : dns::HostName::RelativeName);
+                const auto& target = preTarget;
 
-                           if (!domain.contains(target)) {
-                               std::ostringstream oss;
-                               oss << "Hostname " << target << " is not within the domain "
-                                   << domain;
-                               uasserted(ErrorCodes::FailedToParse, oss.str());
-                           }
-                           return HostAndPort(target.canonicalName(), srv.port);
-                       });
+                if (!domain.contains(target)) {
+                    std::ostringstream oss;
+                    oss << "Hostname " << target << " is not within the domain " << domain;
+                    uasserted(ErrorCodes::FailedToParse, oss.str());
+                }
+                std::cerr << "Adding domain " << target << std::endl;
+                return HostAndPort(srv.host, srv.port);
+            });
     }
 
     // 6. Split the auth database and connection options string by the first, unescaped ?,

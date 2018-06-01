@@ -647,14 +647,12 @@ TEST(MongoURI, srvRecordTest) {
          success},
 
         // Test a sample URI against the need for deep DNS relation
-        {"mongodb+srv://test1.test.build.10gen.cc/?replicaSet=repl0",
+        {"mongodb+srv://test18.test.build.10gen.cc/?replicaSet=repl0",
          "",
          "",
          "",
          {
              {"localhost.sub.test.build.10gen.cc.", 27017},
-             {"localhost.sub.test.build.10gen.cc.", 27018},
-             {"localhost.sub.test.build.10gen.cc.", 27019},
          },
          {
              {"ssl", "true"}, {"replicaSet", "repl0"},
@@ -794,11 +792,11 @@ TEST(MongoURI, srvRecordTest) {
             ASSERT_FALSE(rs.getStatus().isOK()) << "Failing URI: " << test.uri;
             continue;
         }
-        ASSERT_OK(rs.getStatus());
+        ASSERT_OK(rs.getStatus()) << "Failed on URI: " << test.uri;
         auto rv = rs.getValue();
-        ASSERT_EQ(rv.getUser(), test.user);
-        ASSERT_EQ(rv.getPassword(), test.password);
-        ASSERT_EQ(rv.getDatabase(), test.database);
+        ASSERT_EQ(rv.getUser(), test.user) << "Failed on URI: " << test.uri;
+        ASSERT_EQ(rv.getPassword(), test.password) << "Failed on URI: " << test.uri;
+        ASSERT_EQ(rv.getDatabase(), test.database) << "Failed on URI: " << test.uri;
         std::vector<std::pair<std::string, std::string>> options(begin(rv.getOptions()),
                                                                  end(rv.getOptions()));
         std::sort(begin(options), end(options));
@@ -824,9 +822,10 @@ TEST(MongoURI, srvRecordTest) {
         std::sort(begin(expectedHosts), end(expectedHosts));
 
         for (std::size_t i = 0; i < std::min(hosts.size(), expectedHosts.size()); ++i) {
-            ASSERT_EQ(hosts[i], expectedHosts[i]);
+            ASSERT_EQ(hosts[i], expectedHosts[i]) << "Failed on URI: " << test.uri << " at host number" << i;
         }
-        ASSERT_TRUE(hosts.size() == expectedHosts.size());
+        ASSERT_TRUE(hosts.size() == expectedHosts.size()) << "Failed on URI: " << test.uri
+                << " Found " << hosts.size() << " hosts, expected " << expectedHosts.size();
     }
 }
 

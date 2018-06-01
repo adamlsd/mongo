@@ -77,20 +77,19 @@ private:
     void
 	checkForValidForm() const
 	{
-		if( ( _nameComponents.size() == 4 ) )
+		if( this->_nameComponents.size() != 4 ) return;
+		if( this->fullyQualified ) return;
+
+		for( const auto &name: this->_nameComponents )
 		{
-			for( const auto &name: _nameComponents )
-			{
-				// Any letters are good.
-				if( end( name ) != std::find_if( begin( name ), end( name ), isalpha ) ) return;
-				// A hyphen is okay too.
-				if( end( name ) != std::find( begin( name ), end( name ), '-' ) ) return;
-			}
+			// Any letters are good.
+			if( end( name ) != std::find_if( begin( name ), end( name ), isalpha ) ) return;
+			// A hyphen is okay too.
+			if( end( name ) != std::find( begin( name ), end( name ), '-' ) ) return;
 		}
 
 		// If we couldn't find any letters or hyphens
-		uasserted( ErrorCodes::DNSRecordTypeMismatch,
-				"A Domain Name cannot be equivalent in form to an IPv4 address" );
+		uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot be equivalent in form to an IPv4 address" );
     }
 
 public:

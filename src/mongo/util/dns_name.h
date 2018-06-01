@@ -74,12 +74,23 @@ private:
 
     // If there are exactly 4 name components, and they are not fully qualified, then they cannot be
     // all numbers.
-    void checkForValidForm() const {
-        for (const auto& name : _nameComponents) {
-            if (!isalpha(name[0]))
-                uasserted(ErrorCodes::DNSRecordTypeMismatch,
-                          "A Domain Name subdomain must start with a letter");
-        }
+    void
+	checkForValidForm() const
+	{
+		if( ( _nameComponents.size() == 4 ) )
+		{
+			for( const auto &name: _nameComponents )
+			{
+				// Any letters are good.
+				if( end( name ) != std::find_if( begin( name ), end( name ), isalpha ) ) return;
+				// A hyphen is okay too.
+				if( end( name ) != std::find( begin( name ), end( name ), '-' ) ) return;
+			}
+		}
+
+		// If we couldn't find any letters or hyphens
+		uasserted( ErrorCodes::DNSRecordTypeMismatch,
+				"A Domain Name cannot be equivalent in form to an IPv4 address" );
     }
 
 public:

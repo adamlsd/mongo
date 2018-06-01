@@ -646,6 +646,21 @@ TEST(MongoURI, srvRecordTest) {
          {{"ssl", "false"}},
          success},
 
+        // Test a sample URI against the need for deep DNS relation
+        {"mongodb+srv://test1.test.build.10gen.cc/?replicaSet=repl0",
+         "",
+         "",
+         "",
+         {
+             {"localhost.sub.test.build.10gen.cc.", 27017},
+             {"localhost.sub.test.build.10gen.cc.", 27018},
+             {"localhost.sub.test.build.10gen.cc.", 27019},
+         },
+         {
+             {"ssl", "true"}, {"replicaSet", "repl0"},
+         },
+         success},
+
         {"mongodb+srv://user:password@test2.test.build.10gen.cc/"
          "database?someOption=someValue&someOtherOption=someOtherValue",
          "user",
@@ -768,6 +783,9 @@ TEST(MongoURI, srvRecordTest) {
         {"mongodb+srv://test17.test.build.10gen.cc/", "", "", "", {}, {}, failure},
         {"mongodb+srv://test18.test.build.10gen.cc/", "", "", "", {}, {}, failure},
         {"mongodb+srv://test19.test.build.10gen.cc/", "", "", "", {}, {}, failure},
+
+
+        {"mongodb+srv://test18.test.build.10gen.cc/", "", "", "", {}, {}, failure},
     };
 
     for (const auto& test : tests) {

@@ -235,22 +235,6 @@ MongoURI::OptionsMap addTXTOptions(std::map<std::string, std::string> options,
 
     return {std::make_move_iterator(begin(options)), std::make_move_iterator(end(options))};
 }
-
-std::string stripHost(const std::string& hostname) {
-    return hostname.substr(hostname.find('.') + 1);
-}
-
-bool isWithinDomain(std::string hostname, std::string domain) {
-    auto removeFQDNRoot = [](std::string name) -> std::string {
-        if (name.back() == '.') {
-            name.pop_back();
-        }
-        return name;
-    };
-    hostname = stripHost(removeFQDNRoot(std::move(hostname)));
-    domain = removeFQDNRoot(std::move(domain));
-    return hostname == domain;
-}
 }  // namespace
 
 MongoURI MongoURI::parseImpl(const std::string& url) {
@@ -382,10 +366,12 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
 
         const mongo::dns::HostName domain = host.stripSubdomain();
         servers.clear();
+        using std::begin;
+        using std::end;
         std::transform(std::make_move_iterator(begin(srvEntries)),
                        std::make_move_iterator(end(srvEntries)),
                        back_inserter(servers),
-                       [& domain = stdx::as_const(domain)](auto&& srv) {
+                       [&domain](auto&& srv) {
                            const dns::HostName target(srv.host);
 
                            if (!domain.contains(target)) {

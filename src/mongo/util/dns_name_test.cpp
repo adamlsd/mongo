@@ -217,31 +217,31 @@ TEST(DNSNameTest, ForceQualification) {
         FQDNBool becameFQDN;
         std::string becameCanonical;
     } tests[] = {
-        {"mongodb.com."s, kIsFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s},
-        {"mongodb.com"s, kNotFQDN, Qualification::FullyQualified, kIsFQDN, "mongodb.com."s},
+        {"mongodb.com."s, kIsFQDN, Qualification::kFullyQualified, kIsFQDN, "mongodb.com."s},
+        {"mongodb.com"s, kNotFQDN, Qualification::kFullyQualified, kIsFQDN, "mongodb.com."s},
 
         {"atlas.mongodb.com."s,
          kIsFQDN,
-         Qualification::FullyQualified,
+         Qualification::kFullyQualified,
          kIsFQDN,
          "atlas.mongodb.com."s},
         {"atlas.mongodb.com"s,
          kNotFQDN,
-         Qualification::FullyQualified,
+         Qualification::kFullyQualified,
          kIsFQDN,
          "atlas.mongodb.com."s},
 
-        {"mongodb.com."s, kIsFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s},
-        {"mongodb.com"s, kNotFQDN, Qualification::RelativeName, kNotFQDN, "mongodb.com"s},
+        {"mongodb.com."s, kIsFQDN, Qualification::kRelativeName, kNotFQDN, "mongodb.com"s},
+        {"mongodb.com"s, kNotFQDN, Qualification::kRelativeName, kNotFQDN, "mongodb.com"s},
 
         {"atlas.mongodb.com."s,
          kIsFQDN,
-         Qualification::RelativeName,
+         Qualification::kRelativeName,
          kNotFQDN,
          "atlas.mongodb.com"s},
         {"atlas.mongodb.com"s,
          kNotFQDN,
-         Qualification::RelativeName,
+         Qualification::kRelativeName,
          kNotFQDN,
          "atlas.mongodb.com"s},
     };

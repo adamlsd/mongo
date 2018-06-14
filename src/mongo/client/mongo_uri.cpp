@@ -364,7 +364,7 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
         const auto srvEntries =
             dns::lookupSRVRecords(srvSubdomain.resolvedIn(host).canonicalName());
 
-        const mongo::dns::HostName domain = host.stripSubdomain();
+        const mongo::dns::HostName domain = host.parentDomain();
         servers.clear();
         using std::begin;
         using std::end;
@@ -374,16 +374,15 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
             back_inserter(servers),
             [&domain](auto&& srv) {
                 dns::HostName preTarget(srv.host);
-                preTarget.forceQualification(domain.isFQDN() ? dns::HostName::FullyQualified
-                                                             : dns::HostName::RelativeName);
+                preTarget.forceQualification(domain.isFQDN() ? dns::HostName::kFullyQualified
+                                                             : dns::HostName::kRelativeName);
                 const auto& target = preTarget;
 
                 if (!domain.contains(target)) {
-                    std::ostringstream oss;
-                    oss << "Hostname " << target << " is not within the domain " << domain;
-                    uasserted(ErrorCodes::FailedToParse, oss.str());
+                    uasserted(ErrorCodes::FailedToParse,
+                              str::stream() << "Hostname " << target << " is not within the domain "
+                                            << domain);
                 }
-                std::cerr << "Adding domain " << target << std::endl;
                 return HostAndPort(srv.host, srv.port);
             });
     }

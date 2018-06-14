@@ -37,15 +37,25 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/base/string_data.h"
+#include "mongo/bson/util/builder.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
 namespace dns {
+namespace detail_dns_host_name {
+using std::begin;
+using std::end;
 class HostName {
 public:
-    enum Qualification : bool { RelativeName = false, FullyQualified = true };
+    enum Qualification : bool { kRelativeName = false, kFullyQualified = true };
 
 private:
+    class ArgGuard {
+        friend HostName;
+        ArgGuard() = default;
+    };
+
     // Hostname components are stored in hierarchy order (reverse from how read by humans in text)
     std::vector<std::string> _nameComponents;
     Qualification fullyQualified;
@@ -54,14 +64,8 @@ private:
         return std::tie(fullyQualified, _nameComponents);
     }
 
-    void streamQualified(std::ostream& os) const {
-        invariant(fullyQualified);
-        std::copy(rbegin(_nameComponents),
-                  rend(_nameComponents),
-                  std::ostream_iterator<std::string>(os, "."));
-    }
-
-    void streamUnqualified(std::ostream& os) const {
+    template <typename StreamLike>
+    void streamCore(StreamLike& os) const {
         std::for_each(rbegin(_nameComponents),
                       rend(_nameComponents),
                       [ first = true, &os ](const auto& component) mutable {
@@ -72,31 +76,45 @@ private:
                       });
     }
 
+    template <typename StreamLike>
+    void streamQualified(StreamLike& os) const {
+        invariant(fullyQualified);
+        streamCore(os);
+        os << '.';
+    }
+
+    template <typename StreamLike>
+    void streamUnqualified(StreamLike& os) const {
+        streamCore(os);
+    }
+
     // If there are exactly 4 name components, and they are not fully qualified, then they cannot be
     // all numbers.
-    void
-	checkForValidForm() const
-	{
-		if( this->_nameComponents.size() != 4 ) return;
-		if( this->fullyQualified ) return;
+    void checkForValidForm() const {
+        if (this->_nameComponents.size() != 4)
+            return;
+        if (this->fullyQualified)
+            return;
 
-		for( const auto &name: this->_nameComponents )
-		{
-			// Any letters are good.
-			if( end( name ) != std::find_if( begin( name ), end( name ), isalpha ) ) return;
-			// A hyphen is okay too.
-			if( end( name ) != std::find( begin( name ), end( name ), '-' ) ) return;
-		}
+        for (const auto& name : this->_nameComponents) {
+            // Any letters are good.
+            if (end(name) != std::find_if(begin(name), end(name), isalpha))
+                return;
+            // A hyphen is okay too.
+            if (end(name) != std::find(begin(name), end(name), '-'))
+                return;
+        }
 
-		// If we couldn't find any letters or hyphens
-		uasserted( ErrorCodes::DNSRecordTypeMismatch, "A Domain Name cannot be equivalent in form to an IPv4 address" );
+        // If we couldn't find any letters or hyphens
+        uasserted(ErrorCodes::DNSRecordTypeMismatch,
+                  "A Domain Name cannot be equivalent in form to an IPv4 address");
     }
 
 public:
     template <typename StringIter>
     HostName(const StringIter first,
              const StringIter second,
-             const Qualification qualification = RelativeName)
+             const Qualification qualification = kRelativeName)
         : _nameComponents(first, second), fullyQualified(qualification) {
         if (_nameComponents.empty())
             uasserted(ErrorCodes::DNSRecordTypeMismatch,
@@ -113,29 +131,29 @@ public:
             uasserted(ErrorCodes::DNSRecordTypeMismatch,
                       "A Domain Name cannot start with a '.' character.");
 
-        enum ParserState { NonPeriod = 1, Period = 2 };
-        ParserState parserState = NonPeriod;
+        enum ParserState { kNonPeriod = 1, kPeriod = 2 };
+        ParserState parserState = kNonPeriod;
 
         std::string name;
         for (const char ch : dnsName) {
             if (ch == '.') {
-                if (parserState == Period)
+                if (parserState == kPeriod)
                     uasserted(ErrorCodes::DNSRecordTypeMismatch,
                               "A Domain Name cannot have two adjacent '.' characters");
-                parserState = Period;
+                parserState = kPeriod;
                 _nameComponents.push_back(std::move(name));
                 name.clear();
                 continue;
             }
-            parserState = NonPeriod;
+            parserState = kNonPeriod;
 
             name.push_back(ch);
         }
 
-        if (parserState == Period)
-            fullyQualified = FullyQualified;
+        if (parserState == kPeriod)
+            fullyQualified = kFullyQualified;
         else {
-            fullyQualified = RelativeName;
+            fullyQualified = kRelativeName;
             _nameComponents.push_back(std::move(name));
         }
 
@@ -153,23 +171,21 @@ public:
         return fullyQualified;
     }
 
-    void forceQualification(const Qualification qualification = FullyQualified) {
+    void forceQualification(const Qualification qualification = kFullyQualified) {
         fullyQualified = qualification;
     }
 
     std::string canonicalName() const {
-        std::ostringstream oss;
-        oss << *this;
-        return oss.str();
+        return str::stream() << *this;
     }
 
     std::string sslName() const {
-        std::ostringstream oss;
-        streamUnqualified(oss);
-        return oss.str();
+        StringBuilder sb;
+        streamUnqualified(sb);
+        return sb.str();
     }
 
-    HostName stripSubdomain() const {
+    HostName parentDomain() const {
         if (this->_nameComponents.size() == 1) {
             uasserted(ErrorCodes::DNSRecordTypeMismatch,
                       "A top level domain has no subdomains in its name");
@@ -187,9 +203,6 @@ public:
     }
 
     HostName resolvedIn(const HostName& rhs) const {
-        using std::begin;
-        using std::end;
-
         if (this->fullyQualified)
             uasserted(
                 ErrorCodes::DNSRecordTypeMismatch,
@@ -201,7 +214,14 @@ public:
         return result;
     }
 
-    const std::vector<std::string>& nameComponents() const {
+    const std::vector<std::string>& altRvalueNameComponents(
+        ArgGuard = {}, std::vector<std::string>&& preserve = {})&& {
+        preserve = std::move(this->_nameComponents);
+        return preserve;
+    }
+    void nameComponents() && = delete;
+
+    const std::vector<std::string>& nameComponents() const& {
         return this->_nameComponents;
     }
 
@@ -222,6 +242,18 @@ public:
 
         return os;
     }
+
+    friend StringBuilder& operator<<(StringBuilder& os, const HostName& hostName) {
+        if (hostName.fullyQualified) {
+            hostName.streamQualified(os);
+        } else {
+            hostName.streamUnqualified(os);
+        }
+
+        return os;
+    }
 };
+}  // detail_dns_host_name
+using detail_dns_host_name::HostName;
 }  // namespace dns
 }  // namespace mongo

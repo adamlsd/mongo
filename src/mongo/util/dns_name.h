@@ -305,17 +305,15 @@ public:
     /**
      * Returns true if the specified `dns::HostName`s, `lhs` and `rhs` represent the same DNS path,
      * and fase otherwise.
-	 *
+     *
      * RETURNS: True if `lhs` and `rhs` represent the same DNS path, and false otherwise.
      */
-    friend bool operator==(const HostName& lhs, const HostName& rhs) {
-        return lhs.make_equality_lens() == rhs.make_equality_lens();
-    }
+    friend bool operator==(const HostName& lhs, const HostName& rhs);
 
     /**
      * Returns true if the specified `dns::HostName`s, `lhs` and `rhs` do not represent the same DNS
      * path, and fase otherwise.
-	 *
+     *
      * RETURNS: True if `lhs` and `rhs` do not represent the same DNS path, and false otherwise.
      */
     friend bool operator!=(const HostName& lhs, const HostName& rhs) {
@@ -363,7 +361,7 @@ private:
         return std::tie(fullyQualified, _nameComponents);
     }
 
-	// When printing fully qualified names to a stream, we need to always append a dot.
+    // When printing fully qualified names to a stream, we need to always append a dot.
     template <typename StreamLike>
     void streamQualified(StreamLike& os) const {
         invariant(fullyQualified);
@@ -371,13 +369,14 @@ private:
         os << '.';
     }
 
-	// When printing unqualified names to a stream, we omit the trailing dot, even if needed.
+    // When printing unqualified names to a stream, we omit the trailing dot, even if needed.
     template <typename StreamLike>
     void streamUnqualified(StreamLike& os) const {
         streamCore(os);
     }
 
-	// All streaming functions boil down into this central handler, for both `StringBuilder` and `std::ostream`.
+    // All streaming functions boil down into this central handler, for both `StringBuilder` and
+    // `std::ostream`.
     template <typename StreamLike>
     void streamCore(StreamLike& os) const {
         std::for_each(rbegin(_nameComponents),
@@ -391,7 +390,8 @@ private:
     }
 
     // If there are exactly 4 name components, and they are not fully qualified, then they cannot be
-    // all numbers.  This helper function is used in validating that IPv4 addresses are not passed to the constructor of this class.
+    // all numbers.  This helper function is used in validating that IPv4 addresses are not passed
+    // to the constructor of this class.
     void checkForValidForm() const {
         if (this->_nameComponents.size() != 4)
             return;
@@ -412,13 +412,18 @@ private:
                   "A Domain Name cannot be equivalent in form to an IPv4 address");
     }
 
-    // Hostname components are stored in hierarchy order (reverse order from how a name is read by humans in text form).
+    // Hostname components are stored in hierarchy order (reverse order from how a name is read by
+    // humans in text form).
     std::vector<std::string> _nameComponents;
 
-	// FQDNs and Relative Names are discriminated by this field.
+    // FQDNs and Relative Names are discriminated by this field.
     Qualification fullyQualified;
 };
 }  // detail_dns_host_name
+
+inline bool detail_dns_host_name::operator==(const HostName& lhs, const HostName& rhs) {
+    return lhs.make_equality_lens() == rhs.make_equality_lens();
+}
 
 using detail_dns_host_name::HostName;
 }  // namespace dns

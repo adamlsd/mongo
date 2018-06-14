@@ -53,8 +53,10 @@
 #include "mongo/db/repl/drop_pending_collection_reaper.h"
 #include "mongo/db/repl/idempotency_test_fixture.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/oplog_buffer_blocking_queue.h"
 #include "mongo/db/repl/oplog_interface_local.h"
 #include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
 #include "mongo/db/repl/sync_tail.h"
@@ -108,7 +110,6 @@ public:
     void onMissingDocumentsFetchedAndInserted(const std::vector<FetchInfo>& docs) final {
         numFetched += docs.size();
     }
-    void onOperationConsumed(const BSONObj& op) final {}
 
     std::size_t numFetched = 0U;
 
@@ -122,7 +123,7 @@ private:
 class SyncTailWithOperationContextChecker : public SyncTail {
 public:
     SyncTailWithOperationContextChecker();
-    bool fetchAndInsertMissingDocument(OperationContext* opCtx,
+    void fetchAndInsertMissingDocument(OperationContext* opCtx,
                                        const OplogEntry& oplogEntry) override;
     bool called = false;
 };
@@ -148,13 +149,12 @@ SyncTailWithOperationContextChecker::SyncTailWithOperationContextChecker()
                nullptr,  // writer pool
                SyncTailTest::makeInitialSyncOptions()) {}
 
-bool SyncTailWithOperationContextChecker::fetchAndInsertMissingDocument(OperationContext* opCtx,
+void SyncTailWithOperationContextChecker::fetchAndInsertMissingDocument(OperationContext* opCtx,
                                                                         const OplogEntry&) {
     ASSERT_FALSE(opCtx->writesAreReplicated());
     ASSERT_FALSE(opCtx->lockState()->shouldConflictWithSecondaryBatchApplication());
     ASSERT_TRUE(documentValidationDisabled(opCtx));
     called = true;
-    return false;
 }
 
 /**
@@ -388,7 +388,7 @@ TEST_F(SyncTailTest, SyncApplyCommandThrowsException) {
 }
 
 DEATH_TEST_F(SyncTailTest, MultiApplyAbortsWhenNoOperationsAreGiven, "!ops.empty()") {
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(nullptr,
                       getConsistencyMarkers(),
                       getStorageInterface(),
@@ -402,7 +402,7 @@ bool _testOplogEntryIsForCappedCollection(OperationContext* opCtx,
                                           StorageInterface* const storageInterface,
                                           const NamespaceString& nss,
                                           const CollectionOptions& options) {
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     MultiApplier::Operations operationsApplied;
     auto applyOperationFn = [&operationsApplied](OperationContext* opCtx,
                                                  MultiApplier::OperationPtrs* operationsToApply,
@@ -455,7 +455,7 @@ TEST_F(SyncTailTest, MultiApplyAssignsOperationsToWriterThreadsBasedOnNamespaceH
     // the number of threads in the pool.
     NamespaceString nss1("test.t0");
     NamespaceString nss2("test.t1");
-    auto writerPool = SyncTail::makeWriterPool(2);
+    auto writerPool = OplogApplier::makeWriterPool(2);
 
     stdx::mutex mutex;
     std::vector<MultiApplier::Operations> operationsApplied;
@@ -1092,6 +1092,51 @@ TEST_F(SyncTailTest, MultiSyncApplyFetchesMissingDocumentIfDocumentIsAvailableFr
     ASSERT_EQUALS(ErrorCodes::CollectionIsEmpty, iter->next().getStatus());
 }
 
+namespace {
+
+class ReplicationCoordinatorSignalDrainCompleteThrows : public ReplicationCoordinatorMock {
+public:
+    ReplicationCoordinatorSignalDrainCompleteThrows(ServiceContext* service,
+                                                    const ReplSettings& settings)
+        : ReplicationCoordinatorMock(service, settings) {}
+    void signalDrainComplete(OperationContext*, long long) final {
+        uasserted(ErrorCodes::OperationFailed, "failed to signal drain complete");
+    }
+};
+
+}  // namespace
+
+DEATH_TEST_F(SyncTailTest,
+             OplogApplicationLogsExceptionFromSignalDrainCompleteBeforeAborting,
+             "OperationFailed: failed to signal drain complete") {
+    // Leave oplog buffer empty so that SyncTail calls
+    // ReplicationCoordinator::signalDrainComplete() during oplog application.
+    auto oplogBuffer = std::make_unique<OplogBufferBlockingQueue>();
+
+    auto applyOperationFn =
+        [](OperationContext*, MultiApplier::OperationPtrs*, SyncTail*, WorkerMultikeyPathInfo*) {
+            return Status::OK();
+        };
+    auto writerPool = OplogApplier::makeWriterPool();
+    OplogApplier::Options options;
+    SyncTail syncTail(nullptr,  // observer. not required by oplogApplication().
+                      _consistencyMarkers.get(),
+                      _storageInterface.get(),
+                      applyOperationFn,
+                      writerPool.get(),
+                      options);
+
+    auto service = getServiceContext();
+    auto currentReplCoord = ReplicationCoordinator::get(_opCtx.get());
+    ReplicationCoordinatorSignalDrainCompleteThrows replCoord(service,
+                                                              currentReplCoord->getSettings());
+    ASSERT_OK(replCoord.setFollowerMode(MemberState::RS_PRIMARY));
+
+    // SyncTail::oplogApplication() creates its own OperationContext in the current thread context.
+    _opCtx = {};
+    syncTail.oplogApplication(oplogBuffer.get(), &replCoord);
+}
+
 TEST_F(IdempotencyTest, Geo2dsphereIndexFailedOnUpdate) {
     ASSERT_OK(
         ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
@@ -1613,7 +1658,7 @@ TEST_F(SyncTailTxnTableTest, SimpleWriteWithTxn) {
                                    sessionInfo,
                                    date);
 
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(
         nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp}));
@@ -1644,7 +1689,7 @@ TEST_F(SyncTailTxnTableTest, WriteWithTxnMixedWithDirectWriteToTxnTable) {
                                    {},
                                    Date_t::now());
 
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(
         nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, deleteOp}));
@@ -1689,7 +1734,7 @@ TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectDeleteToTxnTa
                                     sessionInfo,
                                     date);
 
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(
         nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, deleteOp, insertOp2}));
@@ -1721,7 +1766,7 @@ TEST_F(SyncTailTxnTableTest, InterleavedWriteWithTxnMixedWithDirectUpdateToTxnTa
                                    {},
                                    Date_t::now());
 
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(
         nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
     ASSERT_OK(syncTail.multiApply(_opCtx.get(), {insertOp, updateOp}));
@@ -1768,7 +1813,7 @@ TEST_F(SyncTailTxnTableTest, MultiApplyUpdatesTheTransactionTable) {
     auto opNoTxn = makeInsertDocumentOplogEntryWithSessionInfo(
         {Timestamp(Seconds(7), 0), 1LL}, ns3, BSON("_id" << 0), info);
 
-    auto writerPool = SyncTail::makeWriterPool();
+    auto writerPool = OplogApplier::makeWriterPool();
     SyncTail syncTail(
         nullptr, getConsistencyMarkers(), getStorageInterface(), multiSyncApply, writerPool.get());
     ASSERT_OK(syncTail.multiApply(

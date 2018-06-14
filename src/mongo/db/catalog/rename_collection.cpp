@@ -134,6 +134,10 @@ Status renameCollectionCommon(OperationContext* opCtx,
     else if (!lockState->isW())
         globalWriteLock.emplace(opCtx);
 
+    // Allow the MODE_X lock above to be interrupted, but rename is not resilient to interruption
+    // when the onRenameCollection OpObserver takes an oplog collection lock.
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+
     // We stay in source context the whole time. This is mostly to set the CurOp namespace.
     boost::optional<OldClientContext> ctx;
     ctx.emplace(opCtx, source.ns());
@@ -254,7 +258,7 @@ Status renameCollectionCommon(OperationContext* opCtx,
             invariant(options.dropTarget);
             auto dropTargetUUID = targetColl->uuid();
             invariant(dropTargetUUID);
-            auto renameOpTime = opObserver->onRenameCollection(
+            auto renameOpTime = opObserver->preRenameCollection(
                 opCtx, source, target, sourceUUID, dropTargetUUID, options.stayTemp);
 
             if (!renameOpTimeFromApplyOps.isNull()) {
@@ -282,6 +286,8 @@ Status renameCollectionCommon(OperationContext* opCtx,
                 return status;
             }
 
+            opObserver->postRenameCollection(
+                opCtx, source, target, sourceUUID, dropTargetUUID, options.stayTemp);
             wunit.commit();
             return Status::OK();
         });

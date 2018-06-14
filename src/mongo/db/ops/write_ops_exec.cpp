@@ -120,24 +120,10 @@ void finishCurOp(OperationContext* opCtx, CurOp* curOp) {
         const bool shouldSample =
             curOp->completeAndLogOperation(opCtx, MONGO_LOG_DEFAULT_COMPONENT);
 
-        auto session = OperationContextSession::get(opCtx);
         if (curOp->shouldDBProfile(shouldSample)) {
-            boost::optional<Session::TxnResources> txnResources;
-            if (session && session->inSnapshotReadOrMultiDocumentTransaction()) {
-                // Stash the current transaction so that writes to the profile collection are not
-                // done as part of the transaction. This must be done under the client lock, since
-                // we are modifying 'opCtx'.
-                stdx::lock_guard<Client> clientLock(*opCtx->getClient());
-                txnResources = Session::TxnResources(opCtx);
-            }
-            ON_BLOCK_EXIT([&] {
-                if (txnResources) {
-                    // Restore the transaction state onto 'opCtx'. This must be done under the
-                    // client lock, since we are modifying 'opCtx'.
-                    stdx::lock_guard<Client> clientLock(*opCtx->getClient());
-                    txnResources->release(opCtx);
-                }
-            });
+            // Stash the current transaction so that writes to the profile collection are not
+            // done as part of the transaction.
+            Session::SideTransactionBlock sideTxn(opCtx);
             profile(opCtx, CurOp::get(opCtx)->getNetworkOp());
         }
     } catch (const DBException& ex) {
@@ -212,7 +198,10 @@ void makeCollection(OperationContext* opCtx, const NamespaceString& ns) {
         if (!db.getDb()->getCollection(opCtx, ns)) {  // someone else may have beat us to it.
             uassertStatusOK(userAllowedCreateNS(ns.db(), ns.coll()));
             WriteUnitOfWork wuow(opCtx);
-            uassertStatusOK(Database::userCreateNS(opCtx, db.getDb(), ns.ns(), BSONObj()));
+            CollectionOptions collectionOptions;
+            uassertStatusOK(
+                collectionOptions.parse(BSONObj(), CollectionOptions::ParseKind::parseForCommand));
+            uassertStatusOK(Database::userCreateNS(opCtx, db.getDb(), ns.ns(), collectionOptions));
             wuow.commit();
         }
     });

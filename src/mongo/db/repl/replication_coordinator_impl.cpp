@@ -1128,6 +1128,9 @@ void ReplicationCoordinatorImpl::_setMyLastAppliedOpTime_inlock(const OpTime& op
     // advanced to avoid races.
     _externalState->updateLocalSnapshot(opTime);
 
+    // Notify the oplog waiters after updating the local snapshot.
+    signalOplogWaiters();
+
     // Add the new applied optime to the list of stable optime candidates and then set the last
     // stable optime. Stable optimes are used to determine the last optime that it is safe to revert
     // the database to, in the event of a rollback via the 'recover to timestamp' method. If we are
@@ -1639,10 +1642,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
                 "specified that we should step down for"};
     }
 
-    // TODO SERVER-34395: Remove this method and kill cursors as part of killAllUserOperations call
-    // when the CursorManager no longer requires collection locks to kill cursors.
-    _externalState->killAllTransactionCursors(opCtx);
-
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
     auto status = opCtx->checkForInterruptNoAssert();
@@ -1965,14 +1964,22 @@ Status ReplicationCoordinatorImpl::processReplSetGetStatus(
     BSONObjBuilder* response, ReplSetGetStatusResponseStyle responseStyle) {
 
     BSONObj initialSyncProgress;
-    stdx::lock_guard<stdx::mutex> lk(_mutex);
     if (responseStyle == ReplSetGetStatusResponseStyle::kInitialSync) {
-        if (_initialSyncer) {
-            initialSyncProgress = _initialSyncer->getInitialSyncProgress();
+        std::shared_ptr<InitialSyncer> initialSyncerCopy;
+        {
+            stdx::lock_guard<stdx::mutex> lk(_mutex);
+            initialSyncerCopy = _initialSyncer;
+        }
+
+        // getInitialSyncProgress must be called outside the ReplicationCoordinatorImpl::_mutex
+        // lock. Else it might deadlock with InitialSyncer::_multiApplierCallback where it first
+        // acquires InitialSyncer::_mutex and then ReplicationCoordinatorImpl::_mutex.
+        if (initialSyncerCopy) {
+            initialSyncProgress = initialSyncerCopy->getInitialSyncProgress();
         }
     }
 
-
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
     Status result(ErrorCodes::InternalError, "didn't set status in prepareStatusResponse");
     _topCoord->prepareStatusResponse(
         TopologyCoordinator::ReplSetStatusArgs{

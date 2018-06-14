@@ -2970,12 +2970,12 @@ def doConfigure(myenv):
     if ssl_provider == 'native':
         if conf.env.TargetOSIs('windows'):
             ssl_provider = 'windows'
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_WINDOWS")
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_WINDOWS")
             conf.env.Append( MONGO_CRYPTO=["windows"] )
 
         elif conf.env.TargetOSIs('darwin', 'macOS'):
             ssl_provider = 'apple'
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_APPLE")
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_APPLE")
             conf.env.Append( MONGO_CRYPTO=["apple"] )
             conf.env.AppendUnique(FRAMEWORKS=[
                 'CoreFoundation',
@@ -2986,7 +2986,7 @@ def doConfigure(myenv):
         if has_option("ssl"):
             checkOpenSSL(conf)
             # Working OpenSSL available, use it.
-            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "SSL_PROVIDER_OPENSSL")
+            env.SetConfigHeaderDefine("MONGO_CONFIG_SSL_PROVIDER", "MONGO_CONFIG_SSL_PROVIDER_OPENSSL")
 
             conf.env.Append( MONGO_CRYPTO=["openssl"] )
         else:
@@ -3251,6 +3251,22 @@ def doConfigure(myenv):
             conf.env.SetConfigHeaderDefine("MONGO_CONFIG_MAX_EXTENDED_ALIGNMENT", size)
             break
  
+    def CheckMongoCMinVersion(context):
+        compile_test_body = textwrap.dedent("""
+        #include <mongoc.h>
+
+        #if !MONGOC_CHECK_VERSION(1,10,0)
+        #error
+        #endif
+        """)
+
+        context.Message("Checking if mongoc version is 1.10.0 or newer...")
+        result = context.TryCompile(compile_test_body, ".cpp")
+        context.Result(result)
+        return result
+
+    conf.AddTest('CheckMongoCMinVersion', CheckMongoCMinVersion)
+
     mongoc_mode = get_option('use-system-mongo-c')
     conf.env['MONGO_HAVE_LIBMONGOC'] = False
     if mongoc_mode != 'off':
@@ -3262,6 +3278,8 @@ def doConfigure(myenv):
                 autoadd=False )
         if not conf.env['MONGO_HAVE_LIBMONGOC'] and mongoc_mode == 'on':
             myenv.ConfError("Failed to find the required C driver headers")
+        if conf.env['MONGO_HAVE_LIBMONGOC'] and not conf.CheckMongoCMinVersion():
+            myenv.ConfError("Version of mongoc is too old. Version 1.10+ required")
 
     # ask each module to configure itself and the build environment.
     moduleconfig.configure_modules(mongo_modules, conf)
@@ -3350,7 +3368,7 @@ if get_option('install-mode') == 'hygienic':
         )
     elif env['PLATFORM'] == 'darwin':
         env.AppendUnique(
-            PROGLINKFLAGS=[
+            LINKFLAGS=[
                 '-Wl,-rpath,@loader_path/../lib'
             ],
             SHLINKFLAGS=[

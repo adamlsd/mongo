@@ -43,6 +43,7 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
+#include "mongo/db/commands/server_status_metric.h"
 #include "mongo/db/concurrency/d_concurrency.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
@@ -62,12 +63,12 @@
 #include "mongo/db/repl/member_state.h"
 #include "mongo/db/repl/noop_writer.h"
 #include "mongo/db/repl/oplog.h"
+#include "mongo/db/repl/oplog_applier_impl.h"
 #include "mongo/db/repl/oplog_buffer_blocking_queue.h"
 #include "mongo/db/repl/repl_settings.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/repl/replication_process.h"
 #include "mongo/db/repl/storage_interface.h"
-#include "mongo/db/repl/sync_tail.h"
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
@@ -131,6 +132,23 @@ MONGO_EXPORT_SERVER_PARAMETER(oplogFetcherMaxFetcherRestarts, int, 3)
         }
         return Status::OK();
     });
+
+// The count of items in the buffer
+OplogBuffer::Counters bufferGauge;
+ServerStatusMetricField<Counter64> displayBufferCount("repl.buffer.count", &bufferGauge.count);
+// The size (bytes) of items in the buffer
+ServerStatusMetricField<Counter64> displayBufferSize("repl.buffer.sizeBytes", &bufferGauge.size);
+// The max size (bytes) of the buffer. If the buffer does not have a size constraint, this is
+// set to 0.
+ServerStatusMetricField<Counter64> displayBufferMaxSize("repl.buffer.maxSizeBytes",
+                                                        &bufferGauge.maxSize);
+
+class NoopOplogApplierObserver : public repl::OplogApplier::Observer {
+public:
+    void onBatchBegin(const repl::OplogApplier::Operations&) final {}
+    void onBatchEnd(const StatusWith<repl::OpTime>&, const repl::OplogApplier::Operations&) final {}
+    void onMissingDocumentsFetchedAndInserted(const std::vector<FetchInfo>&) final {}
+} noopOplogApplierObserver;
 
 /**
  * Returns new thread pool for thread pool task executor.
@@ -208,25 +226,36 @@ void ReplicationCoordinatorExternalStateImpl::startSteadyStateReplication(
         return;
 
     invariant(replCoord);
-    invariant(!_bgSync);
-    log() << "Starting replication fetcher thread";
-    _oplogBuffer = stdx::make_unique<OplogBufferBlockingQueue>();
+    _oplogBuffer = std::make_unique<OplogBufferBlockingQueue>(&bufferGauge);
+
+    // No need to log OplogBuffer::startup because the blocking queue implementation
+    // does not start any threads or access the storage layer.
     _oplogBuffer->startup(opCtx);
 
+    invariant(!_oplogApplier);
+
+    // Using noop observer now that BackgroundSync no longer implements the OplogApplier::Observer
+    // interface. During steady state replication, there is no need to log details on every batch
+    // we apply (recovery); or track missing documents that are fetched from the sync source
+    // (initial sync).
+    _oplogApplier =
+        stdx::make_unique<OplogApplierImpl>(_oplogApplierTaskExecutor.get(),
+                                            _oplogBuffer.get(),
+                                            &noopOplogApplierObserver,
+                                            replCoord,
+                                            _replicationProcess->getConsistencyMarkers(),
+                                            _storageInterface,
+                                            OplogApplier::Options(),
+                                            _writerPool.get());
+
+    invariant(!_bgSync);
     _bgSync =
-        stdx::make_unique<BackgroundSync>(replCoord, this, _replicationProcess, _oplogBuffer.get());
+        std::make_unique<BackgroundSync>(replCoord, this, _replicationProcess, _oplogApplier.get());
+
+    log() << "Starting replication fetcher thread";
     _bgSync->startup(opCtx);
 
     log() << "Starting replication applier thread";
-    invariant(!_oplogApplier);
-    _oplogApplier = stdx::make_unique<OplogApplier>(_oplogApplierTaskExecutor.get(),
-                                                    _oplogBuffer.get(),
-                                                    _bgSync.get(),
-                                                    replCoord,
-                                                    _replicationProcess->getConsistencyMarkers(),
-                                                    _storageInterface,
-                                                    OplogApplier::Options(),
-                                                    _writerPool.get());
     _oplogApplierShutdownFuture = _oplogApplier->startup();
 
     log() << "Starting replication reporter thread";
@@ -280,9 +309,6 @@ void ReplicationCoordinatorExternalStateImpl::_stopDataReplication_inlock(Operat
     // waiting for an operation to be past the slaveDelay point.
     if (oldOplogBuffer) {
         oldOplogBuffer->clear(opCtx);
-        if (oldBgSync) {
-            oldBgSync->onBufferCleared();
-        }
     }
 
     if (oldBgSync) {
@@ -318,7 +344,7 @@ void ReplicationCoordinatorExternalStateImpl::startThreads(const ReplSettings& s
     _taskExecutor = makeTaskExecutor(_service, "replication");
     _taskExecutor->startup();
 
-    _writerPool = SyncTail::makeWriterPool();
+    _writerPool = OplogApplier::makeWriterPool();
 
     _startedThreads = true;
 }
@@ -613,7 +639,12 @@ StatusWith<OpTime> ReplicationCoordinatorExternalStateImpl::loadLastOpTime(
         }
 
         BSONObj oplogEntry;
-        if (!Helpers::getLast(opCtx, NamespaceString::kRsOplogNamespace.ns().c_str(), oplogEntry)) {
+
+        if (!writeConflictRetry(
+                opCtx, "Load last opTime", NamespaceString::kRsOplogNamespace.ns().c_str(), [&] {
+                    return Helpers::getLast(
+                        opCtx, NamespaceString::kRsOplogNamespace.ns().c_str(), oplogEntry);
+                })) {
             return StatusWith<OpTime>(ErrorCodes::NoMatchingDocument,
                                       str::stream() << "Did not find any entries in "
                                                     << NamespaceString::kRsOplogNamespace.ns());
@@ -656,19 +687,12 @@ void ReplicationCoordinatorExternalStateImpl::closeConnections() {
 
 void ReplicationCoordinatorExternalStateImpl::killAllUserOperations(OperationContext* opCtx) {
     ServiceContext* environment = opCtx->getServiceContext();
-    environment->killAllUserOperations(opCtx, ErrorCodes::InterruptedDueToReplStateChange);
+    environment->killAllUserOperations(opCtx, ErrorCodes::InterruptedDueToStepDown);
 
     // Destroy all stashed transaction resources, in order to release locks.
     SessionKiller::Matcher matcherAllSessions(
         KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
-    bool killCursors = false;
-    killSessionsLocalKillTransactions(opCtx, matcherAllSessions, killCursors);
-}
-
-void ReplicationCoordinatorExternalStateImpl::killAllTransactionCursors(OperationContext* opCtx) {
-    SessionKiller::Matcher matcherAllSessions(
-        KillAllSessionsByPatternSet{makeKillAllSessionsByPattern(opCtx)});
-    killSessionsLocalKillTransactionCursors(opCtx, matcherAllSessions);
+    killSessionsLocalKillTransactions(opCtx, matcherAllSessions);
 }
 
 void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {

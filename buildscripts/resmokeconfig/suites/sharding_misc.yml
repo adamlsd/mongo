@@ -177,7 +177,6 @@ selector:
   - jstests/sharding/cursor1.js
   - jstests/sharding/lookup_change_stream_post_image_id_shard_key.js
   - jstests/sharding/database_versioning_safe_secondary_reads.js
-  - jstests/sharding/shard_collection_cache_upgrade_downgrade.js
   - jstests/sharding/change_streams_shards_start_in_sync.js
   - jstests/sharding/auth_add_shard.js
   - jstests/sharding/lookup_change_stream_post_image_compound_shard_key.js
@@ -217,7 +216,7 @@ selector:
   - jstests/sharding/cleanup_orphaned_cmd_during_movechunk_hashed.js
   - jstests/sharding/sharded_limit_batchsize.js
   - jstests/sharding/migration_sets_fromMigrate_flag.js
-  - jstests/sharding/change_stream_invalidation.js
+  - jstests/sharding/change_stream_metadata_notifications.js
   - jstests/sharding/bulk_insert.js
   - jstests/sharding/multi_mongos2a.js
   - jstests/sharding/movechunk_commit_changelog_stats.js
@@ -261,7 +260,6 @@ selector:
   - jstests/sharding/min_optime_recovery_on_successful_move_chunk_commit.js
   - jstests/sharding/autosplit.js
   - jstests/sharding/limit_push.js
-  - jstests/sharding/database_versioning_upgrade_downgrade.js
   - jstests/sharding/shard_keycount.js
   - jstests/sharding/shard_key_immutable.js
   - jstests/sharding/sharding_system_namespaces.js

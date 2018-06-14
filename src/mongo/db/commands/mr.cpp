@@ -60,7 +60,6 @@
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/server_options.h"
@@ -92,6 +91,81 @@ using IndexVersion = IndexDescriptor::IndexVersion;
 namespace dps = ::mongo::dotted_path_support;
 
 namespace mr {
+namespace {
+
+/**
+ * Runs a count against the namespace specified by 'ns'. If the caller holds the global write lock,
+ * then this function does not acquire any additional locks.
+ */
+unsigned long long collectionCount(OperationContext* opCtx,
+                                   const NamespaceString& nss,
+                                   bool callerHoldsGlobalLock) {
+    boost::optional<AutoGetCollectionForReadCommand> ctx;
+
+    Collection* coll = nullptr;
+
+    // If the global write lock is held, we must avoid using AutoGetCollectionForReadCommand as it
+    // may lead to deadlock when waiting for a majority snapshot to be committed. See SERVER-24596.
+    if (callerHoldsGlobalLock) {
+        Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, nss.ns());
+        if (db) {
+            coll = db->getCollection(opCtx, nss);
+        }
+    } else {
+        ctx.emplace(opCtx, nss);
+        coll = ctx->getCollection();
+    }
+
+    return coll ? coll->numRecords(opCtx) : 0;
+}
+
+/**
+ * Emit that will be called by a js function.
+ */
+BSONObj fastEmit(const BSONObj& args, void* data) {
+    uassert(10077, "emit takes 2 args", args.nFields() == 2);
+    uassert(13069,
+            "an emit can't be more than half max bson size",
+            args.objsize() < (BSONObjMaxUserSize / 2));
+
+    State* state = (State*)data;
+    if (args.firstElement().type() == Undefined) {
+        BSONObjBuilder b(args.objsize());
+        b.appendNull("");
+        BSONObjIterator i(args);
+        i.next();
+        b.append(i.next());
+        state->emit(b.obj());
+    } else {
+        state->emit(args);
+    }
+    return BSONObj();
+}
+
+/**
+ * This function is called when we realize we cant use js mode for m/r on the 1st key.
+ */
+BSONObj _bailFromJS(const BSONObj& args, void* data) {
+    State* state = (State*)data;
+    state->bailFromJS();
+
+    // emit this particular key if there is one
+    if (!args.isEmpty()) {
+        fastEmit(args, data);
+    }
+    return BSONObj();
+}
+
+Collection* getCollectionOrUassert(OperationContext* opCtx,
+                                   Database* db,
+                                   const NamespaceString& nss) {
+    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
+    Collection* out = db ? db->getCollection(opCtx, nss) : NULL;
+    uassert(18697, "Collection unexpectedly disappeared: " + nss.ns(), out);
+    return out;
+}
+
+}  // namespace
 
 AtomicUInt32 Config::JOB_NUMBER;
 
@@ -140,9 +214,8 @@ BSONObj JSFinalizer::finalize(const BSONObj& o) {
     Scope::NoDBAccess no = s->disableDBAccess("can't access db inside finalize");
     s->invokeSafe(_func.func(), &o, 0);
 
-    // don't want to use o.objsize() to size b
-    // since there are many cases where the point of finalize
-    // is converting many fields to 1
+    // We don't want to use o.objsize() to size b since there are many cases where the point of
+    // finalize is converting many fields to 1
     BSONObjBuilder b;
     b.append(o.firstElement());
     s->append(b, "value", "__returnValue");
@@ -304,12 +377,20 @@ Config::Config(const string& _dbname, const BSONObj& cmdObj) {
         shardedFirstPass = true;
     }
 
-    if (outputOptions.outType != INMEMORY) {  // setup temp collection name
-        tempNamespace = NamespaceString(
-            outputOptions.outDB.empty() ? dbname : outputOptions.outDB,
-            str::stream() << "tmp.mr." << cmdObj.firstElement().valueStringData() << "_"
-                          << JOB_NUMBER.fetchAndAdd(1));
-        incLong = NamespaceString(str::stream() << tempNamespace.ns() << "_inc");
+    if (outputOptions.outType != INMEMORY) {
+        // Create names for the temp collection and the incremental collection. The incremental
+        // collection goes in the "local" database, so that it doesn't get replicated.
+        const std::string& outDBName = outputOptions.outDB.empty() ? dbname : outputOptions.outDB;
+        const std::string tmpCollDesc = str::stream()
+            << "tmp.mr." << cmdObj.firstElement().valueStringData() << "_"
+            << JOB_NUMBER.fetchAndAdd(1);
+        tempNamespace = NamespaceString(outDBName, tmpCollDesc);
+
+        // The name of the incremental collection includes the name of the database that we put
+        // temporary collection in, to make it easier to see which incremental database is paired
+        // with which temporary database when debugging.
+        incLong =
+            NamespaceString("local", str::stream() << tmpCollDesc << "_" << outDBName << "_inc");
     }
 
     {
@@ -387,10 +468,6 @@ void State::dropTempCollections() {
         ShardConnection::forgetNS(_config.tempNamespace.ns());
     }
     if (_useIncremental && !_config.incLong.isEmpty()) {
-        // We don't want to log the deletion of incLong as it isn't replicated. While
-        // harmless, this would lead to a scary looking warning on the secondaries.
-        repl::UnreplicatedWritesBlock uwb(_opCtx);
-
         writeConflictRetry(_opCtx, "M/R dropTempCollections", _config.incLong.ns(), [this] {
             Lock::DBLock lk(_opCtx, _config.incLong.db(), MODE_X);
             if (Database* db =
@@ -414,10 +491,8 @@ void State::prepTempCollection() {
 
     dropTempCollections();
     if (_useIncremental) {
-        // Create the inc collection and make sure we have index on "0" key.
-        // Intentionally not replicating the inc collection to secondaries.
-        repl::UnreplicatedWritesBlock uwb(_opCtx);
-
+        // Create the inc collection and make sure we have index on "0" key. The inc collection is
+        // in the "local" database, so it does not get replicated to secondaries.
         writeConflictRetry(_opCtx, "M/R prepTempCollection", _config.incLong.ns(), [this] {
             OldClientWriteContext incCtx(_opCtx, _config.incLong.ns());
             WriteUnitOfWork wuow(_opCtx);
@@ -629,42 +704,15 @@ long long State::postProcessCollection(OperationContext* opCtx,
     return postProcessCollectionNonAtomic(opCtx, curOp, pm, holdingGlobalLock);
 }
 
-namespace {
-
-// Runs a count against the namespace specified by 'ns'. If the caller holds the global write lock,
-// then this function does not acquire any additional locks.
-unsigned long long _collectionCount(OperationContext* opCtx,
-                                    const NamespaceString& nss,
-                                    bool callerHoldsGlobalLock) {
-    Collection* coll = nullptr;
-    boost::optional<AutoGetCollectionForReadCommand> ctx;
-
-    // If the global write lock is held, we must avoid using AutoGetCollectionForReadCommand as it
-    // may lead to deadlock when waiting for a majority snapshot to be committed. See SERVER-24596.
-    if (callerHoldsGlobalLock) {
-        Database* db = DatabaseHolder::getDatabaseHolder().get(opCtx, nss.ns());
-        if (db) {
-            coll = db->getCollection(opCtx, nss);
-        }
-    } else {
-        ctx.emplace(opCtx, nss);
-        coll = ctx->getCollection();
-    }
-
-    return coll ? coll->numRecords(opCtx) : 0;
-}
-
-}  // namespace
-
 long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
                                                 CurOp* curOp,
                                                 ProgressMeterHolder& pm,
                                                 bool callerHoldsGlobalLock) {
     if (_config.outputOptions.finalNamespace == _config.tempNamespace)
-        return _collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock);
+        return collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock);
 
     if (_config.outputOptions.outType == Config::REPLACE ||
-        _collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock) == 0) {
+        collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock) == 0) {
         // This must be global because we may write across different databases.
         Lock::GlobalWrite lock(opCtx);
         // replace: just rename from temp to final collection name, dropping previous collection
@@ -684,8 +732,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
     } else if (_config.outputOptions.outType == Config::MERGE) {
         // merge: upsert new docs into old collection
         {
-            const auto count =
-                _collectionCount(opCtx, _config.tempNamespace, callerHoldsGlobalLock);
+            const auto count = collectionCount(opCtx, _config.tempNamespace, callerHoldsGlobalLock);
             stdx::lock_guard<Client> lk(*opCtx->getClient());
             curOp->setMessage_inlock(
                 "m/r: merge post processing", "M/R Merge Post Processing Progress", count);
@@ -704,8 +751,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
         BSONList values;
 
         {
-            const auto count =
-                _collectionCount(opCtx, _config.tempNamespace, callerHoldsGlobalLock);
+            const auto count = collectionCount(opCtx, _config.tempNamespace, callerHoldsGlobalLock);
             stdx::lock_guard<Client> lk(*opCtx->getClient());
             curOp->setMessage_inlock(
                 "m/r: reduce post processing", "M/R Reduce Post Processing Progress", count);
@@ -741,7 +787,7 @@ long long State::postProcessCollectionNonAtomic(OperationContext* opCtx,
         pm.finished();
     }
 
-    return _collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock);
+    return collectionCount(opCtx, _config.outputOptions.finalNamespace, callerHoldsGlobalLock);
 }
 
 /**
@@ -783,7 +829,8 @@ void State::insert(const NamespaceString& nss, const BSONObj& o) {
 }
 
 /**
- * Insert doc into the inc collection. This should not be replicated.
+ * Insert doc into the inc collection. The inc collection is in the "local" database, so this insert
+ * will not be replicated.
  */
 void State::_insertToInc(BSONObj& o) {
     verify(_onDisk);
@@ -792,7 +839,6 @@ void State::_insertToInc(BSONObj& o) {
         OldClientWriteContext ctx(_opCtx, _config.incLong.ns());
         WriteUnitOfWork wuow(_opCtx);
         Collection* coll = getCollectionOrUassert(_opCtx, ctx.db(), _config.incLong);
-        repl::UnreplicatedWritesBlock uwb(_opCtx);
 
         // The documents inserted into the incremental collection are of the form
         // {"0": <key>, "1": <value>}, so we cannot call fixDocumentForInsert(o) here because the
@@ -966,7 +1012,7 @@ void State::init() {
 void State::switchMode(bool jsMode) {
     _jsMode = jsMode;
     if (jsMode) {
-        // emit function that stays in JS
+        // Emit function that stays in JS
         _scope->setFunction("emit",
                             "function(key, value) {"
                             "  if (typeof(key) === 'object') {"
@@ -987,8 +1033,8 @@ void State::switchMode(bool jsMode) {
                             "}");
         _scope->injectNative("_bailFromJS", _bailFromJS, this);
     } else {
-        // emit now populates C++ map
-        _scope->injectNative("emit", fast_emit, this);
+        // Emit now populates C++ map
+        _scope->injectNative("emit", fastEmit, this);
     }
 }
 
@@ -1001,15 +1047,6 @@ void State::bailFromJS() {
     // need to get the real number emitted so far
     _numEmits = _scope->getNumberInt("_emitCt");
     _config.reducer->numReduces = _scope->getNumberInt("_redCt");
-}
-
-Collection* State::getCollectionOrUassert(OperationContext* opCtx,
-                                          Database* db,
-                                          const NamespaceString& nss) {
-    UninterruptibleLockGuard noInterrupt(opCtx->lockState());
-    Collection* out = db ? db->getCollection(opCtx, nss) : NULL;
-    uassert(18697, "Collection unexpectedly disappeared: " + nss.ns(), out);
-    return out;
 }
 
 /**
@@ -1314,43 +1351,6 @@ void State::reduceAndSpillInMemoryStateIfNeeded() {
 }
 
 /**
- * emit that will be called by js function
- */
-BSONObj fast_emit(const BSONObj& args, void* data) {
-    uassert(10077, "fast_emit takes 2 args", args.nFields() == 2);
-    uassert(13069,
-            "an emit can't be more than half max bson size",
-            args.objsize() < (BSONObjMaxUserSize / 2));
-
-    State* state = (State*)data;
-    if (args.firstElement().type() == Undefined) {
-        BSONObjBuilder b(args.objsize());
-        b.appendNull("");
-        BSONObjIterator i(args);
-        i.next();
-        b.append(i.next());
-        state->emit(b.obj());
-    } else {
-        state->emit(args);
-    }
-    return BSONObj();
-}
-
-/**
- * function is called when we realize we cant use js mode for m/r on the 1st key
- */
-BSONObj _bailFromJS(const BSONObj& args, void* data) {
-    State* state = (State*)data;
-    state->bailFromJS();
-
-    // emit this particular key if there is one
-    if (!args.isEmpty()) {
-        fast_emit(args, data);
-    }
-    return BSONObj();
-}
-
-/**
  * This class represents a map/reduce command executed on a single server
  */
 class MapReduceCommand : public ErrmsgCommandDeprecated {
@@ -1439,7 +1439,7 @@ public:
             bool showTotal = true;
             if (state.config().filter.isEmpty()) {
                 const bool holdingGlobalLock = false;
-                const auto count = _collectionCount(opCtx, config.nss, holdingGlobalLock);
+                const auto count = collectionCount(opCtx, config.nss, holdingGlobalLock);
                 progressTotal =
                     (config.limit && static_cast<unsigned long long>(config.limit) < count)
                     ? config.limit
@@ -1501,7 +1501,7 @@ public:
                 unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec;
                 {
                     Database* db = scopedAutoDb->getDb();
-                    Collection* coll = State::getCollectionOrUassert(opCtx, db, config.nss);
+                    Collection* coll = getCollectionOrUassert(opCtx, db, config.nss);
                     invariant(coll);
 
                     exec = uassertStatusOK(
@@ -1880,5 +1880,5 @@ public:
 
 } mapReduceFinishCommand;
 
-}  // namespace
+}  // namespace mr
 }  // namespace mongo

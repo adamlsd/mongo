@@ -17,9 +17,6 @@ selector:
   # running in fully downgraded version, the config server won't forward the
   # command to the shards - it'll just return success immediately.
   - jstests/sharding/max_time_ms_sharded_new_commands.js
-  # Calls setFCV=4.0, which cannot be run on last-stable shards.
-  - jstests/sharding/database_versioning_upgrade_downgrade.js
-  - jstests/sharding/shard_collection_cache_upgrade_downgrade.js
   #### Enable when 4.0 becomes last-stable.
   - jstests/sharding/change_stream_no_shards.js
   - jstests/sharding/create_database.js
@@ -43,6 +40,9 @@ selector:
   - jstests/sharding/movePrimary1.js
   - jstests/sharding/mongos_validate_writes.js
   - jstests/sharding/resume_change_stream_on_subset_of_shards.js
+  # Can be un-blacklisted once the version of 4.0 used for 'last-stable' includes SERVER-34338's
+  # backport.
+  - jstests/sharding/explainFind_stale_mongos.js
   # Requires fix to SERVER-31689
   - jstests/sharding/aggregation_currentop.js
   #### End "Enable when 4.0 becomes last stable"
@@ -68,8 +68,8 @@ selector:
   # New 4.0 feature
   - jstests/sharding/snapshot_aggregate_mongos.js
   - jstests/sharding/snapshot_find_mongos.js
-  - jstests/sharding/change_stream_invalidation.js
   - jstests/sharding/change_stream_lookup_single_shard_cluster.js
+  - jstests/sharding/change_stream_metadata_notifications.js
   - jstests/sharding/change_streams.js
   - jstests/sharding/change_streams_primary_shard_unaware.js
   - jstests/sharding/change_streams_unsharded_becomes_sharded.js
@@ -235,7 +235,7 @@ selector:
   - jstests/sharding/addshard5.js
   - jstests/sharding/count2.js
   - jstests/sharding/features1.js
-  - jstests/sharding/change_stream_invalidation.js
+  - jstests/sharding/change_stream_metadata_notifications.js
   - jstests/sharding/regex_targeting.js
   - jstests/sharding/shard6.js
   - jstests/sharding/query_config.js

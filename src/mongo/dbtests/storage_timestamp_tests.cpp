@@ -33,6 +33,7 @@
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/timestamp.h"
 #include "mongo/db/catalog/collection.h"
+#include "mongo/db/catalog/create_collection.h"
 #include "mongo/db/catalog/drop_database.h"
 #include "mongo/db/catalog/drop_indexes.h"
 #include "mongo/db/catalog/index_catalog.h"
@@ -54,6 +55,7 @@
 #include "mongo/db/repl/multiapplier.h"
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_applier.h"
+#include "mongo/db/repl/oplog_applier_impl.h"
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/repl/optime.h"
 #include "mongo/db/repl/repl_client_info.h"
@@ -84,7 +86,7 @@ public:
     OneOffRead(OperationContext* opCtx, const Timestamp& ts) : _opCtx(opCtx) {
         _opCtx->recoveryUnit()->abandonSnapshot();
         if (ts.isNull()) {
-            _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNone);
+            _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kUnset);
         } else {
             _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kProvided, ts);
         }
@@ -92,7 +94,7 @@ public:
 
     ~OneOffRead() {
         _opCtx->recoveryUnit()->abandonSnapshot();
-        _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNone);
+        _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kUnset);
     }
 
 private:
@@ -114,7 +116,6 @@ public:
     void onBatchBegin(const repl::OplogApplier::Operations&) final {}
     void onBatchEnd(const StatusWith<repl::OpTime>&, const repl::OplogApplier::Operations&) final {}
     void onMissingDocumentsFetchedAndInserted(const std::vector<FetchInfo>&) final {}
-    void onOperationConsumed(const BSONObj&) final {}
 };
 
 class StorageTimestampTest {
@@ -202,7 +203,7 @@ public:
      */
     void reset(NamespaceString nss) const {
         ::mongo::writeConflictRetry(_opCtx, "deleteAll", nss.ns(), [&] {
-            _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kNone);
+            _opCtx->recoveryUnit()->setTimestampReadSource(RecoveryUnit::ReadSource::kUnset);
             AutoGetCollection collRaii(_opCtx, nss, LockMode::MODE_X);
 
             if (collRaii.getCollection()) {
@@ -323,7 +324,8 @@ public:
             _opCtx,
             AutoGetCollectionForRead(_opCtx, NamespaceString::kRsOplogNamespace).getCollection(),
             query,
-            ret));
+            ret))
+            << "Query: " << query;
         return ret;
     }
 
@@ -1340,15 +1342,16 @@ public:
 
         DoNothingOplogApplierObserver observer;
         auto storageInterface = repl::StorageInterface::get(_opCtx);
-        auto writerPool = repl::SyncTail::makeWriterPool();
-        repl::OplogApplier oplogApplier(nullptr,
-                                        nullptr,
-                                        &observer,
-                                        nullptr,
-                                        _consistencyMarkers,
-                                        storageInterface,
-                                        {},
-                                        writerPool.get());
+        auto writerPool = repl::OplogApplier::makeWriterPool();
+        repl::OplogApplierImpl oplogApplier(
+            nullptr,  // task executor. not required for multiApply().
+            nullptr,  // oplog buffer. not required for multiApply().
+            &observer,
+            nullptr,  // replication coordinator. not required for multiApply().
+            _consistencyMarkers,
+            storageInterface,
+            {},
+            writerPool.get());
         ASSERT_EQUALS(op2.getOpTime(), unittest::assertGet(oplogApplier.multiApply(_opCtx, ops)));
 
         AutoGetCollection autoColl(_opCtx, nss, LockMode::MODE_X, LockMode::MODE_IX);
@@ -1452,18 +1455,19 @@ public:
 
         DoNothingOplogApplierObserver observer;
         auto storageInterface = repl::StorageInterface::get(_opCtx);
-        auto writerPool = repl::SyncTail::makeWriterPool();
+        auto writerPool = repl::OplogApplier::makeWriterPool();
         repl::OplogApplier::Options options;
         options.allowNamespaceNotFoundErrorsOnCrudOps = true;
         options.missingDocumentSourceForInitialSync = HostAndPort("localhost", 123);
-        repl::OplogApplier oplogApplier(nullptr,
-                                        nullptr,
-                                        &observer,
-                                        nullptr,
-                                        _consistencyMarkers,
-                                        storageInterface,
-                                        options,
-                                        writerPool.get());
+        repl::OplogApplierImpl oplogApplier(
+            nullptr,  // task executor. not required for multiApply().
+            nullptr,  // oplog buffer. not required for multiApply().
+            &observer,
+            nullptr,  // replication coordinator. not required for multiApply().
+            _consistencyMarkers,
+            storageInterface,
+            options,
+            writerPool.get());
         auto lastTime = unittest::assertGet(oplogApplier.multiApply(_opCtx, ops));
         ASSERT_EQ(lastTime.getTimestamp(), insertTime2.asTimestamp());
 
@@ -1591,6 +1595,7 @@ public:
 
         repl::ReplicationConsistencyMarkersImpl consistencyMarkers(
             repl::StorageInterface::get(_opCtx));
+        ASSERT(consistencyMarkers.createInternalCollections(_opCtx).isOK());
         consistencyMarkers.initializeMinValidDocument(_opCtx);
         consistencyMarkers.setInitialSyncFlag(_opCtx);
 
@@ -2204,7 +2209,7 @@ public:
 
         // Apply the operation.
         auto storageInterface = repl::StorageInterface::get(_opCtx);
-        auto writerPool = repl::SyncTail::makeWriterPool(1);
+        auto writerPool = repl::OplogApplier::makeWriterPool(1);
         repl::SyncTail syncTail(
             nullptr, _consistencyMarkers, storageInterface, applyOperationFn, writerPool.get());
         auto lastOpTime = unittest::assertGet(syncTail.multiApply(_opCtx, {insertOp}));
@@ -2333,6 +2338,66 @@ public:
     }
 };
 
+class ViewCreationSeparateTransaction : public StorageTimestampTest {
+public:
+    void run() {
+        // Only run on 'wiredTiger'. No other storage engines to-date support timestamp writes.
+        if (mongo::storageGlobalParams.engine != "wiredTiger") {
+            return;
+        }
+
+        auto kvStorageEngine =
+            dynamic_cast<KVStorageEngine*>(_opCtx->getServiceContext()->getStorageEngine());
+        KVCatalog* kvCatalog = kvStorageEngine->getCatalog();
+
+        const NamespaceString backingCollNss("unittests.backingColl");
+        reset(backingCollNss);
+
+        const NamespaceString viewNss("unittests.view");
+        const NamespaceString systemViewsNss("unittests.system.views");
+
+        ASSERT_OK(createCollection(_opCtx,
+                                   viewNss.db().toString(),
+                                   BSON("create" << viewNss.coll() << "pipeline" << BSONArray()
+                                                 << "viewOn"
+                                                 << backingCollNss.coll())));
+
+        const Timestamp systemViewsCreateTs = queryOplog(BSON("op"
+                                                              << "c"
+                                                              << "ns"
+                                                              << (viewNss.db() + ".$cmd")
+                                                              << "o.create"
+                                                              << "system.views"))["ts"]
+                                                  .timestamp();
+        const Timestamp viewCreateTs = queryOplog(BSON("op"
+                                                       << "i"
+                                                       << "ns"
+                                                       << systemViewsNss.ns()
+                                                       << "o._id"
+                                                       << viewNss.ns()))["ts"]
+                                           .timestamp();
+
+        {
+            Lock::GlobalRead read(_opCtx);
+            auto systemViewsMd = getMetaDataAtTime(
+                kvCatalog, systemViewsNss, Timestamp(systemViewsCreateTs.asULL() - 1));
+            ASSERT_EQ("", systemViewsMd.ns)
+                << systemViewsNss
+                << " incorrectly exists before creation. CreateTs: " << systemViewsCreateTs;
+
+            systemViewsMd = getMetaDataAtTime(kvCatalog, systemViewsNss, systemViewsCreateTs);
+            ASSERT_EQ(systemViewsNss.ns(), systemViewsMd.ns);
+
+            AutoGetCollection autoColl(_opCtx, systemViewsNss, LockMode::MODE_IS);
+            assertDocumentAtTimestamp(autoColl.getCollection(), systemViewsCreateTs, BSONObj());
+            assertDocumentAtTimestamp(
+                autoColl.getCollection(),
+                viewCreateTs,
+                BSON("_id" << viewNss.ns() << "viewOn" << backingCollNss.coll() << "pipeline"
+                           << BSONArray()));
+        }
+    }
+};
 
 class AllStorageTimestampTests : public unittest::Suite {
 public:
@@ -2369,6 +2434,7 @@ public:
         add<TimestampIndexBuilderOnPrimary<false>>();
         add<TimestampIndexBuilderOnPrimary<true>>();
         add<SecondaryReadsDuringBatchApplicationAreAllowed>();
+        add<ViewCreationSeparateTransaction>();
     }
 };
 

@@ -293,7 +293,7 @@ functions:
         script: |
           set -o errexit
           set -o verbose
-          TAG="3.4.14-Baseline"
+          TAG="3.6.5-Baseline"
           OVERRIDEFILE="../src/dsi/dsi/analysis/${branch_name}/system_perf_override.json"
           python -u ../src/dsi/dsi/analysis/post_run_check.py ${script_flags} --reports-analysis reports --perf-file perf.json --rev ${revision} --refTag $TAG --overrideFile $OVERRIDEFILE --project_id sys-perf --variant ${build_variant} --task ${task_name}
 
@@ -746,13 +746,8 @@ buildvariants:
     - name: misc_workloads
     - name: map_reduce_workloads
     - name: smoke_test
-    - name: retryable_writes_workloads
     - name: industry_benchmarks_wmajority
     - name: mongos_workloads
-    - name: move_chunk_workloads
-    - name: move_chunk_waiting_workloads
-    - name: bestbuy_agg
-    - name: bestbuy_query
     - name: change_streams_throughput
     - name: change_streams_latency
     - name: change_streams_multi_mongos
@@ -777,7 +772,6 @@ buildvariants:
     - name: bestbuy_agg
     - name: bestbuy_query
     - name: change_streams_latency
-    - name: change_streams_multi_mongos
     - name: change_streams_throughput
     - name: industry_benchmarks
     - name: industry_benchmarks_wmajority
@@ -920,21 +914,22 @@ buildvariants:
         variant: compile-rhel70
   tasks: *3nodetasks
 
-- name: wtdevelop-shard-lite
-  display_name: WT Develop Shard Lite Cluster
-  batchtime: 1440  # 24 hours
-  modules: *modules
-  expansions:
-    setup: shard-lite
-    cluster: shard-lite
-    platform: linux
-    project_dir: *project_dir
-    wtdevelop: -wtdevelop
-    authentication: enabled
-    storageEngine: wiredTiger
-  run_on:
-      - "rhel70-perf-shard-lite"
-  depends_on:
-      - name: compile_wtdevelop
-        variant: compile-rhel70
-  tasks: *shardlitetasks
+# Disabled: SERVER-35586
+#- name: wtdevelop-shard-lite
+#  display_name: WT Develop Shard Lite Cluster
+#  batchtime: 1440  # 24 hours
+#  modules: *modules
+#  expansions:
+#    setup: shard-lite
+#    cluster: shard-lite
+#    platform: linux
+#    project_dir: *project_dir
+#    wtdevelop: -wtdevelop
+#    authentication: enabled
+#    storageEngine: wiredTiger
+#  run_on:
+#      - "rhel70-perf-shard-lite"
+#  depends_on:
+#      - name: compile_wtdevelop
+#        variant: compile-rhel70
+#  tasks: *shardlitetasks

@@ -316,7 +316,7 @@ void ConnectionPool::shutdown() {
     for (const auto& pool : pools) {
         stdx::unique_lock<stdx::mutex> lk(_mutex);
         pool->processFailure(
-            Status(ErrorCodes::ShutdownInProgress, "Shuting down the connection pool"),
+            Status(ErrorCodes::ShutdownInProgress, "Shutting down the connection pool"),
             std::move(lk));
     }
 }
@@ -553,8 +553,6 @@ void ConnectionPool::SpecificPool::returnConnection(ConnectionInterface* connPtr
         lk.unlock();
         connPtr->refresh(
             _parent->_options.refreshTimeout, [this](ConnectionInterface* connPtr, Status status) {
-                connPtr->indicateUsed();
-
                 runWithActiveClient([&](stdx::unique_lock<stdx::mutex> lk) {
                     auto conn = takeFromProcessingPool(connPtr);
 
@@ -775,8 +773,6 @@ void ConnectionPool::SpecificPool::spawnConnections(stdx::unique_lock<stdx::mute
         lk.unlock();
         connPtr->setup(
             _parent->_options.refreshTimeout, [this](ConnectionInterface* connPtr, Status status) {
-                connPtr->indicateUsed();
-
                 runWithActiveClient([&](stdx::unique_lock<stdx::mutex> lk) {
                     auto conn = takeFromProcessingPool(connPtr);
 

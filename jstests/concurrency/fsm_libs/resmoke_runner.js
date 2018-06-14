@@ -199,7 +199,6 @@
     const clusterOptions = {
         replication: {enabled: false},
         sharded: {enabled: false},
-        useExistingConnectionAsSeed: true,
     };
 
     const topology = DiscoverTopology.findConnectedNodes(db.getMongo());
@@ -226,9 +225,6 @@
     }
 
     let workloads = TestData.fsmWorkloads;
-    if (!Array.isArray(workloads)) {
-        workloads = [workloads];
-    }
 
     let sessionOptions = {};
     if (TestData.runningWithCausalConsistency) {

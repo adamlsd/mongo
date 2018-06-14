@@ -119,7 +119,6 @@ void filterAllowedIndexEntries(const AllowedIndicesFilter& allowedIndicesFilter,
 namespace {
 // The body is below in the "count hack" section but getExecutor calls it.
 bool turnIxscanIntoCount(QuerySolution* soln);
-
 }  // namespace
 
 
@@ -360,11 +359,9 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
     }
 
     // Try to look up a cached solution for the query.
-    CachedSolution* rawCS;
-    if (PlanCache::shouldCacheQuery(*canonicalQuery) &&
-        collection->infoCache()->getPlanCache()->get(*canonicalQuery, &rawCS).isOK()) {
+    if (auto cs =
+            collection->infoCache()->getPlanCache()->getCacheEntryIfCacheable(*canonicalQuery)) {
         // We have a CachedSolution.  Have the planner turn it into a QuerySolution.
-        unique_ptr<CachedSolution> cs(rawCS);
         auto statusWithQs = QueryPlanner::planFromCache(*canonicalQuery, plannerParams, *cs);
 
         if (statusWithQs.isOK()) {
@@ -675,11 +672,6 @@ StatusWith<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> _getExecutorFind(
     unique_ptr<CanonicalQuery> canonicalQuery,
     PlanExecutor::YieldPolicy yieldPolicy,
     size_t plannerOptions) {
-    if (canonicalQuery->getQueryRequest().getMaxScan()) {
-        RARELY log() << "Support for the maxScan option has been deprecated. Instead, use "
-                        "maxTimeMS. See http://dochub.mongodb.org/core/4.0-deprecate-maxScan.";
-    }
-
     if (NULL != collection && canonicalQuery->getQueryRequest().isOplogReplay()) {
         return getOplogStartHack(opCtx, collection, std::move(canonicalQuery), plannerOptions);
     }

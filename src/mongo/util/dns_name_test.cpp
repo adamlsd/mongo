@@ -86,7 +86,7 @@ TEST(DNSNameTest, CanonicalName) {
     }
 }
 
-TEST(DNSNameTest, SSLName) {
+TEST(DNSNameTest, NoncanonicalName) {
     const struct {
         std::string input;
         std::string result;
@@ -104,7 +104,7 @@ TEST(DNSNameTest, SSLName) {
     for (const auto& test : tests) {
         const ::mongo::dns::HostName host(test.input);
 
-        ASSERT_EQ(host.sslName(), test.result);
+        ASSERT_EQ(host.noncanonicalName(), test.result);
     }
 }
 

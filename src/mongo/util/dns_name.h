@@ -29,6 +29,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <iterator>
 #include <sstream>
@@ -46,6 +47,8 @@ namespace dns {
 namespace detail_dns_host_name {
 using std::begin;
 using std::end;
+class HostName;
+bool operator==(const HostName& lhs, const HostName& rhs);
 
 /**
  * A `dns::HostName` represents a DNS Hostname in a form which is suitable for programatic
@@ -69,12 +72,6 @@ public:
      * Hostname is fully qualified or not.
      */
     enum Qualification : bool { kRelativeName = false, kFullyQualified = true };
-
-private:
-    class ArgGuard {
-        friend HostName;
-        ArgGuard() = default;
-    };
 
 public:
     /**
@@ -115,7 +112,12 @@ public:
             }
             parserState = kNonPeriod;
 
-            name.push_back(ch);
+            if (!(ch == '-' || std::isalnum(ch)))
+                uasserted(ErrorCodes::DNSRecordTypeMismatch,
+                          "A Domain Name cannot have tokens other than dash or alphanumerics");
+            // All domain names are represented in lower-case letters, because DNS is case
+            // insensitive.
+            name.push_back(std::tolower(ch));
         }
 
         if (parserState == kPeriod)
@@ -136,7 +138,7 @@ public:
     }
 
     /**
-     * Returns `true` if this DNS Hostname has been fully qualified, and false otherwise.
+     * Returns whether this DNS Hostname has been fully qualified.
      *
      * A DNS Hostname is considered fully qualified, if the canonical specification of its name
      * includes a trailing `'.'`.  Fully Qualified Domain Names (FQDNs) are always resolved against
@@ -165,7 +167,7 @@ public:
     }
 
     /**
-     * Returns the complete canonical name for this `dns::HostName` as a `std::string` object.
+     * Returns the complete canonical name for this `dns::HostName`.
      *
      * The canonical form for a DNS Hostname is the complete dotted DNS path, including a trailing
      * dot (if the domain in question is fully qualified).  A DNS Hostname which is fully qualified
@@ -180,17 +182,16 @@ public:
     }
 
     /**
-     * Returns the complete name for this `dns::HostNmae` as a `std::string` object, in a form
-     * suitable
-     * for use with SSL certificate names.
+     * Returns the complete name for this `dns::HostName` in a form suitable for use with SSL
+     * certificate names.
      *
      * For myriad reasons, SSL certificates do not specify the fully qualified name of any host.
      * When using `dns::HostName` objects in SSL aware code, it may be necessary to get an
      * unqualified string form for use in certificate name comparisons.
      *
-     * RETURNS: A `std::string` which represents this DNS Hostname without qualification indication.
+     * RETURNS: A `std::string` which represents this Hostname without a trailing dot (`'.'`).
      */
-    std::string sslName() const {
+    std::string noncanonicalName() const {
         StringBuilder sb;
         streamUnqualified(sb);
         return sb.str();
@@ -234,7 +235,7 @@ public:
 
     /**
      * Returns true if the specified `candidate` Hostname would be resolved within `*this` as a
-     * hostname, and false otherwise.
+     * hostname and false otherwise.
      *
      * Two domains can be said to have a "contains" relationship only when when both are Fully
      * Qualified Domain Names (FQDNs).  When either domain or both domains are unqualified, then it
@@ -294,27 +295,27 @@ public:
         return this->_nameComponents;
     }
 
-    void nameComponents() && = delete;
-
-    const std::vector<std::string>& altRvalueNameComponents(
-        ArgGuard = {}, std::vector<std::string>&& preserve = {})&& {
-        preserve = std::move(this->_nameComponents);
-        return preserve;
+    std::vector<std::string> nameComponents() && {
+        return std::move(this->_nameComponents);
     }
 
     /**
-     * Returns true if the specified `dns::HostName`s, `lhs` and `rhs` represent the same DNS path,
-     * and fase otherwise.
+     * Compares two `dns::HostName` objects.
+     *
+     * Two `dns::HostName` objects comare equal when they both represent the same resolution path.
+     * This means that in addition to the lookup sequence (order of sub domains) being the same, the
+     * qualification of both objects must be the same.  For example, `"www.google.com"` would not
+     * compare equal to `"www.google.com."` due to the presence of a trailing dot in the second
+     * case.
      *
      * RETURNS: True if `lhs` and `rhs` represent the same DNS path, and false otherwise.
      */
     friend bool operator==(const HostName& lhs, const HostName& rhs);
 
     /**
-     * Returns true if the specified `dns::HostName`s, `lhs` and `rhs` do not represent the same DNS
-     * path, and fase otherwise.
+     * Compares two `dns::HostName` objects.
      *
-     * RETURNS: True if `lhs` and `rhs` do not represent the same DNS path, and false otherwise.
+     * RETURNS: `!(lhs == rhs)`.
      */
     friend bool operator!=(const HostName& lhs, const HostName& rhs) {
         return !(lhs == rhs);
@@ -338,14 +339,6 @@ public:
         return os;
     }
 
-    /**
-     * Streams a representation of the specified `hostName` to the specified `os` formatting stream.
-     *
-     * A canonical representation of `hostName` (with a trailing dot, `'.'`, when `hostName.isFQDN()
-     * == true`) will be placed into the formatting stream handled by `os`.
-     *
-     * RETURNS: A reference to the specified output stream `os`.
-     */
     friend StringBuilder& operator<<(StringBuilder& os, const HostName& hostName) {
         if (hostName.fullyQualified) {
             hostName.streamQualified(os);
@@ -399,11 +392,10 @@ private:
             return;
 
         for (const auto& name : this->_nameComponents) {
-            // Any letters are good.
-            if (end(name) != std::find_if(begin(name), end(name), isalpha))
-                return;
-            // A hyphen is okay too.
-            if (end(name) != std::find(begin(name), end(name), '-'))
+            // Any letters are good.  A hyphen is okay too.
+            if (end(name) != std::find_if(begin(name), end(name), [](const char ch) {
+                    return std::isalpha(ch) || ch == '-';
+                }))
                 return;
         }
 
@@ -421,6 +413,8 @@ private:
 };
 }  // detail_dns_host_name
 
+// The `operator==` function has to be defined out-of-line, because it uses `make_equality_lens`
+// which is an auto-deduced return type function defined later in the class body.
 inline bool detail_dns_host_name::operator==(const HostName& lhs, const HostName& rhs) {
     return lhs.make_equality_lens() == rhs.make_equality_lens();
 }

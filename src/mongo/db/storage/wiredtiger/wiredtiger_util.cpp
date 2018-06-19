@@ -386,6 +386,32 @@ size_t WiredTigerUtil::getCacheSizeMB(double requestedCacheSizeGB) {
 }
 
 namespace {
+int mdb_handle_error_with_startup_suppression(WT_EVENT_HANDLER* handler,
+                                              WT_SESSION* session,
+                                              int errorCode,
+                                              const char* message) {
+    WiredTigerEventHandler* wtHandler = reinterpret_cast<WiredTigerEventHandler*>(handler);
+
+    try {
+        StringData sd(message);
+        if (!wtHandler->wasStartupSuccessful()) {
+            // During startup, storage tries different WiredTiger compatibility modes to determine
+            // the state of the data files before FCV can be read. Suppress the error messages
+            // regarding expected version compatibility requirements.
+            if (sd.find("Version incompatibility detected:") != std::string::npos) {
+                return 0;
+            }
+        }
+
+        error() << "WiredTiger error (" << errorCode << ") " << redact(message)
+                << " Raw: " << message;
+        fassert(50853, errorCode != WT_PANIC);
+    } catch (...) {
+        std::terminate();
+    }
+    return 0;
+}
+
 int mdb_handle_error(WT_EVENT_HANDLER* handler,
                      WT_SESSION* session,
                      int errorCode,
@@ -420,14 +446,31 @@ int mdb_handle_progress(WT_EVENT_HANDLER* handler,
 
     return 0;
 }
-}
 
-WT_EVENT_HANDLER WiredTigerUtil::defaultEventHandlers() {
+WT_EVENT_HANDLER defaultEventHandlers() {
     WT_EVENT_HANDLER handlers = {};
     handlers.handle_error = mdb_handle_error;
     handlers.handle_message = mdb_handle_message;
     handlers.handle_progress = mdb_handle_progress;
     return handlers;
+}
+}
+
+WiredTigerEventHandler::WiredTigerEventHandler() {
+    WT_EVENT_HANDLER* handler = static_cast<WT_EVENT_HANDLER*>(this);
+    invariant((void*)this == (void*)handler);
+
+    handler->handle_error = mdb_handle_error_with_startup_suppression;
+    handler->handle_message = mdb_handle_message;
+    handler->handle_progress = mdb_handle_progress;
+    handler->handle_close = nullptr;
+}
+
+WT_EVENT_HANDLER* WiredTigerEventHandler::getWtEventHandler() {
+    WT_EVENT_HANDLER* ret = static_cast<WT_EVENT_HANDLER*>(this);
+    invariant((void*)this == (void*)ret);
+
+    return ret;
 }
 
 WiredTigerUtil::ErrorAccumulator::ErrorAccumulator(std::vector<std::string>* errors)
@@ -493,43 +536,6 @@ bool WiredTigerUtil::useTableLogging(NamespaceString ns, bool replEnabled) {
 
     // The remainder of local gets logged. In particular, the oplog and user created collections.
     return true;
-}
-
-Status WiredTigerUtil::setTableLogging(OperationContext* opCtx, const std::string& uri, bool on) {
-    // Try to close as much as possible to avoid EBUSY errors.
-    WiredTigerRecoveryUnit::get(opCtx)->getSession()->closeAllCursors(uri);
-    WiredTigerSessionCache* sessionCache = WiredTigerRecoveryUnit::get(opCtx)->getSessionCache();
-    sessionCache->closeAllCursors(uri);
-
-    // Use a dedicated session for alter operations to avoid transaction issues.
-    WiredTigerSession session(sessionCache->conn());
-    return setTableLogging(session.getSession(), uri, on);
-}
-
-Status WiredTigerUtil::setTableLogging(WT_SESSION* session, const std::string& uri, bool on) {
-    std::string setting;
-    if (on) {
-        setting = "log=(enabled=true)";
-    } else {
-        setting = "log=(enabled=false)";
-    }
-
-    int ret = session->alter(session, uri.c_str(), setting.c_str());
-    if (ret) {
-        // `setTableLogging` can be called even when the table is in the desired state. WT can
-        // return EBUSY if it cannot access the table to be altered before it knows whether
-        // there's anything to change.  Assert that if alter call returned an error, the table is
-        // in the expected state.
-        std::string existingMetadata = getMetadataRaw(session, uri).getValue();
-        if (existingMetadata.find(setting) == std::string::npos) {
-            severe() << "Failed to update log setting. Uri: " << uri << " Enable? " << on
-                     << " Ret: " << ret << " MD: " << redact(existingMetadata)
-                     << " Msg: " << session->strerror(session, ret);
-            fassertFailed(50756);
-        }
-    }
-
-    return Status::OK();
 }
 
 Status WiredTigerUtil::exportTableToBSON(WT_SESSION* session,

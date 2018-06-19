@@ -280,6 +280,11 @@ public:
     void commitTransaction(OperationContext* opCtx);
 
     /**
+     * Puts a transaction into a prepared state.
+     */
+    void prepareTransaction(OperationContext* opCtx);
+
+    /**
      * Aborts the transaction outside the transaction, releasing transaction resources.
      */
     void abortArbitraryTransaction();
@@ -351,6 +356,10 @@ public:
     TxnNumber getActiveTxnNumberForTest() const {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         return _activeTxnNumber;
+    }
+
+    boost::optional<SingleTransactionStats> getSingleTransactionStats() const {
+        return _singleTransactionStats;
     }
 
     /**

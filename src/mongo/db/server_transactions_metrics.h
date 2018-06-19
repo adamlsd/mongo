@@ -46,8 +46,18 @@ public:
     static ServerTransactionsMetrics* get(ServiceContext* service);
     static ServerTransactionsMetrics* get(OperationContext* opCtx);
 
+    unsigned long long getCurrentOpen() const;
+    void decrementCurrentOpen();
+    void incrementCurrentOpen();
+
     unsigned long long getTotalStarted() const;
     void incrementTotalStarted();
+
+    unsigned long long getTotalAborted() const;
+    void incrementTotalAborted();
+
+    unsigned long long getTotalCommitted() const;
+    void incrementTotalCommitted();
 
     /**
      * Appends the accumulated stats to a transactions stats object.
@@ -55,8 +65,17 @@ public:
     void updateStats(TransactionsStats* stats);
 
 private:
+    // The total number of open transactions.
+    AtomicUInt64 _currentOpen{0};
+
     // The total number of multi-document transactions started since the last server startup.
     AtomicUInt64 _totalStarted{0};
+
+    // The total number of multi-document transaction aborts.
+    AtomicUInt64 _totalAborted{0};
+
+    // The total number of multi-document transaction commits.
+    AtomicUInt64 _totalCommitted{0};
 };
 
 }  // namespace mongo

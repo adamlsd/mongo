@@ -33,7 +33,6 @@
 #include "mongo/db/session.h"
 
 #include "mongo/db/catalog/index_catalog.h"
-#include "mongo/db/commands/feature_compatibility_version_documentation.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/concurrency/lock_state.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -47,7 +46,6 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/retryable_writes_stats.h"
-#include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/server_transactions_metrics.h"
 #include "mongo/db/stats/fill_locker_info.h"
@@ -599,30 +597,24 @@ void Session::_beginOrContinueTxn(WithLock wl,
                               << " does not match any in-progress transactions.",
                 startTransaction != boost::none);
 
-        // Check for FCV 4.0. The presence of an autocommit field distiguishes this as a
-        // multi-statement transaction vs a retryable write.
-        uassert(
-            50773,
-            str::stream() << "Transactions are only supported in featureCompatibilityVersion 4.0. "
-                          << "See "
-                          << feature_compatibility_version_documentation::kCompatibilityLink
-                          << " for more information.",
-            (serverGlobalParams.featureCompatibility.isVersionInitialized() &&
-             serverGlobalParams.featureCompatibility.getVersion() ==
-                 ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40));
-
         _setActiveTxn(wl, txnNumber);
         _autocommit = false;
         _txnState = MultiDocumentTransactionState::kInProgress;
+        // Tracks various transactions metrics.
+        _singleTransactionStats = SingleTransactionStats();
+        _singleTransactionStats->setStartTime(curTimeMicros64());
         _transactionExpireDate =
-            Date_t::now() + stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()};
+            Date_t::fromMillisSinceEpoch(_singleTransactionStats->getStartTime() / 1000) +
+            stdx::chrono::seconds{transactionLifetimeLimitSeconds.load()};
         ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalStarted();
+        ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementCurrentOpen();
     } else {
         // Execute a retryable write or snapshot read.
         invariant(startTransaction == boost::none);
         _setActiveTxn(wl, txnNumber);
         _autocommit = true;
         _txnState = MultiDocumentTransactionState::kNone;
+        // SingleTransactionStats are only for multi-document transactions.
         _singleTransactionStats = boost::none;
     }
 
@@ -763,7 +755,6 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
         return;
     }
 
-    bool snapshotPreallocated = false;
     {
         // We must lock the Client to change the Locker on the OperationContext and the Session
         // mutex to access Session state. We must lock the Client before the Session mutex, since
@@ -799,45 +790,59 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
 
             _txnResourceStash->release(opCtx);
             _txnResourceStash = boost::none;
-        } else {
-            // Stashed transaction resources do not exist for this transaction.  If this is a
-            // snapshot read or a multi-document transaction, set up the transaction resources on
-            // the opCtx.
-            auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-            if (readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern ||
-                _txnState == MultiDocumentTransactionState::kInProgress) {
-                opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
+            return;
+        }
 
-                // Storage engine transactions may be started in a lazy manner. By explicitly
-                // starting here we ensure that a point-in-time snapshot is established during the
-                // first operation of a transaction.
-                opCtx->recoveryUnit()->preallocateSnapshot();
-                snapshotPreallocated = true;
 
-                if (_txnState == MultiDocumentTransactionState::kInProgress) {
-                    // If maxTransactionLockRequestTimeoutMillis is set, then we will ensure no
-                    // future lock request waits longer than maxTransactionLockRequestTimeoutMillis
-                    // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
-                    // operation performance degradations.
-                    auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
-                    if (maxTransactionLockMillis >= 0) {
-                        opCtx->lockState()->setMaxLockTimeout(
-                            Milliseconds(maxTransactionLockMillis));
-                    }
-                }
+        // Stashed transaction resources do not exist for this transaction.  If this is a
+        // snapshot read or a multi-document transaction, set up the transaction resources on
+        // the opCtx.
+        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+        if (!(readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern ||
+              _txnState == MultiDocumentTransactionState::kInProgress)) {
+            return;
+        }
+        opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
 
-                if (_txnState != MultiDocumentTransactionState::kInProgress) {
-                    _txnState = MultiDocumentTransactionState::kInSnapshotRead;
-                }
+
+        if (_txnState == MultiDocumentTransactionState::kInProgress) {
+            // If maxTransactionLockRequestTimeoutMillis is set, then we will ensure no
+            // future lock request waits longer than maxTransactionLockRequestTimeoutMillis
+            // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
+            // operation performance degradations.
+            auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
+            if (maxTransactionLockMillis >= 0) {
+                opCtx->lockState()->setMaxLockTimeout(Milliseconds(maxTransactionLockMillis));
             }
+        }
+
+        if (_txnState != MultiDocumentTransactionState::kInProgress) {
+            _txnState = MultiDocumentTransactionState::kInSnapshotRead;
         }
     }
 
-    if (snapshotPreallocated) {
-        // The Client lock must not be held when executing this failpoint as it will block currentOp
-        // execution.
-        MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterPreallocateSnapshot);
-    }
+    // Storage engine transactions may be started in a lazy manner. By explicitly
+    // starting here we ensure that a point-in-time snapshot is established during the
+    // first operation of a transaction.
+    //
+    // Active transactions are protected by the locking subsystem, so we must always hold at least a
+    // Global intent lock before starting a transaction.  We pessimistically acquire an intent
+    // exclusive lock here because we might be doing writes in this transaction, and it is currently
+    // not deadlock-safe to upgrade IS to IX.
+    Lock::GlobalLock(opCtx, MODE_IX);
+    opCtx->recoveryUnit()->preallocateSnapshot();
+
+    // The Client lock must not be held when executing this failpoint as it will block currentOp
+    // execution.
+    MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterPreallocateSnapshot);
+}
+
+void Session::prepareTransaction(OperationContext* opCtx) {
+    auto opObserver = opCtx->getServiceContext()->getOpObserver();
+    invariant(opObserver);
+    opObserver->onTransactionPrepare(opCtx);
+
+    opCtx->getWriteUnitOfWork()->prepare();
 }
 
 void Session::abortArbitraryTransaction() {
@@ -892,11 +897,17 @@ void Session::_abortTransaction(WithLock wl) {
         _txnState == MultiDocumentTransactionState::kCommitted) {
         return;
     }
+    const bool isMultiDocumentTransaction = _txnState == MultiDocumentTransactionState::kInProgress;
     _txnResourceStash = boost::none;
     _transactionOperationBytes = 0;
     _transactionOperations.clear();
     _txnState = MultiDocumentTransactionState::kAborted;
     _speculativeTransactionReadOpTime = repl::OpTime();
+    ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalAborted();
+    if (isMultiDocumentTransaction) {
+        _singleTransactionStats->setEndTime(curTimeMicros64());
+    }
+    ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentOpen();
 }
 
 void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
@@ -1027,6 +1038,12 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
         clientInfo.setLastOp(_speculativeTransactionReadOpTime);
     }
     _txnState = MultiDocumentTransactionState::kCommitted;
+    ServerTransactionsMetrics::get(opCtx)->incrementTotalCommitted();
+    // After the transaction has been committed, we must update the end time.
+    if (isMultiDocumentTransaction) {
+        _singleTransactionStats->setEndTime(curTimeMicros64());
+    }
+    ServerTransactionsMetrics::get(opCtx)->decrementCurrentOpen();
 }
 
 BSONObj Session::reportStashedState() const {

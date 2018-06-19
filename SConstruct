@@ -1100,6 +1100,9 @@ os_macros = {
     "iOS-sim": "defined(__APPLE__) && TARGET_OS_IOS && TARGET_OS_SIMULATOR",
     "tvOS": "defined(__APPLE__) && TARGET_OS_TV && !TARGET_OS_SIMULATOR",
     "tvOS-sim": "defined(__APPLE__) && TARGET_OS_TV && TARGET_OS_SIMULATOR",
+    "watchOS": "defined(__APPLE__) && TARGET_OS_WATCH && !TARGET_OS_SIMULATOR",
+    "watchOS-sim": "defined(__APPLE__) && TARGET_OS_WATCH && TARGET_OS_SIMULATOR",
+
     # NOTE: Once we have XCode 8 required, we can rely on the value of TARGET_OS_OSX. In case
     # we are on an older XCode, use TARGET_OS_MAC and TARGET_OS_IPHONE. We don't need to correct
     # the above declarations since we will never target them with anything other than XCode 8.
@@ -2468,8 +2471,10 @@ def doConfigure(myenv):
 
         # On 32-bit systems, we need to define this in order to get access to
         # the 64-bit versions of fseek, etc.
+        # except on 32 bit android where it breaks boost
         if not conf.CheckTypeSize('off_t', includes="#include <sys/types.h>", expect=8):
-            myenv.Append(CPPDEFINES=["_FILE_OFFSET_BITS=64"])
+            if not env.TargetOSIs('android'):
+                myenv.Append(CPPDEFINES=["_FILE_OFFSET_BITS=64"])
 
         conf.Finish()
 

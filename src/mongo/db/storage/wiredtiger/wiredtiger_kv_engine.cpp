@@ -76,7 +76,6 @@
 #include "mongo/db/storage/wiredtiger/wiredtiger_recovery_unit.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_session_cache.h"
 #include "mongo/db/storage/wiredtiger/wiredtiger_size_storer.h"
-#include "mongo/db/storage/wiredtiger/wiredtiger_util.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/background.h"
@@ -109,11 +108,10 @@ bool WiredTigerFileVersion::shouldDowngrade(bool readOnly,
     }
 
     if (!serverGlobalParams.featureCompatibility.isVersionInitialized()) {
-        // If the FCV document hasn't been read, trust the WT log file version. MongoD will
-        // downgrade to the same log version it discovered on startup. If the previous instance of
-        // MongoD was running with `--nojournal`, the log version cannot be determined and
-        // `_startupVersion` is considered to be 4.0.
-        return _startupVersion == StartupVersion::IS_36 || _startupVersion == StartupVersion::IS_34;
+        // If the FCV document hasn't been read, trust the WT compatibility. MongoD will
+        // downgrade to the same compatibility it discovered on startup.
+        return _startupVersion == StartupVersion::IS_40 ||
+            _startupVersion == StartupVersion::IS_36 || _startupVersion == StartupVersion::IS_34;
     }
 
     if (serverGlobalParams.featureCompatibility.getVersion() !=
@@ -142,19 +140,20 @@ bool WiredTigerFileVersion::shouldDowngrade(bool readOnly,
 
 std::string WiredTigerFileVersion::getDowngradeString() {
     if (!serverGlobalParams.featureCompatibility.isVersionInitialized()) {
-        invariant(_startupVersion != StartupVersion::IS_40);
+        invariant(_startupVersion != StartupVersion::IS_42);
 
         switch (_startupVersion) {
             case StartupVersion::IS_34:
                 return "compatibility=(release=2.9)";
             case StartupVersion::IS_36:
                 return "compatibility=(release=3.0)";
+            case StartupVersion::IS_40:
+                return "compatibility=(release=3.1)";
             default:
                 MONGO_UNREACHABLE;
         }
     }
-
-    return "compatibility=(release=3.0)";
+    return "compatibility=(release=3.1)";
 }
 
 namespace {
@@ -170,6 +169,9 @@ void openWiredTiger(const std::string& path,
         return;
     }
 
+    // Arbiters do not replicate the FCV document. Due to arbiter FCV semantics on 4.0, shutting
+    // down a 4.0 arbiter may either downgrade the data files to WT compatibility 2.9 or 3.0. Thus,
+    // 4.2 binaries must allow starting up on 2.9 and 3.0 files.
     configStr = wtOpenConfig + ",compatibility=(require_min=\"3.0.0\")";
     ret = wiredtiger_open(path.c_str(), eventHandler, configStr.c_str(), connOut);
     if (!ret) {
@@ -177,9 +179,6 @@ void openWiredTiger(const std::string& path,
         return;
     }
 
-    // Arbiters do not replicate the FCV document. Due to arbiter FCV semantics on 3.6, shutting
-    // down a 3.6 arbiter will downgrade the data files to WT compatibility 2.9. Thus, 4.0
-    // binaries must allow starting up on 2.9 files.
     configStr = wtOpenConfig + ",compatibility=(require_min=\"2.9.0\")";
     ret = wiredtiger_open(path.c_str(), eventHandler, configStr.c_str(), connOut);
     if (!ret) {
@@ -187,6 +186,7 @@ void openWiredTiger(const std::string& path,
         return;
     }
 
+    severe() << "Failed to start up WiredTiger under any compatibility version.";
     if (ret == EINVAL) {
         fassertFailedNoTrace(28561);
     }
@@ -449,8 +449,7 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
                                        bool ephemeral,
                                        bool repair,
                                        bool readOnly)
-    : _eventHandler(WiredTigerUtil::defaultEventHandlers()),
-      _clockSource(cs),
+    : _clockSource(cs),
       _oplogManager(stdx::make_unique<WiredTigerOplogManager>()),
       _canonicalName(canonicalName),
       _path(path),
@@ -518,7 +517,8 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
             string config = ss.str();
             log() << "Detected WT journal files.  Running recovery from last checkpoint.";
             log() << "journal to nojournal transition config: " << config;
-            int ret = wiredtiger_open(path.c_str(), &_eventHandler, config.c_str(), &_conn);
+            int ret = wiredtiger_open(
+                path.c_str(), _eventHandler.getWtEventHandler(), config.c_str(), &_conn);
             if (ret == EINVAL) {
                 fassertFailedNoTrace(28717);
             } else if (ret != 0) {
@@ -540,7 +540,8 @@ WiredTigerKVEngine::WiredTigerKVEngine(const std::string& canonicalName,
 
     string config = ss.str();
     log() << "wiredtiger_open config: " << config;
-    openWiredTiger(path, &_eventHandler, config, &_conn, &_fileVersion);
+    openWiredTiger(path, _eventHandler.getWtEventHandler(), config, &_conn, &_fileVersion);
+    _eventHandler.setStartupSuccessful();
     _wtOpenConfig = config;
 
     {
@@ -653,55 +654,14 @@ void WiredTigerKVEngine::cleanShutdown() {
         closeConfig = "leak_memory=true,";
     }
 
-    if (!_fileVersion.shouldDowngrade(_readOnly, _inRepairMode, !_recoveryTimestamp.isNull())) {
-        closeConfig += "use_timestamp=true,";
-        invariantWTOK(_conn->close(_conn, closeConfig.c_str()));
-        return;
+    if (_fileVersion.shouldDowngrade(_readOnly, _inRepairMode, !_recoveryTimestamp.isNull())) {
+        log() << "Downgrading WiredTiger datafiles.";
+        LOG(1) << "Downgrade compatibility configuration: " << _fileVersion.getDowngradeString();
+        invariantWTOK(_conn->reconfigure(_conn, _fileVersion.getDowngradeString().c_str()));
     }
 
-    log() << "Downgrading WiredTiger datafiles.";
-    // Steps for downgrading:
-    //
-    // 1) Close WiredTiger with an "unstable" checkpoint. Then reopen WiredTiger. This has the
-    //    effect of closing any leftover cursors that get in the way of performing the downgrade.
-    //
-    // 2) Enable WiredTiger logging on all tables.
-    closeConfig += "use_timestamp=false,";
     invariantWTOK(_conn->close(_conn, closeConfig.c_str()));
     _conn = nullptr;
-
-    WT_CONNECTION* conn;
-    std::stringstream openConfig;
-    openConfig << _wtOpenConfig << ",log=(archive=false)";
-    invariantWTOK(wiredtiger_open(_path.c_str(), &_eventHandler, openConfig.str().c_str(), &conn));
-
-    WT_SESSION* session;
-    conn->open_session(conn, nullptr, "", &session);
-
-    WT_CURSOR* tableCursor;
-    invariantWTOK(session->open_cursor(session, "metadata:create", nullptr, nullptr, &tableCursor));
-    while (tableCursor->next(tableCursor) == 0) {
-        const char* raw;
-        tableCursor->get_key(tableCursor, &raw);
-        StringData key(raw);
-        size_t idx = key.find(':');
-        if (idx == string::npos) {
-            continue;
-        }
-
-        StringData type = key.substr(0, idx);
-        if (type != "table") {
-            continue;
-        }
-
-        uassertStatusOK(WiredTigerUtil::setTableLogging(session, raw, true));
-    }
-
-    tableCursor->close(tableCursor);
-    session->close(session, nullptr);
-    LOG(1) << "Downgrade compatibility configuration: " << _fileVersion.getDowngradeString();
-    invariantWTOK(conn->reconfigure(conn, _fileVersion.getDowngradeString().c_str()));
-    invariantWTOK(conn->close(conn, closeConfig.c_str()));
 }
 
 Status WiredTigerKVEngine::okToRename(OperationContext* opCtx,

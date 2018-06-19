@@ -100,11 +100,14 @@ public:
         ParserState parserState = kFirstLetter;
 
         std::string name;
+        int idx = -1;
         for (const char& ch : dnsName) {
+            ++idx;
             if (ch == '.') {
-                if (parserState == kPeriod){
+                if (parserState == kPeriod) {
                     uasserted(ErrorCodes::DNSRecordTypeMismatch,
-                              "A Domain Name cannot have two adjacent '.' characters");}
+                              "A Domain Name cannot have two adjacent '.' characters");
+                }
                 parserState = kPeriod;
                 this->_nameComponents.push_back(std::move(name));
                 name.clear();
@@ -115,11 +118,14 @@ public:
             }
 
 
-            if (!(ch == '-' || std::isalnum(ch)))
-                uasserted(ErrorCodes::DNSRecordTypeMismatch,
-                          "A Domain Name cannot have tokens other than dash or alphanumerics");
             invariant(ch != '.');
 
+            // We permit dashes and numbers.  We also permit underscores for use with SRV records
+            // and such.
+            if (!(ch == '-' || std::isalnum(ch) || (ch == '_' && parserState == kFirstLetter))) {
+                uasserted(ErrorCodes::DNSRecordTypeMismatch,
+                          "A Domain Name cannot have tokens other than dash or alphanumerics.");
+            }
             // All domain names are represented in lower-case letters, because DNS is case
             // insensitive.
             name.push_back(std::tolower(ch));

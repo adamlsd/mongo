@@ -96,28 +96,36 @@ public:
             uasserted(ErrorCodes::DNSRecordTypeMismatch,
                       "A Domain Name cannot start with a '.' character.");
 
-        enum ParserState { kNonPeriod = 1, kPeriod = 2 };
-        ParserState parserState = kNonPeriod;
+        enum ParserState { kFirstLetter, kNonPeriod, kPeriod };
+        ParserState parserState = kFirstLetter;
 
         std::string name;
-        for (const char ch : dnsName) {
+        for (const char& ch : dnsName) {
             if (ch == '.') {
-                if (parserState == kPeriod)
+                if (parserState == kPeriod){
                     uasserted(ErrorCodes::DNSRecordTypeMismatch,
-                              "A Domain Name cannot have two adjacent '.' characters");
+                              "A Domain Name cannot have two adjacent '.' characters");}
                 parserState = kPeriod;
-                _nameComponents.push_back(std::move(name));
+                this->_nameComponents.push_back(std::move(name));
                 name.clear();
                 continue;
             }
-            parserState = kNonPeriod;
+            if (parserState == kPeriod) {
+                parserState = kFirstLetter;
+            }
+
 
             if (!(ch == '-' || std::isalnum(ch)))
                 uasserted(ErrorCodes::DNSRecordTypeMismatch,
                           "A Domain Name cannot have tokens other than dash or alphanumerics");
+            invariant(ch != '.');
+
             // All domain names are represented in lower-case letters, because DNS is case
             // insensitive.
             name.push_back(std::tolower(ch));
+            if (parserState == kFirstLetter) {
+                parserState = kNonPeriod;
+            }
         }
 
         if (parserState == kPeriod)

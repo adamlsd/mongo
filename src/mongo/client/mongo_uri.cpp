@@ -364,19 +364,18 @@ MongoURI MongoURI::parseImpl(const std::string& url) {
         const auto srvEntries =
             dns::lookupSRVRecords(srvSubdomain.resolvedIn(host).canonicalName());
 
-        const mongo::dns::HostName domain = host.parentDomain();
+        auto makeFQDN = [](dns::HostName hostName) {
+            hostName.forceQualification();
+            return hostName;
+        };
+
+        const mongo::dns::HostName domain = makeFQDN(host.parentDomain());
         servers.clear();
         using std::begin;
         using std::end;
         std::transform(
-            std::make_move_iterator(begin(srvEntries)),
-            std::make_move_iterator(end(srvEntries)),
-            back_inserter(servers),
-            [&domain](auto&& srv) {
-                dns::HostName preTarget(srv.host);
-                preTarget.forceQualification(domain.isFQDN() ? dns::HostName::kFullyQualified
-                                                             : dns::HostName::kRelativeName);
-                const auto& target = preTarget;
+            begin(srvEntries), end(srvEntries), back_inserter(servers), [&domain](auto&& srv) {
+                const dns::HostName target(srv.host);  // FQDN
 
                 if (!domain.contains(target)) {
                     uasserted(ErrorCodes::FailedToParse,

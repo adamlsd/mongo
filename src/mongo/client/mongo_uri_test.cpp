@@ -665,6 +665,20 @@ TEST(MongoURI, srvRecordTest) {
          },
          success},
 
+        // Test a sample URI with FQDN against the need for deep DNS relation
+        {__LINE__,
+         "mongodb+srv://test18.test.build.10gen.cc./?replicaSet=repl0",
+         "",
+         "",
+         "",
+         {
+             {"localhost.sub.test.build.10gen.cc.", 27017},
+         },
+         {
+             {"ssl", "true"}, {"replicaSet", "repl0"},
+         },
+         success},
+
         {__LINE__,
          "mongodb+srv://user:password@test2.test.build.10gen.cc/"
          "database?someOption=someValue&someOtherOption=someOtherValue",

@@ -47,6 +47,9 @@ namespace dns {
 namespace detail_dns_host_name {
 using std::begin;
 using std::end;
+using std::rbegin;
+using std::rend;
+
 class HostName;
 bool operator==(const HostName& lhs, const HostName& rhs);
 
@@ -68,7 +71,7 @@ public:
     /**
      * A `dns::HostName` can be either Fully Qualified (FQDN) or a relative name.
      *
-     * Some member functions of `dns::HostName` may function differently depending upon whether a
+     * Some member functions of `dns::HostName` may behave differently depending upon whether a
      * Hostname is fully qualified or not.
      */
     enum Qualification : bool { kRelativeName = false, kFullyQualified = true };
@@ -255,7 +258,7 @@ public:
      * Qualified Domain Names (FQDNs).  When either domain or both domains are unqualified, then it
      * is impossible to know whether one could be resolved within the other correctly.
      *
-     * RETURNS: False when `!candidate.isFQDN() || this->isFQDN()`.  False when `this->depth() >=
+     * RETURNS: False when `!candidate.isFQDN() || !this->isFQDN()`.  False when `this->depth() >=
      * candidate.depth()`.  Otherwise a value equivalent to `[temp = candidate]{ while (temp.depth()
      * > this->depth()) temp= temp.parentDomain(); return temp; }() == *this;`
      */
@@ -316,7 +319,7 @@ public:
     /**
      * Compares two `dns::HostName` objects.
      *
-     * Two `dns::HostName` objects comare equal when they both represent the same resolution path.
+     * Two `dns::HostName` objects compare equal when they both represent the same resolution path.
      * This means that in addition to the lookup sequence (order of sub domains) being the same, the
      * qualification of both objects must be the same.  For example, `"www.google.com"` would not
      * compare equal to `"www.google.com."` due to the presence of a trailing dot in the second

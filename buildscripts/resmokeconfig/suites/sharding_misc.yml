@@ -64,7 +64,6 @@ selector:
   - jstests/sharding/all_config_servers_blackholed_from_mongos.js
   - jstests/sharding/authCommands.js
   - jstests/sharding/addshard4.js
-  - jstests/sharding/remove4.js
   - jstests/sharding/split_with_force.js
   - jstests/sharding/auto_rebalance_parallel_replica_sets.js
   - jstests/sharding/database_and_shard_versioning_all_commands.js
@@ -361,8 +360,6 @@ selector:
   - jstests/sharding/auth_repl.js
   - jstests/sharding/count_config_servers.js
   - jstests/sharding/sharding_options.js
-  - jstests/sharding/snapshot_aggregate_mongos.js
-  - jstests/sharding/snapshot_find_mongos.js
   - jstests/sharding/advance_cluster_time_action_type.js
   - jstests/sharding/mongos_wait_csrs_initiate.js
   - jstests/sharding/config_rs_change.js

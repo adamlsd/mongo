@@ -171,6 +171,8 @@ public:
     /**
      * Similar to beginOrContinueTxn except it is used specifically for shard migrations and does
      * not check or modify the autocommit parameter.
+     *
+     * Not called with session checked out.
      */
     void beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber txnNumber);
 
@@ -199,6 +201,8 @@ public:
      * Helper function to begin a migration on a primary node.
      *
      * Returns whether the specified statement should be migrated at all or skipped.
+     *
+     * Not called with session checked out.
      */
     bool onMigrateBeginOnPrimary(OperationContext* opCtx, TxnNumber txnNumber, StmtId stmtId);
 
@@ -267,12 +271,6 @@ public:
      */
     void unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName);
 
-    // TODO SERVER-34113: Remove the "cursor exists" mechanism from both Session and CursorManager
-    // once snapshot reads outside of multi-statement transcactions are no longer supported.
-    static void registerCursorExistsFunction(CursorExistsFunction cursorExistsFunc) {
-        _cursorExistsFunction = cursorExistsFunc;
-    }
-
     /**
      * Commits the transaction, including committing the write unit of work and updating
      * transaction state.
@@ -286,12 +284,16 @@ public:
 
     /**
      * Aborts the transaction outside the transaction, releasing transaction resources.
+     *
+     * Not called with session checked out.
      */
     void abortArbitraryTransaction();
 
     /**
      * Same as abortArbitraryTransaction, except only executes if _transactionExpireDate indicates
      * that the transaction has expired.
+     *
+     * Not called with session checked out.
      */
     void abortArbitraryTransactionIfExpired();
 
@@ -313,17 +315,8 @@ public:
      */
     bool inMultiDocumentTransaction() const {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        return _txnState == MultiDocumentTransactionState::kInProgress;
+        return _inMultiDocumentTransaction(lk);
     };
-
-    /**
-     * Returns whether we are in a read-only or multi-document transaction.
-     */
-    bool inSnapshotReadOrMultiDocumentTransaction() const {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        return _txnState == MultiDocumentTransactionState::kInProgress ||
-            _txnState == MultiDocumentTransactionState::kInSnapshotRead;
-    }
 
     bool transactionIsCommitted() const {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
@@ -407,6 +400,11 @@ private:
     // Checks if there is a conflicting operation on the current Session
     void _checkValid(WithLock) const;
 
+    bool _inMultiDocumentTransaction(WithLock) const {
+        return _txnState == MultiDocumentTransactionState::kInProgress ||
+            _txnState == MultiDocumentTransactionState::kPrepared;
+    }
+
     // Checks that a new txnNumber is higher than the activeTxnNumber so
     // we don't start a txn that is too old.
     void _checkTxnValid(WithLock, TxnNumber txnNumber) const;
@@ -482,11 +480,14 @@ private:
     boost::optional<TxnResources> _txnResourceStash;
 
     // Indicates the state of the current multi-document transaction or snapshot read, if any.  If
-    // the transaction is in any state but kInProgress, no more operations can be collected.
+    // the transaction is in any state but kInProgress, no more operations can be collected. Once
+    // the transaction is in kPrepared, the transaction is not allowed to abort outside of an
+    // 'abortTransaction' command. At this point, aborting the transaction must log an
+    // 'abortTransaction' oplog entry.
     enum class MultiDocumentTransactionState {
         kNone,
-        kInSnapshotRead,
         kInProgress,
+        kPrepared,
         kCommitting,
         kCommitted,
         kAborted

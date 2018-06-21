@@ -247,6 +247,7 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
     ]
 )
 
@@ -976,6 +977,7 @@ env.Library(
         'query/explain.cpp',
         'query/find.cpp',
         'pipeline/document_source_cursor.cpp',
+        'pipeline/document_source_geo_near_cursor.cpp',
         'pipeline/pipeline_d.cpp',
         'query/get_executor.cpp',
         'query/internal_plans.cpp',

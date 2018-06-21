@@ -10,6 +10,7 @@ env.SConscript(
         'client',
         'commands',
         'query',
+        'transaction',
         'write_ops',
     ],
     exports=[
@@ -63,6 +64,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/storage/key_string',
         '$BUILD_DIR/mongo/db/update/update_common',
         '$BUILD_DIR/mongo/util/concurrency/ticketholder',
+        'chunk_writes_tracker',
         'common_s',
     ],
 )
@@ -100,6 +102,7 @@ env.Library(
         "$BUILD_DIR/mongo/s/client/sharding_client",
         "$BUILD_DIR/mongo/s/coreshard",
         '$BUILD_DIR/mongo/s/client/shard_interface',
+        'transaction/router_session',
     ],
 )
 
@@ -115,12 +118,10 @@ env.Library(
         'catalog/type_lockpings.cpp',
         'catalog/type_locks.cpp',
         'catalog/type_mongos.cpp',
-        'catalog/type_shard.cpp',
         'catalog/type_shard_collection.cpp',
         'catalog/type_shard_database.cpp',
+        'catalog/type_shard.cpp',
         'catalog/type_tags.cpp',
-        'chunk_version.cpp',
-        'database_version_helpers.cpp',
         'request_types/add_shard_request_type.cpp',
         'request_types/add_shard_to_zone_request_type.cpp',
         'request_types/balance_chunk_request_type.cpp',
@@ -132,8 +133,13 @@ env.Library(
         'request_types/set_shard_version_request.cpp',
         'request_types/split_chunk_request_type.cpp',
         'request_types/update_zone_key_range_request_type.cpp',
+        'cannot_implicitly_create_collection_info.cpp',
+        'chunk_version.cpp',
+        'database_version_helpers.cpp',
         'shard_id.cpp',
+        'stale_exception.cpp',
         env.Idlc('catalog/type_chunk_base.idl')[0],
+        env.Idlc('database_version.idl')[0],
         env.Idlc('request_types/clone_catalog_data.idl')[0],
         env.Idlc('request_types/create_collection.idl')[0],
         env.Idlc('request_types/create_database.idl')[0],
@@ -150,7 +156,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/query/query_request',
         '$BUILD_DIR/mongo/db/repl/optime',
         '$BUILD_DIR/mongo/idl/idl_parser',
-        'stale_config',
     ]
 )
 
@@ -293,19 +298,6 @@ env.Library(
     ],
 )
 
-env.Library(
-    target='stale_config',
-    source=[
-        'cannot_implicitly_create_collection_info.cpp',
-        'stale_exception.cpp',
-        env.Idlc('database_version.idl')[0],
-    ],
-    LIBDEPS=[
-        '$BUILD_DIR/mongo/base',
-        '$BUILD_DIR/mongo/idl/idl_parser',
-    ],
-)
-
 # This library contains sharding functionality used by both mongod and mongos
 env.Library(
     target='grid',
@@ -368,6 +360,46 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/s/sharding',
         '$BUILD_DIR/mongo/db/serveronly',
         'catalog_cache_test_fixture',
+    ]
+)
+
+env.Library(
+    target='chunk_writes_tracker',
+    source=[
+        'chunk_writes_tracker.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.CppUnitTest(
+    target='chunk_writes_tracker_test',
+    source=[
+        'chunk_writes_tracker_test.cpp',
+    ],
+    LIBDEPS=[
+        'chunk_writes_tracker',
+    ]
+)
+
+env.Library(
+    target='chunk_split_state_driver',
+    source=[
+        'chunk_split_state_driver.cpp',
+    ],
+    LIBDEPS=[
+        'chunk_writes_tracker'
+    ],
+)
+
+env.CppUnitTest(
+    target='chunk_split_state_driver_test',
+    source=[
+        'chunk_split_state_driver_test.cpp',
+    ],
+    LIBDEPS=[
+        'chunk_split_state_driver',
     ]
 )
 

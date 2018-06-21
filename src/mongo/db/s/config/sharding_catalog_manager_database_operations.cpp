@@ -112,23 +112,8 @@ DatabaseType ShardingCatalogManager::createDatabase(OperationContext* opCtx,
     const auto primaryShardId =
         uassertStatusOK(_selectShardForNewDatabase(opCtx, Grid::get(opCtx)->shardRegistry()));
 
-    // Hold the Global IX lock across checking the FCV and writing the new database entry.
-    // Because of the Global S lock barrier in setFCV, this ensures either the setFCV schema
-    // upgrade/downgrade will block until we have written the entry, or we will write the entry in
-    // the target FCV's schema.
-    Lock::GlobalLock lk(opCtx, MODE_IX);
-
-    // If in FCV>3.6, generate a databaseVersion, including a UUID, for the new database.
-    boost::optional<DatabaseVersion> dbVersion = boost::none;
-    if (serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kUpgradingTo40 ||
-        serverGlobalParams.featureCompatibility.getVersion() ==
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
-        dbVersion = databaseVersion::makeNew();
-    }
-
     // Insert an entry for the new database into the sharding catalog.
-    DatabaseType db(dbName, std::move(primaryShardId), false, std::move(dbVersion));
+    DatabaseType db(dbName, std::move(primaryShardId), false, databaseVersion::makeNew());
 
     log() << "Registering new database " << db << " in sharding catalog";
 
@@ -241,16 +226,10 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
 
     auto const currentDatabaseVersion = dbType.getVersion();
 
-    uassert(ErrorCodes::InternalError,
-            str::stream() << "DatabaseVersion doesn't exist in database entry despite the config "
-                          << "server being in FCV 4.0"
-                          << dbType.toBSON(),
-            currentDatabaseVersion != boost::none);
-
-    newDbType.setVersion(databaseVersion::makeIncremented(*currentDatabaseVersion));
+    newDbType.setVersion(databaseVersion::makeIncremented(currentDatabaseVersion));
 
     auto updateQueryBuilder = BSONObjBuilder(BSON(DatabaseType::name << dbname));
-    updateQueryBuilder.append(DatabaseType::version.name(), currentDatabaseVersion->toBSON());
+    updateQueryBuilder.append(DatabaseType::version.name(), currentDatabaseVersion.toBSON());
 
     auto updateStatus = Grid::get(opCtx)->catalogClient()->updateConfigDocument(
         opCtx,
@@ -273,7 +252,7 @@ Status ShardingCatalogManager::commitMovePrimary(OperationContext* opCtx,
     uassert(ErrorCodes::IncompatibleShardingMetadata,
             str::stream() << "Tried to update primary shard for database '" << dbname
                           << " with version "
-                          << currentDatabaseVersion->getLastMod(),
+                          << currentDatabaseVersion.getLastMod(),
             updateStatus.getValue());
 
     // Ensure the next attempt to retrieve the database or any of its collections will do a full

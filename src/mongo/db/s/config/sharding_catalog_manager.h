@@ -361,25 +361,6 @@ public:
      */
     static void clearForTests(ServiceContext* serviceContext);
 
-    //
-    // Upgrade/downgrade
-    //
-
-    /**
-     * Upgrade the chunk metadata to include the history field.
-     */
-    Status upgradeChunksHistory(OperationContext* opCtx,
-                                const NamespaceString& nss,
-                                const OID& collectionEpoch,
-                                const Timestamp validAfter);
-
-    /**
-     * Remove the history field from the chunk metadata.
-     */
-    Status downgradeChunksHistory(OperationContext* opCtx,
-                                  const NamespaceString& nss,
-                                  const OID& collectionEpoch);
-
 private:
     /**
      * Performs the necessary checks for version compatibility and creates a new config.version
@@ -471,16 +452,6 @@ private:
      * Appends a read committed read concern to the request object.
      */
     void _appendReadConcern(BSONObjBuilder* builder);
-
-    /**
-     * Creates the first chunks of a new sharded collection.
-     */
-    ChunkVersion _createFirstChunks(OperationContext* opCtx,
-                                    const NamespaceString& nss,
-                                    const ShardKeyPattern& shardKeyPattern,
-                                    const ShardId& primaryShardId,
-                                    const std::vector<BSONObj>& initPoints,
-                                    const bool distributeInitialChunks);
 
     /**
      * Retrieve the full chunk description from the config.

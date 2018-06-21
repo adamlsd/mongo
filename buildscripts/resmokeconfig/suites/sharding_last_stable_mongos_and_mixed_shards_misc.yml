@@ -61,8 +61,6 @@ selector:
   # Requires killOp to work for local operations on mongos, introduced in v4.0.
   - jstests/sharding/killop.js
   # New 4.0 feature
-  - jstests/sharding/snapshot_aggregate_mongos.js
-  - jstests/sharding/snapshot_find_mongos.js
   - jstests/sharding/change_stream_lookup_single_shard_cluster.js
   - jstests/sharding/change_stream_metadata_notifications.js
   - jstests/sharding/change_streams.js
@@ -73,7 +71,6 @@ selector:
   - jstests/sharding/resume_change_stream.js
   - jstests/sharding/change_stream_resume_from_different_mongos.js
   - jstests/sharding/change_stream_shard_failover.js
-  - jstests/sharding/transactions_prohibited_in_sharded_cluster.js
   # Requires count command to be accurate on sharded clusters, introduced in v4.0.
   - jstests/sharding/accurate_count_with_predicate.js
   # Disabled throughout sharding. See SERVER-31937 for details.
@@ -132,7 +129,6 @@ selector:
   - jstests/sharding/sharding_multiple_ns_rs.js
   - jstests/sharding/shard_aware_init.js
   - jstests/sharding/balance_repl.js
-  - jstests/sharding/remove4.js
   - jstests/sharding/authCommands.js
   - jstests/sharding/test_stacked_migration_cleanup.js
   - jstests/sharding/shard_aware_primary_failover.js

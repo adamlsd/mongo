@@ -68,8 +68,6 @@ namespace mongo {
 // to run without aborting transactions.
 MONGO_EXPORT_SERVER_PARAMETER(maxTransactionLockRequestTimeoutMillis, int, 5);
 
-Session::CursorExistsFunction Session::_cursorExistsFunction;
-
 // Server parameter that dictates the lifetime given to each transaction.
 // Transactions must eventually expire to preempt storage cache pressure immobilizing the system.
 MONGO_EXPORT_SERVER_PARAMETER(transactionLifetimeLimitSeconds, std::int32_t, 60)
@@ -372,15 +370,6 @@ void Session::beginOrContinueTxnOnMigration(OperationContext* opCtx, TxnNumber t
 }
 
 void Session::setSpeculativeTransactionOpTimeToLastApplied(OperationContext* opCtx) {
-    // TODO: This check can be removed once SERVER-34113 is completed. Certain commands that use
-    // DBDirectClient can use snapshot readConcern, but are not supported in transactions. These
-    // commands are only allowed when test commands are enabled, but violate an invariant that the
-    // read timestamp cannot be changed on a RecoveryUnit while it is active.
-    if (opCtx->getClient()->isInDirectClient() &&
-        opCtx->recoveryUnit()->getTimestampReadSource() != RecoveryUnit::ReadSource::kUnset) {
-        return;
-    }
-
     stdx::lock_guard<stdx::mutex> lg(_mutex);
     repl::ReplicationCoordinator* replCoord =
         repl::ReplicationCoordinator::get(opCtx->getClient()->getServiceContext());
@@ -552,9 +541,8 @@ void Session::_beginOrContinueTxn(WithLock wl,
                               << " since it is already in progress.",
                 startTransaction == boost::none);
 
-        // Continue a retryable write or a snapshot read.
-        if (_txnState == MultiDocumentTransactionState::kNone ||
-            _txnState == MultiDocumentTransactionState::kInSnapshotRead) {
+        // Continue a retryable write.
+        if (_txnState == MultiDocumentTransactionState::kNone) {
             uassert(ErrorCodes::InvalidOptions,
                     "Cannot specify 'autocommit' on an operation not inside a multi-statement "
                     "transaction.",
@@ -563,14 +551,15 @@ void Session::_beginOrContinueTxn(WithLock wl,
         }
 
         // Continue a multi-statement transaction. In this case, it is required that
-        // autocommit=false be given as an argument on the request. Retryable writes and snapshot
-        // reads will have _autocommit=true, so that is why we verify that _autocommit=false here.
+        // autocommit=false be given as an argument on the request. Retryable writes will have
+        // _autocommit=true, so that is why we verify that _autocommit=false here.
         if (!_autocommit) {
             uassert(
                 ErrorCodes::InvalidOptions,
                 "Must specify autocommit=false on all operations of a multi-statement transaction.",
                 autocommit == boost::optional<bool>(false));
-            if (_txnState == MultiDocumentTransactionState::kInProgress && !_txnResourceStash) {
+            if (_inMultiDocumentTransaction(wl) && !_txnResourceStash) {
+                invariant(_txnState != MultiDocumentTransactionState::kPrepared);
                 // This indicates that the first command in the transaction failed but did not
                 // implicitly abort the transaction. It is not safe to continue the transaction, in
                 // particular because we have not saved the readConcern from the first statement of
@@ -609,7 +598,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
         ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalStarted();
         ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementCurrentOpen();
     } else {
-        // Execute a retryable write or snapshot read.
+        // Execute a retryable write.
         invariant(startTransaction == boost::none);
         _setActiveTxn(wl, txnNumber);
         _autocommit = true;
@@ -725,21 +714,13 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     // expect this function to be called at the end of the 'abortTransaction' command.
     _checkIsActiveTransaction(lg, *opCtx->getTxnNumber(), false);
 
-    if (_txnState != MultiDocumentTransactionState::kInProgress &&
-        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
-        // Not in a multi-document transaction or snapshot read: nothing to do.
+    if (!_inMultiDocumentTransaction(lg)) {
+        // Not in a multi-document transaction: nothing to do.
         return;
     }
 
-    if (_txnState == MultiDocumentTransactionState::kInSnapshotRead &&
-        !_cursorExistsFunction(_sessionId, _activeTxnNumber)) {
-        // The snapshot read is complete.
-        invariant(opCtx->getWriteUnitOfWork());
-        _commitTransaction(std::move(lg), opCtx);
-    } else {
-        invariant(!_txnResourceStash);
-        _txnResourceStash = TxnResources(opCtx);
-    }
+    invariant(!_txnResourceStash);
+    _txnResourceStash = TxnResources(opCtx);
 }
 
 void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
@@ -793,31 +774,23 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
             return;
         }
 
+        // If we have no transaction resources then we cannot be prepared.
+        invariant(_txnState != MultiDocumentTransactionState::kPrepared);
 
         // Stashed transaction resources do not exist for this transaction.  If this is a
-        // snapshot read or a multi-document transaction, set up the transaction resources on
-        // the opCtx.
-        auto readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-        if (!(readConcernArgs.getLevel() == repl::ReadConcernLevel::kSnapshotReadConcern ||
-              _txnState == MultiDocumentTransactionState::kInProgress)) {
+        // multi-document transaction, set up the transaction resources on the opCtx.
+        if (_txnState != MultiDocumentTransactionState::kInProgress) {
             return;
         }
         opCtx->setWriteUnitOfWork(std::make_unique<WriteUnitOfWork>(opCtx));
 
-
-        if (_txnState == MultiDocumentTransactionState::kInProgress) {
-            // If maxTransactionLockRequestTimeoutMillis is set, then we will ensure no
-            // future lock request waits longer than maxTransactionLockRequestTimeoutMillis
-            // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
-            // operation performance degradations.
-            auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
-            if (maxTransactionLockMillis >= 0) {
-                opCtx->lockState()->setMaxLockTimeout(Milliseconds(maxTransactionLockMillis));
-            }
-        }
-
-        if (_txnState != MultiDocumentTransactionState::kInProgress) {
-            _txnState = MultiDocumentTransactionState::kInSnapshotRead;
+        // If maxTransactionLockRequestTimeoutMillis is set, then we will ensure no
+        // future lock request waits longer than maxTransactionLockRequestTimeoutMillis
+        // to acquire a lock. This is to avoid deadlocks and minimize non-transaction
+        // operation performance degradations.
+        auto maxTransactionLockMillis = maxTransactionLockRequestTimeoutMillis.load();
+        if (maxTransactionLockMillis >= 0) {
+            opCtx->lockState()->setMaxLockTimeout(Milliseconds(maxTransactionLockMillis));
         }
     }
 
@@ -838,11 +811,32 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
 }
 
 void Session::prepareTransaction(OperationContext* opCtx) {
+    // This ScopeGuard is created outside of the lock so that the lock is always released before
+    // this is called.
+    ScopeGuard abortGuard = MakeGuard([&] { abortActiveTransaction(opCtx); });
+
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    // Always check '_activeTxnNumber' and '_txnState', since they can be modified by
+    // session kill and migration, which do not check out the session.
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+
+    invariant(_txnState == MultiDocumentTransactionState::kInProgress);
+
+    _txnState = MultiDocumentTransactionState::kPrepared;
+
+    // We need to unlock the session to run the opObserver onTransactionPrepare, which calls back
+    // into the session.
+    lk.unlock();
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
     invariant(opObserver);
     opObserver->onTransactionPrepare(opCtx);
+    lk.lock();
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+    invariant(_txnState == MultiDocumentTransactionState::kPrepared);
 
     opCtx->getWriteUnitOfWork()->prepare();
+
+    abortGuard.Dismiss();
 }
 
 void Session::abortArbitraryTransaction() {
@@ -859,8 +853,9 @@ void Session::abortArbitraryTransactionIfExpired() {
 }
 
 void Session::_abortArbitraryTransaction(WithLock lock) {
-    if (_txnState != MultiDocumentTransactionState::kInProgress &&
-        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
+    if (_txnState != MultiDocumentTransactionState::kInProgress) {
+        // We do not want to abort transactions that are prepared unless we get an
+        // 'abortTransaction' command.
         return;
     }
 
@@ -871,8 +866,7 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
     stdx::unique_lock<Client> clientLock(*opCtx->getClient());
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
-    if (_txnState != MultiDocumentTransactionState::kInProgress &&
-        _txnState != MultiDocumentTransactionState::kInSnapshotRead) {
+    if (!_inMultiDocumentTransaction(lock)) {
         return;
     }
 
@@ -897,7 +891,7 @@ void Session::_abortTransaction(WithLock wl) {
         _txnState == MultiDocumentTransactionState::kCommitted) {
         return;
     }
-    const bool isMultiDocumentTransaction = _txnState == MultiDocumentTransactionState::kInProgress;
+    const bool isMultiDocumentTransaction = _inMultiDocumentTransaction(wl);
     _txnResourceStash = boost::none;
     _transactionOperationBytes = 0;
     _transactionOperations.clear();
@@ -922,9 +916,8 @@ void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
 }
 
 void Session::_setActiveTxn(WithLock wl, TxnNumber txnNumber) {
-    // Abort the existing transaction if it's not committed or aborted.
-    if (_txnState == MultiDocumentTransactionState::kInProgress ||
-        _txnState == MultiDocumentTransactionState::kInSnapshotRead) {
+    // Abort the existing transaction if it's not prepared, committed, or aborted.
+    if (_txnState == MultiDocumentTransactionState::kInProgress) {
         _abortTransaction(wl);
     }
     _activeTxnNumber = txnNumber;
@@ -985,25 +978,20 @@ void Session::commitTransaction(OperationContext* opCtx) {
 }
 
 void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) {
-    invariant(_txnState == MultiDocumentTransactionState::kInProgress ||
-              _txnState == MultiDocumentTransactionState::kInSnapshotRead);
-    const bool isMultiDocumentTransaction = _txnState == MultiDocumentTransactionState::kInProgress;
-    if (isMultiDocumentTransaction) {
-        // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
-        // into the session.
-        lk.unlock();
-        auto opObserver = opCtx->getServiceContext()->getOpObserver();
-        invariant(opObserver);
-        opObserver->onTransactionCommit(opCtx);
-        lk.lock();
-        // It's possible some other thread aborted the transaction (e.g. through killSession) while
-        // the opObserver was running.  If that happened, the commit should be reported as failed.
-        uassert(ErrorCodes::NoSuchTransaction,
-                str::stream() << "Transaction " << opCtx->getTxnNumber()
-                              << " aborted while attempting to commit",
-                _txnState == MultiDocumentTransactionState::kInProgress &&
-                    _activeTxnNumber == opCtx->getTxnNumber());
-    }
+    invariant(_inMultiDocumentTransaction(lk));
+
+    // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
+    // into the session.
+    lk.unlock();
+    auto opObserver = opCtx->getServiceContext()->getOpObserver();
+    invariant(opObserver);
+    opObserver->onTransactionCommit(opCtx);
+    lk.lock();
+
+    // Always check '_activeTxnNumber' and '_txnState', since they can be modified by session
+    // kill and migration, which do not check out the session.
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+
     _txnState = MultiDocumentTransactionState::kCommitting;
     bool committed = false;
     ON_BLOCK_EXIT([this, &committed, opCtx]() {
@@ -1015,6 +1003,8 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
             // Make sure the transaction didn't change because of chunk migration.
             if (opCtx->getTxnNumber() == _activeTxnNumber) {
                 _txnState = MultiDocumentTransactionState::kAborted;
+                // After the transaction has been aborted, we must update the end time.
+                _singleTransactionStats->setEndTime(curTimeMicros64());
             }
         }
         // We must clear the recovery unit and locker so any post-transaction writes can run without
@@ -1040,9 +1030,7 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
     _txnState = MultiDocumentTransactionState::kCommitted;
     ServerTransactionsMetrics::get(opCtx)->incrementTotalCommitted();
     // After the transaction has been committed, we must update the end time.
-    if (isMultiDocumentTransaction) {
-        _singleTransactionStats->setEndTime(curTimeMicros64());
-    }
+    _singleTransactionStats->setEndTime(curTimeMicros64());
     ServerTransactionsMetrics::get(opCtx)->decrementCurrentOpen();
 }
 
@@ -1101,7 +1089,7 @@ boost::optional<repl::OpTime> Session::_checkStatementExecuted(WithLock wl,
     _checkValid(wl);
     _checkIsActiveTransaction(wl, txnNumber, false);
     // Retries are not detected for multi-document transactions.
-    if (_txnState == MultiDocumentTransactionState::kInProgress)
+    if (_inMultiDocumentTransaction(wl))
         return boost::none;
 
     const auto it = _activeTxnCommittedStatements.find(stmtId);

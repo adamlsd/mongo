@@ -1086,7 +1086,7 @@ functions:
         WORKDIR=${workdir}
 
         if [ "${build_cdriver|}" = "true" ]; then
-        CDRIVER_VERSION=1.10.1
+        CDRIVER_VERSION=1.10.3
         rm -rf mongo-c-driver-$CDRIVER_VERSION
         rm -rf mongo-c-driver
         curl -LO https://github.com/mongodb/mongo-c-driver/releases/download/$CDRIVER_VERSION/mongo-c-driver-$CDRIVER_VERSION.tar.gz
@@ -1455,8 +1455,10 @@ functions:
         exit_status=$?
         # If compile fails we do not run any tests
         if [ $exit_status -ne 0 ]; then
-          echo "Dumping build/scons/config.log"
-          cat build/scons/config.log
+          if [ ${dump_scons_config_on_failure} = 'true' ]; then
+            echo "Dumping build/scons/config.log"
+            cat build/scons/config.log
+          fi
           touch ${skip_tests}
         fi
         exit $exit_status
@@ -7798,26 +7800,11 @@ buildvariants:
   - name: parallel
   - name: parallel_compatibility
   - name: concurrency
-    distros:
-    # There is a known performance issue with the ubuntu1604-arm64-1.linaro.build.10gen.cc host
-    # that's part of the ubuntu1604-arm64-large pool. We run the concurrency tests only on the
-    # hosts from the ubuntu1604-arm64-small pool to work around this issue.
-    - ubuntu1604-arm64-small
   - name: concurrency_replication
-    distros:
-    - ubuntu1604-arm64-small
   - name: concurrency_replication_causal_consistency
-    distros:
-    - ubuntu1604-arm64-small
   - name: concurrency_sharded_replication
-    distros:
-    - ubuntu1604-arm64-small
   - name: concurrency_sharded_replication_with_balancer
-    distros:
-    - ubuntu1604-arm64-small
   - name: concurrency_simultaneous
-    distros:
-    - ubuntu1604-arm64-small
   - name: replica_sets
   - name: replica_sets_auth
   - name: replica_sets_jscore_passthrough
@@ -9398,6 +9385,7 @@ buildvariants:
         -DCMAKE_INSTALL_NAME_DIR=@rpath
     disable_unit_tests: true
     enable_embedded_tests: native
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9427,6 +9415,7 @@ buildvariants:
         -DCMAKE_INSTALL_NAME_DIR=@rpath
     compile_env: DEVELOPER_DIR=/Applications/Xcode9.2.app
     disable_unit_tests: true
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9459,6 +9448,7 @@ buildvariants:
     enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: iPhone-7
     ios_sim_runtime: iOS-10-2
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9488,6 +9478,7 @@ buildvariants:
         -DCMAKE_LINKER_FLAGS="-arch arm64 -isysroot $(xcrun --sdk appletvos --show-sdk-path) -mtvos-version-min=10.2"
         -DCMAKE_INSTALL_NAME_DIR=@rpath
     disable_unit_tests: true
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9520,11 +9511,12 @@ buildvariants:
     enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: Apple-TV-1080p
     ios_sim_runtime: tvOS-10-2
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
-- name: embedded-sdk-watchos-4.3
-  display_name: "Embedded SDK - watchOS 4.3"
+- name: embedded-sdk-watchos-4.2
+  display_name: "Embedded SDK - watchOS 4.2"
   run_on:
   - macos-1012
   batchtime: 1440 # 1 day
@@ -9549,15 +9541,16 @@ buildvariants:
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
         -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch armv7k -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.3"
-        -DCMAKE_LINKER_FLAGS="-arch armv7k -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.3"
+        -DCMAKE_C_FLAGS="-arch armv7k -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.2"
+        -DCMAKE_LINKER_FLAGS="-arch armv7k -isysroot $(xcrun --sdk watchos --show-sdk-path) -mwatchos-version-min=4.2"
         -DCMAKE_INSTALL_NAME_DIR=@rpath
     disable_unit_tests: true
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
-- name: embedded-sdk-watchsimulator-4.3
-  display_name: "Embedded SDK - watchOS Simulator 4.3"
+- name: embedded-sdk-watchsimulator-4.2
+  display_name: "Embedded SDK - watchOS Simulator 4.2"
   run_on:
   - macos-1012
   batchtime: 1440 # 1 day
@@ -9582,13 +9575,14 @@ buildvariants:
         -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY
         -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
         -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
-        -DCMAKE_C_FLAGS="-arch i386 -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.3"
-        -DCMAKE_LINKER_FLAGS="-arch i386 -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.3"
+        -DCMAKE_C_FLAGS="-arch i386 -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.2"
+        -DCMAKE_LINKER_FLAGS="-arch i386 -isysroot $(xcrun --sdk watchsimulator --show-sdk-path) -mwatchos-version-min=4.2"
         -DCMAKE_INSTALL_NAME_DIR=@rpath
     disable_unit_tests: true
-    enable_embedded_tests: ios_watchos_simulator
+    enable_embedded_tests: ios_tvos_simulator
     ios_sim_device: Apple-Watch-Series-3-42mm
-    ios_sim_runtime: watchOS-4-3
+    ios_sim_runtime: watchOS-4-2
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9614,6 +9608,7 @@ buildvariants:
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     disable_unit_tests: true
     enable_embedded_tests: native
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9649,9 +9644,10 @@ buildvariants:
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "armeabi-v7a"
-    android_system_image_version: "25"
+    android_system_image_version: "24"
     android_toolchain_target_arch: "arm"
     android_toolchain_api_version: "21"
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9686,9 +9682,10 @@ buildvariants:
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "arm64-v8a"
-    android_system_image_version: "25"
+    android_system_image_version: "24"
     android_toolchain_target_arch: "arm64"
     android_toolchain_api_version: "21"
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 
@@ -9723,9 +9720,10 @@ buildvariants:
     enable_embedded_tests: android_emulator
     setup_android_toolchain: true
     android_toolchain_system_image_arch: "x86_64"
-    android_system_image_version: 21
+    android_system_image_version: "24"
     android_toolchain_target_arch: "x86_64"
     android_toolchain_api_version: "21"
+    dump_scons_config_on_failure: true
   tasks:
   - name: compile_mobile
 

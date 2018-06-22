@@ -258,13 +258,23 @@ public:
      * Qualified Domain Names (FQDNs).  When either domain or both domains are unqualified, then it
      * is impossible to know whether one could be resolved within the other correctly.
      *
+     * PRE: This `this->isFQDN() && candidate.isFQDN()` must be true.  Resolving unqualified names
+     * against other unqualified names has some implications on what the `contains` relationship
+     * would indicate.  We sidestep those at this time.
+     *
+     * THROWS: `DBException` with `ErrorCodes::DNSRecordTypeMismatch` as the status value if
+     * `!this->isFQDN() || !candidate.isFQDN()`.
+     *
      * RETURNS: False when `!candidate.isFQDN() || !this->isFQDN()`.  False when `this->depth() >=
      * candidate.depth()`.  Otherwise a value equivalent to `[temp = candidate]{ while (temp.depth()
      * > this->depth()) temp= temp.parentDomain(); return temp; }() == *this;`
      */
     bool contains(const HostName& candidate) const {
-        return (fullyQualified == candidate.fullyQualified) &&
-            (_nameComponents.size() < candidate._nameComponents.size()) &&
+        if (!this->isFQDN() || !candidate.isFQDN()) {
+            uasserted(ErrorCodes::DNSRecordTypeMismatch,
+                      "Only FQDNs can be checked for subdomain relationships.");
+        }
+        return (_nameComponents.size() < candidate._nameComponents.size()) &&
             std::equal(
                    begin(_nameComponents), end(_nameComponents), begin(candidate._nameComponents));
     }

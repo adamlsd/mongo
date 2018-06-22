@@ -110,57 +110,64 @@ TEST(DNSNameTest, NoncanonicalName) {
 
 TEST(DNSNameTest, Contains) {
     enum IsSubdomain : bool { kIsSubdomain = true, kNotSubdomain = false };
+    enum TripsCheck : bool { kFailure = true, kSuccess = false };
     const struct {
         std::string domain;
         std::string subdomain;
         IsSubdomain isSubdomain;
+        TripsCheck tripsCheck;
     } tests[] = {
-        {"com."s, "mongodb.com."s, kIsSubdomain},
-        {"com"s, "mongodb.com"s, kIsSubdomain},
-        {"com."s, "mongodb.com"s, kNotSubdomain},
-        {"com"s, "mongodb.com."s, kNotSubdomain},
+        {"com."s, "mongodb.com."s, kIsSubdomain, kSuccess},
+        {"com"s, "mongodb.com"s, kIsSubdomain, kFailure},
+        {"com."s, "mongodb.com"s, kNotSubdomain, kFailure},
+        {"com"s, "mongodb.com."s, kNotSubdomain, kFailure},
 
-        {"com."s, "atlas.mongodb.com."s, kIsSubdomain},
-        {"com"s, "atlas.mongodb.com"s, kIsSubdomain},
-        {"com."s, "atlas.mongodb.com"s, kNotSubdomain},
-        {"com"s, "atlas.mongodb.com."s, kNotSubdomain},
+        {"com."s, "atlas.mongodb.com."s, kIsSubdomain, kSuccess},
+        {"com"s, "atlas.mongodb.com"s, kIsSubdomain, kFailure},
+        {"com."s, "atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"com"s, "atlas.mongodb.com."s, kNotSubdomain, kFailure},
 
-        {"org."s, "atlas.mongodb.com."s, kNotSubdomain},
-        {"org"s, "atlas.mongodb.com"s, kNotSubdomain},
-        {"org."s, "atlas.mongodb.com"s, kNotSubdomain},
-        {"org"s, "atlas.mongodb.com."s, kNotSubdomain},
+        {"org."s, "atlas.mongodb.com."s, kNotSubdomain, kSuccess},
+        {"org"s, "atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"org."s, "atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"org"s, "atlas.mongodb.com."s, kNotSubdomain, kFailure},
 
-        {"com."s, "com."s, kNotSubdomain},
-        {"com"s, "com."s, kNotSubdomain},
-        {"com."s, "com"s, kNotSubdomain},
-        {"com"s, "com"s, kNotSubdomain},
+        {"com."s, "com."s, kNotSubdomain, kSuccess},
+        {"com"s, "com."s, kNotSubdomain, kFailure},
+        {"com."s, "com"s, kNotSubdomain, kFailure},
+        {"com"s, "com"s, kNotSubdomain, kFailure},
 
-        {"mongodb.com."s, "mongodb.com."s, kNotSubdomain},
-        {"mongodb.com."s, "mongodb.com"s, kNotSubdomain},
-        {"mongodb.com"s, "mongodb.com."s, kNotSubdomain},
-        {"mongodb.com"s, "mongodb.com"s, kNotSubdomain},
+        {"mongodb.com."s, "mongodb.com."s, kNotSubdomain, kSuccess},
+        {"mongodb.com."s, "mongodb.com"s, kNotSubdomain, kFailure},
+        {"mongodb.com"s, "mongodb.com."s, kNotSubdomain, kFailure},
+        {"mongodb.com"s, "mongodb.com"s, kNotSubdomain, kFailure},
 
-        {"mongodb.com."s, "atlas.mongodb.com."s, kIsSubdomain},
-        {"mongodb.com"s, "atlas.mongodb.com"s, kIsSubdomain},
-        {"mongodb.com."s, "atlas.mongodb.com"s, kNotSubdomain},
-        {"mongodb.com"s, "atlas.mongodb.com."s, kNotSubdomain},
+        {"mongodb.com."s, "atlas.mongodb.com."s, kIsSubdomain, kSuccess},
+        {"mongodb.com"s, "atlas.mongodb.com"s, kIsSubdomain, kFailure},
+        {"mongodb.com."s, "atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"mongodb.com"s, "atlas.mongodb.com."s, kNotSubdomain, kFailure},
 
-        {"mongodb.com."s, "server.atlas.mongodb.com."s, kIsSubdomain},
-        {"mongodb.com"s, "server.atlas.mongodb.com"s, kIsSubdomain},
-        {"mongodb.com."s, "server.atlas.mongodb.com"s, kNotSubdomain},
-        {"mongodb.com"s, "server.atlas.mongodb.com."s, kNotSubdomain},
+        {"mongodb.com."s, "server.atlas.mongodb.com."s, kIsSubdomain, kSuccess},
+        {"mongodb.com"s, "server.atlas.mongodb.com"s, kIsSubdomain, kFailure},
+        {"mongodb.com."s, "server.atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"mongodb.com"s, "server.atlas.mongodb.com."s, kNotSubdomain, kFailure},
 
-        {"mongodb.org."s, "server.atlas.mongodb.com."s, kNotSubdomain},
-        {"mongodb.org"s, "server.atlas.mongodb.com"s, kNotSubdomain},
-        {"mongodb.org."s, "server.atlas.mongodb.com"s, kNotSubdomain},
-        {"mongodb.org"s, "server.atlas.mongodb.com."s, kNotSubdomain},
+        {"mongodb.org."s, "server.atlas.mongodb.com."s, kNotSubdomain, kSuccess},
+        {"mongodb.org"s, "server.atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"mongodb.org."s, "server.atlas.mongodb.com"s, kNotSubdomain, kFailure},
+        {"mongodb.org"s, "server.atlas.mongodb.com."s, kNotSubdomain, kFailure},
     };
 
     for (const auto& test : tests) {
         const ::mongo::dns::HostName domain(test.domain);
         const ::mongo::dns::HostName subdomain(test.subdomain);
 
-        ASSERT(test.isSubdomain == domain.contains(subdomain));
+        try {
+            ASSERT(test.isSubdomain == domain.contains(subdomain));
+            ASSERT(!test.tripsCheck);
+        } catch (const ExceptionFor<ErrorCodes::DNSRecordTypeMismatch>&) {
+            ASSERT(test.tripsCheck);
+        }
     }
 }
 

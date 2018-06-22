@@ -204,12 +204,14 @@ Status ShardingCatalogClientImpl::_log(OperationContext* opCtx,
                                        const BSONObj& detail,
                                        const WriteConcernOptions& writeConcern) {
     Date_t now = Grid::get(opCtx)->getNetwork()->now();
-    const std::string hostName = Grid::get(opCtx)->getNetwork()->getHostName();
-    const string changeId = str::stream() << hostName << "-" << now.toString() << "-" << OID::gen();
+    const std::string serverName = str::stream() << Grid::get(opCtx)->getNetwork()->getHostName()
+                                                 << ":" << serverGlobalParams.port;
+    const std::string changeId = str::stream() << serverName << "-" << now.toString() << "-"
+                                               << OID::gen();
 
     ChangeLogType changeLog;
     changeLog.setChangeId(changeId);
-    changeLog.setServer(hostName);
+    changeLog.setServer(serverName);
     changeLog.setClientAddr(opCtx->getClient()->clientAddress(true));
     changeLog.setTime(now);
     changeLog.setNS(operationNS);
@@ -777,7 +779,7 @@ Status ShardingCatalogClientImpl::applyChunkOpsDeprecated(OperationContext* opCt
         // Look for the chunk in this shard whose version got bumped. We assume that if that
         // mod made it to the config server, then transaction was successful.
         BSONObjBuilder query;
-        lastChunkVersion.addToBSON(query, ChunkType::lastmod());
+        lastChunkVersion.appendLegacyWithField(&query, ChunkType::lastmod());
         query.append(ChunkType::ns(), nss.ns());
         auto chunkWithStatus = getChunks(opCtx, query.obj(), BSONObj(), 1, nullptr, readConcern);
 

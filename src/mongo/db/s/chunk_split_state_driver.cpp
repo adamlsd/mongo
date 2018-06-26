@@ -30,7 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/s/chunk_split_state_driver.h"
+#include "mongo/db/s/chunk_split_state_driver.h"
 
 #include "mongo/util/assert_util.h"
 
@@ -62,8 +62,8 @@ void ChunkSplitStateDriver::prepareSplit() {
     invariant(_splitState == SplitState::kSplitInProgress);
     _splitState = SplitState::kSplitPrepared;
 
-    _stashedBytesWritten = _getWritesTracker()->getBytesWritten();
-    _getWritesTracker()->clearBytesWritten();
+    // Clear bytes written and get the previous bytes written.
+    _stashedBytesWritten = _getWritesTracker()->clearBytesWritten();
 }
 
 void ChunkSplitStateDriver::commitSplit() {

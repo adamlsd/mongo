@@ -1,5 +1,3 @@
-// unordered_fast_key_table.h
-
 /*    Copyright 2012 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -217,6 +215,20 @@ public:
     UnorderedFastKeyTable() = default;  // TODO constexpr
 
     UnorderedFastKeyTable(std::initializer_list<std::pair<key_type, mapped_type>> entries);
+
+	~UnorderedFastKeyTable()= default;
+	UnorderedFastKeyTable( const UnorderedFastKeyTable & )= default;
+	UnorderedFastKeyTable( UnorderedFastKeyTable &&original )
+	{
+		this->swap( other );
+	}
+
+	UnorderedFastKeyTable &operator= ( UnorderedFastKeyTable other )
+	{
+		this->swap( other );
+		return *this;
+	}
+	
 
     /**
      * @return number of elements in map

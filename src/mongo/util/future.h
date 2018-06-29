@@ -576,12 +576,21 @@ public:
      */
     SharedPromise<T> share() noexcept;
 
+	static auto makePromiseFutureImpl()
+	{
+		struct PromiseAndFuture {
+			Promise<T> promise;
+			Future<T> future = promise.getFuture();
+		};
+		return PromiseAndFuture();
+	}
+
+private:
     /**
      * Prefer using makePromiseFuture<T>() over constructing a promise and calling this method.
      */
     Future<T> getFuture() noexcept;
 
-private:
     friend class Future<void>;
 
     template <typename Func>
@@ -1312,11 +1321,7 @@ auto makeReadyFutureWith(Func&& func) {
  */
 template <typename T>
 inline auto makePromiseFuture() {
-    struct PromiseAndFuture {
-        Promise<T> promise;
-        Future<T> future = promise.getFuture();
-    };
-    return PromiseAndFuture();
+	return Promise<T>::makePromiseFutureImpl();
 }
 
 /**

@@ -169,7 +169,8 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
         request.metadata = newMetadata.obj();
     }
 
-    auto state = std::make_shared<CommandState>(request, cbHandle);
+    auto pf=  makePromiseFuture<RemoteCommandResponse>();
+    auto state = std::make_shared<CommandState>(request, cbHandle, std::move( pf.promise ));
     {
         stdx::lock_guard<stdx::mutex> lk(_inProgressMutex);
         _inProgress.insert({state->cbHandle, state});
@@ -182,7 +183,7 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
 
     if (MONGO_FAIL_POINT(networkInterfaceDiscardCommandsBeforeAcquireConn)) {
         log() << "Discarding command due to failpoint before acquireConn";
-        std::move(state->mergedFuture)
+        std::move(pf.future)
             .getAsync([onFinish](StatusWith<RemoteCommandResponse> response) {
                 onFinish(RemoteCommandResponse(response.getStatus(), Milliseconds{0}));
             });
@@ -215,10 +216,11 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
             });
     });
 
-    auto remainingWork = [this, state, baton, onFinish](
-        StatusWith<std::shared_ptr<CommandState::ConnHandle>> swConn) {
+    auto remainingWork = [this, state, future= std::make_shared<decltype(pf.future)>(std::move(
+pf.future )), baton, onFinish](
+        StatusWith<std::shared_ptr<CommandState::ConnHandle>> swConn) mutable {
         makeReadyFutureWith(
-            [&] { return _onAcquireConn(state, std::move(*uassertStatusOK(swConn)), baton); })
+            [&] { return _onAcquireConn(state, std::move(*future), std::move(*uassertStatusOK(swConn)), baton); })
             .onError([](Status error) -> StatusWith<RemoteCommandResponse> {
                 // The TransportLayer has, for historical reasons returned SocketException for
                 // network errors, but sharding assumes HostUnreachable on network errors.
@@ -266,12 +268,12 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
 // This is only called from within a then() callback on a future, so throwing is equivalent to
 // returning a ready Future with a not-OK status.
 Future<RemoteCommandResponse> NetworkInterfaceTL::_onAcquireConn(
-    std::shared_ptr<CommandState> state,
+    std::shared_ptr<CommandState> state, Future<RemoteCommandResponse> future,
     CommandState::ConnHandle conn,
     const transport::BatonHandle& baton) {
     if (MONGO_FAIL_POINT(networkInterfaceDiscardCommandsAfterAcquireConn)) {
         conn->indicateSuccess();
-        return std::move(state->mergedFuture);
+        return future;
     }
 
     if (state->done.load()) {
@@ -366,7 +368,7 @@ Future<RemoteCommandResponse> NetworkInterfaceTL::_onAcquireConn(
             state->promise.setFromStatusWith(std::move(swr));
         });
 
-    return std::move(state->mergedFuture);
+    return future;
 }
 
 void NetworkInterfaceTL::_eraseInUseConn(const TaskExecutor::CallbackHandle& cbHandle) {

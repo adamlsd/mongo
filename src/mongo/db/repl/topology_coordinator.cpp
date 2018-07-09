@@ -64,8 +64,6 @@ namespace repl {
 
 MONGO_FAIL_POINT_DEFINE(forceSyncSourceCandidate);
 
-const Seconds TopologyCoordinator::VoteLease::leaseTime = Seconds(30);
-
 // Controls how caught up in replication a secondary with higher priority than the current primary
 // must be before it will call for a priority takeover election.
 MONGO_EXPORT_STARTUP_SERVER_PARAMETER(priorityTakeoverFreshnessWindowSeconds, int, 2);
@@ -697,18 +695,10 @@ HeartbeatResponseAction TopologyCoordinator::processHeartbeatResponse(
     invariant(hbStats.getLastHeartbeatStartDate() != Date_t());
     const bool isUnauthorized = (hbResponse.getStatus().code() == ErrorCodes::Unauthorized) ||
         (hbResponse.getStatus().code() == ErrorCodes::AuthenticationFailed);
-    if (!hbResponse.isOK()) {
-        if (isUnauthorized) {
-            hbStats.hit(networkRoundTripTime);
-        } else {
-            hbStats.miss();
-        }
-    } else {
+    if (hbResponse.isOK() || isUnauthorized) {
         hbStats.hit(networkRoundTripTime);
-        // Log diagnostics.
-        if (hbResponse.getValue().isStateDisagreement()) {
-            LOG(1) << target << " thinks that we are down because they cannot send us heartbeats.";
-        }
+    } else {
+        hbStats.miss();
     }
 
     // If a node is not PRIMARY and has no sync source, we increase the heartbeat rate in order
@@ -1150,41 +1140,6 @@ HeartbeatResponseAction TopologyCoordinator::_updatePrimaryFromHBDataV1(
     return HeartbeatResponseAction::makeNoAction();
 }
 
-Status TopologyCoordinator::checkShouldStandForElection(Date_t now) const {
-    if (_currentPrimaryIndex != -1) {
-        return {ErrorCodes::NodeNotElectable, "Not standing for election since there is a Primary"};
-    }
-    invariant(_role != Role::kLeader);
-
-    if (_role == Role::kCandidate) {
-        return {ErrorCodes::NodeNotElectable, "Not standing for election again; already candidate"};
-    }
-
-    const UnelectableReasonMask unelectableReason =
-        _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout);
-    if (unelectableReason) {
-        return {ErrorCodes::NodeNotElectable,
-                str::stream() << "Not standing for election because "
-                              << _getUnelectableReasonString(unelectableReason)};
-    }
-    if (_electionSleepUntil > now) {
-        if (_rsConfig.getProtocolVersion() == 1) {
-            return {
-                ErrorCodes::NodeNotElectable,
-                str::stream() << "Not standing for election before "
-                              << dateToISOStringLocal(_electionSleepUntil)
-                              << " because I stood up or learned about a new term too recently"};
-        } else {
-            return {ErrorCodes::NodeNotElectable,
-                    str::stream() << "Not standing for election before "
-                                  << dateToISOStringLocal(_electionSleepUntil)
-                                  << " because I stood too recently"};
-        }
-    }
-    // All checks passed. Start election proceedings.
-    return Status::OK();
-}
-
 bool TopologyCoordinator::_aMajoritySeemsToBeUp() const {
     int vUp = 0;
     for (std::vector<MemberData>::const_iterator it = _memberData.begin(); it != _memberData.end();
@@ -1312,31 +1267,6 @@ OpTime TopologyCoordinator::_latestKnownOpTime() const {
     }
 
     return latest;
-}
-
-bool TopologyCoordinator::_isMemberHigherPriority(int memberOneIndex, int memberTwoIndex) const {
-    if (memberOneIndex == -1)
-        return false;
-
-    if (memberTwoIndex == -1)
-        return true;
-
-    return _rsConfig.getMemberAt(memberOneIndex).getPriority() >
-        _rsConfig.getMemberAt(memberTwoIndex).getPriority();
-}
-
-int TopologyCoordinator::_getHighestPriorityElectableIndex(Date_t now) const {
-    int maxIndex = -1;
-    for (int currentIndex = 0; currentIndex < _rsConfig.getNumMembers(); currentIndex++) {
-        UnelectableReasonMask reason = currentIndex == _selfIndex
-            ? _getMyUnelectableReason(now, StartElectionReason::kElectionTimeout)
-            : _getUnelectableReason(currentIndex);
-        if (None == reason && _isMemberHigherPriority(currentIndex, maxIndex)) {
-            maxIndex = currentIndex;
-        }
-    }
-
-    return maxIndex;
 }
 
 bool TopologyCoordinator::prepareForUnconditionalStepDown() {
@@ -1805,27 +1735,6 @@ TopologyCoordinator::prepareFreezeResponse(Date_t now, int secs, BSONObjBuilder*
     return PrepareFreezeResponseResult::kNoAction;
 }
 
-bool TopologyCoordinator::becomeCandidateIfStepdownPeriodOverAndSingleNodeSet(Date_t now) {
-    if (_stepDownUntil > now) {
-        return false;
-    }
-
-    if (_isElectableNodeInSingleNodeReplicaSet()) {
-        // If the new config describes a one-node replica set, we're the one member,
-        // we're electable, we're not in maintenance mode, and we are currently in followerMode
-        // SECONDARY, we must transition to candidate, in leiu of heartbeats.
-        _role = Role::kCandidate;
-        return true;
-    }
-    return false;
-}
-
-void TopologyCoordinator::setElectionSleepUntil(Date_t newTime) {
-    if (_electionSleepUntil < newTime) {
-        _electionSleepUntil = newTime;
-    }
-}
-
 Timestamp TopologyCoordinator::getElectionTime() const {
     return _electionTime;
 }
@@ -1984,9 +1893,6 @@ TopologyCoordinator::UnelectableReasonMask TopologyCoordinator::_getUnelectableR
     if (hbData.getState() != MemberState::RS_SECONDARY) {
         result |= NotSecondary;
     }
-    if (hbData.up() && hbData.isUnelectable()) {
-        result |= RefusesToStand;
-    }
     invariant(result || memberConfig.isElectable());
     return result;
 }
@@ -2100,13 +2006,6 @@ std::string TopologyCoordinator::_getUnelectableReasonString(const UnelectableRe
         hasWrittenToStream = true;
         ss << "node is not a member of a valid replica set configuration";
     }
-    if (ur & RefusesToStand) {
-        if (hasWrittenToStream) {
-            ss << "; ";
-        }
-        hasWrittenToStream = true;
-        ss << "most recent heartbeat indicates node will not stand for election";
-    }
     if (!hasWrittenToStream) {
         severe() << "Invalid UnelectableReasonMask value 0x" << integerToHex(ur);
         fassertFailed(26011);
@@ -2132,23 +2031,6 @@ int TopologyCoordinator::_getTotalPings() {
         it++;
     }
     return totalPings;
-}
-
-std::vector<HostAndPort> TopologyCoordinator::getMaybeUpHostAndPorts() const {
-    std::vector<HostAndPort> upHosts;
-    for (std::vector<MemberData>::const_iterator it = _memberData.begin(); it != _memberData.end();
-         ++it) {
-        const int itIndex = indexOfIterator(_memberData, it);
-        if (itIndex == _selfIndex) {
-            continue;  // skip ourselves
-        }
-        if (!it->maybeUp()) {
-            continue;  // skip DOWN nodes
-        }
-
-        upHosts.push_back(_rsConfig.getMemberAt(itIndex).getHostAndPort());
-    }
-    return upHosts;
 }
 
 bool TopologyCoordinator::isSteppingDown() const {
@@ -2254,12 +2136,6 @@ void TopologyCoordinator::processLoseElection() {
     _electionTime = Timestamp(0, 0);
     _electionId = OID();
     _role = Role::kFollower;
-
-    // Clear voteLease time, if we voted for ourselves in this election.
-    // This will allow us to vote for others.
-    if (_voteLease.whoId == _selfConfig().getId()) {
-        _voteLease.when = Date_t();
-    }
 }
 
 bool TopologyCoordinator::attemptStepDown(
@@ -2311,6 +2187,14 @@ bool TopologyCoordinator::_canCompleteStepDownAttempt(Date_t now, Date_t waitUnt
     return isSafeToStepDown();
 }
 
+bool TopologyCoordinator::_isCaughtUpAndElectable(int memberIndex, OpTime lastApplied) {
+    if (_getUnelectableReason(memberIndex)) {
+        return false;
+    }
+
+    return (_memberData.at(memberIndex).getLastAppliedOpTime() >= lastApplied);
+}
+
 bool TopologyCoordinator::isSafeToStepDown() {
     if (!_rsConfig.isInitialized() || _selfIndex < 0) {
         return false;
@@ -2327,20 +2211,52 @@ bool TopologyCoordinator::isSafeToStepDown() {
     }
 
     // Now check that we also have at least one caught up node that is electable.
-    const OpTime lastOpApplied = getMyLastAppliedOpTime();
     for (int memberIndex = 0; memberIndex < _rsConfig.getNumMembers(); memberIndex++) {
         // ignore your self
         if (memberIndex == _selfIndex) {
             continue;
         }
-        UnelectableReasonMask reason = _getUnelectableReason(memberIndex);
-        if (!reason && _memberData.at(memberIndex).getHeartbeatAppliedOpTime() >= lastOpApplied) {
-            // Found a caught up and electable node, succeed with step down.
+
+        if (_isCaughtUpAndElectable(memberIndex, lastApplied)) {
             return true;
         }
     }
 
     return false;
+}
+
+int TopologyCoordinator::chooseElectionHandoffCandidate() {
+
+    OpTime lastApplied = getMyLastAppliedOpTime();
+
+    int bestCandidateIndex = -1;
+    int highestPriority = -1;
+
+    for (int memberIndex = 0; memberIndex < _rsConfig.getNumMembers(); memberIndex++) {
+
+        // Skip your own member index.
+        if (memberIndex == _selfIndex) {
+            continue;
+        }
+
+        // Skip this node if it is not eligible to become primary. This includes nodes with
+        // priority 0.
+        if (!_isCaughtUpAndElectable(memberIndex, lastApplied)) {
+            continue;
+        }
+
+        // Only update best if priority is strictly greater. This guarantees that
+        // we will pick the member with the lowest index in case of a tie. Note that
+        // member priority is always a non-negative number.
+        auto memberPriority = _rsConfig.getMemberAt(memberIndex).getPriority();
+        if (memberPriority > highestPriority) {
+            bestCandidateIndex = memberIndex;
+            highestPriority = memberPriority;
+        }
+    }
+
+    // This is the most suitable node.
+    return bestCandidateIndex;
 }
 
 void TopologyCoordinator::setFollowerMode(MemberState::MS newMode) {

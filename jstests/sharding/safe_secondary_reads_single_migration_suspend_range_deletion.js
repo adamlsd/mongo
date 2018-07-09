@@ -176,7 +176,7 @@
         emptycapped: {skip: "primary only"},
         enableSharding: {skip: "primary only"},
         endSessions: {skip: "does not return user data"},
-        eval: {skip: "primary only"},
+        eval: {skip: "must define test coverage for 4.0 backwards compatibility"},
         explain: {skip: "TODO SERVER-30068"},
         features: {skip: "does not return user data"},
         filemd5: {skip: "does not return user data"},
@@ -202,6 +202,7 @@
         forceerror: {skip: "does not return user data"},
         fsync: {skip: "does not return user data"},
         fsyncUnlock: {skip: "does not return user data"},
+        geoNear: {skip: "must define test coverage for 4.0 backwards compatibility"},
         geoSearch: {skip: "not supported in mongos"},
         getCmdLineOpts: {skip: "does not return user data"},
         getDiagnosticData: {skip: "does not return user data"},
@@ -217,13 +218,13 @@
         grantPrivilegesToRole: {skip: "primary only"},
         grantRolesToRole: {skip: "primary only"},
         grantRolesToUser: {skip: "primary only"},
+        group: {skip: "must define test coverage for 4.0 backwards compatibility"},
         handshake: {skip: "does not return user data"},
         hostInfo: {skip: "does not return user data"},
         insert: {skip: "primary only"},
         invalidateUserCache: {skip: "does not return user data"},
         isdbgrid: {skip: "does not return user data"},
         isMaster: {skip: "does not return user data"},
-        journalLatencyTest: {skip: "does not return user data"},
         killCursors: {skip: "does not return user data"},
         killAllSessions: {skip: "does not return user data"},
         killAllSessionsByPattern: {skip: "does not return user data"},
@@ -374,6 +375,12 @@
         assert.commandWorked(freshMongos.adminCommand({enableSharding: db}));
         st.ensurePrimaryShard(db, st.shard0.shardName);
         assert.commandWorked(freshMongos.adminCommand({shardCollection: nss, key: {x: 1}}));
+
+        // We do this because we expect staleMongos to see that the collection is sharded, which
+        // it may not if the "nearest" config server it contacts has not replicated the
+        // shardCollection writes (or has not heard that they have reached a majority).
+        st.configRS.awaitReplication();
+
         assert.commandWorked(freshMongos.adminCommand({split: nss, middle: {x: 0}}));
 
         // Do dummy read from the stale mongos so it loads the routing table into memory once.

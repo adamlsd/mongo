@@ -64,7 +64,6 @@
 #include "mongo/db/server_parameters.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/storage/key_string.h"
-#include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/record_fetcher.h"
 #include "mongo/db/storage/record_store.h"
 #include "mongo/db/update/update_driver.h"
@@ -504,7 +503,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
     int64_t keysInserted;
     status = _indexCatalog.indexRecords(opCtx, bsonRecords, &keysInserted);
     if (opDebug) {
-        opDebug->keysInserted += keysInserted;
+        opDebug->additiveMetrics.incrementKeysInserted(keysInserted);
     }
 
     return status;
@@ -569,7 +568,7 @@ void CollectionImpl::deleteDocument(OperationContext* opCtx,
     int64_t keysDeleted;
     _indexCatalog.unindexRecord(opCtx, doc.value(), loc, noWarn, &keysDeleted);
     if (opDebug) {
-        opDebug->keysDeleted += keysDeleted;
+        opDebug->additiveMetrics.incrementKeysDeleted(keysDeleted);
     }
 
     _recordStore->deleteRecord(opCtx, loc);
@@ -686,8 +685,8 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
             uassertStatusOK(iam->update(
                 opCtx, *updateTickets.mutableMap()[descriptor], &keysInserted, &keysDeleted));
             if (opDebug) {
-                opDebug->keysInserted += keysInserted;
-                opDebug->keysDeleted += keysDeleted;
+                opDebug->additiveMetrics.incrementKeysInserted(keysInserted);
+                opDebug->additiveMetrics.incrementKeysDeleted(keysDeleted);
             }
         }
     }
@@ -747,9 +746,9 @@ StatusWith<RecordId> CollectionImpl::_updateDocumentWithMove(OperationContext* o
 
     moveCounter.increment();
     if (opDebug) {
-        opDebug->nmoved++;
-        opDebug->keysInserted += keysInserted;
-        opDebug->keysDeleted += keysDeleted;
+        opDebug->additiveMetrics.incrementNmoved(1);
+        opDebug->additiveMetrics.incrementKeysInserted(keysInserted);
+        opDebug->additiveMetrics.incrementKeysDeleted(keysDeleted);
     }
 
     return newLocation;
@@ -797,9 +796,6 @@ StatusWith<RecordData> CollectionImpl::updateDocumentWithDamages(
 
 bool CollectionImpl::_enforceQuota(bool userEnforeQuota) const {
     if (!userEnforeQuota)
-        return false;
-
-    if (!mmapv1GlobalOptions.quota)
         return false;
 
     if (_ns.db() == "local")

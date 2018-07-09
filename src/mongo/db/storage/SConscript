@@ -5,12 +5,12 @@ env = env.Clone()
 
 env.SConscript(
     dirs=[
+        'biggie',
         'devnull',
         'ephemeral_for_test',
         'kv',
-        'mmap_v1',
-        'wiredtiger',
         'mobile',
+        'wiredtiger',
     ],
     exports=[
         'env'
@@ -245,9 +245,6 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
-    ],
-    LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/storage/mmap_v1/paths',
     ],
 )
 

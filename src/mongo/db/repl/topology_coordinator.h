@@ -163,12 +163,6 @@ public:
     HostAndPort getSyncSourceAddress() const;
 
     /**
-     * Retrieves a vector of HostAndPorts containing all nodes that are neither DOWN nor
-     * ourself.
-     */
-    std::vector<HostAndPort> getMaybeUpHostAndPorts() const;
-
-    /**
      * Gets the earliest time the current node will stand for election.
      */
     Date_t getStepDownTime() const;
@@ -245,21 +239,6 @@ public:
                                 const rpc::ReplSetMetadata& replMetadata,
                                 boost::optional<rpc::OplogQueryMetadata> oqMetadata,
                                 Date_t now) const;
-
-    /**
-     * Checks whether we are a single node set and we are not in a stepdown period.  If so,
-     * puts us into candidate mode, otherwise does nothing.  This is used to ensure that
-     * nodes in a single node replset become primary again when their stepdown period ends.
-     */
-    bool becomeCandidateIfStepdownPeriodOverAndSingleNodeSet(Date_t now);
-
-    /**
-     * Sets the earliest time the current node will stand for election to "newTime".
-     *
-     * Until this time, while the node may report itself as electable, it will not stand
-     * for election.
-     */
-    void setElectionSleepUntil(Date_t newTime);
 
     /**
      * Sets the reported mode of this node to one of RS_SECONDARY, RS_STARTUP2, RS_ROLLBACK or
@@ -617,10 +596,11 @@ public:
     void finishUnconditionalStepDown();
 
     /**
-     * Considers whether or not this node should stand for election, and returns true
-     * if the node has transitioned to candidate role as a result of the call.
+     * Returns the index of the most suitable candidate for an election handoff. The node must be
+     * caught up and electable. Ties are resolved first by highest priority, then by lowest member
+     * id.
      */
-    Status checkShouldStandForElection(Date_t now) const;
+    int chooseElectionHandoffCandidate();
 
     /**
      * Set the outgoing heartbeat message from self
@@ -743,9 +723,8 @@ private:
         StepDownPeriodActive = 1 << 4,
         NoData = 1 << 5,
         NotInitialized = 1 << 6,
-        RefusesToStand = 1 << 7,
-        NotCloseEnoughToLatestForPriorityTakeover = 1 << 8,
-        NotFreshEnoughForCatchupTakeover = 1 << 9,
+        NotCloseEnoughToLatestForPriorityTakeover = 1 << 7,
+        NotFreshEnoughForCatchupTakeover = 1 << 8,
     };
 
     // Set what type of PRIMARY this node currently is.
@@ -790,12 +769,6 @@ private:
     // Scans through all members that are 'up' and return the latest known optime.
     OpTime _latestKnownOpTime() const;
 
-    // Scans the electable set and returns the highest priority member index
-    int _getHighestPriorityElectableIndex(Date_t now) const;
-
-    // Returns true if "one" member is higher priority than "two" member
-    bool _isMemberHigherPriority(int memberOneIndex, int memberTwoIndex) const;
-
     // Helper shortcut to self config
     const MemberConfig& _selfConfig() const;
 
@@ -838,6 +811,11 @@ private:
      * attemptStepDown() for more details on the rules of when stepdown attempts succeed or fail.
      */
     bool _canCompleteStepDownAttempt(Date_t now, Date_t waitUntil, bool force);
+
+    /**
+     * Returns true if a node is both caught up to our last applied opTime and electable.
+     */
+    bool _isCaughtUpAndElectable(int memberIndex, OpTime lastApplied);
 
     void _stepDownSelfAndReplaceWith(int newPrimary);
 
@@ -937,15 +915,6 @@ private:
     typedef std::map<HostAndPort, PingStats> PingMap;
     // Ping stats for each member by HostAndPort;
     PingMap _pings;
-
-    // Last vote info from the election
-    struct VoteLease {
-        static const Seconds leaseTime;
-
-        Date_t when;
-        int whoId = -1;
-        HostAndPort whoHostAndPort;
-    } _voteLease;
 
     // V1 last vote info for elections
     LastVote _lastVote{OpTime::kInitialTerm, -1};

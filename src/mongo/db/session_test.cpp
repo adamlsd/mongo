@@ -159,7 +159,8 @@ protected:
                            osi,
                            stmtId,
                            link,
-                           false /* prepare */);
+                           false /* prepare */,
+                           OplogSlot());
     }
 
     void bumpTxnNumberFromDifferentOpCtx(Session* session, TxnNumber newTxnNum) {
@@ -554,7 +555,8 @@ TEST_F(SessionTest, ErrorOnlyWhenStmtIdBeingCheckedIsNotInCache) {
                                   osi,
                                   1,
                                   {},
-                                  false /* prepare */);
+                                  false /* prepare */,
+                                  OplogSlot());
         session.onWriteOpCompletedOnPrimary(opCtx(), txnNum, {1}, opTime, wallClockTime);
         wuow.commit();
 
@@ -581,7 +583,8 @@ TEST_F(SessionTest, ErrorOnlyWhenStmtIdBeingCheckedIsNotInCache) {
                                   osi,
                                   kIncompleteHistoryStmtId,
                                   link,
-                                  false /* prepare */);
+                                  false /* prepare */,
+                                  OplogSlot());
 
         session.onWriteOpCompletedOnPrimary(
             opCtx(), txnNum, {kIncompleteHistoryStmtId}, opTime, wallClockTime);
@@ -725,6 +728,7 @@ TEST_F(SessionTest, StashAndUnstashResources) {
 TEST_F(SessionTest, ReportStashedResources) {
     const auto sessionId = makeLogicalSessionIdForTest();
     const TxnNumber txnNum = 20;
+    const bool autocommit = false;
     opCtx()->setLogicalSessionId(sessionId);
     opCtx()->setTxnNumber(txnNum);
 
@@ -734,7 +738,7 @@ TEST_F(SessionTest, ReportStashedResources) {
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
 
-    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "find");
+    session.beginOrContinueTxn(opCtx(), txnNum, autocommit, true, "testDB", "find");
 
     repl::ReadConcernArgs readConcernArgs;
     ASSERT_OK(readConcernArgs.initialize(BSON("find"
@@ -749,31 +753,24 @@ TEST_F(SessionTest, ReportStashedResources) {
     ASSERT(opCtx()->getWriteUnitOfWork());
     ASSERT(opCtx()->lockState()->isLocked());
 
-    // Build a BSONObj containing the details which we expect to see reported when we call
-    // Session::reportStashedState.
-    const auto lockerInfo = opCtx()->lockState()->getLockerInfo();
-    ASSERT(lockerInfo);
-
-    auto txnDoc = BSON("parameters" << BSON("txnNumber" << txnNum));
-    auto reportBuilder =
-        std::move(BSONObjBuilder() << "host" << getHostNameCachedAndPort() << "desc"
-                                   << "inactive transaction"
-                                   << "lsid"
-                                   << sessionId.toBSON()
-                                   << "transaction"
-                                   << txnDoc
-                                   << "waitingForLock"
-                                   << false
-                                   << "active"
-                                   << false);
-    fillLockerInfo(*lockerInfo, reportBuilder);
-
     // Stash resources. The original Locker and RecoveryUnit now belong to the stash.
     session.stashTransactionResources(opCtx());
     ASSERT(!opCtx()->getWriteUnitOfWork());
 
     // Verify that the Session's report of its own stashed state aligns with our expectations.
-    ASSERT_BSONOBJ_EQ(session.reportStashedState(), reportBuilder.obj());
+    auto stashedState = session.reportStashedState();
+    auto transactionDocument =
+        stashedState.getObjectField("transaction").getObjectField("parameters");
+
+    ASSERT_EQ(stashedState.getField("host").valueStringData().toString(),
+              getHostNameCachedAndPort());
+    ASSERT_EQ(stashedState.getField("desc").valueStringData().toString(), "inactive transaction");
+    ASSERT_BSONOBJ_EQ(stashedState.getField("lsid").Obj(), sessionId.toBSON());
+    ASSERT_EQ(transactionDocument.getField("txnNumber").numberLong(), txnNum);
+    ASSERT_EQ(transactionDocument.getField("autocommit").boolean(), autocommit);
+    ASSERT_GTE(transactionDocument.getField("timeOpenMicros").numberLong(), 0);
+    ASSERT_EQ(stashedState.getField("waitingForLock").boolean(), false);
+    ASSERT_EQ(stashedState.getField("active").boolean(), false);
 
     // Unset the read concern on the OperationContext. This is needed to unstash.
     repl::ReadConcernArgs::get(opCtx()) = repl::ReadConcernArgs();
@@ -788,6 +785,85 @@ TEST_F(SessionTest, ReportStashedResources) {
 
     // Commit the transaction. This allows us to release locks.
     session.commitTransaction(opCtx());
+}
+
+TEST_F(SessionTest, ReportUnstashedResources) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    const TxnNumber txnNum = 20;
+    const bool autocommit = false;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+
+    ASSERT(opCtx()->lockState());
+    ASSERT(opCtx()->recoveryUnit());
+
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    session.beginOrContinueTxn(opCtx(), txnNum, autocommit, true, "testDB", "find");
+
+    repl::ReadConcernArgs readConcernArgs;
+    ASSERT_OK(readConcernArgs.initialize(BSON("find"
+                                              << "test"
+                                              << repl::ReadConcernArgs::kReadConcernFieldName
+                                              << BSON(repl::ReadConcernArgs::kLevelFieldName
+                                                      << "snapshot"))));
+    repl::ReadConcernArgs::get(opCtx()) = readConcernArgs;
+
+    // Perform initial unstash which sets up a WriteUnitOfWork.
+    session.unstashTransactionResources(opCtx(), "find");
+    ASSERT(opCtx()->getWriteUnitOfWork());
+    ASSERT(opCtx()->lockState()->isLocked());
+
+    // Verify that the Session's report of its own unstashed state aligns with our expectations.
+    BSONObjBuilder unstashedStateBuilder;
+    session.reportUnstashedState(&unstashedStateBuilder);
+    auto unstashedState = unstashedStateBuilder.obj();
+    auto transactionDocument =
+        unstashedState.getObjectField("transaction").getObjectField("parameters");
+
+    ASSERT_EQ(transactionDocument.getField("txnNumber").numberLong(), txnNum);
+    ASSERT_EQ(transactionDocument.getField("autocommit").boolean(), autocommit);
+    ASSERT_GTE(transactionDocument.getField("timeOpenMicros").numberLong(), 0);
+
+    // Stash resources. The original Locker and RecoveryUnit now belong to the stash.
+    session.stashTransactionResources(opCtx());
+    ASSERT(!opCtx()->getWriteUnitOfWork());
+
+    // With the resources stashed, verify that the Session reports an empty unstashed state.
+    BSONObjBuilder builder;
+    session.reportUnstashedState(&builder);
+    ASSERT(builder.obj().isEmpty());
+}
+
+TEST_F(SessionTest, ReportUnstashedResourcesForARetryableWrite) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    const TxnNumber txnNum = 20;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+
+    ASSERT(opCtx()->lockState());
+    ASSERT(opCtx()->recoveryUnit());
+
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    session.beginOrContinueTxn(opCtx(), txnNum, boost::none, boost::none, "testDB", "find");
+    session.unstashTransactionResources(opCtx(), "find");
+
+    // Build a BSONObj containing the details which we expect to see reported when we call
+    // Session::reportUnstashedState. For a retryable write, we should only include the txnNumber.
+    BSONObjBuilder reportBuilder;
+    BSONObjBuilder transactionBuilder(reportBuilder.subobjStart("transaction"));
+    BSONObjBuilder parametersBuilder(transactionBuilder.subobjStart("parameters"));
+    parametersBuilder.append("txnNumber", txnNum);
+    parametersBuilder.done();
+    transactionBuilder.done();
+
+    // Verify that the Session's report of its own unstashed state aligns with our expectations.
+    BSONObjBuilder unstashedStateBuilder;
+    session.reportUnstashedState(&unstashedStateBuilder);
+    ASSERT_BSONOBJ_EQ(unstashedStateBuilder.obj(), reportBuilder.obj());
 }
 
 TEST_F(SessionTest, CannotSpecifyStartTransactionOnInProgressTxn) {
@@ -1897,6 +1973,129 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldNotBeSetIfUnstashHasBadRea
 
     // Time active should not have increased.
     ASSERT_EQ(session.getSingleTransactionStats()->getTimeActiveMicros(), timeActiveSoFar);
+}
+
+TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponStash) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
+
+    // Initialize field values for both AdditiveMetrics objects.
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysExamined = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 5;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.docsExamined = 2;
+    CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 0;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nMatched = 3;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nModified = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.nModified = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.ninserted = 4;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nmoved = 3;
+    CurOp::get(opCtx())->debug().additiveMetrics.nmoved = 2;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysInserted = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysDeleted = 0;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysDeleted = 0;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.prepareReadConflicts = 5;
+    CurOp::get(opCtx())->debug().additiveMetrics.prepareReadConflicts = 4;
+
+    auto additiveMetricsToCompare =
+        session.getSingleTransactionStats()->getOpDebug()->additiveMetrics;
+    additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
+
+    session.unstashTransactionResources(opCtx(), "insert");
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
+    session.stashTransactionResources(opCtx());
+
+    ASSERT(session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.equals(
+        additiveMetricsToCompare));
+}
+
+TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponCommit) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
+
+    // Initialize field values for both AdditiveMetrics objects.
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysExamined = 3;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 2;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.docsExamined = 0;
+    CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 2;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nMatched = 4;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nModified = 5;
+    CurOp::get(opCtx())->debug().additiveMetrics.nModified = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.ninserted = 1;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.ndeleted = 4;
+    CurOp::get(opCtx())->debug().additiveMetrics.ndeleted = 0;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysInserted = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.prepareReadConflicts = 0;
+    CurOp::get(opCtx())->debug().additiveMetrics.prepareReadConflicts = 0;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.writeConflicts = 6;
+    CurOp::get(opCtx())->debug().additiveMetrics.writeConflicts = 3;
+
+    auto additiveMetricsToCompare =
+        session.getSingleTransactionStats()->getOpDebug()->additiveMetrics;
+    additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
+
+    session.unstashTransactionResources(opCtx(), "insert");
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
+    session.commitTransaction(opCtx());
+
+    ASSERT(session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.equals(
+        additiveMetricsToCompare));
+}
+
+TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponAbort) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
+
+    // Initialize field values for both AdditiveMetrics objects.
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysExamined = 2;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysExamined = 4;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.docsExamined = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.docsExamined = 3;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nMatched = 2;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nModified = 0;
+    CurOp::get(opCtx())->debug().additiveMetrics.nModified = 3;
+    CurOp::get(opCtx())->debug().additiveMetrics.ndeleted = 5;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.nmoved = 0;
+    CurOp::get(opCtx())->debug().additiveMetrics.nmoved = 2;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysInserted = 1;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysInserted = 1;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.keysDeleted = 6;
+    CurOp::get(opCtx())->debug().additiveMetrics.keysDeleted = 0;
+    session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.writeConflicts = 3;
+    CurOp::get(opCtx())->debug().additiveMetrics.writeConflicts = 3;
+
+    auto additiveMetricsToCompare =
+        session.getSingleTransactionStats()->getOpDebug()->additiveMetrics;
+    additiveMetricsToCompare.add(CurOp::get(opCtx())->debug().additiveMetrics);
+
+    session.unstashTransactionResources(opCtx(), "insert");
+    // The transaction machinery cannot store an empty locker.
+    { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
+    session.abortActiveTransaction(opCtx());
+
+    ASSERT(session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.equals(
+        additiveMetricsToCompare));
 }
 
 }  // namespace

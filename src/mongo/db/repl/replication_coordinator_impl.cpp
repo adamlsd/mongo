@@ -320,7 +320,8 @@ InitialSyncerOptions createInitialSyncerOptions(
     };
     options.resetOptimes = [replCoord]() { replCoord->resetMyLastOpTimes(); };
     options.syncSourceSelector = replCoord;
-    options.oplogFetcherMaxFetcherRestarts = externalState->getOplogFetcherMaxFetcherRestarts();
+    options.oplogFetcherMaxFetcherRestarts =
+        externalState->getOplogFetcherInitialSyncMaxFetcherRestarts();
     return options;
 }
 }  // namespace
@@ -697,13 +698,11 @@ void ReplicationCoordinatorImpl::_startDataReplication(OperationContext* opCtx,
         if (startCompleted) {
             startCompleted();
         }
-        // Repair local db (to compact it).
-        auto opCtxHolder = cc().makeOperationContext();
-        uassertStatusOK(_externalState->runRepairOnLocalDB(opCtxHolder.get()));
         // Because initial sync completed, we can only be in STARTUP2, not REMOVED.
         // Transition from STARTUP2 to RECOVERING and start the producer and the applier.
         invariant(getMemberState().startup2());
         invariant(setFollowerMode(MemberState::RS_RECOVERING));
+        auto opCtxHolder = cc().makeOperationContext();
         _externalState->startSteadyStateReplication(opCtxHolder.get(), this);
     };
 
@@ -821,7 +820,6 @@ void ReplicationCoordinatorImpl::shutdown(OperationContext* opCtx) {
         _opTimeWaiterList.signalAll_inlock();
         _currentCommittedSnapshotCond.notify_all();
         _initialSyncer.swap(initialSyncerCopy);
-        _stepDownWaiters.notify_all();
     }
 
 
@@ -1605,9 +1603,14 @@ Status ReplicationCoordinatorImpl::_awaitReplication_inlock(
 }
 
 void ReplicationCoordinatorImpl::waitForStepDownAttempt_forTest() {
-    stdx::unique_lock<stdx::mutex> lk(_mutex);
-    while (!_topCoord->isSteppingDown()) {
-        _stepDownWaiters.wait(lk);
+    auto isSteppingDown = [&]() {
+        stdx::unique_lock<stdx::mutex> lk(_mutex);
+        // If true, we know that a stepdown is underway.
+        return (_topCoord->isSteppingDown());
+    };
+
+    while (!isSteppingDown()) {
+        sleepFor(Milliseconds{10});
     }
 }
 
@@ -1662,9 +1665,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
         return status;
     }
 
-    // Wake up threads blocked in waitForStepDownAttempt_forTest.
-    _stepDownWaiters.notify_all();
-
     // Update _canAcceptNonLocalWrites from the TopologyCoordinator now that we're in the middle
     // of a stepdown attempt.  This will prevent us from accepting writes so that if our stepdown
     // attempt fails later we can release the global lock and go to sleep to allow secondaries to
@@ -1705,21 +1705,23 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
 
     try {
 
-        bool firstTime = true;
+        auto waitTimeout = std::min(waitTime, stepdownTime);
+        auto lastAppliedOpTime = _getMyLastAppliedOpTime_inlock();
+
+        // Set up a waiter which will be signalled when we process a heartbeat or updatePosition
+        // and have a majority of nodes at our optime.
+        stdx::condition_variable condVar;
+        const WriteConcernOptions waiterWriteConcern(
+            WriteConcernOptions::kMajority, WriteConcernOptions::SyncMode::NONE, waitTimeout);
+        ThreadWaiter waiter(lastAppliedOpTime, &waiterWriteConcern, &condVar);
+        WaiterGuard guard(&_replicationWaiterList, &waiter);
+
         while (!_topCoord->attemptStepDown(
             termAtStart, _replExecutor->now(), waitUntil, stepDownUntil, force)) {
 
-            // The stepdown attempt failed.
-
-            if (firstTime) {
-                // We send out a fresh round of heartbeats because stepping down successfully
-                // without {force: true} is dependent on timely heartbeat data.
-                _restartHeartbeats_inlock();
-                firstTime = false;
-            }
-
-            // Now release the global lock to allow secondaries to read the oplog, then wait until
-            // enough secondaries are caught up for us to finish stepdown.
+            // The stepdown attempt failed. We now release the global lock to allow secondaries
+            // to read the oplog, then wait until enough secondaries are caught up for us to
+            // finish stepdown.
             globalLock.reset();
             invariant(!opCtx->lockState()->isLocked());
 
@@ -1748,7 +1750,7 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
             // attemptStepDown again will cause attemptStepDown to return ExceededTimeLimit with
             // the proper error message.
             opCtx->waitForConditionOrInterruptUntil(
-                _stepDownWaiters, lk, std::min(stepDownUntil, waitUntil));
+                condVar, lk, std::min(stepDownUntil, waitUntil));
         }
     } catch (const DBException& e) {
         return e.toStatus();
@@ -1764,12 +1766,6 @@ Status ReplicationCoordinatorImpl::stepDown(OperationContext* opCtx,
     return Status::OK();
 }
 
-void ReplicationCoordinatorImpl::_signalStepDownWaiterIfReady_inlock() {
-    if (_topCoord->isSafeToStepDown()) {
-        _stepDownWaiters.notify_all();
-    }
-}
-
 void ReplicationCoordinatorImpl::_handleTimePassing(
     const executor::TaskExecutor::CallbackArgs& cbData) {
     if (!cbData.status.isOK()) {
@@ -1778,20 +1774,9 @@ void ReplicationCoordinatorImpl::_handleTimePassing(
 
     // For election protocol v1, call _startElectSelfIfEligibleV1 to avoid race
     // against other elections caused by events like election timeout, replSetStepUp etc.
-    if (isV1ElectionProtocol()) {
-        _startElectSelfIfEligibleV1(
-            TopologyCoordinator::StartElectionReason::kSingleNodeStepDownTimeout);
-        return;
-    }
-
-    bool wonSingleNodeElection = [this]() {
-        stdx::lock_guard<stdx::mutex> lk(_mutex);
-        return _topCoord->becomeCandidateIfStepdownPeriodOverAndSingleNodeSet(_replExecutor->now());
-    }();
-
-    if (wonSingleNodeElection) {
-        _performPostMemberStateUpdateAction(kActionWinElection);
-    }
+    invariant(isV1ElectionProtocol());
+    _startElectSelfIfEligibleV1(
+        TopologyCoordinator::StartElectionReason::kSingleNodeStepDownTimeout);
 }
 
 bool ReplicationCoordinatorImpl::isMasterForReportingPurposes() {
@@ -2444,8 +2429,6 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock(
         _replicationWaiterList.signalAll_inlock();
         // Wake up the optime waiter that is waiting for primary catch-up to finish.
         _opTimeWaiterList.signalAll_inlock();
-        // If there are any pending stepdown command requests wake them up.
-        _stepDownWaiters.notify_all();
 
         // _canAcceptNonLocalWrites should already be set above.
         invariant(!_canAcceptNonLocalWrites);
@@ -2534,7 +2517,7 @@ ReplicationCoordinatorImpl::_updateMemberStateFromTopologyCoordinator_inlock(
     // receive the replicated version. This is to avoid bugs like SERVER-32639.
     if (newState.arbiter()) {
         serverGlobalParams.featureCompatibility.setVersion(
-            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     }
 
     _memberState = newState;

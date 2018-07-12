@@ -87,6 +87,7 @@ namespace {
 const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
                                         {"aggregate", 1},
                                         {"commitTransaction", 1},
+                                        {"coordinateCommitTransaction", 1},
                                         {"delete", 1},
                                         {"distinct", 1},
                                         {"doTxn", 1},
@@ -105,8 +106,11 @@ const StringMap<int> txnCmdWhitelist = {{"abortTransaction", 1},
 const StringMap<int> txnCmdForTestingWhitelist = {{"dbHash", 1}};
 
 // The commands that can be run on the 'admin' database in multi-document transactions.
-const StringMap<int> txnAdminCommands = {
-    {"abortTransaction", 1}, {"commitTransaction", 1}, {"doTxn", 1}, {"prepareTransaction", 1}};
+const StringMap<int> txnAdminCommands = {{"abortTransaction", 1},
+                                         {"commitTransaction", 1},
+                                         {"coordinateCommitTransaction", 1},
+                                         {"doTxn", 1},
+                                         {"prepareTransaction", 1}};
 
 void fassertOnRepeatedExecution(const LogicalSessionId& lsid,
                                 TxnNumber txnNumber,
@@ -629,7 +633,7 @@ Session::TxnResources::TxnResources(OperationContext* opCtx) {
     _ruState = opCtx->getWriteUnitOfWork()->release();
     opCtx->setWriteUnitOfWork(nullptr);
 
-    _locker = opCtx->swapLockState(stdx::make_unique<DefaultLockerImpl>());
+    _locker = opCtx->swapLockState(stdx::make_unique<LockerImpl>());
     _locker->releaseTicket();
     _locker->unsetThreadId();
 
@@ -710,7 +714,6 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     // effectively owns the Session. That is, a user might lock the Client to ensure it doesn't go
     // away, and then lock the Session owned by that client. We rely on the fact that we are not
     // using the DefaultLockerImpl to avoid deadlock.
-    invariant(!isMMAPV1());
     stdx::lock_guard<Client> lk(*opCtx->getClient());
     stdx::unique_lock<stdx::mutex> lg(_mutex);
 
@@ -747,12 +750,6 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
     }
 
     invariant(opCtx->getTxnNumber());
-
-    // If the storage engine is mmapv1, it is not safe to lock both the Client and the Session
-    // mutex. This is fine because mmapv1 does not support transactions.
-    if (isMMAPV1()) {
-        return;
-    }
 
     {
         // We must lock the Client to change the Locker on the OperationContext and the Session

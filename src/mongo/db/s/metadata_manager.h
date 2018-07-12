@@ -113,14 +113,6 @@ public:
     CleanupNotification cleanUpRange(ChunkRange const& range, Date_t whenToDelete);
 
     /**
-     * Returns a vector of ScopedCollectionMetadata objects representing metadata instances in use
-     * by running queries that overlap the argument range, suitable for identifying and invalidating
-     * those queries.
-     */
-    std::vector<ScopedCollectionMetadata> overlappingMetadata(
-        std::shared_ptr<MetadataManager> const& itself, ChunkRange const& range);
-
-    /**
      * Returns the number of ranges scheduled to be cleaned, exclusive of such ranges that might
      * still be in use by running queries.  Outside of test drivers, the actual number may vary
      * after it returns, so this is really only useful for unit tests.
@@ -265,41 +257,22 @@ public:
     ScopedCollectionMetadata(ScopedCollectionMetadata&& other);
     ScopedCollectionMetadata& operator=(ScopedCollectionMetadata&& other);
 
-    /**
-     * Dereferencing the ScopedCollectionMetadata dereferences the private CollectionMetadata.
-     */
-    CollectionMetadata* getMetadata() const;
-
-    CollectionMetadata* operator->() const {
-        return getMetadata();
+    const CollectionMetadata& get() const {
+        invariant(_metadataTracker);
+        return _metadataTracker->metadata;
     }
 
-    /**
-     * True if the ScopedCollectionMetadata stores a metadata (is not empty) and the collection is
-     * sharded.
-     */
-    operator bool() const {
-        return getMetadata() != nullptr;
+    const auto* operator-> () const {
+        return &get();
     }
 
-    /**
-     * Returns just the shard key fields, if collection is sharded, and the _id field, from `doc`.
-     * Does not alter any field values (e.g. by hashing); values are copied verbatim.
-     */
-    BSONObj extractDocumentKey(BSONObj const& doc) const;
+    const auto& operator*() const {
+        return get();
+    }
 
 private:
     friend ScopedCollectionMetadata MetadataManager::getActiveMetadata(
         std::shared_ptr<MetadataManager>, const boost::optional<LogicalTime>&);
-
-    friend std::vector<ScopedCollectionMetadata> MetadataManager::overlappingMetadata(
-        std::shared_ptr<MetadataManager> const&, ChunkRange const&);
-
-    /**
-     * Creates an empty ScopedCollectionMetadata, which is interpreted as if the collection is
-     * unsharded.
-     */
-    ScopedCollectionMetadata();
 
     /**
      * Increments the usageCounter in the specified CollectionMetadata.

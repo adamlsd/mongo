@@ -1022,7 +1022,6 @@ SetState::SetState(StringData name, const std::set<HostAndPort>& seedNodes)
 SetState::SetState(const MongoURI& uri)
     : SetState(uri.getSetName(),
                std::set<HostAndPort>(uri.getServers().begin(), uri.getServers().end())) {
-    setUri = uri;
 }
 
 HostAndPort SetState::getMatchingHost(const ReadPreferenceSetting& criteria) const {

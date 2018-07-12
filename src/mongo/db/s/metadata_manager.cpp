@@ -35,7 +35,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
 #include "mongo/bson/util/builder.h"
-#include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/query/internal_plans.h"
 #include "mongo/db/range_arithmetic.h"
 #include "mongo/db/s/collection_sharding_state.h"
@@ -185,7 +184,8 @@ ScopedCollectionMetadata MetadataManager::getActiveMetadata(
     std::shared_ptr<MetadataManager> self, const boost::optional<LogicalTime>& atClusterTime) {
     stdx::lock_guard<stdx::mutex> lg(_managerLock);
     if (_metadata.empty()) {
-        return ScopedCollectionMetadata();
+        return ScopedCollectionMetadata(
+            std::make_shared<MetadataManager::CollectionMetadataTracker>(CollectionMetadata()));
     }
 
     auto metadataTracker = _metadata.back();
@@ -438,35 +438,6 @@ auto MetadataManager::cleanUpRange(ChunkRange const& range, Date_t whenToDelete)
     return orphans.back().notification;
 }
 
-std::vector<ScopedCollectionMetadata> MetadataManager::overlappingMetadata(
-    std::shared_ptr<MetadataManager> const& self, ChunkRange const& range) {
-    stdx::lock_guard<stdx::mutex> lg(_managerLock);
-    invariant(!_metadata.empty());
-
-    std::vector<ScopedCollectionMetadata> result;
-    result.reserve(_metadata.size());
-
-    // Start with the active metadata
-    auto it = _metadata.rbegin();
-    if ((*it)->metadata.rangeOverlapsChunk(range)) {
-        // We ignore the refcount of the active mapping; effectively, we assume it is in use.
-        result.push_back(ScopedCollectionMetadata(lg, self, (*it)));
-    }
-
-    // Continue to snapshots
-    ++it;
-    for (; it != _metadata.rend(); ++it) {
-        auto& tracker = *it;
-
-        // We want all the overlapping snapshot mappings still possibly in use by a query.
-        if (tracker->usageCounter > 0 && tracker->metadata.rangeOverlapsChunk(range)) {
-            result.push_back(ScopedCollectionMetadata(lg, self, tracker));
-        }
-    }
-
-    return result;
-}
-
 size_t MetadataManager::numberOfRangesToCleanStillInUse() const {
     stdx::lock_guard<stdx::mutex> lg(_managerLock);
     size_t count = 0;
@@ -540,8 +511,6 @@ boost::optional<ChunkRange> MetadataManager::getNextOrphanRange(BSONObj const& f
     return _metadata.back()->metadata.getNextOrphanRange(_receivingChunks, from);
 }
 
-ScopedCollectionMetadata::ScopedCollectionMetadata() = default;
-
 ScopedCollectionMetadata::ScopedCollectionMetadata(
     WithLock,
     std::shared_ptr<MetadataManager> metadataManager,
@@ -573,29 +542,6 @@ ScopedCollectionMetadata& ScopedCollectionMetadata::operator=(ScopedCollectionMe
         other._metadataTracker = nullptr;
     }
     return *this;
-}
-
-CollectionMetadata* ScopedCollectionMetadata::getMetadata() const {
-    return _metadataTracker ? &_metadataTracker->metadata : nullptr;
-}
-
-BSONObj ScopedCollectionMetadata::extractDocumentKey(BSONObj const& doc) const {
-    BSONObj key;
-    if (*this) {  // is sharded
-        auto const& pattern = _metadataTracker->metadata.getChunkManager()->getShardKeyPattern();
-        key = dotted_path_support::extractElementsBasedOnTemplate(doc, pattern.toBSON());
-        if (pattern.hasId()) {
-            return key;
-        }
-        // else, try to append an _id field from the document.
-    }
-
-    if (auto id = doc["_id"]) {
-        return key.isEmpty() ? id.wrap() : BSONObjBuilder(std::move(key)).append(id).obj();
-    }
-
-    // For legacy documents that lack an _id, use the document itself as its key.
-    return doc;
 }
 
 void ScopedCollectionMetadata::_clear() {

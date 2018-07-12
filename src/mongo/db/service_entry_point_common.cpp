@@ -111,6 +111,7 @@ const StringMap<int> sessionCheckoutWhitelist = {{"abortTransaction", 1},
                                                  {"aggregate", 1},
                                                  {"applyOps", 1},
                                                  {"commitTransaction", 1},
+                                                 {"coordinateCommitTransaction", 1},
                                                  {"count", 1},
                                                  {"dbHash", 1},
                                                  {"delete", 1},
@@ -128,7 +129,6 @@ const StringMap<int> sessionCheckoutWhitelist = {{"abortTransaction", 1},
                                                  {"insert", 1},
                                                  {"killCursors", 1},
                                                  {"mapReduce", 1},
-                                                 {"parallelCollectionScan", 1},
                                                  {"prepareTransaction", 1},
                                                  {"refreshLogicalSessionCacheNow", 1},
                                                  {"update", 1}};
@@ -887,8 +887,11 @@ void execCommandDatabase(OperationContext* opCtx,
                                 sessionOptions)) {
                 command->incrementCommandsFailed();
             }
-        } catch (const DBException&) {
+        } catch (const DBException& e) {
             command->incrementCommandsFailed();
+            if (e.code() == ErrorCodes::Unauthorized) {
+                CommandHelpers::auditLogAuthEvent(opCtx, invocation.get(), request, e.code());
+            }
             throw;
         }
     } catch (const DBException& e) {

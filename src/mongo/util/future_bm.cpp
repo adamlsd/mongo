@@ -108,7 +108,7 @@ void BM_futureIntDeferredThenReady(benchmark::State& state) {
     for (auto _ : state) {
         benchmark::ClobberMemory();
         auto pf = makePromiseFuture<int>();
-        auto fut = std::move(pf.future).then([&](int i) { return makeReadyFutWithPromise(); });
+        auto fut = std::move(pf.future).then([](int i) { return makeReadyFutWithPromise(); });
         pf.promise.emplaceValue(1);
         benchmark::DoNotOptimize(std::move(fut).get());
     }

@@ -157,7 +157,7 @@ public:
                 promise.emplaceValue();
             }
 
-			explicit Latch(Promise<void> p) : promise( std::move( p ) ) {}
+            explicit Latch(Promise<void> p) : promise(std::move(p)) {}
 
             Promise<void> promise;
         };
@@ -169,7 +169,7 @@ public:
             return Future<void>::makeReady();
         }
 
-		auto pf= makePromiseFuture<void>();
+        auto pf = makePromiseFuture<void>();
         // We rely on shard_ptr to handle the atomic refcounting before emplacing for us.
         auto latch = std::make_shared<Latch>(std::move(pf.promise));
         auto future = std::move(pf.future);

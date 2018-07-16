@@ -231,7 +231,7 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
     if (recordId.isNull()) {
         // Upsert case.
         auto status = collection->insertDocument(
-            opCtx, InsertStatement(updateRequest.getUpdates()), nullptr, true, false);
+            opCtx, InsertStatement(updateRequest.getUpdates()), nullptr, false);
 
         if (status == ErrorCodes::DuplicateKey) {
             throw WriteConflictException();
@@ -266,7 +266,6 @@ void updateSessionEntry(OperationContext* opCtx, const UpdateRequest& updateRequ
                                recordId,
                                Snapshotted<BSONObj>(startingSnapshotId, originalDoc),
                                updateRequest.getUpdates(),
-                               true,   // enforceQuota
                                false,  // indexesAffected = false because _id is the only index
                                nullptr,
                                &args);
@@ -742,6 +741,11 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     // We accept possible slight inaccuracies in these counters from non-atomicity.
     ServerTransactionsMetrics::get(opCtx)->decrementCurrentActive();
     ServerTransactionsMetrics::get(opCtx)->incrementCurrentInactive();
+
+    // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
+    // with this Client's information. This is the last client that ran a transaction operation on
+    // the Session.
+    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
 }
 
 void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
@@ -918,6 +922,10 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
     // SingleTransactionStats instance on the Session.
     _singleTransactionStats->getOpDebug()->additiveMetrics.add(
         CurOp::get(opCtx)->debug().additiveMetrics);
+
+    // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
+    // with this Client's information.
+    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
 }
 
 void Session::_abortTransaction(WithLock wl) {
@@ -1063,6 +1071,9 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
                 // SingleTransactionStats instance on the Session.
                 _singleTransactionStats->getOpDebug()->additiveMetrics.add(
                     CurOp::get(opCtx)->debug().additiveMetrics);
+                // Update the LastClientInfo object stored in the SingleTransactionStats instance on
+                // the Session with this Client's information.
+                _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
             }
         }
         // We must clear the recovery unit and locker so any post-transaction writes can run without
@@ -1099,6 +1110,9 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
     // SingleTransactionStats instance on the Session.
     _singleTransactionStats->getOpDebug()->additiveMetrics.add(
         CurOp::get(opCtx)->debug().additiveMetrics);
+    // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
+    // with this Client's information.
+    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
 }
 
 BSONObj Session::reportStashedState() const {
@@ -1149,10 +1163,21 @@ void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) cons
         return;
     }
     parametersBuilder.append("autocommit", _autocommit);
-    parametersBuilder.append("timeOpenMicros",
-                             static_cast<long long>(_singleTransactionStats->getDuration()));
-
     parametersBuilder.done();
+
+    builder->append("startWallClockTime",
+                    dateToISOStringLocal(Date_t::fromMillisSinceEpoch(
+                        _singleTransactionStats->getStartTime() / 1000)));
+    // We use the same "now" time so that the following time metrics are consistent with each other.
+    auto curTime = curTimeMicros64();
+    builder->append("timeOpenMicros",
+                    static_cast<long long>(_singleTransactionStats->getDuration(curTime)));
+    auto timeActive =
+        durationCount<Microseconds>(_singleTransactionStats->getTimeActiveMicros(curTime));
+    auto timeInactive =
+        durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
+    builder->append("timeActiveMicros", timeActive);
+    builder->append("timeInactiveMicros", timeInactive);
 }
 
 void Session::_checkValid(WithLock) const {

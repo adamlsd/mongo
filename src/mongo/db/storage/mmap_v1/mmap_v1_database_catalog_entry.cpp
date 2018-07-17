@@ -222,7 +222,7 @@ void MMAPV1DatabaseCatalogEntry::_removeFromCache(RecoveryUnit* ru, StringData n
 
     //  If there is an operation context, register a rollback to restore the cache entry
     if (ru) {
-        ru->registerChange(new EntryRemoval(ns, this, i->second));
+        ru->registerChange(std::make_unique<EntryRemoval>(ns, this, i->second));
     } else {
         delete i->second;
     }
@@ -394,7 +394,7 @@ Status MMAPV1DatabaseCatalogEntry::_renameSingleNamespace(OperationContext* opCt
 
     Entry*& entry = _collections[toNS.toString()];
     invariant(entry == NULL);
-    opCtx->recoveryUnit()->registerChange(new EntryInsertion(toNS, this));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<EntryInsertion>(toNS, this));
     entry = new Entry();
     _removeFromCache(opCtx->recoveryUnit(), fromNS);
     _insertInCache(opCtx, toNS, rid, entry);
@@ -555,11 +555,13 @@ void MMAPV1DatabaseCatalogEntry::_init(OperationContext* opCtx) {
 
     if (isSystemNamespacesGoingToBeNew) {
         invariant(!storageGlobalParams.readOnly);
-        opCtx->recoveryUnit()->registerChange(new EntryInsertion(nsn.toString(), this));
+        opCtx->recoveryUnit()->registerChange(
+            std::make_unique<EntryInsertion>(nsn.toString(), this));
     }
     if (isSystemIndexesGoingToBeNew) {
         invariant(!storageGlobalParams.readOnly);
-        opCtx->recoveryUnit()->registerChange(new EntryInsertion(nsi.toString(), this));
+        opCtx->recoveryUnit()->registerChange(
+            std::make_unique<EntryInsertion>(nsi.toString(), this));
     }
 
     Entry*& indexEntry = _collections[nsi.toString()];
@@ -672,7 +674,7 @@ Status MMAPV1DatabaseCatalogEntry::createCollection(OperationContext* opCtx,
 
     Entry*& entry = _collections[ns.toString()];
     invariant(!entry);
-    opCtx->recoveryUnit()->registerChange(new EntryInsertion(ns, this));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<EntryInsertion>(ns, this));
     entry = new Entry();
     _insertInCache(opCtx, ns, rid, entry);
 
@@ -720,7 +722,7 @@ void MMAPV1DatabaseCatalogEntry::createNamespaceForIndex(OperationContext* opCtx
 
     Entry*& entry = _collections[name.toString()];
     invariant(!entry);
-    opCtx->recoveryUnit()->registerChange(new EntryInsertion(name, this));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<EntryInsertion>(name, this));
     entry = new Entry();
     _insertInCache(opCtx, name, rid, entry);
 }

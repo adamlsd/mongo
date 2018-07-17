@@ -59,7 +59,7 @@ public:
 
     void abandonSnapshot() override;
 
-    void registerChange(Change* change) override;
+    void registerChange(std::unique_ptr<Change> change) override;
 
     void* writingPtr(void* data, size_t len) override {
         MONGO_UNREACHABLE;

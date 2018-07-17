@@ -1055,7 +1055,7 @@ Status IndexCatalogImpl::_dropIndex(OperationContext* opCtx, IndexCatalogEntry* 
 
     invariant(_entries.release(entry->descriptor()) == entry);
     opCtx->recoveryUnit()->registerChange(
-        new IndexRemoveChange(opCtx, _collection, &_entries, entry));
+        std::make_unique<IndexRemoveChange>(opCtx, _collection, &_entries, entry));
     _collection->infoCache()->droppedIndex(opCtx, indexName);
     entry = nullptr;
     _deleteIndexFromDisk(opCtx, indexName, indexNamespace);
@@ -1348,7 +1348,7 @@ const IndexDescriptor* IndexCatalogImpl::refreshEntry(OperationContext* opCtx,
     // invalid and should not be dereferenced.
     IndexCatalogEntry* oldEntry = _entries.release(oldDesc);
     opCtx->recoveryUnit()->registerChange(
-        new IndexRemoveChange(opCtx, _collection, &_entries, oldEntry));
+        std::make_unique<IndexRemoveChange>(opCtx, _collection, &_entries, oldEntry));
 
     // Ask the CollectionCatalogEntry for the new index spec.
     BSONObj spec = _collection->getCatalogEntry()->getIndexSpec(opCtx, indexName).getOwned();

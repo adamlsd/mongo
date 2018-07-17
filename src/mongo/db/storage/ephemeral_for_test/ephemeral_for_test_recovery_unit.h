@@ -1,5 +1,3 @@
-// ephemeral_for_test_recovery_unit.h
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -30,6 +28,8 @@
 
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <vector>
 
 #include "mongo/db/record_id.h"
@@ -42,48 +42,48 @@ class SortedDataInterface;
 
 class EphemeralForTestRecoveryUnit : public RecoveryUnit {
 public:
-    EphemeralForTestRecoveryUnit(stdx::function<void()> cb = nullptr)
+    EphemeralForTestRecoveryUnit(std::function<void()> cb = nullptr)
         : _waitUntilDurableCallback(cb) {}
 
     void beginUnitOfWork(OperationContext* opCtx) final{};
     void commitUnitOfWork() final;
     void abortUnitOfWork() final;
 
-    virtual bool waitUntilDurable() {
+    bool waitUntilDurable() final {
         if (_waitUntilDurableCallback) {
             _waitUntilDurableCallback();
         }
         return true;
     }
 
-    virtual void abandonSnapshot() {}
+    void abandonSnapshot() final {}
 
     Status obtainMajorityCommittedSnapshot() final;
 
-    virtual void registerChange(Change* change) {
-        _changes.push_back(ChangePtr(change));
+    void registerChange(std::unique_ptr<Change> change) final {
+        _changes.push_back(std::move(change));
     }
 
-    virtual void* writingPtr(void* data, size_t len) {
+    void* writingPtr(void* data, size_t len) final {
         MONGO_UNREACHABLE;
     }
 
-    virtual void setRollbackWritesDisabled() {}
+    void setRollbackWritesDisabled() final {}
 
-    virtual SnapshotId getSnapshotId() const {
+    SnapshotId getSnapshotId() const final {
         return SnapshotId();
     }
 
-    virtual void setOrderedCommit(bool orderedCommit) {}
+    void setOrderedCommit(bool orderedCommit) final {}
 
-    virtual void setPrepareTimestamp(Timestamp) {}
+    void setPrepareTimestamp(Timestamp) final {}
 
 private:
     typedef std::shared_ptr<Change> ChangePtr;
     typedef std::vector<ChangePtr> Changes;
 
     Changes _changes;
-    stdx::function<void()> _waitUntilDurableCallback;
+    std::function<void()> _waitUntilDurableCallback;
 };
 
 }  // namespace mongo

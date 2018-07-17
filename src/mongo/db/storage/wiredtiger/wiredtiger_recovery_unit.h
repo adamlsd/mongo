@@ -72,7 +72,7 @@ public:
 
     bool waitUntilUnjournaledWritesDurable() override;
 
-    void registerChange(Change* change) override;
+    void registerChange(std::unique_ptr<Change> change) override;
 
     void abandonSnapshot() override;
     void preallocateSnapshot() override;
@@ -219,4 +219,4 @@ private:
     WiredTigerSession* _session;
     WT_CURSOR* _cursor;  // owned, but pulled
 };
-}
+}  // namespace mongo

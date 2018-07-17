@@ -208,7 +208,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
     WriteUnitOfWork wunit(_opCtx);
 
     invariant(_indexes.empty());
-    _opCtx->recoveryUnit()->registerChange(new CleanupIndexesVectorOnRollback(this));
+    _opCtx->recoveryUnit()->registerChange(std::make_unique<CleanupIndexesVectorOnRollback>(this));
 
     const string& ns = _collection->ns().ns();
 
@@ -540,7 +540,7 @@ void MultiIndexBlockImpl::commit(stdx::function<void(const BSONObj& spec)> onCre
         }
     }
 
-    _opCtx->recoveryUnit()->registerChange(new SetNeedToCleanupOnRollback(this));
+    _opCtx->recoveryUnit()->registerChange(std::make_unique<SetNeedToCleanupOnRollback>(this));
     _needToCleanup = false;
 }
 }  // namespace mongo

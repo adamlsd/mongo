@@ -233,7 +233,7 @@ public:
 void IndexCatalogEntryImpl::setHead(OperationContext* opCtx, RecordId newHead) {
     _collection->setIndexHead(opCtx, _descriptor->indexName(), newHead);
 
-    opCtx->recoveryUnit()->registerChange(new SetHeadChange(this, _head));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<SetHeadChange>(this, _head));
     _head = newHead;
 }
 

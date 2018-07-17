@@ -30,6 +30,8 @@
 
 #include "mongo/db/auth/authz_manager_external_state_local.h"
 
+#include <memory>
+
 #include "mongo/base/status.h"
 #include "mongo/bson/mutable/algorithm.h"
 #include "mongo/bson/mutable/document.h"
@@ -591,7 +593,7 @@ void AuthzManagerExternalStateLocal::logOp(OperationContext* opCtx,
     if (nss == AuthorizationManager::rolesCollectionNamespace ||
         nss == AuthorizationManager::adminCommandNamespace) {
         opCtx->recoveryUnit()->registerChange(
-            new AuthzManagerLogOpHandler(opCtx, this, op, nss, o, o2));
+            std::make_unique<AuthzManagerLogOpHandler>(opCtx, this, op, nss, o, o2));
     }
 }
 

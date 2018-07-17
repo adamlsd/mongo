@@ -29,6 +29,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <stdlib.h>
 #include <string>
 
@@ -278,7 +279,7 @@ public:
      * The registerChange() method may only be called when a WriteUnitOfWork is active, and
      * may not be called during commit or rollback.
      */
-    virtual void registerChange(Change* change) = 0;
+    virtual void registerChange(std::unique_ptr<Change> change) = 0;
 
     /**
      * Registers a callback to be called if the current WriteUnitOfWork rolls back.
@@ -299,7 +300,7 @@ public:
             Callback _callback;
         };
 
-        registerChange(new OnRollbackChange(std::move(callback)));
+        registerChange(std::make_unique<OnRollbackChange>(std::move(callback)));
     }
 
     /**
@@ -321,7 +322,7 @@ public:
             Callback _callback;
         };
 
-        registerChange(new OnCommitChange(std::move(callback)));
+        registerChange(std::make_unique<OnCommitChange>(std::move(callback)));
     }
 
     //

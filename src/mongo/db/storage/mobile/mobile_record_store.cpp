@@ -699,7 +699,7 @@ private:
 
 void MobileRecordStore::_changeNumRecs(OperationContext* opCtx, int64_t diff) {
     stdx::lock_guard<stdx::mutex> lock(_numRecsMutex);
-    opCtx->recoveryUnit()->registerChange(new NumRecsChange(this, diff));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<NumRecsChange>(this, diff));
     _initNumRecsIfNeeded_inlock(opCtx);
     _numRecs += diff;
 }
@@ -736,7 +736,7 @@ private:
 
 void MobileRecordStore::_changeDataSize(OperationContext* opCtx, int64_t diff) {
     stdx::lock_guard<stdx::mutex> lock(_dataSizeMutex);
-    opCtx->recoveryUnit()->registerChange(new DataSizeChange(this, diff));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<DataSizeChange>(this, diff));
     _initDataSizeIfNeeded_inlock(opCtx);
     _dataSize += diff;
 }

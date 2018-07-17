@@ -103,9 +103,9 @@ void MobileRecoveryUnit::abandonSnapshot() {
     _areWriteUnitOfWorksBanned = false;
 }
 
-void MobileRecoveryUnit::registerChange(Change* change) {
+void MobileRecoveryUnit::registerChange(std::unique_ptr<Change> change) {
     invariant(_inUnitOfWork);
-    _changes.push_back(std::unique_ptr<Change>{change});
+    _changes.push_back(std::move(change));
 }
 
 MobileSession* MobileRecoveryUnit::getSession(OperationContext* opCtx) {
@@ -163,4 +163,4 @@ void MobileRecoveryUnit::_txnClose(bool commit) {
 void MobileRecoveryUnit::enqueueFailedDrop(std::string& dropQuery) {
     _sessionPool->failedDropsQueue.enqueueOp(dropQuery);
 }
-}
+}  // namespace mongo

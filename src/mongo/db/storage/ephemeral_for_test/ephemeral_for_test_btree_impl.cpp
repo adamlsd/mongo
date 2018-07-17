@@ -1,5 +1,3 @@
-// ephemeral_for_test_btree_impl.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -32,6 +30,7 @@
 
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_btree_impl.h"
 
+#include <memory>
 #include <set>
 
 #include "mongo/db/catalog/index_catalog_entry.h"
@@ -167,7 +166,8 @@ public:
         IndexKeyEntry entry(key.getOwned(), loc);
         if (_data->insert(entry).second) {
             _currentKeySize += key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, true));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, true));
         }
         return Status::OK();
     }
@@ -184,7 +184,8 @@ public:
         invariant(numDeleted <= 1);
         if (numDeleted == 1) {
             _currentKeySize -= key.objsize();
-            opCtx->recoveryUnit()->registerChange(new IndexChange(_data, entry, false));
+            opCtx->recoveryUnit()->registerChange(
+                std::make_unique<IndexChange>(_data, entry, false));
         }
     }
 

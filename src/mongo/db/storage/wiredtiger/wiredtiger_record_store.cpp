@@ -1,5 +1,3 @@
-// wiredtiger_record_store.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -252,11 +250,11 @@ void WiredTigerRecordStore::OplogStones::updateCurrentStoneAfterInsertOnCommit(
     RecordId highestInserted,
     int64_t countInserted) {
     opCtx->recoveryUnit()->registerChange(
-        new InsertChange(this, bytesInserted, highestInserted, countInserted));
+        std::make_unique<InsertChange>(this, bytesInserted, highestInserted, countInserted));
 }
 
 void WiredTigerRecordStore::OplogStones::clearStonesOnCommit(OperationContext* opCtx) {
-    opCtx->recoveryUnit()->registerChange(new TruncateChange(this));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<TruncateChange>(this));
 }
 
 void WiredTigerRecordStore::OplogStones::updateStonesAfterCappedTruncateAfter(
@@ -1715,7 +1713,7 @@ void WiredTigerRecordStore::_changeNumRecords(OperationContext* opCtx, int64_t d
         return;
     }
 
-    opCtx->recoveryUnit()->registerChange(new NumRecordsChange(this, diff));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<NumRecordsChange>(this, diff));
     if (_sizeInfo->numRecords.fetchAndAdd(diff) < 0)
         _sizeInfo->numRecords.store(std::max(diff, int64_t(0)));
 }
@@ -1739,7 +1737,7 @@ void WiredTigerRecordStore::_increaseDataSize(OperationContext* opCtx, int64_t a
     }
 
     if (opCtx)
-        opCtx->recoveryUnit()->registerChange(new DataSizeChange(this, amount));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<DataSizeChange>(this, amount));
 
     if (_sizeInfo->dataSize.fetchAndAdd(amount) < 0)
         _sizeInfo->dataSize.store(std::max(amount, int64_t(0)));

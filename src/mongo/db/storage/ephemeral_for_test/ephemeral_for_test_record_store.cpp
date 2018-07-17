@@ -1,5 +1,3 @@
-// ephemeral_for_test_record_store.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -32,6 +30,8 @@
 #define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
 #include "mongo/db/storage/ephemeral_for_test/ephemeral_for_test_record_store.h"
+
+#include <memory>
 
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
@@ -346,7 +346,7 @@ void EphemeralForTestRecordStore::deleteRecord(OperationContext* opCtx, const Re
 void EphemeralForTestRecordStore::deleteRecord_inlock(OperationContext* opCtx,
                                                       const RecordId& loc) {
     EphemeralForTestRecord* rec = recordFor(loc);
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *rec));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<RemoveChange>(opCtx, _data, loc, *rec));
     _data->dataSize -= rec->size;
     invariant(_data->records.erase(loc) == 1);
 }
@@ -419,7 +419,7 @@ StatusWith<RecordId> EphemeralForTestRecordStore::insertRecord(
         loc = allocateLoc();
     }
 
-    opCtx->recoveryUnit()->registerChange(new InsertChange(opCtx, _data, loc));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<InsertChange>(opCtx, _data, loc));
     _data->dataSize += len;
     _data->records[loc] = rec;
 
@@ -456,7 +456,7 @@ Status EphemeralForTestRecordStore::insertRecordsWithDocWriter(OperationContext*
             loc = allocateLoc();
         }
 
-        opCtx->recoveryUnit()->registerChange(new InsertChange(opCtx, _data, loc));
+        opCtx->recoveryUnit()->registerChange(std::make_unique<InsertChange>(opCtx, _data, loc));
         _data->dataSize += len;
         _data->records[loc] = rec;
 
@@ -494,7 +494,8 @@ Status EphemeralForTestRecordStore::updateRecord(OperationContext* opCtx,
     EphemeralForTestRecord newRecord(len);
     memcpy(newRecord.data.get(), data, len);
 
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *oldRecord));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<RemoveChange>(opCtx, _data, loc, *oldRecord));
     _data->dataSize += len - oldLen;
     *oldRecord = newRecord;
 
@@ -521,7 +522,8 @@ StatusWith<RecordData> EphemeralForTestRecordStore::updateWithDamages(
     EphemeralForTestRecord newRecord(len);
     memcpy(newRecord.data.get(), oldRecord->data.get(), len);
 
-    opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, loc, *oldRecord));
+    opCtx->recoveryUnit()->registerChange(
+        std::make_unique<RemoveChange>(opCtx, _data, loc, *oldRecord));
     *oldRecord = newRecord;
 
     cappedDeleteAsNeeded_inlock(opCtx);
@@ -543,14 +545,14 @@ StatusWith<RecordData> EphemeralForTestRecordStore::updateWithDamages(
 std::unique_ptr<SeekableRecordCursor> EphemeralForTestRecordStore::getCursor(
     OperationContext* opCtx, bool forward) const {
     if (forward)
-        return stdx::make_unique<Cursor>(opCtx, *this);
-    return stdx::make_unique<ReverseCursor>(opCtx, *this);
+        return std::make_unique<Cursor>(opCtx, *this);
+    return std::make_unique<ReverseCursor>(opCtx, *this);
 }
 
 Status EphemeralForTestRecordStore::truncate(OperationContext* opCtx) {
     // Unlike other changes, TruncateChange mutates _data on construction to perform the
     // truncate
-    opCtx->recoveryUnit()->registerChange(new TruncateChange(opCtx, _data));
+    opCtx->recoveryUnit()->registerChange(std::make_unique<TruncateChange>(opCtx, _data));
     return Status::OK();
 }
 
@@ -568,7 +570,8 @@ void EphemeralForTestRecordStore::cappedTruncateAfter(OperationContext* opCtx,
             uassertStatusOK(_cappedCallback->aboutToDeleteCapped(opCtx, id, record.toRecordData()));
         }
 
-        opCtx->recoveryUnit()->registerChange(new RemoveChange(opCtx, _data, id, record));
+        opCtx->recoveryUnit()->registerChange(
+            std::make_unique<RemoveChange>(opCtx, _data, id, record));
         _data->dataSize -= record.size;
         _data->records.erase(it++);
     }

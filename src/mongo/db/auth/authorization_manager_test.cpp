@@ -27,6 +27,8 @@
 
 #include "mongo/platform/basic.h"
 
+#include "mongo/db/auth/authorization_manager.h"
+
 /**
  * Unit tests of the AuthorizationManager type.
  */
@@ -38,7 +40,6 @@
 #include "mongo/crypto/sha256_block.h"
 #include "mongo/db/auth/action_set.h"
 #include "mongo/db/auth/action_type.h"
-#include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_impl.h"
 #include "mongo/db/auth/authorization_session.h"
 #include "mongo/db/auth/authz_manager_external_state_mock.h"
@@ -354,9 +355,9 @@ public:
     public:
         MockRecoveryUnit(size_t* registeredChanges) : _registeredChanges(registeredChanges) {}
 
-        virtual void registerChange(Change* change) final {
+        void registerChange(std::unique_ptr<Change> change) final {
             // RecoveryUnitNoop takes ownership of the Change
-            RecoveryUnitNoop::registerChange(change);
+            RecoveryUnitNoop::registerChange(std::move(change));
             ++(*_registeredChanges);
         }
 
@@ -364,7 +365,7 @@ public:
         size_t* _registeredChanges;
     };
 
-    virtual void setUp() override {
+    void setUp() override {
         opCtx.setRecoveryUnit(recoveryUnit, WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
         AuthorizationManagerTest::setUp();
     }

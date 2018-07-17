@@ -254,11 +254,12 @@ static Status parseGeoJSONPolygonCoordinates(const BSONElement& elem,
     // Given all loops are valid / normalized and S2Polygon::IsValid() above returns true.
     // The polygon must be valid. See S2Polygon member function IsValid().
 
+    [out, &loops]() noexcept
     {
         // Transfer ownership of the loops and clears loop vector.
-        std::vector<S2Loop*> rawLoops = transitional_tools_do_not_use::leak_vector(loops);
+        std::vector<S2Loop*> rawLoops = transitional_tools_do_not_use::leak_vector(std::move(loops));
         out->Init(&rawLoops);
-    }
+    }();
 
     if (skipValidation)
         return Status::OK();

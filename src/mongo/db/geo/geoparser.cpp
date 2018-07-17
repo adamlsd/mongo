@@ -562,18 +562,17 @@ Status GeoParser::parseMultiLine(const BSONObj& obj, bool skipValidation, MultiL
         return BAD_VALUE("MultiLineString coordinates must be an array");
 
     out->lines.clear();
-    vector<S2Polyline*>& lines = out->lines.mutableVector();
 
     BSONObjIterator it(coordElt.Obj());
 
     // Iterate array
     while (it.more()) {
-        lines.push_back(new S2Polyline());
-        status = parseGeoJSONLineCoordinates(it.next(), skipValidation, lines.back());
+        out->lines.push_back(std::make_unique<S2Polyline>());
+        status = parseGeoJSONLineCoordinates(it.next(), skipValidation, out->lines.back().get());
         if (!status.isOK())
             return status;
     }
-    if (0 == lines.size())
+    if (0 == out->lines.size())
         return BAD_VALUE("MultiLineString coordinates must have at least 1 element");
 
     return Status::OK();
@@ -592,17 +591,17 @@ Status GeoParser::parseMultiPolygon(const BSONObj& obj,
         return BAD_VALUE("MultiPolygon coordinates must be an array");
 
     out->polygons.clear();
-    vector<S2Polygon*>& polygons = out->polygons.mutableVector();
 
     BSONObjIterator it(coordElt.Obj());
     // Iterate array
     while (it.more()) {
-        polygons.push_back(new S2Polygon());
-        status = parseGeoJSONPolygonCoordinates(it.next(), skipValidation, polygons.back());
+        out->polygons.push_back(std::make_unique<S2Polygon>());
+        status =
+            parseGeoJSONPolygonCoordinates(it.next(), skipValidation, out->polygons.back().get());
         if (!status.isOK())
             return status;
     }
-    if (0 == polygons.size())
+    if (0 == out->polygons.size())
         return BAD_VALUE("MultiPolygon coordinates must have at least 1 element");
 
     return Status::OK();
@@ -706,21 +705,20 @@ Status GeoParser::parseGeometryCollection(const BSONObj& obj,
             out->points.resize(out->points.size() + 1);
             status = parseGeoJSONPoint(geoObj, &out->points.back());
         } else if (GEOJSON_LINESTRING == type) {
-            out->lines.mutableVector().push_back(new LineWithCRS());
-            status = parseGeoJSONLine(geoObj, skipValidation, out->lines.vector().back());
+            out->lines.push_back(std::make_unique<LineWithCRS>());
+            status = parseGeoJSONLine(geoObj, skipValidation, out->lines.back().get());
         } else if (GEOJSON_POLYGON == type) {
-            out->polygons.mutableVector().push_back(new PolygonWithCRS());
-            status = parseGeoJSONPolygon(geoObj, skipValidation, out->polygons.vector().back());
+            out->polygons.push_back(std::make_unique<PolygonWithCRS>());
+            status = parseGeoJSONPolygon(geoObj, skipValidation, out->polygons.back().get());
         } else if (GEOJSON_MULTI_POINT == type) {
-            out->multiPoints.mutableVector().push_back(new MultiPointWithCRS());
-            status = parseMultiPoint(geoObj, out->multiPoints.mutableVector().back());
+            out->multiPoints.push_back(std::make_unique<MultiPointWithCRS>());
+            status = parseMultiPoint(geoObj, out->multiPoints.back().get());
         } else if (GEOJSON_MULTI_LINESTRING == type) {
-            out->multiLines.mutableVector().push_back(new MultiLineWithCRS());
-            status = parseMultiLine(geoObj, skipValidation, out->multiLines.mutableVector().back());
+            out->multiLines.push_back(std::make_unique<MultiLineWithCRS>());
+            status = parseMultiLine(geoObj, skipValidation, out->multiLines.back().get());
         } else if (GEOJSON_MULTI_POLYGON == type) {
-            out->multiPolygons.mutableVector().push_back(new MultiPolygonWithCRS());
-            status = parseMultiPolygon(
-                geoObj, skipValidation, out->multiPolygons.mutableVector().back());
+            out->multiPolygons.push_back(std::make_unique<MultiPolygonWithCRS>());
+            status = parseMultiPolygon(geoObj, skipValidation, out->multiPolygons.back().get());
         } else {
             // Should not reach here.
             MONGO_UNREACHABLE;

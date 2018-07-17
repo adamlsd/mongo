@@ -1,35 +1,34 @@
-// record_store_v1_test_help.h
-
 /**
-*    Copyright (C) 2014 MongoDB Inc.
-*
-*    This program is free software: you can redistribute it and/or  modify
-*    it under the terms of the GNU Affero General Public License, version 3,
-*    as published by the Free Software Foundation.
-*
-*    This program is distributed in the hope that it will be useful,
-*    but WITHOUT ANY WARRANTY; without even the implied warranty of
-*    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*    GNU Affero General Public License for more details.
-*
-*    You should have received a copy of the GNU Affero General Public License
-*    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*
-*    As a special exception, the copyright holders give permission to link the
-*    code of portions of this program with the OpenSSL library under certain
-*    conditions as described in each individual source file and distribute
-*    linked combinations including the program with the OpenSSL library. You
-*    must comply with the GNU Affero General Public License in all respects for
-*    all of the code used other than as permitted herein. If you modify file(s)
-*    with this exception, you may extend this exception to your version of the
-*    file(s), but you are not obligated to do so. If you do not wish to do so,
-*    delete this exception statement from your version. If you delete this
-*    exception statement from all source files in the program, then also delete
-*    it in the license file.
-*/
+ *    Copyright (C) 2014 MongoDB Inc.
+ *
+ *    This program is free software: you can redistribute it and/or  modify
+ *    it under the terms of the GNU Affero General Public License, version 3,
+ *    as published by the Free Software Foundation.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU Affero General Public License for more details.
+ *
+ *    You should have received a copy of the GNU Affero General Public License
+ *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ *    As a special exception, the copyright holders give permission to link the
+ *    code of portions of this program with the OpenSSL library under certain
+ *    conditions as described in each individual source file and distribute
+ *    linked combinations including the program with the OpenSSL library. You
+ *    must comply with the GNU Affero General Public License in all respects for
+ *    all of the code used other than as permitted herein. If you modify file(s)
+ *    with this exception, you may extend this exception to your version of the
+ *    file(s), but you are not obligated to do so. If you do not wish to do so,
+ *    delete this exception statement from your version. If you delete this
+ *    exception statement from all source files in the program, then also delete
+ *    it in the license file.
+ */
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "mongo/db/storage/mmap_v1/data_file.h"
@@ -111,45 +110,42 @@ protected:
 
 class DummyExtentManager : public ExtentManager {
 public:
-    virtual ~DummyExtentManager();
+    ~DummyExtentManager() override;
 
-    virtual void close(OperationContext* opCtx);
+    void close(OperationContext* opCtx) final;
 
-    virtual Status init(OperationContext* opCtx);
+    Status init(OperationContext* opCtx) final;
 
-    virtual int numFiles() const;
-    virtual long long fileSize() const;
+    int numFiles() const final;
+    long long fileSize() const final;
 
-    virtual DiskLoc allocateExtent(OperationContext* opCtx,
-                                   bool capped,
-                                   int size,
-                                   bool enforceQuota);
+    DiskLoc allocateExtent(OperationContext* opCtx, bool capped, int size, bool enforceQuota) final;
 
-    virtual void freeExtents(OperationContext* opCtx, DiskLoc firstExt, DiskLoc lastExt);
+    void freeExtents(OperationContext* opCtx, DiskLoc firstExt, DiskLoc lastExt) final;
 
-    virtual void freeExtent(OperationContext* opCtx, DiskLoc extent);
+    void freeExtent(OperationContext* opCtx, DiskLoc extent) final;
 
-    virtual void freeListStats(OperationContext* opCtx,
-                               int* numExtents,
-                               int64_t* totalFreeSizeBytes) const;
+    void freeListStats(OperationContext* opCtx,
+                       int* numExtents,
+                       int64_t* totalFreeSizeBytes) const final;
 
-    virtual MmapV1RecordHeader* recordForV1(const DiskLoc& loc) const;
+    MmapV1RecordHeader* recordForV1(const DiskLoc& loc) const final;
 
-    virtual std::unique_ptr<RecordFetcher> recordNeedsFetch(const DiskLoc& loc) const final;
+    std::unique_ptr<RecordFetcher> recordNeedsFetch(const DiskLoc& loc) const final;
 
-    virtual Extent* extentForV1(const DiskLoc& loc) const;
+    Extent* extentForV1(const DiskLoc& loc) const final;
 
-    virtual DiskLoc extentLocForV1(const DiskLoc& loc) const;
+    DiskLoc extentLocForV1(const DiskLoc& loc) const final;
 
-    virtual Extent* getExtent(const DiskLoc& loc, bool doSanityCheck = true) const;
+    Extent* getExtent(const DiskLoc& loc, bool doSanityCheck = true) const final;
 
-    virtual int maxSize() const;
+    int maxSize() const final;
 
-    virtual CacheHint* cacheHint(const DiskLoc& extentLoc, const HintType& hint);
+    std::unique_ptr<CacheHint> cacheHint(const DiskLoc& extentLoc, const HintType& hint) final;
 
     DataFileVersion getFileFormat(OperationContext* opCtx) const final;
 
-    virtual void setFileFormat(OperationContext* opCtx, DataFileVersion newVersion) final;
+    void setFileFormat(OperationContext* opCtx, DataFileVersion newVersion) final;
 
     const DataFile* getOpenFile(int n) const final;
 

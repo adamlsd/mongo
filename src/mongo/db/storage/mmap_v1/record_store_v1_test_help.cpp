@@ -1,5 +1,3 @@
-// record_store_v1_test_help.cpp
-
 /**
 *    Copyright (C) 2014 MongoDB Inc.
 *
@@ -104,7 +102,7 @@ void DummyRecordStoreV1MetaData::setStats(OperationContext* opCtx,
 
 namespace {
 DiskLoc myNull;
-}
+}  // namespace
 
 DiskLoc DummyRecordStoreV1MetaData::deletedListEntry(int bucket) const {
     invariant(bucket >= 0);
@@ -291,9 +289,9 @@ int DummyExtentManager::maxSize() const {
     return 1024 * 1024 * 64;
 }
 
-DummyExtentManager::CacheHint* DummyExtentManager::cacheHint(const DiskLoc& extentLoc,
-                                                             const HintType& hint) {
-    return new CacheHint();
+std::unique_ptr<DummyExtentManager::CacheHint> DummyExtentManager::cacheHint(
+    const DiskLoc& extentLoc, const HintType& hint) {
+    return std::make_unique<CacheHint>();
 }
 
 DataFileVersion DummyExtentManager::getFileFormat(OperationContext* opCtx) const {
@@ -665,4 +663,4 @@ void assertStateV1RS(OperationContext* opCtx,
         throw;
     }
 }
-}
+}  // namespace mongo

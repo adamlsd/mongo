@@ -1,5 +1,3 @@
-// record_store_v1_capped.cpp
-
 /**
  *    Copyright (C) 2013 10gen Inc.
  *
@@ -693,4 +691,4 @@ DiskLoc CappedRecordStoreV1::lastRecord(OperationContext* opCtx, const DiskLoc& 
     }
     return DiskLoc();
 }
-}
+}  // namespace mongo

@@ -170,7 +170,7 @@ protected:
      * returns a thread safe object that you can call flush on
      * Flushable has to fail nicely if the underlying object gets killed
      */
-    virtual Flushable* prepareFlush() = 0;
+    virtual std::unique_ptr<Flushable> prepareFlush() = 0;
 
     /**
      * Returns true iff the file is closed.
@@ -229,12 +229,12 @@ protected:
 public:
     MemoryMappedFile(OperationContext* opCtx, OptionSet options = NONE);
 
-    virtual ~MemoryMappedFile();
+    ~MemoryMappedFile() override;
 
     /**
      * Callers must be holding a `LockMongoFilesExclusive`.
      */
-    virtual void close(OperationContext* opCtx);
+    void close(OperationContext* opCtx) override;
 
     /**
      * uasserts if file doesn't exist. fasserts on mmap error.
@@ -252,9 +252,9 @@ public:
 
     void flush(bool sync);
 
-    virtual bool isClosed();
+    bool isClosed() override;
 
-    virtual Flushable* prepareFlush();
+    std::unique_ptr<Flushable> prepareFlush() override;
 
     long shortLength() const {
         return (long)len;
@@ -272,7 +272,7 @@ public:
      */
     void* createPrivateMap();
 
-    virtual uint64_t getUniqueId() const {
+    uint64_t getUniqueId() const override {
         return _uniqueId;
     }
 

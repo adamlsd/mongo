@@ -29,8 +29,8 @@
 #include "mongo/db/geo/big_polygon.h"
 
 #include <map>
+#include <memory>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/stdx/memory.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/transitional_tools_do_not_use/vector_spooling.h"
@@ -227,4 +227,4 @@ bool BigSimplePolygon::Decode(Decoder* const decoder) {
 bool BigSimplePolygon::DecodeWithinScope(Decoder* const decoder) {
     MONGO_UNREACHABLE;
 }
-}
+}  // namespace mongo

@@ -1,5 +1,3 @@
-// key_string_test.cpp
-
 /**
  *    Copyright (C) 2014 MongoDB Inc.
  *
@@ -40,7 +38,6 @@
 #include <typeinfo>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/bson/bsonobj_comparator.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
@@ -55,6 +52,8 @@
 #include "mongo/util/hex.h"
 #include "mongo/util/log.h"
 #include "mongo/util/timer.h"
+
+namespace {
 
 using std::string;
 using namespace mongo;
@@ -1465,3 +1464,4 @@ DEATH_TEST(KeyStringTest, ToBsonPromotesAssertionsToTerminate, "terminate() call
     KeyString::TypeBits typeBits(KeyString::Version::V1);
     KeyString::toBson(invalidString, sizeof(invalidString), ALL_ASCENDING, typeBits);
 }
+}  // namespace

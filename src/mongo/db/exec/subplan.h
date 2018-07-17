@@ -32,7 +32,6 @@
 #include <string>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/status.h"
 #include "mongo/base/string_data.h"
 #include "mongo/db/exec/plan_stage.h"

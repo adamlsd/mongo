@@ -32,7 +32,6 @@
 #include <utility>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/storage/recovery_unit.h"
 #include "mongo/platform/compiler.h"
 

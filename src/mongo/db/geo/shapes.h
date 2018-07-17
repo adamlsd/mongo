@@ -32,7 +32,6 @@
 #include <string>
 #include <vector>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/geo/big_polygon.h"
 #include "mongo/db/geo/s2.h"
 #include "mongo/db/jsobj.h"

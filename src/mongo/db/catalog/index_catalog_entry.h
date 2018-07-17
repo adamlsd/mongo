@@ -31,7 +31,6 @@
 #include <boost/optional.hpp>
 #include <string>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/base/shim.h"
 #include "mongo/bson/ordering.h"
 #include "mongo/bson/timestamp.h"

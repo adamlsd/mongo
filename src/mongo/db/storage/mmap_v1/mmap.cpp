@@ -1,5 +1,3 @@
-// mmap.cpp
-
 /*    Copyright 2009 10gen Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -35,7 +33,6 @@
 
 #include <boost/filesystem/operations.hpp>
 
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/client.h"
 #include "mongo/db/concurrency/locker.h"
 #include "mongo/db/operation_context.h"

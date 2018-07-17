@@ -31,7 +31,6 @@
 #include "mongo/db/query/plan_cache_indexability.h"
 
 #include "mongo/base/init.h"
-#include "mongo/base/owned_pointer_vector.h"
 #include "mongo/db/matcher/expression.h"
 #include "mongo/db/matcher/expression_algo.h"
 #include "mongo/db/matcher/expression_internal_expr_eq.h"

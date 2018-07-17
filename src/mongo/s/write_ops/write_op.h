@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "mongo/s/ns_targeter.h"
@@ -119,7 +120,7 @@ public:
      */
     Status targetWrites(OperationContext* opCtx,
                         const NSTargeter& targeter,
-                        std::vector<TargetedWrite*>* targetedWrites);
+                        std::vector<std::unique_ptr<TargetedWrite>>* targetedWrites);
 
     /**
      * Returns the number of child writes that were last targeted.

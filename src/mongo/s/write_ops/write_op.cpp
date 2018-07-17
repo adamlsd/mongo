@@ -52,7 +52,7 @@ const WriteErrorDetail& WriteOp::getOpError() const {
 
 Status WriteOp::targetWrites(OperationContext* opCtx,
                              const NSTargeter& targeter,
-                             std::vector<TargetedWrite*>* targetedWrites) {
+                             std::vector<std::unique_ptr<TargetedWrite>>* targetedWrites) {
     const bool isIndexInsert = _itemRef.getRequest()->isInsertIndexRequest();
 
     auto swEndpoints = [&]() -> StatusWith<std::vector<ShardEndpoint>> {
@@ -102,9 +102,9 @@ Status WriteOp::targetWrites(OperationContext* opCtx,
             endpoint.shardVersion = ChunkVersion::IGNORED();
         }
 
-        targetedWrites->push_back(new TargetedWrite(std::move(endpoint), ref));
+        targetedWrites->push_back(std::make_unique<TargetedWrite>(std::move(endpoint), ref));
 
-        _childOps.back().pendingWrite = targetedWrites->back();
+        _childOps.back().pendingWrite = targetedWrites->back().get();
         _childOps.back().state = WriteOpState_Pending;
     }
 

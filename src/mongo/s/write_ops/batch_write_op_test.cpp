@@ -28,7 +28,6 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/base/owned_pointer_map.h"
 #include "mongo/db/operation_context_noop.h"
 #include "mongo/s/write_ops/batch_write_op.h"
 #include "mongo/s/write_ops/batched_command_request.h"

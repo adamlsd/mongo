@@ -122,8 +122,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
         //    exactly when the metadata changed.
         //
 
-        OwnedPointerMap<ShardId, TargetedWriteBatch> childBatchesOwned;
-        std::map<ShardId, TargetedWriteBatch*>& childBatches = childBatchesOwned.mutableMap();
+        std::map<ShardId, std::unique_ptr<TargetedWriteBatch>> childBatches;
 
         // If we've already had a targeting error, we've refreshed the metadata once and can
         // record target errors definitively.
@@ -157,7 +156,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
             // Get as many batches as we can at once
             for (auto& childBatch : childBatches) {
-                TargetedWriteBatch* const nextBatch = childBatch.second;
+                auto& nextBatch = childBatch.second;
 
                 // If the batch is nullptr, we sent it previously, so skip
                 if (!nextBatch)
@@ -195,13 +194,8 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                 requests.emplace_back(targetShardId, request);
 
-                // Indicate we're done by setting the batch to nullptr. We'll only get duplicate
-                // hostEndpoints if we have broadcast and non-broadcast endpoints for the same host,
-                // so this should be pretty efficient without moving stuff around.
-                childBatch.second = nullptr;
-
                 // Recv-side is responsible for cleaning up the nextBatch when used
-                pendingBatches.emplace(targetShardId, nextBatch);
+                pendingBatches.emplace(targetShardId, nextBatch.release());
             }
 
             AsyncRequestsSender ars(opCtx,
@@ -241,7 +235,6 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                     // We're done with this batch. Clean up when we can't resolve a host.
                     auto it = childBatches.find(batch->getEndpoint().shardName);
                     invariant(it != childBatches.end());
-                    delete it->second;
                     it->second = nullptr;
                     continue;
                 }

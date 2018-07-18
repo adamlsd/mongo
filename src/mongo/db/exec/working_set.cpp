@@ -39,16 +39,9 @@ using std::string;
 
 namespace dps = ::mongo::dotted_path_support;
 
-WorkingSet::MemberHolder::MemberHolder() : member(NULL) {}
-WorkingSet::MemberHolder::~MemberHolder() {}
-
 WorkingSet::WorkingSet() : _freeList(INVALID_ID) {}
 
-WorkingSet::~WorkingSet() {
-    for (size_t i = 0; i < _data.size(); i++) {
-        delete _data[i].member;
-    }
-}
+WorkingSet::~WorkingSet() {}
 
 WorkingSetID WorkingSet::allocate() {
     if (_freeList == INVALID_ID) {
@@ -58,7 +51,7 @@ WorkingSetID WorkingSet::allocate() {
         WorkingSetID id = _data.size();
         _data.resize(_data.size() + 1);
         _data.back().nextFreeOrSelf = id;
-        _data.back().member = new WorkingSetMember();
+        _data.back().member = std::make_unique<WorkingSetMember>();
         return id;
     }
 
@@ -96,9 +89,6 @@ bool WorkingSet::isFlagged(WorkingSetID id) const {
 }
 
 void WorkingSet::clear() {
-    for (size_t i = 0; i < _data.size(); i++) {
-        delete _data[i].member;
-    }
     _data.clear();
 
     // Since working set is now empty, the free list pointer should

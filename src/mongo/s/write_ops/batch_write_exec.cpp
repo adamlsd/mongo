@@ -57,7 +57,7 @@ const ReadPreferenceSetting kPrimaryOnlyReadPreference(ReadPreference::PrimaryOn
 //
 
 // TODO: Unordered map?
-typedef OwnedPointerMap<ShardId, TargetedWriteBatch> OwnedShardBatchMap;
+typedef std::map<ShardId, std::unique_ptr<TargetedWriteBatch>> ShardBatchMap;
 
 WriteErrorDetail errorFromStatus(const Status& status) {
     WriteErrorDetail error;
@@ -145,8 +145,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
         while (numSent != numToSend) {
             // Collect batches out on the network, mapped by endpoint
-            OwnedShardBatchMap ownedPendingBatches;
-            OwnedShardBatchMap::MapType& pendingBatches = ownedPendingBatches.mutableMap();
+            ShardBatchMap pendingBatches;
 
             //
             // Construct the requests.
@@ -195,7 +194,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
                 requests.emplace_back(targetShardId, request);
 
                 // Recv-side is responsible for cleaning up the nextBatch when used
-                pendingBatches.emplace(targetShardId, nextBatch.release());
+                pendingBatches.insert({targetShardId, std::move(nextBatch)});
             }
 
             AsyncRequestsSender ars(opCtx,
@@ -217,7 +216,7 @@ void BatchWriteExec::executeBatch(OperationContext* opCtx,
 
                 // Get the TargetedWriteBatch to find where to put the response
                 dassert(pendingBatches.find(response.shardId) != pendingBatches.end());
-                TargetedWriteBatch* batch = pendingBatches.find(response.shardId)->second;
+                auto &batch = pendingBatches.find(response.shardId)->second;
 
                 // First check if we were able to target a shard host.
                 if (!response.shardHostAndPort) {

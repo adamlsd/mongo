@@ -783,9 +783,9 @@ int _main(int argc, char* argv[], char** envp) {
     // We create an altered URI from the one passed so that we can pass that to replica set
     // monitors.  This is to avoid making potentially breaking changes to the replica set monitor
     // code.
-    std::string processedURI = shellGlobalParams.url;
+    const auto &cmdlineURI = shellGlobalParams.url;
 
-    if (processedURI.size()) {
+    if (cmdlineURI.size()) {
         if (mechanismRequiresPassword() && parsedURI.getUser().size()) {
             shellGlobalParams.usingPassword = true;
         }
@@ -810,7 +810,7 @@ int _main(int argc, char* argv[], char** envp) {
         if (mongo::serverGlobalParams.quiet.load())
             ss << "__quiet = true;";
         ss << "db = connect( \""
-           << getURIFromArgs(processedURI, shellGlobalParams.dbhost, shellGlobalParams.port)
+           << getURIFromArgs(cmdlineURI, shellGlobalParams.dbhost, shellGlobalParams.port)
            << "\");";
 
         if (shellGlobalParams.shouldRetryWrites || parsedURI.getRetryWrites()) {

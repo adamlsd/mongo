@@ -785,29 +785,14 @@ int _main(int argc, char* argv[], char** envp) {
     // code.
     std::string processedURI = shellGlobalParams.url;
 
-    if (processedURI.size())
-    {
-        if(! shellGlobalParams.authenticationMechanism.empty() )
-        {
-            parsedURI.setOption( "authMechanism", shellGlobalParams.authenticationMechanism );
-        }
-
-        if( shellGlobalParams.username.size() )
-        {
-            parsedURI.setUser( shellGlobalParams.username );
-        }
-
-        if (mechanismRequiresPassword() &&
-            parsedURI.getUser().size()){
+    if (processedURI.size()) {
+        if (mechanismRequiresPassword() && parsedURI.getUser().size()) {
             shellGlobalParams.usingPassword = true;
         }
 
-        if( shellGlobalParams.usingPassword && shellGlobalParams.password.empty() )
-        {
-             shellGlobalParams.password = parsedURI.getPassword().size()
-                    ? parsedURI.getPassword()
-                    : mongo::askPassword();
-            parsedURI.setPassword( shellGlobalParams.password );
+        if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
+            shellGlobalParams.password =
+                parsedURI.getPassword().size() ? parsedURI.getPassword() : mongo::askPassword();
         }
 
         auto authParam = parsedURI.getOptions().find(kAuthParam);
@@ -815,17 +800,9 @@ int _main(int argc, char* argv[], char** envp) {
             shellGlobalParams.authenticationDatabase.empty()) {
             shellGlobalParams.authenticationDatabase = authParam->second;
         }
+    } else if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
+        shellGlobalParams.password = mongo::askPassword();
     }
-    else if (shellGlobalParams.usingPassword && shellGlobalParams.password.empty()) {
-            shellGlobalParams.password = mongo::askPassword();
-    }
-
-    std::string& cmdlineURI = shellGlobalParams.url;
-
-    // We now substitute the altered URI to permit the replica set monitors to see it without
-    // usernames.  This is to avoid making potentially breaking changes to the replica set monitor
-    // code.
-    cmdlineURI = processedURI;
 
 
     if (!shellGlobalParams.nodb) {  // connect to db

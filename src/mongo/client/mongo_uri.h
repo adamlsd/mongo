@@ -117,22 +117,25 @@ public:
         return _user;
     }
 
-	void setUser( std::string userName ) { _user= std::move( userName ); }
+    void setUser(std::string userName) {
+        _user = std::move(userName);
+    }
 
     const std::string& getPassword() const {
         return _password;
     }
 
-	void setPassword( std::string password ) { _password= std::move( password ); }
+    void setPassword(std::string password) {
+        _password = std::move(password);
+    }
 
     const OptionsMap& getOptions() const {
         return _options;
     }
 
-	void setOption( const std::string &name, std::string value )
-	{
-		_options[ name ]= std::move( value );
-	}
+    void setOption(const std::string& name, std::string value) {
+        _options[name] = std::move(value);
+    }
 
     const std::string& getDatabase() const {
         return _database;

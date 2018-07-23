@@ -549,17 +549,17 @@ public:
 
     template <typename... Args>
     void emplaceValue(Args&&... args) noexcept {
-        _setImpl([&] { _sharedState->emplaceValue(std::forward<Args>(args)...); });
+        _setImpl([&](auto sharedState) { sharedState->emplaceValue(std::forward<Args>(args)...); });
     }
 
     void setError(Status status) noexcept {
         invariant(!status.isOK());
-        _setImpl([&] { _sharedState->setError(std::move(status)); });
+        _setImpl([&](auto sharedState) { sharedState->setError(std::move(status)); });
     }
 
     // TODO rename to not XXXWith and handle void
     void setFromStatusWith(StatusWith<T> sw) noexcept {
-        _setImpl([&] { _sharedState->setFromStatusWith(std::move(sw)); });
+        _setImpl([&](auto sharedState) { sharedState->setFromStatusWith(std::move(sw)); });
     }
 
     /**
@@ -593,8 +593,7 @@ private:
     template <typename Func>
     void _setImpl(Func&& doSet) noexcept {
         invariant(_sharedState);
-        doSet();
-        _sharedState.reset();
+        doSet(std::move(_sharedState));
     }
 
     boost::intrusive_ptr<SharedState<T>> _sharedState = make_intrusive<SharedState<T>>();
@@ -792,7 +791,7 @@ public:
             // on not ready yet:
             [&] {
                 _shared->callback = [func = std::forward<Func>(func)](SharedStateBase *
-                                                                     ssb) mutable noexcept {
+                                                                      ssb) mutable noexcept {
                     const auto input = checked_cast<SharedState<T>*>(ssb);
                     if (input->status.isOK()) {
                         call(func, std::move(*input->data));
@@ -1019,8 +1018,8 @@ public:
                       "func passed to tap must return void");
 
         return _tapImpl(std::forward<Func>(func),
-                       [](Func && func, const T& val) noexcept { call(func, val); },
-                       [](Func && func, const Status& status) noexcept {});
+                        [](Func && func, const T& val) noexcept { call(func, val); },
+                        [](Func && func, const Status& status) noexcept {});
     }
 
     /**
@@ -1034,8 +1033,8 @@ public:
                       "func passed to tapError must return void");
 
         return _tapImpl(std::forward<Func>(func),
-                       [](Func && func, const T& val) noexcept {},
-                       [](Func && func, const Status& status) noexcept { call(func, status); });
+                        [](Func && func, const T& val) noexcept {},
+                        [](Func && func, const Status& status) noexcept { call(func, status); });
     }
 
     /**
@@ -1057,8 +1056,8 @@ public:
                       "func passed to tapAll must return void");
 
         return _tapImpl(std::forward<Func>(func),
-                       [](Func && func, const T& val) noexcept { call(func, val); },
-                       [](Func && func, const Status& status) noexcept { call(func, status); });
+                        [](Func && func, const T& val) noexcept { call(func, val); },
+                        [](Func && func, const Status& status) noexcept { call(func, status); });
     }
 
     /**
@@ -1183,7 +1182,7 @@ private:
         continuation->threadUnsafeIncRefCountTo(2);
         _shared->continuation.reset(continuation.get(), /*add ref*/ false);
         _shared->callback = [onReady = std::forward<OnReady>(onReady)](SharedStateBase *
-                                                                      ssb) mutable noexcept {
+                                                                       ssb) mutable noexcept {
             const auto input = checked_cast<SharedState<T>*>(ssb);
             const auto output = checked_cast<SharedState<Result>*>(ssb->continuation.get());
             onReady(input, output);
@@ -1359,7 +1358,7 @@ inline SharedPromise<T> Promise<T>::share() noexcept {
 
 template <typename T>
 inline void Promise<T>::setFrom(Future<T>&& future) noexcept {
-    _setImpl([&] { future._propagateResultTo(_sharedState.get()); });
+    _setImpl([&](auto sharedState) { future._propagateResultTo(sharedState.get()); });
 }
 
 template <typename T>

@@ -66,7 +66,7 @@ void BM_futureIntReadyThen(benchmark::State& state) {
 NOINLINE_DECL Future<int> makeReadyFutWithPromise() {
     benchmark::ClobberMemory();
     auto pf = makePromiseFuture<int>();
-    pf.promise.emplaceValue(1);  // before getFuture().
+    pf.promise.emplaceValue(1);
     return std::move(pf.future);
 }
 

@@ -549,17 +549,19 @@ public:
 
     template <typename... Args>
     void emplaceValue(Args&&... args) noexcept {
-        _setImpl([&](auto sharedState) { sharedState->emplaceValue(std::forward<Args>(args)...); });
+        _setImpl([&](auto&& sharedState) {
+            sharedState->emplaceValue(std::forward<Args>(args)...);
+        });
     }
 
     void setError(Status status) noexcept {
         invariant(!status.isOK());
-        _setImpl([&](auto sharedState) { sharedState->setError(std::move(status)); });
+        _setImpl([&](auto&& sharedState) { sharedState->setError(std::move(status)); });
     }
 
     // TODO rename to not XXXWith and handle void
     void setFromStatusWith(StatusWith<T> sw) noexcept {
-        _setImpl([&](auto sharedState) { sharedState->setFromStatusWith(std::move(sw)); });
+        _setImpl([&](auto&& sharedState) { sharedState->setFromStatusWith(std::move(sw)); });
     }
 
     /**
@@ -593,7 +595,9 @@ private:
     template <typename Func>
     void _setImpl(Func&& doSet) noexcept {
         invariant(_sharedState);
-        doSet(std::move(_sharedState));
+        const auto sharedState = std::move(_sharedState);
+        doSet(sharedState);
+        invariant(!_sharedState);
     }
 
     boost::intrusive_ptr<SharedState<T>> _sharedState = make_intrusive<SharedState<T>>();
@@ -1358,7 +1362,7 @@ inline SharedPromise<T> Promise<T>::share() noexcept {
 
 template <typename T>
 inline void Promise<T>::setFrom(Future<T>&& future) noexcept {
-    _setImpl([&](auto sharedState) { future._propagateResultTo(sharedState.get()); });
+    _setImpl([&](auto&& sharedState) { future._propagateResultTo(sharedState.get()); });
 }
 
 template <typename T>

@@ -51,6 +51,7 @@
 namespace mongo {
 
 class OperationContext;
+class StartChunkCloneRequest;
 class Status;
 struct WriteConcernOptions;
 
@@ -102,12 +103,7 @@ public:
     Status start(OperationContext* opCtx,
                  const NamespaceString& nss,
                  ScopedReceiveChunk scopedReceiveChunk,
-                 const MigrationSessionId& sessionId,
-                 const ShardId& fromShard,
-                 const ShardId& toShard,
-                 const BSONObj& min,
-                 const BSONObj& max,
-                 const BSONObj& shardKeyPattern,
+                 StartChunkCloneRequest cloneRequest,
                  const OID& epoch,
                  const WriteConcernOptions& writeConcern);
 
@@ -116,7 +112,7 @@ public:
      */
     static void cloneDocumentsFromDonor(
         OperationContext* opCtx,
-        stdx::function<void(OperationContext*, BSONObjIterator)> insertBatchFn,
+        stdx::function<void(OperationContext*, BSONObj)> insertBatchFn,
         stdx::function<BSONObj(OperationContext*)> fetchBatchFn);
 
     /**
@@ -132,6 +128,13 @@ public:
     void abortWithoutSessionIdCheck();
 
     Status startCommit(const MigrationSessionId& sessionId);
+
+    /**
+     * Creates the collection nss on the shard and clones the indexes and options from fromShardId.
+     */
+    static void cloneCollectionIndexesAndOptions(OperationContext* opCtx,
+                                                 const NamespaceString& nss,
+                                                 ShardId fromShardId);
 
 private:
     /**

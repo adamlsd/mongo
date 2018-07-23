@@ -42,6 +42,7 @@ env.Library(
         'move_timing_helper.cpp',
         'namespace_metadata_change_notifications.cpp',
         'read_only_catalog_cache_loader.cpp',
+        'scoped_operation_completion_sharding_actions.cpp',
         'session_catalog_migration_destination.cpp',
         'session_catalog_migration_source.cpp',
         'shard_filtering_metadata_refresh.cpp',
@@ -58,6 +59,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/commands/mongod_fcv',
         '$BUILD_DIR/mongo/db/db_raii',
         '$BUILD_DIR/mongo/db/dbhelpers',
+        '$BUILD_DIR/mongo/db/ops/write_ops_exec',
         '$BUILD_DIR/mongo/db/repl/oplog',
         '$BUILD_DIR/mongo/db/repl/repl_coordinator_interface',
         '$BUILD_DIR/mongo/db/rw_concern_d',
@@ -289,6 +291,7 @@ env.Library(
         'split_vector_command.cpp',
         'unset_sharding_command.cpp',
         'shardsvr_shard_collection.cpp',
+        'clone_collection_options_from_primary_shard_cmd.cpp',
     ],
     LIBDEPS_PRIVATE=[
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',

@@ -372,20 +372,15 @@ public:
     virtual StatusWith<RecordId> insertRecord(OperationContext* opCtx,
                                               const char* data,
                                               int len,
-                                              Timestamp timestamp,
-                                              bool enforceQuota) = 0;
+                                              Timestamp timestamp) = 0;
 
     virtual Status insertRecords(OperationContext* opCtx,
                                  std::vector<Record>* records,
-                                 std::vector<Timestamp>* timestamps,
-                                 bool enforceQuota) {
+                                 std::vector<Timestamp>* timestamps) {
         int index = 0;
         for (auto& record : *records) {
-            StatusWith<RecordId> res = insertRecord(opCtx,
-                                                    record.data.data(),
-                                                    record.data.size(),
-                                                    (*timestamps)[index++],
-                                                    enforceQuota);
+            StatusWith<RecordId> res =
+                insertRecord(opCtx, record.data.data(), record.data.size(), (*timestamps)[index++]);
             if (!res.isOK())
                 return res.getStatus();
 
@@ -431,7 +426,6 @@ public:
                                 const RecordId& oldLocation,
                                 const char* data,
                                 int len,
-                                bool enforceQuota,
                                 UpdateNotifier* notifier) = 0;
 
     /**
@@ -490,17 +484,6 @@ public:
      */
     virtual std::unique_ptr<RecordCursor> getRandomCursor(OperationContext* opCtx) const {
         return {};
-    }
-
-    /**
-     * Returns many RecordCursors that partition the RecordStore into many disjoint sets.
-     * Iterating all returned RecordCursors is equivalent to iterating the full store.
-     */
-    virtual std::vector<std::unique_ptr<RecordCursor>> getManyCursors(
-        OperationContext* opCtx) const {
-        std::vector<std::unique_ptr<RecordCursor>> out(1);
-        out[0] = getCursor(opCtx);
-        return out;
     }
 
     // higher level

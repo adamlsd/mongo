@@ -218,13 +218,6 @@ std::unique_ptr<SeekableRecordCursor> CollectionImpl::getCursor(OperationContext
     return _recordStore->getCursor(opCtx, forward);
 }
 
-vector<std::unique_ptr<RecordCursor>> CollectionImpl::getManyCursors(
-    OperationContext* opCtx) const {
-    dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IS));
-
-    return _recordStore->getManyCursors(opCtx);
-}
-
 
 bool CollectionImpl::findDoc(OperationContext* opCtx,
                              const RecordId& loc,
@@ -329,7 +322,6 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
                                        const vector<InsertStatement>::const_iterator begin,
                                        const vector<InsertStatement>::const_iterator end,
                                        OpDebug* opDebug,
-                                       bool enforceQuota,
                                        bool fromMigrate) {
 
     MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
@@ -363,7 +355,7 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
 
     const SnapshotId sid = opCtx->recoveryUnit()->getSnapshotId();
 
-    Status status = _insertDocuments(opCtx, begin, end, enforceQuota, opDebug);
+    Status status = _insertDocuments(opCtx, begin, end, opDebug);
     if (!status.isOK())
         return status;
     invariant(sid == opCtx->recoveryUnit()->getSnapshotId());
@@ -380,17 +372,15 @@ Status CollectionImpl::insertDocuments(OperationContext* opCtx,
 Status CollectionImpl::insertDocument(OperationContext* opCtx,
                                       const InsertStatement& docToInsert,
                                       OpDebug* opDebug,
-                                      bool enforceQuota,
                                       bool fromMigrate) {
     vector<InsertStatement> docs;
     docs.push_back(docToInsert);
-    return insertDocuments(opCtx, docs.begin(), docs.end(), opDebug, enforceQuota, fromMigrate);
+    return insertDocuments(opCtx, docs.begin(), docs.end(), opDebug, fromMigrate);
 }
 
 Status CollectionImpl::insertDocument(OperationContext* opCtx,
                                       const BSONObj& doc,
-                                      const std::vector<MultiIndexBlock*>& indexBlocks,
-                                      bool enforceQuota) {
+                                      const std::vector<MultiIndexBlock*>& indexBlocks) {
 
     MONGO_FAIL_POINT_BLOCK(failCollectionInserts, extraData) {
         const BSONObj& data = extraData.getData();
@@ -415,8 +405,8 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
 
     // TODO SERVER-30638: using timestamp 0 for these inserts, which are non-oplog so we don't yet
     // care about their correct timestamps.
-    StatusWith<RecordId> loc = _recordStore->insertRecord(
-        opCtx, doc.objdata(), doc.objsize(), Timestamp(), _enforceQuota(enforceQuota));
+    StatusWith<RecordId> loc =
+        _recordStore->insertRecord(opCtx, doc.objdata(), doc.objsize(), Timestamp());
 
     if (!loc.isOK())
         return loc.getStatus();
@@ -450,7 +440,6 @@ Status CollectionImpl::insertDocument(OperationContext* opCtx,
 Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
                                         const vector<InsertStatement>::const_iterator begin,
                                         const vector<InsertStatement>::const_iterator end,
-                                        bool enforceQuota,
                                         OpDebug* opDebug) {
     dassert(opCtx->lockState()->isCollectionLockedForMode(ns().toString(), MODE_IX));
 
@@ -483,8 +472,7 @@ Status CollectionImpl::_insertDocuments(OperationContext* opCtx,
         Timestamp timestamp = Timestamp(it->oplogSlot.opTime.getTimestamp());
         timestamps.push_back(timestamp);
     }
-    Status status =
-        _recordStore->insertRecords(opCtx, &records, &timestamps, _enforceQuota(enforceQuota));
+    Status status = _recordStore->insertRecords(opCtx, &records, &timestamps);
     if (!status.isOK())
         return status;
 
@@ -584,7 +572,6 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
                                         const RecordId& oldLocation,
                                         const Snapshotted<BSONObj>& oldDoc,
                                         const BSONObj& newDoc,
-                                        bool enforceQuota,
                                         bool indexesAffected,
                                         OpDebug* opDebug,
                                         OplogUpdateEntryArgs* args) {
@@ -664,8 +651,8 @@ RecordId CollectionImpl::updateDocument(OperationContext* opCtx,
 
     args->preImageDoc = oldDoc.value().getOwned();
 
-    Status updateStatus = _recordStore->updateRecord(
-        opCtx, oldLocation, newDoc.objdata(), newDoc.objsize(), _enforceQuota(enforceQuota), this);
+    Status updateStatus =
+        _recordStore->updateRecord(opCtx, oldLocation, newDoc.objdata(), newDoc.objsize(), this);
 
     // Update each index with each respective UpdateTicket.
     if (indexesAffected) {
@@ -731,19 +718,6 @@ StatusWith<RecordData> CollectionImpl::updateDocumentWithDamages(
         getGlobalServiceContext()->getOpObserver()->onUpdate(opCtx, *args);
     }
     return newRecStatus;
-}
-
-bool CollectionImpl::_enforceQuota(bool userEnforeQuota) const {
-    if (!userEnforeQuota)
-        return false;
-
-    if (_ns.db() == "local")
-        return false;
-
-    if (_ns.isSpecial())
-        return false;
-
-    return true;
 }
 
 bool CollectionImpl::isCapped() const {

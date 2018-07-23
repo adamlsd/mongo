@@ -495,7 +495,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
     // and subsequent callers will try to do a full refresh.
     const auto refreshStatus = [&] {
         try {
-            forceShardFilteringMetadataRefresh(opCtx, getNss());
+            forceShardFilteringMetadataRefresh(opCtx, getNss(), true);
             return Status::OK();
         } catch (const DBException& ex) {
             return ex.toStatus();
@@ -537,6 +537,23 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
     }
 
     if (refreshedMetadata->keyBelongsToMe(_args.getMinKey())) {
+        // This condition may only happen if the migration commit has failed for any reason
+        if (migrationCommitStatus.isOK()) {
+            severe() << "The migration commit succeeded, but the new chunk placement was not "
+                        "reflected after metadata refresh, which is an indication of an "
+                        "afterOpTime bug.";
+            severe() << "The current config server opTime is " << Grid::get(opCtx)->configOpTime();
+            severe() << "The commit response came from "
+                     << redact(commitChunkMigrationResponse.getValue().hostAndPort->toString())
+                     << " and contained:";
+            severe() << "  metadata: "
+                     << redact(commitChunkMigrationResponse.getValue().metadata.toString());
+            severe() << "  response: "
+                     << redact(commitChunkMigrationResponse.getValue().response.toString());
+
+            fassertFailed(50878);
+        }
+
         // The chunk modification was not applied, so report the original error
         return migrationCommitStatus.withContext("Chunk move was not successful");
     }
@@ -588,16 +605,24 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                                      refreshedMetadata->getCollVersion());
     }
 
+    std::string orphanedRangeCleanUpErrMsg = str::stream()
+        << "Moved chunks successfully but failed to clean up " << getNss().ns() << " range "
+        << redact(range.toString()) << " due to: ";
+
     if (_args.getWaitForDelete()) {
         log() << "Waiting for cleanup of " << getNss().ns() << " range "
               << redact(range.toString());
-        return notification.waitStatus(opCtx);
+        auto deleteStatus = notification.waitStatus(opCtx);
+        if (!deleteStatus.isOK()) {
+            return {ErrorCodes::OrphanedRangeCleanUpFailed,
+                    orphanedRangeCleanUpErrMsg + redact(deleteStatus)};
+        }
+        return Status::OK();
     }
 
     if (notification.ready() && !notification.waitStatus(opCtx).isOK()) {
-        warning() << "Failed to initiate cleanup of " << getNss().ns() << " range "
-                  << redact(range.toString())
-                  << " due to: " << redact(notification.waitStatus(opCtx));
+        return {ErrorCodes::OrphanedRangeCleanUpFailed,
+                orphanedRangeCleanUpErrMsg + redact(notification.waitStatus(opCtx))};
     } else {
         log() << "Leaving cleanup of " << getNss().ns() << " range " << redact(range.toString())
               << " to complete in background";

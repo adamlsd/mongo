@@ -36,42 +36,28 @@
 #include "mongo/db/audit.h"
 #include "mongo/db/auth/action_type.h"
 #include "mongo/db/auth/authorization_session.h"
-#include "mongo/db/s/sharding_state.h"
-//#include "mongo/db/auth/privilege.h"
+#include "mongo/db/catalog_raii.h"
 #include "mongo/db/commands.h"
-//#include "mongo/db/commands/test_commands_enabled.h"
+#include "mongo/db/dbdirectclient.h"
 #include "mongo/db/hasher.h"
-#include "mongo/db/index/index_descriptor.h"
+#include "mongo/db/logical_clock.h"
 #include "mongo/db/namespace_string.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
-//#include "mongo/db/repl/read_concern_args.h"
-//#include "mongo/db/repl/repl_client_info.h"
-//#include "mongo/db/repl/repl_set_config.h"
-//#include "mongo/db/repl/replication_coordinator.h"
+#include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
+#include "mongo/db/s/shard_filtering_metadata_refresh.h"
+#include "mongo/db/s/sharding_state.h"
+#include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/balancer_configuration.h"
+#include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/catalog/type_database.h"
 #include "mongo/s/catalog/type_shard.h"
-#include "mongo/s/catalog_cache.h"
-#include "mongo/s/catalog_cache.h"
-//#include "mongo/s/client/shard_registry.h"
+#include "mongo/s/catalog/type_tags.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
-//#include "mongo/s/config_server_client.h"
-#include "mongo/db/catalog_raii.h"
-#include "mongo/db/dbdirectclient.h"
-#include "mongo/db/logical_clock.h"
-#include "mongo/db/s/shard_filtering_metadata_refresh.h"
-#include "mongo/db/s/shard_filtering_metadata_refresh.h"
-#include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/rpc/get_status_from_command_result.h"
-#include "mongo/s/catalog/sharding_catalog_client.h"
-#include "mongo/s/catalog/sharding_catalog_client_impl.h"
 #include "mongo/s/grid.h"
-#include "mongo/s/request_types/migration_secondary_throttle_options.h"
 #include "mongo/s/request_types/set_shard_version_request.h"
 #include "mongo/s/request_types/shard_collection_gen.h"
 #include "mongo/s/shard_util.h"
-#include "mongo/util/exit.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/scopeguard.h"
@@ -278,6 +264,69 @@ void validateShardKeyAgainstExistingIndexes(OperationContext* opCtx,
         BSONObj res;
         localClient.runCommand(nss.db().toString(), createIndexesCmd, res);
         uassertStatusOK(getStatusFromCommandResult(res));
+    }
+}
+
+/**
+ * Compares the proposed shard key with the shard key of the collection's existing zones
+ * to ensure they are a legal combination.
+ */
+void validateShardKeyAgainstExistingZones(OperationContext* opCtx,
+                                          const BSONObj& proposedKey,
+                                          const ShardKeyPattern& shardKeyPattern,
+                                          const std::vector<BSONObj>& tagDocList) {
+    for (const auto& tagDoc : tagDocList) {
+        auto tagParseStatus = TagsType::fromBSON(tagDoc);
+        uassertStatusOK(tagParseStatus);
+        const auto& parsedTagDoc = tagParseStatus.getValue();
+        uassert(ErrorCodes::InvalidOptions,
+                str::stream() << "the min and max of the existing zone " << parsedTagDoc.getMinKey()
+                              << " -->> "
+                              << parsedTagDoc.getMaxKey()
+                              << " have non-matching number of keys",
+                parsedTagDoc.getMinKey().nFields() == parsedTagDoc.getMaxKey().nFields());
+
+        BSONObjIterator tagMinFields(parsedTagDoc.getMinKey());
+        BSONObjIterator tagMaxFields(parsedTagDoc.getMaxKey());
+        BSONObjIterator proposedFields(proposedKey);
+
+        while (tagMinFields.more() && proposedFields.more()) {
+            BSONElement tagMinKeyElement = tagMinFields.next();
+            BSONElement tagMaxKeyElement = tagMaxFields.next();
+            uassert(ErrorCodes::InvalidOptions,
+                    str::stream() << "the min and max of the existing zone "
+                                  << parsedTagDoc.getMinKey()
+                                  << " -->> "
+                                  << parsedTagDoc.getMaxKey()
+                                  << " have non-matching keys",
+                    str::equals(tagMinKeyElement.fieldName(), tagMaxKeyElement.fieldName()));
+
+            BSONElement proposedKeyElement = proposedFields.next();
+            bool match =
+                (str::equals(tagMinKeyElement.fieldName(), proposedKeyElement.fieldName()) &&
+                 ((tagMinFields.more() && proposedFields.more()) ||
+                  (!tagMinFields.more() && !proposedFields.more())));
+            uassert(ErrorCodes::InvalidOptions,
+                    str::stream() << "the proposed shard key " << proposedKey.toString()
+                                  << " does not match with the shard key of the existing zone "
+                                  << parsedTagDoc.getMinKey()
+                                  << " -->> "
+                                  << parsedTagDoc.getMaxKey(),
+                    match);
+
+            if (ShardKeyPattern::isHashedPatternEl(proposedKeyElement) &&
+                (tagMinKeyElement.type() != NumberLong || tagMaxKeyElement.type() != NumberLong)) {
+                uasserted(ErrorCodes::InvalidOptions,
+                          str::stream() << "cannot do hash sharding with the proposed key "
+                                        << proposedKey.toString()
+                                        << " because there exists a zone "
+                                        << parsedTagDoc.getMinKey()
+                                        << " -->> "
+                                        << parsedTagDoc.getMaxKey()
+                                        << " whose boundaries are not "
+                                           "of type NumberLong");
+            }
+        }
     }
 }
 
@@ -666,14 +715,28 @@ public:
         // Take the collection critical section so that no writes can happen.
         CollectionCriticalSection critSec(opCtx, nss);
 
-        // SERVER-35794 TODO: read zone info
-
         auto proposedKey(shardsvrShardCollectionRequest.getKey().getOwned());
         ShardKeyPattern shardKeyPattern(proposedKey);
 
-        // SERVER-35794 TODO: Also validate against zone info if it exists
         validateShardKeyAgainstExistingIndexes(
             opCtx, nss, proposedKey, shardKeyPattern, shardsvrShardCollectionRequest);
+
+        // read zone info
+        auto configServer = Grid::get(opCtx)->shardRegistry()->getConfigShard();
+        auto tagStatus =
+            configServer->exhaustiveFindOnConfig(opCtx,
+                                                 kConfigReadSelector,
+                                                 repl::ReadConcernLevel::kMajorityReadConcern,
+                                                 TagsType::ConfigNS,
+                                                 BSON(TagsType::ns(nss.ns())),
+                                                 BSONObj(),
+                                                 0);
+        uassertStatusOK(tagStatus);
+        const auto& tagDocList = tagStatus.getValue().docs;
+
+        if (tagDocList.size() > 0) {
+            validateShardKeyAgainstExistingZones(opCtx, proposedKey, shardKeyPattern, tagDocList);
+        }
 
         boost::optional<UUID> uuid;
         if (shardsvrShardCollectionRequest.getGetUUIDfromPrimaryShard()) {

@@ -1239,8 +1239,7 @@ void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx, Timestamp pers
 
 Status WiredTigerRecordStore::insertRecords(OperationContext* opCtx,
                                             std::vector<Record>* records,
-                                            std::vector<Timestamp>* timestamps,
-                                            bool enforceQuota) {
+                                            std::vector<Timestamp>* timestamps) {
     return _insertRecords(opCtx, records->data(), timestamps->data(), records->size());
 }
 
@@ -1324,8 +1323,10 @@ Status WiredTigerRecordStore::_insertRecords(OperationContext* opCtx,
     return Status::OK();
 }
 
-StatusWith<RecordId> WiredTigerRecordStore::insertRecord(
-    OperationContext* opCtx, const char* data, int len, Timestamp timestamp, bool enforceQuota) {
+StatusWith<RecordId> WiredTigerRecordStore::insertRecord(OperationContext* opCtx,
+                                                         const char* data,
+                                                         int len,
+                                                         Timestamp timestamp) {
     Record record = {RecordId(), RecordData(data, len)};
     Status status = _insertRecords(opCtx, &record, &timestamp, 1);
     if (!status.isOK())
@@ -1399,7 +1400,6 @@ Status WiredTigerRecordStore::updateRecord(OperationContext* opCtx,
                                            const RecordId& id,
                                            const char* data,
                                            int len,
-                                           bool enforceQuota,
                                            UpdateNotifier* notifier) {
     dassert(opCtx->lockState()->isWriteLocked());
 
@@ -1478,13 +1478,6 @@ std::unique_ptr<RecordCursor> WiredTigerRecordStore::getRandomCursor(
     OperationContext* opCtx) const {
     const char* extraConfig = "";
     return getRandomCursorWithOptions(opCtx, extraConfig);
-}
-
-std::vector<std::unique_ptr<RecordCursor>> WiredTigerRecordStore::getManyCursors(
-    OperationContext* opCtx) const {
-    std::vector<std::unique_ptr<RecordCursor>> cursors(1);
-    cursors[0] = getCursor(opCtx, /*forward=*/true);
-    return cursors;
 }
 
 Status WiredTigerRecordStore::truncate(OperationContext* opCtx) {

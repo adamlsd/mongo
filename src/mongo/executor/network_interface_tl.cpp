@@ -218,6 +218,7 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
     auto remainingWork = [
         this,
         state,
+        // TODO: once SERVER-35685 is done, stop using a `std::shared_ptr<Future>` here.
         future = std::make_shared<decltype(pf.future)>(std::move(pf.future)),
         baton,
         onFinish

@@ -480,6 +480,9 @@ struct SharedStateImpl final : SharedStateBase {
 using future_details::Promise;
 using future_details::Future;
 
+template <typename T>
+auto makePromiseFuture();
+
 /**
  * This class represents the producer side of a Future.
  *
@@ -574,21 +577,13 @@ public:
      */
     SharedPromise<T> share() noexcept;
 
-    static auto makePromiseFutureImpl() {
-        struct PromiseAndFuture {
-            Promise<T> promise;
-            Future<T> future = promise.getFuture();
-        };
-        return PromiseAndFuture();
-    }
-
 private:
-    /**
-     * Prefer using makePromiseFuture<T>() over constructing a promise and calling this method.
-     */
-    Future<T> getFuture() noexcept;
+    friend auto makePromiseFuture<T>();
 
     friend class Future<void>;
+
+    Future<T> getFuture() noexcept;
+
 
     template <typename Func>
     void setImpl(Func&& doSet) noexcept {
@@ -1312,7 +1307,11 @@ auto makeReadyFutureWith(Func&& func) {
  */
 template <typename T>
 inline auto makePromiseFuture() {
-    return Promise<T>::makePromiseFutureImpl();
+    struct PromiseAndFuture {
+        Promise<T> promise;
+        Future<T> future = promise.getFuture();
+    };
+    return PromiseAndFuture();
 }
 
 /**

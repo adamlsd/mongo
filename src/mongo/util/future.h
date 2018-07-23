@@ -549,17 +549,17 @@ public:
 
     template <typename... Args>
     void emplaceValue(Args&&... args) noexcept {
-        _setImpl([&] { _sharedState->emplaceValue(std::forward<Args>(args)...); });
+        setImpl([&] { _sharedState->emplaceValue(std::forward<Args>(args)...); });
     }
 
     void setError(Status status) noexcept {
         invariant(!status.isOK());
-        _setImpl([&] { _sharedState->setError(std::move(status)); });
+        setImpl([&] { _sharedState->setError(std::move(status)); });
     }
 
     // TODO rename to not XXXWith and handle void
     void setFromStatusWith(StatusWith<T> sw) noexcept {
-        _setImpl([&] { _sharedState->setFromStatusWith(std::move(sw)); });
+        setImpl([&] { _sharedState->setFromStatusWith(std::move(sw)); });
     }
 
     /**
@@ -577,7 +577,7 @@ public:
     static auto makePromiseFutureImpl() {
         struct PromiseAndFuture {
             Promise<T> promise;
-            Future<T> future = promise._getFuture();
+            Future<T> future = promise.getFuture();
         };
         return PromiseAndFuture();
     }
@@ -586,12 +586,12 @@ private:
     /**
      * Prefer using makePromiseFuture<T>() over constructing a promise and calling this method.
      */
-    Future<T> _getFuture() noexcept;
+    Future<T> getFuture() noexcept;
 
     friend class Future<void>;
 
     template <typename Func>
-    void _setImpl(Func&& doSet) noexcept {
+    void setImpl(Func&& doSet) noexcept {
         invariant(_sharedState);
         doSet();
         _sharedState.reset();
@@ -743,13 +743,13 @@ public:
      * These methods can be called multiple times, except for the rvalue overloads.
      */
     T get() && {
-        return std::move(_getImpl());
+        return std::move(getImpl());
     }
     T& get() & {
-        return _getImpl();
+        return getImpl();
     }
     const T& get() const& {
-        return const_cast<Future*>(this)->_getImpl();
+        return const_cast<Future*>(this)->getImpl();
     }
     StatusWith<T> getNoThrow() && noexcept {
         if (_immediate) {
@@ -784,7 +784,7 @@ public:
         static_assert(std::is_void<decltype(call(func, std::declval<StatusWith<T>>()))>::value,
                       "func passed to getAsync must return void");
 
-        return _generalImpl(
+        return generalImpl(
             // on ready success:
             [&](T&& val) { call(func, std::move(val)); },
             // on ready failure:
@@ -792,7 +792,7 @@ public:
             // on not ready yet:
             [&] {
                 _shared->callback = [func = std::forward<Func>(func)](SharedStateBase *
-                                                                     ssb) mutable noexcept {
+                                                                      ssb) mutable noexcept {
                     const auto input = checked_cast<SharedState<T>*>(ssb);
                     if (input->status.isOK()) {
                         call(func, std::move(*input->data));
@@ -834,14 +834,14 @@ public:
               typename Result = NormalizedCallResult<Func, T>,
               typename = std::enable_if_t<!isFuture<Result>>>
         Future<Result> then(Func&& func) && noexcept {
-        return _generalImpl(
+        return generalImpl(
             // on ready success:
             [&](T&& val) { return Future<Result>::makeReady(statusCall(func, std::move(val))); },
             // on ready failure:
             [&](Status&& status) { return Future<Result>::makeReady(std::move(status)); },
             // on not ready yet:
             [&] {
-                return _makeContinuation<Result>([func = std::forward<Func>(func)](
+                return makeContinuation<Result>([func = std::forward<Func>(func)](
                     SharedState<T> * input, SharedState<Result> * output) mutable noexcept {
                     if (!input->status.isOK())
                         return output->setError(std::move(input->status));
@@ -859,7 +859,7 @@ public:
               typename = std::enable_if_t<isFuture<RawResult>>,
               typename UnwrappedResult = typename RawResult::value_type>
         Future<UnwrappedResult> then(Func&& func) && noexcept {
-        return _generalImpl(
+        return generalImpl(
             // on ready success:
             [&](T&& val) {
                 try {
@@ -872,14 +872,14 @@ public:
             [&](Status&& status) { return Future<UnwrappedResult>::makeReady(std::move(status)); },
             // on not ready yet:
             [&] {
-                return _makeContinuation<UnwrappedResult>([func = std::forward<Func>(func)](
+                return makeContinuation<UnwrappedResult>([func = std::forward<Func>(func)](
                     SharedState<T> * input,
                     SharedState<UnwrappedResult> * output) mutable noexcept {
                     if (!input->status.isOK())
                         return output->setError(std::move(input->status));
 
                     try {
-                        throwingCall(func, std::move(*input->data))._propagateResultTo(output);
+                        throwingCall(func, std::move(*input->data)).propagateResultTo(output);
                     } catch (const DBException& ex) {
                         output->setError(ex.toStatus());
                     }
@@ -905,7 +905,7 @@ public:
             std::is_same<Result, T>::value,
             "func passed to Future<T>::onError must return T, StatusWith<T>, or Future<T>");
 
-        return _generalImpl(
+        return generalImpl(
             // on ready success:
             [&](T&& val) { return Future<T>::makeReady(std::move(val)); },
             // on ready failure:
@@ -914,7 +914,7 @@ public:
             },
             // on not ready yet:
             [&] {
-                return _makeContinuation<T>([func = std::forward<Func>(func)](
+                return makeContinuation<T>([func = std::forward<Func>(func)](
                     SharedState<T> * input, SharedState<T> * output) mutable noexcept {
                     if (input->status.isOK())
                         return output->emplaceValue(std::move(*input->data));
@@ -937,7 +937,7 @@ public:
                 (std::is_same<T, FakeVoid>::value && std::is_same<Result, Future<void>>::value),
             "func passed to Future<T>::onError must return T, StatusWith<T>, or Future<T>");
 
-        return _generalImpl(
+        return generalImpl(
             // on ready success:
             [&](T&& val) { return Future<T>::makeReady(std::move(val)); },
             // on ready failure:
@@ -950,13 +950,13 @@ public:
             },
             // on not ready yet:
             [&] {
-                return _makeContinuation<T>([func = std::forward<Func>(func)](
+                return makeContinuation<T>([func = std::forward<Func>(func)](
                     SharedState<T> * input, SharedState<T> * output) mutable noexcept {
                     if (input->status.isOK())
                         return output->emplaceValue(std::move(*input->data));
 
                     try {
-                        throwingCall(func, std::move(input->status))._propagateResultTo(output);
+                        throwingCall(func, std::move(input->status)).propagateResultTo(output);
                     } catch (const DBException& ex) {
                         output->setError(ex.toStatus());
                     }
@@ -1018,7 +1018,7 @@ public:
         static_assert(std::is_void<decltype(call(func, std::declval<const T&>()))>::value,
                       "func passed to tap must return void");
 
-        return _tapImpl(std::forward<Func>(func),
+        return tapImpl(std::forward<Func>(func),
                        [](Func && func, const T& val) noexcept { call(func, val); },
                        [](Func && func, const Status& status) noexcept {});
     }
@@ -1033,7 +1033,7 @@ public:
         static_assert(std::is_void<decltype(call(func, std::declval<const Status&>()))>::value,
                       "func passed to tapError must return void");
 
-        return _tapImpl(std::forward<Func>(func),
+        return tapImpl(std::forward<Func>(func),
                        [](Func && func, const T& val) noexcept {},
                        [](Func && func, const Status& status) noexcept { call(func, status); });
     }
@@ -1056,7 +1056,7 @@ public:
         static_assert(std::is_void<decltype(call(func, std::declval<const Status&>()))>::value,
                       "func passed to tapAll must return void");
 
-        return _tapImpl(std::forward<Func>(func),
+        return tapImpl(std::forward<Func>(func),
                        [](Func && func, const T& val) noexcept { call(func, val); },
                        [](Func && func, const Status& status) noexcept { call(func, status); });
     }
@@ -1075,7 +1075,7 @@ private:
     friend class Future;
     friend class Promise<T>;
 
-    T& _getImpl() {
+    T& getImpl() {
         if (_immediate) {
             return *_immediate;
         }
@@ -1088,7 +1088,7 @@ private:
     // All callbacks are called immediately so they are allowed to capture everything by reference.
     // All callbacks should return the same return type.
     template <typename SuccessFunc, typename FailFunc, typename NotReady>
-    auto _generalImpl(SuccessFunc&& success, FailFunc&& fail, NotReady&& notReady) noexcept {
+    auto generalImpl(SuccessFunc&& success, FailFunc&& fail, NotReady&& notReady) noexcept {
         if (_immediate) {
             return success(std::move(*_immediate));
         }
@@ -1118,12 +1118,12 @@ private:
 
     // success and fail may be called from a continuation so they shouldn't capture anything.
     template <typename Callback, typename SuccessFunc, typename FailFunc>
-    Future<T> _tapImpl(Callback&& cb, SuccessFunc&& success, FailFunc&& fail) noexcept {
+    Future<T> tapImpl(Callback&& cb, SuccessFunc&& success, FailFunc&& fail) noexcept {
         // Make sure they don't capture anything.
         MONGO_STATIC_ASSERT(std::is_empty<SuccessFunc>::value);
         MONGO_STATIC_ASSERT(std::is_empty<FailFunc>::value);
 
-        return _generalImpl(
+        return generalImpl(
             [&](T&& val) {
                 success(std::forward<Callback>(cb), stdx::as_const(val));
                 return Future<T>::makeReady(std::move(val));
@@ -1133,7 +1133,7 @@ private:
                 return Future<T>::makeReady(std::move(status));
             },
             [&] {
-                return _makeContinuation<T>([ success, fail, cb = std::forward<Callback>(cb) ](
+                return makeContinuation<T>([ success, fail, cb = std::forward<Callback>(cb) ](
                     SharedState<T> * input, SharedState<T> * output) mutable noexcept {
                     if (input->status.isOK()) {
                         success(std::forward<Callback>(cb), stdx::as_const(*input->data));
@@ -1146,8 +1146,8 @@ private:
             });
     }
 
-    void _propagateResultTo(SharedState<T>* output) noexcept {
-        _generalImpl(
+    void propagateResultTo(SharedState<T>* output) noexcept {
+        generalImpl(
             // on ready success:
             [&](T&& val) { output->emplaceValue(std::move(val)); },
             // on ready failure:
@@ -1176,14 +1176,14 @@ private:
     }
 
     template <typename Result, typename OnReady>
-    inline Future<Result> _makeContinuation(OnReady&& onReady) {
+    inline Future<Result> makeContinuation(OnReady&& onReady) {
         invariant(!_shared->callback && !_shared->continuation);
 
         auto continuation = make_intrusive<SharedState<Result>>();
         continuation->threadUnsafeIncRefCountTo(2);
         _shared->continuation.reset(continuation.get(), /*add ref*/ false);
         _shared->callback = [onReady = std::forward<OnReady>(onReady)](SharedStateBase *
-                                                                      ssb) mutable noexcept {
+                                                                       ssb) mutable noexcept {
             const auto input = checked_cast<SharedState<T>*>(ssb);
             const auto output = checked_cast<SharedState<Result>*>(ssb->continuation.get());
             onReady(input, output);
@@ -1224,50 +1224,50 @@ public:
     }
 
     bool isReady() const {
-        return inner.isReady();
+        return _inner.isReady();
     }
 
     void get() const {
-        inner.get();
+        _inner.get();
     }
 
     Status getNoThrow() const noexcept {
-        return inner.getNoThrow().getStatus();
+        return _inner.getNoThrow().getStatus();
     }
 
     template <typename Func>  // Status -> void
         void getAsync(Func&& func) && noexcept {
-        return std::move(inner).getAsync(std::forward<Func>(func));
+        return std::move(_inner).getAsync(std::forward<Func>(func));
     }
 
     template <typename Func>  // () -> T or StatusWith<T> or Future<T>
         auto then(Func&& func) && noexcept {
-        return std::move(inner).then(std::forward<Func>(func));
+        return std::move(_inner).then(std::forward<Func>(func));
     }
 
     template <typename Func>  // Status -> T or StatusWith<T> or Future<T>
         Future<void> onError(Func&& func) && noexcept {
-        return std::move(inner).onError(std::forward<Func>(func));
+        return std::move(_inner).onError(std::forward<Func>(func));
     }
 
     template <ErrorCodes::Error code, typename Func>  // Status -> T or StatusWith<T> or Future<T>
         Future<void> onError(Func&& func) && noexcept {
-        return std::move(inner).onError<code>(std::forward<Func>(func));
+        return std::move(_inner).onError<code>(std::forward<Func>(func));
     }
 
     template <typename Func>  // () -> void
         Future<void> tap(Func&& func) && noexcept {
-        return std::move(inner).tap(std::forward<Func>(func));
+        return std::move(_inner).tap(std::forward<Func>(func));
     }
 
     template <typename Func>  // Status -> void
         Future<void> tapError(Func&& func) && noexcept {
-        return std::move(inner).tapError(std::forward<Func>(func));
+        return std::move(_inner).tapError(std::forward<Func>(func));
     }
 
     template <typename Func>  // Status -> void
         Future<void> tapAll(Func&& func) && noexcept {
-        return std::move(inner).tapAll(std::forward<Func>(func));
+        return std::move(_inner).tapAll(std::forward<Func>(func));
     }
 
     Future<void> ignoreValue() && noexcept {
@@ -1279,21 +1279,21 @@ private:
     friend class Future;
     friend class Promise<void>;
 
-    explicit Future(boost::intrusive_ptr<SharedState<FakeVoid>> ptr) : inner(std::move(ptr)) {}
-    /*implicit*/ Future(Future<FakeVoid>&& inner) : inner(std::move(inner)) {}
+    explicit Future(boost::intrusive_ptr<SharedState<FakeVoid>> ptr) : _inner(std::move(ptr)) {}
+    /*implicit*/ Future(Future<FakeVoid>&& inner) : _inner(std::move(inner)) {}
     /*implicit*/ operator Future<FakeVoid>() && {
-        return std::move(inner);
+        return std::move(_inner);
     }
 
-    void _propagateResultTo(SharedState<void>* output) noexcept {
-        inner._propagateResultTo(output);
+    void propagateResultTo(SharedState<void>* output) noexcept {
+        _inner.propagateResultTo(output);
     }
 
     static Future<void> makeReady(StatusWith<FakeVoid> status) {
         return Future<FakeVoid>::makeReady(std::move(status));
     }
 
-    Future<FakeVoid> inner;
+    Future<FakeVoid> _inner;
 };
 
 /**
@@ -1346,7 +1346,7 @@ using FutureContinuationResult =
 //
 
 template <typename T>
-inline Future<T> Promise<T>::_getFuture() noexcept {
+inline Future<T> Promise<T>::getFuture() noexcept {
     _sharedState->threadUnsafeIncRefCountTo(2);
     return Future<T>(boost::intrusive_ptr<SharedState<T>>(_sharedState.get(), /*add ref*/ false));
 }
@@ -1359,7 +1359,7 @@ inline SharedPromise<T> Promise<T>::share() noexcept {
 
 template <typename T>
 inline void Promise<T>::setFrom(Future<T>&& future) noexcept {
-    _setImpl([&] { future._propagateResultTo(_sharedState.get()); });
+    setImpl([&] { future.propagateResultTo(_sharedState.get()); });
 }
 
 template <typename T>

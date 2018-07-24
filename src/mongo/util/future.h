@@ -583,6 +583,8 @@ private:
 
     friend class Future<void>;
 
+    // This is not public because we found it frequently was involved in races.  The
+    // `makePromiseFuture<T>` API avoids those races entirely.
     Future<T> getFuture() noexcept;
 
 

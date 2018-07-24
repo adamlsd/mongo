@@ -578,8 +578,7 @@ public:
     SharedPromise<T> share() noexcept;
 
 private:
-    template <typename>
-    friend auto makePromiseFuture();
+    friend makePromiseFuture;
 
     friend class Future<void>;
 

@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2017 MongoDB Inc.
+ * Copyright (C) 2018 MongoDB Inc.
  *
  * This program is free software: you can redistribute it and/or  modify
  * it under the terms of the GNU Affero General Public License, version 3,
@@ -28,27 +28,27 @@
 
 #pragma once
 
-#include "mongo/bson/bsonobj.h"
-#include "mongo/bson/bsonobjbuilder.h"
-#include "mongo/db/namespace_string.h"
-#include "mongo/db/operation_context.h"
-#include "mongo/db/pipeline/aggregation_request.h"
-#include "mongo/rpc/op_msg_rpc_impls.h"
+#include "mongo/db/pipeline/document_source_out.h"
 
 namespace mongo {
 
 /**
- * Executes the aggregation 'request' over the specified namespace 'nss' using context 'opCtx'.
- *
- * The raw aggregate command parameters should be passed in 'cmdObj', and will be reported as the
- * originatingCommand in subsequent getMores on the resulting agg cursor.
- *
- * On success, fills out 'result' with the command response.
+ * Version of $out which writes directly to the output collection.
  */
-Status runAggregate(OperationContext* opCtx,
-                    const NamespaceString& nss,
-                    const AggregationRequest& request,
-                    const BSONObj& cmdObj,
-                    rpc::ReplyBuilderInterface* result);
+class DocumentSourceOutInPlace final : public DocumentSourceOut {
+public:
+    using DocumentSourceOut::DocumentSourceOut;
+
+    const NamespaceString& getWriteNs() const final {
+        return getOutputNs();
+    };
+
+    /**
+     * No initialization needed since writes will be directed straight to the output collection.
+     */
+    void initializeWriteNs() final{};
+
+    void finalize() final{};
+};
 
 }  // namespace mongo

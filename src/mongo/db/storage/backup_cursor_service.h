@@ -26,29 +26,40 @@
  *    it in the license file.
  */
 
-#include "mongo/tools/mongoebench_options.h"
+#pragma once
 
-#include "mongo/util/options_parser/startup_option_init.h"
-#include "mongo/util/options_parser/startup_options.h"
-#include "mongo/util/quick_exit.h"
+#include <memory>
+
+#include "mongo/base/disallow_copying.h"
+
+#include "mongo/stdx/mutex.h"
 
 namespace mongo {
-namespace {
 
-MONGO_GENERAL_STARTUP_OPTIONS_REGISTER(MongoeBenchOptions)(InitializerContext* context) {
-    return addMongoeBenchOptions(&moe::startupOptions);
-}
+class OperationContext;
+class ServiceContext;
+class StorageEngine;
 
-GlobalInitializerRegisterer mongoeBenchOptionsStore(
-    "MongoeBenchOptions_Store",
-    {"BeginStartupOptionStorage", "EmbeddedOptions_Store"},
-    {"EndStartupOptionStorage"},
-    [](InitializerContext* context) {
-        if (!handlePreValidationMongoeBenchOptions(moe::startupOptionsParsed)) {
-            quickExit(EXIT_SUCCESS);
-        }
-        return storeMongoeBenchOptions(moe::startupOptionsParsed, context->args());
-    });
+class BackupCursorService {
+    MONGO_DISALLOW_COPYING(BackupCursorService);
 
-}  // namespace
+public:
+    static BackupCursorService* get(ServiceContext* service);
+    static void set(ServiceContext* service,
+                    std::unique_ptr<BackupCursorService> backupCursorService);
+
+    BackupCursorService(StorageEngine* storageEngine) : _storageEngine(storageEngine) {}
+
+    void fsyncLock(OperationContext* opCtx);
+
+    void fsyncUnlock(OperationContext* opCtx);
+
+private:
+    StorageEngine* _storageEngine;
+
+    // This mutex serializes all access into this class.
+    stdx::mutex _mutex;
+    bool _cursorOpen = false;
+};
+
 }  // namespace mongo

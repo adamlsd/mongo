@@ -579,7 +579,7 @@ public:
     SharedPromise<T> share() noexcept;
 
 private:
-    friend makePromiseFuture;
+    friend auto makePromiseFuture<T>();
 
     friend class Future<void>;
 

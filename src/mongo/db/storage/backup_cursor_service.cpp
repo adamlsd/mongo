@@ -26,29 +26,47 @@
  *    it in the license file.
  */
 
-#include "mongo/tools/mongoebench_options.h"
+#define MONGO_LOG_DEFAULT_COMPONENT ::mongo::logger::LogComponent::kStorage
 
-#include "mongo/util/options_parser/startup_option_init.h"
-#include "mongo/util/options_parser/startup_options.h"
-#include "mongo/util/quick_exit.h"
+#include "mongo/platform/basic.h"
+
+#include "mongo/db/storage/backup_cursor_service.h"
+
+#include "mongo/db/operation_context.h"
+#include "mongo/db/service_context.h"
+#include "mongo/db/storage/storage_engine.h"
+#include "mongo/util/log.h"
 
 namespace mongo {
 namespace {
+const auto getBackupCursorService =
+    ServiceContext::declareDecoration<std::unique_ptr<BackupCursorService>>();
+}  // namespace
 
-MONGO_GENERAL_STARTUP_OPTIONS_REGISTER(MongoeBenchOptions)(InitializerContext* context) {
-    return addMongoeBenchOptions(&moe::startupOptions);
+BackupCursorService* BackupCursorService::get(ServiceContext* service) {
+    return getBackupCursorService(service).get();
 }
 
-GlobalInitializerRegisterer mongoeBenchOptionsStore(
-    "MongoeBenchOptions_Store",
-    {"BeginStartupOptionStorage", "EmbeddedOptions_Store"},
-    {"EndStartupOptionStorage"},
-    [](InitializerContext* context) {
-        if (!handlePreValidationMongoeBenchOptions(moe::startupOptionsParsed)) {
-            quickExit(EXIT_SUCCESS);
-        }
-        return storeMongoeBenchOptions(moe::startupOptionsParsed, context->args());
-    });
+void BackupCursorService::set(ServiceContext* service,
+                              std::unique_ptr<BackupCursorService> backupCursorService) {
+    auto& decoration = getBackupCursorService(service);
+    decoration = std::move(backupCursorService);
+}
 
-}  // namespace
+void BackupCursorService::fsyncLock(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    uassert(50880,
+            "The existing backup cursor must be closed before fsyncLock can succeed.",
+            !_cursorOpen);
+    uassertStatusOK(_storageEngine->beginBackup(opCtx));
+    _cursorOpen = true;
+}
+
+void BackupCursorService::fsyncUnlock(OperationContext* opCtx) {
+    stdx::lock_guard<stdx::mutex> lk(_mutex);
+    uassert(50879, "There is no backup cursor to close with fsyncUnlock.", _cursorOpen);
+    _storageEngine->endBackup(opCtx);
+    _cursorOpen = false;
+}
+
 }  // namespace mongo

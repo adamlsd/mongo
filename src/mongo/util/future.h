@@ -549,7 +549,7 @@ public:
 
     template <typename... Args>
     void emplaceValue(Args&&... args) noexcept {
-        setImpl([&](boost::intrusive_ptr<SharedState<T>>&&) {
+        setImpl([&](boost::intrusive_ptr<SharedState<T>>&& sharedState) {
             sharedState->emplaceValue(std::forward<Args>(args)...);
         });
     }
@@ -601,7 +601,7 @@ private:
         // We keep `sharedState` as a stack local, to preserve ownership of the resource,
         // in case the code in `doSet` unblocks a thread which winds up causing
         // `~Promise` to be invoked.
-        const auto sharedState = std::move(_sharedState);
+        auto sharedState = std::move(_sharedState);
         doSet(std::move(sharedState));
         // Note: `this` is potentially dead, at this point.
     }

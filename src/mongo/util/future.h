@@ -480,7 +480,8 @@ struct SharedStateImpl final : SharedStateBase {
 using future_details::Promise;
 using future_details::Future;
 
-class PromisePermission;
+template <typename T>
+auto makePromiseFuture();
 
 /**
  * This class represents the producer side of a Future.
@@ -576,16 +577,15 @@ public:
      */
     SharedPromise<T> share() noexcept;
 
-
-    // This is not public because we found it frequently was involved in races.  The
-    // `makePromiseFuture<T>` API avoids those races entirely.
-    Future<T> getFuture(PromisePermission) noexcept;
-
 private:
     template <typename>
     friend auto makePromiseFuture();
 
     friend class Future<void>;
+
+    // This is not public because we found it frequently was involved in races.  The
+    // `makePromiseFuture<T>` API avoids those races entirely.
+    Future<T> getFuture() noexcept;
 
 
     template <typename Func>
@@ -1304,19 +1304,6 @@ auto makeReadyFutureWith(Func&& func) {
     return Future<void>::makeReady().then(std::forward<Func>(func));
 }
 
-PromisePermission makePromisePermission();
-
-class EvilBase {
-protected:
-    EvilBase() = default;
-};
-class PromisePermission : EvilBase {
-private:
-    PromisePermission() = default;
-
-    friend PromisePermission makePromisePermission();
-};
-
 /**
  * Returns a bound Promise and Future in a struct with friendly names (promise and future) that also
  * works well with C++17 structured bindings.
@@ -1325,13 +1312,9 @@ template <typename T>
 inline auto makePromiseFuture() {
     struct PromiseAndFuture {
         Promise<T> promise;
-        Future<T> future = promise.getFuture(makePromisePermission());
+        Future<T> future = promise.getFuture();
     };
     return PromiseAndFuture();
-}
-
-inline PromisePermission makePromisePermission() {
-    return PromisePermission{};
 }
 
 /**
@@ -1365,7 +1348,7 @@ using FutureContinuationResult =
 //
 
 template <typename T>
-inline Future<T> Promise<T>::getFuture(PromisePermission) noexcept {
+inline Future<T> Promise<T>::getFuture() noexcept {
     sharedState->threadUnsafeIncRefCountTo(2);
     return Future<T>(boost::intrusive_ptr<SharedState<T>>(sharedState.get(), /*add ref*/ false));
 }

@@ -155,6 +155,8 @@ variables:
        value: ${remote_dir}/afterrecovery
      - key: backup_path_before
        value: ${remote_dir}/beforerecovery
+     - key: backup_artifacts
+       value: ${remote_dir}/afterrecovery* ${remote_dir}/beforerecovery*
      - key: db_path
        value: /data/db
      - key: log_path
@@ -163,7 +165,7 @@ variables:
        value: powercycle_exit.yml
 
 - &powercycle_test
-  ec2_artifacts: ${log_path} ${db_path} ${backup_path_after} ${backup_path_before}
+  ec2_artifacts: ${log_path} ${db_path} ${backup_artifacts}
   program_options:  --exitYamlFile=${exit_file} --logLevel=info --backupPathBefore=${backup_path_before} --backupPathAfter=${backup_path_after}
   connection_options: --sshUserHost=${private_ip_address} --sshConnection=\"${ssh_identity} ${ssh_connection_options}\"
   test_options: --testLoops=15 --seedDocNum=10000 --rsync --rsyncExcludeFiles=diagnostic.data/metrics.interim* --validate=local --canary=local
@@ -12292,7 +12294,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling
-      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-32993
+      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-35473
     compile_flags: >-
       -j$(grep -c ^processor /proc/cpuinfo)
       --mobile-se=on
@@ -12314,11 +12316,8 @@ buildvariants:
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
   - name: auth
+  - name: concurrency
   - name: dbtest
-  # TODO SERVER-32993: Re-enable the concurrency and concurrency_simultaneous suite on the
-  # mobile storage engine builders.
-  # - name: concurrency
-  # - name: concurrency_simultaneous
   - name: disk_mobile
   - name: failpoints
   - name: failpoints_auth
@@ -12335,8 +12334,6 @@ buildvariants:
   - name: jstestfuzz_concurrent
   - name: noPassthrough
   - name: noPassthroughWithMongod
-  - name: parallel
-  - name: parallel_compatibility
   - name: serial_run
   - name: session_jscore_passthrough
 
@@ -12349,7 +12346,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling
-      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-32993
+      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-35473
     compile_flags: >-
         -j$(grep -c ^processor /proc/cpuinfo)
         --mobile-se=on
@@ -12370,11 +12367,8 @@ buildvariants:
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
   - name: auth
+  - name: concurrency
   - name: dbtest
-  # TODO SERVER-32993: Re-enable the concurrency and concurrency_simultaneous suite on the
-  # mobile storage engine builders.
-  # - name: concurrency
-  # - name: concurrency_simultaneous
   - name: disk_mobile
   - name: failpoints
   - name: failpoints_auth
@@ -12391,8 +12385,6 @@ buildvariants:
   - name: jstestfuzz_concurrent
   - name: noPassthrough
   - name: noPassthroughWithMongod
-  - name: parallel
-  - name: parallel_compatibility
   - name: serial_run
   - name: session_jscore_passthrough
 
@@ -12432,7 +12424,7 @@ buildvariants:
     test_flags: >-
       --storageEngine=mobile
       --excludeWithAnyTags=requires_wiredtiger,requires_replication,requires_sharding,uses_transactions,requires_capped,requires_profiling
-      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-32993
+      --excludeWithAnyTags=SERVER-32709,SERVER-32869,SERVER-35473
     compile_env: DEVELOPER_DIR=/Applications/Xcode8.3.app
     compile_flags: >-
       -j$(sysctl -n hw.logicalcpu)
@@ -12454,11 +12446,8 @@ buildvariants:
   - name: aggregation_auth
   - name: aggregation_facet_unwind_passthrough
   - name: auth
+  - name: concurrency
   - name: dbtest
-  # TODO SERVER-32993: Re-enable the concurrency and concurrency_simultaneous suite on the
-  # mobile storage engine builders.
-  # - name: concurrency
-  # - name: concurrency_simultaneous
   - name: disk_mobile
   - name: failpoints
   - name: failpoints_auth
@@ -12475,8 +12464,6 @@ buildvariants:
   - name: jstestfuzz_concurrent
   - name: noPassthrough
   - name: noPassthroughWithMongod
-  - name: parallel
-  - name: parallel_compatibility
   - name: serial_run
   - name: session_jscore_passthrough
 

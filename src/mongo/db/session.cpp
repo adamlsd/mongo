@@ -1155,7 +1155,8 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
                 getSessionId().serialize(&lsid);
             }
             BSONObjBuilder transactionBuilder;
-            _reportTransactionStats(ls, &transactionBuilder);
+            _reportTransactionStats(
+                ls, &transactionBuilder, _txnResourceStash->getReadConcernArgs());
             builder->append("transaction", transactionBuilder.obj());
             builder->append("waitingForLock", false);
             builder->append("active", false);
@@ -1164,17 +1165,20 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
     }
 }
 
-void Session::reportUnstashedState(BSONObjBuilder* builder) const {
+void Session::reportUnstashedState(repl::ReadConcernArgs readConcernArgs,
+                                   BSONObjBuilder* builder) const {
     stdx::lock_guard<stdx::mutex> ls(_mutex);
 
     if (!_txnResourceStash) {
         BSONObjBuilder transactionBuilder;
-        _reportTransactionStats(ls, &transactionBuilder);
+        _reportTransactionStats(ls, &transactionBuilder, readConcernArgs);
         builder->append("transaction", transactionBuilder.obj());
     }
 }
 
-void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) const {
+void Session::_reportTransactionStats(WithLock wl,
+                                      BSONObjBuilder* builder,
+                                      repl::ReadConcernArgs readConcernArgs) const {
     BSONObjBuilder parametersBuilder(builder->subobjStart("parameters"));
     parametersBuilder.append("txnNumber", _activeTxnNumber);
 
@@ -1184,8 +1188,10 @@ void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) cons
         return;
     }
     parametersBuilder.append("autocommit", _autocommit);
+    readConcernArgs.appendInfo(&parametersBuilder);
     parametersBuilder.done();
 
+    builder->append("readTimestamp", _speculativeTransactionReadOpTime.getTimestamp());
     builder->append("startWallClockTime",
                     dateToISOStringLocal(Date_t::fromMillisSinceEpoch(
                         _singleTransactionStats->getStartTime() / 1000)));
@@ -1199,6 +1205,54 @@ void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) cons
         durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
     builder->append("timeActiveMicros", timeActive);
     builder->append("timeInactiveMicros", timeInactive);
+}
+
+std::string Session::transactionInfoForLog(const SingleThreadedLockStats* lockStats) {
+    // Need to lock because this function checks the state of _txnState.
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+
+    invariant(lockStats);
+    invariant(_txnState.isCommitted(lg) || _txnState.isAborted(lg));
+
+    StringBuilder s;
+
+    // User specified transaction parameters.
+    BSONObjBuilder parametersBuilder;
+    BSONObjBuilder lsidBuilder(parametersBuilder.subobjStart("lsid"));
+    _sessionId.serialize(&lsidBuilder);
+    lsidBuilder.doneFast();
+    parametersBuilder.append("txnNumber", _activeTxnNumber);
+    // TODO: SERVER-35174 Add readConcern to parameters here once pushed.
+    parametersBuilder.append("autocommit", _autocommit);
+    s << "parameters:" << parametersBuilder.obj().toString() << ",";
+
+    s << " readTimestamp:" << _speculativeTransactionReadOpTime.getTimestamp().toString() << ",";
+
+    s << _singleTransactionStats->getOpDebug()->additiveMetrics.report();
+
+    std::string terminationCause = _txnState.isCommitted(lg) ? "committed" : "aborted";
+    s << " terminationCause:" << terminationCause;
+
+    auto curTime = curTimeMicros64();
+    s << " timeActiveMicros:"
+      << durationCount<Microseconds>(_singleTransactionStats->getTimeActiveMicros(curTime));
+    s << " timeInactiveMicros:"
+      << durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
+
+    // Number of yields is always 0 in multi-document transactions, but it is included mainly to
+    // match the format with other slow operation logging messages.
+    s << " numYields:" << 0;
+
+    // Aggregate lock statistics.
+    BSONObjBuilder locks;
+    lockStats->report(&locks);
+    s << " locks:" << locks.obj().toString();
+
+    // Total duration of the transaction.
+    s << " "
+      << Milliseconds{static_cast<long long>(_singleTransactionStats->getDuration(curTime)) / 1000};
+
+    return s.str();
 }
 
 void Session::_checkValid(WithLock) const {

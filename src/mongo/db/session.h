@@ -93,6 +93,13 @@ public:
          */
         void release(OperationContext* opCtx);
 
+        /**
+         * Returns the read concern arguments.
+         */
+        repl::ReadConcernArgs getReadConcernArgs() const {
+            return _readConcernArgs;
+        }
+
     private:
         bool _released = false;
         std::unique_ptr<Locker> _locker;
@@ -358,6 +365,11 @@ public:
         return _singleTransactionStats;
     }
 
+    repl::OpTime getSpeculativeTransactionReadOpTimeForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _speculativeTransactionReadOpTime;
+    }
+
     /**
      * If this session is holding stashed locks in _txnResourceStash, reports the current state of
      * the session using the provided builder. Locks the session object's mutex while running.
@@ -369,13 +381,21 @@ public:
      * reports the current state of the session using the provided builder. Locks the session
      * object's mutex while running.
      */
-    void reportUnstashedState(BSONObjBuilder* builder) const;
+    void reportUnstashedState(repl::ReadConcernArgs readConcernArgs, BSONObjBuilder* builder) const;
 
     /**
      * Convenience method which creates and populates a BSONObj containing the stashed state.
      * Returns an empty BSONObj if this session has no stashed resources.
      */
     BSONObj reportStashedState() const;
+
+    /**
+     * This method returns a string with information about a slow transaction. The format of the
+     * logging string produced should match the format used for slow operation logging. A
+     * transaction must be completed (committed or aborted) and a valid LockStats reference must be
+     * passed in order for this method to be called.
+     */
+    std::string transactionInfoForLog(const SingleThreadedLockStats* lockStats);
 
     void addMultikeyPathInfo(MultikeyPathInfo info) {
         _multikeyPathInfo.push_back(std::move(info));
@@ -567,7 +587,9 @@ private:
 
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.
-    void _reportTransactionStats(WithLock wl, BSONObjBuilder* builder) const;
+    void _reportTransactionStats(WithLock wl,
+                                 BSONObjBuilder* builder,
+                                 repl::ReadConcernArgs readConcernArgs) const;
 
     // Caches what is known to be the last written transaction record for the session
     boost::optional<SessionTxnRecord> _lastWrittenSessionRecord;

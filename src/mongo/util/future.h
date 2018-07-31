@@ -498,6 +498,10 @@ using future_details::Future;
  *
  * If the result is ready when producing the Future, it is more efficient to use
  * makeReadyFutureWith() or Future<T>::makeReady() than to use a Promise<T>.
+ *
+ * A default constructed `Promise` is in a null state.  Null `Promises` can only be assigned over
+ * and destroyed. It is a programmer error to call any methods on a null `Promise`.  Any methods
+ * that complete a `Promise` leave it in the null state.
  */
 template <typename T>
 class future_details::Promise {
@@ -505,7 +509,7 @@ public:
     using value_type = T;
 
     /**
-     * Creates a `Promise` in the moved-from state.
+     * Creates a null `Promise`.
      */
     Promise() = default;
 
@@ -518,7 +522,6 @@ public:
 
 
     /**
-     * Move-assigns from another `Promise` to this one.
      * Breaks this `Promise`, if not fulfilled and not in a moved-from state.
      */
     Promise& operator=(Promise&& p) noexcept {
@@ -527,7 +530,6 @@ public:
         return *this;
     }
 
-    // The default move construction is fine.
     Promise(Promise&&) = default;
 
     /**
@@ -617,8 +619,7 @@ private:
         // Note: `this` is potentially dead, at this point.
     }
 
-    // The current promise will be broken, if not fulfilled.  Used in the dtor and move assignment
-    // operator.
+    // The current promise will be broken, if not already fulfilled.
     void breakPromiseIfNeeded() {
         if (MONGO_unlikely(_sharedState)) {
             _sharedState->setError({ErrorCodes::BrokenPromise, "broken promise"});

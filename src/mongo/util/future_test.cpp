@@ -1795,6 +1795,20 @@ TEST(Promise, Success_setWith_Future) {
                         });
 }
 
+TEST(Promise, MoveAssignBreaksPromise) {
+    auto pf = makePromiseFuture<int>();
+    pf.promise = Promise<int>();  // This should break the promise.
+    ASSERT_THROWS_CODE(std::move(pf.future).get(), DBException, ErrorCodes::BrokenPromise);
+}
+
+TEST(Promise, MoveAssignedPromiseIsTheSameAsTheOldOne) {
+    const int kResult= 11;
+    auto pf = makePromiseFuture<int>();
+    auto promise = std::move(pf.promise);
+    promise.emplaceValue(kResult);
+    ASSERT_EQ(std::move(pf.future).get(), kResult);
+}
+
 TEST(Promise, Fail_setWith_Future) {
     FUTURE_FAIL_TEST<int>([](Future<int>&& fut) {
         auto pf = makePromiseFuture<int>();
@@ -1847,31 +1861,14 @@ TEST(Promise_void, Fail_setWith_Status) {
 TEST(Promise_void, MoveAssignBreaksPromise) {
     auto pf = makePromiseFuture<void>();
     pf.promise = Promise<void>();  // This should break the promise.
-    ASSERT_THROWS_failStatus(std::move(pf.future).get());
+    ASSERT_THROWS_CODE(std::move(pf.future).get(), DBException, ErrorCodes::BrokenPromise);
 }
 
 TEST(Promise_void, MoveAssignedPromiseIsTheSameAsTheOldOne) {
     auto pf = makePromiseFuture<void>();
     auto promise = std::move(pf.promise);
-    promise.setWith([] {});  // This should succeed, as it is the old promise.
+    promise.setWith([] {});
     ASSERT_OK(std::move(pf.future).getNoThrow());
-}
-
-
-TEST(Promise_void, StdTieOfPromiseFutureFun) {
-    struct SomeType {
-        Future<void> future;
-    };
-    struct OtherType {
-        Promise<void> promise;
-    };
-
-    SomeType s;
-    OtherType o;
-
-    std::tie(o.promise, s.future) = makeTiedPromiseAndFuture<void>();
-    o.promise.emplace();
-    ASSERT_OK(std::move(s.future).getNoThrow());
 }
 
 TEST(Promise_void, Success_setWith_Future) {

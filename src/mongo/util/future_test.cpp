@@ -1844,6 +1844,36 @@ TEST(Promise_void, Fail_setWith_Status) {
     ASSERT_THROWS_failStatus(std::move(pf.future).get());
 }
 
+TEST(Promise_void, MoveAssignBreaksPromise) {
+    auto pf = makePromiseFuture<void>();
+    pf.promise = Promise<void>();  // This should break the promise.
+    ASSERT_THROWS_failStatus(std::move(pf.future).get());
+}
+
+TEST(Promise_void, MoveAssignedPromiseIsTheSameAsTheOldOne) {
+    auto pf = makePromiseFuture<void>();
+    auto promise = std::move(pf.promise);
+    promise.setWith([] {});  // This should succeed, as it is the old promise.
+    ASSERT_OK(std::move(pf.future).getNoThrow());
+}
+
+
+TEST(Promise_void, StdTieOfPromiseFutureFun) {
+    struct SomeType {
+        Future<void> future;
+    };
+    struct OtherType {
+        Promise<void> promise;
+    };
+
+    SomeType s;
+    OtherType o;
+
+    std::tie(o.promise, s.future) = makeTiedPromiseAndFuture<void>();
+    o.promise.emplace();
+    ASSERT_OK(std::move(s.future).getNoThrow());
+}
+
 TEST(Promise_void, Success_setWith_Future) {
     FUTURE_SUCCESS_TEST([] {},
                         [](Future<void>&& fut) {

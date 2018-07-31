@@ -504,20 +504,28 @@ class future_details::Promise {
 public:
     using value_type = T;
 
+    /**
+     * Creates a `Promise` in the moved-from state.
+     */
     Promise() = default;
 
     ~Promise() {
-        if (MONGO_unlikely(_sharedState)) {
-            _sharedState->setError({ErrorCodes::BrokenPromise, "broken promise"});
-        }
+        breakPromiseIfNeeded();
     }
 
     Promise(const Promise&) = delete;
     Promise& operator=(const Promise&) = delete;
 
-    // If we want to enable move-assignability, we need to handle breaking the promise on the old
-    // value of this.
-    Promise& operator=(Promise&&) = delete;
+
+    /**
+     * Move-assigns from another `Promise` to this one.
+     * Breaks this `Promise`, if not fulfilled and not in a moved-from state.
+     */
+    Promise& operator=(Promise&& p) noexcept {
+        breakPromiseIfNeeded();
+        _sharedState = std::move(p._sharedState);
+        return *this;
+    }
 
     // The default move construction is fine.
     Promise(Promise&&) = default;
@@ -582,13 +590,16 @@ public:
 
     static auto makePromiseFutureImpl() {
         struct PromiseAndFuture {
-            Promise<T> promise;
+            Promise<T> promise{make_intrusive<SharedState<T>>()};
             Future<T> future = promise.getFuture();
         };
         return PromiseAndFuture();
     }
 
 private:
+    explicit Promise(boost::intrusive_ptr<SharedState<T>>&& sharedState)
+        : _sharedState(std::move(sharedState)) {}
+
     // This is not public because we found it frequently was involved in races.  The
     // `makePromiseFuture<T>` API avoids those races entirely.
     Future<T> getFuture() noexcept;
@@ -606,7 +617,15 @@ private:
         // Note: `this` is potentially dead, at this point.
     }
 
-    boost::intrusive_ptr<SharedState<T>> _sharedState = make_intrusive<SharedState<T>>();
+    // The current promise will be broken, if not fulfilled.  Used in the dtor and move assignment
+    // operator.
+    void breakPromiseIfNeeded() {
+        if (MONGO_unlikely(_sharedState)) {
+            _sharedState->setError({ErrorCodes::BrokenPromise, "broken promise"});
+        }
+    }
+
+    boost::intrusive_ptr<SharedState<T>> _sharedState;
 };
 
 /**
@@ -1322,6 +1341,12 @@ auto makeReadyFutureWith(Func&& func) {
 template <typename T>
 inline auto makePromiseFuture() {
     return Promise<T>::makePromiseFutureImpl();
+}
+
+template <typename T>
+inline auto makeTiedPromiseAndFuture() {
+    auto pf = makePromiseFuture<T>();
+    return std::make_tuple(std::move(pf.promise), std::move(pf.future));
 }
 
 /**

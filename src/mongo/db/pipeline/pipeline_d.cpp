@@ -70,9 +70,7 @@
 #include "mongo/db/query/get_executor.h"
 #include "mongo/db/query/plan_summary_stats.h"
 #include "mongo/db/query/query_planner.h"
-#include "mongo/db/s/collection_metadata.h"
 #include "mongo/db/s/collection_sharding_state.h"
-#include "mongo/db/s/metadata_manager.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
@@ -763,7 +761,7 @@ BSONObj PipelineD::MongoDInterface::getCollectionOptions(const NamespaceString& 
     return infos.empty() ? BSONObj() : infos.front().getObjectField("options").getOwned();
 }
 
-Status PipelineD::MongoDInterface::renameIfOptionsAndIndexesHaveNotChanged(
+void PipelineD::MongoDInterface::renameIfOptionsAndIndexesHaveNotChanged(
     OperationContext* opCtx,
     const BSONObj& renameCommandObj,
     const NamespaceString& targetNs,
@@ -771,31 +769,29 @@ Status PipelineD::MongoDInterface::renameIfOptionsAndIndexesHaveNotChanged(
     const std::list<BSONObj>& originalIndexes) {
     Lock::GlobalWrite globalLock(opCtx);
 
-    if (SimpleBSONObjComparator::kInstance.evaluate(originalCollectionOptions !=
-                                                    getCollectionOptions(targetNs))) {
-        return {ErrorCodes::CommandFailed,
-                str::stream() << "collection options of target collection " << targetNs.ns()
-                              << " changed during processing. Original options: "
-                              << originalCollectionOptions
-                              << ", new options: "
-                              << getCollectionOptions(targetNs)};
-    }
+    uassert(ErrorCodes::CommandFailed,
+            str::stream() << "collection options of target collection " << targetNs.ns()
+                          << " changed during processing. Original options: "
+                          << originalCollectionOptions
+                          << ", new options: "
+                          << getCollectionOptions(targetNs),
+            SimpleBSONObjComparator::kInstance.evaluate(originalCollectionOptions ==
+                                                        getCollectionOptions(targetNs)));
 
     auto currentIndexes = _client.getIndexSpecs(targetNs.ns());
-    if (originalIndexes.size() != currentIndexes.size() ||
-        !std::equal(originalIndexes.begin(),
-                    originalIndexes.end(),
-                    currentIndexes.begin(),
-                    SimpleBSONObjComparator::kInstance.makeEqualTo())) {
-        return {ErrorCodes::CommandFailed,
-                str::stream() << "indexes of target collection " << targetNs.ns()
-                              << " changed during processing."};
-    }
+    uassert(ErrorCodes::CommandFailed,
+            str::stream() << "indexes of target collection " << targetNs.ns()
+                          << " changed during processing.",
+            originalIndexes.size() == currentIndexes.size() &&
+                std::equal(originalIndexes.begin(),
+                           originalIndexes.end(),
+                           currentIndexes.begin(),
+                           SimpleBSONObjComparator::kInstance.makeEqualTo()));
 
     BSONObj info;
-    bool ok = _client.runCommand("admin", renameCommandObj, info);
-    return ok ? Status::OK() : Status{ErrorCodes::CommandFailed,
-                                      str::stream() << "renameCollection failed: " << info};
+    uassert(ErrorCodes::CommandFailed,
+            str::stream() << "renameCollection failed: " << info,
+            _client.runCommand("admin", renameCommandObj, info));
 }
 
 StatusWith<std::unique_ptr<Pipeline, PipelineDeleter>> PipelineD::MongoDInterface::makePipeline(
@@ -964,7 +960,7 @@ BSONObj PipelineD::MongoDInterface::_reportCurrentOpForClient(
 
     if (clientOpCtx) {
         if (auto opCtxSession = OperationContextSession::get(clientOpCtx)) {
-            opCtxSession->reportUnstashedState(&builder);
+            opCtxSession->reportUnstashedState(repl::ReadConcernArgs::get(clientOpCtx), &builder);
         }
 
         // Append lock stats before returning.

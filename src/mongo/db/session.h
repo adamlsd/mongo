@@ -93,6 +93,13 @@ public:
          */
         void release(OperationContext* opCtx);
 
+        /**
+         * Returns the read concern arguments.
+         */
+        repl::ReadConcernArgs getReadConcernArgs() const {
+            return _readConcernArgs;
+        }
+
     private:
         bool _released = false;
         std::unique_ptr<Locker> _locker;
@@ -274,13 +281,23 @@ public:
     /**
      * Commits the transaction, including committing the write unit of work and updating
      * transaction state.
+     *
+     * Throws an exception if the transaction is prepared.
      */
-    void commitTransaction(OperationContext* opCtx);
+    void commitUnpreparedTransaction(OperationContext* opCtx);
 
     /**
-     * Puts a transaction into a prepared state.
+     * Commits the transaction, including committing the write unit of work and updating
+     * transaction state.
+     *
+     * Throws an exception if the transaction is not prepared or if the 'commitTimestamp' is null.
      */
-    void prepareTransaction(OperationContext* opCtx);
+    void commitPreparedTransaction(OperationContext* opCtx, Timestamp commitTimestamp);
+
+    /**
+     * Puts a transaction into a prepared state and returns the prepareTimestamp.
+     */
+    Timestamp prepareTransaction(OperationContext* opCtx);
 
     /**
      * Aborts the transaction outside the transaction, releasing transaction resources.
@@ -355,6 +372,11 @@ public:
         return _singleTransactionStats;
     }
 
+    repl::OpTime getSpeculativeTransactionReadOpTimeForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        return _speculativeTransactionReadOpTime;
+    }
+
     /**
      * If this session is holding stashed locks in _txnResourceStash, reports the current state of
      * the session using the provided builder. Locks the session object's mutex while running.
@@ -366,13 +388,21 @@ public:
      * reports the current state of the session using the provided builder. Locks the session
      * object's mutex while running.
      */
-    void reportUnstashedState(BSONObjBuilder* builder) const;
+    void reportUnstashedState(repl::ReadConcernArgs readConcernArgs, BSONObjBuilder* builder) const;
 
     /**
      * Convenience method which creates and populates a BSONObj containing the stashed state.
      * Returns an empty BSONObj if this session has no stashed resources.
      */
     BSONObj reportStashedState() const;
+
+    /**
+     * This method returns a string with information about a slow transaction. The format of the
+     * logging string produced should match the format used for slow operation logging. A
+     * transaction must be completed (committed or aborted) and a valid LockStats reference must be
+     * passed in order for this method to be called.
+     */
+    std::string transactionInfoForLog(const SingleThreadedLockStats* lockStats);
 
     void addMultikeyPathInfo(MultikeyPathInfo info) {
         _multikeyPathInfo.push_back(std::move(info));
@@ -399,7 +429,7 @@ public:
 
     void transitionToCommittingforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _txnState.transitionTo(lk, TransitionTable::State::kCommitting);
+        _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithoutPrepare);
     }
 
 private:
@@ -453,7 +483,15 @@ private:
      */
     class TransitionTable {
     public:
-        enum class State { kNone, kInProgress, kPrepared, kCommitting, kCommitted, kAborted };
+        enum class State {
+            kNone,
+            kInProgress,
+            kPrepared,
+            kCommittingWithoutPrepare,
+            kCommittingWithPrepare,
+            kCommitted,
+            kAborted
+        };
 
         /**
          * Transitions the session from the current state to the new state. If transition validation
@@ -481,8 +519,12 @@ private:
             return _state == State::kPrepared;
         }
 
-        bool isCommitting(WithLock) const {
-            return _state == State::kCommitting;
+        bool isCommittingWithoutPrepare(WithLock) const {
+            return _state == State::kCommittingWithoutPrepare;
+        }
+
+        bool isCommittingWithPrepare(WithLock) const {
+            return _state == State::kCommittingWithPrepare;
         }
 
         bool isCommitted(WithLock) const {
@@ -518,11 +560,11 @@ private:
     // Releases stashed transaction resources to abort the transaction.
     void _abortTransaction(WithLock);
 
-    // Committing a transaction first changes its state to "Committing" and writes to the oplog,
+    // Committing a transaction first changes its state to "Committing*" and writes to the oplog,
     // then it changes the state to "Committed".
     //
-    // When a transaction is in "Committing" state, it's not allowed for other threads to change its
-    // state (i.e. abort the transaction), otherwise the on-disk state will diverge from the
+    // When a transaction is in "Committing*" state, it's not allowed for other threads to change
+    // its state (i.e. abort the transaction), otherwise the on-disk state will diverge from the
     // in-memory state.
     // There are 3 cases where the transaction will be aborted.
     // 1) abortTransaction command. Session check-out mechanism only allows one client to access a
@@ -550,7 +592,9 @@ private:
 
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.
-    void _reportTransactionStats(WithLock wl, BSONObjBuilder* builder) const;
+    void _reportTransactionStats(WithLock wl,
+                                 BSONObjBuilder* builder,
+                                 repl::ReadConcernArgs readConcernArgs) const;
 
     // Caches what is known to be the last written transaction record for the session
     boost::optional<SessionTxnRecord> _lastWrittenSessionRecord;

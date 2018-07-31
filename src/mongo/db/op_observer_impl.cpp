@@ -47,7 +47,6 @@
 #include "mongo/db/repl/oplog.h"
 #include "mongo/db/repl/oplog_entry_gen.h"
 #include "mongo/db/repl/replication_coordinator.h"
-#include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/shard_server_op_observer.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/session_catalog.h"
@@ -413,9 +412,9 @@ void OpObserverImpl::onInserts(OperationContext* opCtx,
         onWriteOpCompleted(opCtx, nss, session, stmtIdsWritten, lastOpTime, lastWriteDate);
     }
 
-    auto css = (nss == NamespaceString::kSessionTransactionsTableNamespace || fromMigrate)
+    auto* const css = (nss == NamespaceString::kSessionTransactionsTableNamespace || fromMigrate)
         ? nullptr
-        : CollectionShardingState::get(opCtx, nss);
+        : CollectionShardingRuntime::get(opCtx, nss);
 
     size_t index = 0;
     for (auto it = first; it != last; it++, index++) {
@@ -487,7 +486,7 @@ void OpObserverImpl::onUpdate(OperationContext* opCtx, const OplogUpdateEntryArg
 
     if (args.nss != NamespaceString::kSessionTransactionsTableNamespace) {
         if (!args.fromMigrate) {
-            auto css = CollectionShardingState::get(opCtx, args.nss);
+            auto* const css = CollectionShardingRuntime::get(opCtx, args.nss);
             shardObserveUpdateOp(
                 opCtx, css, args.updatedDoc, opTime.writeOpTime, opTime.prePostImageOpTime);
         }
@@ -511,7 +510,7 @@ void OpObserverImpl::aboutToDelete(OperationContext* opCtx,
                                    NamespaceString const& nss,
                                    BSONObj const& doc) {
     getDeleteState(opCtx) =
-        ShardObserverDeleteState::make(opCtx, CollectionShardingState::get(opCtx, nss), doc);
+        ShardObserverDeleteState::make(opCtx, CollectionShardingRuntime::get(opCtx, nss), doc);
 }
 
 void OpObserverImpl::onDelete(OperationContext* opCtx,
@@ -545,7 +544,7 @@ void OpObserverImpl::onDelete(OperationContext* opCtx,
 
     if (nss != NamespaceString::kSessionTransactionsTableNamespace) {
         if (!fromMigrate) {
-            auto css = CollectionShardingState::get(opCtx, nss);
+            auto* const css = CollectionShardingRuntime::get(opCtx, nss);
             shardObserveDeleteOp(
                 opCtx, css, deleteState, opTime.writeOpTime, opTime.prePostImageOpTime);
         }
@@ -963,20 +962,43 @@ OpTimeBundle logApplyOpsForTransaction(OperationContext* opCtx,
 
 }  //  namespace
 
-void OpObserverImpl::onTransactionCommit(OperationContext* opCtx) {
+void OpObserverImpl::onTransactionCommit(OperationContext* opCtx, bool wasPrepared) {
     invariant(opCtx->getTxnNumber());
-    Session* const session = OperationContextSession::get(opCtx);
-    invariant(session);
-    auto stmts = session->endTransactionAndRetrieveOperations(opCtx);
+    if (wasPrepared) {
+        // TODO (SERVER-35865): log commitTransaction oplog entry correctly. We log a dummy entry to
+        // test the timestamping behavior.
+        const NamespaceString cmdNss{"admin", "$cmd"};
+        const auto cmdObj = BSON("commitTransaction" << 1);
+        Session::SideTransactionBlock sideTxn(opCtx);
+        WriteUnitOfWork wuow(opCtx);
+        logOperation(opCtx,
+                     "c",
+                     cmdNss,
+                     boost::none,
+                     cmdObj,
+                     nullptr,
+                     false,
+                     getWallClockTimeForOpLog(opCtx),
+                     {},
+                     kUninitializedStmtId,
+                     {},
+                     false /* prepare */,
+                     OplogSlot());
+        wuow.commit();
+    } else {
+        Session* const session = OperationContextSession::get(opCtx);
+        invariant(session);
+        const auto stmts = session->endTransactionAndRetrieveOperations(opCtx);
 
-    // It is possible that the transaction resulted in no changes.  In that case, we should
-    // not write an empty applyOps entry.
-    if (stmts.empty())
-        return;
+        // It is possible that the transaction resulted in no changes.  In that case, we should
+        // not write an empty applyOps entry.
+        if (stmts.empty())
+            return;
 
-    const auto commitOpTime =
-        logApplyOpsForTransaction(opCtx, session, stmts, false /* prepare */).writeOpTime;
-    invariant(!commitOpTime.isNull());
+        const auto commitOpTime =
+            logApplyOpsForTransaction(opCtx, session, stmts, false /* prepare */).writeOpTime;
+        invariant(!commitOpTime.isNull());
+    }
 }
 
 void OpObserverImpl::onTransactionPrepare(OperationContext* opCtx) {

@@ -44,6 +44,7 @@
 #include "mongo/db/stats/fill_locker_info.h"
 #include "mongo/stdx/future.h"
 #include "mongo/stdx/memory.h"
+#include "mongo/unittest/death_test.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/net/socket_utils.h"
 
@@ -52,6 +53,7 @@ namespace {
 
 const NamespaceString kNss("TestDB", "TestColl");
 const OptionalCollectionUUID kUUID;
+const Timestamp kPrepareTimestamp(Timestamp(1, 1));
 
 /**
  * Creates an OplogEntry with given parameters and preset defaults for this test suite.
@@ -85,21 +87,42 @@ repl::OplogEntry makeOplogEntry(repl::OpTime opTime,
 class OpObserverMock : public OpObserverNoop {
 public:
     void onTransactionPrepare(OperationContext* opCtx) override;
-
     bool onTransactionPrepareThrowsException = false;
     bool transactionPrepared = false;
     stdx::function<void()> onTransactionPrepareFn = [this]() { transactionPrepared = true; };
+
+    void onTransactionCommit(OperationContext* opCtx, bool wasPrepared) override;
+    bool onTransactionCommitThrowsException = false;
+    bool transactionCommitted = false;
+    stdx::function<void(bool)> onTransactionCommitFn = [this](bool wasPrepared) {
+        transactionCommitted = true;
+    };
 };
 
 void OpObserverMock::onTransactionPrepare(OperationContext* opCtx) {
     ASSERT_TRUE(opCtx->lockState()->inAWriteUnitOfWork());
     OpObserverNoop::onTransactionPrepare(opCtx);
 
+    // Get the recovery unit and set the prepareTimestamp.
+    RecoveryUnit* recoveryUnit = opCtx->recoveryUnit();
+    recoveryUnit->setPrepareTimestamp(kPrepareTimestamp);
+
     uassert(ErrorCodes::OperationFailed,
             "onTransactionPrepare() failed",
             !onTransactionPrepareThrowsException);
 
     onTransactionPrepareFn();
+}
+
+void OpObserverMock::onTransactionCommit(OperationContext* opCtx, bool wasPrepared) {
+    ASSERT_TRUE(opCtx->lockState()->inAWriteUnitOfWork());
+    OpObserverNoop::onTransactionCommit(opCtx, wasPrepared);
+
+    uassert(ErrorCodes::OperationFailed,
+            "onTransactionCommit() failed",
+            !onTransactionCommitThrowsException);
+
+    onTransactionCommitFn(wasPrepared);
 }
 
 class SessionTest : public MockReplCoordServerFixture {
@@ -722,7 +745,7 @@ TEST_F(SessionTest, StashAndUnstashResources) {
     ASSERT(opCtx()->getWriteUnitOfWork());
 
     // Commit the transaction. This allows us to release locks.
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 }
 
 TEST_F(SessionTest, ReportStashedResources) {
@@ -738,6 +761,22 @@ TEST_F(SessionTest, ReportStashedResources) {
 
     Session session(sessionId);
     session.refreshFromStorageIfNeeded(opCtx());
+
+    // Create a ClientMetadata object and set it on ClientMetadataIsMasterState.
+    BSONObjBuilder builder;
+    ASSERT_OK(ClientMetadata::serializePrivate("driverName",
+                                               "driverVersion",
+                                               "osType",
+                                               "osName",
+                                               "osArchitecture",
+                                               "osVersion",
+                                               "appName",
+                                               &builder));
+    auto obj = builder.obj();
+    auto clientMetadata = ClientMetadata::parse(obj["client"]);
+    auto& clientMetadataIsMasterState = ClientMetadataIsMasterState::get(opCtx()->getClient());
+    clientMetadataIsMasterState.setClientMetadata(opCtx()->getClient(),
+                                                  std::move(clientMetadata.getValue()));
 
     session.beginOrContinueTxn(opCtx(), txnNum, autocommit, true, "testDB", "find");
 
@@ -769,18 +808,25 @@ TEST_F(SessionTest, ReportStashedResources) {
     ASSERT_BSONOBJ_EQ(stashedState.getField("lsid").Obj(), sessionId.toBSON());
     ASSERT_EQ(parametersDocument.getField("txnNumber").numberLong(), txnNum);
     ASSERT_EQ(parametersDocument.getField("autocommit").boolean(), autocommit);
+    ASSERT_BSONELT_EQ(parametersDocument.getField("readConcern"),
+                      readConcernArgs.toBSON().getField("readConcern"));
+    ASSERT_GTE(transactionDocument.getField("readTimestamp").timestamp(), Timestamp(0, 0));
     ASSERT_GTE(
         dateFromISOString(transactionDocument.getField("startWallClockTime").valueStringData())
             .getValue(),
         startTime);
+    ASSERT_EQ(stashedState.getField("client").valueStringData().toString(), "");
+    ASSERT_EQ(stashedState.getField("connectionId").numberLong(), 0);
+    ASSERT_EQ(stashedState.getField("appName").valueStringData().toString(), "appName");
+    ASSERT_BSONOBJ_EQ(stashedState.getField("clientMetadata").Obj(), obj.getField("client").Obj());
+    ASSERT_EQ(stashedState.getField("waitingForLock").boolean(), false);
+    ASSERT_EQ(stashedState.getField("active").boolean(), false);
     // For the following time metrics, we are only verifying that the transaction sub-document is
     // being constructed correctly with proper types because we have other tests to verify that the
     // values are being tracked correctly.
     ASSERT_GTE(transactionDocument.getField("timeOpenMicros").numberLong(), 0);
     ASSERT_GTE(transactionDocument.getField("timeActiveMicros").numberLong(), 0);
     ASSERT_GTE(transactionDocument.getField("timeInactiveMicros").numberLong(), 0);
-    ASSERT_EQ(stashedState.getField("waitingForLock").boolean(), false);
-    ASSERT_EQ(stashedState.getField("active").boolean(), false);
 
     // Unset the read concern on the OperationContext. This is needed to unstash.
     repl::ReadConcernArgs::get(opCtx()) = repl::ReadConcernArgs();
@@ -794,7 +840,7 @@ TEST_F(SessionTest, ReportStashedResources) {
     ASSERT(session.reportStashedState().isEmpty());
 
     // Commit the transaction. This allows us to release locks.
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 }
 
 TEST_F(SessionTest, ReportUnstashedResources) {
@@ -828,13 +874,16 @@ TEST_F(SessionTest, ReportUnstashedResources) {
 
     // Verify that the Session's report of its own unstashed state aligns with our expectations.
     BSONObjBuilder unstashedStateBuilder;
-    session.reportUnstashedState(&unstashedStateBuilder);
+    session.reportUnstashedState(repl::ReadConcernArgs::get(opCtx()), &unstashedStateBuilder);
     auto unstashedState = unstashedStateBuilder.obj();
     auto transactionDocument = unstashedState.getObjectField("transaction");
     auto parametersDocument = transactionDocument.getObjectField("parameters");
 
     ASSERT_EQ(parametersDocument.getField("txnNumber").numberLong(), txnNum);
     ASSERT_EQ(parametersDocument.getField("autocommit").boolean(), autocommit);
+    ASSERT_BSONELT_EQ(parametersDocument.getField("readConcern"),
+                      readConcernArgs.toBSON().getField("readConcern"));
+    ASSERT_GTE(transactionDocument.getField("readTimestamp").timestamp(), Timestamp(0, 0));
     ASSERT_GTE(
         dateFromISOString(transactionDocument.getField("startWallClockTime").valueStringData())
             .getValue(),
@@ -852,7 +901,7 @@ TEST_F(SessionTest, ReportUnstashedResources) {
 
     // With the resources stashed, verify that the Session reports an empty unstashed state.
     BSONObjBuilder builder;
-    session.reportUnstashedState(&builder);
+    session.reportUnstashedState(repl::ReadConcernArgs::get(opCtx()), &builder);
     ASSERT(builder.obj().isEmpty());
 }
 
@@ -882,7 +931,7 @@ TEST_F(SessionTest, ReportUnstashedResourcesForARetryableWrite) {
 
     // Verify that the Session's report of its own unstashed state aligns with our expectations.
     BSONObjBuilder unstashedStateBuilder;
-    session.reportUnstashedState(&unstashedStateBuilder);
+    session.reportUnstashedState(repl::ReadConcernArgs::get(opCtx()), &unstashedStateBuilder);
     ASSERT_BSONOBJ_EQ(unstashedStateBuilder.obj(), reportBuilder.obj());
 }
 
@@ -1008,9 +1057,126 @@ TEST_F(SessionTest, EmptyTransactionCommit) {
     session.unstashTransactionResources(opCtx(), "commitTransaction");
     // The transaction machinery cannot store an empty locker.
     Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
     session.stashTransactionResources(opCtx());
     ASSERT_TRUE(session.transactionIsCommitted());
+}
+
+TEST_F(SessionTest, CommitTransactionSetsCommitTimestampOnPreparedTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    Timestamp actualCommitTimestamp;
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT(wasPrepared);
+        actualCommitTimestamp = opCtx()->recoveryUnit()->getCommitTimestamp();
+    };
+
+    const auto commitTimestamp = Timestamp(6, 6);
+    const TxnNumber txnNum = 25;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    // The transaction machinery cannot store an empty locker.
+    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    session.prepareTransaction(opCtx());
+    session.commitPreparedTransaction(opCtx(), commitTimestamp);
+
+    ASSERT_EQ(commitTimestamp, actualCommitTimestamp);
+    // The recovery unit is reset on commit.
+    ASSERT(opCtx()->recoveryUnit()->getCommitTimestamp().isNull());
+
+    session.stashTransactionResources(opCtx());
+    ASSERT_TRUE(session.transactionIsCommitted());
+    ASSERT(opCtx()->recoveryUnit()->getCommitTimestamp().isNull());
+}
+
+TEST_F(SessionTest, CommitTransactionWithCommitTimestampFailsOnUnpreparedTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const auto commitTimestamp = Timestamp(6, 6);
+    const TxnNumber txnNum = 25;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    // The transaction machinery cannot store an empty locker.
+    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    ASSERT_THROWS_CODE(session.commitPreparedTransaction(opCtx(), commitTimestamp),
+                       AssertionException,
+                       ErrorCodes::InvalidOptions);
+}
+
+TEST_F(SessionTest, CommitTransactionDoesNotSetCommitTimestampOnUnpreparedTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    Timestamp actualCommitTimestamp;
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT_FALSE(wasPrepared);
+        actualCommitTimestamp = opCtx()->recoveryUnit()->getCommitTimestamp();
+    };
+
+    const TxnNumber txnNum = 25;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    // The transaction machinery cannot store an empty locker.
+    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    session.commitUnpreparedTransaction(opCtx());
+
+    ASSERT(opCtx()->recoveryUnit()->getCommitTimestamp().isNull());
+    ASSERT(actualCommitTimestamp.isNull());
+
+    session.stashTransactionResources(opCtx());
+    ASSERT_TRUE(session.transactionIsCommitted());
+    ASSERT(opCtx()->recoveryUnit()->getCommitTimestamp().isNull());
+}
+
+TEST_F(SessionTest, CommitTransactionWithoutCommitTimestampFailsOnPreparedTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 25;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    // The transaction machinery cannot store an empty locker.
+    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    session.prepareTransaction(opCtx());
+    ASSERT_THROWS_CODE(session.commitUnpreparedTransaction(opCtx()),
+                       AssertionException,
+                       ErrorCodes::InvalidOptions);
+}
+
+TEST_F(SessionTest, CommitTransactionWithNullCommitTimestampFailsOnPreparedTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 25;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    // The transaction machinery cannot store an empty locker.
+    Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
+    session.prepareTransaction(opCtx());
+    ASSERT_THROWS_CODE(session.commitPreparedTransaction(opCtx(), Timestamp()),
+                       AssertionException,
+                       ErrorCodes::InvalidOptions);
 }
 
 // This test makes sure the abort machinery works even when no operations are done on the
@@ -1230,8 +1396,9 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndAbort) {
     session.abortArbitraryTransaction();
 
     // An commitTransaction() after an abort should uassert.
-    ASSERT_THROWS_CODE(
-        session.commitTransaction(opCtx()), AssertionException, ErrorCodes::NoSuchTransaction);
+    ASSERT_THROWS_CODE(session.commitUnpreparedTransaction(opCtx()),
+                       AssertionException,
+                       ErrorCodes::NoSuchTransaction);
 }
 
 TEST_F(SessionTest, ConcurrencyOfPrepareTransactionAndAbort) {
@@ -1278,7 +1445,9 @@ TEST_F(SessionTest, KillSessionsDuringPrepareDoesNotAbortTransaction) {
         ASSERT_FALSE(session.transactionIsAborted());
     };
 
-    session.prepareTransaction(opCtx());
+    // Check that prepareTimestamp gets set.
+    auto prepareTimestamp = session.prepareTransaction(opCtx());
+    ASSERT_EQ(kPrepareTimestamp, prepareTimestamp);
     ASSERT(_opObserver->transactionPrepared);
     ASSERT_FALSE(session.transactionIsAborted());
 }
@@ -1330,6 +1499,171 @@ TEST_F(SessionTest, ThrowDuringOnTransactionPrepareAbortsTransaction) {
     ASSERT(session.transactionIsAborted());
 }
 
+TEST_F(SessionTest, KillSessionsDuringPreparedCommitDoesNotAbortTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const auto commitTimestamp = Timestamp(1, 1);
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT(wasPrepared);
+
+        // The transaction may be aborted without checking out the session.
+        session.abortArbitraryTransaction();
+        ASSERT_FALSE(session.transactionIsAborted());
+    };
+
+    session.prepareTransaction(opCtx());
+    session.commitPreparedTransaction(opCtx(), commitTimestamp);
+    ASSERT(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT(session.transactionIsCommitted());
+}
+
+// This tests documents behavior, though it is not necessarily the behavior we want.
+TEST_F(SessionTest, AbortDuringPreparedCommitDoesNotAbortTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const auto commitTimestamp = Timestamp(1, 1);
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT(wasPrepared);
+
+        // The transaction may be aborted without checking out the session.
+        session.abortActiveTransaction(opCtx());
+        ASSERT_FALSE(session.transactionIsAborted());
+    };
+
+    session.prepareTransaction(opCtx());
+    session.commitPreparedTransaction(opCtx(), commitTimestamp);
+    ASSERT(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT(session.transactionIsCommitted());
+}
+
+// This tests documents behavior, though it is not necessarily the behavior we want.
+TEST_F(SessionTest, ThrowDuringPreparedOnTransactionCommitDoesNothing) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const auto commitTimestamp = Timestamp(1, 1);
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    _opObserver->onTransactionCommitThrowsException = true;
+
+    session.prepareTransaction(opCtx());
+    ASSERT_THROWS_CODE(session.commitPreparedTransaction(opCtx(), commitTimestamp),
+                       AssertionException,
+                       ErrorCodes::OperationFailed);
+    ASSERT_FALSE(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT_FALSE(session.transactionIsCommitted());
+}
+
+TEST_F(SessionTest, KillSessionsDuringUnpreparedCommitDoesNotAbortTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT_FALSE(wasPrepared);
+
+        // The transaction may be aborted without checking out the session.
+        session.abortArbitraryTransaction();
+        ASSERT_FALSE(session.transactionIsAborted());
+    };
+
+    session.commitUnpreparedTransaction(opCtx());
+    ASSERT(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT(session.transactionIsCommitted());
+}
+
+TEST_F(SessionTest, AbortDuringUnpreparedCommitDoesNotAbortTransaction) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    auto originalFn = _opObserver->onTransactionCommitFn;
+    _opObserver->onTransactionCommitFn = [&](bool wasPrepared) {
+        originalFn(wasPrepared);
+        ASSERT_FALSE(wasPrepared);
+
+        // The transaction may be aborted without checking out the session.
+        session.abortActiveTransaction(opCtx());
+        ASSERT_FALSE(session.transactionIsAborted());
+    };
+
+    session.commitUnpreparedTransaction(opCtx());
+    ASSERT(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT(session.transactionIsCommitted());
+}
+
+// This tests documents behavior, though it is not necessarily the behavior we want.
+TEST_F(SessionTest, ThrowDuringUnpreparedOnTransactionCommitDoesNothing) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 26;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+
+    _opObserver->onTransactionCommitThrowsException = true;
+
+    ASSERT_THROWS_CODE(session.commitUnpreparedTransaction(opCtx()),
+                       AssertionException,
+                       ErrorCodes::OperationFailed);
+    ASSERT_FALSE(_opObserver->transactionCommitted);
+    ASSERT_FALSE(session.transactionIsAborted());
+    ASSERT_FALSE(session.transactionIsCommitted());
+}
+
 TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
     const auto sessionId = makeLogicalSessionIdForTest();
     Session session(sessionId);
@@ -1350,7 +1684,7 @@ TEST_F(SessionTest, ConcurrencyOfCommitTransactionAndMigration) {
 
     // An commitTransaction() after a migration that bumps the active transaction number should
     // uassert.
-    ASSERT_THROWS_CODE(session.commitTransaction(opCtx()),
+    ASSERT_THROWS_CODE(session.commitUnpreparedTransaction(opCtx()),
                        AssertionException,
                        ErrorCodes::ConflictingOperationInProgress);
 }
@@ -1408,7 +1742,10 @@ TEST_F(SessionTest, KillSessionsDoesNotAbortPreparedTransactions) {
     session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
 
     session.unstashTransactionResources(opCtx(), "insert");
-    session.prepareTransaction(opCtx());
+
+    // Check that prepareTimestamp is set.
+    auto prepareTimestamp = session.prepareTransaction(opCtx());
+    ASSERT_EQ(kPrepareTimestamp, prepareTimestamp);
     session.stashTransactionResources(opCtx());
 
     session.abortArbitraryTransaction();
@@ -1474,7 +1811,7 @@ TEST_F(SessionTest, IncrementTotalCommittedOnCommit) {
     unsigned long long beforeCommitCount =
         ServerTransactionsMetrics::get(opCtx())->getTotalCommitted();
 
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 
     // Assert that the committed counter is incremented by 1.
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getTotalCommitted(), beforeCommitCount + 1U);
@@ -1556,7 +1893,7 @@ TEST_F(SessionTest, TrackTotalOpenTransactionsWithCommit) {
     session.unstashTransactionResources(opCtx(), "insert");
 
     // Tests that committing a transaction decrements the open transactions counter by 1.
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentOpen(), beforeTransactionStart);
 }
 
@@ -1597,7 +1934,7 @@ TEST_F(SessionTest, TrackTotalActiveAndInactiveTransactionsWithCommit) {
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentInactive(), beforeInactiveCounter);
 
     // Tests that committing a transaction decrements the active counter only.
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentActive(), beforeActiveCounter);
     ASSERT_EQ(ServerTransactionsMetrics::get(opCtx())->getCurrentInactive(), beforeInactiveCounter);
 }
@@ -1708,7 +2045,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldBeSetUponCom
     sleepmillis(10);
 
     unsigned long long timeBeforeTxnCommit = curTimeMicros64();
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
     unsigned long long timeAfterTxnCommit = curTimeMicros64();
 
     ASSERT_GTE(session.getSingleTransactionStats()->getDuration(curTimeMicros64()),
@@ -1769,7 +2106,7 @@ TEST_F(TransactionsMetricsTest, SingleTransactionStatsDurationShouldKeepIncreasi
     ASSERT_GT(session.getSingleTransactionStats()->getDuration(curTimeMicros64()),
               txnDurationAfterStart);
     sleepmillis(10);
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
     unsigned long long txnDurationAfterCommit =
         session.getSingleTransactionStats()->getDuration(curTimeMicros64());
 
@@ -1979,7 +2316,7 @@ TEST_F(TransactionsMetricsTest, TimeActiveMicrosShouldIncreaseUntilCommit) {
     // Time active should have increased again.
     ASSERT_GT(session.getSingleTransactionStats()->getTimeActiveMicros(curTimeMicros64()),
               timeActiveSoFar);
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 
     // The transaction is no longer active, so time active should not have increased.
     timeActiveSoFar = session.getSingleTransactionStats()->getTimeActiveMicros(curTimeMicros64());
@@ -2103,7 +2440,7 @@ TEST_F(TransactionsMetricsTest, AdditiveMetricsObjectsShouldBeAddedTogetherUponC
     session.unstashTransactionResources(opCtx(), "insert");
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 
     ASSERT(session.getSingleTransactionStats()->getOpDebug()->additiveMetrics.equals(
         additiveMetricsToCompare));
@@ -2267,7 +2604,7 @@ TEST_F(TransactionsMetricsTest, TimeInactiveMicrosShouldIncreaseUntilCommit) {
     session.unstashTransactionResources(opCtx(), "insert");
     // The transaction machinery cannot store an empty locker.
     { Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow); }
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 
     timeInactiveSoFar =
         session.getSingleTransactionStats()->getTimeInactiveMicros(curTimeMicros64());
@@ -2321,10 +2658,10 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
     session.stashTransactionResources(opCtx());
 
     // LastClientInfo should have been set.
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->client, "");
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->connectionId, 0);
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->appName, "appName");
-    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo()->clientMetadata,
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientHostAndPort, "");
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().connectionId, 0);
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().appName, "appName");
+    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientMetadata,
                       obj.getField("client").Obj());
 
     // Create another ClientMetadata object.
@@ -2337,8 +2674,8 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponStash) {
     session.stashTransactionResources(opCtx());
 
     // LastClientInfo's clientMetadata should have been updated to the new ClientMetadata object.
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->appName, "newAppName");
-    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo()->clientMetadata,
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().appName, "newAppName");
+    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientMetadata,
                       newObj.getField("client").Obj());
 }
 
@@ -2362,13 +2699,13 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponCommit) {
     session.unstashTransactionResources(opCtx(), "insert");
     // The transaction machinery cannot store an empty locker.
     Lock::GlobalLock lk(opCtx(), MODE_IX, Date_t::now(), Lock::InterruptBehavior::kThrow);
-    session.commitTransaction(opCtx());
+    session.commitUnpreparedTransaction(opCtx());
 
     // LastClientInfo should have been set.
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->client, "");
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->connectionId, 0);
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->appName, "appName");
-    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo()->clientMetadata,
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientHostAndPort, "");
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().connectionId, 0);
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().appName, "appName");
+    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientMetadata,
                       obj.getField("client").Obj());
 }
 
@@ -2394,11 +2731,213 @@ TEST_F(TransactionsMetricsTest, LastClientInfoShouldUpdateUponAbort) {
     session.abortActiveTransaction(opCtx());
 
     // LastClientInfo should have been set.
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->client, "");
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->connectionId, 0);
-    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo()->appName, "appName");
-    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo()->clientMetadata,
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientHostAndPort, "");
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().connectionId, 0);
+    ASSERT_EQ(session.getSingleTransactionStats()->getLastClientInfo().appName, "appName");
+    ASSERT_BSONOBJ_EQ(session.getSingleTransactionStats()->getLastClientInfo().clientMetadata,
                       obj.getField("client").Obj());
+}
+
+namespace {
+
+/*
+ * Sets up the additive metrics for Transactions Metrics test.
+ */
+void setupAdditiveMetrics(const int metricValue, OperationContext* opCtx) {
+    CurOp::get(opCtx)->debug().additiveMetrics.keysExamined = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.docsExamined = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.nMatched = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.nModified = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.ninserted = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.ndeleted = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.nmoved = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.keysInserted = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.keysDeleted = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.prepareReadConflicts = metricValue;
+    CurOp::get(opCtx)->debug().additiveMetrics.writeConflicts = metricValue;
+}
+
+/*
+ * Builds expected parameters info string.
+ */
+void buildParametersInfoString(StringBuilder* sb,
+                               LogicalSessionId sessionId,
+                               const TxnNumber txnNum) {
+    BSONObjBuilder lsidBuilder;
+    sessionId.serialize(&lsidBuilder);
+    (*sb) << "parameters:{ lsid: " << lsidBuilder.done().toString() << ", txnNumber: " << txnNum
+          << ", autocommit: false },";
+}
+
+/*
+ * Builds expected single transaction stats info string.
+ */
+void buildSingleTransactionStatsString(StringBuilder* sb, const int metricValue) {
+    (*sb) << " keysExamined:" << metricValue << " docsExamined:" << metricValue
+          << " nMatched:" << metricValue << " nModified:" << metricValue
+          << " ninserted:" << metricValue << " ndeleted:" << metricValue
+          << " nmoved:" << metricValue << " keysInserted:" << metricValue
+          << " keysDeleted:" << metricValue << " prepareReadConflicts:" << metricValue
+          << " writeConflicts:" << metricValue;
+}
+
+/*
+ * Builds the time active and time inactive info string.
+ */
+void buildTimeActiveInactiveString(StringBuilder* sb,
+                                   Session* session,
+                                   unsigned long long curTime) {
+    // Add time active micros to string.
+    (*sb) << " timeActiveMicros:"
+          << durationCount<Microseconds>(
+                 session->getSingleTransactionStats()->getTimeActiveMicros(curTime));
+
+    // Add time inactive micros to string.
+    (*sb) << " timeInactiveMicros:"
+          << session->getSingleTransactionStats()->getDuration(curTime) -
+            durationCount<Microseconds>(
+                 session->getSingleTransactionStats()->getTimeActiveMicros(curTime));
+}
+
+
+/*
+ * Builds the entire expected transaction info string and returns it.
+ */
+std::string buildTransactionInfoString(OperationContext* opCtx,
+                                       Session* session,
+                                       std::string terminationCause,
+                                       const LogicalSessionId sessionId,
+                                       const TxnNumber txnNum,
+                                       const int metricValue) {
+    // Calling transactionInfoForLog to get the actual transaction info string.
+    const auto lockerInfo = opCtx->lockState()->getLockerInfo();
+
+    // Building expected transaction info string.
+    StringBuilder parametersInfo;
+    buildParametersInfoString(&parametersInfo, sessionId, txnNum);
+
+    StringBuilder readTimestampInfo;
+    readTimestampInfo
+        << " readTimestamp:"
+        << session->getSpeculativeTransactionReadOpTimeForTest().getTimestamp().toString() << ",";
+
+    StringBuilder singleTransactionStatsInfo;
+    buildSingleTransactionStatsString(&singleTransactionStatsInfo, metricValue);
+
+    auto curTime = curTimeMicros64();
+    StringBuilder timeActiveAndInactiveInfo;
+    buildTimeActiveInactiveString(&timeActiveAndInactiveInfo, session, curTime);
+
+    BSONObjBuilder locks;
+    if (lockerInfo) {
+        lockerInfo->stats.report(&locks);
+    }
+
+    // Puts all the substrings together into one expected info string. The expected info string will
+    // look something like this:
+    // parameters:{ lsid: { id: UUID("f825288c-100e-49a1-9fd7-b95c108049e6"), uid: BinData(0,
+    // E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855) }, txnNumber: 1,
+    // autocommit: false }, readTimestamp:Timestamp(0, 0), keysExamined:1 docsExamined:1 nMatched:1
+    // nModified:1 ninserted:1 ndeleted:1 nmoved:1 keysInserted:1 keysDeleted:1
+    // prepareReadConflicts:1 writeConflicts:1 terminationCause:committed timeActiveMicros:3
+    // timeInactiveMicros:2 numYields:0 locks:{ Global: { acquireCount: { r: 6, w: 4 } }, Database:
+    // { acquireCount: { r: 1, w: 1, W: 2 } }, Collection: { acquireCount: { R: 1 } }, oplog: {
+    // acquireCount: { W: 1 } } } 0ms
+    StringBuilder expectedTransactionInfo;
+    expectedTransactionInfo << parametersInfo.str() << readTimestampInfo.str()
+                            << singleTransactionStatsInfo.str()
+                            << " terminationCause:" << terminationCause
+                            << timeActiveAndInactiveInfo.str() << " numYields:" << 0
+                            << " locks:" << locks.done().toString() << " "
+                            << Milliseconds{
+                                   static_cast<long long>(
+                                       session->getSingleTransactionStats()->getDuration(curTime)) /
+                                   1000};
+    return expectedTransactionInfo.str();
+}
+}  // namespace
+
+TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterCommit) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "commitTransaction");
+
+    // Initialize SingleTransactionStats AdditiveMetrics objects.
+    const int metricValue = 1;
+    setupAdditiveMetrics(metricValue, opCtx());
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    session.commitUnpreparedTransaction(opCtx());
+
+    const auto lockerInfo = opCtx()->lockState()->getLockerInfo();
+    ASSERT(lockerInfo);
+    std::string testTransactionInfo = session.transactionInfoForLog(&lockerInfo->stats);
+
+    std::string expectedTransactionInfo =
+        buildTransactionInfoString(opCtx(), &session, "committed", sessionId, txnNum, metricValue);
+    ASSERT_EQ(testTransactionInfo, expectedTransactionInfo);
+}
+
+TEST_F(TransactionsMetricsTest, LogTransactionInfoAfterAbort) {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "admin", "abortTransaction");
+
+    // Initialize SingleTransactionStats AdditiveMetrics objects.
+    const int metricValue = 1;
+    setupAdditiveMetrics(metricValue, opCtx());
+
+    session.unstashTransactionResources(opCtx(), "abortTransaction");
+    session.abortActiveTransaction(opCtx());
+
+    const auto lockerInfo = opCtx()->lockState()->getLockerInfo();
+    ASSERT(lockerInfo);
+    std::string testTransactionInfo = session.transactionInfoForLog(&lockerInfo->stats);
+
+    std::string expectedTransactionInfo =
+        buildTransactionInfoString(opCtx(), &session, "aborted", sessionId, txnNum, metricValue);
+    ASSERT_EQ(testTransactionInfo, expectedTransactionInfo);
+}
+
+DEATH_TEST_F(TransactionsMetricsTest, UnterminatedLogTransactionInfoFails, "invariant") {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
+
+    const auto lockerInfo = opCtx()->lockState()->getLockerInfo();
+    ASSERT(lockerInfo);
+    session.transactionInfoForLog(&lockerInfo->stats);
+}
+
+DEATH_TEST_F(TransactionsMetricsTest, noLockerInfoStatsFails, "invariant") {
+    const auto sessionId = makeLogicalSessionIdForTest();
+    Session session(sessionId);
+    session.refreshFromStorageIfNeeded(opCtx());
+
+    const TxnNumber txnNum = 1;
+    opCtx()->setLogicalSessionId(sessionId);
+    opCtx()->setTxnNumber(txnNum);
+    session.beginOrContinueTxn(opCtx(), txnNum, false, true, "testDB", "insert");
+
+    session.unstashTransactionResources(opCtx(), "commitTransaction");
+    session.commitUnpreparedTransaction(opCtx());
+
+    session.transactionInfoForLog(nullptr);
 }
 
 }  // namespace

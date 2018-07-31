@@ -72,6 +72,7 @@
 #include "mongo/db/s/balancer/balancer.h"
 #include "mongo/db/s/chunk_splitter.h"
 #include "mongo/db/s/config/sharding_catalog_manager.h"
+#include "mongo/db/s/periodic_balancer_config_refresher.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/server_options.h"
@@ -482,8 +483,7 @@ void ReplicationCoordinatorExternalStateImpl::onDrainComplete(OperationContext* 
     }
 }
 
-OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationContext* opCtx,
-                                                                      bool isV1ElectionProtocol) {
+OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationContext* opCtx) {
     invariant(opCtx->lockState()->isW());
 
     // Clear the appliedThrough marker so on startup we'll use the top of the oplog. This must be
@@ -497,16 +497,14 @@ OpTime ReplicationCoordinatorExternalStateImpl::onTransitionToPrimary(OperationC
     _replicationProcess->getConsistencyMarkers()->clearAppliedThrough(
         opCtx, lastAppliedOpTime.getTimestamp());
 
-    if (isV1ElectionProtocol) {
-        writeConflictRetry(opCtx, "logging transition to primary to oplog", "local.oplog.rs", [&] {
-            WriteUnitOfWork wuow(opCtx);
-            opCtx->getClient()->getServiceContext()->getOpObserver()->onOpMessage(
-                opCtx,
-                BSON("msg"
-                     << "new primary"));
-            wuow.commit();
-        });
-    }
+    writeConflictRetry(opCtx, "logging transition to primary to oplog", "local.oplog.rs", [&] {
+        WriteUnitOfWork wuow(opCtx);
+        opCtx->getClient()->getServiceContext()->getOpObserver()->onOpMessage(
+            opCtx,
+            BSON("msg"
+                 << "new primary"));
+        wuow.commit();
+    });
     const auto opTimeToReturn = fassert(28665, loadLastOpTime(opCtx));
 
     _shardingOnTransitionToPrimaryHook(opCtx);
@@ -705,6 +703,7 @@ void ReplicationCoordinatorExternalStateImpl::shardingOnStepDownHook() {
         invariant(serverGlobalParams.clusterRole == ClusterRole::ShardServer);
         ChunkSplitter::get(_service).onStepDown();
         CatalogCacheLoader::get(_service).onStepDown();
+        PeriodicBalancerConfigRefresher::get(_service).onStepDown();
     }
 
     if (auto validator = LogicalTimeValidator::get(_service)) {
@@ -788,6 +787,7 @@ void ReplicationCoordinatorExternalStateImpl::_shardingOnTransitionToPrimaryHook
 
         CatalogCacheLoader::get(_service).onStepUp();
         ChunkSplitter::get(_service).onStepUp();
+        PeriodicBalancerConfigRefresher::get(_service).onStepUp(_service);
     } else {  // unsharded
         if (auto validator = LogicalTimeValidator::get(_service)) {
             validator->enableKeyGenerator(opCtx, true);

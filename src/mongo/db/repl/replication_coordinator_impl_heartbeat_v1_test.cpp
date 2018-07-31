@@ -123,9 +123,13 @@ TEST_F(ReplCoordHBV1Test,
     hbResp.setState(MemberState::RS_PRIMARY);
     hbResp.setConfigVersion(rsConfig.getConfigVersion());
     hbResp.setConfig(rsConfig);
+    // The smallest valid optime in PV1.
+    OpTime opTime(Timestamp(), 0);
+    hbResp.setAppliedOpTime(opTime);
+    hbResp.setDurableOpTime(opTime);
     BSONObjBuilder responseBuilder;
     responseBuilder << "ok" << 1;
-    hbResp.addToBSON(&responseBuilder, true);
+    hbResp.addToBSON(&responseBuilder);
     net->scheduleResponse(
         noi, startDate + Milliseconds(200), makeResponseStatus(responseBuilder.obj()));
     assertRunUntil(startDate + Milliseconds(200));
@@ -193,9 +197,13 @@ TEST_F(ReplCoordHBV1Test,
     hbResp.setState(MemberState::RS_PRIMARY);
     hbResp.setConfigVersion(rsConfig.getConfigVersion());
     hbResp.setConfig(rsConfig);
+    // The smallest valid optime in PV1.
+    OpTime opTime(Timestamp(), 0);
+    hbResp.setAppliedOpTime(opTime);
+    hbResp.setDurableOpTime(opTime);
     BSONObjBuilder responseBuilder;
     responseBuilder << "ok" << 1;
-    hbResp.addToBSON(&responseBuilder, true);
+    hbResp.addToBSON(&responseBuilder);
     net->scheduleResponse(
         noi, startDate + Milliseconds(200), makeResponseStatus(responseBuilder.obj()));
     assertRunUntil(startDate + Milliseconds(200));
@@ -263,9 +271,13 @@ TEST_F(ReplCoordHBV1Test,
     hbResp.setState(MemberState::RS_PRIMARY);
     hbResp.setConfigVersion(rsConfig.getConfigVersion());
     hbResp.setConfig(rsConfig);
+    // The smallest valid optime in PV1.
+    OpTime opTime(Timestamp(), 0);
+    hbResp.setAppliedOpTime(opTime);
+    hbResp.setDurableOpTime(opTime);
     BSONObjBuilder responseBuilder;
     responseBuilder << "ok" << 1;
-    hbResp.addToBSON(&responseBuilder, true);
+    hbResp.addToBSON(&responseBuilder);
     net->scheduleResponse(
         noi, startDate + Milliseconds(200), makeResponseStatus(responseBuilder.obj()));
     assertRunUntil(startDate + Milliseconds(2200));
@@ -373,10 +385,12 @@ TEST_F(ReplCoordHBV1Test, IgnoreTheContentsOfMetadataWhenItsReplicaSetIdDoesNotM
         hbResp.setSetName(rsConfig.getReplSetName());
         hbResp.setState(MemberState::RS_PRIMARY);
         hbResp.setConfigVersion(rsConfig.getConfigVersion());
+        hbResp.setAppliedOpTime(opTime);
+        hbResp.setDurableOpTime(opTime);
 
         BSONObjBuilder responseBuilder;
         responseBuilder << "ok" << 1;
-        hbResp.addToBSON(&responseBuilder, true);
+        hbResp.addToBSON(&responseBuilder);
 
         rpc::ReplSetMetadata metadata(
             opTime.getTerm(), opTime, opTime, rsConfig.getConfigVersion(), unexpectedId, 1, -1);

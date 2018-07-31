@@ -745,7 +745,7 @@ void Session::stashTransactionResources(OperationContext* opCtx) {
     // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
     // with this Client's information. This is the last client that ran a transaction operation on
     // the Session.
-    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
+    _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
 }
 
 void Session::unstashTransactionResources(OperationContext* opCtx, const std::string& cmdName) {
@@ -846,7 +846,7 @@ void Session::unstashTransactionResources(OperationContext* opCtx, const std::st
     MONGO_FAIL_POINT_PAUSE_WHILE_SET(hangAfterPreallocateSnapshot);
 }
 
-void Session::prepareTransaction(OperationContext* opCtx) {
+Timestamp Session::prepareTransaction(OperationContext* opCtx) {
     // This ScopeGuard is created outside of the lock so that the lock is always released before
     // this is called.
     ScopeGuard abortGuard = MakeGuard([&] { abortActiveTransaction(opCtx); });
@@ -873,6 +873,9 @@ void Session::prepareTransaction(OperationContext* opCtx) {
     opCtx->getWriteUnitOfWork()->prepare();
 
     abortGuard.Dismiss();
+
+    // Return the prepareTimestamp from the recovery unit.
+    return opCtx->recoveryUnit()->getPrepareTimestamp();
 }
 
 void Session::abortArbitraryTransaction() {
@@ -899,7 +902,6 @@ void Session::_abortArbitraryTransaction(WithLock lock) {
 }
 
 void Session::abortActiveTransaction(OperationContext* opCtx) {
-    stdx::unique_lock<Client> clientLock(*opCtx->getClient());
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
     if (!_txnState.inMultiDocumentTransaction(lock)) {
@@ -925,7 +927,7 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
 
     // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
     // with this Client's information.
-    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
+    _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
 }
 
 void Session::_abortTransaction(WithLock wl) {
@@ -1013,7 +1015,7 @@ std::vector<repl::ReplOperation> Session::endTransactionAndRetrieveOperations(
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
     // Ensure that we only ever end a transaction when prepared or committing.
-    invariant(_txnState.isPrepared(lk) || _txnState.isCommitting(lk),
+    invariant(_txnState.isPrepared(lk) || _txnState.isCommittingWithoutPrepare(lk),
               str::stream() << "Current state: " << _txnState);
 
     invariant(!_autocommit);
@@ -1021,30 +1023,58 @@ std::vector<repl::ReplOperation> Session::endTransactionAndRetrieveOperations(
     return std::move(_transactionOperations);
 }
 
-void Session::commitTransaction(OperationContext* opCtx) {
+void Session::commitUnpreparedTransaction(OperationContext* opCtx) {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
+    uassert(ErrorCodes::InvalidOptions,
+            "commitTransaction must provide commitTimestamp to prepared transaction.",
+            !_txnState.isPrepared(lk));
 
     // Always check '_activeTxnNumber' and '_txnState', since they can be modified by session kill
     // and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    _commitTransaction(std::move(lk), opCtx);
-}
-
-void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) {
-    _txnState.transitionTo(lk, TransitionTable::State::kCommitting);
+    _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithoutPrepare);
 
     // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
     // into the session.
     lk.unlock();
     auto opObserver = opCtx->getServiceContext()->getOpObserver();
     invariant(opObserver);
-    opObserver->onTransactionCommit(opCtx);
+    opObserver->onTransactionCommit(opCtx, false /* wasPrepared */);
     lk.lock();
 
-    // Always check '_activeTxnNumber' and '_txnState', since they can be modified by session
-    // kill and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+    _commitTransaction(std::move(lk), opCtx);
+}
+
+void Session::commitPreparedTransaction(OperationContext* opCtx, Timestamp commitTimestamp) {
+    stdx::unique_lock<stdx::mutex> lk(_mutex);
+    uassert(ErrorCodes::InvalidOptions,
+            "commitTransaction cannot provide commitTimestamp to unprepared transaction.",
+            _txnState.isPrepared(lk));
+    uassert(
+        ErrorCodes::InvalidOptions, "'commitTimestamp' cannot be null", !commitTimestamp.isNull());
+
+    // Always check '_activeTxnNumber' and '_txnState', since they can be modified by session kill
+    // and migration, which do not check out the session.
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+
+    _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithPrepare);
+    opCtx->recoveryUnit()->setCommitTimestamp(commitTimestamp);
+
+    // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
+    // into the session.
+    lk.unlock();
+    auto opObserver = opCtx->getServiceContext()->getOpObserver();
+    invariant(opObserver);
+    opObserver->onTransactionCommit(opCtx, true /* wasPrepared */);
+    lk.lock();
+
+    _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
+    _commitTransaction(std::move(lk), opCtx);
+}
+
+void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) {
 
     bool committed = false;
     ON_BLOCK_EXIT([this, &committed, opCtx]() {
@@ -1073,7 +1103,7 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
                     CurOp::get(opCtx)->debug().additiveMetrics);
                 // Update the LastClientInfo object stored in the SingleTransactionStats instance on
                 // the Session with this Client's information.
-                _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
+                _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
             }
         }
         // We must clear the recovery unit and locker so any post-transaction writes can run without
@@ -1112,7 +1142,7 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
         CurOp::get(opCtx)->debug().additiveMetrics);
     // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
     // with this Client's information.
-    _singleTransactionStats->getLastClientInfo()->update(opCtx->getClient());
+    _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
 }
 
 BSONObj Session::reportStashedState() const {
@@ -1129,12 +1159,18 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
             invariant(_activeTxnNumber != kUninitializedTxnNumber);
             builder->append("host", getHostNameCachedAndPort());
             builder->append("desc", "inactive transaction");
+            auto lastClientInfo = _singleTransactionStats->getLastClientInfo();
+            builder->append("client", lastClientInfo.clientHostAndPort);
+            builder->append("connectionId", lastClientInfo.connectionId);
+            builder->append("appName", lastClientInfo.appName);
+            builder->append("clientMetadata", lastClientInfo.clientMetadata);
             {
                 BSONObjBuilder lsid(builder->subobjStart("lsid"));
                 getSessionId().serialize(&lsid);
             }
             BSONObjBuilder transactionBuilder;
-            _reportTransactionStats(ls, &transactionBuilder);
+            _reportTransactionStats(
+                ls, &transactionBuilder, _txnResourceStash->getReadConcernArgs());
             builder->append("transaction", transactionBuilder.obj());
             builder->append("waitingForLock", false);
             builder->append("active", false);
@@ -1143,17 +1179,20 @@ void Session::reportStashedState(BSONObjBuilder* builder) const {
     }
 }
 
-void Session::reportUnstashedState(BSONObjBuilder* builder) const {
+void Session::reportUnstashedState(repl::ReadConcernArgs readConcernArgs,
+                                   BSONObjBuilder* builder) const {
     stdx::lock_guard<stdx::mutex> ls(_mutex);
 
     if (!_txnResourceStash) {
         BSONObjBuilder transactionBuilder;
-        _reportTransactionStats(ls, &transactionBuilder);
+        _reportTransactionStats(ls, &transactionBuilder, readConcernArgs);
         builder->append("transaction", transactionBuilder.obj());
     }
 }
 
-void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) const {
+void Session::_reportTransactionStats(WithLock wl,
+                                      BSONObjBuilder* builder,
+                                      repl::ReadConcernArgs readConcernArgs) const {
     BSONObjBuilder parametersBuilder(builder->subobjStart("parameters"));
     parametersBuilder.append("txnNumber", _activeTxnNumber);
 
@@ -1163,8 +1202,10 @@ void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) cons
         return;
     }
     parametersBuilder.append("autocommit", _autocommit);
+    readConcernArgs.appendInfo(&parametersBuilder);
     parametersBuilder.done();
 
+    builder->append("readTimestamp", _speculativeTransactionReadOpTime.getTimestamp());
     builder->append("startWallClockTime",
                     dateToISOStringLocal(Date_t::fromMillisSinceEpoch(
                         _singleTransactionStats->getStartTime() / 1000)));
@@ -1178,6 +1219,54 @@ void Session::_reportTransactionStats(WithLock wl, BSONObjBuilder* builder) cons
         durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
     builder->append("timeActiveMicros", timeActive);
     builder->append("timeInactiveMicros", timeInactive);
+}
+
+std::string Session::transactionInfoForLog(const SingleThreadedLockStats* lockStats) {
+    // Need to lock because this function checks the state of _txnState.
+    stdx::lock_guard<stdx::mutex> lg(_mutex);
+
+    invariant(lockStats);
+    invariant(_txnState.isCommitted(lg) || _txnState.isAborted(lg));
+
+    StringBuilder s;
+
+    // User specified transaction parameters.
+    BSONObjBuilder parametersBuilder;
+    BSONObjBuilder lsidBuilder(parametersBuilder.subobjStart("lsid"));
+    _sessionId.serialize(&lsidBuilder);
+    lsidBuilder.doneFast();
+    parametersBuilder.append("txnNumber", _activeTxnNumber);
+    // TODO: SERVER-35174 Add readConcern to parameters here once pushed.
+    parametersBuilder.append("autocommit", _autocommit);
+    s << "parameters:" << parametersBuilder.obj().toString() << ",";
+
+    s << " readTimestamp:" << _speculativeTransactionReadOpTime.getTimestamp().toString() << ",";
+
+    s << _singleTransactionStats->getOpDebug()->additiveMetrics.report();
+
+    std::string terminationCause = _txnState.isCommitted(lg) ? "committed" : "aborted";
+    s << " terminationCause:" << terminationCause;
+
+    auto curTime = curTimeMicros64();
+    s << " timeActiveMicros:"
+      << durationCount<Microseconds>(_singleTransactionStats->getTimeActiveMicros(curTime));
+    s << " timeInactiveMicros:"
+      << durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
+
+    // Number of yields is always 0 in multi-document transactions, but it is included mainly to
+    // match the format with other slow operation logging messages.
+    s << " numYields:" << 0;
+
+    // Aggregate lock statistics.
+    BSONObjBuilder locks;
+    lockStats->report(&locks);
+    s << " locks:" << locks.obj().toString();
+
+    // Total duration of the transaction.
+    s << " "
+      << Milliseconds{static_cast<long long>(_singleTransactionStats->getDuration(curTime)) / 1000};
+
+    return s.str();
 }
 
 void Session::_checkValid(WithLock) const {
@@ -1385,8 +1474,10 @@ std::string Session::TransitionTable::toString(State state) {
             return "TxnState::InProgress";
         case Session::TransitionTable::State::kPrepared:
             return "TxnState::Prepared";
-        case Session::TransitionTable::State::kCommitting:
-            return "TxnState::Committing";
+        case Session::TransitionTable::State::kCommittingWithoutPrepare:
+            return "TxnState::CommittingWithoutPrepare";
+        case Session::TransitionTable::State::kCommittingWithPrepare:
+            return "TxnState::CommittingWithPrepare";
         case Session::TransitionTable::State::kCommitted:
             return "TxnState::Committed";
         case Session::TransitionTable::State::kAborted:
@@ -1410,7 +1501,7 @@ bool Session::TransitionTable::_isLegalTransition(State oldState, State newState
             switch (newState) {
                 case State::kNone:
                 case State::kPrepared:
-                case State::kCommitting:
+                case State::kCommittingWithoutPrepare:
                 case State::kAborted:
                     return true;
                 default:
@@ -1419,14 +1510,15 @@ bool Session::TransitionTable::_isLegalTransition(State oldState, State newState
             MONGO_UNREACHABLE;
         case State::kPrepared:
             switch (newState) {
-                case State::kCommitting:
+                case State::kCommittingWithPrepare:
                 case State::kAborted:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kCommitting:
+        case State::kCommittingWithPrepare:
+        case State::kCommittingWithoutPrepare:
             switch (newState) {
                 case State::kNone:
                 case State::kCommitted:

@@ -125,6 +125,7 @@
 #include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/storage/backup_cursor_service.h"
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
@@ -416,8 +417,9 @@ ExitCode _initAndListen(int listenPort) {
 
     auto startupOpCtx = serviceContext->makeOperationContext(&cc());
 
-    bool canCallFCVSetIfCleanStartup =
-        !storageGlobalParams.readOnly && (storageGlobalParams.engine != "devnull");
+    // TODO: Remove biggie from this list after implemented
+    bool canCallFCVSetIfCleanStartup = !storageGlobalParams.readOnly &&
+        (storageGlobalParams.engine != "devnull") && (storageGlobalParams.engine != "biggie");
     if (canCallFCVSetIfCleanStartup && !replSettings.usingReplSets()) {
         Lock::GlobalWrite lk(startupOpCtx.get());
         FeatureCompatibilityVersion::setIfCleanStartup(startupOpCtx.get(),
@@ -516,6 +518,11 @@ ExitCode _initAndListen(int listenPort) {
               << startupWarningsLog;
     }
 
+    // Set up the periodic runner for background job execution
+    auto runner = makePeriodicRunner(serviceContext);
+    runner->startup();
+    serviceContext->setPeriodicRunner(std::move(runner));
+
     // This function may take the global lock.
     auto shardingInitialized =
         uassertStatusOK(ShardingState::get(startupOpCtx.get())
@@ -526,6 +533,7 @@ ExitCode _initAndListen(int listenPort) {
 
     auto storageEngine = serviceContext->getStorageEngine();
     invariant(storageEngine);
+    BackupCursorService::set(serviceContext, stdx::make_unique<BackupCursorService>(storageEngine));
 
     if (!storageGlobalParams.readOnly) {
 
@@ -600,11 +608,6 @@ ExitCode _initAndListen(int listenPort) {
     startClientCursorMonitor();
 
     PeriodicTask::startRunningPeriodicTasks();
-
-    // Set up the periodic runner for background job execution
-    auto runner = makePeriodicRunner(serviceContext);
-    runner->startup();
-    serviceContext->setPeriodicRunner(std::move(runner));
 
     SessionKiller::set(serviceContext,
                        std::make_shared<SessionKiller>(serviceContext, killSessionsLocal));

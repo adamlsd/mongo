@@ -1,17 +1,18 @@
 /**
- * Tests prepared transaction support.
+ * Tests prepared transaction abort support.
  *
  * @tags: [uses_transactions]
  */
 (function() {
     "use strict";
+    load("jstests/core/txns/libs/prepare_helpers.js");
 
     const dbName = "test";
-    const collName = "prepare_transaction";
+    const collName = "abort_prepared_transaction";
     const testDB = db.getSiblingDB(dbName);
     const testColl = testDB.getCollection(collName);
 
-    testColl.drop();
+    testColl.drop({writeConcern: {w: "majority"}});
     assert.commandWorked(testDB.runCommand({create: collName, writeConcern: {w: "majority"}}));
 
     const session = db.getMongo().startSession({causalConsistency: false});
@@ -23,10 +24,7 @@
     // ---- Test 1. Insert a single document and run prepare. ----
 
     session.startTransaction();
-    assert.commandWorked(sessionDB.runCommand({
-        insert: collName,
-        documents: [doc1],
-    }));
+    assert.commandWorked(sessionColl.insert(doc1));
 
     // Insert should not be visible outside the session.
     assert.eq(null, testColl.findOne(doc1));
@@ -34,7 +32,7 @@
     // Insert should be visible in this session.
     assert.eq(doc1, sessionColl.findOne(doc1));
 
-    assert.commandWorked(sessionDB.adminCommand({prepareTransaction: 1}));
+    PrepareHelpers.prepareTransaction(session);
     session.abortTransaction();
 
     // After abort the insert is rolled back.
@@ -43,14 +41,10 @@
     // ---- Test 2. Update a document and run prepare. ----
 
     // Insert a document to update.
-    assert.commandWorked(
-        testDB.runCommand({insert: collName, documents: [doc1], writeConcern: {w: "majority"}}));
+    assert.commandWorked(sessionColl.insert(doc1, {writeConcern: {w: "majority"}}));
 
     session.startTransaction();
-    assert.commandWorked(sessionDB.runCommand({
-        update: collName,
-        updates: [{q: doc1, u: {$inc: {x: 1}}}],
-    }));
+    assert.commandWorked(sessionColl.update(doc1, {$inc: {x: 1}}));
 
     const doc2 = {_id: 1, x: 2};
 
@@ -60,7 +54,7 @@
     // Update should be visible in this session.
     assert.eq(doc2, sessionColl.findOne(doc2));
 
-    assert.commandWorked(sessionDB.adminCommand({prepareTransaction: 1}));
+    PrepareHelpers.prepareTransaction(session);
     session.abortTransaction();
 
     // After abort the update is rolled back.
@@ -69,17 +63,10 @@
     // ---- Test 3. Delete a document and run prepare. ----
 
     // Update the document.
-    assert.commandWorked(testDB.runCommand({
-        update: collName,
-        updates: [{q: doc1, u: {$inc: {x: 1}}}],
-        writeConcern: {w: "majority"}
-    }));
+    assert.commandWorked(sessionColl.update(doc1, {$inc: {x: 1}}, {writeConcern: {w: "majority"}}));
 
     session.startTransaction();
-    assert.commandWorked(sessionDB.runCommand({
-        delete: collName,
-        deletes: [{q: doc2, limit: 1}],
-    }));
+    assert.commandWorked(sessionColl.remove(doc2, {justOne: true}));
 
     // Delete should not be visible outside the session, so the document should be.
     assert.eq(doc2, testColl.findOne(doc2));
@@ -87,7 +74,7 @@
     // Document should not be visible in this session, since the delete should be visible.
     assert.eq(null, sessionColl.findOne(doc2));
 
-    assert.commandWorked(sessionDB.adminCommand({prepareTransaction: 1}));
+    PrepareHelpers.prepareTransaction(session);
     session.abortTransaction();
 
     // After abort the delete is rolled back.

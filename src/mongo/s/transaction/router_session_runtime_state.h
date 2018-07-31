@@ -35,14 +35,21 @@
 #include "mongo/base/disallow_copying.h"
 #include "mongo/db/logical_session_id.h"
 #include "mongo/db/operation_context.h"
+#include "mongo/db/repl/read_concern_args.h"
 #include "mongo/s/shard_id.h"
 #include "mongo/util/string_map.h"
 
 namespace mongo {
 
+/**
+ * Represents a shard participant in a distributed transaction. Lives only for the duration of the
+ * transaction that created it.
+ */
 class TransactionParticipant {
 public:
-    explicit TransactionParticipant(bool isCoordinator);
+    explicit TransactionParticipant(bool isCoordinator,
+                                    TxnNumber txnNumber,
+                                    repl::ReadConcernArgs readConcernArgs);
 
     enum class State {
         // Next transaction should include startTransaction.
@@ -70,7 +77,9 @@ public:
 
 private:
     State _state{State::kMustStart};
-    bool _isCoordinator{false};
+    const bool _isCoordinator{false};
+    const TxnNumber _txnNumber;
+    const repl::ReadConcernArgs _readConcernArgs;
 };
 
 /**
@@ -83,7 +92,7 @@ public:
     /**
      * Starts a fresh transaction in this session. Also cleans up the previous transaction state.
      */
-    void beginOrContinueTxn(TxnNumber txnNumber, bool startTransaction);
+    void beginOrContinueTxn(OperationContext* opCtx, TxnNumber txnNumber, bool startTransaction);
 
     /**
      * Returns the participant for this transaction. Creates a new one if it doesn't exist.
@@ -117,6 +126,9 @@ private:
 
     // The id of coordinator participant, used to construct prepare requests.
     boost::optional<ShardId> _coordinatorId;
+
+    // The read concern the current transaction was started with.
+    repl::ReadConcernArgs _readConcernArgs;
 };
 
 /**

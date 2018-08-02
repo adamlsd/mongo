@@ -65,7 +65,7 @@ TEST(Promise, Success_setWith_value) {
 TEST(Promise, Fail_setWith_throw) {
     auto pf = makePromiseFuture<int>();
     pf.promise.setWith([&] {
-        uassertStatusOK(failStatus);
+        uassertStatusOK(failStatus());
         return 1;
     });
     ASSERT_THROWS_failStatus(std::move(pf.future).get());
@@ -79,7 +79,7 @@ TEST(Promise, Success_setWith_StatusWith) {
 
 TEST(Promise, Fail_setWith_StatusWith) {
     auto pf = makePromiseFuture<int>();
-    pf.promise.setWith([&] { return StatusWith<int>(failStatus); });
+    pf.promise.setWith([&] { return StatusWith<int>(failStatus()); });
     ASSERT_THROWS_failStatus(std::move(pf.future).get());
 }
 

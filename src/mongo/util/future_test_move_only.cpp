@@ -147,7 +147,7 @@ TEST(Future_MoveOnly, Fail_getNothrowConstLvalue) {
 
 TEST(Future_MoveOnly, Fail_getNothrowRvalue) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
-        ASSERT_EQ(std::move(fut).getNoThrow().getStatus(), failStatus);
+        ASSERT_EQ(std::move(fut).getNoThrow().getStatus(), failStatus());
     });
 }
 
@@ -158,7 +158,7 @@ TEST(Future_MoveOnly, Fail_getAsync) {
             ASSERT(!sw.isOK());
             outside.setError(sw.getStatus());
         });
-        ASSERT_EQ(std::move(pf.future).getNoThrow(), failStatus);
+        ASSERT_EQ(std::move(pf.future).getNoThrow(), failStatus());
     });
 }
 
@@ -280,7 +280,7 @@ TEST(Future_MoveOnly, Fail_thenSimple) {
                           return Widget(0);
                       })
                       .getNoThrow(),
-                  failStatus);
+                  failStatus());
     });
 }
 
@@ -292,7 +292,7 @@ TEST(Future_MoveOnly, Fail_thenFutureAsync) {
                           return Future<Widget>();
                       })
                       .getNoThrow(),
-                  failStatus);
+                  failStatus());
     });
 }
 
@@ -328,7 +328,7 @@ TEST(Future_MoveOnly, Fail_onErrorSimple) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         ASSERT_EQ(uassertStatusOK(std::move(fut)
                                       .onError([](Status s) {
-                                          ASSERT_EQ(s, failStatus);
+                                          ASSERT_EQ(s, failStatus());
                                           return Widget(3);
                                       })
                                       .getNoThrow()),
@@ -338,7 +338,7 @@ TEST(Future_MoveOnly, Fail_onErrorSimple) {
 TEST(Future_MoveOnly, Fail_onErrorError_throw) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         auto fut2 = std::move(fut).onError([](Status s) -> Widget {
-            ASSERT_EQ(s, failStatus);
+            ASSERT_EQ(s, failStatus());
             uasserted(ErrorCodes::BadValue, "oh no!");
         });
         ASSERT_EQ(std::move(fut2).getNoThrow(), ErrorCodes::BadValue);
@@ -348,7 +348,7 @@ TEST(Future_MoveOnly, Fail_onErrorError_throw) {
 TEST(Future_MoveOnly, Fail_onErrorError_StatusWith) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         auto fut2 = std::move(fut).onError([](Status s) {
-            ASSERT_EQ(s, failStatus);
+            ASSERT_EQ(s, failStatus());
             return StatusWith<Widget>(ErrorCodes::BadValue, "oh no!");
         });
         ASSERT_EQ(std::move(fut2).getNoThrow(), ErrorCodes::BadValue);
@@ -359,7 +359,7 @@ TEST(Future_MoveOnly, Fail_onErrorFutureImmediate) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         ASSERT_EQ(std::move(fut)
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return Future<Widget>::makeReady(Widget(3));
                       })
                       .get(),
@@ -371,7 +371,7 @@ TEST(Future_MoveOnly, Fail_onErrorFutureReady) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         ASSERT_EQ(std::move(fut)
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           auto pf = makePromiseFuture<Widget>();
                           pf.promise.emplaceValue(3);
                           return std::move(pf.future);
@@ -385,7 +385,7 @@ TEST(Future_MoveOnly, Fail_onErrorFutureAsync) {
     FUTURE_FAIL_TEST<Widget>([](Future<Widget>&& fut) {
         ASSERT_EQ(std::move(fut)
                       .onError([&](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return async([] { return Widget(3); });
                       })
                       .get(),
@@ -467,7 +467,7 @@ TEST(Future_MoveOnly, Fail_tap) {
         ASSERT_EQ(std::move(fut)
                       .tap([](const Widget& i) { FAIL("tap() callback was called"); })
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return Widget(3);
                       })
                       .get(),
@@ -480,11 +480,11 @@ TEST(Future_MoveOnly, Fail_tapError) {
         bool tapCalled = false;
         ASSERT_EQ(std::move(fut)
                       .tapError([&tapCalled](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           tapCalled = true;
                       })
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return Widget(3);
                       })
                       .get(),
@@ -499,11 +499,11 @@ TEST(Future_MoveOnly, Fail_tapAll_StatusWith) {
         bool tapCalled = false;
         ASSERT_EQ(std::move(fut)
                       .tapAll([&tapCalled](StatusWith<Widget> sw) {
-                          ASSERT_EQ(sw.getStatus(), failStatus);
+                          ASSERT_EQ(sw.getStatus(), failStatus());
                           tapCalled = true;
                       })
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return Widget(3);
                       })
                       .get(),
@@ -520,7 +520,7 @@ TEST(Future_MoveOnly, Fail_tapAll_Overloaded) {
                 FAIL("Widget overload called with ") << i;
             }
             void operator()(Status status) {
-                ASSERT_EQ(status, failStatus);
+                ASSERT_EQ(status, failStatus());
                 called = true;
             }
             bool called = false;
@@ -530,7 +530,7 @@ TEST(Future_MoveOnly, Fail_tapAll_Overloaded) {
         ASSERT_EQ(std::move(fut)
                       .tapAll(std::ref(callback))
                       .onError([](Status s) {
-                          ASSERT_EQ(s, failStatus);
+                          ASSERT_EQ(s, failStatus());
                           return Widget(3);
                       })
                       .get(),

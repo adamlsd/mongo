@@ -40,25 +40,6 @@
 
 namespace mongo {
 
-MONGO_STATIC_ASSERT(std::is_same<FutureContinuationResult<std::function<void()>>, void>::value);
-MONGO_STATIC_ASSERT(std::is_same<FutureContinuationResult<std::function<Status()>>, void>::value);
-MONGO_STATIC_ASSERT(
-    std::is_same<FutureContinuationResult<std::function<Future<void>()>>, void>::value);
-MONGO_STATIC_ASSERT(std::is_same<FutureContinuationResult<std::function<int()>>, int>::value);
-MONGO_STATIC_ASSERT(
-    std::is_same<FutureContinuationResult<std::function<StatusWith<int>()>>, int>::value);
-MONGO_STATIC_ASSERT(
-    std::is_same<FutureContinuationResult<std::function<Future<int>()>>, int>::value);
-MONGO_STATIC_ASSERT(
-    std::is_same<FutureContinuationResult<std::function<int(bool)>, bool>, int>::value);
-
-template <typename T>
-auto overloadCheck(T) -> FutureContinuationResult<std::function<std::true_type(bool)>, T>;
-auto overloadCheck(...) -> std::false_type;
-
-MONGO_STATIC_ASSERT(decltype(overloadCheck(bool()))::value);          // match.
-MONGO_STATIC_ASSERT(!decltype(overloadCheck(std::string()))::value);  // SFINAE-failure.
-
 template <typename T, typename Func>
 void completePromise(Promise<T>* promise, Func&& func) {
     promise->emplaceValue(func());
@@ -89,12 +70,14 @@ Future<Result> async(Func&& func) {
     return std::move(pf.future);
 }
 
-const auto failStatus = Status(ErrorCodes::Error(50728), "expected failure");
+inline const auto failStatus() {
+    return Status(ErrorCodes::Error(50728), "expected failure");
+}
 
 #define ASSERT_THROWS_failStatus(expr)                                          \
     [&] {                                                                       \
         ASSERT_THROWS_WITH_CHECK(expr, DBException, [](const DBException& ex) { \
-            ASSERT_EQ(ex.toStatus(), failStatus);                               \
+            ASSERT_EQ(ex.toStatus(), failStatus());                             \
         });                                                                     \
     }()
 
@@ -144,17 +127,17 @@ void FUTURE_SUCCESS_TEST(const CompletionFunc& completion, const TestFunc& test)
 template <typename CompletionType, typename TestFunc>
 void FUTURE_FAIL_TEST(const TestFunc& test) {
     {  // immediate future
-        test(Future<CompletionType>::makeReady(failStatus));
+        test(Future<CompletionType>::makeReady(failStatus()));
     }
     {  // ready future from promise
         auto pf = makePromiseFuture<CompletionType>();
-        pf.promise.setError(failStatus);
+        pf.promise.setError(failStatus());
         test(std::move(pf.future));
     }
 
     {  // async future
         test(async([&]() -> CompletionType {
-            uassertStatusOK(failStatus);
+            uassertStatusOK(failStatus());
             MONGO_UNREACHABLE;
         }));
     }

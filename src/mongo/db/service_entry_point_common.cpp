@@ -68,6 +68,7 @@
 #include "mongo/db/s/scoped_operation_completion_sharding_actions.h"
 #include "mongo/db/s/shard_filtering_metadata_refresh.h"
 #include "mongo/db/s/sharded_connection_info.h"
+#include "mongo/db/s/sharding_config_optime_gossip.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_entry_point_common.h"
 #include "mongo/db/session_catalog.h"
@@ -213,7 +214,7 @@ void generateErrorResponse(OperationContext* opCtx,
     // so we need to reset it to a clean state just to be sure.
     replyBuilder->reset();
     replyBuilder->setCommandReply(exception.toStatus(), extraFields);
-    replyBuilder->setMetadata(replyMetadata);
+    replyBuilder->getBodyBuilder().appendElements(replyMetadata);
 }
 
 BSONObj getErrorLabels(const boost::optional<OperationSessionInfoFromClient>& sessionOptions,
@@ -229,6 +230,7 @@ BSONObj getErrorLabels(const boost::optional<OperationSessionInfoFromClient>& se
         || code == ErrorCodes::SnapshotUnavailable                        //
         || code == ErrorCodes::NoSuchTransaction                          //
         || code == ErrorCodes::LockTimeout                                //
+        || code == ErrorCodes::PreparedTransactionInProgress              //
         // Clients can retry a single commitTransaction command, but cannot retry the whole
         // transaction if commitTransaction fails due to NotMaster.
         || (isRetryable && (commandName != "commitTransaction"));
@@ -571,15 +573,10 @@ bool runCommandImpl(OperationContext* opCtx,
         }
     }
 
-    BSONObjBuilder metadataBob;
-    appendReplyMetadata(opCtx, request, &metadataBob);
+    auto commandBodyBob = replyBuilder->getBodyBuilder();
+    appendReplyMetadata(opCtx, request, &commandBodyBob);
+    appendClusterAndOperationTime(opCtx, &commandBodyBob, &commandBodyBob, startOperationTime);
 
-    {
-        auto commandBodyBob = replyBuilder->getBodyBuilder();
-        appendClusterAndOperationTime(opCtx, &commandBodyBob, &metadataBob, startOperationTime);
-    }
-
-    replyBuilder->setMetadata(metadataBob.obj());
     return ok;
 }
 
@@ -856,7 +853,7 @@ void execCommandDatabase(OperationContext* opCtx,
             }
 
             // Handle config optime information that may have been sent along with the command.
-            uassertStatusOK(shardingState->updateConfigServerOpTimeFromMetadata(opCtx));
+            rpc::advanceConfigOptimeFromRequestMetadata(opCtx);
         }
 
         oss.setAllowImplicitCollectionCreation(allowImplicitCollectionCreationField);
@@ -1297,7 +1294,7 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
         if (nsString.isCommand()) {
             isCommand = true;
         }
-    } else if (op == dbCommand || op == dbMsg) {
+    } else if (op == dbMsg) {
         isCommand = true;
     }
 
@@ -1316,7 +1313,7 @@ DbResponse ServiceEntryPointCommon::handleRequest(OperationContext* opCtx,
     bool forceLog = false;
 
     DbResponse dbresponse;
-    if (op == dbMsg || op == dbCommand || (op == dbQuery && isCommand)) {
+    if (op == dbMsg || (op == dbQuery && isCommand)) {
         dbresponse = receivedCommands(opCtx, m, behaviors);
     } else if (op == dbQuery) {
         invariant(!isCommand);

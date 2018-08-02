@@ -45,7 +45,6 @@
 #include "mongo/db/exec/fetch.h"
 #include "mongo/db/exec/geo_near.h"
 #include "mongo/db/exec/index_scan.h"
-#include "mongo/db/exec/keep_mutations.h"
 #include "mongo/db/exec/limit.h"
 #include "mongo/db/exec/merge_sort.h"
 #include "mongo/db/exec/or.h"
@@ -299,14 +298,6 @@ PlanStage* buildStages(OperationContext* opCtx,
                 ws,
                 childStage);
         }
-        case STAGE_KEEP_MUTATIONS: {
-            const KeepMutationsNode* km = static_cast<const KeepMutationsNode*>(root);
-            PlanStage* childStage = buildStages(opCtx, collection, cq, qsol, km->children[0], ws);
-            if (nullptr == childStage) {
-                return nullptr;
-            }
-            return new KeepMutationsStage(opCtx, km->filter.get(), ws, childStage);
-        }
         case STAGE_DISTINCT_SCAN: {
             const DistinctNode* dn = static_cast<const DistinctNode*>(root);
 
@@ -359,7 +350,6 @@ PlanStage* buildStages(OperationContext* opCtx,
         case STAGE_EOF:
         case STAGE_GROUP:
         case STAGE_IDHACK:
-        case STAGE_INDEX_ITERATOR:
         case STAGE_MULTI_ITERATOR:
         case STAGE_MULTI_PLAN:
         case STAGE_PIPELINE_PROXY:

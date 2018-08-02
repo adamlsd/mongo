@@ -32,6 +32,7 @@
 #include <memory>
 #include <vector>
 
+#include "mongo/base/data_builder.h"
 #include "mongo/base/data_range.h"
 #include "mongo/base/string_data.h"
 #include "mongo/executor/thread_pool_task_executor.h"
@@ -51,15 +52,42 @@ public:
     virtual ~HttpClient() = default;
 
     /**
-     * Url is a full URL with hostname and protocol specification.
+     * Configure all future requests on this client to allow insecure http:// urls.
+     * By default, only https:// is allowed.
      */
-    virtual Future<std::vector<uint8_t>> postAsync(
-        StringData url, std::shared_ptr<std::vector<std::uint8_t>> data) = 0;
+    virtual void allowInsecureHTTP(bool allow) = 0;
+
+    /**
+     * Assign a set of headers for this request.
+     */
+    virtual void setHeaders(const std::vector<std::string>& headers) = 0;
+
+    /**
+     * Perform a POST request to specified URL.
+     */
+    virtual DataBuilder post(StringData url, ConstDataRange data) const = 0;
+
+    /**
+     * Futurized helper for HttpClient::post().
+     */
+    Future<DataBuilder> postAsync(executor::ThreadPoolTaskExecutor* executor,
+                                  StringData url,
+                                  std::shared_ptr<std::vector<std::uint8_t>> data) const;
+
+    /**
+     * Perform a GET request from the specified URL.
+     */
+    virtual DataBuilder get(StringData url) const = 0;
+
+    /**
+     * Futurized helpr for HttpClient::get().
+     */
+    Future<DataBuilder> getAsync(executor::ThreadPoolTaskExecutor* executor, StringData url) const;
 
     /**
      * Factory method provided by client implementation.
      */
-    static std::unique_ptr<HttpClient> create(std::unique_ptr<executor::ThreadPoolTaskExecutor>);
+    static std::unique_ptr<HttpClient> create();
 };
 
 }  // namespace mongo

@@ -121,7 +121,6 @@ env.Library(
         'sorted_data_interface_test_harness.cpp',
         'sorted_data_interface_test_insert.cpp',
         'sorted_data_interface_test_isempty.cpp',
-        'sorted_data_interface_test_rand_cursor.cpp',
         'sorted_data_interface_test_rollback.cpp',
         'sorted_data_interface_test_spaceused.cpp',
         'sorted_data_interface_test_touch.cpp',
@@ -271,7 +270,16 @@ env.CppUnitTest(
     LIBDEPS=[
         'key_string',
         '$BUILD_DIR/mongo/base',
-        ]
+    ],
+)
+
+env.Benchmark(
+    target='storage_key_string_bm',
+    source='key_string_bm.cpp',
+    LIBDEPS=[
+        'key_string',
+        '$BUILD_DIR/mongo/base',
+    ],
 )
 
 env.CppUnitTest(

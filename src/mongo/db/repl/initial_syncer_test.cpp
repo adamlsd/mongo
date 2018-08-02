@@ -56,6 +56,7 @@
 #include "mongo/db/repl/sync_source_selector_mock.h"
 #include "mongo/db/repl/task_executor_mock.h"
 #include "mongo/db/repl/update_position_args.h"
+#include "mongo/db/service_context_test_fixture.h"
 #include "mongo/executor/network_interface_mock.h"
 #include "mongo/executor/thread_pool_task_executor_test_fixture.h"
 #include "mongo/stdx/mutex.h"
@@ -112,7 +113,9 @@ struct CollectionCloneInfo {
     Status status{ErrorCodes::NotYetInitialized, ""};
 };
 
-class InitialSyncerTest : public executor::ThreadPoolExecutorTest, public SyncSourceSelector {
+class InitialSyncerTest : public executor::ThreadPoolExecutorTest,
+                          public SyncSourceSelector,
+                          public ScopedGlobalServiceContextForTest {
 public:
     InitialSyncerTest() {}
 
@@ -159,7 +162,7 @@ public:
                                  const BSONObj& obj) {
         NetworkInterfaceMock* net = getNet();
         Milliseconds millis(0);
-        RemoteCommandResponse response(obj, BSONObj(), millis);
+        RemoteCommandResponse response(obj, millis);
         log() << "Sending response for network request:";
         log() << "     req: " << noi->getRequest().dbname << "." << noi->getRequest().cmdObj;
         log() << "     resp:" << response;
@@ -419,6 +422,7 @@ protected:
         _dbWorkThreadPool.reset();
         _replicationProcess.reset();
         _storageInterface.reset();
+        Client::destroy();
     }
 
     /**
@@ -497,9 +501,6 @@ RemoteCommandResponse makeCursorResponse(CursorId cursorId,
                                          int rbid = 1) {
     OpTime futureOpTime(Timestamp(1000, 1000), 1000);
     rpc::OplogQueryMetadata oqMetadata(futureOpTime, futureOpTime, rbid, 0, 0);
-    BSONObjBuilder metadataBob;
-    ASSERT_OK(oqMetadata.writeToMetadata(&metadataBob));
-    auto metadataObj = metadataBob.obj();
 
     BSONObjBuilder bob;
     {
@@ -514,8 +515,9 @@ RemoteCommandResponse makeCursorResponse(CursorId cursorId,
             }
         }
     }
+    ASSERT_OK(oqMetadata.writeToMetadata(&bob));
     bob.append("ok", 1);
-    return {bob.obj(), metadataObj, Milliseconds(0)};
+    return {bob.obj(), Milliseconds()};
 }
 
 /**

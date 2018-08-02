@@ -38,6 +38,7 @@
 
 #include "mongo/base/error_codes.h"
 #include "mongo/base/parse_number.h"
+#include "mongo/base/simple_string_data_comparator.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/exec/cached_plan.h"
 #include "mongo/db/exec/collection_scan.h"
@@ -194,17 +195,6 @@ void fillOutPlannerParams(OperationContext* opCtx,
 
     plannerParams->options |= QueryPlannerParams::SPLIT_LIMITED_SORT;
 
-    // Doc-level locking storage engines cannot answer predicates implicitly via exact index
-    // bounds for index intersection plans, as this can lead to spurious matches.
-    //
-    // Such storage engines do not use the invalidation framework, and therefore
-    // have no need for KEEP_MUTATIONS.
-    if (supportsDocLocking()) {
-        plannerParams->options |= QueryPlannerParams::CANNOT_TRIM_IXISECT;
-    } else {
-        plannerParams->options |= QueryPlannerParams::KEEP_MUTATIONS;
-    }
-
     if (shouldWaitForOplogVisibility(
             opCtx, collection, canonicalQuery->getQueryRequest().isTailable())) {
         plannerParams->options |= QueryPlannerParams::OPLOG_SCAN_WAIT_FOR_VISIBLE;
@@ -357,36 +347,46 @@ StatusWith<PrepareExecutionResult> prepareExecution(OperationContext* opCtx,
         }
     }
 
-    // Try to look up a cached solution for the query.
-    if (auto cs =
-            collection->infoCache()->getPlanCache()->getCacheEntryIfCacheable(*canonicalQuery)) {
-        // We have a CachedSolution.  Have the planner turn it into a QuerySolution.
-        auto statusWithQs = QueryPlanner::planFromCache(*canonicalQuery, plannerParams, *cs);
+    // Check that the query should be cached.
+    if (collection->infoCache()->getPlanCache()->shouldCacheQuery(*canonicalQuery)) {
+        auto planCacheKey = collection->infoCache()->getPlanCache()->computeKey(*canonicalQuery);
 
-        if (statusWithQs.isOK()) {
-            auto querySolution = std::move(statusWithQs.getValue());
-            if ((plannerParams.options & QueryPlannerParams::IS_COUNT) &&
-                turnIxscanIntoCount(querySolution.get())) {
-                LOG(2) << "Using fast count: " << redact(canonicalQuery->toStringShort());
+        // Fill in opDebug information.
+        boost::optional<uint32_t> hash =
+            SimpleStringDataComparator::kInstance.hash(StringData(planCacheKey));
+        CurOp::get(opCtx)->debug().queryHash = hash;
+
+        // Try to look up a cached solution for the query.
+        if (auto cs =
+                collection->infoCache()->getPlanCache()->getCacheEntryIfActive(planCacheKey)) {
+            // We have a CachedSolution.  Have the planner turn it into a QuerySolution.
+            auto statusWithQs = QueryPlanner::planFromCache(*canonicalQuery, plannerParams, *cs);
+
+            if (statusWithQs.isOK()) {
+                auto querySolution = std::move(statusWithQs.getValue());
+                if ((plannerParams.options & QueryPlannerParams::IS_COUNT) &&
+                    turnIxscanIntoCount(querySolution.get())) {
+                    LOG(2) << "Using fast count: " << redact(canonicalQuery->toStringShort());
+                }
+
+                PlanStage* rawRoot;
+                verify(StageBuilder::build(
+                    opCtx, collection, *canonicalQuery, *querySolution, ws, &rawRoot));
+
+                // Add a CachedPlanStage on top of the previous root.
+                //
+                // 'decisionWorks' is used to determine whether the existing cache entry should
+                // be evicted, and the query replanned.
+                root = make_unique<CachedPlanStage>(opCtx,
+                                                    collection,
+                                                    ws,
+                                                    canonicalQuery.get(),
+                                                    plannerParams,
+                                                    cs->decisionWorks,
+                                                    rawRoot);
+                return PrepareExecutionResult(
+                    std::move(canonicalQuery), std::move(querySolution), std::move(root));
             }
-
-            PlanStage* rawRoot;
-            verify(StageBuilder::build(
-                opCtx, collection, *canonicalQuery, *querySolution, ws, &rawRoot));
-
-            // Add a CachedPlanStage on top of the previous root.
-            //
-            // 'decisionWorks' is used to determine whether the existing cache entry should
-            // be evicted, and the query replanned.
-            root = make_unique<CachedPlanStage>(opCtx,
-                                                collection,
-                                                ws,
-                                                canonicalQuery.get(),
-                                                plannerParams,
-                                                cs->decisionWorks,
-                                                rawRoot);
-            return PrepareExecutionResult(
-                std::move(canonicalQuery), std::move(querySolution), std::move(root));
         }
     }
 

@@ -44,6 +44,7 @@
 #include "mongo/util/debug_util.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/scopeguard.h"
+#include "mongo/util/functional.h"
 
 namespace mongo {
 
@@ -422,7 +423,7 @@ public:
     boost::intrusive_ptr<SharedStateBase> continuation;  // F
 
     // Takes this as argument and usually writes to continuation.
-    std::function<void(SharedStateBase* input)> callback;  // F
+    unique_function<void(SharedStateBase* input)> callback;  // F
 
 
     // These are only used to signal completion to blocking waiters. Benchmarks showed that it was

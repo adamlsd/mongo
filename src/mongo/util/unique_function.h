@@ -28,9 +28,23 @@
 
 #pragma once
 
+#ifndef _MSC_VER
+
 #include "third_party/function2-3.0.0/function2.hpp"
 
 namespace mongo
 {
 	using ::fu2::unique_function;
 }//namespace mongo
+
+#else
+
+#include <functional>
+
+namespace mongo
+{
+	template< typename Function >
+	using unique_function= std::function< Function >;
+} //namespace mongo
+
+#endif

@@ -28,9 +28,22 @@
 
 #pragma once
 
+#ifndef _MSC_VER
+
 #include "third_party/function2-3.0.0/function2.hpp"
 
 namespace mongo
 {
 	using ::fu2::overload;
 }//namespace mongo
+
+#else
+
+#include <functional>
+
+namespace mongo
+{
+	// No overload in std, at this time.
+} //namespace mongo
+
+#endif

@@ -68,7 +68,11 @@ namespace mongo
 					public:
 						explicit SpecificImpl( Functor f ) : f( std::move( f ) ) {}
 
-						RetType call( Args &&... args ) override { return f( args... ); }
+						RetType
+						call( Args &&... args ) override
+						{
+							return f( std::forward< Args >( args )... );
+						}
 				};
 
 				return std::make_unique< SpecificImpl >( std::move( functor ) );
@@ -84,7 +88,7 @@ namespace mongo
 				: impl( makeImpl( std::move( functor ) ) ) {}
 
 			RetType
-			operator() ( Args &&... args ) const
+			operator() ( Args ... args ) const
 			{
 				if( !this->impl.get() ) throw std::bad_function_call();
 				return this->impl->call( std::forward< Args >( args )... );

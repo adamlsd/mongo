@@ -442,8 +442,7 @@ env.Library(
     LIBDEPS=[
         "$BUILD_DIR/mongo/client/clientdriver_network",
         "$BUILD_DIR/mongo/db/auth/auth",
-        "$BUILD_DIR/mongo/rpc/command_reply",
-        "$BUILD_DIR/mongo/rpc/command_request",
+        "$BUILD_DIR/mongo/rpc/rpc",
         "$BUILD_DIR/mongo/rpc/metadata",
         "$BUILD_DIR/mongo/util/processinfo",
         "$BUILD_DIR/mongo/util/signal_handlers",
@@ -679,6 +678,7 @@ env.CppUnitTest(
         'auth/authmocks',
         'catalog/database_holder_mock',
         'catalog_raii',
+        'service_context_test_fixture',
         'stats/fill_locker_info',
     ],
 )
@@ -959,9 +959,7 @@ env.Library(
         'exec/fetch.cpp',
         'exec/geo_near.cpp',
         'exec/idhack.cpp',
-        'exec/index_iterator.cpp',
         'exec/index_scan.cpp',
-        'exec/keep_mutations.cpp',
         'exec/limit.cpp',
         'exec/merge_sort.cpp',
         'exec/multi_iterator.cpp',

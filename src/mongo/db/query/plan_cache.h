@@ -237,7 +237,9 @@ public:
      * Grabs any planner-specific data required from the solutions.
      * Takes ownership of the PlanRankingDecision that placed the plan in the cache.
      */
-    PlanCacheEntry(const std::vector<QuerySolution*>& solutions, PlanRankingDecision* why);
+    PlanCacheEntry(const std::vector<QuerySolution*>& solutions,
+                   PlanRankingDecision* why,
+                   uint32_t queryHash);
 
     ~PlanCacheEntry();
 
@@ -268,6 +270,10 @@ public:
     BSONObj projection;
     BSONObj collation;
     Date_t timeOfCreation;
+
+    // Hash of the PlanCacheKey. Intended as an identifier for the query shape in logs and other
+    // diagnostic output.
+    uint32_t queryHash;
 
     //
     // Performance stats
@@ -384,11 +390,20 @@ public:
     GetResult get(const CanonicalQuery& query) const;
 
     /**
-     * Determine whether or not the cache should be used. If it shouldn't be used because the cache
-     * entry exists but is inactive, log a message. Returns nullptr if the cache should not be
-     * used, and a CachedSolution otherwise.
+     * Look up the cached data access for the provided PlanCacheKey. Circumvents the recalculation
+     * of a plan cache key.
+     *
+     * The return value will provide the "state" of the cache entry, as well as the CachedSolution
+     * for the query (if there is one).
      */
-    std::unique_ptr<CachedSolution> getCacheEntryIfCacheable(const CanonicalQuery& cq) const;
+    GetResult get(const PlanCacheKey& key) const;
+
+    /**
+     * If the cache entry exists and is active, return a CachedSolution. If the cache entry is
+     * inactive, log a message and return a nullptr. If no cache entry exists, return a nullptr.
+     */
+    std::unique_ptr<CachedSolution> getCacheEntryIfActive(const PlanCacheKey& key) const;
+
 
     /**
      * When the CachedPlanStage runs a plan out of the cache, we want to record data about the
@@ -428,6 +443,12 @@ public:
     PlanCacheKey computeKey(const CanonicalQuery&) const;
 
     /**
+     * Returns a hash of the plan cache key. This hash may not be stable between different versions
+     * of the server.
+     */
+    static uint32_t computeQueryHash(const PlanCacheKey& key);
+
+    /**
      * Returns a copy of a cache entry.
      * Used by planCacheListPlans to display plan details.
      *
@@ -437,11 +458,9 @@ public:
 
     /**
      * Returns a vector of all cache entries.
-     * Caller owns the result vector and is responsible for cleaning up
-     * the cache entry copies.
      * Used by planCacheListQueryShapes and index_filter_commands_test.cpp.
      */
-    std::vector<PlanCacheEntry*> getAllEntries() const;
+    std::vector<std::unique_ptr<PlanCacheEntry>> getAllEntries() const;
 
     /**
      * Returns number of entries in cache. Includes inactive entries.
@@ -464,6 +483,7 @@ private:
     };
 
     NewEntryState getNewEntryState(const CanonicalQuery& query,
+                                   uint32_t queryHash,
                                    PlanCacheEntry* oldEntry,
                                    size_t newWorks,
                                    double growthCoefficient);

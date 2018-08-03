@@ -150,10 +150,10 @@ public:
     // -------------------
 
     // basic options
-    // _networkOp represents the network-level op code: OP_QUERY, OP_GET_MORE, OP_COMMAND, etc.
+    // _networkOp represents the network-level op code: OP_QUERY, OP_GET_MORE, OP_MSG, etc.
     NetworkOp networkOp{opInvalid};  // only set this through setNetworkOp_inlock() to keep synced
     // _logicalOp is the logical operation type, ie 'dbQuery' regardless of whether this is an
-    // OP_QUERY find, a find command using OP_QUERY, or a find command using OP_COMMAND.
+    // OP_QUERY find, a find command using OP_QUERY, or a find command using OP_MSG.
     // Similarly, the return value will be dbGetMore for both OP_GET_MORE and getMore command.
     LogicalOp logicalOp{LogicalOp::opInvalid};  // only set this through setNetworkOp_inlock()
     bool iscommand{false};
@@ -165,6 +165,8 @@ public:
     bool exhaust{false};
 
     bool hasSortStage{false};  // true if the query plan involves an in-memory sort
+
+    bool usedDisk{false};  // true if the given query used disk
 
     // True if the plan came from the multi-planner (not from the plan cache and not a query with a
     // single solution).
@@ -179,6 +181,8 @@ public:
         false};  // true if the cursor has been closed at end a find/getMore operation
 
     BSONObj execStats;  // Owned here.
+
+    boost::optional<uint32_t> queryHash;
 
     // Details of any error (whether from an exception or a command returning failure).
     Status errInfo = Status::OK();
@@ -578,10 +582,10 @@ private:
     // The cumulative duration for which the timer has been paused.
     Microseconds _totalPausedDuration{0};
 
-    // _networkOp represents the network-level op code: OP_QUERY, OP_GET_MORE, OP_COMMAND, etc.
+    // _networkOp represents the network-level op code: OP_QUERY, OP_GET_MORE, OP_MSG, etc.
     NetworkOp _networkOp{opInvalid};  // only set this through setNetworkOp_inlock() to keep synced
     // _logicalOp is the logical operation type, ie 'dbQuery' regardless of whether this is an
-    // OP_QUERY find, a find command using OP_QUERY, or a find command using OP_COMMAND.
+    // OP_QUERY find, a find command using OP_QUERY, or a find command using OP_MSG.
     // Similarly, the return value will be dbGetMore for both OP_GET_MORE and getMore command.
     LogicalOp _logicalOp{LogicalOp::opInvalid};  // only set this through setNetworkOp_inlock()
 

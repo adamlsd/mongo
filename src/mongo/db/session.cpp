@@ -35,6 +35,7 @@
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/concurrency/lock_state.h"
+#include "mongo/db/concurrency/locker.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db_raii.h"
 #include "mongo/db/dbdirectclient.h"
@@ -326,8 +327,8 @@ void Session::refreshFromStorageIfNeeded(OperationContext* opCtx) {
                     // transition table for other callers.
                     _txnState.transitionTo(
                         ul,
-                        TransitionTable::State::kCommitted,
-                        TransitionTable::TransitionValidation::kRelaxTransitionValidation);
+                        TransactionState::kCommitted,
+                        TransactionState::TransitionValidation::kRelaxTransitionValidation);
                 }
             }
 
@@ -572,7 +573,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
                 // implicitly abort the transaction. It is not safe to continue the transaction, in
                 // particular because we have not saved the readConcern from the first statement of
                 // the transaction.
-                _abortTransaction(wl);
+                _abortTransactionOnSession(wl);
                 uasserted(ErrorCodes::NoSuchTransaction,
                           str::stream() << "Transaction " << txnNumber << " has been aborted.");
             }
@@ -594,9 +595,16 @@ void Session::_beginOrContinueTxn(WithLock wl,
                               << " does not match any in-progress transactions.",
                 startTransaction != boost::none);
 
+        // We cannot start a transaction if a prepared transaction is already running on the
+        // session.
+        uassert(ErrorCodes::PreparedTransactionInProgress,
+                "Cannot start a new transaction when a prepared transaction already exists on the "
+                "session.",
+                !_txnState.isPrepared(wl));
+
         _setActiveTxn(wl, txnNumber);
         _autocommit = false;
-        _txnState.transitionTo(wl, TransitionTable::State::kInProgress);
+        _txnState.transitionTo(wl, TransactionState::kInProgress);
         // Tracks various transactions metrics.
         _singleTransactionStats = SingleTransactionStats();
         _singleTransactionStats->setStartTime(curTimeMicros64());
@@ -610,7 +618,7 @@ void Session::_beginOrContinueTxn(WithLock wl,
         invariant(startTransaction == boost::none);
         _setActiveTxn(wl, txnNumber);
         _autocommit = true;
-        _txnState.transitionTo(wl, TransitionTable::State::kNone);
+        _txnState.transitionTo(wl, TransactionState::kNone);
         // SingleTransactionStats are only for multi-document transactions.
         _singleTransactionStats = boost::none;
     }
@@ -856,7 +864,11 @@ Timestamp Session::prepareTransaction(OperationContext* opCtx) {
     // session kill and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    _txnState.transitionTo(lk, TransitionTable::State::kPrepared);
+    uassert(ErrorCodes::TransactionCommitted,
+            str::stream() << "Transaction " << *opCtx->getTxnNumber() << " has been committed.",
+            !_txnState.isCommitted(lk));
+
+    _txnState.transitionTo(lk, TransactionState::kPrepared);
 
     // We need to unlock the session to run the opObserver onTransactionPrepare, which calls back
     // into the session.
@@ -898,19 +910,78 @@ void Session::_abortArbitraryTransaction(WithLock lock) {
         return;
     }
 
-    _abortTransaction(lock);
+    _abortTransactionOnSession(lock);
 }
 
 void Session::abortActiveTransaction(OperationContext* opCtx) {
+    _abortActiveTransaction(opCtx, TransactionState::kInProgress | TransactionState::kPrepared);
+}
+
+void Session::_abortActiveTransaction(OperationContext* opCtx,
+                                      TransactionState::StateSet expectedStates) {
     stdx::lock_guard<stdx::mutex> lock(_mutex);
 
-    if (!_txnState.inMultiDocumentTransaction(lock)) {
-        return;
+    invariant(!_txnResourceStash);
+
+    if (!_txnState.isNone(lock)) {
+        // Add the latest operation stats to the aggregate OpDebug object stored in the
+        // SingleTransactionStats instance on the Session.
+        _singleTransactionStats->getOpDebug()->additiveMetrics.add(
+            CurOp::get(opCtx)->debug().additiveMetrics);
+
+        // Update the LastClientInfo object stored in the SingleTransactionStats instance on the
+        // Session with this Client's information.
+        _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
     }
 
-    _abortTransaction(lock);
+    // Only abort the transaction in session if it's in expected states.
+    // When the state of active transaction on session is not expected, it means another
+    // thread has already aborted the transaction on session.
+    if (_txnState.isInSet(lock, expectedStates)) {
+        invariant(opCtx->getTxnNumber() == _activeTxnNumber);
+        _abortTransactionOnSession(lock);
+    }
 
-    // Abort the WUOW. We should be able to abort empty transactions that don't have WUOW.
+    // Log the transaction if its duration is longer than the slowMS command threshold.
+    _logSlowTransaction(
+        lock, &(opCtx->lockState()->getLockerInfo())->stats, TransactionState::kAborted);
+
+    // Clean up the transaction resources on opCtx even if the transaction on session has been
+    // aborted.
+    _cleanUpTxnResourceOnOpCtx(opCtx);
+}
+
+void Session::_abortTransactionOnSession(WithLock wl) {
+    if (!_txnState.isNone(wl)) {
+        _singleTransactionStats->setEndTime(curTimeMicros64());
+        // The transaction has aborted, so we mark it as inactive.
+        if (_singleTransactionStats->isActive()) {
+            _singleTransactionStats->setInactive(curTimeMicros64());
+        }
+    }
+
+    if (_txnResourceStash) {
+        // The transaction is stashed, so we abort the inactive transaction on session.
+        _logSlowTransaction(
+            wl, &(_txnResourceStash->locker()->getLockerInfo())->stats, TransactionState::kAborted);
+        _txnResourceStash = boost::none;
+        ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentInactive();
+    } else {
+        // Transaction resource has been unstashed and transferred into an active opCtx, which will
+        // clean it up.
+        ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentActive();
+    }
+
+    _transactionOperationBytes = 0;
+    _transactionOperations.clear();
+    _txnState.transitionTo(wl, TransactionState::kAborted);
+    _speculativeTransactionReadOpTime = repl::OpTime();
+    ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalAborted();
+    ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentOpen();
+}
+
+void Session::_cleanUpTxnResourceOnOpCtx(OperationContext* opCtx) {
+    // Reset the WUOW. We should be able to abort empty transactions that don't have WUOW.
     if (opCtx->getWriteUnitOfWork()) {
         opCtx->setWriteUnitOfWork(nullptr);
     }
@@ -919,39 +990,6 @@ void Session::abortActiveTransaction(OperationContext* opCtx) {
     opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
                            WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
     opCtx->lockState()->unsetMaxLockTimeout();
-
-    // Add the latest operation stats to the aggregate OpDebug object stored in the
-    // SingleTransactionStats instance on the Session.
-    _singleTransactionStats->getOpDebug()->additiveMetrics.add(
-        CurOp::get(opCtx)->debug().additiveMetrics);
-
-    // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
-    // with this Client's information.
-    _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
-}
-
-void Session::_abortTransaction(WithLock wl) {
-    // If the transaction is stashed, then we have aborted an inactive transaction.
-    if (_txnResourceStash) {
-        ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentInactive();
-    } else {
-        ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentActive();
-    }
-
-    _txnResourceStash = boost::none;
-    _transactionOperationBytes = 0;
-    _transactionOperations.clear();
-    _txnState.transitionTo(wl, TransitionTable::State::kAborted);
-    _speculativeTransactionReadOpTime = repl::OpTime();
-    ServerTransactionsMetrics::get(getGlobalServiceContext())->incrementTotalAborted();
-    if (!_txnState.isNone(wl)) {
-        _singleTransactionStats->setEndTime(curTimeMicros64());
-        // The transaction has aborted, so we mark it as inactive.
-        if (_singleTransactionStats->isActive()) {
-            _singleTransactionStats->setInactive(curTimeMicros64());
-        }
-    }
-    ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentOpen();
 }
 
 void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
@@ -968,12 +1006,12 @@ void Session::_beginOrContinueTxnOnMigration(WithLock wl, TxnNumber txnNumber) {
 void Session::_setActiveTxn(WithLock wl, TxnNumber txnNumber) {
     // Abort the existing transaction if it's not prepared, committed, or aborted.
     if (_txnState.isInProgress(wl)) {
-        _abortTransaction(wl);
+        _abortTransactionOnSession(wl);
     }
     _activeTxnNumber = txnNumber;
     _activeTxnCommittedStatements.clear();
     _hasIncompleteHistory = false;
-    _txnState.transitionTo(wl, TransitionTable::State::kNone);
+    _txnState.transitionTo(wl, TransactionState::kNone);
     _singleTransactionStats = boost::none;
     _speculativeTransactionReadOpTime = repl::OpTime();
     _multikeyPathInfo.clear();
@@ -1033,7 +1071,7 @@ void Session::commitUnpreparedTransaction(OperationContext* opCtx) {
     // and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithoutPrepare);
+    _txnState.transitionTo(lk, TransactionState::kCommittingWithoutPrepare);
 
     // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
     // into the session.
@@ -1059,7 +1097,7 @@ void Session::commitPreparedTransaction(OperationContext* opCtx, Timestamp commi
     // and migration, which do not check out the session.
     _checkIsActiveTransaction(lk, *opCtx->getTxnNumber(), true);
 
-    _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithPrepare);
+    _txnState.transitionTo(lk, TransactionState::kCommittingWithPrepare);
     opCtx->recoveryUnit()->setCommitTimestamp(commitTimestamp);
 
     // We need to unlock the session to run the opObserver onTransactionCommit, which calls back
@@ -1075,47 +1113,15 @@ void Session::commitPreparedTransaction(OperationContext* opCtx, Timestamp commi
 }
 
 void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationContext* opCtx) {
-
-    bool committed = false;
-    ON_BLOCK_EXIT([this, &committed, opCtx]() {
-        // If we're still "committing", the recovery unit failed to commit, and the lock is not
-        // held.  We can't safely use _txnState here, as it is protected by the lock.
-        if (!committed) {
-            stdx::lock_guard<stdx::mutex> lk(_mutex);
-            opCtx->setWriteUnitOfWork(nullptr);
-
-            // Make sure the transaction didn't change because of chunk migration.
-            if (opCtx->getTxnNumber() == _activeTxnNumber) {
-                _txnState.transitionTo(lk, TransitionTable::State::kAborted);
-                ServerTransactionsMetrics::get(getGlobalServiceContext())->decrementCurrentActive();
-                // After the transaction has been aborted, we must update the end time and mark it
-                // as inactive.
-                auto curTime = curTimeMicros64();
-                _singleTransactionStats->setEndTime(curTime);
-                if (_singleTransactionStats->isActive()) {
-                    _singleTransactionStats->setInactive(curTime);
-                }
-                ServerTransactionsMetrics::get(opCtx)->incrementTotalAborted();
-                ServerTransactionsMetrics::get(opCtx)->decrementCurrentOpen();
-                // Add the latest operation stats to the aggregate OpDebug object stored in the
-                // SingleTransactionStats instance on the Session.
-                _singleTransactionStats->getOpDebug()->additiveMetrics.add(
-                    CurOp::get(opCtx)->debug().additiveMetrics);
-                // Update the LastClientInfo object stored in the SingleTransactionStats instance on
-                // the Session with this Client's information.
-                _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
-            }
-        }
-        // We must clear the recovery unit and locker so any post-transaction writes can run without
-        // transactional settings such as a read timestamp.
-        opCtx->setRecoveryUnit(opCtx->getServiceContext()->getStorageEngine()->newRecoveryUnit(),
-                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
-        opCtx->lockState()->unsetMaxLockTimeout();
+    auto abortGuard = MakeGuard([this, opCtx]() {
+        _abortActiveTransaction(opCtx,
+                                TransactionState::kCommittingWithoutPrepare |
+                                    TransactionState::kCommittingWithPrepare);
     });
     lk.unlock();
     opCtx->getWriteUnitOfWork()->commit();
     opCtx->setWriteUnitOfWork(nullptr);
-    committed = true;
+    abortGuard.Dismiss();
     lk.lock();
     auto& clientInfo = repl::ReplClientInfo::forClient(opCtx->getClient());
     // If no writes have been done, set the client optime forward to the read timestamp so waiting
@@ -1126,7 +1132,8 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
     if (_speculativeTransactionReadOpTime > clientInfo.getLastOp()) {
         clientInfo.setLastOp(_speculativeTransactionReadOpTime);
     }
-    _txnState.transitionTo(lk, TransitionTable::State::kCommitted);
+    _txnState.transitionTo(lk, TransactionState::kCommitted);
+
     ServerTransactionsMetrics::get(opCtx)->incrementTotalCommitted();
     // After the transaction has been committed, we must update the end time and mark it as
     // inactive.
@@ -1143,6 +1150,14 @@ void Session::_commitTransaction(stdx::unique_lock<stdx::mutex> lk, OperationCon
     // Update the LastClientInfo object stored in the SingleTransactionStats instance on the Session
     // with this Client's information.
     _singleTransactionStats->updateLastClientInfo(opCtx->getClient());
+
+    // Log the transaction if its duration is longer than the slowMS command threshold.
+    _logSlowTransaction(
+        lk, &(opCtx->lockState()->getLockerInfo())->stats, TransactionState::kCommitted);
+
+    // We must clear the recovery unit and locker so any post-transaction writes can run without
+    // transactional settings such as a read timestamp.
+    _cleanUpTxnResourceOnOpCtx(opCtx);
 }
 
 BSONObj Session::reportStashedState() const {
@@ -1219,14 +1234,17 @@ void Session::_reportTransactionStats(WithLock wl,
         durationCount<Microseconds>(_singleTransactionStats->getTimeInactiveMicros(curTime));
     builder->append("timeActiveMicros", timeActive);
     builder->append("timeInactiveMicros", timeInactive);
+
+    if (_transactionExpireDate) {
+        builder->append("expiryTime", dateToISOStringLocal(*_transactionExpireDate));
+    }
 }
 
-std::string Session::transactionInfoForLog(const SingleThreadedLockStats* lockStats) {
-    // Need to lock because this function checks the state of _txnState.
-    stdx::lock_guard<stdx::mutex> lg(_mutex);
-
+std::string Session::_transactionInfoForLog(const SingleThreadedLockStats* lockStats,
+                                            TransactionState::StateFlag terminationCause) {
     invariant(lockStats);
-    invariant(_txnState.isCommitted(lg) || _txnState.isAborted(lg));
+    invariant(terminationCause == TransactionState::kCommitted ||
+              terminationCause == TransactionState::kAborted);
 
     StringBuilder s;
 
@@ -1244,8 +1262,9 @@ std::string Session::transactionInfoForLog(const SingleThreadedLockStats* lockSt
 
     s << _singleTransactionStats->getOpDebug()->additiveMetrics.report();
 
-    std::string terminationCause = _txnState.isCommitted(lg) ? "committed" : "aborted";
-    s << " terminationCause:" << terminationCause;
+    std::string terminationCauseString =
+        terminationCause == TransactionState::kCommitted ? "committed" : "aborted";
+    s << " terminationCause:" << terminationCauseString;
 
     auto curTime = curTimeMicros64();
     s << " timeActiveMicros:"
@@ -1267,6 +1286,20 @@ std::string Session::transactionInfoForLog(const SingleThreadedLockStats* lockSt
       << Milliseconds{static_cast<long long>(_singleTransactionStats->getDuration(curTime)) / 1000};
 
     return s.str();
+}
+
+void Session::_logSlowTransaction(WithLock wl,
+                                  const SingleThreadedLockStats* lockStats,
+                                  TransactionState::StateFlag terminationCause) {
+    // Only log multi-document transactions.
+    if (!_txnState.isNone(wl)) {
+        // Log the transaction if its duration is longer than the slowMS command threshold.
+        if (_singleTransactionStats->getDuration(curTimeMicros64()) >
+            serverGlobalParams.slowMS * 1000ULL) {
+            log(logger::LogComponent::kCommand)
+                << _transactionInfoForLog(lockStats, terminationCause);
+        }
+    }
 }
 
 void Session::_checkValid(WithLock) const {
@@ -1466,81 +1499,81 @@ boost::optional<repl::OplogEntry> Session::createMatchingTransactionTableUpdate(
         );
 }
 
-std::string Session::TransitionTable::toString(State state) {
+std::string Session::TransactionState::toString(StateFlag state) {
     switch (state) {
-        case Session::TransitionTable::State::kNone:
+        case Session::TransactionState::kNone:
             return "TxnState::None";
-        case Session::TransitionTable::State::kInProgress:
+        case Session::TransactionState::kInProgress:
             return "TxnState::InProgress";
-        case Session::TransitionTable::State::kPrepared:
+        case Session::TransactionState::kPrepared:
             return "TxnState::Prepared";
-        case Session::TransitionTable::State::kCommittingWithoutPrepare:
+        case Session::TransactionState::kCommittingWithoutPrepare:
             return "TxnState::CommittingWithoutPrepare";
-        case Session::TransitionTable::State::kCommittingWithPrepare:
+        case Session::TransactionState::kCommittingWithPrepare:
             return "TxnState::CommittingWithPrepare";
-        case Session::TransitionTable::State::kCommitted:
+        case Session::TransactionState::kCommitted:
             return "TxnState::Committed";
-        case Session::TransitionTable::State::kAborted:
+        case Session::TransactionState::kAborted:
             return "TxnState::Aborted";
     }
     MONGO_UNREACHABLE;
 }
 
-bool Session::TransitionTable::_isLegalTransition(State oldState, State newState) {
+bool Session::TransactionState::_isLegalTransition(StateFlag oldState, StateFlag newState) {
     switch (oldState) {
-        case State::kNone:
+        case kNone:
             switch (newState) {
-                case State::kNone:
-                case State::kInProgress:
+                case kNone:
+                case kInProgress:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kInProgress:
+        case kInProgress:
             switch (newState) {
-                case State::kNone:
-                case State::kPrepared:
-                case State::kCommittingWithoutPrepare:
-                case State::kAborted:
+                case kNone:
+                case kPrepared:
+                case kCommittingWithoutPrepare:
+                case kAborted:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kPrepared:
+        case kPrepared:
             switch (newState) {
-                case State::kCommittingWithPrepare:
-                case State::kAborted:
+                case kCommittingWithPrepare:
+                case kAborted:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kCommittingWithPrepare:
-        case State::kCommittingWithoutPrepare:
+        case kCommittingWithPrepare:
+        case kCommittingWithoutPrepare:
             switch (newState) {
-                case State::kNone:
-                case State::kCommitted:
-                case State::kAborted:
+                case kNone:
+                case kCommitted:
+                case kAborted:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kCommitted:
+        case kCommitted:
             switch (newState) {
-                case State::kNone:
-                case State::kInProgress:
+                case kNone:
+                case kInProgress:
                     return true;
                 default:
                     return false;
             }
             MONGO_UNREACHABLE;
-        case State::kAborted:
+        case kAborted:
             switch (newState) {
-                case State::kNone:
-                case State::kInProgress:
+                case kNone:
+                case kInProgress:
                     return true;
                 default:
                     return false;
@@ -1550,12 +1583,12 @@ bool Session::TransitionTable::_isLegalTransition(State oldState, State newState
     MONGO_UNREACHABLE;
 }
 
-void Session::TransitionTable::transitionTo(WithLock,
-                                            State newState,
-                                            TransitionValidation shouldValidate) {
+void Session::TransactionState::transitionTo(WithLock,
+                                             StateFlag newState,
+                                             TransitionValidation shouldValidate) {
 
     if (shouldValidate == TransitionValidation::kValidateTransition) {
-        invariant(TransitionTable::_isLegalTransition(_state, newState),
+        invariant(TransactionState::_isLegalTransition(_state, newState),
                   str::stream() << "Current state: " << toString(_state)
                                 << ", Illegal attempted next state: "
                                 << toString(newState));

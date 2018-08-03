@@ -111,17 +111,11 @@ string optionString(size_t options) {
             case QueryPlannerParams::INDEX_INTERSECTION:
                 ss << "INDEX_INTERSECTION ";
                 break;
-            case QueryPlannerParams::KEEP_MUTATIONS:
-                ss << "KEEP_MUTATIONS ";
-                break;
             case QueryPlannerParams::IS_COUNT:
                 ss << "IS_COUNT ";
                 break;
             case QueryPlannerParams::SPLIT_LIMITED_SORT:
                 ss << "SPLIT_LIMITED_SORT ";
-                break;
-            case QueryPlannerParams::CANNOT_TRIM_IXISECT:
-                ss << "CANNOT_TRIM_IXISECT ";
                 break;
             case QueryPlannerParams::NO_UNCOVERED_PROJECTIONS:
                 ss << "NO_UNCOVERED_PROJECTIONS ";

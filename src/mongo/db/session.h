@@ -377,6 +377,12 @@ public:
         return _speculativeTransactionReadOpTime;
     }
 
+    const Locker* getTxnResourceStashLockerForTest() const {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        invariant(_txnResourceStash);
+        return _txnResourceStash->locker();
+    }
+
     /**
      * If this session is holding stashed locks in _txnResourceStash, reports the current state of
      * the session using the provided builder. Locks the session object's mutex while running.
@@ -396,13 +402,13 @@ public:
      */
     BSONObj reportStashedState() const;
 
-    /**
-     * This method returns a string with information about a slow transaction. The format of the
-     * logging string produced should match the format used for slow operation logging. A
-     * transaction must be completed (committed or aborted) and a valid LockStats reference must be
-     * passed in order for this method to be called.
-     */
-    std::string transactionInfoForLog(const SingleThreadedLockStats* lockStats);
+    std::string transactionInfoForLogForTest(const SingleThreadedLockStats* lockStats,
+                                             bool committed) {
+        stdx::lock_guard<stdx::mutex> lk(_mutex);
+        TransactionState::StateFlag terminationCause =
+            committed ? TransactionState::kCommitted : TransactionState::kAborted;
+        return _transactionInfoForLog(lockStats, terminationCause);
+    }
 
     void addMultikeyPathInfo(MultikeyPathInfo info) {
         _multikeyPathInfo.push_back(std::move(info));
@@ -424,12 +430,12 @@ public:
 
     void transitionToPreparedforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _txnState.transitionTo(lk, TransitionTable::State::kPrepared);
+        _txnState.transitionTo(lk, TransactionState::kPrepared);
     }
 
     void transitionToCommittingforTest() {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
-        _txnState.transitionTo(lk, TransitionTable::State::kCommittingWithoutPrepare);
+        _txnState.transitionTo(lk, TransactionState::kCommittingWithoutPrepare);
     }
 
 private:
@@ -481,17 +487,23 @@ private:
      * kPrepared, the transaction is not allowed to abort outside of an 'abortTransaction' command.
      * At this point, aborting the transaction must log an 'abortTransaction' oplog entry.
      */
-    class TransitionTable {
+    class TransactionState {
     public:
-        enum class State {
-            kNone,
-            kInProgress,
-            kPrepared,
-            kCommittingWithoutPrepare,
-            kCommittingWithPrepare,
-            kCommitted,
-            kAborted
+        enum StateFlag {
+            kNone = 1 << 0,
+            kInProgress = 1 << 1,
+            kPrepared = 1 << 2,
+            kCommittingWithoutPrepare = 1 << 3,
+            kCommittingWithPrepare = 1 << 4,
+            kCommitted = 1 << 5,
+            kAborted = 1 << 6
         };
+
+        using StateSet = int;
+
+        bool isInSet(WithLock, StateSet stateSet) const {
+            return _state & stateSet;
+        }
 
         /**
          * Transitions the session from the current state to the new state. If transition validation
@@ -500,65 +512,73 @@ private:
         enum class TransitionValidation { kValidateTransition, kRelaxTransitionValidation };
         void transitionTo(
             WithLock,
-            State newState,
+            StateFlag newState,
             TransitionValidation shouldValidate = TransitionValidation::kValidateTransition);
 
         bool inMultiDocumentTransaction(WithLock) const {
-            return _state == State::kInProgress || _state == State::kPrepared;
+            return _state == kInProgress || _state == kPrepared;
         }
 
         bool isNone(WithLock) const {
-            return _state == State::kNone;
+            return _state == kNone;
         }
 
         bool isInProgress(WithLock) const {
-            return _state == State::kInProgress;
+            return _state == kInProgress;
         }
 
         bool isPrepared(WithLock) const {
-            return _state == State::kPrepared;
+            return _state == kPrepared;
         }
 
         bool isCommittingWithoutPrepare(WithLock) const {
-            return _state == State::kCommittingWithoutPrepare;
+            return _state == kCommittingWithoutPrepare;
         }
 
         bool isCommittingWithPrepare(WithLock) const {
-            return _state == State::kCommittingWithPrepare;
+            return _state == kCommittingWithPrepare;
         }
 
         bool isCommitted(WithLock) const {
-            return _state == State::kCommitted;
+            return _state == kCommitted;
         }
 
         bool isAborted(WithLock) const {
-            return _state == State::kAborted;
+            return _state == kAborted;
         }
 
         std::string toString() const {
             return toString(_state);
         }
 
-        static std::string toString(State state);
+        static std::string toString(StateFlag state);
 
     private:
-        static bool _isLegalTransition(State oldState, State newState);
+        static bool _isLegalTransition(StateFlag oldState, StateFlag newState);
 
-        State _state = State::kNone;
+        StateFlag _state = kNone;
     };
 
-    friend std::ostream& operator<<(std::ostream& s, TransitionTable txnState) {
+    friend std::ostream& operator<<(std::ostream& s, TransactionState txnState) {
         return (s << txnState.toString());
     }
 
-    friend StringBuilder& operator<<(StringBuilder& s, TransitionTable txnState) {
+    friend StringBuilder& operator<<(StringBuilder& s, TransactionState txnState) {
         return (s << txnState.toString());
     }
+
+    // Abort the transaction if it's in one of the expected states and clean up the transaction
+    // states associated with the opCtx.
+    void _abortActiveTransaction(OperationContext* opCtx,
+                                 TransactionState::StateSet expectedStates);
 
     void _abortArbitraryTransaction(WithLock);
 
-    // Releases stashed transaction resources to abort the transaction.
-    void _abortTransaction(WithLock);
+    // Releases stashed transaction resources to abort the transaction on the session.
+    void _abortTransactionOnSession(WithLock);
+
+    // Clean up the transaction resources unstashed on operation context.
+    void _cleanUpTxnResourceOnOpCtx(OperationContext* opCtx);
 
     // Committing a transaction first changes its state to "Committing*" and writes to the oplog,
     // then it changes the state to "Committed".
@@ -590,6 +610,19 @@ private:
     // truncated because it was too old.
     bool _hasIncompleteHistory{false};
 
+    // Logs the transaction information if it has run slower than the global parameter slowMS. The
+    // transaction must be committed or aborted when this function is called.
+    void _logSlowTransaction(WithLock wl,
+                             const SingleThreadedLockStats* lockStats,
+                             TransactionState::StateFlag terminationCause);
+
+    // This method returns a string with information about a slow transaction. The format of the
+    // logging string produced should match the format used for slow operation logging. A
+    // transaction must be completed (committed or aborted) and a valid LockStats reference must be
+    // passed in order for this method to be called.
+    std::string _transactionInfoForLog(const SingleThreadedLockStats* lockStats,
+                                       TransactionState::StateFlag terminationCause);
+
     // Reports transaction stats for both active and inactive transactions using the provided
     // builder.
     void _reportTransactionStats(WithLock wl,
@@ -608,7 +641,7 @@ private:
     boost::optional<TxnResources> _txnResourceStash;
 
     // Maintains the transaction state and the transition table for legal state transitions.
-    TransitionTable _txnState;
+    TransactionState _txnState;
 
     // Holds oplog data for operations which have been applied in the current multi-document
     // transaction.  Not used for retryable writes.

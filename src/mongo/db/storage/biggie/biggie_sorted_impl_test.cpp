@@ -1,5 +1,5 @@
 /**
- *    Copyright (C) 2015 MongoDB Inc.
+ *    Copyright (C) 2018 MongoDB Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
  *    it under the terms of the GNU Affero General Public License, version 3,
@@ -26,30 +26,43 @@
  *    it in the license file.
  */
 
-#pragma once
-
-#include "mongo/db/jsobj.h"
-#include "mongo/rpc/message.h"
-#include "mongo/rpc/op_msg.h"
+#include "mongo/db/storage/biggie/biggie_sorted_impl.h"
+#include "mongo/base/init.h"
+#include "mongo/db/storage/biggie/biggie_kv_engine.h"
+#include "mongo/db/storage/biggie/biggie_recovery_unit.h"
+#include "mongo/db/storage/biggie/store.h"
+#include "mongo/db/storage/sorted_data_interface_test_harness.h"
+#include "mongo/platform/basic.h"
+#include "mongo/stdx/memory.h"
+#include "mongo/unittest/unittest.h"
 
 namespace mongo {
-namespace rpc {
+namespace biggie {
+namespace {
+class SortedDataInterfaceTestHarnessHelper final : public virtual SortedDataInterfaceHarnessHelper {
+private:
+    KVEngine _kvEngine{};
+    Ordering _order;
 
-/**
- * This captures a full OP_COMMAND message before the body and metadata are merged. It should only
- * be used for testing and implementation of opMsgRequestFromCommandRequest(). All other code should
- * just use the general OpMsgRequest.
- */
-struct ParsedOpCommand {
-    static ParsedOpCommand parse(const Message& message);
-
-    std::string database;
-    BSONObj body;
-    BSONObj metadata;
+public:
+    SortedDataInterfaceTestHarnessHelper() : _order(Ordering::make(BSONObj())) {}
+    std::unique_ptr<mongo::SortedDataInterface> newSortedDataInterface(bool unique) final {
+        return std::make_unique<SortedDataInterface>(_order, unique, "ident"_sd);
+    }
+    std::unique_ptr<mongo::RecoveryUnit> newRecoveryUnit() final {
+        //! not correct lol
+        return std::make_unique<RecoveryUnit>(&_kvEngine);
+    }
 };
 
+std::unique_ptr<HarnessHelper> makeHarnessHelper() {
+    return stdx::make_unique<SortedDataInterfaceTestHarnessHelper>();
+}
 
-OpMsgRequest opMsgRequestFromCommandRequest(const Message& message);
-
-}  // namespace rpc
+MONGO_INITIALIZER(RegisterHarnessFactory)(InitializerContext* const) {
+    mongo::registerHarnessHelperFactory(makeHarnessHelper);
+    return Status::OK();
+}
+}  // namespace
+}  // namespace biggie
 }  // namespace mongo

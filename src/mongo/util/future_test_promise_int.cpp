@@ -107,7 +107,7 @@ TEST(Promise, MoveAssignBreaksPromise) {
 }
 
 TEST(Promise, MoveAssignedPromiseIsTheSameAsTheOldOne) {
-    const int kResult= 11;
+    const int kResult = 11;
     auto pf = makePromiseFuture<int>();
     auto promise = std::move(pf.promise);
     promise.emplaceValue(kResult);

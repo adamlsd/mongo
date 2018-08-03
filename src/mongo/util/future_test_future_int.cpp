@@ -118,7 +118,8 @@ TEST(Future, Fail_getNothrowLvalue) {
 }
 
 TEST(Future, Fail_getNothrowConstLvalue) {
-    FUTURE_FAIL_TEST<int>([](const Future<int>& fut) { ASSERT_EQ(fut.getNoThrow(), failStatus()); });
+    FUTURE_FAIL_TEST<int>(
+        [](const Future<int>& fut) { ASSERT_EQ(fut.getNoThrow(), failStatus()); });
 }
 
 TEST(Future, Fail_getNothrowRvalue) {

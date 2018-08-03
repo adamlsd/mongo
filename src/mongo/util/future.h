@@ -523,7 +523,7 @@ public:
 
 
     /**
-     * Breaks this `Promise`, if not fulfilled and not in a moved-from state.
+     * Breaks this `Promise`, if not fulfilled and not in a null state.
      */
     Promise& operator=(Promise&& p) noexcept {
         breakPromiseIfNeeded();

@@ -235,13 +235,8 @@ Status NetworkInterfaceTL::startCommand(const TaskExecutor::CallbackHandle& cbHa
             });
     });
 
-    auto remainingWork = [
-        this,
-        state,
-        future = std::move(pf.future),
-        baton,
-        onFinish
-    ](StatusWith<std::shared_ptr<CommandState::ConnHandle>> swConn) mutable {
+    auto remainingWork = [ this, state, future = std::move(pf.future), baton, onFinish ](
+        StatusWith<std::shared_ptr<CommandState::ConnHandle>> swConn) mutable {
         makeReadyFutureWith([&] {
             return _onAcquireConn(
                 state, std::move(future), std::move(*uassertStatusOK(swConn)), baton);

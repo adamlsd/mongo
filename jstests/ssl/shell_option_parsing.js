@@ -24,14 +24,17 @@
     const port = mongod.port;
 
     const username = "user";
+    const usernameAdmin = "user2";
     const usernameNotTest = "userNotTest";
     const usernameX509 = "C=US,ST=New York,L=New York City,O=MongoDB,OU=KernelUser,CN=client";
 
     const password = username;
+    const passwordAdmin = usernameAdmin;
     const passwordNotTest = usernameNotTest;
 
-    mongod.getDB("test").createUser({user: username, pwd: username, roles: []});
-    mongod.getDB("notTest").createUser({user: usernameNotTest, pwd: usernameNotTest, roles: []});
+    mongod.getDB("test").createUser({user: username, pwd: password, roles: []});
+    mongod.getDB("admin").createUser({user: usernameAdmin, pwd: passwordAdmin, roles: []});
+    mongod.getDB("notTest").createUser({user: usernameNotTest, pwd: passwordNotTest, roles: []});
     mongod.getDB("$external").createUser({user: usernameX509, roles: []});
 
     var i = 0;
@@ -181,5 +184,29 @@
                 usernameX509,
                 '--authenticationMechanism',
                 'MONGODB-X509');
+
+
+
+
+    assert.soon(function() {
+        return runMongoProgram('mongo',
+                               'mongodb://${host}/?ssl=true'
+                               '--username',
+                               usernameAdmin,
+                               '--password',
+                               passwordAdmin,
+                               '--eval',
+                               'quit()') === 0;
+    }, "mongo did not initialize properly");
+
+    assert.soon(function() {
+        return runMongoProgram('mongo',
+                               'mongodb://${usernameAdmin}:${passwordAdmin}@${host}/?ssl=true'
+                               '--eval',
+                               'quit()') === 0;
+    }, "mongo did not initialize properly");
+
     rst.stopSet();
+
+
 })();

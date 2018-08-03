@@ -44,7 +44,54 @@ namespace mongo
 namespace mongo
 {
 	template< typename Function >
-	using unique_function= std::function< Function >;
+	class unique_function;
+
+	template< typename RetType, typename ... Args >
+	class unique_function< RetType ( Args... ) >
+	{
+		private:
+			struct Impl
+			{
+				virtual ~Impl()= default;
+				virtual RetType call( Args &&... )= 0;
+			};
+
+			template< typename Functor >
+			static std::unique_ptr< Impl >
+			makeImpl( Functor functor )
+			{
+				class SpecificImpl : public Impl
+				{
+					private:
+						Functor f;
+
+					public:
+						explicit SpecificImpl( Functor f ) : f( std::move( f ) ) {}
+
+						RetType call( Args &&... args ) override { return f( args... ); }
+				};
+
+				return std::make_unique< SpecificImpl >( std::move( functor ) );
+			}
+
+			std::unique_ptr< Impl > impl;
+
+		public:
+			unique_function()= default;
+
+			template< typename Functor >
+			unique_function( Functor functor )
+				: impl( makeImpl( std::move( functor ) ) ) {}
+
+			RetType
+			operator() ( Args &&... args ) const
+			{
+				if( !this->impl.get() ) throw std::bad_function_call();
+				return this->impl->call( std::forward< Args >( args )... );
+			}
+
+			explicit operator bool () const { return this->impl.get(); }
+	};
 } //namespace mongo
 
 #endif

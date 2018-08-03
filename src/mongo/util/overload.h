@@ -32,18 +32,16 @@
 
 #include "third_party/function2-3.0.0/function2.hpp"
 
-namespace mongo
-{
-	using ::fu2::overload;
-}//namespace mongo
+namespace mongo {
+using ::fu2::overload;
+}  // namespace mongo
 
 #else
 
 #include <functional>
 
-namespace mongo
-{
-	// No overload in std, at this time.
-} //namespace mongo
+namespace mongo {
+// No overload supported for MSVC, at this time.
+}  // namespace mongo
 
 #endif

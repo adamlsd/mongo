@@ -32,70 +32,62 @@
 
 #include "third_party/function2-3.0.0/function2.hpp"
 
-namespace mongo
-{
-	using ::fu2::unique_function;
-}//namespace mongo
+namespace mongo {
+using ::fu2::unique_function;
+}  // namespace mongo
 
 #else
 
 #include <functional>
 
-namespace mongo
-{
-	template< typename Function >
-	class unique_function;
+namespace mongo {
+template <typename Function>
+class unique_function;
 
-	template< typename RetType, typename ... Args >
-	class unique_function< RetType ( Args... ) >
-	{
-		private:
-			struct Impl
-			{
-				virtual ~Impl()= default;
-				virtual RetType call( Args &&... )= 0;
-			};
+template <typename RetType, typename... Args>
+class unique_function<RetType(Args...)> {
+private:
+    struct Impl {
+        virtual ~Impl() = default;
+        virtual RetType call(Args&&...) = 0;
+    };
 
-			template< typename Functor >
-			static std::unique_ptr< Impl >
-			makeImpl( Functor functor )
-			{
-				class SpecificImpl : public Impl
-				{
-					private:
-						Functor f;
+public:
+    unique_function() = default;
 
-					public:
-						explicit SpecificImpl( Functor f ) : f( std::move( f ) ) {}
+    template <typename Functor>
+    unique_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
 
-						RetType
-						call( Args &&... args ) override
-						{
-							return f( std::forward< Args >( args )... );
-						}
-				};
+    RetType operator()(Args... args) const {
+        if (!this->impl.get())
+            throw std::bad_function_call();
+        return this->impl->call(std::forward<Args>(args)...);
+    }
 
-				return std::make_unique< SpecificImpl >( std::move( functor ) );
-			}
+    explicit operator bool() const {
+        return this->impl.get();
+    }
 
-			std::unique_ptr< Impl > impl;
+private:
+    template <typename Functor>
+    static std::unique_ptr<Impl> makeImpl(Functor functor) {
+        class SpecificImpl : public Impl {
+        private:
+            Functor f;
 
-		public:
-			unique_function()= default;
+        public:
+            explicit SpecificImpl(Functor f) : f(std::move(f)) {}
 
-			template< typename Functor >
-			unique_function( Functor functor )
-				: impl( makeImpl( std::move( functor ) ) ) {}
+            RetType call(Args&&... args) override {
+                return f(std::forward<Args>(args)...);
+            }
+        };
 
-			RetType
-			operator() ( Args ... args ) const
-			{
-				if( !this->impl.get() ) throw std::bad_function_call();
-				return this->impl->call( std::forward< Args >( args )... );
-			}
+        return std::make_unique<SpecificImpl>(std::move(functor));
+    }
 
-			explicit operator bool () const { return this->impl.get(); }
-	};
-} //namespace mongo
+    std::unique_ptr<Impl> impl;
+};
+}  // namespace mongo
 
 #endif

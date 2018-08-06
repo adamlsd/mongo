@@ -832,11 +832,11 @@ HostAndPort Refresher::_refreshUntilMatches(const ReadPreferenceSetting* criteri
                 int64_t pingMicros = 0;
                 MongoURI targetURI;
 
-                if (_set->setUri.isValid()) {
-                    targetURI = _set->setUri.cloneURIForServer(ns.host);
-                } else {
+                //if (_set->setUri.isValid()) {
+                    //targetURI = _set->setUri.cloneURIForServer(ns.host);
+                //} else {
                     targetURI = MongoURI(ConnectionString(ns.host));
-                }
+                //}
 
                 // Do not do network calls while holding a mutex
                 lk.unlock();

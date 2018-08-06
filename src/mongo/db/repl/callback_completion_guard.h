@@ -34,6 +34,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/assert_util.h"
+#include "mongo/util/concurrency/with_lock.h"
 
 namespace mongo {
 namespace repl {
@@ -82,10 +83,7 @@ public:
      * Requires either a unique_lock or lock_guard to be passed in to ensure that we call
      * _cancelRemainingWork_inlock()) while we have a lock on the callers's mutex.
      */
-    void setResultAndCancelRemainingWork_inlock(const stdx::lock_guard<stdx::mutex>& lock,
-                                                const Result& result);
-    void setResultAndCancelRemainingWork_inlock(const stdx::unique_lock<stdx::mutex>& lock,
-                                                const Result& result);
+    void setResultAndCancelRemainingWork(WithLock, const Result& result);
 
 private:
     /**
@@ -93,7 +91,7 @@ private:
      * versions of setResultAndCancelRemainingWork_inlock() to set the result and cancel any
      * remaining work in the caller.
      */
-    void _setResultAndCancelRemainingWork_inlock(const Result& result);
+    void _setResultAndCancelRemainingWork(WithLock, const Result& result);
 
     // Called at most once after setting '_result'.
     const CancelRemainingWorkInLockFn _cancelRemainingWorkInLock;
@@ -122,21 +120,14 @@ CallbackCompletionGuard<Result>::~CallbackCompletionGuard() {
 }
 
 template <typename Result>
-void CallbackCompletionGuard<Result>::setResultAndCancelRemainingWork_inlock(
-    const stdx::lock_guard<stdx::mutex>& lock, const Result& result) {
-    _setResultAndCancelRemainingWork_inlock(result);
+void CallbackCompletionGuard<Result>::setResultAndCancelRemainingWork(WithLock withLock,
+                                                                      const Result& result) {
+    _setResultAndCancelRemainingWork(withLock, result);
 }
 
 template <typename Result>
-void CallbackCompletionGuard<Result>::setResultAndCancelRemainingWork_inlock(
-    const stdx::unique_lock<stdx::mutex>& lock, const Result& result) {
-    invariant(lock.owns_lock());
-    _setResultAndCancelRemainingWork_inlock(result);
-}
-
-template <typename Result>
-void CallbackCompletionGuard<Result>::_setResultAndCancelRemainingWork_inlock(
-    const Result& result) {
+void CallbackCompletionGuard<Result>::_setResultAndCancelRemainingWork(WithLock,
+                                                                       const Result& result) {
     if (_result) {
         return;
     }

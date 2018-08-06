@@ -55,7 +55,7 @@ class NetworkInterface {
 
 public:
     using Response = RemoteCommandResponse;
-    using RemoteCommandCompletionFn = stdx::function<void(const TaskExecutor::ResponseStatus&)>;
+    using RemoteCommandCompletionFn = unique_function<void(const TaskExecutor::ResponseStatus&)>;
 
     virtual ~NetworkInterface();
 
@@ -143,7 +143,7 @@ public:
      */
     virtual Status startCommand(const TaskExecutor::CallbackHandle& cbHandle,
                                 RemoteCommandRequest& request,
-                                const RemoteCommandCompletionFn& onFinish,
+                                RemoteCommandCompletionFn onFinish,
                                 const transport::BatonHandle& baton = nullptr) = 0;
 
     Future<TaskExecutor::ResponseStatus> startCommand(
@@ -155,7 +155,7 @@ public:
         auto status =
             startCommand(cbHandle,
                          request,
-                         [sp = pf.promise.share()](const TaskExecutor::ResponseStatus& rs) mutable {
+                         [sp = std::move(pf.promise)](const TaskExecutor::ResponseStatus& rs) mutable {
                              sp.emplaceValue(rs);
                          },
                          baton);
@@ -185,7 +185,7 @@ public:
      * return true. See that method for why.
      */
     virtual Status setAlarm(Date_t when,
-                            const stdx::function<void()>& action,
+                            unique_function<void()> action,
                             const transport::BatonHandle& baton = nullptr) = 0;
 
     /**

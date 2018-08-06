@@ -43,6 +43,7 @@
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/util/clock_source.h"
 #include "mongo/util/time_support.h"
+#include "mongo/util/concurrency/with_lock.h"
 
 namespace mongo {
 
@@ -109,10 +110,10 @@ public:
     virtual void signalWorkAvailable();
     virtual Date_t now();
     virtual std::string getHostName();
-    virtual Status startCommand(const TaskExecutor::CallbackHandle& cbHandle,
+    Status startCommand(const TaskExecutor::CallbackHandle& cbHandle,
                                 RemoteCommandRequest& request,
-                                const RemoteCommandCompletionFn& onFinish,
-                                const transport::BatonHandle& baton = nullptr);
+                                RemoteCommandCompletionFn onFinish,
+                                const transport::BatonHandle& baton = nullptr) override;
 
     /**
      * If the network operation is in the _unscheduled or _processing queues, moves the operation
@@ -126,9 +127,9 @@ public:
     /**
      * Not implemented.
      */
-    virtual Status setAlarm(Date_t when,
-                            const stdx::function<void()>& action,
-                            const transport::BatonHandle& baton = nullptr);
+    Status setAlarm(Date_t when,
+                            unique_function<void()> action,
+                            const transport::BatonHandle& baton = nullptr) override;
 
     virtual bool onNetworkThread();
 
@@ -303,12 +304,12 @@ private:
     /**
      * Implementation of startup behavior.
      */
-    void _startup_inlock();
+    void _startup(WithLock);
 
     /**
      * Returns information about the state of this mock for diagnostic purposes.
      */
-    std::string _getDiagnosticString_inlock() const;
+    std::string _getDiagnosticString(WithLock) const;
 
     /**
      * Logs the contents of the queues for diagnostics.
@@ -317,7 +318,7 @@ private:
     /**
      * Returns the current virtualized time.
      */
-    Date_t _now_inlock() const {
+    Date_t _getNow(WithLock) const {
         return _now;
     }
 
@@ -344,12 +345,12 @@ private:
     /**
      * Enqueues a network operation to run in order of 'consideration date'.
      */
-    void _enqueueOperation_inlock(NetworkOperation&& op);
+    void _enqueueOperation(WithLock, NetworkOperation&& op);
 
     /**
      * "Connects" to a remote host, and then enqueues the provided operation.
      */
-    void _connectThenEnqueueOperation_inlock(const HostAndPort& target, NetworkOperation&& op);
+    void _connectThenEnqueueOperation(WithLock, const HostAndPort& target, NetworkOperation&& op);
 
     /**
      * Runs all ready network operations, called while holding "lk".  May drop and

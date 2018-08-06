@@ -71,7 +71,7 @@ TEST(Future_Void, Success_getAsync) {
         [] {},
         [](Future<void>&& fut) {
             auto pf = makePromiseFuture<void>();
-            std::move(fut).getAsync([outside = pf.promise.share()](Status status) mutable {
+            std::move(fut).getAsync([outside = std::move(pf.promise)](Status status) mutable {
                 ASSERT_OK(status);
                 outside.emplaceValue();
             });
@@ -109,7 +109,7 @@ TEST(Future_Void, Fail_getNothrowRvalue) {
 TEST(Future_Void, Fail_getAsync) {
     FUTURE_FAIL_TEST<void>([](Future<void>&& fut) {
         auto pf = makePromiseFuture<void>();
-        std::move(fut).getAsync([outside = pf.promise.share()](Status status) mutable {
+        std::move(fut).getAsync([outside = std::move(pf.promise)](Status status) mutable {
             ASSERT(!status.isOK());
             outside.setError(status);
         });

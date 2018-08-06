@@ -582,14 +582,13 @@ public:
     /**
      * Get a copyable SharedPromise that can be used to complete this Promise's Future.
      *
-     * Callers are required to extract the Future before calling share() to prevent race conditions.
      * Even with a SharedPromise, callers must ensure it is only completed at most once. Copyability
      * is primarily to allow capturing lambdas to be put in std::functions which don't support
      * move-only types.
      *
      * It is safe to destroy the original Promise as soon as this call returns.
      */
-    SharedPromise<T> share() noexcept;
+    //SharedPromise<T> share() noexcept;
 
     static auto makePromiseFutureImpl() {
         struct PromiseAndFuture {
@@ -1381,11 +1380,13 @@ inline Future<T> Promise<T>::getFuture() noexcept {
     return Future<T>(boost::intrusive_ptr<SharedState<T>>(_sharedState.get(), /*add ref*/ false));
 }
 
+#if 0
 template <typename T>
 inline SharedPromise<T> Promise<T>::share() noexcept {
     invariant(_sharedState);
     return SharedPromise<T>(std::make_shared<Promise<T>>(std::move(*this)));
 }
+#endif
 
 template <typename T>
 inline void Promise<T>::setFrom(Future<T>&& future) noexcept {

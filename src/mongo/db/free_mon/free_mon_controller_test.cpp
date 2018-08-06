@@ -248,10 +248,10 @@ public:
             pf.promise.setFrom(doRegister(req));
         } else {
             auto swSchedule =
-                _threadPool->scheduleWork([ sharedPromise = pf.promise.share(), req, this ](
+                _threadPool->scheduleWork([ promise = std::move(pf.promise), req, this ](
                     const executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
 
-                    sharedPromise.setWith([&] { return doRegister(req); });
+                    promise.setWith([&] { return doRegister(req); });
                 });
 
             ASSERT_OK(swSchedule.getStatus());
@@ -295,10 +295,10 @@ public:
             pf.promise.setFrom(doMetrics(req));
         } else {
             auto swSchedule =
-                _threadPool->scheduleWork([ sharedPromise = pf.promise.share(), req, this ](
+                _threadPool->scheduleWork([ promise = std::move(pf.promise), req, this ](
                     const executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
 
-                    sharedPromise.setWith([&] { return doMetrics(req); });
+                    promise.setWith([&] { return doMetrics(req); });
                 });
 
             ASSERT_OK(swSchedule.getStatus());

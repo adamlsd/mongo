@@ -272,11 +272,11 @@ void ThreadPoolTaskExecutor::signalEvent(const EventHandle& event) {
 }
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::onEvent(const EventHandle& event,
-                                                                         const CallbackFn& work) {
+                                                                         CallbackFn work) {
     if (!event.isValid()) {
         return {ErrorCodes::BadValue, "Passed invalid event handle to onEvent"};
     }
-    auto wq = makeSingletonWorkQueue(work, nullptr);
+    auto wq = makeSingletonWorkQueue(std::move(work), nullptr);
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     auto eventState = checked_cast<EventState*>(getEventFromHandle(event));
     auto cbHandle = enqueueCallbackState_inlock(&eventState->waiters, &wq);
@@ -322,8 +322,8 @@ void ThreadPoolTaskExecutor::waitForEvent(const EventHandle& event) {
 }
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWork(
-    const CallbackFn& work) {
-    auto wq = makeSingletonWorkQueue(work, nullptr);
+    CallbackFn work) {
+    auto wq = makeSingletonWorkQueue(std::move(work), nullptr);
     WorkQueue temp;
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     auto cbHandle = enqueueCallbackState_inlock(&temp, &wq);
@@ -335,11 +335,11 @@ StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWork(
 }
 
 StatusWith<TaskExecutor::CallbackHandle> ThreadPoolTaskExecutor::scheduleWorkAt(
-    Date_t when, const CallbackFn& work) {
+    Date_t when, CallbackFn work) {
     if (when <= now()) {
-        return scheduleWork(work);
+        return scheduleWork(std::move(work));
     }
-    auto wq = makeSingletonWorkQueue(work, nullptr, when);
+    auto wq = makeSingletonWorkQueue(std::move(work), nullptr, when);
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     auto cbHandle = enqueueCallbackState_inlock(&_sleepersQueue, &wq);
     if (!cbHandle.isOK()) {

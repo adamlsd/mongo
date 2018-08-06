@@ -157,16 +157,16 @@ public:
     virtual void stop() = 0;
     virtual void drain() = 0;
 
-    using Task = stdx::function<void()>;
+    using Task = unique_function<void()>;
 
     enum ScheduleMode { kDispatch, kPost };
     virtual void schedule(ScheduleMode mode, Task task) = 0;
 
     template <typename Callback>
-    Future<FutureContinuationResult<Callback>> execute(Callback&& cb) {
+    Future<FutureContinuationResult<Callback>> execute(Callback cb) {
         auto pf = makePromiseFuture<FutureContinuationResult<Callback>>();
-        schedule(kPost, [ cb = std::forward<Callback>(cb), sp = pf.promise.share() ]() mutable {
-            sp.setWith(cb);
+        schedule(kPost, [ cb = std::move(cb), sp = std::move(pf.promise) ]() mutable {
+            sp.setWith(std::move(cb));
         });
 
         return std::move(pf.future);

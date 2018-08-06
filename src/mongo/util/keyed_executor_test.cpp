@@ -44,7 +44,7 @@ namespace {
 
 class MockExecutor : public OutOfLineExecutor {
 public:
-    void schedule(stdx::function<void()> func) override {
+    void schedule(unique_function<void()> func) override {
         _deque.push_front(std::move(func));
     }
 
@@ -85,7 +85,7 @@ public:
         _threadPool.shutdown();
     }
 
-    void schedule(stdx::function<void()> func) override {
+    void schedule(unique_function<void()> func) override {
         ASSERT_OK(_threadPool.schedule(std::move(func)));
     }
 

@@ -312,7 +312,7 @@ TEST_F(NetworkInterfaceTest, SetAlarm) {
     auto makeTimerFuture = [&] {
         auto pf = makePromiseFuture<Date_t>();
         return std::make_pair(
-            [ this, promise = pf.promise.share() ]() mutable { promise.emplaceValue(net().now()); },
+            [ this, promise = std::move(pf.promise) ]() mutable { promise.emplaceValue(net().now()); },
             std::move(pf.future));
     };
 

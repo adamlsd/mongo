@@ -70,12 +70,12 @@ void NetworkInterfaceMock::logQueues() {
 
 std::string NetworkInterfaceMock::getDiagnosticString() {
     stdx::unique_lock<stdx::mutex> lk(_mutex);
-    return _getDiagnosticString_inlock();
+    return _getDiagnosticString(lk);
 }
 
-std::string NetworkInterfaceMock::_getDiagnosticString_inlock() const {
+std::string NetworkInterfaceMock::_getDiagnosticString(WithLock withLock) const {
     return str::stream() << "NetworkInterfaceMock -- waitingToRunMask:" << _waitingToRunMask
-                         << ", now:" << _now_inlock().toString() << ", hasStarted:" << _hasStarted
+                         << ", now:" << _getNow(withLock).toString() << ", hasStarted:" << _hasStarted
                          << ", inShutdown: " << _inShutdown.load()
                          << ", processing: " << _processing.size()
                          << ", scheduled: " << _scheduled.size()
@@ -104,16 +104,16 @@ void NetworkInterfaceMock::appendConnectionStats(ConnectionPoolStats* stats) con
 
 Date_t NetworkInterfaceMock::now() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    return _now_inlock();
+    return _getNow(lk);
 }
 
 std::string NetworkInterfaceMock::getHostName() {
     return "thisisourhostname";
 }
 
-Status NetworkInterfaceMock::startCommand(const CallbackHandle& cbHandle,
+Status NetworkInterfaceMock::startCommand(const CallbackHandle &cbHandle,
                                           RemoteCommandRequest& request,
-                                          const RemoteCommandCompletionFn& onFinish,
+                                          RemoteCommandCompletionFn onFinish,
                                           const transport::BatonHandle& baton) {
     if (inShutdown()) {
         return {ErrorCodes::ShutdownInProgress, "NetworkInterfaceMock shutdown in progress"};
@@ -122,13 +122,13 @@ Status NetworkInterfaceMock::startCommand(const CallbackHandle& cbHandle,
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     const Date_t now = _now_inlock();
-    auto op = NetworkOperation(cbHandle, request, now, onFinish);
+    auto op = NetworkOperation(cbHandle, request, now, std::move(onFinish));
 
     // If we don't have a hook, or we have already 'connected' to this host, enqueue the op.
     if (!_hook || _connections.count(request.target)) {
-        _enqueueOperation_inlock(std::move(op));
+        _enqueueOperation(lk, std::move(op));
     } else {
-        _connectThenEnqueueOperation_inlock(request.target, std::move(op));
+        _connectThenEnqueueOperation(lk, request.target, std::move(op));
     }
 
     return Status::OK();
@@ -178,7 +178,7 @@ void NetworkInterfaceMock::_interruptWithResponse_inlock(
 }
 
 Status NetworkInterfaceMock::setAlarm(const Date_t when,
-                                      const stdx::function<void()>& action,
+                                      unique_function<void()> action,
                                       const transport::BatonHandle& baton) {
     if (inShutdown()) {
         return {ErrorCodes::ShutdownInProgress, "NetworkInterfaceMock shutdown in progress"};
@@ -186,12 +186,12 @@ Status NetworkInterfaceMock::setAlarm(const Date_t when,
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
 
-    if (when <= _now_inlock()) {
+    if (when <= _getNow(lk)) {
         lk.unlock();
         action();
         return Status::OK();
     }
-    _alarms.emplace(when, action);
+    _alarms.emplace(when, std::move(action));
 
     return Status::OK();
 }
@@ -202,10 +202,10 @@ bool NetworkInterfaceMock::onNetworkThread() {
 
 void NetworkInterfaceMock::startup() {
     stdx::lock_guard<stdx::mutex> lk(_mutex);
-    _startup_inlock();
+    _startup(lk);
 }
 
-void NetworkInterfaceMock::_startup_inlock() {
+void NetworkInterfaceMock::_startup(WithLock) {
     invariant(!_hasStarted);
     _hasStarted = true;
     _inShutdown.store(false);
@@ -218,7 +218,7 @@ void NetworkInterfaceMock::shutdown() {
 
     stdx::unique_lock<stdx::mutex> lk(_mutex);
     if (!_hasStarted) {
-        _startup_inlock();
+        _startup(lk);
     }
     _inShutdown.store(true);
     NetworkOperationList todo;
@@ -635,14 +635,14 @@ NetworkInterfaceMock::NetworkOperation::NetworkOperation()
 NetworkInterfaceMock::NetworkOperation::NetworkOperation(const CallbackHandle& cbHandle,
                                                          const RemoteCommandRequest& theRequest,
                                                          Date_t theRequestDate,
-                                                         const RemoteCommandCompletionFn& onFinish)
+                                                         RemoteCommandCompletionFn onFinish)
     : _requestDate(theRequestDate),
       _nextConsiderationDate(theRequestDate),
       _responseDate(),
       _cbHandle(cbHandle),
       _request(theRequest),
       _response(kUnsetResponse),
-      _onFinish(onFinish) {}
+      _onFinish(std::move(onFinish)) {}
 
 NetworkInterfaceMock::NetworkOperation::~NetworkOperation() {}
 

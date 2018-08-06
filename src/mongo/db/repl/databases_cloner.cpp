@@ -225,9 +225,9 @@ Status DatabasesCloner::startup() noexcept {
     return Status::OK();
 }
 
-void DatabasesCloner::setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& work) {
+void DatabasesCloner::setScheduleDbWorkFn_forTest(CollectionCloner::ScheduleDbWorkFn work) {
     LockGuard lk(_mutex);
-    _scheduleDbWorkFn = work;
+    _scheduleDbWorkFn = std::move(work);
 }
 
 StatusWith<std::vector<BSONElement>> DatabasesCloner::parseListDatabasesResponse_forTest(

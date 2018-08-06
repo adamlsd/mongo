@@ -188,6 +188,7 @@
 
 
 
+/*
     assert.soon(function() {
         return runMongoProgram('mongo',
                                'mongodb://${host}/?ssl=true',
@@ -205,6 +206,7 @@
                                '--eval',
                                'quit()') === 0;
     }, "mongo did not initialize properly");
+*/
 
     rst.stopSet();
 

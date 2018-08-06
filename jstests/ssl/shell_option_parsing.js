@@ -190,7 +190,7 @@
 
     assert.soon(function() {
         return runMongoProgram('mongo',
-                               'mongodb://${host}/?ssl=true'
+                               'mongodb://${host}/?ssl=true',
                                '--username',
                                usernameAdmin,
                                '--password',
@@ -201,7 +201,7 @@
 
     assert.soon(function() {
         return runMongoProgram('mongo',
-                               'mongodb://${usernameAdmin}:${passwordAdmin}@${host}/?ssl=true'
+                               'mongodb://${usernameAdmin}:${passwordAdmin}@${host}/?ssl=true',
                                '--eval',
                                'quit()') === 0;
     }, "mongo did not initialize properly");

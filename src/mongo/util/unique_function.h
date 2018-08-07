@@ -28,12 +28,51 @@
 
 #pragma once
 
+#include <memory>
+
 #ifndef _MSC_VER
 
 #include "third_party/function2-3.0.0/function2.hpp"
 
 namespace mongo {
 using ::fu2::unique_function;
+
+template< typename Function >
+class shared_function;
+
+template< typename RetType, typename ... Args >
+class shared_function< RetType( Args... ) >
+{
+	private:
+		std::shared_ptr< unique_function< RetType( Args... ) > > impl;
+
+	public:
+		shared_function() = default;
+
+		template< typename Functor >
+		shared_function( Functor functor )
+				: impl( std::make_unique< unique_function< RetType( Args... ) > >(
+						std::move( functor ) ) )
+		{}
+
+
+		template< typename Functor>
+		shared_function( unique_function< RetType( Args... ) > functor )
+				: impl( std::make_unique< unique_function< RetType( Args... ) > >(
+						std::move( functor ) ) )
+		{}
+
+		RetType
+		operator()( Args... args ) const
+		{
+			if( !this->impl.get() ) throw std::bad_function_call();
+			return ( *this->impl )( std::forward< Args >( args )... );
+		}
+
+		explicit operator bool() const { return this->impl.get(); }
+};
+
+
 }  // namespace mongo
 
 #else
@@ -44,6 +83,9 @@ namespace mongo {
 template <typename Function>
 class unique_function;
 
+template< typename Function >
+class shared_function;
+
 template <typename RetType, typename... Args>
 class unique_function<RetType(Args...)> {
 private:
@@ -51,6 +93,8 @@ private:
         virtual ~Impl() = default;
         virtual RetType call(Args&&...) = 0;
     };
+
+	template< typename F > friend class shared_function< F >;
 
 public:
     unique_function() = default;
@@ -88,6 +132,47 @@ private:
 
     std::unique_ptr<Impl> impl;
 };
-}  // namespace mongo
 
+template< typename Function >
+class shared_function;
+
+template< typename RetType, typename ... Args >
+class shared_function< RetType( Args... ) >
+{
+	private:
+		using Impl= typename unique_function< RetType( Args... ) >::Impl;
+		std::shared_ptr< Impl > impl;
+
+	public:
+		shared_function() = default;
+
+		template< typename Functor >
+		shared_function( Functor functor )
+				: impl( unique_function< RetType( Args... ) >( std::move( functor ) ) ) {}
+
+		template< typename Functor >
+		shared_function( unique_function< Functor > functor )
+				: impl( std::move( functor.impl ) ) {}
+
+		RetType
+		operator()( Args... args ) const
+		{
+			if( !this->impl.get() ) throw std::bad_function_call();
+			return this->impl->call(std::forward<Args>(args)...);
+		}
+
+		explicit operator bool() const { return this->impl.get(); }
+};
+
+}//namespace mongo
 #endif
+
+namespace mongo
+{
+	template< typename RetVal, typename ... Args >
+	auto
+	wrapFunction( unique_function< RetVal( Args... ) > function )
+	{
+		return shared_function< RetVal( Args... ) >( std::move( function ) );
+	}
+} //namespace mongo

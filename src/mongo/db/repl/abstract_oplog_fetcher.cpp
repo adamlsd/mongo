@@ -145,7 +145,7 @@ void AbstractOplogFetcher::_makeAndScheduleFetcherCallback(
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
         _fetcher = _makeFetcher(findCommandObj, metadataObj, _getInitialFindMaxTime());
-        scheduleStatus = _scheduleFetcher_inlock();
+        scheduleStatus = _scheduleFetcher(lock);
     }
     if (!scheduleStatus.isOK()) {
         _finishCallback(scheduleStatus);
@@ -153,8 +153,8 @@ void AbstractOplogFetcher::_makeAndScheduleFetcherCallback(
     }
 }
 
-Status AbstractOplogFetcher::_doStartup_inlock() noexcept {
-    return _scheduleWorkAndSaveHandle_inlock(
+Status AbstractOplogFetcher::_doStartup(WithLock withLock) noexcept {
+    return _scheduleWorkAndSaveHandle(withLock,
         [this](const executor::TaskExecutor::CallbackArgs& args) {
             _makeAndScheduleFetcherCallback(args);
         },
@@ -162,8 +162,8 @@ Status AbstractOplogFetcher::_doStartup_inlock() noexcept {
         "_makeAndScheduleFetcherCallback");
 }
 
-void AbstractOplogFetcher::_doShutdown_inlock() noexcept {
-    _cancelHandle_inlock(_makeAndScheduleFetcherHandle);
+void AbstractOplogFetcher::_doShutdown(WithLock withLock) noexcept {
+    _cancelHandle(withLock, _makeAndScheduleFetcherHandle);
     if (_fetcher) {
         _fetcher->shutdown();
     }
@@ -173,7 +173,7 @@ stdx::mutex* AbstractOplogFetcher::_getMutex() noexcept {
     return &_mutex;
 }
 
-Status AbstractOplogFetcher::_scheduleFetcher_inlock() {
+Status AbstractOplogFetcher::_scheduleFetcher(WithLock) {
     readersCreatedStats.increment();
     return _fetcher->schedule();
 }
@@ -241,7 +241,7 @@ void AbstractOplogFetcher::_callback(const Fetcher::QueryResponseStatus& result,
                 // retry 'find' timeout.
                 _fetcher = _makeFetcher(findCommandObj, metadataObj, _getRetriedFindMaxTime());
 
-                auto scheduleStatus = _scheduleFetcher_inlock();
+                auto scheduleStatus = _scheduleFetcher(lock);
                 if (scheduleStatus.isOK()) {
                     log() << "Scheduled new oplog query " << _fetcher->toString();
                     return;
@@ -257,7 +257,7 @@ void AbstractOplogFetcher::_callback(const Fetcher::QueryResponseStatus& result,
     // Reset fetcher restart counter on successful response.
     {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
-        invariant(_isActive_inlock());
+        invariant(_isActive(lock));
         _fetcherRestarts = 0;
     }
 
@@ -324,7 +324,7 @@ void AbstractOplogFetcher::_finishCallback(Status status) {
 
     decltype(_onShutdownCallbackFn) onShutdownCallbackFn;
     stdx::lock_guard<stdx::mutex> lock(_mutex);
-    _transitionToComplete_inlock();
+    _transitionToComplete(lock);
 
     // Release any resources that might be held by the '_onShutdownCallbackFn' function object.
     // The function object will be destroyed outside the lock since the temporary variable

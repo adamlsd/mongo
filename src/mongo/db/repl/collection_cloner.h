@@ -91,7 +91,7 @@ public:
      * Used for testing only.
      */
     using ScheduleDbWorkFn = unique_function<StatusWith<executor::TaskExecutor::CallbackHandle>(
-        const executor::TaskExecutor::CallbackFn&)>;
+        executor::TaskExecutor::CallbackFn)>;
 
     /**
      * Creates CollectionCloner task in inactive state. Use start() to activate cloner.

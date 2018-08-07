@@ -42,8 +42,8 @@
 #include "mongo/stdx/unordered_map.h"
 #include "mongo/stdx/unordered_set.h"
 #include "mongo/util/clock_source.h"
-#include "mongo/util/time_support.h"
 #include "mongo/util/concurrency/with_lock.h"
+#include "mongo/util/time_support.h"
 
 namespace mongo {
 
@@ -111,9 +111,9 @@ public:
     virtual Date_t now();
     virtual std::string getHostName();
     Status startCommand(const TaskExecutor::CallbackHandle& cbHandle,
-                                RemoteCommandRequest& request,
-                                RemoteCommandCompletionFn onFinish,
-                                const transport::BatonHandle& baton = nullptr) override;
+                        RemoteCommandRequest& request,
+                        RemoteCommandCompletionFn onFinish,
+                        const transport::BatonHandle& baton = nullptr) override;
 
     /**
      * If the network operation is in the _unscheduled or _processing queues, moves the operation
@@ -128,8 +128,8 @@ public:
      * Not implemented.
      */
     Status setAlarm(Date_t when,
-                            unique_function<void()> action,
-                            const transport::BatonHandle& baton = nullptr) override;
+                    unique_function<void()> action,
+                    const transport::BatonHandle& baton = nullptr) override;
 
     virtual bool onNetworkThread();
 
@@ -274,9 +274,10 @@ public:
      * This represents interrupting the regular flow with, for example, a NetworkTimeout or
      * CallbackCanceled error.
      */
-    void _interruptWithResponse_inlock(const TaskExecutor::CallbackHandle& cbHandle,
-                                       const std::vector<NetworkOperationList*> queuesToCheck,
-                                       const ResponseStatus& response);
+    void _interruptWithResponse(WithLock,
+                                const TaskExecutor::CallbackHandle& cbHandle,
+                                const std::vector<NetworkOperationList*> queuesToCheck,
+                                const ResponseStatus& response);
 
 private:
     /**
@@ -325,22 +326,22 @@ private:
     /**
      * Implementation of waitForWork*.
      */
-    void _waitForWork_inlock(stdx::unique_lock<stdx::mutex>* lk);
+    void _waitForWork(stdx::unique_lock<stdx::mutex> &lk);
 
     /**
      * Returns true if there are ready requests for the network thread to service.
      */
-    bool _hasReadyRequests_inlock();
+    bool _hasReadyRequests(WithLock);
 
     /**
      * Returns true if the network thread could run right now.
      */
-    bool _isNetworkThreadRunnable_inlock();
+    bool _isNetworkThreadRunnable(WithLock);
 
     /**
      * Returns true if the executor thread could run right now.
      */
-    bool _isExecutorThreadRunnable_inlock();
+    bool _isExecutorThreadRunnable(WithLock);
 
     /**
      * Enqueues a network operation to run in order of 'consideration date'.
@@ -357,7 +358,7 @@ private:
      * reaquire "lk" several times, but will not return until the executor has blocked
      * in waitFor*.
      */
-    void _runReadyNetworkOperations_inlock(stdx::unique_lock<stdx::mutex>* lk);
+    void _runReadyNetworkOperations(stdx::unique_lock<stdx::mutex>& lk);
 
     // Mutex that synchronizes access to mutable data in this class and its subclasses.
     // Fields guarded by the mutex are labled (M), below, and those that are read-only
@@ -434,7 +435,7 @@ public:
     NetworkOperation(const TaskExecutor::CallbackHandle& cbHandle,
                      const RemoteCommandRequest& theRequest,
                      Date_t theRequestDate,
-                     const RemoteCommandCompletionFn& onFinish);
+                     RemoteCommandCompletionFn onFinish);
     ~NetworkOperation();
 
     /**

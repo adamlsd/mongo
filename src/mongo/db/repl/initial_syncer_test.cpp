@@ -398,8 +398,8 @@ protected:
                     _onCompletion(lastApplied);
                 });
             _initialSyncer->setScheduleDbWorkFn_forTest(
-                [this](const executor::TaskExecutor::CallbackFn& work) {
-                    return getExecutor().scheduleWork(work);
+                [this](executor::TaskExecutor::CallbackFn work) {
+                    return getExecutor().scheduleWork(std::move(work));
                 });
 
         } catch (...) {

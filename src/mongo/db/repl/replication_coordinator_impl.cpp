@@ -3402,13 +3402,14 @@ void ReplicationCoordinatorImpl::waitForElectionDryRunFinish_forTest() {
     }
 }
 
-CallbackHandle ReplicationCoordinatorImpl::_scheduleWorkAt(Date_t when, const CallbackFn& work) {
-    auto cbh = _replExecutor->scheduleWorkAt(when, [work](const CallbackArgs& args) {
-        if (args.status == ErrorCodes::CallbackCanceled) {
-            return;
-        }
-        work(args);
-    });
+CallbackHandle ReplicationCoordinatorImpl::_scheduleWorkAt(Date_t when, CallbackFn work) {
+    auto cbh = _replExecutor->scheduleWorkAt(
+        when, [work = std::move(work)](const CallbackArgs& args) mutable {
+            if (args.status == ErrorCodes::CallbackCanceled) {
+                return;
+            }
+            work(args);
+        });
     if (cbh == ErrorCodes::ShutdownInProgress) {
         return {};
     }

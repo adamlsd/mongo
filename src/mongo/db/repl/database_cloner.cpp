@@ -248,7 +248,7 @@ void DatabaseCloner::join() {
     _condition.wait(lk, [this]() { return !_isActive_inlock(); });
 }
 
-void DatabaseCloner::setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& work) {
+void DatabaseCloner::setScheduleDbWorkFn_forTest(CollectionCloner::ScheduleDbWorkFn work) {
     LockGuard lk(_mutex);
 
     _scheduleDbWorkFn = work;

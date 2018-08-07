@@ -217,7 +217,7 @@ public:
      *
      * For testing only.
      */
-    void setScheduleDbWorkFn_forTest(const CollectionCloner::ScheduleDbWorkFn& scheduleDbWorkFn);
+    void setScheduleDbWorkFn_forTest(CollectionCloner::ScheduleDbWorkFn scheduleDbWorkFn);
 
     // State transitions:
     // PreStart --> Running --> ShuttingDown --> Complete

@@ -36,6 +36,7 @@
 #include "mongo/db/repl/optime_with.h"
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
+#include "mongo/util/concurrency/with_lock.h"
 
 namespace mongo {
 namespace repl {
@@ -148,12 +149,12 @@ protected:
     /**
      * Initializes and schedules a Fetcher with a `find` command specified by the subclass.
      */
-    virtual Status _doStartup_inlock() noexcept override;
+    virtual Status _doStartup(WithLock) noexcept override;
 
     /**
      * Shuts down the Fetcher.
      */
-    virtual void _doShutdown_inlock() noexcept override;
+    virtual void _doShutdown(WithLock) noexcept override;
 
 private:
     stdx::mutex* _getMutex() noexcept override;
@@ -196,7 +197,7 @@ private:
     /**
      * Schedules fetcher and updates counters.
      */
-    Status _scheduleFetcher_inlock();
+    Status _scheduleFetcher(WithLock);
 
     /**
      * Processes each batch of results from the cursor started by the Fetcher on the sync source.

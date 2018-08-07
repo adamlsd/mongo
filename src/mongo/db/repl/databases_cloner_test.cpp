@@ -296,7 +296,7 @@ protected:
                                    result = status;
                                    cvDone.notify_all();
                                }};
-        cloner.setScheduleDbWorkFn_forTest([this](executor::TaskExecutor::CallbackFn work) {
+        cloner.setScheduleDbWorkFn_forTest([&](executor::TaskExecutor::CallbackFn work) mutable {
             return getExecutor().scheduleWork(std::move(work));
         });
 

@@ -91,8 +91,8 @@ public:
     void shutdownComponent_forTest(const std::unique_ptr<MockAsyncComponent>& component);
 
 private:
-    Status _doStartup_inlock() noexcept override;
-    void _doShutdown_inlock() noexcept override;
+    Status _doStartup(WithLock) noexcept override;
+    void _doShutdown(WithLock) noexcept override;
     stdx::mutex* _getMutex() noexcept override;
 
     // Used by AbstractAsyncComponent to guard start changes.

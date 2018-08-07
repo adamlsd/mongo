@@ -496,12 +496,13 @@ TEST_F(CollectionClonerTest,
     // status.
     auto exec = &getExecutor();
     collectionCloner->setScheduleDbWorkFn_forTest([exec](
-        const executor::TaskExecutor::CallbackFn& workFn) {
-        auto wrappedTask = [workFn](const executor::TaskExecutor::CallbackArgs& cbd) {
+        executor::TaskExecutor::CallbackFn workFn) mutable {
+        auto wrappedTask = [workFn = std::move(workFn)](
+            const executor::TaskExecutor::CallbackArgs& cbd) mutable {
             workFn(executor::TaskExecutor::CallbackArgs(
                 cbd.executor, cbd.myHandle, Status(ErrorCodes::CallbackCanceled, ""), cbd.opCtx));
         };
-        return exec->scheduleWork(wrappedTask);
+        return exec->scheduleWork(std::move(wrappedTask));
     });
 
     bool collectionCreated = false;
@@ -551,13 +552,13 @@ TEST_F(CollectionClonerTest, BeginCollectionCallbackCanceled) {
     // Replace scheduleDbWork function so that the callback runs with a cancelled status.
     auto&& executor = getExecutor();
     collectionCloner->setScheduleDbWorkFn_forTest(
-        [&](const executor::TaskExecutor::CallbackFn& workFn) {
+        [&](const executor::TaskExecutor::CallbackFn& workFn) mutable {
             executor::TaskExecutor::CallbackHandle handle(std::make_shared<MockCallbackState>());
             mongo::executor::TaskExecutor::CallbackArgs args{
                 &executor,
                 handle,
                 {ErrorCodes::CallbackCanceled, "Never run, but treat like cancelled."}};
-            workFn(args);
+            workFn(std::move(args));
             return StatusWith<executor::TaskExecutor::CallbackHandle>(handle);
         });
 

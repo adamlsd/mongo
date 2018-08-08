@@ -171,7 +171,7 @@ namespace mongo
 {
 	template< typename RetVal, typename ... Args >
 	auto
-	wrapFunction( unique_function< RetVal( Args... ) > function )
+	shareFunction( unique_function< RetVal( Args... ) > function )
 	{
 		return shared_function< RetVal( Args... ) >( std::move( function ) );
 	}

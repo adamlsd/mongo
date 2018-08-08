@@ -552,7 +552,7 @@ TEST_F(CollectionClonerTest, BeginCollectionCallbackCanceled) {
     // Replace scheduleDbWork function so that the callback runs with a cancelled status.
     auto&& executor = getExecutor();
     collectionCloner->setScheduleDbWorkFn_forTest(
-        [&](const executor::TaskExecutor::CallbackFn& workFn) mutable {
+        [&](executor::TaskExecutor::CallbackFn workFn) mutable {
             executor::TaskExecutor::CallbackHandle handle(std::make_shared<MockCallbackState>());
             mongo::executor::TaskExecutor::CallbackArgs args{
                 &executor,
@@ -865,7 +865,7 @@ TEST_F(CollectionClonerTest, InsertDocumentsCallbackCanceled) {
     // Replace scheduleDbWork function so that the callback runs with a cancelled status.
     auto&& executor = getExecutor();
     collectionCloner->setScheduleDbWorkFn_forTest(
-        [&](const executor::TaskExecutor::CallbackFn& workFn) {
+        [&](executor::TaskExecutor::CallbackFn workFn) {
             executor::TaskExecutor::CallbackHandle handle(std::make_shared<MockCallbackState>());
             mongo::executor::TaskExecutor::CallbackArgs args{
                 &executor,

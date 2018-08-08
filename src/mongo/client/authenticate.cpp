@@ -144,7 +144,7 @@ void authX509(RunCommandHook runCommand,
     if (!authRequest.isOK())
         return handler(std::move(authRequest.getStatus()));
 
-    runCommand(authRequest.getValue(), handler);
+    runCommand(authRequest.getValue(), std::move(handler));
 }
 
 //
@@ -162,19 +162,6 @@ void auth(RunCommandHook runCommand,
           StringData clientName,
           AuthCompletionHandler handler) {
     std::string mechanism;
-    auto authCompletionHandler = [handler](AuthResponse response) {
-        if (isFailedAuthOk(response)) {
-            // If auth failed in transitionToAuth, just pretend it succeeded.
-            log() << "Failed to authenticate in transitionToAuth, falling back to no "
-                     "authentication.";
-
-            // We need to mock a successful AuthResponse.
-            return handler(AuthResponse(RemoteCommandResponse(BSON("ok" << 1), Milliseconds(0))));
-        }
-
-        // otherwise, call handler
-        return handler(std::move(response));
-    };
     auto response = bsonExtractStringField(params, saslCommandMechanismFieldName, &mechanism);
     if (!response.isOK())
         return handler(std::move(response));
@@ -184,16 +171,34 @@ void auth(RunCommandHook runCommand,
                         "You cannot specify both 'db' and 'userSource'. Please use only 'db'."});
     }
 
+
+    auto makeAuthCompletionHandler = [&handler] {
+        return [handler = std::move(handler)](AuthResponse response) mutable {
+            if (isFailedAuthOk(response)) {
+                // If auth failed in transitionToAuth, just pretend it succeeded.
+                log() << "Failed to authenticate in transitionToAuth, falling back to no "
+                         "authentication.";
+
+                // We need to mock a successful AuthResponse.
+                return handler(
+                    AuthResponse(RemoteCommandResponse(BSON("ok" << 1), Milliseconds(0))));
+            }
+
+            // otherwise, call handler
+            return handler(std::move(response));
+        };
+    };
+
     if (mechanism == kMechanismMongoCR)
-        return authMongoCR(runCommand, params, authCompletionHandler);
+        return authMongoCR(runCommand, params, makeAuthCompletionHandler());
 
 #ifdef MONGO_CONFIG_SSL
     else if (mechanism == kMechanismMongoX509)
-        return authX509(runCommand, params, clientName, authCompletionHandler);
+        return authX509(runCommand, params, clientName, makeAuthCompletionHandler());
 #endif
 
     else if (saslClientAuthenticate != nullptr)
-        return saslClientAuthenticate(runCommand, hostname, params, authCompletionHandler);
+        return saslClientAuthenticate(runCommand, hostname, params, makeAuthCompletionHandler());
 
     return handler({ErrorCodes::AuthenticationFailed,
                     mechanism + " mechanism support not compiled into client library."});

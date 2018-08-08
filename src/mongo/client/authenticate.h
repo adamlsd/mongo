@@ -28,12 +28,13 @@
 #pragma once
 
 #include <string>
+#include <functional>
 
 #include "mongo/base/status_with.h"
 #include "mongo/base/string_data.h"
 #include "mongo/executor/remote_command_request.h"
 #include "mongo/executor/remote_command_response.h"
-#include "mongo/stdx/functional.h"
+#include "mongo/util/functional.h"
 #include "mongo/util/md5.h"
 
 namespace mongo {
@@ -43,14 +44,14 @@ class BSONObj;
 namespace auth {
 
 using AuthResponse = executor::RemoteCommandResponse;
-using AuthCompletionHandler = stdx::function<void(AuthResponse)>;
+using AuthCompletionHandler = unique_function<void(AuthResponse)>;
 using RunCommandResultHandler = AuthCompletionHandler;
 using RunCommandHook =
-    stdx::function<void(executor::RemoteCommandRequest, RunCommandResultHandler)>;
+    std::function<void(executor::RemoteCommandRequest, RunCommandResultHandler)>;
 
 /* Hook for legacy MONGODB-CR support provided by shell client only */
 using AuthMongoCRHandler =
-    stdx::function<void(RunCommandHook, const BSONObj&, AuthCompletionHandler)>;
+    std::function<void(RunCommandHook, const BSONObj&, AuthCompletionHandler)>;
 extern AuthMongoCRHandler authMongoCR;
 
 /**

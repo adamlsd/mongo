@@ -122,25 +122,26 @@ void authMongoCRImpl(RunCommandHook runCommand,
     if (!nonceRequest.isOK())
         return handler(std::move(nonceRequest.getStatus()));
 
-    runCommand(nonceRequest.getValue(), [runCommand, params, handler](AuthResponse response) {
-        if (!response.isOK())
-            return handler(std::move(response));
+    runCommand(nonceRequest.getValue(),
+               [ runCommand, params, handler = std::move(handler) ](AuthResponse response) mutable {
+                   if (!response.isOK())
+                       return handler(std::move(response));
 
-        try {
-            // Ensure response was valid
-            std::string nonce;
-            BSONObj nonceResponse = response.data;
-            auto valid = bsonExtractStringField(nonceResponse, "nonce", &nonce);
-            if (!valid.isOK())
-                return handler({ErrorCodes::AuthenticationFailed,
-                                "Invalid nonce response: " + nonceResponse.toString()});
+                   try {
+                       // Ensure response was valid
+                       std::string nonce;
+                       BSONObj nonceResponse = response.data;
+                       auto valid = bsonExtractStringField(nonceResponse, "nonce", &nonce);
+                       if (!valid.isOK())
+                           return handler({ErrorCodes::AuthenticationFailed,
+                                           "Invalid nonce response: " + nonceResponse.toString()});
 
-            // Step 2: send authenticate command, receive response
-            runCommand(createMongoCRAuthenticateCmd(params, nonce), handler);
-        } catch (const DBException& e) {
-            return handler(e.toStatus());
-        }
-    });
+                       // Step 2: send authenticate command, receive response
+                       runCommand(createMongoCRAuthenticateCmd(params, nonce), std::move(handler));
+                   } catch (const DBException& e) {
+                       return handler(e.toStatus());
+                   }
+               });
 }
 
 MONGO_INITIALIZER(RegisterAuthMongoCR)(InitializerContext* context) {

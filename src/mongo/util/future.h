@@ -1344,6 +1344,14 @@ inline auto makePromiseFuture() {
     return Promise<T>::makePromiseFutureImpl();
 }
 
+template< typename T >
+inline auto
+makePairOfPromiseAndFuture()
+{
+	auto tmp= makePromiseFuture< T >();
+	return std::make_tuple( std::move( tmp.promise ), std::move( tmp.future ) );
+}
+
 /**
  * This metafunction allows APIs that take callbacks and return Future to avoid doing their own type
  * calculus. This results in the base value_type that would result from passing Func to a

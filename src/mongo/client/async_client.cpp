@@ -141,7 +141,7 @@ Future<void> AsyncDBClient::authenticate(const BSONObj& params) {
 #endif
 
     auto pf = makePromiseFuture<void>();
-    auto authCompleteCb = [promise = pf.promise.share()](auth::AuthResponse response) mutable {
+    auto authCompleteCb = [promise = std::move(pf.promise)](auth::AuthResponse response) mutable {
         if (response.isOK()) {
             promise.emplaceValue();
         } else {
@@ -153,7 +153,7 @@ Future<void> AsyncDBClient::authenticate(const BSONObj& params) {
                            auth::AuthCompletionHandler handler) {
 
         runCommandRequest(request).getAsync([handler = std::move(handler)](
-            StatusWith<executor::RemoteCommandResponse> response) {
+            StatusWith<executor::RemoteCommandResponse> response) mutable {
             if (!response.isOK()) {
                 handler(executor::RemoteCommandResponse(response.getStatus()));
             } else {

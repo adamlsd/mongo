@@ -46,7 +46,7 @@ Future<DataBuilder> HttpClient::postAsync(executor::ThreadPoolTaskExecutor* exec
     std::string urlString(url.toString());
 
     auto status = executor->scheduleWork([
-        shared_promise = pf.promise.share(),
+        promise = std::move(pf.promise),
         urlString = std::move(urlString),
         data = std::move(data),
         this
@@ -54,9 +54,9 @@ Future<DataBuilder> HttpClient::postAsync(executor::ThreadPoolTaskExecutor* exec
         ConstDataRange cdr(reinterpret_cast<char*>(data->data()), data->size());
         try {
             auto result = this->post(urlString, cdr);
-            shared_promise.emplaceValue(std::move(result));
+            promise.emplaceValue(std::move(result));
         } catch (...) {
-            shared_promise.setError(exceptionToStatus());
+            promise.setError(exceptionToStatus());
         }
     });
 
@@ -69,13 +69,13 @@ Future<DataBuilder> HttpClient::getAsync(executor::ThreadPoolTaskExecutor* execu
     auto pf = makePromiseFuture<DataBuilder>();
     std::string urlString(url.toString());
 
-    auto status = executor->scheduleWork([ shared_promise = pf.promise.share(), urlString, this ](
+    auto status = executor->scheduleWork([ promise = std::move(pf.promise), urlString, this ](
         const executor::TaskExecutor::CallbackArgs& cbArgs) mutable {
         try {
             auto result = this->get(urlString);
-            shared_promise.emplaceValue(std::move(result));
+            promise.emplaceValue(std::move(result));
         } catch (...) {
-            shared_promise.setError(exceptionToStatus());
+            promise.setError(exceptionToStatus());
         }
     });
 

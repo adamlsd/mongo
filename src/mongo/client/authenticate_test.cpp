@@ -65,7 +65,7 @@ public:
           _responses() {
         _runCommandCallback = [this](RemoteCommandRequest request,
                                      RunCommandResultHandler handler) {
-            runCommand(std::move(request), handler);
+            runCommand(std::move(request), std::move(handler));
         };
 
         // create our digest

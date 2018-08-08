@@ -148,9 +148,9 @@ CollectionCloner::CollectionCloner(executor::TaskExecutor* executor,
       _indexSpecs(),
       _documentsToInsert(),
       _dbWorkTaskRunner(_dbWorkThreadPool),
-      _scheduleDbWorkFn([this](const executor::TaskExecutor::CallbackFn& work) {
-          auto task = [ this, work ](OperationContext * opCtx,
-                                     const Status& status) noexcept->TaskRunner::NextAction {
+      _scheduleDbWorkFn([this](executor::TaskExecutor::CallbackFn work) {
+          auto task = [ this, work= std::move(work) ](OperationContext * opCtx,
+                                     const Status& status) mutable noexcept->TaskRunner::NextAction {
               try {
                   work(executor::TaskExecutor::CallbackArgs(nullptr, {}, status, opCtx));
               } catch (...) {
@@ -188,10 +188,10 @@ const NamespaceString& CollectionCloner::getSourceNamespace() const {
 
 bool CollectionCloner::isActive() const {
     LockGuard lk(_mutex);
-    return _isActive_inlock();
+    return _isActive(lk);
 }
 
-bool CollectionCloner::_isActive_inlock() const {
+bool CollectionCloner::_isActive(WithLock) const {
     return State::kRunning == _state || State::kShuttingDown == _state;
 }
 
@@ -241,10 +241,10 @@ void CollectionCloner::shutdown() {
             // Nothing to do if we are already in ShuttingDown or Complete state.
             return;
     }
-    _cancelRemainingWork_inlock();
+    _cancelRemainingWork(lock);
 }
 
-void CollectionCloner::_cancelRemainingWork_inlock() {
+void CollectionCloner::_cancelRemainingWork(WithLock) {
     if (_arm) {
         // This method can be called from a callback from either a TaskExecutor or a TaskRunner. The
         // TaskExecutor should never have an OperationContext attached to the Client, and the
@@ -279,7 +279,7 @@ void CollectionCloner::join() {
     if (_killArmHandle) {
         _executor->waitForEvent(_killArmHandle);
     }
-    _condition.wait(lk, [this]() { return !_isActive_inlock(); });
+    _condition.wait(lk, [this, &lk]() { return !_isActive(lk); });
 }
 
 void CollectionCloner::waitForDbWorker() {
@@ -585,7 +585,7 @@ void CollectionCloner::_establishCollectionCursorsCallback(const RemoteCommandCa
     opCtx.reset();
 
     // This completion guard invokes _finishCallback on destruction.
-    auto cancelRemainingWorkInLock = [this]() { _cancelRemainingWork_inlock(); };
+    auto cancelRemainingWorkInLock = [this]() { _cancelRemainingWork(WithLock::withoutLock()); };
     auto finishCallbackFn = [this](const Status& status) { _finishCallback(status); };
     auto onCompletionGuard =
         std::make_shared<OnCompletionGuard>(cancelRemainingWorkInLock, finishCallbackFn);
@@ -596,7 +596,7 @@ void CollectionCloner::_establishCollectionCursorsCallback(const RemoteCommandCa
     stdx::lock_guard<stdx::mutex> lock(_mutex);
     Status scheduleStatus = _scheduleNextARMResultsCallback(onCompletionGuard);
     if (!scheduleStatus.isOK()) {
-        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, scheduleStatus);
+        onCompletionGuard->setResultAndCancelRemainingWork(lock, scheduleStatus);
         return;
     }
 }
@@ -649,7 +649,7 @@ void CollectionCloner::_handleARMResultsCallback(
     auto setResultAndCancelRemainingWork = [this](std::shared_ptr<OnCompletionGuard> guard,
                                                   Status status) {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
-        guard->setResultAndCancelRemainingWork_inlock(lock, status);
+        guard->setResultAndCancelRemainingWork(lock, status);
         return;
     };
 
@@ -677,7 +677,7 @@ void CollectionCloner::_handleARMResultsCallback(
                 // collection with the same name created in the interim.
                 _verifyCollectionWasDropped(lk, nextBatchStatus, onCompletionGuard, cbd.opCtx);
             } else {
-                onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, nextBatchStatus);
+                onCompletionGuard->setResultAndCancelRemainingWork(lk, nextBatchStatus);
             }
             return;
         }
@@ -771,7 +771,7 @@ void CollectionCloner::_verifyCollectionWasDropped(
                       << "' uuid: UUID(\"" << *_options.uuid << "\"), status "
                       << args.response.status;
             }
-            onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, finalStatus);
+            onCompletionGuard->setResultAndCancelRemainingWork(lk, finalStatus);
         },
         RemoteCommandRetryScheduler::makeNoRetryPolicy());
 
@@ -780,7 +780,7 @@ void CollectionCloner::_verifyCollectionWasDropped(
         log() << "CollectionCloner is unable to start verification of ns: '" << _sourceNss.ns()
               << "' uuid: UUID(\"" << *_options.uuid << "\"), status " << status;
         // If we can't run the command, assume this wasn't a drop and just use the original error.
-        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, batchStatus);
+        onCompletionGuard->setResultAndCancelRemainingWork(lk, batchStatus);
     }
 }
 
@@ -790,7 +790,7 @@ void CollectionCloner::_insertDocumentsCallback(
     std::shared_ptr<OnCompletionGuard> onCompletionGuard) {
     if (!cbd.status.isOK()) {
         stdx::lock_guard<stdx::mutex> lock(_mutex);
-        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lock, cbd.status);
+        onCompletionGuard->setResultAndCancelRemainingWork(lock, cbd.status);
         return;
     }
 
@@ -799,7 +799,7 @@ void CollectionCloner::_insertDocumentsCallback(
     if (_documentsToInsert.size() == 0) {
         warning() << "_insertDocumentsCallback, but no documents to insert for ns:" << _destNss;
         if (lastBatch) {
-            onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, Status::OK());
+            onCompletionGuard->setResultAndCancelRemainingWork(lk, Status::OK());
         }
         return;
     }
@@ -810,7 +810,7 @@ void CollectionCloner::_insertDocumentsCallback(
     invariant(_collLoader);
     const auto status = _collLoader->insertDocuments(docs.cbegin(), docs.cend());
     if (!status.isOK()) {
-        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, status);
+        onCompletionGuard->setResultAndCancelRemainingWork(lk, status);
         return;
     }
 
@@ -830,7 +830,7 @@ void CollectionCloner::_insertDocumentsCallback(
 
     if (lastBatch) {
         // Clean up resources once the last batch has been copied over and set the status to OK.
-        onCompletionGuard->setResultAndCancelRemainingWork_inlock(lk, Status::OK());
+        onCompletionGuard->setResultAndCancelRemainingWork(lk, Status::OK());
     }
 }
 

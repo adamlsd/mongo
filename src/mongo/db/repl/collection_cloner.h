@@ -51,6 +51,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/thread_pool.h"
+#include "mongo/util/concurrency/with_lock.h"
 #include "mongo/util/net/hostandport.h"
 #include "mongo/util/progress_meter.h"
 
@@ -153,7 +154,7 @@ public:
     std::vector<BSONObj> getDocumentsToInsert_forTest();
 
 private:
-    bool _isActive_inlock() const;
+    bool _isActive(WithLock) const;
 
     /**
      * Returns whether the CollectionCloner is in shutdown.
@@ -164,7 +165,7 @@ private:
      * Cancels all outstanding work.
      * Used by shutdown() and CompletionGuard::setResultAndCancelRemainingWork().
      */
-    void _cancelRemainingWork_inlock();
+    void _cancelRemainingWork(WithLock);
 
     /**
      * Read number of documents in collection from count result.

@@ -123,7 +123,7 @@ private:
         cancel(baton);
 
         auto pf = makePromiseFuture<void>();
-        armTimer().getAsync([sp = pf.promise.share()](Status status) mutable {
+        armTimer().getAsync([sp = std::move(pf.promise)](Status status) mutable {
             if (status.isOK()) {
                 sp.emplaceValue();
             } else {
@@ -185,9 +185,9 @@ public:
 
     void schedule(ScheduleMode mode, Task task) override {
         if (mode == kDispatch) {
-            _ioContext.dispatch(std::move(task));
+            _ioContext.dispatch(shareFunction(std::move(task)));
         } else {
-            _ioContext.post(std::move(task));
+            _ioContext.post(shareFunction(std::move(task)));
         }
     }
 

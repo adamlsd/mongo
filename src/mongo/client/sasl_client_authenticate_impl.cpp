@@ -206,7 +206,8 @@ void asyncSaslConversation(auth::RunCommandHook runCommand,
     // Asynchronously continue the conversation
     runCommand(
         request,
-        [runCommand, session, targetDatabase, saslLogLevel, handler](auth::AuthResponse response) {
+        [ runCommand, session, targetDatabase, saslLogLevel, handler = std::move(handler) ](
+            auth::AuthResponse response) mutable {
             if (!response.isOK()) {
                 return handler(std::move(response));
             }
@@ -233,7 +234,7 @@ void asyncSaslConversation(auth::RunCommandHook runCommand,
                                   std::move(serverResponse),
                                   std::move(targetDatabase),
                                   saslLogLevel,
-                                  handler);
+                                  std::move(handler));
         });
 }
 
@@ -281,7 +282,7 @@ void saslClientAuthenticateImpl(auth::RunCommandHook runCommand,
                           std::move(inputObj),
                           targetDatabase,
                           saslLogLevel,
-                          handler);
+                          std::move(handler));
 }
 
 MONGO_INITIALIZER(SaslClientAuthenticateFunction)(InitializerContext* context) {

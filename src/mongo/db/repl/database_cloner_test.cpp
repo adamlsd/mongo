@@ -92,8 +92,8 @@ void DatabaseClonerTest::setUp() {
                                           makeCollectionWorkClosure(),
                                           makeSetStatusClosure());
     _databaseCloner->setScheduleDbWorkFn_forTest(
-        [this](const executor::TaskExecutor::CallbackFn& work) {
-            return getExecutor().scheduleWork(work);
+        [this](executor::TaskExecutor::CallbackFn work) {
+            return getExecutor().scheduleWork(std::move(work));
         });
 
     storageInterface->createCollectionForBulkFn =

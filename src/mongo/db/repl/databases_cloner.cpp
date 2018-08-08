@@ -347,7 +347,7 @@ void DatabasesCloner::_onListDatabaseFinish(
         };
         Status startStatus = Status::OK();
         try {
-            dbCloner.reset(new DatabaseCloner(
+            dbCloner= std::make_unique< DatabaseCloner>(
                 _exec,
                 _dbWorkThreadPool,
                 _source,
@@ -356,9 +356,9 @@ void DatabasesCloner::_onListDatabaseFinish(
                 collectionFilterPred,
                 _storage,  // use storage provided.
                 onCollectionFinish,
-                onDbFinish));
+                onDbFinish);
             if (_scheduleDbWorkFn) {
-                dbCloner->setScheduleDbWorkFn_forTest(_scheduleDbWorkFn);
+                dbCloner->setScheduleDbWorkFn_forTest(std::move(_scheduleDbWorkFn));
             }
             // Start first database cloner.
             if (_databaseCloners.empty()) {

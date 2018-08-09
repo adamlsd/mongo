@@ -146,7 +146,7 @@ public:
         auto pf = makePromiseFuture<void>();
         _safeExecute([ timerPtr = &timer, expiration, p = std::move(pf.promise), this ]() mutable {
             auto pair = _timers.insert({
-                timerPtr, expiration, std::move(p),
+                timerPtr, expiration, std::make_unique<Promise<void>>(std::move(p)),
             });
             invariant(pair.second);
             _timersById[pair.first->id] = pair.first;
@@ -317,7 +317,7 @@ public:
 
         // Fire expired timers
         for (auto iter = _timers.begin(); iter != _timers.end() && iter->expiration < now;) {
-            toFulfill.push_back(std::move(iter->promise));
+            toFulfill.push_back(std::move(*iter->promise));
             _timersById.erase(iter->id);
             iter = _timers.erase(iter);
         }
@@ -355,7 +355,7 @@ private:
     struct Timer {
         const ReactorTimer* id;
         Date_t expiration;
-        Promise<void> promise;
+		std::unique_ptr<Promise<void>> promiseHolder;
 
         struct LessThan {
             bool operator()(const Timer& lhs, const Timer& rhs) const {

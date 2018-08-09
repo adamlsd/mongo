@@ -29,6 +29,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #if 0
 
@@ -187,6 +188,8 @@ namespace mongo
 	// This code shall not compile.  If it does, we have a problem:
 
 #if 0
+
+	#if 0
 	inline void
 	mustFail()
 	{
@@ -215,6 +218,25 @@ namespace mongo
 
 		Evil e1;
 		Evil e2= e1;
+	}
+
+	inline void
+	mustFail4()
+	{
+		using Evil= unique_function< void () >;
+
+		Evil e1;
+		Evil e2= e1;
+	}
+	#endif
+
+	inline void
+	mustFail5()
+	{
+		using Evil= unique_function< void () >;
+
+		Evil e1;
+		Evil e2( e1 );
 	}
 #endif
 } //namespace mongo

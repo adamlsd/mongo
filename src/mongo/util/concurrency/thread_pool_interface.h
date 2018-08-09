@@ -29,7 +29,7 @@
 #pragma once
 
 #include "mongo/base/disallow_copying.h"
-#include "mongo/stdx/functional.h"
+#include "mongo/util/functional.h"
 
 namespace mongo {
 
@@ -42,7 +42,7 @@ class ThreadPoolInterface {
     MONGO_DISALLOW_COPYING(ThreadPoolInterface);
 
 public:
-    using Task = stdx::function<void()>;
+    using Task = unique_function<void()>;
 
     /**
      * Destroys a thread pool.

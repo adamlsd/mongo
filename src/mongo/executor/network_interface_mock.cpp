@@ -122,7 +122,7 @@ Status NetworkInterfaceMock::startCommand(const CallbackHandle& cbHandle,
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
     const Date_t now = _getNow(lk);
-    auto op = NetworkOperation(cbHandle, request, now, std::move(onFinish));
+    NetworkOperation op(cbHandle, request, now, std::move(onFinish));
 
     // If we don't have a hook, or we have already 'connected' to this host, enqueue the op.
     if (!_hook || _connections.count(request.target)) {
@@ -509,28 +509,31 @@ void NetworkInterfaceMock::_connectThenEnqueueOperation(WithLock withLock,
         return;
     }
 
+    auto callbackHandle= op.getCallbackHandle();
+
     // The completion handler for the postconnect command schedules the original command.
-    auto postconnectCompletionHandler = [this, op](ResponseStatus rs) mutable {
+    auto postconnectCompletionHandler = [this, operation= std::move(op)](ResponseStatus rs) mutable {
         stdx::lock_guard<stdx::mutex> lk(_mutex);
         if (!rs.isOK()) {
-            op.setResponse(_getNow(lk), rs);
-            op.finishResponse();
+            operation.setResponse(_getNow(lk), rs);
+            operation.finishResponse();
             return;
         }
 
-        auto handleStatus = _hook->handleReply(op.getRequest().target, std::move(rs));
+        auto handleStatus = _hook->handleReply(operation.getRequest().target, std::move(rs));
 
         if (!handleStatus.isOK()) {
-            op.setResponse(_getNow(lk), handleStatus);
-            op.finishResponse();
+            operation.setResponse(_getNow(lk), handleStatus);
+            operation.finishResponse();
             return;
         }
 
-        _enqueueOperation(lk, std::move(op));
-        _connections.emplace(op.getRequest().target);
+        auto target= operation.getRequest().target;
+        _enqueueOperation(lk, std::move(operation));
+        _connections.emplace(target);
     };
 
-    auto postconnectOp = NetworkOperation(op.getCallbackHandle(),
+    auto postconnectOp = NetworkOperation(callbackHandle,
                                           std::move(*hookPostconnectCommand),
                                           _getNow(withLock),
                                           std::move(postconnectCompletionHandler));
@@ -563,7 +566,7 @@ void NetworkInterfaceMock::signalWorkAvailable() {
 
 void NetworkInterfaceMock::_runReadyNetworkOperations(stdx::unique_lock<stdx::mutex> &lk) {
     while (!_alarms.empty() && _getNow(lk) >= _alarms.top().when) {
-        auto fn = _alarms.top().action;
+        auto &fn = _alarms.top().action;
         _alarms.pop();
         lk.unlock();
         fn();
@@ -571,7 +574,7 @@ void NetworkInterfaceMock::_runReadyNetworkOperations(stdx::unique_lock<stdx::mu
     }
     while (!_scheduled.empty() && _scheduled.front().getResponseDate() <= _getNow(lk)) {
         invariant(_currentlyRunning == kNetworkThread);
-        NetworkOperation op = _scheduled.front();
+        NetworkOperation &op = _scheduled.front();
         _scheduled.pop_front();
         _waitingToRunMask |= kExecutorThread;
         lk.unlock();

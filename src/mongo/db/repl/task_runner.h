@@ -36,6 +36,7 @@
 #include "mongo/stdx/functional.h"
 #include "mongo/stdx/mutex.h"
 #include "mongo/util/concurrency/thread_pool.h"
+#include "mongo/util/concurrency/with_lock.h"
 
 namespace mongo {
 
@@ -58,7 +59,7 @@ public:
         kCancel = 3,
     };
 
-    using Task = stdx::function<NextAction(OperationContext*, const Status&)>;
+    using Task = unique_function<NextAction(OperationContext*, const Status&)>;
     using SynchronousTask = stdx::function<Status(OperationContext* opCtx)>;
 
     /**
@@ -124,7 +125,7 @@ public:
      * immediately. This is usually the case when the task runner is canceled. Accessing the
      * operation context in the task will result in undefined behavior.
      */
-    void schedule(const Task& task);
+    void schedule(Task task);
 
     /**
      * If there is a task that is already running, allows the task to run to completion.
@@ -148,7 +149,7 @@ private:
      * Loop exits when any of the tasks returns a non-kContinue next action.
      */
     void _runTasks();
-    void _finishRunTasks_inlock();
+    void _finishRunTasks(WithLock);
 
     /**
      * Waits for next scheduled task to be added to queue.

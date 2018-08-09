@@ -381,7 +381,7 @@ private:
     template <typename Callback>
     void _safeExecute(stdx::unique_lock<stdx::mutex> lk, Callback&& cb) {
         if (_inPoll) {
-            _scheduled.push_back([cb, this] {
+            _scheduled.push_back([cb= std::forward<Callback>(cb), this] () mutable{
                 stdx::lock_guard<stdx::mutex> lk(_mutex);
                 cb();
             });

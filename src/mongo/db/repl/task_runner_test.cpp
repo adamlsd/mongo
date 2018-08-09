@@ -79,9 +79,9 @@ TEST_F(TaskRunnerTest, CallbackValues) {
 
 using OpIdVector = std::vector<unsigned int>;
 
-OpIdVector _testRunTaskTwice(TaskRunnerTest& test,
+OpIdVector testRunTaskTwice(TaskRunnerTest& test,
                              TaskRunner::NextAction nextAction,
-                             stdx::function<void(const Task& task)> schedule) {
+                             std::function<void(Task task)> schedule) {
     unittest::Barrier barrier(2U);
     stdx::mutex mutex;
     std::vector<OperationContext*> txns;
@@ -117,14 +117,14 @@ OpIdVector _testRunTaskTwice(TaskRunnerTest& test,
     return txnIds;
 }
 
-std::vector<unsigned int> _testRunTaskTwice(TaskRunnerTest& test,
+std::vector<unsigned int> testRunTaskTwice(TaskRunnerTest& test,
                                             TaskRunner::NextAction nextAction) {
-    auto schedule = [&](const Task& task) { test.getTaskRunner().schedule(task); };
-    return _testRunTaskTwice(test, nextAction, schedule);
+    auto schedule = [&](Task task) { test.getTaskRunner().schedule(std::move(task)); };
+    return testRunTaskTwice(test, nextAction, schedule);
 }
 
 TEST_F(TaskRunnerTest, RunTaskTwiceDisposeOperationContext) {
-    auto txnId = _testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext);
+    auto txnId = testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext);
     ASSERT_NOT_EQUALS(txnId[0], txnId[1]);
 }
 
@@ -132,17 +132,17 @@ TEST_F(TaskRunnerTest, RunTaskTwiceDisposeOperationContext) {
 // Joining thread pool before scheduling second task ensures that task runner releases
 // thread back to pool after disposing of operation context.
 TEST_F(TaskRunnerTest, RunTaskTwiceDisposeOperationContextJoinThreadPoolBeforeScheduling) {
-    auto schedule = [this](const Task& task) {
+    auto schedule = [this](Task task) {
         getThreadPool().waitForIdle();
-        getTaskRunner().schedule(task);
+        getTaskRunner().schedule(std::move(task));
     };
     auto txnId =
-        _testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext, schedule);
+        testRunTaskTwice(*this, TaskRunner::NextAction::kDisposeOperationContext, schedule);
     ASSERT_NOT_EQUALS(txnId[0], txnId[1]);
 }
 
 TEST_F(TaskRunnerTest, RunTaskTwiceKeepOperationContext) {
-    auto txnId = _testRunTaskTwice(*this, TaskRunner::NextAction::kKeepOperationContext);
+    auto txnId = testRunTaskTwice(*this, TaskRunner::NextAction::kKeepOperationContext);
     ASSERT_EQUALS(txnId[0], txnId[1]);
 }
 

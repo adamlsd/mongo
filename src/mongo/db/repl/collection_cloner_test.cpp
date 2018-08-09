@@ -1249,8 +1249,8 @@ TEST_F(CollectionClonerTest,
     // Store the scheduled CollectionCloner::_insertDocuments task but do not run it yet.
     executor::TaskExecutor::CallbackFn insertDocumentsFn;
     collectionCloner->setScheduleDbWorkFn_forTest(
-        [&](const executor::TaskExecutor::CallbackFn& workFn) {
-            insertDocumentsFn = workFn;
+        [&](executor::TaskExecutor::CallbackFn workFn) {
+            insertDocumentsFn = std::move(workFn);
             executor::TaskExecutor::CallbackHandle handle(std::make_shared<MockCallbackState>());
             return StatusWith<executor::TaskExecutor::CallbackHandle>(handle);
         });

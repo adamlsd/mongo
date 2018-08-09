@@ -158,7 +158,7 @@ CollectionCloner::CollectionCloner(executor::TaskExecutor* executor,
               }
               return TaskRunner::NextAction::kDisposeOperationContext;
           };
-          _dbWorkTaskRunner.schedule(task);
+          _dbWorkTaskRunner.schedule(std::move(task));
           return executor::TaskExecutor::CallbackHandle();
       }),
       _progressMeter(1U,  // total will be replaced with count command result.
@@ -289,9 +289,9 @@ void CollectionCloner::waitForDbWorker() {
     _dbWorkTaskRunner.join();
 }
 
-void CollectionCloner::setScheduleDbWorkFn_forTest(const ScheduleDbWorkFn& scheduleDbWorkFn) {
+void CollectionCloner::setScheduleDbWorkFn_forTest(ScheduleDbWorkFn scheduleDbWorkFn) {
     LockGuard lk(_mutex);
-    _scheduleDbWorkFn = scheduleDbWorkFn;
+    _scheduleDbWorkFn = std::move(scheduleDbWorkFn);
 }
 
 std::vector<BSONObj> CollectionCloner::getDocumentsToInsert_forTest() {

@@ -143,7 +143,7 @@ public:
      *
      * For testing only.
      */
-    void setScheduleDbWorkFn_forTest(const ScheduleDbWorkFn& scheduleDbWorkFn);
+    void setScheduleDbWorkFn_forTest(ScheduleDbWorkFn scheduleDbWorkFn);
 
     /**
      * Returns the documents currently stored in the '_documents' buffer that is intended

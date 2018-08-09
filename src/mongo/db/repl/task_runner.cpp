@@ -100,12 +100,12 @@ bool TaskRunner::isActive() const {
     return _active;
 }
 
-void TaskRunner::schedule(const Task& task) {
+void TaskRunner::schedule(Task task) {
     invariant(task);
 
     stdx::lock_guard<stdx::mutex> lk(_mutex);
 
-    _tasks.push_back(task);
+    _tasks.push_back(std::move(task));
     _condition.notify_all();
 
     if (_active) {
@@ -161,37 +161,36 @@ void TaskRunner::_runTasks() {
             nextAction == NextAction::kInvalid) {
             stdx::lock_guard<stdx::mutex> lk(_mutex);
             if (_tasks.empty()) {
-                _finishRunTasks_inlock();
+                _finishRunTasks(lk);
                 return;
             }
         }
     }
     opCtx.reset();
 
-    std::list<Task> tasks;
     UniqueLock lk{_mutex};
 
     auto cancelTasks = [&]() {
+        std::list<Task> tasks;
         tasks.swap(_tasks);
         lk.unlock();
         // Cancel remaining tasks with a CallbackCanceled status.
-        for (auto task : tasks) {
-            runSingleTask(task,
+        for (auto &task : tasks) {
+            runSingleTask(std::move(task),
                           nullptr,
                           Status(ErrorCodes::CallbackCanceled,
                                  "this task has been canceled by a previously invoked task"));
         }
-        tasks.clear();
 
     };
     cancelTasks();
 
     lk.lock();
-    _finishRunTasks_inlock();
+    _finishRunTasks(lk);
     cancelTasks();
 }
 
-void TaskRunner::_finishRunTasks_inlock() {
+void TaskRunner::_finishRunTasks(WithLock) {
     _active = false;
     _cancelRequested = false;
     _condition.notify_all();
@@ -208,7 +207,7 @@ TaskRunner::Task TaskRunner::_waitForNextTask() {
         return Task();
     }
 
-    Task task = _tasks.front();
+    Task task = std::move(_tasks.front());
     _tasks.pop_front();
     return task;
 }

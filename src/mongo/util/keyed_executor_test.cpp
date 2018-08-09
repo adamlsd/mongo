@@ -70,7 +70,7 @@ public:
     }
 
 private:
-    std::deque<stdx::function<void()>> _deque;
+    std::deque<unique_function<void()>> _deque;
 };
 
 class ThreadPoolExecutor : public OutOfLineExecutor {

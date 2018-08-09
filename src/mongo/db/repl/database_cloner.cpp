@@ -251,7 +251,7 @@ void DatabaseCloner::join() {
 void DatabaseCloner::setScheduleDbWorkFn_forTest(CollectionCloner::ScheduleDbWorkFn work) {
     LockGuard lk(_mutex);
 
-    _scheduleDbWorkFn = work;
+    _scheduleDbWorkFn = std::move(work);
 }
 
 void DatabaseCloner::setStartCollectionClonerFn(
@@ -407,8 +407,9 @@ void DatabaseCloner::_listCollectionsCallback(const StatusWith<Fetcher::QueryRes
     }
 
     if (_scheduleDbWorkFn) {
+        auto shared= shareFunction( std::move(_scheduleDbWorkFn) );
         for (auto&& collectionCloner : _collectionCloners) {
-            collectionCloner.setScheduleDbWorkFn_forTest(_scheduleDbWorkFn);
+            collectionCloner.setScheduleDbWorkFn_forTest(shared);
         }
     }
 

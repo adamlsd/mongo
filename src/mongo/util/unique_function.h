@@ -30,7 +30,7 @@
 
 #include <memory>
 
-#ifndef _MSC_VER
+#if 0
 
 #include "third_party/function2-3.0.0/function2.hpp"
 
@@ -94,10 +94,18 @@ private:
         virtual RetType call(Args&&...) = 0;
     };
 
-	template< typename F > friend class shared_function< F >;
+	template< typename F > friend class shared_function;
 
 public:
     unique_function() = default;
+
+	~unique_function() noexcept= default;
+
+	unique_function( const unique_function & )= delete;
+	unique_function &operator= ( const unique_function & )= delete;
+
+	unique_function( unique_function && ) noexcept= default;
+	unique_function &operator= ( unique_function && ) noexcept= default;
 
     template <typename Functor>
     unique_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
@@ -175,4 +183,38 @@ namespace mongo
 	{
 		return shared_function< RetVal( Args... ) >( std::move( function ) );
 	}
+
+	// This code shall not compile.  If it does, we have a problem:
+
+#if 0
+	inline void
+	mustFail()
+	{
+		std::function< void () > func;
+		unique_function< void () > uf;
+
+		func= std::move( uf );
+	}
+
+	inline void
+	mustFail2()
+	{
+		std::vector< std::function< void () > > funcs;
+		unique_function< void () > uf;
+
+		funcs.push_back( std::move( uf ) );
+	}
+
+	inline void
+	mustFail3()
+	{
+		struct Evil
+		{
+			unique_function< void () > uf;
+		};
+
+		Evil e1;
+		Evil e2= e1;
+	}
+#endif
 } //namespace mongo

@@ -284,11 +284,11 @@ private:
      * Information describing a scheduled alarm.
      */
     struct AlarmInfo {
-        using AlarmAction = stdx::function<void()>;
+        using AlarmAction = unique_function<void()>;
         AlarmInfo(Date_t inWhen, AlarmAction inAction)
             : when(inWhen), action(std::move(inAction)) {}
-        bool operator>(const AlarmInfo& rhs) const {
-            return when > rhs.when;
+        friend bool operator>(const AlarmInfo &lhs, const AlarmInfo& rhs) {
+            return lhs.when > rhs.when;
         }
 
         Date_t when;
@@ -437,6 +437,9 @@ public:
                      Date_t theRequestDate,
                      RemoteCommandCompletionFn onFinish);
     ~NetworkOperation();
+
+	NetworkOperation( NetworkOperation && ) noexcept= default;
+	NetworkOperation &operator= ( NetworkOperation && ) noexcept= default;
 
     /**
      * Adjusts the stored virtual time at which this entry will be subject to consideration

@@ -130,7 +130,7 @@ public:
             _myLastOpTime = opTime;
         };
         _myLastOpTime = OpTime();
-        _syncSourceSelector = stdx::make_unique<SyncSourceSelectorMock>();
+        _syncSourceSelector = std::make_unique<SyncSourceSelectorMock>();
     }
 
     // SyncSourceSelector
@@ -212,7 +212,7 @@ public:
         getNet()->runReadyNetworkOperations();
         if (getNet()->hasReadyRequests()) {
             log() << "The network has unexpected requests to process, next req:";
-            NetworkInterfaceMock::NetworkOperation req = *getNet()->getNextReadyRequest();
+            NetworkInterfaceMock::NetworkOperation &req = *getNet()->getNextReadyRequest();
             log() << req.getDiagnosticString();
         }
         ASSERT_FALSE(getNet()->hasReadyRequests());

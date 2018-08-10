@@ -32,134 +32,15 @@
 
 namespace mongo
 {
-	template< typename Function >
-	class disposable_function;
-
     template< typename Function >
     class unique_function;
 
     template< typename Function >
     class shared_function;
 
-	template< typename RetType, typename ... Args >
-	class disposable_function< RetType( Args ... ) >
-	{
-		public:
-			~disposable_function()= default;
-            disposable_function() noexcept= default;
-
-            disposable_function( const disposable_function & )= delete;
-            disposable_function &operator= ( const disposable_function & )= delete;
-
-            disposable_function( disposable_function && ) noexcept= default;
-            disposable_function &operator= ( disposable_function && ) noexcept= default;
-
-            template< typename Functor >
-            disposable_function( Functor functor ) : impl( makeImpl( std::move( functor ) ) ) {}
-
-            template< typename FuncRetType, typename ... FuncArgs >
-            disposable_function( std::function< FuncRetType ( FuncArgs... ) > functor ) : impl( makeImpl( std::move( functor ) ) ) {}
-
-            disposable_function( unique_function< RetType( Args... ) > functor ) : impl( std::move( functor.impl ) ) {}
-            disposable_function( shared_function< RetType( Args... ) > functor )= delete;
-
-			disposable_function( std::nullptr_t ) noexcept {}
-
-            RetType
-            operator()( Args ... args )
-            {
-				// By taking a local copy of the disposable implementation, we erase upon completion.
-				const std::unique_ptr< Impl > local= std::move( this->impl );
-				this->dispose();
-
-                if( !*this ) throw std::bad_function_call();
-                return local->call( std::forward< Args >( args ) ... );
-            }
-
-			void dispose()
-			{
-				class bad_function_call : public std::bad_function_call { public : const char *what() const noexcept override { return "Invoked a function in the disposed state"; } };
-				this->impl= makeImpl( []( Args ... ) -> RetType { throw bad_function_call(); } );
-			}
-
-            explicit
-            operator bool() const
-            {
-                return static_cast< bool >( this->impl );
-            }
-
-			friend bool
-			operator == ( const disposable_function &lhs, std::nullptr_t ) noexcept
-			{
-				return !lhs;
-			}
-
-
-			friend bool
-			operator != ( const disposable_function &lhs, std::nullptr_t ) noexcept
-			{
-				return lhs;
-			}
-
-			friend bool
-			operator == ( std::nullptr_t, const disposable_function &rhs ) noexcept
-			{
-				return !rhs;
-			}
-
-
-			friend bool
-			operator != ( std::nullptr_t, const disposable_function &rhs ) noexcept
-			{
-				return rhs;
-			}
-
-		private:
-            struct Impl
-            {
-                virtual ~Impl()= default;
-
-                virtual RetType call( Args && ... )= 0;
-            };
-
-            template< typename Functor >
-            static std::unique_ptr< Impl >
-            makeImpl( Functor functor )
-            {
-                class SpecificImpl
-                    : public Impl
-                {
-                    private:
-                        Functor f;
-
-                    public:
-                        explicit SpecificImpl( Functor f ) : f( std::move( f ) ) {}
-
-                        RetType
-                        call( Args && ... args ) override
-                        {
-                            return f( std::forward< Args >( args ) ... );
-                        }
-                };
-
-                return std::make_unique< SpecificImpl >( std::move( functor ) );
-            }
-
-			template< typename Function >
-			friend class unique_function;
-
-			template< typename Function >
-			friend class shared_function;
-
-            std::unique_ptr< Impl > impl;
-	};
-
     template< typename RetType, typename ... Args >
     class unique_function< RetType( Args ... ) >
     {
-		private:
-			using companion= disposable_function< RetType( Args... ) >;
-
         public:
 			using result_type= RetType;
 
@@ -181,6 +62,9 @@ namespace mongo
 			unique_function( std::nullptr_t ) noexcept {}
 
 			unique_function( disposable_function< RetType( Args ... ) > func )= delete;
+
+			// One should not be able to move a shared function into a unique function -- this probably indicates an error.
+			// Wrapping the shared function in a lambda is an easy way to get around this.
 			unique_function( shared_function< RetType( Args ... ) > func )= delete;
 
             RetType
@@ -223,10 +107,15 @@ namespace mongo
 			}
 
         private:
-            struct Impl : public companion::Impl {};
+            struct Impl
+            {
+                virtual ~Impl()= default;
+
+                virtual RetType call( Args && ... )= 0;
+            };
 
             template< typename Functor >
-            static std::unique_ptr< Impl >
+            static auto
             makeImpl( Functor functor )
             {
                 class SpecificImpl
@@ -326,7 +215,7 @@ namespace mongo
 			using Impl= typename unique_function< RetType( Args... ) >::Impl;
 
             template< typename Functor >
-            static std::shared_ptr< Impl >
+            static auto
             makeImpl( Functor functor )
             {
                 class SpecificImpl

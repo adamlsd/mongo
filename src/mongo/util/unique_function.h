@@ -155,7 +155,7 @@ public:
     }
 
     explicit operator bool() const {
-        return this->impl.get();
+        return !(this->impl);
     }
 
     friend bool operator==(const shared_function& lhs, std::nullptr_t) noexcept {

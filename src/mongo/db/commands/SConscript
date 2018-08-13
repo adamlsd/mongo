@@ -91,7 +91,6 @@ env.Library(
 env.Library(
     target="core",
     source=[
-        "copydb_common.cpp",
         "fail_point_cmd.cpp",
         "find_and_modify_common.cpp",
         "generic.cpp",
@@ -242,7 +241,6 @@ env.Library(
         '$BUILD_DIR/mongo/db/ops/write_ops_exec',
         '$BUILD_DIR/mongo/db/pipeline/mongod_process_interface',
         '$BUILD_DIR/mongo/db/query_exec',
-        '$BUILD_DIR/mongo/db/repair_database',
         '$BUILD_DIR/mongo/db/rw_concern_d',
         '$BUILD_DIR/mongo/db/stats/counters',
         '$BUILD_DIR/mongo/db/storage/storage_engine_common',
@@ -277,12 +275,9 @@ env.Library(
     target="mongod",
     source=[
         "apply_ops_cmd.cpp",
-        "clone.cpp",
         "clone_collection.cpp",
         "collection_to_capped.cpp",
         "compact.cpp",
-        "copydb.cpp",
-        "copydb_start_commands.cpp",
         "cpuload.cpp",
         "dbcheck.cpp",
         "dbcommands_d.cpp",

@@ -119,7 +119,7 @@ public:
 
     void commit(boost::optional<Timestamp>) final {
         invariant(_bytesInserted >= 0);
-        invariant(_highestInserted.isNormal());
+        invariant(_highestInserted.isValid());
 
         _oplogStones->_currentRecords.addAndFetch(_countInserted);
         int64_t newCurrentBytes = _oplogStones->_currentBytes.addAndFetch(_bytesInserted);
@@ -225,7 +225,7 @@ void WiredTigerRecordStore::OplogStones::awaitHasExcessStonesOrDead() {
                     : Timestamp::min();
 
                 auto stone = _stones.front();
-                invariant(stone.lastRecord.isNormal());
+                invariant(stone.lastRecord.isValid());
                 if (static_cast<std::uint64_t>(stone.lastRecord.repr()) <
                     lastStableRecoveryTimestamp.asULL()) {
                     break;
@@ -1016,11 +1016,12 @@ int64_t WiredTigerRecordStore::_cappedDeleteAsNeeded_inlock(OperationContext* op
                                                             const RecordId& justInserted) {
     // we do this in a side transaction in case it aborts
     WiredTigerRecoveryUnit* realRecoveryUnit =
-        checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit());
+        checked_cast<WiredTigerRecoveryUnit*>(opCtx->releaseRecoveryUnit().release());
     invariant(realRecoveryUnit);
     WiredTigerSessionCache* sc = realRecoveryUnit->getSessionCache();
-    WriteUnitOfWork::RecoveryUnitState const realRUstate = opCtx->setRecoveryUnit(
-        new WiredTigerRecoveryUnit(sc), WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
+    WriteUnitOfWork::RecoveryUnitState const realRUstate =
+        opCtx->setRecoveryUnit(std::make_unique<WiredTigerRecoveryUnit>(sc),
+                               WriteUnitOfWork::RecoveryUnitState::kNotInUnitOfWork);
 
     WT_SESSION* session = WiredTigerRecoveryUnit::get(opCtx)->getSession()->getSession();
 
@@ -1148,18 +1149,18 @@ int64_t WiredTigerRecordStore::_cappedDeleteAsNeeded_inlock(OperationContext* op
             }
         }
     } catch (const WriteConflictException&) {
-        delete opCtx->releaseRecoveryUnit();
-        opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+        opCtx->releaseRecoveryUnit();
+        opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
         log() << "got conflict truncating capped, ignoring";
         return 0;
     } catch (...) {
-        delete opCtx->releaseRecoveryUnit();
-        opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+        opCtx->releaseRecoveryUnit();
+        opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
         throw;
     }
 
-    delete opCtx->releaseRecoveryUnit();
-    opCtx->setRecoveryUnit(realRecoveryUnit, realRUstate);
+    opCtx->releaseRecoveryUnit();
+    opCtx->setRecoveryUnit(std::unique_ptr<RecoveryUnit>(realRecoveryUnit), realRUstate);
     return docsRemoved;
 }
 
@@ -1210,7 +1211,7 @@ void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx) {
 void WiredTigerRecordStore::reclaimOplog(OperationContext* opCtx, Timestamp recoveryTimestamp) {
     Timer timer;
     while (auto stone = _oplogStones->peekOldestStoneIfNeeded()) {
-        invariant(stone->lastRecord.isNormal());
+        invariant(stone->lastRecord.isValid());
 
         if (static_cast<std::uint64_t>(stone->lastRecord.repr()) >= recoveryTimestamp.asULL()) {
             // Do not truncate oplogs needed for replication recovery.
@@ -1934,7 +1935,7 @@ boost::optional<Record> WiredTigerRecordStoreCursorBase::next() {
     }
 
     _skipNextAdvance = false;
-    if (!id.isNormal()) {
+    if (!id.isValid()) {
         id = getKey(c);
     }
 

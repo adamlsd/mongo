@@ -170,15 +170,12 @@ void incrementChunkOnInsertOrUpdate(OperationContext* opCtx,
 
     const auto balancerConfig = Grid::get(opCtx)->getBalancerConfiguration();
 
-    if (chunkWritesTracker->shouldSplit(balancerConfig->getMaxChunkSizeBytes())) {
+    if (balancerConfig->getShouldAutoSplit() &&
+        chunkWritesTracker->shouldSplit(balancerConfig->getMaxChunkSizeBytes())) {
         auto chunkSplitStateDriver = ChunkSplitStateDriver::tryInitiateSplit(chunkWritesTracker);
         if (chunkSplitStateDriver) {
-            // TODO (SERVER-9287): Enable the following to trigger chunk splitting
-            // ChunkSplitter::get(opCtx).trySplitting(std::move(chunkSplitStateDriver.get()),
-            //                                       nss,
-            //                                       chunk.getMin(),
-            //                                       chunk.getMax(),
-            //                                       dataWritten);
+            ChunkSplitter::get(opCtx).trySplitting(
+                std::move(chunkSplitStateDriver), nss, chunk.getMin(), chunk.getMax(), dataWritten);
         }
     }
 }

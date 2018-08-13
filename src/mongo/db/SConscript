@@ -620,6 +620,7 @@ env.Library(
     target='catalog_raii',
     source=[
         'catalog_raii.cpp',
+        'operation_context_session_mongod.cpp',
         'retryable_writes_stats.cpp',
         'server_transactions_metrics.cpp',
         'session.cpp',
@@ -645,7 +646,9 @@ env.Library(
         'logical_session_id',
         'namespace_string',
         'repl/oplog_entry',
+        'repl/oplog_shim',
         's/sharding_api_d',
+        "stats/top",
         'views/views',
         '$BUILD_DIR/mongo/db/commands/test_commands_enabled',
     ],
@@ -1068,7 +1071,6 @@ env.Library(
         "catalog/catalog_impl",
         "catalog/collection_options",
         "catalog/document_validation",
-        "catalog/index_create_impl_servers",
         "catalog/index_key_validate",
         "cloner",
         "collection_index_usage_tracker",
@@ -1904,6 +1906,19 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/auth/authmocks',
         '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
         '$BUILD_DIR/mongo/client/read_preference'
+    ],
+)
+
+env.CppUnitTest(
+    target='transaction_participant_test',
+ source=[
+        'transaction_participant_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/client/read_preference',
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/db/repl/mock_repl_coord_server_fixture',
+        'query_exec',
     ],
 )
 

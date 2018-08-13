@@ -33,6 +33,8 @@ selector:
   - jstests/sharding/collation_targeting_inherited.js
   - jstests/sharding/geo_near_random1.js
   - jstests/sharding/geo_near_random2.js
+  - jstests/sharding/out_to_existing.js
+  - jstests/sharding/out_to_non_existing.js
   - jstests/sharding/shard7.js
   - jstests/sharding/shard_collection_existing_zones.js
   - jstests/sharding/snapshot_aggregate_mongos.js
@@ -56,6 +58,8 @@ selector:
   - jstests/sharding/resume_change_stream.js
   - jstests/sharding/resume_change_stream_from_stale_mongos.js
   - jstests/sharding/resume_change_stream_on_subset_of_shards.js
+  # Enable if SERVER-20865 is backported or 4.2 becomes last-stable
+  - jstests/sharding/sharding_statistics_server_status.js
 executor:
   config:
     shell_options:

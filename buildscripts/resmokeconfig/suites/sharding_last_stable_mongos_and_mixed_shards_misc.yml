@@ -181,7 +181,6 @@ selector:
   - jstests/sharding/move_chunk_open_cursors.js
   - jstests/sharding/time_zone_info_mongos.js
   - jstests/sharding/agg_sort.js
-  - jstests/sharding/conf_server_write_concern_metadata.js
   - jstests/sharding/error_during_agg_getmore.js
   - jstests/sharding/cleanup_orphaned.js
   - jstests/sharding/remove3.js
@@ -298,7 +297,6 @@ selector:
   - jstests/sharding/disable_autosplit.js
   - jstests/sharding/mongos_query_comment.js
   - jstests/sharding/read_after_optime.js
-  - jstests/sharding/copydb_from_mongos.js
   - jstests/sharding/server_status.js
   - jstests/sharding/missing_key.js
   - jstests/sharding/listDatabases.js
@@ -318,7 +316,6 @@ selector:
   - jstests/sharding/remove_shard_from_zone.js
   - jstests/sharding/addshard6.js
   - jstests/sharding/autodiscover_config_rs_from_secondary.js
-  - jstests/sharding/auth_copydb.js
   - jstests/sharding/mrShardedOutputAuth.js
   - jstests/sharding/authmr.js
   - jstests/sharding/forget_mr_temp_ns.js
@@ -351,6 +348,8 @@ selector:
   - jstests/sharding/collation_targeting_inherited.js
   - jstests/sharding/geo_near_random1.js
   - jstests/sharding/geo_near_random2.js
+  - jstests/sharding/out_to_existing.js
+  - jstests/sharding/out_to_non_existing.js
   - jstests/sharding/shard7.js
   - jstests/sharding/shard_collection_existing_zones.js
   - jstests/sharding/snapshot_aggregate_mongos.js
@@ -374,7 +373,8 @@ selector:
   - jstests/sharding/resume_change_stream.js
   - jstests/sharding/resume_change_stream_from_stale_mongos.js
   - jstests/sharding/resume_change_stream_on_subset_of_shards.js
-
+  # Enable if SERVER-20865 is backported or 4.2 becomes last-stable
+  - jstests/sharding/sharding_statistics_server_status.js
 
 executor:
   config:

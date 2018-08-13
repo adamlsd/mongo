@@ -74,6 +74,12 @@ MONGO_FAIL_POINT_DEFINE(hangAfterIndexBuildOf);
 
 AtomicInt32 maxIndexBuildMemoryUsageMegabytes(500);
 
+MONGO_REGISTER_SHIM(MultiIndexBlock::makeImpl)
+(OperationContext* const opCtx, Collection* const collection, PrivateTo<MultiIndexBlock>)
+    ->std::unique_ptr<MultiIndexBlock::Impl> {
+    return stdx::make_unique<MultiIndexBlockImpl>(opCtx, collection);
+}
+
 class ExportedMaxIndexBuildMemoryUsageParameter
     : public ExportedServerParameter<std::int32_t, ServerParameterType::kStartupAndRuntime> {
 public:
@@ -232,7 +238,7 @@ StatusWith<std::vector<BSONObj>> MultiIndexBlockImpl::init(const std::vector<BSO
         }
 
         // Any foreground indexes make all indexes be built in the foreground.
-        _buildInBackground = (_buildInBackground && initBackgroundIndexFromSpec(info));
+        _buildInBackground = (_buildInBackground && info["background"].trueValue());
     }
 
     std::vector<BSONObj> indexInfoObjs;
@@ -480,7 +486,7 @@ Status MultiIndexBlockImpl::insert(const BSONObj& doc, const RecordId& loc) {
         int64_t unused;
         Status idxStatus(ErrorCodes::InternalError, "");
         if (_indexes[i].bulk) {
-            idxStatus = _indexes[i].bulk->insert(_opCtx, doc, loc, _indexes[i].options, &unused);
+            idxStatus = _indexes[i].bulk->insert(_opCtx, doc, loc, _indexes[i].options);
         } else {
             idxStatus = _indexes[i].real->insert(_opCtx, doc, loc, _indexes[i].options, &unused);
         }

@@ -71,8 +71,8 @@ class TransportLayerASIO::BatonASIO : public Baton {
             ::close(fd);
         }
 
-		EventFDHolder( const EventFDHolder & )= delete;
-		EventFDHolder &operator= ( const EventFDHolder & )= delete;
+        EventFDHolder(const EventFDHolder&) = delete;
+        EventFDHolder& operator=(const EventFDHolder&) = delete;
 
         // Writes to the underlying eventfd
         void notify() {

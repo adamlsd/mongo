@@ -76,13 +76,16 @@ public:
         return static_cast<bool>(this->impl);
     }
 
+	template< typename Any >
+	operator std::function< Any > ()= delete;
+
     friend bool operator==(const unique_function& lhs, std::nullptr_t) noexcept {
         return !lhs;
     }
 
 
     friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
-        return lhs;
+        return static_cast< bool >( lhs );
     }
 
     friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
@@ -91,7 +94,7 @@ public:
 
 
     friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
-        return rhs;
+        return static_cast< bool >( rhs );
     }
 
 private:
@@ -126,10 +129,9 @@ private:
 
 template <typename RetType, typename... Args>
 class shared_function<RetType(Args...)> {
-private:
-    using companion = unique_function<RetType(Args...)>;
-
 public:
+    using result_type = RetType;
+
     ~shared_function() = default;
     shared_function() noexcept = default;
 
@@ -148,6 +150,8 @@ public:
 
     shared_function(unique_function<RetType(Args...)> functor) : impl(std::move(functor.impl)) {}
 
+    shared_function(std::nullptr_t) noexcept {}
+
     RetType operator()(Args... args) const {
         if (!*this)
             throw std::bad_function_call();
@@ -155,7 +159,7 @@ public:
     }
 
     explicit operator bool() const {
-        return !(this->impl);
+        return static_cast<bool>(this->impl);
     }
 
     friend bool operator==(const shared_function& lhs, std::nullptr_t) noexcept {
@@ -164,7 +168,7 @@ public:
 
 
     friend bool operator!=(const shared_function& lhs, std::nullptr_t) noexcept {
-        return lhs;
+        return static_cast< bool >( lhs );
     }
 
     friend bool operator==(std::nullptr_t, const shared_function& rhs) noexcept {
@@ -173,11 +177,12 @@ public:
 
 
     friend bool operator!=(std::nullptr_t, const shared_function& rhs) noexcept {
-        return rhs;
+        return static_cast< bool >( rhs );
     }
 
 private:
-    using Impl = typename unique_function<RetType(Args...)>::Impl;
+    using companion = unique_function<RetType(Args...)>;
+    using Impl = typename companion::Impl;
 
     template <typename Functor>
     static auto makeImpl(Functor functor) {

@@ -61,6 +61,14 @@ namespace stdx {
 
 using std::void_t;
 
+using std::is_invokable;
+
+using std::is_invokable_r;
+
+using std::disjunction;
+
+using std::conjunction;
+
 }  // namespace stdx
 }  // namespace mongo
 
@@ -76,6 +84,55 @@ struct make_void {
 
 template <typename... Args>
 using void_t = typename make_void<Args...>::type;
+
+
+template <typename... B>
+struct disjunction : std::false_type {};
+template <typename B>
+struct disjunction<B> : B {};
+
+template <typename B1, typename... B>
+struct disjunction<B1, B...> : std::conditional_t<bool(B1::value), B1, disjunction<B...>> {};
+
+
+template <typename...>
+struct conjunction : std::true_type {};
+template <typename B>
+struct conjunction<B> : B {};
+
+template <typename B1, typename... B>
+struct conjunction<B1, B...> : std::conditional_t<bool(B1::value), conjunction<B...>, B1> {};
+
+/**
+ * This is a poor-man's implementation of c++17 std::is_invokable. We should replace it with the
+ * stdlib one once we can make call() use std::invoke.
+ */
+template <typename Func,
+          typename... Args,
+          typename = typename std::result_of<Func && (Args && ...)>::type>
+auto is_invokable_impl(Func&& func, Args&&... args) -> std::true_type;
+auto is_invokable_impl(...) -> std::false_type;
+
+template <typename Func, typename... Args>
+struct is_invokable : decltype(is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
+
+
+template <typename T>
+struct magic_carrier {};
+
+template <typename R,
+          typename Func,
+          typename... Args,
+          typename ComputedResult = typename std::result_of<Func && (Args && ...)>::type>
+auto is_invokable_r_impl(magic_carrier<R>&&, Func&& func, Args&&... args) ->
+    typename stdx::disjunction<std::is_void<R>,
+                               std::is_same<ComputedResult, R>,
+                               std::is_convertible<ComputedResult, R>>::type;
+auto is_invokable_r_impl(...) -> std::false_type;
+
+template <typename R, typename Func, typename... Args>
+struct is_invokable_r : decltype(is_invokable_r_impl(
+                            magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
 
 }  // namespace stdx
 }  // namespace mongo

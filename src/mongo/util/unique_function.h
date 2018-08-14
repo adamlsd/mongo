@@ -29,6 +29,9 @@
 #pragma once
 
 #include <functional>
+#include <type_traits>
+
+#include "mongo/stdx/type_traits.h"
 
 namespace mongo {
 template <typename Function>
@@ -58,7 +61,12 @@ public:
     unique_function(unique_function&&) noexcept = default;
     unique_function& operator=(unique_function&&) noexcept = default;
 
-    template <typename Functor>
+    template <
+        typename Functor,
+        typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
+                                           void>::type,
+        typename =
+            typename std::enable_if<!std::is_same<unique_function, Functor>::value, void>::type>
     unique_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
 
     template <typename FuncRetType, typename... FuncArgs>
@@ -90,7 +98,6 @@ public:
         return !lhs;
     }
 
-
     friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
         return static_cast<bool>(lhs);
     }
@@ -98,7 +105,6 @@ public:
     friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
         return !rhs;
     }
-
 
     friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
         return static_cast<bool>(rhs);
@@ -159,14 +165,19 @@ public:
     shared_function(shared_function&&) noexcept = default;
     shared_function& operator=(shared_function&&) noexcept = default;
 
-    template <typename Functor>
+    template <
+        typename Functor,
+        typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
+                                           void>::type,
+        typename =
+            typename std::enable_if<!std::is_same<shared_function, Functor>::value, void>::type>
     shared_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
 
     template <typename FuncRetType, typename... FuncArgs>
-    shared_function(std::function<FuncRetType(FuncArgs...)> functor)
+    shared_function(std::function<FuncRetType(FuncArgs...)>&& functor)
         : impl(makeImpl(std::move(functor))) {}
 
-    shared_function(unique_function<RetType(Args...)> functor) : impl(std::move(functor.impl)) {}
+    shared_function(unique_function<RetType(Args...)>&& functor) : impl(std::move(functor.impl)) {}
 
     shared_function(std::nullptr_t) noexcept {}
 
@@ -184,7 +195,6 @@ public:
         return !lhs;
     }
 
-
     friend bool operator!=(const shared_function& lhs, std::nullptr_t) noexcept {
         return static_cast<bool>(lhs);
     }
@@ -192,7 +202,6 @@ public:
     friend bool operator==(std::nullptr_t, const shared_function& rhs) noexcept {
         return !rhs;
     }
-
 
     friend bool operator!=(std::nullptr_t, const shared_function& rhs) noexcept {
         return static_cast<bool>(rhs);
@@ -223,4 +232,9 @@ private:
 
     std::shared_ptr<Impl> impl;
 };
+
+template <typename RetType, typename... Args, template <typename> class ErasedFunctor>
+auto wrapShared(ErasedFunctor<RetType(Args...)>&& f) {
+    return shared_function<RetType(Args...)>(std::move(f));
+}
 }  // namespace mongo

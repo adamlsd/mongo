@@ -31,14 +31,130 @@
 #include <functional>
 #include <type_traits>
 
+#include "mongo/base/clonable_ptr.h"
 #include "mongo/stdx/type_traits.h"
 
 namespace mongo {
+template <typename Function>
+class disposable_function;
+
 template <typename Function>
 class unique_function;
 
 template <typename Function>
 class shared_function;
+
+template <typename Function>
+class clonable_function;
+
+/**
+ * A `disposable_function` is a move-only, type-erased functor object similar to `std::function`.
+ * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
+ * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
+ * `std::unique_ptr` by move.  The interface of `disposable_function` is nearly identical to
+ * `std::function`, except that it is not copyable, and provides no support for allocators.
+ * Additionally, a `disposable_function` can only be called once.
+ */
+template <typename RetType, typename... Args>
+class disposable_function<RetType(Args...)> {
+public:
+    using result_type = RetType;
+
+    ~disposable_function() = default;
+    disposable_function() noexcept = default;
+
+    disposable_function(const disposable_function&) = delete;
+    disposable_function& operator=(const disposable_function&) = delete;
+
+    disposable_function(disposable_function&&) noexcept = default;
+    disposable_function& operator=(disposable_function&&) noexcept = default;
+
+    template <
+        typename Functor,
+        typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
+                                           void>::type,
+        typename =
+            typename std::enable_if<!std::is_same<disposable_function, Functor>::value, void>::type>
+    disposable_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
+
+    template <typename FuncRetType, typename... FuncArgs>
+    disposable_function(std::function<FuncRetType(FuncArgs...)> functor)
+        : impl(makeImpl(std::move(functor))) {}
+
+    disposable_function(std::nullptr_t) noexcept {}
+
+    disposable_function(unique_function<RetType(Args...)>&& func);
+
+    disposable_function(shared_function<RetType(Args...)>&& func);
+
+    disposable_function(clonable_function<RetType(Args...)>&& func);
+
+    RetType operator()(Args... args)  // && //(TODO!)
+    {
+        if (!*this)
+            throw std::bad_function_call();
+        disposable_function tmp = std::move(*this);
+        return tmp.impl->call(std::forward<Args>(args)...);
+    }
+
+    explicit operator bool() const {
+        return static_cast<bool>(this->impl);
+    }
+
+    template <typename Any>
+    operator std::function<Any>() = delete;
+
+    friend bool operator==(const disposable_function& lhs, std::nullptr_t) noexcept {
+        return !lhs;
+    }
+
+    friend bool operator!=(const disposable_function& lhs, std::nullptr_t) noexcept {
+        return static_cast<bool>(lhs);
+    }
+
+    friend bool operator==(std::nullptr_t, const disposable_function& rhs) noexcept {
+        return !rhs;
+    }
+
+    friend bool operator!=(std::nullptr_t, const disposable_function& rhs) noexcept {
+        return static_cast<bool>(rhs);
+    }
+
+private:
+    struct Impl {
+        virtual ~Impl() = default;
+
+        virtual RetType call(Args&&...) = 0;
+    };
+
+    template <typename Functor>
+    static auto makeImpl(Functor functor) {
+        class SpecificImpl : public Impl {
+        private:
+            Functor f;
+
+        public:
+            explicit SpecificImpl(Functor f) : f(std::move(f)) {}
+
+            RetType call(Args&&... args) override {
+                return f(std::forward<Args>(args)...);
+            }
+        };
+
+        return std::make_unique<SpecificImpl>(std::move(functor));
+    }
+
+    template <typename Function>
+    friend class unique_function;
+
+    template <typename Function>
+    friend class shared_function;
+
+    template <typename Function>
+    friend class clonable_function;
+
+    std::unique_ptr<Impl> impl;
+};
 
 /**
  * A `unique_function` is a move-only, type-erased functor object similar to `std::function`.
@@ -81,6 +197,8 @@ public:
     unique_function(shared_function<RetType(Args...)>&& func) = delete;
     unique_function(const shared_function<RetType(Args...)>& func) = delete;
 
+    unique_function(clonable_function<RetType(Args...)>&& func);
+
     RetType operator()(Args... args) const {
         if (!*this)
             throw std::bad_function_call();
@@ -111,11 +229,7 @@ public:
     }
 
 private:
-    struct Impl {
-        virtual ~Impl() = default;
-
-        virtual RetType call(Args&&...) = 0;
-    };
+    struct Impl : disposable_function<RetType(Args...)>::Impl {};
 
     template <typename Functor>
     static auto makeImpl(Functor functor) {
@@ -135,7 +249,13 @@ private:
     }
 
     template <typename Function>
+    friend class disposable_function;
+
+    template <typename Function>
     friend class shared_function;
+
+    template <typename Function>
+    friend class clonable_function;
 
     std::unique_ptr<Impl> impl;
 };
@@ -178,6 +298,12 @@ public:
         : impl(makeImpl(std::move(functor))) {}
 
     shared_function(unique_function<RetType(Args...)>&& functor) : impl(std::move(functor.impl)) {}
+
+    shared_function(disposable_function<RetType(Args...)>&& functor) = delete;
+    shared_function(const disposable_function<RetType(Args...)>& functor) = delete;
+
+
+    shared_function(clonable_function<RetType(Args...)>&& functor);
 
     shared_function(std::nullptr_t) noexcept {}
 
@@ -230,11 +356,132 @@ private:
         return std::make_shared<SpecificImpl>(std::move(functor));
     }
 
+    template <typename Function>
+    friend class clonable_function;
+
     std::shared_ptr<Impl> impl;
+};
+
+template <typename RetType, typename... Args>
+class clonable_function<RetType(Args...)> {
+private:
+    using companion = unique_function<RetType(Args...)>;
+    class Impl : public companion::Impl {
+    public:
+        virtual std::unique_ptr<Impl> clone() const = 0;
+    };
+
+    template <typename Functor>
+    static auto makeImpl(Functor functor) {
+        class SpecificImpl : public Impl {
+        private:
+            Functor f;
+
+        public:
+            explicit SpecificImpl(Functor f) : f(std::move(f)) {}
+
+            std::unique_ptr<Impl> clone() const override {
+                return std::make_unique<SpecificImpl>(*this);
+            }
+
+            RetType call(Args&&... args) override {
+                return (RetType)f(std::forward<Args>(args)...);
+            }
+        };
+
+        return std::make_unique<SpecificImpl>(std::move(functor));
+    }
+
+    template <typename Function>
+    friend class unique_function;
+
+    template <typename Function>
+    friend class shared_function;
+
+    clonable_ptr<Impl> impl;
+
+public:
+    using result_type = RetType;
+
+    ~clonable_function() = default;
+    clonable_function() noexcept = default;
+
+    clonable_function(const clonable_function&) = default;
+    clonable_function& operator=(const clonable_function&) = default;
+
+    clonable_function(clonable_function&&) noexcept = default;
+    clonable_function& operator=(clonable_function&&) noexcept = default;
+
+    template <typename Functor,
+              typename = typename std::
+                  enable_if<stdx::is_invokable_r<result_type, Functor, Args...>::value, void>::type,
+              typename = typename std::enable_if<!std::is_same<clonable_function, Functor>::value,
+                                                 void>::type>
+    clonable_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
+
+    template <typename FuncRetType, typename... FuncArgs>
+    clonable_function(std::function<FuncRetType(FuncArgs...)> functor)
+        : impl(makeImpl(std::move(functor))) {}
+
+    clonable_function(unique_function<RetType(Args...)>&&) = delete;
+    clonable_function(const unique_function<RetType(Args...)>&) = delete;
+
+    clonable_function(shared_function<RetType(Args...)>&&) = delete;
+    clonable_function(const shared_function<RetType(Args...)>&) = delete;
+
+    clonable_function(std::nullptr_t) noexcept {}
+
+    RetType operator()(Args... args) const {
+        if (!*this)
+            throw std::bad_function_call();
+        return this->impl->call(std::forward<Args>(args)...);
+    }
+
+    explicit operator bool() const {
+        return static_cast<bool>(this->impl);
+    }
+
+    friend bool operator==(const clonable_function& lhs, std::nullptr_t) noexcept {
+        return !lhs;
+    }
+
+    friend bool operator!=(const clonable_function& lhs, std::nullptr_t) noexcept {
+        return static_cast<bool>(lhs);
+    }
+
+    friend bool operator==(std::nullptr_t, const clonable_function& rhs) noexcept {
+        return !rhs;
+    }
+
+    friend bool operator!=(std::nullptr_t, const clonable_function& rhs) noexcept {
+        return static_cast<bool>(rhs);
+    }
 };
 
 template <typename RetType, typename... Args, template <typename> class ErasedFunctor>
 auto wrapShared(ErasedFunctor<RetType(Args...)>&& f) {
     return shared_function<RetType(Args...)>(std::move(f));
 }
+
+
+template <typename RetType, typename... Args>
+disposable_function<RetType(Args...)>::disposable_function(unique_function<RetType(Args...)>&& func)
+    : impl(std::move(func.impl)) {}
+
+template <typename RetType, typename... Args>
+disposable_function<RetType(Args...)>::disposable_function(shared_function<RetType(Args...)>&& func)
+    : impl(std::move(func.impl)) {}
+
+template <typename RetType, typename... Args>
+disposable_function<RetType(Args...)>::disposable_function(
+    clonable_function<RetType(Args...)>&& func)
+    : impl(std::move(func.impl)) {}
+
+template <typename RetType, typename... Args>
+unique_function<RetType(Args...)>::unique_function(clonable_function<RetType(Args...)>&& func)
+    : impl(std::move(func.impl)) {}
+
+template <typename RetType, typename... Args>
+shared_function<RetType(Args...)>::shared_function(clonable_function<RetType(Args...)>&& func)
+    : impl(std::move(func.impl)) {}
 }  // namespace mongo

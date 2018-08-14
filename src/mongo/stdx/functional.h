@@ -30,6 +30,8 @@
 
 #include <functional>
 
+#include "mongo/util/functional.h"
+
 namespace mongo {
 namespace stdx {
 

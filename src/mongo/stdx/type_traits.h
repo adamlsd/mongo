@@ -77,13 +77,15 @@ using std::conjunction;
 namespace mongo {
 namespace stdx {
 
+namespace detail {
 template <typename...>
 struct make_void {
     using type = void;
 };
+}  // namespace detail
 
 template <typename... Args>
-using void_t = typename make_void<Args...>::type;
+using void_t = typename detail::make_void<Args...>::type;
 
 
 template <typename... B>
@@ -107,15 +109,18 @@ struct conjunction<B1, B...> : std::conditional_t<bool(B1::value), conjunction<B
  * This is a poor-man's implementation of c++17 std::is_invokable. We should replace it with the
  * stdlib one once we can make call() use std::invoke.
  */
+namespace detail {
 template <typename Func,
           typename... Args,
           typename = typename std::result_of<Func && (Args && ...)>::type>
 auto is_invokable_impl(Func&& func, Args&&... args) -> std::true_type;
 auto is_invokable_impl(...) -> std::false_type;
+}  // namespace detail
 
 template <typename Func, typename... Args>
-struct is_invokable : decltype(is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invokable : decltype(detail::is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
 
+namespace detail {
 
 template <typename T>
 struct magic_carrier {};
@@ -129,10 +134,11 @@ auto is_invokable_r_impl(magic_carrier<R>&&, Func&& func, Args&&... args) ->
                                std::is_same<ComputedResult, R>,
                                std::is_convertible<ComputedResult, R>>::type;
 auto is_invokable_r_impl(...) -> std::false_type;
+}  // namespace detail
 
 template <typename R, typename Func, typename... Args>
-struct is_invokable_r : decltype(is_invokable_r_impl(
-                            magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invokable_r : decltype(detail::is_invokable_r_impl(
+                            detail::magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
 
 }  // namespace stdx
 }  // namespace mongo

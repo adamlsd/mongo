@@ -37,6 +37,13 @@ class unique_function;
 template <typename Function>
 class shared_function;
 
+/**
+ * A `unique_function` is a move-only, type-erased functor object similar to `std::function`.
+ * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
+ * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
+ * `std::unique_ptr` by move.  The interface of `unique_function` is nearly identical to
+ * `std::function`, except that it is not copyable, and provides no support for allocators.
+ */
 template <typename RetType, typename... Args>
 class unique_function<RetType(Args...)> {
 public:
@@ -76,8 +83,8 @@ public:
         return static_cast<bool>(this->impl);
     }
 
-	template< typename Any >
-	operator std::function< Any > ()= delete;
+    template <typename Any>
+    operator std::function<Any>() = delete;
 
     friend bool operator==(const unique_function& lhs, std::nullptr_t) noexcept {
         return !lhs;
@@ -85,7 +92,7 @@ public:
 
 
     friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
-        return static_cast< bool >( lhs );
+        return static_cast<bool>(lhs);
     }
 
     friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
@@ -94,7 +101,7 @@ public:
 
 
     friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
-        return static_cast< bool >( rhs );
+        return static_cast<bool>(rhs);
     }
 
 private:
@@ -127,6 +134,17 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
+/**
+ * A `shared_function` is a copyable, type-erased functor object similar to `std::function`.
+ * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
+ * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
+ * `std::unique_ptr` by move.  The interface of `shared_function` is nearly identical to
+ * `std::function`, except that it provides no support for allocators.  Unlike `unique_function`,
+ * `shared_function` objects are copyable, but all copies refer to the exact same underlying functor
+ * object instance, just like a `std::shared_ptr`.  `unique_function` objects can be moved into
+ * `shared_function` objects, in the same way that `std::unique_ptr` objects can be moved by
+ * construction or assignment into `std::shared_ptr` objects.
+ */
 template <typename RetType, typename... Args>
 class shared_function<RetType(Args...)> {
 public:
@@ -168,7 +186,7 @@ public:
 
 
     friend bool operator!=(const shared_function& lhs, std::nullptr_t) noexcept {
-        return static_cast< bool >( lhs );
+        return static_cast<bool>(lhs);
     }
 
     friend bool operator==(std::nullptr_t, const shared_function& rhs) noexcept {
@@ -177,7 +195,7 @@ public:
 
 
     friend bool operator!=(std::nullptr_t, const shared_function& rhs) noexcept {
-        return static_cast< bool >( rhs );
+        return static_cast<bool>(rhs);
     }
 
 private:

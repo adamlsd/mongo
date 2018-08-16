@@ -337,7 +337,6 @@ TEST(UniqueFunctionTest, convertability_tests) {
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(long)>, uf<int(int)>>::value);
 
 
-
     struct X {};
     struct Y {};
 

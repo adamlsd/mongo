@@ -28,5 +28,4 @@
 
 #pragma once
 
-#include "mongo/util/overload.h"
 #include "mongo/util/unique_function.h"

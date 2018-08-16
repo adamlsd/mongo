@@ -43,9 +43,9 @@
 #include "mongo/stdx/utility.h"
 #include "mongo/util/assert_util.h"
 #include "mongo/util/debug_util.h"
+#include "mongo/util/functional.h"
 #include "mongo/util/intrusive_counter.h"
 #include "mongo/util/scopeguard.h"
-#include "mongo/util/functional.h"
 
 namespace mongo {
 
@@ -106,8 +106,9 @@ inline auto call(Func&& func) {
 
 template <typename Func>
 inline auto call(Func&& func, FakeVoid) {
-    auto useStatus =
-        std::integral_constant<bool, (!stdx::is_invokable<Func>() && stdx::is_invokable<Func, Status>())>();
+    auto useStatus = std::integral_constant<bool,
+                                            (!stdx::is_invokable<Func>() &&
+                                             stdx::is_invokable<Func, Status>())>();
     return callVoidOrStatus(func, useStatus);
 }
 

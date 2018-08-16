@@ -118,11 +118,13 @@ auto is_invokable_impl(...) -> std::false_type;
 }  // namespace detail
 
 template <typename Func, typename... Args>
-struct is_invokable : decltype(detail::is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invokable
+    : decltype(detail::is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
 
 namespace detail {
 
-// This helps solve the lack of regular void problem, when passing a 'conversion target' as a parameter.
+// This helps solve the lack of regular void problem, when passing a 'conversion target' as a
+// parameter.
 template <typename T>
 struct magic_carrier {};
 
@@ -138,8 +140,9 @@ auto is_invokable_r_impl(...) -> std::false_type;
 }  // namespace detail
 
 template <typename R, typename Func, typename... Args>
-struct is_invokable_r : decltype(detail::is_invokable_r_impl(
-                            detail::magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invokable_r
+    : decltype(detail::is_invokable_r_impl(
+          detail::magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
 
 }  // namespace stdx
 }  // namespace mongo

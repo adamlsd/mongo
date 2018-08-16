@@ -58,11 +58,10 @@ public:
     unique_function(unique_function&&) noexcept = default;
     unique_function& operator=(unique_function&&) noexcept = default;
 
-    template <
-        typename Functor,
-        typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
-                                           void>::type>
-    unique_function(Functor &&functor) : impl(makeImpl(std::forward<Functor>(functor))) {}
+    template <typename Functor,
+              typename = typename std::
+                  enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>::type>
+    unique_function(Functor&& functor) : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
 

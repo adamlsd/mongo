@@ -30,8 +30,8 @@
 
 #include <memory>
 
-#include "mongo/util/unique_function.h"
 #include "mongo/transport/transport_layer.h"
+#include "mongo/util/functional.h"
 #include "mongo/util/future.h"
 #include "mongo/util/time_support.h"
 

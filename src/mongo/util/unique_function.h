@@ -37,9 +37,6 @@ namespace mongo {
 template <typename Function>
 class unique_function;
 
-template <typename Function>
-class shared_function;
-
 /**
  * A `unique_function` is a move-only, type-erased functor object similar to `std::function`.
  * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
@@ -64,22 +61,10 @@ public:
     template <
         typename Functor,
         typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
-                                           void>::type,
-        typename =
-            typename std::enable_if<!std::is_same<unique_function, Functor>::value, void>::type>
-    unique_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
-
-    template <typename FuncRetType, typename... FuncArgs>
-    unique_function(std::function<FuncRetType(FuncArgs...)> functor)
-        : impl(makeImpl(std::move(functor))) {}
+                                           void>::type>
+    unique_function(Functor &&functor) : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
-
-    // One should not be able to move or copy a shared function into a unique function -- this
-    // probably indicates an error.  Wrapping the shared function in a lambda is an easy way to get
-    // around this.
-    unique_function(shared_function<RetType(Args...)>&& func) = delete;
-    unique_function(const shared_function<RetType(Args...)>& func) = delete;
 
     RetType operator()(Args... args) const {
         if (!*this)
@@ -91,6 +76,8 @@ public:
         return static_cast<bool>(this->impl);
     }
 
+    // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>`
+    // be `std::false_type`.
     template <typename Any>
     operator std::function<Any>() = delete;
 
@@ -140,101 +127,4 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
-/**
- * A `shared_function` is a copyable, type-erased functor object similar to `std::function`.
- * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
- * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
- * `std::unique_ptr` by move.  The interface of `shared_function` is nearly identical to
- * `std::function`, except that it provides no support for allocators.  Unlike `unique_function`,
- * `shared_function` objects are copyable, but all copies refer to the exact same underlying functor
- * object instance, just like a `std::shared_ptr`.  `unique_function` objects can be moved into
- * `shared_function` objects, in the same way that `std::unique_ptr` objects can be moved by
- * construction or assignment into `std::shared_ptr` objects.
- */
-template <typename RetType, typename... Args>
-class shared_function<RetType(Args...)> {
-public:
-    using result_type = RetType;
-
-    ~shared_function() = default;
-    shared_function() noexcept = default;
-
-    shared_function(const shared_function&) = default;
-    shared_function& operator=(const shared_function&) = default;
-
-    shared_function(shared_function&&) noexcept = default;
-    shared_function& operator=(shared_function&&) noexcept = default;
-
-    template <
-        typename Functor,
-        typename = typename std::enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value,
-                                           void>::type,
-        typename =
-            typename std::enable_if<!std::is_same<shared_function, Functor>::value, void>::type>
-    shared_function(Functor functor) : impl(makeImpl(std::move(functor))) {}
-
-    template <typename FuncRetType, typename... FuncArgs>
-    shared_function(std::function<FuncRetType(FuncArgs...)>&& functor)
-        : impl(makeImpl(std::move(functor))) {}
-
-    shared_function(unique_function<RetType(Args...)>&& functor) : impl(std::move(functor.impl)) {}
-
-    shared_function(std::nullptr_t) noexcept {}
-
-    RetType operator()(Args... args) const {
-        if (!*this)
-            throw std::bad_function_call();
-        return this->impl->call(std::forward<Args>(args)...);
-    }
-
-    explicit operator bool() const {
-        return static_cast<bool>(this->impl);
-    }
-
-    friend bool operator==(const shared_function& lhs, std::nullptr_t) noexcept {
-        return !lhs;
-    }
-
-    friend bool operator!=(const shared_function& lhs, std::nullptr_t) noexcept {
-        return static_cast<bool>(lhs);
-    }
-
-    friend bool operator==(std::nullptr_t, const shared_function& rhs) noexcept {
-        return !rhs;
-    }
-
-    friend bool operator!=(std::nullptr_t, const shared_function& rhs) noexcept {
-        return static_cast<bool>(rhs);
-    }
-
-private:
-    using companion = unique_function<RetType(Args...)>;
-    using Impl = typename companion::Impl;
-
-    template <typename Functor>
-    static auto makeImpl(Functor functor) {
-        class SpecificImpl : public Impl {
-        private:
-            Functor f;
-
-        public:
-            explicit SpecificImpl(Functor f) : f(std::move(f)) {}
-
-            RetType call(Args&&... args) override {
-                return f(std::forward<Args>(args)...);
-            }
-        };
-
-        // We use `make_shared` for `shared_function` Impl creation, to avoid the extra allocation
-        // for the ref-counting data.
-        return std::make_shared<SpecificImpl>(std::move(functor));
-    }
-
-    std::shared_ptr<Impl> impl;
-};
-
-template <typename RetType, typename... Args, template <typename> class ErasedFunctor>
-auto wrapShared(ErasedFunctor<RetType(Args...)>&& f) {
-    return shared_function<RetType(Args...)>(std::move(f));
-}
 }  // namespace mongo

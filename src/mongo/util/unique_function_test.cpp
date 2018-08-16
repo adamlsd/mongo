@@ -181,289 +181,214 @@ TEST(UniqueFunctionTest, comparison_checks) {
     ASSERT_FALSE(nullptr != uf);
 }
 
-TEST(UniqueAndSharedFunctionTest, convertability_tests) {
-    static_assert(
-        !std::is_convertible<mongo::unique_function<void()>, std::function<void()>>::value, "");
-    static_assert(std::is_convertible<std::function<void()>, mongo::unique_function<void()>>::value,
-                  "");
-    static_assert(
-        !std::is_convertible<mongo::shared_function<void()>, mongo::unique_function<void()>>::value,
-        "");
-    static_assert(
-        std::is_convertible<mongo::unique_function<void()>, mongo::unique_function<void()>>::value,
-        "");
-    static_assert(
-        std::is_convertible<mongo::unique_function<void()>, mongo::shared_function<void()>>::value,
-        "");
-    static_assert(
-        std::is_convertible<mongo::shared_function<void()>, mongo::shared_function<void()>>::value,
-        "");
-    static_assert(std::is_convertible<std::function<void()>, mongo::shared_function<void()>>::value,
-                  "");
-    static_assert(std::is_convertible<mongo::shared_function<void()>, std::function<void()>>::value,
-                  "");
+namespace conversion_checking {
+template <typename FT>
+using uf = mongo::unique_function<FT>;
+template <typename FT>
+using sf = std::function<FT>;
+
+// Check expected `is_convertible` traits (which also checks if this kind of conversion will compile
+// correctly too.
+TEST(UniqueFunctionTest, convertability_tests) {
+    // Note that `mongo::unique_function` must never convert to `std::function` in any of the
+    // following cases.
+
+    // No arguments, return variants
+
+    // Same return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<void()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<void()>, uf<void()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<void()>, uf<void()>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<int()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int()>, uf<int()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int()>, uf<int()>>::value);
+
+    // Convertible return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<void()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int()>, uf<void()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int()>, uf<void()>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<long()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int()>, uf<long()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int()>, uf<long()>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*()>, sf<std::string()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<const char*()>, uf<std::string()>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<const char*()>, uf<std::string()>>::value);
+
+    // Impossible return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<int()>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, uf<int()>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void()>, uf<int()>>::value);
+
+
+    // Argument consistency, with return variants
+
+    // Same return type, same arguments
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(int)>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<void(int)>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<void(int)>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(int)>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(int)>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(int)>, uf<int(int)>>::value);
+
+    // Convertible return type, same arguments
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(int)>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(int)>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(int)>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(int)>, sf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(int)>, uf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(int)>, uf<long(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*(int)>, sf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<const char*(int)>, uf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<const char*(int)>, uf<std::string(int)>>::value);
+
+    // Impossible return type, same arguments
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(int)>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(int)>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(int)>, uf<int(int)>>::value);
+
+
+    // Spurious arguments, with return variants
+
+    // Same return type, with spurious arguments (Not permitted)
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void()>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int()>, uf<int(int)>>::value);
+
+    // Convertible return type, with spurious arguments (Not permitted)
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int()>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, uf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int()>, uf<long(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*()>, sf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*()>, uf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<const char*()>, uf<std::string(int)>>::value);
+
+    // Impossible return type, with spurious arguments (Not permitted)
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void()>, uf<int(int)>>::value);
+
+
+    // Argument conversions, with return variants
+
+    // Same return type, Convertible argument
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(long)>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<void(long)>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<void(long)>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(long)>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(long)>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(long)>, uf<int(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(std::string)>, sf<void(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<void(const char*)>, uf<void(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<void(std::string)>, uf<void(const char*)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(std::string)>, sf<int(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(std::string)>, uf<int(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(std::string)>, uf<int(const char*)>>::value);
+
+    // Convertible return type, with convertible arguments
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(long)>, sf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(long)>, uf<void(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(long)>, uf<void(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(long)>, sf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(long)>, uf<long(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(long)>, uf<long(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*(long)>, sf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<const char*(long)>, uf<std::string(int)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<const char*(long)>, uf<std::string(int)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(std::string)>, sf<void(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(std::string)>, uf<void(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(std::string)>, uf<void(const char*)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(std::string)>, sf<long(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<uf<int(std::string)>, uf<long(const char*)>>::value);
+    MONGO_STATIC_ASSERT(std::is_convertible<sf<int(std::string)>, uf<long(const char*)>>::value);
+
+    MONGO_STATIC_ASSERT(
+        !std::is_convertible<uf<const char*(std::string)>, sf<std::string(const char*)>>::value);
+    MONGO_STATIC_ASSERT(
+        std::is_convertible<uf<const char*(std::string)>, uf<std::string(const char*)>>::value);
+    MONGO_STATIC_ASSERT(
+        std::is_convertible<sf<const char*(std::string)>, uf<std::string(const char*)>>::value);
+
+    // Impossible return type, with convertible arguments (Not permitted)
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(long)>, sf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(long)>, uf<int(int)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(long)>, uf<int(int)>>::value);
+
+
+
+    struct X {};
+    struct Y {};
+
+    // Impossible argument conversions, with return variants
+
+    // Same return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(X)>, sf<void(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(X)>, uf<void(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(X)>, uf<void(Y)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, sf<int(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, uf<int(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int(X)>, uf<int(Y)>>::value);
+
+    // Convertible return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, sf<void(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, uf<void(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int(X)>, uf<void(Y)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, sf<long(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<int(X)>, uf<long(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<int(X)>, uf<long(Y)>>::value);
+
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*(X)>, sf<std::string(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*(X)>, uf<std::string(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<const char*(X)>, uf<std::string(Y)>>::value);
+
+    // Impossible return type
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(X)>, sf<int(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(X)>, uf<int(Y)>>::value);
+    MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(X)>, uf<int(Y)>>::value);
+}
+}  // namespace conversion_checking
+
+template <typename U>
+bool accept(std::function<void()> arg, U) {
+    return false;
 }
 
-TEST(SharedFunctionTest, construct_simple_shared_function_from_lambda) {
-    // Implicit construction
-    {
-        RunDetection<0> runDetection;
-        mongo::shared_function<void()> sf = [] { RunDetection<0>::itRan = true; };
-
-        sf();
-
-        ASSERT_TRUE(runDetection.itRan);
-    }
-
-    // Explicit construction
-    {
-        RunDetection<0> runDetection;
-        mongo::shared_function<void()> sf{[] { RunDetection<0>::itRan = true; }};
-
-        sf();
-
-        ASSERT_TRUE(runDetection.itRan);
-    }
+template <typename T,
+          typename U,
+          typename = typename std::enable_if<!std::is_convertible<T, std::function<void()>>::value,
+                                             void>::type>
+bool accept(T arg, U) {
+    return true;
 }
 
-TEST(SharedFunctionTest, assign_simple_shared_function_from_lambda) {
-    // Implicit construction
-    RunDetection<0> runDetection;
-    mongo::shared_function<void()> sf;
-    sf = [] { RunDetection<0>::itRan = true; };
+TEST(UniqueFunctionTest, functionDominanceExample) {
+    mongo::unique_function<void()> uf = [] {};
 
-    sf();
-
-    ASSERT_TRUE(runDetection.itRan);
-}
-
-TEST(SharedFunctionTest, reassign_simple_shared_function_from_lambda) {
-    // Implicit construction
-    RunDetection<0> runDetection0;
-    RunDetection<1> runDetection1;
-
-    mongo::shared_function<void()> sf = [] { RunDetection<0>::itRan = true; };
-
-    sf = [] { RunDetection<1>::itRan = true; };
-
-    sf();
-
-    ASSERT_FALSE(runDetection0.itRan);
-    ASSERT_TRUE(runDetection1.itRan);
-}
-
-TEST(SharedFunctionTest, calling_an_unassigned_shared_function_throws_std_bad_function_call) {
-    mongo::shared_function<void()> sf;
-
-    try {
-        sf();
-        ASSERT_FALSE(true);
-    } catch (const std::bad_function_call&) {
-    }
-    ASSERT_TRUE(true);
-}
-
-TEST(SharedFunctionTest, calling_a_nullptr_assigned_shared_function_throws_std_bad_function_call) {
-    RunDetection<0> runDetection;
-    mongo::shared_function<void()> sf = [] { RunDetection<0>::itRan = true; };
-
-    sf = nullptr;
-
-    try {
-        sf();
-        ASSERT_FALSE(true);
-    } catch (const std::bad_function_call&) {
-    }
-    ASSERT_TRUE(true);
-
-    ASSERT_FALSE(runDetection.itRan);
-}
-
-TEST(SharedFunctionTest, accepts_a_functor_that_is_move_only) {
-    struct Checker {};
-
-    mongo::shared_function<void()> sf = [checkerPtr = std::make_unique<Checker>()]{};
-
-    mongo::shared_function<void()> sf2 = std::move(sf);
-
-    sf = std::move(sf2);
-}
-
-TEST(SharedFunctionTest, accepts_a_functor_that_is_move_only_and_shares_a_single_copy) {
-    auto dataPtr = std::make_unique<int>(0);
-    int& data = *dataPtr;
-
-    mongo::shared_function<void()> sf = [checkerPtr = std::move(dataPtr)] {
-        ++*checkerPtr;
-    };
-
-    ASSERT_EQ(data, 0);
-
-    sf();
-
-    ASSERT_EQ(data, 1);
-
-    mongo::shared_function<void()> sf2 = sf;
-
-    ASSERT_EQ(data, 1);
-
-    sf();
-
-    ASSERT_EQ(data, 2);
-
-    sf2();
-
-    ASSERT_EQ(data, 3);
-
-    sf = sf2;
-
-    ASSERT_EQ(data, 3);
-
-    sf2();
-
-    ASSERT_EQ(data, 4);
-
-    sf();
-
-    ASSERT_EQ(data, 5);
-}
-
-TEST(SharedFunctionTest, accepts_a_functor_that_is_copyable_and_shares_a_single_copy) {
-    mongo::shared_function<const int&()> sf = [data = int(0)]() mutable->const int& {
-        ++data;
-        return data;
-    };
-
-    const int& data = sf();
-
-    ASSERT_EQ(data, 1);
-
-    sf();
-
-    ASSERT_EQ(data, 2);
-
-    mongo::shared_function<const int&()> sf2 = sf;
-
-    ASSERT_EQ(data, 2);
-
-    sf();
-
-    ASSERT_EQ(data, 3);
-
-    sf2();
-
-    ASSERT_EQ(data, 4);
-
-    sf = sf2;
-
-    ASSERT_EQ(data, 4);
-
-    sf2();
-
-    ASSERT_EQ(data, 5);
-
-    sf();
-
-    ASSERT_EQ(data, 6);
-}
-
-TEST(SharedFunctionTest,
-     accepts_a_functor_that_is_copyable_and_started_life_as_a_unique_and_shares_a_single_copy) {
-    mongo::unique_function<const int&()> uf = [data = int(0)]() mutable->const int& {
-        ++data;
-        return data;
-    };
-
-    const int& data = uf();
-
-    ASSERT_EQ(data, 1);
-
-    mongo::shared_function<const int&()> sf = std::move(uf);
-
-    ASSERT_EQ(data, 1);
-
-    sf();
-
-    ASSERT_EQ(data, 2);
-
-    mongo::shared_function<const int&()> sf2 = sf;
-
-    ASSERT_EQ(data, 2);
-
-    sf();
-
-    ASSERT_EQ(data, 3);
-
-    sf2();
-
-    ASSERT_EQ(data, 4);
-
-    sf = sf2;
-
-    ASSERT_EQ(data, 4);
-
-    sf2();
-
-    ASSERT_EQ(data, 5);
-
-    sf();
-
-    ASSERT_EQ(data, 6);
-
-    std::function<void()> f = sf;
-
-    ASSERT_EQ(data, 6);
-
-    f();
-
-    ASSERT_EQ(data, 7);
-}
-
-TEST(SharedFunctionTest, comparison_checks) {
-    mongo::shared_function<void()> sf;
-
-    // Using true/false assertions, as we're testing the actual operators and commutativity here.
-    ASSERT_TRUE(sf == nullptr);
-    ASSERT_TRUE(nullptr == sf);
-    ASSERT_FALSE(sf != nullptr);
-    ASSERT_FALSE(nullptr != sf);
-
-    sf = [] {};
-
-    ASSERT_FALSE(sf == nullptr);
-    ASSERT_FALSE(nullptr == sf);
-    ASSERT_TRUE(sf != nullptr);
-    ASSERT_TRUE(nullptr != sf);
-
-    sf = nullptr;
-
-    ASSERT_TRUE(sf == nullptr);
-    ASSERT_TRUE(nullptr == sf);
-    ASSERT_FALSE(sf != nullptr);
-    ASSERT_FALSE(nullptr != sf);
-}
-
-TEST(SharedFunctionTest, dtor_releases_functor_object_and_does_not_call_function) {
-    RunDetection<0> runDetection0;
-    RunDetection<1> runDetection1;
-
-    struct Checker {
-        ~Checker() {
-            RunDetection<0>::itRan = true;
-        }
-    };
-
-    {
-        mongo::shared_function<void()> sf = [checkerPtr = std::make_unique<Checker>()] {
-            RunDetection<1>::itRan = true;
-        };
-
-        ASSERT_FALSE(runDetection0.itRan);
-        ASSERT_FALSE(runDetection1.itRan);
-    }
-
-    ASSERT_TRUE(runDetection0.itRan);
-    ASSERT_FALSE(runDetection1.itRan);
+    ASSERT_TRUE(accept(std::move(uf), nullptr));
 }
 
 }  // namespace

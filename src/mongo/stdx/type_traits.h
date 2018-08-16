@@ -122,6 +122,7 @@ struct is_invokable : decltype(detail::is_invokable_impl(std::declval<Func>(), s
 
 namespace detail {
 
+// This helps solve the lack of regular void problem, when passing a 'conversion target' as a parameter.
 template <typename T>
 struct magic_carrier {};
 

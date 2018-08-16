@@ -181,6 +181,13 @@ TEST(UniqueFunctionTest, comparison_checks) {
     ASSERT_FALSE(nullptr != uf);
 }
 
+TEST(UniqueFunctionTest, simple_instantiations) {
+    mongo::unique_function<void()> a;
+
+    mongo::unique_function<void()> x = []() -> int { return 42; };
+    x = []() -> int { return 42; };
+}
+
 namespace conversion_checking {
 template <typename FT>
 using uf = mongo::unique_function<FT>;
@@ -388,6 +395,17 @@ TEST(UniqueFunctionTest, functionDominanceExample) {
     mongo::unique_function<void()> uf = [] {};
 
     ASSERT_TRUE(accept(std::move(uf), nullptr));
+}
+
+TEST(UniqueFunctionTest, noexceptness) {
+    auto myLambda = [] {};
+    MONGO_STATIC_ASSERT(noexcept(decltype(myLambda){std::move(myLambda)}));
+    MONGO_STATIC_ASSERT(noexcept(mongo::unique_function<void()>{std::move(myLambda)}));
+
+    const auto throwingLambda = [s = std::string()]{};
+
+    MONGO_STATIC_ASSERT(!noexcept(decltype(throwingLambda){std::move(throwingLambda)}));
+    MONGO_STATIC_ASSERT(!noexcept(mongo::unique_function<void()>{std::move(throwingLambda)}));
 }
 
 }  // namespace

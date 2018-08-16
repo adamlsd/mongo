@@ -49,7 +49,7 @@ class unique_function<RetType(Args...)> {
 public:
     using result_type = RetType;
 
-    ~unique_function() = default;
+    ~unique_function() noexcept = default;
     unique_function() noexcept = default;
 
     unique_function(const unique_function&) = delete;
@@ -58,20 +58,29 @@ public:
     unique_function(unique_function&&) noexcept = default;
     unique_function& operator=(unique_function&&) noexcept = default;
 
+
+    // TODO: Look into creating a mechanism based upon a shared_ptr to `void *`-like state, and a
+    // `void *` accepting function object.  This will permit reusing the core impl object when
+    // converting between related function types, such as
+    // `int (std::string)` -> `void (const char *)`
     template <typename Functor,
               typename = typename std::
-                  enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>::type>
-    unique_function(Functor&& functor) : impl(makeImpl(std::forward<Functor>(functor))) {}
+                  enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>::type,
+              typename = typename std::enable_if<std::is_move_constructible<Functor>::value>::type>
+    unique_function(Functor&& functor) noexcept(noexcept(makeImpl(std::forward<Functor>(functor))))
+        : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
 
     RetType operator()(Args... args) const {
-        if (!*this)
-            throw std::bad_function_call();
+        class bad_unique_function_call : public std::bad_function_call {};
+        if (!*this) {
+            throw bad_unique_function_call();
+        }
         return this->impl->call(std::forward<Args>(args)...);
     }
 
-    explicit operator bool() const {
+    explicit operator bool() const noexcept {
         return static_cast<bool>(this->impl);
     }
 
@@ -98,19 +107,26 @@ public:
 
 private:
     struct Impl {
-        virtual ~Impl() = default;
+        virtual ~Impl() noexcept = default;
 
         virtual RetType call(Args&&...) = 0;
     };
 
+
+    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
+    // `noexcept`, as long as the move construction of the function object being passed is also
+    // `noexcept`.  This ripples out to the accepting template constructor.
     template <typename Functor>
-    static auto makeImpl(Functor functor) {
+    static auto makeImpl_impl(Functor&& functor, std::false_type) noexcept(
+        noexcept(typename std::remove_reference<Functor>::type{std::move(functor)})) {
         class SpecificImpl : public Impl {
         private:
             Functor f;
 
         public:
-            explicit SpecificImpl(Functor f) : f(std::move(f)) {}
+            explicit SpecificImpl(Functor&& func) noexcept(
+                noexcept(typename std::remove_reference<Functor>::type{std::move(func)}))
+                : f(std::move(func)) {}
 
             RetType call(Args&&... args) override {
                 return f(std::forward<Args>(args)...);
@@ -120,8 +136,46 @@ private:
         return std::make_unique<SpecificImpl>(std::move(functor));
     }
 
-    template <typename Function>
-    friend class shared_function;
+
+    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
+    // `noexcept`, as long as the move construction of the function object being passed is also
+    // `noexcept`.  This ripples out to the accepting template constructor.
+    // This overload is needed to squelch problems in the `T ()` -> `void ()` case.
+    template <typename Functor>
+    static auto makeImpl_impl(Functor&& functor, std::true_type) noexcept(
+        noexcept(typename std::remove_reference<Functor>::type{std::move(functor)})) {
+        class SpecificImpl : public Impl {
+        private:
+            Functor f;
+
+        public:
+            explicit SpecificImpl(Functor&& func) noexcept(
+                noexcept(typename std::remove_reference<Functor>::type{std::move(func)}))
+                : f(std::move(func)) {}
+
+            void call(Args&&... args) override {
+                (void)f(std::forward<Args>(args)...);
+            }
+        };
+
+        return std::make_unique<SpecificImpl>(std::move(functor));
+    }
+
+    template <typename Functor>
+    static constexpr auto selectCase(Functor&& f) noexcept {
+        constexpr bool kVoidCase = stdx::conjunction<
+            std::is_void<RetType>,
+            stdx::negation<std::is_void<typename std::result_of<Functor(Args...)>::type>>>::value;
+        using selected_case = stdx::bool_constant<kVoidCase>;
+        return selected_case{};
+    }
+
+    template <typename Functor>
+    static auto makeImpl(Functor&& functor) noexcept(noexcept(makeImpl_impl(
+        std::forward<Functor>(functor), selectCase(std::forward<Functor>(functor))))) {
+        return makeImpl_impl(std::forward<Functor>(functor),
+                             selectCase(std::forward<Functor>(functor)));
+    }
 
     std::unique_ptr<Impl> impl;
 };

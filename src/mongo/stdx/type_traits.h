@@ -61,13 +61,17 @@ namespace stdx {
 
 using std::void_t;
 
-using std::is_invokable;
+using std::bool_constant;
 
-using std::is_invokable_r;
+using std::negation;
 
 using std::disjunction;
 
 using std::conjunction;
+
+using std::is_invokable;
+
+using std::is_invokable_r;
 
 }  // namespace stdx
 }  // namespace mongo
@@ -87,6 +91,11 @@ struct make_void {
 template <typename... Args>
 using void_t = typename detail::make_void<Args...>::type;
 
+template <bool b>
+using bool_constant = std::integral_constant<bool, b>;
+
+template <typename T>
+struct negation : stdx::bool_constant<!bool(T::value)> {};
 
 template <typename... B>
 struct disjunction : std::false_type {};

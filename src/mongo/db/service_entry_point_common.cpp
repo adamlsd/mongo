@@ -47,6 +47,7 @@
 #include "mongo/db/curop_metrics.h"
 #include "mongo/db/cursor_manager.h"
 #include "mongo/db/dbdirectclient.h"
+#include "mongo/db/handle_request_response.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/introspect.h"
 #include "mongo/db/jsobj.h"
@@ -134,7 +135,9 @@ const StringMap<int> sessionCheckoutWhitelist = {{"abortTransaction", 1},
                                                  {"mapReduce", 1},
                                                  {"prepareTransaction", 1},
                                                  {"refreshLogicalSessionCacheNow", 1},
-                                                 {"update", 1}};
+                                                 {"update", 1},
+                                                 {"voteAbortTransaction", 1},
+                                                 {"voteCommitTransaction", 1}};
 
 bool shouldActivateFailCommandFailPoint(const BSONObj& data, StringData cmdName) {
     if (cmdName == "configureFailPoint"_sd)  // Banned even if in failCommands.
@@ -216,30 +219,6 @@ void generateErrorResponse(OperationContext* opCtx,
     replyBuilder->reset();
     replyBuilder->setCommandReply(exception.toStatus(), extraFields);
     replyBuilder->getBodyBuilder().appendElements(replyMetadata);
-}
-
-BSONObj getErrorLabels(const boost::optional<OperationSessionInfoFromClient>& sessionOptions,
-                       const std::string& commandName,
-                       ErrorCodes::Error code) {
-    // By specifying "autocommit", the user indicates they want to run a transaction.
-    if (!sessionOptions || !sessionOptions->getAutocommit()) {
-        return {};
-    }
-
-    bool isRetryable = ErrorCodes::isNotMasterError(code) || ErrorCodes::isShutdownError(code);
-    bool isTransientTransactionError = code == ErrorCodes::WriteConflict  //
-        || code == ErrorCodes::SnapshotUnavailable                        //
-        || code == ErrorCodes::NoSuchTransaction                          //
-        || code == ErrorCodes::LockTimeout                                //
-        || code == ErrorCodes::PreparedTransactionInProgress              //
-        // Clients can retry a single commitTransaction command, but cannot retry the whole
-        // transaction if commitTransaction fails due to NotMaster.
-        || (isRetryable && (commandName != "commitTransaction"));
-
-    if (isTransientTransactionError) {
-        return BSON("errorLabels" << BSON_ARRAY("TransientTransactionError"));
-    }
-    return {};
 }
 
 /**
@@ -638,7 +617,7 @@ void execCommandDatabase(OperationContext* opCtx,
 
         // TODO: move this back to runCommands when mongos supports OperationContext
         // see SERVER-18515 for details.
-        rpc::readRequestMetadata(opCtx, request.body);
+        rpc::readRequestMetadata(opCtx, request.body, command->requiresAuth());
         rpc::TrackingMetadata::get(opCtx).initWithOperName(command->getName());
 
         auto const replCoord = repl::ReplicationCoordinator::get(opCtx);
@@ -668,9 +647,11 @@ void execCommandDatabase(OperationContext* opCtx,
         // Parse the arguments specific to multi-statement transactions.
         boost::optional<bool> startMultiDocTxn = boost::none;
         boost::optional<bool> autocommitVal = boost::none;
+        boost::optional<bool> coordinatorVal = boost::none;
         if (sessionOptions) {
             startMultiDocTxn = sessionOptions->getStartTransaction();
             autocommitVal = sessionOptions->getAutocommit();
+            coordinatorVal = sessionOptions->getCoordinator();
             if (command->getName() == "doTxn") {
                 // Autocommit and 'startMultiDocTxn' are overridden for 'doTxn' to get the oplog
                 // entry generation behavior used for multi-document transactions. The 'doTxn'
@@ -703,7 +684,7 @@ void execCommandDatabase(OperationContext* opCtx,
         // handles the appropriate state management for both multi-statement transactions and
         // retryable writes.
         OperationContextSessionMongod sessionTxnState(
-            opCtx, shouldCheckoutSession, autocommitVal, startMultiDocTxn);
+            opCtx, shouldCheckoutSession, autocommitVal, startMultiDocTxn, coordinatorVal);
 
         std::unique_ptr<MaintenanceModeSetter> mmSetter;
 

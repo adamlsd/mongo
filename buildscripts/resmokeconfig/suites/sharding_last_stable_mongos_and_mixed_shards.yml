@@ -33,12 +33,13 @@ selector:
   - jstests/sharding/collation_targeting_inherited.js
   - jstests/sharding/geo_near_random1.js
   - jstests/sharding/geo_near_random2.js
+  - jstests/sharding/out_from_stale_mongos.js
   - jstests/sharding/out_to_existing.js
   - jstests/sharding/out_to_non_existing.js
+  - jstests/sharding/restart_transactions.js
   - jstests/sharding/shard7.js
   - jstests/sharding/shard_collection_existing_zones.js
-  - jstests/sharding/snapshot_aggregate_mongos.js
-  - jstests/sharding/snapshot_find_mongos.js
+  - jstests/sharding/snapshot_cursor_commands_mongos.js
   - jstests/sharding/update_sharded.js
   # SERVER-35977
   - jstests/sharding/change_stream_lookup_single_shard_cluster.js

@@ -1744,7 +1744,8 @@ if env.TargetOSIs('posix'):
     # SERVER-9761: Ensure early detection of missing symbols in dependent libraries at program
     # startup.
     if env.TargetOSIs('darwin'):
-        env.Append( LINKFLAGS=["-Wl,-bind_at_load"] )
+        if env.TargetOSIs('macOS'):
+            env.Append( LINKFLAGS=["-Wl,-bind_at_load"] )
     else:
         env.Append( LINKFLAGS=["-Wl,-z,now"] )
         env.Append( LINKFLAGS=["-rdynamic"] )
@@ -2145,6 +2146,10 @@ def doConfigure(myenv):
         # This warning was added in clang-5 and incorrectly flags our implementation of
         # exceptionToStatus(). See https://bugs.llvm.org/show_bug.cgi?id=34804
         AddToCCFLAGSIfSupported(myenv, "-Wno-exceptions")
+
+        # These warnings begin in gcc-8.2 and we should get rid of these disables at some point.
+        AddToCCFLAGSIfSupported(env, '-Wno-format-truncation')
+        AddToCXXFLAGSIfSupported(env, '-Wno-class-memaccess')
 
 
         # Check if we can set "-Wnon-virtual-dtor" when "-Werror" is set. The only time we can't set it is on

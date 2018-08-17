@@ -63,11 +63,13 @@ public:
     // `void *` accepting function object.  This will permit reusing the core impl object when
     // converting between related function types, such as
     // `int (std::string)` -> `void (const char *)`
-    template <typename Functor,
-              typename = typename std::
-                  enable_if<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>::type,
-              typename = typename std::enable_if<std::is_move_constructible<Functor>::value>::type>
-    unique_function(Functor&& functor) noexcept(noexcept(makeImpl(std::forward<Functor>(functor))))
+    template <
+        typename Functor,
+        typename = std::enable_if_t<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>,
+        typename = std::enable_if_t<std::is_move_constructible<Functor>::value, void>>
+    /* implicit */
+    unique_function(Functor&& functor) noexcept(noexcept(std::remove_reference_t<Functor>{
+        std::move(functor)}))
         : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
@@ -112,69 +114,46 @@ private:
         virtual RetType call(Args&&...) = 0;
     };
 
-
-    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
-    // `noexcept`, as long as the move construction of the function object being passed is also
-    // `noexcept`.  This ripples out to the accepting template constructor.
     template <typename Functor>
-    static auto makeImpl_impl(Functor&& functor, std::false_type) noexcept(
-        noexcept(typename std::remove_reference<Functor>::type{std::move(functor)})) {
-        class SpecificImpl : public Impl {
-        private:
-            Functor f;
-
-        public:
-            explicit SpecificImpl(Functor&& func) noexcept(
-                noexcept(typename std::remove_reference<Functor>::type{std::move(func)}))
-                : f(std::move(func)) {}
-
-            RetType call(Args&&... args) override {
-                return f(std::forward<Args>(args)...);
-            }
-        };
-
-        return std::make_unique<SpecificImpl>(std::move(functor));
-    }
-
-
-    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
-    // `noexcept`, as long as the move construction of the function object being passed is also
-    // `noexcept`.  This ripples out to the accepting template constructor.
-    // This overload is needed to squelch problems in the `T ()` -> `void ()` case.
-    template <typename Functor>
-    static auto makeImpl_impl(Functor&& functor, std::true_type) noexcept(
-        noexcept(typename std::remove_reference<Functor>::type{std::move(functor)})) {
-        class SpecificImpl : public Impl {
-        private:
-            Functor f;
-
-        public:
-            explicit SpecificImpl(Functor&& func) noexcept(
-                noexcept(typename std::remove_reference<Functor>::type{std::move(func)}))
-                : f(std::move(func)) {}
-
-            void call(Args&&... args) override {
-                (void)f(std::forward<Args>(args)...);
-            }
-        };
-
-        return std::make_unique<SpecificImpl>(std::move(functor));
-    }
-
-    template <typename Functor>
-    static constexpr auto selectCase(Functor&& f) noexcept {
+    static constexpr auto selectCase() noexcept {
         constexpr bool kVoidCase = stdx::conjunction<
             std::is_void<RetType>,
-            stdx::negation<std::is_void<typename std::result_of<Functor(Args...)>::type>>>::value;
+            stdx::negation<std::is_void<std::result_of_t<Functor(Args...)>>>>::value;
         using selected_case = stdx::bool_constant<kVoidCase>;
         return selected_case{};
     }
 
+    // These overload helpers are needed to squelch problems in the `T ()` -> `void ()` case.
     template <typename Functor>
-    static auto makeImpl(Functor&& functor) noexcept(noexcept(makeImpl_impl(
-        std::forward<Functor>(functor), selectCase(std::forward<Functor>(functor))))) {
-        return makeImpl_impl(std::forward<Functor>(functor),
-                             selectCase(std::forward<Functor>(functor)));
+    static void callRegularVoid(const std::true_type isVoid, Functor& f, Args&&... args) {
+        // The result is not cast to void, to help preserve detection of `[[nodiscard]]` violations.
+        f(std::forward<Args>(args)...);
+    }
+
+    template <typename Functor>
+    static void callRegularVoid(const std::false_type isNotVoid, Functor& f, Args&&... args) {
+        return f(std::forward<Args>(args)...);
+    }
+
+
+    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
+    // `noexcept`, as long as the move construction of the function object being passed is also
+    // `noexcept`.  This ripples out to the accepting template constructor.
+    template <typename Functor>
+    static auto makeImpl(Functor&& functor) {
+        class SpecificImpl : public Impl {
+        private:
+            Functor f;
+
+        public:
+            explicit SpecificImpl(Functor&& func) : f(std::move(func)) {}
+
+            RetType call(Args&&... args) override {
+                return callRegularVoid(selectCase<Functor>(), f, std::forward<Args>(args)...);
+            }
+        };
+
+        return std::make_unique<SpecificImpl>(std::move(functor));
     }
 
     std::unique_ptr<Impl> impl;

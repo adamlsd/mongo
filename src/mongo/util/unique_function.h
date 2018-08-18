@@ -50,7 +50,7 @@ public:
     using result_type = RetType;
 
     ~unique_function() noexcept = default;
-    unique_function() noexcept = default;
+    unique_function() = default;
 
     unique_function(const unique_function&) = delete;
     unique_function& operator=(const unique_function&) = delete;
@@ -59,7 +59,7 @@ public:
     unique_function& operator=(unique_function&&) noexcept = default;
 
 
-    // TODO: Look into creating a mechanism based upon a shared_ptr to `void *`-like state, and a
+    // TODO: Look into creating a mechanism based upon a unique_ptr to `void *`-like state, and a
     // `void *` accepting function object.  This will permit reusing the core impl object when
     // converting between related function types, such as
     // `int (std::string)` -> `void (const char *)`
@@ -70,20 +70,23 @@ public:
     /* implicit */
     unique_function(Functor&& functor) noexcept(noexcept(std::remove_reference_t<Functor>{
         std::move(functor)}))
-        : impl(makeImpl(std::forward<Functor>(functor))) {}
+        : entryPointAndImpl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
 
     RetType operator()(Args... args) const {
         class bad_unique_function_call : public std::bad_function_call {};
+
         if (!*this) {
             throw bad_unique_function_call();
         }
-        return this->impl->call(std::forward<Args>(args)...);
+        auto& func = std::get<0>(this->entryPointAndImpl);
+        auto& impl = std::get<1>(this->entryPointAndImpl);
+        return func(impl.get(), std::forward<Args>(args)...);
     }
 
     explicit operator bool() const noexcept {
-        return static_cast<bool>(this->impl);
+        return static_cast<bool>(std::get<1>(this->entryPointAndImpl));
     }
 
     // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>`
@@ -110,8 +113,6 @@ public:
 private:
     struct Impl {
         virtual ~Impl() noexcept = default;
-
-        virtual RetType call(Args&&...) = 0;
     };
 
     template <typename Functor>
@@ -131,32 +132,34 @@ private:
     }
 
     template <typename Functor>
-    static void callRegularVoid(const std::false_type isNotVoid, Functor& f, Args&&... args) {
+    static RetType callRegularVoid(const std::false_type isNotVoid, Functor& f, Args&&... args) {
         return f(std::forward<Args>(args)...);
     }
-
 
     // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
     // `noexcept`, as long as the move construction of the function object being passed is also
     // `noexcept`.  This ripples out to the accepting template constructor.
     template <typename Functor>
     static auto makeImpl(Functor&& functor) {
-        class SpecificImpl : public Impl {
-        private:
+        struct SpecificImpl : Impl {
             Functor f;
 
-        public:
             explicit SpecificImpl(Functor&& func) : f(std::move(func)) {}
-
-            RetType call(Args&&... args) override {
-                return callRegularVoid(selectCase<Functor>(), f, std::forward<Args>(args)...);
-            }
         };
 
-        return std::make_unique<SpecificImpl>(std::move(functor));
+        auto specificImpl = std::make_unique<SpecificImpl>(std::move(functor));
+        CallerType caller;
+
+        caller = [](Impl* const imp, Args&&... args) {
+            return callRegularVoid(selectCase<Functor>(),
+                                   static_cast<SpecificImpl*>(imp)->f,
+                                   std::forward<Args>(args)...);
+        };
+
+        return std::make_tuple(std::move(caller), std::move(specificImpl));
     }
 
-    std::unique_ptr<Impl> impl;
+    using CallerType = RetType (*)(Impl*, Args&&...);
+    std::tuple<CallerType, std::unique_ptr<Impl>> entryPointAndImpl;
 };
-
 }  // namespace mongo

@@ -100,26 +100,6 @@ public:
     template <typename Any>
     operator std::function<Any>() = delete;
 
-    template <typename F>
-    friend bool operator==(const unique_function<F>& lhs, std::nullptr_t) noexcept {
-        return !lhs;
-    }
-
-    template <typename F>
-    friend bool operator!=(const unique_function<F>& lhs, std::nullptr_t) noexcept {
-        return static_cast<bool>(lhs);
-    }
-
-    template <typename F>
-    friend bool operator==(std::nullptr_t, const unique_function<F>& rhs) noexcept {
-        return !rhs;
-    }
-
-    template <typename F>
-    friend bool operator!=(std::nullptr_t, const unique_function<F>& rhs) noexcept {
-        return static_cast<bool>(rhs);
-    }
-
 private:
     struct Impl {
         virtual ~Impl() noexcept = default;
@@ -156,4 +136,25 @@ private:
 
     std::unique_ptr<Impl> impl;
 };
+
+template <typename F>
+bool operator==(const unique_function<F>& lhs, std::nullptr_t) noexcept {
+    return !lhs;
+}
+
+template <typename F>
+bool operator!=(const unique_function<F>& lhs, std::nullptr_t) noexcept {
+    return static_cast<bool>(lhs);
+}
+
+template <typename F>
+bool operator==(std::nullptr_t, const unique_function<F>& rhs) noexcept {
+    return !rhs;
+}
+
+template <typename F>
+bool operator!=(std::nullptr_t, const unique_function<F>& rhs) noexcept {
+    return static_cast<bool>(rhs);
+}
+
 }  // namespace mongo

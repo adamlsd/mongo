@@ -370,15 +370,4 @@ TEST(UniqueFunctionTest, functionDominanceExample) {
     ASSERT_TRUE(accept(std::move(uf), nullptr));
 }
 
-TEST(UniqueFunctionTest, noexceptness) {
-    auto myLambda = [] {};
-    MONGO_STATIC_ASSERT(noexcept(decltype(myLambda){std::move(myLambda)}));
-    MONGO_STATIC_ASSERT(noexcept(mongo::unique_function<void()>{std::move(myLambda)}));
-
-    const auto throwingLambda = [s = std::string()]{};
-
-    MONGO_STATIC_ASSERT(!noexcept(decltype(throwingLambda){std::move(throwingLambda)}));
-    MONGO_STATIC_ASSERT(!noexcept(mongo::unique_function<void()>{std::move(throwingLambda)}));
-}
-
 }  // namespace

@@ -122,13 +122,6 @@ private:
         virtual RetType call(Args&&... args) = 0;
     };
 
-    template <typename Functor>
-    static constexpr auto selectCase() noexcept {
-        constexpr bool kIsVoidCase =
-            std::is_void<RetType>() && !std::is_void<std::result_of_t<Functor(Args...)>>();
-        return stdx::bool_constant<kIsVoidCase>;
-    }
-
     // These overload helpers are needed to squelch problems in the `T ()` -> `void ()` case.
     template <typename Functor>
     static void callRegularVoid(const std::true_type isVoid, Functor& f, Args&&... args) {
@@ -151,7 +144,7 @@ private:
             explicit SpecificImpl(Functor&& func) : f(std::move(func)) {}
 
             RetType call(Args&&... args) override {
-                return callRegularVoid(selectCase<Functor>(), f, std::forward<Args>(args)...);
+                return callRegularVoid(std::is_void<RetType>(), f, std::forward<Args>(args)...);
             }
 
             std::decay_t<Functor> f;

@@ -26,7 +26,7 @@
  *    then also delete it in the license file.
  */
 
-#include "mongo/util/unique_function.h"
+#include "mongo/util/functional.h"
 
 #include "mongo/unittest/unittest.h"
 
@@ -95,33 +95,6 @@ TEST(UniqueFunctionTest, reassign_simple_unique_function_from_lambda) {
 
     ASSERT_FALSE(runDetection0.itRan);
     ASSERT_TRUE(runDetection1.itRan);
-}
-
-TEST(UniqueFunctionTest, calling_an_unassigned_unique_function_throws_std_bad_function_call) {
-    mongo::unique_function<void()> uf;
-
-    try {
-        uf();
-        ASSERT_FALSE(true);
-    } catch (const std::bad_function_call&) {
-    }
-    ASSERT_TRUE(true);
-}
-
-TEST(UniqueFunctionTest, calling_a_nullptr_assigned_unique_function_throws_std_bad_function_call) {
-    RunDetection<0> runDetection;
-    mongo::unique_function<void()> uf = [] { RunDetection<0>::itRan = true; };
-
-    uf = nullptr;
-
-    try {
-        uf();
-        ASSERT_FALSE(true);
-    } catch (const std::bad_function_call&) {
-    }
-    ASSERT_TRUE(true);
-
-    ASSERT_FALSE(runDetection.itRan);
 }
 
 TEST(UniqueFunctionTest, accepts_a_functor_that_is_move_only) {

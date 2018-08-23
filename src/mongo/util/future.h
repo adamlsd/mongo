@@ -107,8 +107,8 @@ inline auto call(Func&& func) {
 template <typename Func>
 inline auto call(Func&& func, FakeVoid) {
     auto useStatus = std::integral_constant<bool,
-                                            (!stdx::is_invokable<Func>() &&
-                                             stdx::is_invokable<Func, Status>())>();
+                                            (!stdx::is_invocable<Func>() &&
+                                             stdx::is_invocable<Func, Status>())>();
     return callVoidOrStatus(func, useStatus);
 }
 

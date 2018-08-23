@@ -63,7 +63,6 @@ struct type_identity {
     using type = T;
 };
 
-
 template <typename T>
 using type_identity_t = type_identity<T>;
 
@@ -111,16 +110,13 @@ template <typename... B>
 struct disjunction : std::false_type {};
 template <typename B>
 struct disjunction<B> : B {};
-
 template <typename B1, typename... B>
 struct disjunction<B1, B...> : std::conditional_t<bool(B1::value), B1, disjunction<B...>> {};
-
 
 template <typename...>
 struct conjunction : std::true_type {};
 template <typename B>
 struct conjunction<B> : B {};
-
 template <typename B1, typename... B>
 struct conjunction<B1, B...> : std::conditional_t<bool(B1::value), conjunction<B...>, B1> {};
 

@@ -59,12 +59,12 @@ public:
     unique_function(unique_function&&) noexcept = default;
     unique_function& operator=(unique_function&&) noexcept = default;
 
-    void swap(unique_function& that) {
+    void swap(unique_function& that) noexcept {
         using std::swap;
         swap(this->impl, that.impl);
     }
 
-    friend void swap(unique_function& a, unique_function& b) {
+    friend void swap(unique_function& a, unique_function& b) noexcept {
         a.swap(b);
     }
 
@@ -78,9 +78,7 @@ public:
         typename = std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, void>,
         typename = std::enable_if_t<std::is_move_constructible<Functor>::value, void>>
     /* implicit */
-    unique_function(Functor&& functor) noexcept(noexcept(std::remove_reference_t<Functor>{
-        std::move(functor)}))
-        : impl(makeImpl(std::forward<Functor>(functor))) {}
+    unique_function(Functor&& functor) : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
 

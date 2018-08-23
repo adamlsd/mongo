@@ -91,6 +91,7 @@ public:
         return static_cast<bool>(this->impl);
     }
 
+#if 0
     // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>` be
     // `std::false_type`.  `mongo::unique_function` objects are not convertible to any kind of
     // `std::function` object, since the latter requires a copy constructor, which the former does
@@ -115,6 +116,7 @@ public:
     friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
         return static_cast<bool>(rhs);
     }
+#endif
 
 private:
     struct Impl {

@@ -71,25 +71,6 @@ using type_identity_t = stdx::type_identity<T>;
 }  // namespace stdx
 }  // namespace mongo
 
-// Using `std::result_of` can cause strange problems on MSVC15.
-#ifdef _MSC_VER
-namespace mongo {
-namespace stdx {
-
-using boost::result_of;
-
-}  // namespace stdx
-}  // namespace mongo
-#else
-namespace mongo {
-namespace stdx {
-
-using std::result_of;
-
-}  // namespace stdx
-}  // namespace mongo
-#endif
-
 #if __cplusplus >= 201703
 
 namespace mongo {
@@ -144,7 +125,7 @@ struct conjunction<B1, B...> : std::conditional_t<bool(B1::value), stdx::conjunc
 namespace detail {
 template <typename Func,
           typename... Args,
-          typename = typename stdx::result_of<Func && (Args && ...)>::type>
+          typename = typename std::result_of<Func && (Args && ...)>::type>
 auto is_invocable_impl(Func&& func, Args&&... args) -> std::true_type;
 auto is_invocable_impl(...) -> std::false_type;
 }  // namespace detail
@@ -161,7 +142,7 @@ namespace detail {
 template <typename R,
           typename Func,
           typename... Args,
-          typename ComputedResult = typename stdx::result_of<Func && (Args && ...)>::type>
+          typename ComputedResult = typename std::result_of<Func && (Args && ...)>::type>
 auto is_invocable_r_impl(stdx::type_identity<R>, Func&& func, Args&&... args) ->
     typename stdx::disjunction<std::is_void<R>,
                                std::is_same<ComputedResult, R>,

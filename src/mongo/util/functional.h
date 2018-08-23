@@ -93,8 +93,12 @@ public:
         return static_cast<bool>(this->impl);
     }
 
-    // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>`
-    // be `std::false_type`.
+    // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>` be
+    // `std::false_type`.  `mongo::unique_function` objects are not convertible to any kind of
+    // `std::function` object, since the latter requires a copy constructor, which the former does
+    // not provide.  If you see a compiler error which references this line, you have tried to
+    // assign a `unique_function` object to a `std::function` object which is impossible -- please
+    // check your variables and function signatures.
     template <typename Any>
     operator std::function<Any>() = delete;
 

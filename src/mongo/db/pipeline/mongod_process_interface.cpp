@@ -291,6 +291,10 @@ Status MongoDInterface::attachCursorSourceToPipeline(
 
     PipelineD::prepareCursorSource(autoColl->getCollection(), expCtx->ns, nullptr, pipeline);
 
+    // Optimize again, since there may be additional optimizations that can be done after adding
+    // the initial cursor stage.
+    pipeline->optimizePipeline();
+
     return Status::OK();
 }
 
@@ -412,6 +416,31 @@ BackupCursorState MongoDInterface::openBackupCursor(OperationContext* opCtx) {
 void MongoDInterface::closeBackupCursor(OperationContext* opCtx, std::uint64_t cursorId) {
     auto backupCursorService = BackupCursorService::get(opCtx->getServiceContext());
     backupCursorService->closeBackupCursor(opCtx, cursorId);
+}
+
+std::vector<BSONObj> MongoDInterface::getMatchingPlanCacheEntryStats(
+    OperationContext* opCtx, const NamespaceString& nss, const MatchExpression* matchExp) const {
+    const auto serializer = [](const PlanCacheEntry& entry) {
+        BSONObjBuilder out;
+        Explain::planCacheEntryToBSON(entry, &out);
+        return out.obj();
+    };
+
+    const auto predicate = [&matchExp](const BSONObj& obj) {
+        return !matchExp ? true : matchExp->matchesBSON(obj);
+    };
+
+    AutoGetCollection autoColl(opCtx, nss, MODE_IS);
+    const auto collection = autoColl.getCollection();
+    uassert(
+        50933, str::stream() << "collection '" << nss.toString() << "' does not exist", collection);
+
+    const auto infoCache = collection->infoCache();
+    invariant(infoCache);
+    const auto planCache = infoCache->getPlanCache();
+    invariant(planCache);
+
+    return planCache->getMatchingStats(serializer, predicate);
 }
 
 BSONObj MongoDInterface::_reportCurrentOpForClient(OperationContext* opCtx,

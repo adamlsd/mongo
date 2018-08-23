@@ -133,6 +133,7 @@ env.CppUnitTest(
         'auth/authmocks',
         'common',
         'op_observer_d',
+        'repl/oplog_interface_local',
         'repl/replmocks',
         'service_context_d_test_fixture',
     ],
@@ -628,6 +629,7 @@ env.Library(
         'single_transaction_stats.cpp',
         'transaction_coordinator.cpp',
         'transaction_coordinator_commands_impl.cpp',
+        'transaction_metrics_observer.cpp',
         'transaction_participant.cpp',
         'transaction_history_iterator.cpp',
         env.Idlc('session_txn_record.idl')[0],
@@ -912,6 +914,7 @@ env.Library(
     LIBDEPS=[
         '$BUILD_DIR/mongo/db/catalog/collection',
         '$BUILD_DIR/mongo/db/catalog/database',
+        'rw_concern_d',
         'background',
         'logical_clock',
     ],
@@ -919,6 +922,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/catalog/document_validation',
         '$BUILD_DIR/mongo/db/catalog/index_create',
         '$BUILD_DIR/mongo/db/catalog/index_key_validate',
+        '$BUILD_DIR/mongo/db/storage/storage_repair_observer',
         '$BUILD_DIR/mongo/db/repl/oplog',
     ],
 )
@@ -1060,7 +1064,9 @@ env.Library(
         # See the additional comments in instance.cpp for details.
         'instance.cpp'
     ],
-    LIBDEPS=[
+    LIBDEPS_PRIVATE=[
+        # DO NOT ADD ADDITIONAL FILES TO THIS LIST.
+        # This list should be gradually becoming empty.
         "$BUILD_DIR/mongo/db/bson/dotted_path_support",
         "$BUILD_DIR/mongo/db/logical_time_metadata_hook",
         "$BUILD_DIR/mongo/db/ttl_collection_cache",
@@ -1147,6 +1153,7 @@ env.Library(
         'repair_database',
         'repl/drop_pending_collection_reaper',
         'repl/repl_settings',
+        'storage/storage_repair_observer',
     ],
 )
 

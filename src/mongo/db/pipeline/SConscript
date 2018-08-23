@@ -168,17 +168,6 @@ env.Library(
 )
 
 env.Library(
-    target='cluster_aggregation_planner',
-    source=[
-        'cluster_aggregation_planner.cpp',
-    ],
-    LIBDEPS=[
-        'pipeline',
-        '$BUILD_DIR/mongo/s/query/cluster_client_cursor',
-    ]
-)
-
-env.Library(
     target='granularity_rounder',
     source=[
         'granularity_rounder.cpp',
@@ -213,6 +202,7 @@ env.CppUnitTest(
         'document_source_check_resume_token_test.cpp',
         'document_source_count_test.cpp',
         'document_source_current_op_test.cpp',
+        'document_source_plan_cache_stats_test.cpp',
         'document_source_exchange_test.cpp',
         'document_source_geo_near_test.cpp',
         'document_source_graph_lookup_test.cpp',
@@ -347,6 +337,7 @@ pipelineeEnv.Library(
         'document_source_update_on_add_shard.cpp',
         'document_source_out.cpp',
         'document_source_out_replace_coll.cpp',
+        'document_source_plan_cache_stats.cpp',
         'document_source_project.cpp',
         'document_source_redact.cpp',
         'document_source_replace_root.cpp',
@@ -450,7 +441,7 @@ env.CppUnitTest(
         '$BUILD_DIR/mongo/db/repl/replmocks',
         '$BUILD_DIR/mongo/db/service_context_test_fixture',
         '$BUILD_DIR/mongo/s/is_mongos',
-        'cluster_aggregation_planner',
+        '$BUILD_DIR/mongo/s/query/cluster_aggregate',
         'document_source_mock',
         'document_value_test_util',
         'pipeline',

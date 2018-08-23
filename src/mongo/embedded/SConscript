@@ -70,7 +70,24 @@ env.Library(
     ],
 )
 
-env.Library(
+capiEnv = env.Clone()
+capiEnv.AppendUnique(
+    CPPDEFINES=[
+        'MONGO_EMBEDDED_CAPI_COMPILING',
+    ],
+    SHCCFLAGS=[
+        '-fvisibility=hidden' if env.TargetOSIs('posix') else [],
+    ],
+)
+
+if get_option('link-model') == 'static':
+    capiEnv.AppendUnique(
+        CPPDEFINES=[
+            'MONGO_EMBEDDED_CAPI_STATIC',
+        ],
+    )
+
+capiEnv.Library(
     target='mongo_embedded_capi',
     source=[
         'capi.cpp',
@@ -82,7 +99,7 @@ env.Library(
         'embedded',
     ],
     INSTALL_ALIAS=[
-        'mobile-dev',
+        'embedded-dev',
     ],
 )
 
@@ -91,7 +108,7 @@ if get_option('install-mode') == 'hygienic':
         'include/mongo/embedded-v1/mongo/embedded',
         source=['capi.h'],
         INSTALL_ALIAS=[
-            'mobile-dev',
+            'embedded-dev',
         ],
     )
 
@@ -111,7 +128,7 @@ capiTest = yamlEnv.Program(
         'mongo_embedded_capi',
     ],
     INSTALL_ALIAS=[
-        'mobile-test',
+        'embedded-test',
     ],
 )
 
@@ -134,7 +151,7 @@ mongoed = yamlEnv.Program(
         'embedded_integration_helpers',
     ],
     INSTALL_ALIAS=[
-        'mobile-test',
+        'embedded-test',
     ],
 )
 
@@ -148,7 +165,24 @@ if not hygienic:
 if not env['MONGO_HAVE_LIBMONGOC']:
     Return()
 
-env.Library(
+mongocClientEnv = env.Clone()
+mongocClientEnv.AppendUnique(
+    CPPDEFINES=[
+        'MONGO_EMBEDDED_MONGOC_CLIENT_COMPILING',
+     ],
+    SHCCFLAGS=[
+        '-fvisibility=hidden' if env.TargetOSIs('posix') else [],
+    ],
+)
+
+if get_option('link-model') == 'static':
+    mongocClientEnv.AppendUnique(
+        CPPDEFINES=[
+            'MONGO_EMBEDDED_MONGOC_CLIENT_STATIC',
+        ],
+    )
+
+mongocClientEnv.Library(
     target='mongo_embedded_mongoc_client',
     source=[
         'mongoc_client.cpp',
@@ -163,7 +197,7 @@ env.Library(
         'bson-1.0',
     ],
     INSTALL_ALIAS=[
-        'mobile-dev',
+        'embedded-dev',
     ],
 )
 
@@ -172,7 +206,7 @@ if get_option('install-mode') == 'hygienic':
         'include/mongo/embedded-v1/mongo/embedded',
         source=['mongoc_client.h'],
         INSTALL_ALIAS=[
-            'mobile-dev',
+            'embedded-dev',
         ],
     )
 
@@ -190,7 +224,7 @@ clientTest = yamlEnv.Program(
         'mongo_embedded_mongoc_client',
     ],
     INSTALL_ALIAS=[
-        'mobile-test',
+        'embedded-test',
     ],
 )
 

@@ -490,6 +490,9 @@ ExitCode _initAndListen(int listenPort) {
                   << "User and role management commands require auth data to have "
                   << "at least schema version " << AuthorizationManager::schemaVersion26Final
                   << " but startup could not verify schema version: " << status;
+            log() << "To manually repair the 'authSchema' document in the admin.system.version "
+                     "collection, start up with --setParameter "
+                     "startupAuthSchemaValidation=false to disable validation.";
             exitCleanly(EXIT_NEED_UPGRADE);
         }
 
@@ -639,6 +642,12 @@ ExitCode _initAndListen(int listenPort) {
     auto start = serviceContext->getServiceExecutor()->start();
     if (!start.isOK()) {
         error() << "Failed to start the service executor: " << start;
+        return EXIT_NET_ERROR;
+    }
+
+    start = serviceContext->getServiceEntryPoint()->start();
+    if (!start.isOK()) {
+        error() << "Failed to start the service entry point: " << start;
         return EXIT_NET_ERROR;
     }
 

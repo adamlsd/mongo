@@ -78,7 +78,6 @@ namespace stdx {
 using std::void_t;
 using std::bool_constant;
 using std::negation;
-using std::type_identity;
 using std::disjunction;
 using std::conjunction;
 using std::is_invocable;

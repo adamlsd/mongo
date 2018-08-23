@@ -135,9 +135,6 @@ private:
         return f(std::forward<Args>(args)...);
     }
 
-    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
-    // `noexcept`, as long as the move construction of the function object being passed is also
-    // `noexcept`.  This ripples out to the accepting template constructor.
     template <typename Functor>
     static auto makeImpl(Functor&& functor) {
         struct SpecificImpl : Impl {

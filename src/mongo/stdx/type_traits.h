@@ -54,24 +54,35 @@ using enable_if_t = typename std::enable_if<B, T>::type;
 }  // namespace mongo
 #endif
 
+// TODO: Deal with importing this from C++20, when the time comes.
+namespace mongo {
+namespace stdx {
+
+template <typename T>
+struct type_identity {
+    using type = T;
+};
+
+
+template <typename T>
+using type_identity_t = type_identity<T>;
+
+}  // namespace stdx
+}  // namespace mongo
+
 #if __cplusplus >= 201703
 
 namespace mongo {
 namespace stdx {
 
 using std::void_t;
-
 using std::bool_constant;
-
 using std::negation;
-
+using std::type_identity;
 using std::disjunction;
-
 using std::conjunction;
-
-using std::is_invokable;
-
-using std::is_invokable_r;
+using std::is_invocable;
+using std::is_invocable_r;
 
 }  // namespace stdx
 }  // namespace mongo
@@ -114,44 +125,37 @@ struct conjunction<B> : B {};
 template <typename B1, typename... B>
 struct conjunction<B1, B...> : std::conditional_t<bool(B1::value), conjunction<B...>, B1> {};
 
-/**
- * This is a poor-man's implementation of c++17 std::is_invokable. We should replace it with the
- * stdlib one once we can make call() use std::invoke.
- */
 namespace detail {
 template <typename Func,
           typename... Args,
           typename = typename std::result_of<Func && (Args && ...)>::type>
-auto is_invokable_impl(Func&& func, Args&&... args) -> std::true_type;
-auto is_invokable_impl(...) -> std::false_type;
+auto is_invocable_impl(Func&& func, Args&&... args) -> std::true_type;
+auto is_invocable_impl(...) -> std::false_type;
 }  // namespace detail
 
 template <typename Func, typename... Args>
-struct is_invokable
-    : decltype(detail::is_invokable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invocable
+    : decltype(detail::is_invocable_impl(std::declval<Func>(), std::declval<Args>()...)) {};
 
 namespace detail {
 
 // This helps solve the lack of regular void problem, when passing a 'conversion target' as a
 // parameter.
-template <typename T>
-struct magic_carrier {};
 
 template <typename R,
           typename Func,
           typename... Args,
           typename ComputedResult = typename std::result_of<Func && (Args && ...)>::type>
-auto is_invokable_r_impl(magic_carrier<R>&&, Func&& func, Args&&... args) ->
+auto is_invocable_r_impl(stdx::type_identity<R>, Func&& func, Args&&... args) ->
     typename stdx::disjunction<std::is_void<R>,
                                std::is_same<ComputedResult, R>,
                                std::is_convertible<ComputedResult, R>>::type;
-auto is_invokable_r_impl(...) -> std::false_type;
+auto is_invocable_r_impl(...) -> std::false_type;
 }  // namespace detail
 
 template <typename R, typename Func, typename... Args>
-struct is_invokable_r
-    : decltype(detail::is_invokable_r_impl(
-          detail::magic_carrier<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
+struct is_invocable_r : decltype(detail::is_invocable_r_impl(
+                            type_identity<R>(), std::declval<Func>(), std::declval<Args>()...)) {};
 
 }  // namespace stdx
 }  // namespace mongo

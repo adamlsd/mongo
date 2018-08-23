@@ -28,4 +28,138 @@
 
 #pragma once
 
-#include "mongo/util/unique_function.h"
+#include <functional>
+#include <type_traits>
+
+#include "mongo/stdx/type_traits.h"
+
+namespace mongo {
+template <typename Function>
+class unique_function;
+
+/**
+ * A `unique_function` is a move-only, type-erased functor object similar to `std::function`.
+ * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
+ * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
+ * `std::unique_ptr` by move.  The interface of `unique_function` is nearly identical to
+ * `std::function`, except that it is not copyable, and provides no support for allocators.
+ */
+template <typename RetType, typename... Args>
+class unique_function<RetType(Args...)> {
+public:
+    using result_type = RetType;
+
+    ~unique_function() noexcept = default;
+    unique_function() = default;
+
+    unique_function(const unique_function&) = delete;
+    unique_function& operator=(const unique_function&) = delete;
+
+    unique_function(unique_function&&) noexcept = default;
+    unique_function& operator=(unique_function&&) noexcept = default;
+
+
+    // TODO: Look into creating a mechanism based upon a unique_ptr to `void *`-like state, and a
+    // `void *` accepting function object.  This will permit reusing the core impl object when
+    // converting between related function types, such as
+    // `int (std::string)` -> `void (const char *)`
+    template <
+        typename Functor,
+        typename = std::enable_if_t<stdx::is_invokable_r<RetType, Functor, Args...>::value, void>,
+        typename = std::enable_if_t<std::is_move_constructible<Functor>::value, void>>
+    /* implicit */
+    unique_function(Functor&& functor) noexcept(noexcept(std::remove_reference_t<Functor>{
+        std::move(functor)}))
+        : entryPointAndImpl(makeImpl(std::forward<Functor>(functor))) {}
+
+    unique_function(std::nullptr_t) noexcept {}
+
+    RetType operator()(Args... args) const {
+        class bad_unique_function_call : public std::bad_function_call {};
+
+        if (!*this) {
+            throw bad_unique_function_call();
+        }
+        auto& func = std::get<0>(this->entryPointAndImpl);
+        auto& impl = std::get<1>(this->entryPointAndImpl);
+        return func(impl.get(), std::forward<Args>(args)...);
+    }
+
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(std::get<1>(this->entryPointAndImpl));
+    }
+
+    // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>`
+    // be `std::false_type`.
+    template <typename Any>
+    operator std::function<Any>() = delete;
+
+    friend bool operator==(const unique_function& lhs, std::nullptr_t) noexcept {
+        return !lhs;
+    }
+
+    friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
+        return static_cast<bool>(lhs);
+    }
+
+    friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
+        return !rhs;
+    }
+
+    friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
+        return static_cast<bool>(rhs);
+    }
+
+private:
+    struct Impl {
+        virtual ~Impl() noexcept = default;
+    };
+
+    template <typename Functor>
+    static constexpr auto selectCase() noexcept {
+        constexpr bool kVoidCase = stdx::conjunction<
+            std::is_void<RetType>,
+            stdx::negation<std::is_void<std::result_of_t<Functor(Args...)>>>>::value;
+        using selected_case = stdx::bool_constant<kVoidCase>;
+        return selected_case{};
+    }
+
+    // These overload helpers are needed to squelch problems in the `T ()` -> `void ()` case.
+    template <typename Functor>
+    static void callRegularVoid(const std::true_type isVoid, Functor& f, Args&&... args) {
+        // The result is not cast to void, to help preserve detection of `[[nodiscard]]` violations.
+        f(std::forward<Args>(args)...);
+    }
+
+    template <typename Functor>
+    static RetType callRegularVoid(const std::false_type isNotVoid, Functor& f, Args&&... args) {
+        return f(std::forward<Args>(args)...);
+    }
+
+    // We assume that allocations do not fail by throwing, so we have marked the `makeImpl` function
+    // `noexcept`, as long as the move construction of the function object being passed is also
+    // `noexcept`.  This ripples out to the accepting template constructor.
+    template <typename Functor>
+    static auto makeImpl(Functor&& functor) {
+        struct SpecificImpl : Impl {
+            Functor f;
+
+            explicit SpecificImpl(Functor&& func) : f(std::move(func)) {}
+        };
+
+        auto specificImpl = std::make_unique<SpecificImpl>(std::move(functor));
+        CallerType caller;
+
+        caller = [](Impl* const imp, Args&&... args) {
+            return callRegularVoid(selectCase<Functor>(),
+                                   static_cast<SpecificImpl*>(imp)->f,
+                                   std::forward<Args>(args)...);
+        };
+
+        return std::make_tuple(std::move(caller), std::move(specificImpl));
+    }
+
+    using CallerType = RetType (*)(Impl*, Args&&...);
+    std::tuple<CallerType, std::unique_ptr<Impl>> entryPointAndImpl;
+};
+}  // namespace mongo

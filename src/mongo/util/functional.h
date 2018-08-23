@@ -91,7 +91,6 @@ public:
         return static_cast<bool>(this->impl);
     }
 
-#if 0
     // Needed to make `std::is_convertible<mongo::unique_function<...>, std::function<...>>` be
     // `std::false_type`.  `mongo::unique_function` objects are not convertible to any kind of
     // `std::function` object, since the latter requires a copy constructor, which the former does
@@ -101,22 +100,25 @@ public:
     template <typename Any>
     operator std::function<Any>() = delete;
 
-    friend bool operator==(const unique_function& lhs, std::nullptr_t) noexcept {
+    template <typename F>
+    friend bool operator==(const unique_function<F>& lhs, std::nullptr_t) noexcept {
         return !lhs;
     }
 
-    friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
+    template <typename F>
+    friend bool operator!=(const unique_function<F>& lhs, std::nullptr_t) noexcept {
         return static_cast<bool>(lhs);
     }
 
-    friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
+    template <typename F>
+    friend bool operator==(std::nullptr_t, const unique_function<F>& rhs) noexcept {
         return !rhs;
     }
 
-    friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
+    template <typename F>
+    friend bool operator!=(std::nullptr_t, const unique_function<F>& rhs) noexcept {
         return static_cast<bool>(rhs);
     }
-#endif
 
 private:
     struct Impl {

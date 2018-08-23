@@ -32,15 +32,14 @@
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_limit.h"
 #include "mongo/db/pipeline/expression.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/db/sorter/sorter.h"
 
 namespace mongo {
 
 class DocumentSourceSort final : public DocumentSource, public NeedsMergerDocumentSource {
 public:
-    static const uint64_t kMaxMemoryUsageBytes = 100 * 1024 * 1024;
     static constexpr StringData kStageName = "$sort"_sd;
-
     enum class SortKeySerialization {
         kForExplain,
         kForPipelineSerialization,
@@ -62,16 +61,14 @@ public:
         return {GetModPathsReturn::Type::kFiniteSet, std::set<std::string>{}, {}};
     }
 
-    StageConstraints constraints(Pipeline::SplitState pipeState) const final {
-        StageConstraints constraints(
-            _mergingPresorted ? StreamType::kStreaming : StreamType::kBlocking,
-            PositionRequirement::kNone,
-            HostTypeRequirement::kNone,
-            _mergingPresorted ? DiskUseRequirement::kNoDiskUse : DiskUseRequirement::kWritesTmpData,
-            _mergingPresorted ? FacetRequirement::kNotAllowed : FacetRequirement::kAllowed,
-            TransactionRequirement::kAllowed,
-            _mergingPresorted ? ChangeStreamRequirement::kWhitelist
-                              : ChangeStreamRequirement::kBlacklist);
+    StageConstraints constraints(Pipeline::SplitState) const final {
+        StageConstraints constraints(StreamType::kBlocking,
+                                     PositionRequirement::kNone,
+                                     HostTypeRequirement::kNone,
+                                     DiskUseRequirement::kWritesTmpData,
+                                     FacetRequirement::kAllowed,
+                                     TransactionRequirement::kAllowed,
+                                     ChangeStreamRequirement::kBlacklist);
 
         // Can't swap with a $match if a limit has been absorbed, as $match can't swap with $limit.
         constraints.canSwapWithMatch = !_limitSrc;
@@ -85,7 +82,7 @@ public:
     DepsTracker::State getDependencies(DepsTracker* deps) const final;
 
     boost::intrusive_ptr<DocumentSource> getShardSource() final;
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final;
+    MergingLogic mergingLogic() final;
 
     /**
      * Write out a Document whose contents are the sort key pattern.
@@ -99,21 +96,14 @@ public:
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
 
     /**
-     * Convenience method for creating a $sort stage.
+     * Convenience method for creating a $sort stage. If maxMemoryUsageBytes is boost::none,
+     * then it will actually use the value of internalDocumentSourceSortMaxBlockingSortBytes.
      */
     static boost::intrusive_ptr<DocumentSourceSort> create(
         const boost::intrusive_ptr<ExpressionContext>& pExpCtx,
         BSONObj sortOrder,
         long long limit = -1,
-        uint64_t maxMemoryUsageBytes = kMaxMemoryUsageBytes,
-        bool mergingPresorted = false);
-
-    /**
-     * Returns true if this $sort stage is merging presorted streams.
-     */
-    bool mergingPresorted() const {
-        return _mergingPresorted;
-    }
+        boost::optional<uint64_t> maxMemoryUsageBytes = boost::none);
 
     /**
      * Returns -1 for no limit.
@@ -132,6 +122,11 @@ public:
      * loadDocument() once this method returns.
      */
     void loadingDone();
+
+    /**
+     * Returns true if the sorter used disk while satisfying the query and false otherwise.
+     */
+    bool usedDisk() final;
 
     /**
      * Instructs the sort stage to use the given set of cursors as inputs, to merge documents that
@@ -262,9 +257,9 @@ private:
 
     uint64_t _maxMemoryUsageBytes;
     bool _done;
-    bool _mergingPresorted;  // TODO SERVER-34009 Remove this flag.
     std::unique_ptr<MySorter> _sorter;
     std::unique_ptr<MySorter::Iterator> _output;
+    bool _usedDisk = false;
 };
 
 }  // namespace mongo

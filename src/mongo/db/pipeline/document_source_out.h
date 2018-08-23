@@ -29,16 +29,43 @@
 #pragma once
 
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_out_gen.h"
 
 namespace mongo {
 
-class DocumentSourceOut final : public DocumentSource, public NeedsMergerDocumentSource {
+/**
+ * Abstract class for the $out aggregation stage.
+ */
+class DocumentSourceOut : public DocumentSource, public NeedsMergerDocumentSource {
 public:
-    static std::unique_ptr<LiteParsedDocumentSourceForeignCollections> liteParse(
-        const AggregationRequest& request, const BSONElement& spec);
+    /**
+     * A "lite parsed" $out stage is similar to other stages involving foreign collections except in
+     * some cases the foreign collection is allowed to be sharded.
+     */
+    class LiteParsed final : public LiteParsedDocumentSourceForeignCollections {
+    public:
+        static std::unique_ptr<LiteParsed> parse(const AggregationRequest& request,
+                                                 const BSONElement& spec);
 
-    // virtuals from DocumentSource
-    ~DocumentSourceOut() final;
+        LiteParsed(NamespaceString outNss, PrivilegeVector privileges, bool allowShardedOutNss)
+            : LiteParsedDocumentSourceForeignCollections(outNss, privileges),
+              _allowShardedOutNss(allowShardedOutNss) {}
+
+        bool allowShardedForeignCollection(NamespaceString nss) const final {
+            return _allowShardedOutNss ? true : (_foreignNssSet.find(nss) == _foreignNssSet.end());
+        }
+
+    private:
+        bool _allowShardedOutNss;
+    };
+
+    DocumentSourceOut(const NamespaceString& outputNs,
+                      const boost::intrusive_ptr<ExpressionContext>& expCtx,
+                      WriteModeEnum mode,
+                      std::set<FieldPath> uniqueKey);
+
+    virtual ~DocumentSourceOut() = default;
+
     GetNextResult getNext() final;
     const char* getSourceName() const final;
     Value serialize(boost::optional<ExplainOptions::Verbosity> explain = boost::none) const final;
@@ -57,7 +84,7 @@ public:
     boost::intrusive_ptr<DocumentSource> getShardSource() final {
         return NULL;
     }
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final {
+    MergingLogic mergingLogic() final {
         return {this};
     }
 
@@ -66,47 +93,73 @@ public:
     }
 
     /**
-      Create a document source for output and pass-through.
+     * Retrieves the namespace to direct each batch to, which may be a temporary namespace or the
+     * final output namespace.
+     */
+    virtual const NamespaceString& getWriteNs() const = 0;
 
-      This can be put anywhere in a pipeline and will store content as
-      well as pass it on.
+    /**
+     * Prepares the DocumentSource to be able to write incoming batches to the desired collection.
+     */
+    virtual void initializeWriteNs() = 0;
 
-      @param pBsonElement the raw BSON specification for the source
-      @param pExpCtx the expression context for the pipeline
-      @returns the newly created document source
-    */
+    /**
+     * Storage for a batch of BSON Objects to be inserted/updated to the write namespace. The
+     * extracted unique key values are also stored in a batch, used by $out with mode
+     * "replaceDocuments" as the query portion of the update.
+     *
+     */
+    struct BatchedObjects {
+        void emplace(BSONObj obj, BSONObj key) {
+            objects.emplace_back(std::move(obj));
+            uniqueKeys.emplace_back(std::move(key));
+        }
+
+        bool empty() const {
+            return objects.empty();
+        }
+
+        size_t size() const {
+            return objects.size();
+        }
+
+        void clear() {
+            objects.clear();
+            uniqueKeys.clear();
+        }
+
+        std::vector<BSONObj> objects;
+        // Store the unique keys as BSON objects instead of Documents for compatibility with the
+        // batch update command. (e.g. {q: <array of uniqueKeys>, u: <array of objects>})
+        std::vector<BSONObj> uniqueKeys;
+    };
+
+    /**
+     * Writes the documents in 'batch' to the write namespace.
+     */
+    virtual void spill(const BatchedObjects& batch) {
+        pExpCtx->mongoProcessInterface->insert(pExpCtx, getWriteNs(), batch.objects);
+    };
+
+    /**
+     * Finalize the output collection, called when there are no more documents to write.
+     */
+    virtual void finalize() = 0;
+
     static boost::intrusive_ptr<DocumentSource> createFromBson(
         BSONElement elem, const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
 
 private:
-    DocumentSourceOut(const NamespaceString& outputNs,
-                      const boost::intrusive_ptr<ExpressionContext>& pExpCtx);
-
-    /**
-     * Sets '_tempNs' to a unique temporary namespace, makes sure the output collection isn't
-     * sharded or capped, and saves the collection options and indexes of the target collection.
-     * Then creates the temporary collection we will insert into by copying the collection options
-     * and indexes from the target collection.
-     *
-     * Sets '_initialized' to true upon completion.
-     */
-    void initialize();
-
-    /**
-     * Inserts all of 'toInsert' into the temporary collection.
-     */
-    void spill(const std::vector<BSONObj>& toInsert);
-
     bool _initialized = false;
     bool _done = false;
 
-    // Holds on to the original collection options and index specs so we can check they didn't
-    // change during computation.
-    BSONObj _originalOutOptions;
-    std::list<BSONObj> _originalIndexes;
+    const NamespaceString _outputNs;
+    WriteModeEnum _mode;
 
-    NamespaceString _tempNs;          // output goes here as it is being processed.
-    const NamespaceString _outputNs;  // output will go here after all data is processed.
+    // Holds the unique key used for uniquely identifying documents. There must exist a unique index
+    // with this key pattern (up to order). Default is "_id" for unsharded collections, and "_id"
+    // plus the shard key for sharded collections.
+    std::set<FieldPath> _uniqueKeyFields;
 };
 
 }  // namespace mongo

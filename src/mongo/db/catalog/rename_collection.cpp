@@ -48,14 +48,18 @@
 #include "mongo/db/index_builder.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/db/namespace_string.h"
+#include "mongo/db/query/query_knobs.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/s/collection_sharding_state.h"
 #include "mongo/db/s/database_sharding_state.h"
+#include "mongo/db/server_options.h"
 #include "mongo/db/service_context.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/scopeguard.h"
 
 namespace mongo {
+MONGO_FAIL_POINT_DEFINE(writeConfilctInRenameCollCopyToTmp);
 namespace {
 
 NamespaceString getNamespaceFromUUID(OperationContext* opCtx, const UUID& uuid) {
@@ -166,14 +170,22 @@ Status renameCollectionCommon(OperationContext* opCtx,
     }
 
     // Make sure the source collection is not sharded.
-    if (CollectionShardingState::get(opCtx, source)->getMetadata(opCtx)) {
-        return {ErrorCodes::IllegalOperation, "source namespace cannot be sharded"};
+    {
+        auto const css = CollectionShardingState::get(opCtx, source);
+        if (css->getMetadata(opCtx)->isSharded()) {
+            return {ErrorCodes::IllegalOperation, "source namespace cannot be sharded"};
+        }
     }
 
     // Ensure that collection name does not exceed maximum length.
-    // Ensure that index names do not push the length over the max.
+    // Index names do not limit the maximum allowable length of the target namespace under
+    // FCV 4.2 and above.
+    const auto checkIndexNamespace =
+        serverGlobalParams.featureCompatibility.isVersionInitialized() &&
+        serverGlobalParams.featureCompatibility.getVersion() !=
+            ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42;
     std::string::size_type longestIndexNameLength =
-        sourceColl->getIndexCatalog()->getLongestIndexNameLength(opCtx);
+        checkIndexNamespace ? sourceColl->getIndexCatalog()->getLongestIndexNameLength(opCtx) : 0;
     auto status = target.checkLengthForRename(longestIndexNameLength);
     if (!status.isOK()) {
         return status;
@@ -194,8 +206,12 @@ Status renameCollectionCommon(OperationContext* opCtx,
             invariant(source == target);
             return Status::OK();
         }
-        if (CollectionShardingState::get(opCtx, target)->getMetadata(opCtx)) {
-            return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
+
+        {
+            auto const css = CollectionShardingState::get(opCtx, target);
+            if (css->getMetadata(opCtx)->isSharded()) {
+                return {ErrorCodes::IllegalOperation, "cannot rename to a sharded collection"};
+            }
         }
 
         if (!options.dropTarget) {
@@ -397,11 +413,10 @@ Status renameCollectionCommon(OperationContext* opCtx,
 
         writeConflictRetry(opCtx, "renameCollection", tmpName.ns(), [&] {
             WriteUnitOfWork wunit(opCtx);
-            indexer.commit();
-            for (auto&& infoObj : indexesToCopy) {
-                getGlobalServiceContext()->getOpObserver()->onCreateIndex(
-                    opCtx, tmpName, newUUID, infoObj, false);
-            }
+            indexer.commit([opCtx, &tmpName, tmpColl](const BSONObj& spec) {
+                opCtx->getServiceContext()->getOpObserver()->onCreateIndex(
+                    opCtx, tmpName, tmpColl->uuid(), spec, false);
+            });
             wunit.commit();
         });
     }
@@ -432,22 +447,39 @@ Status renameCollectionCommon(OperationContext* opCtx,
         }
 
         auto cursor = sourceColl->getCursor(opCtx);
-        while (auto record = cursor->next()) {
+        auto record = cursor->next();
+        while (record) {
             opCtx->checkForInterrupt();
-
-            const auto obj = record->data.releaseToBson();
-
+            // Cursor is left one past the end of the batch inside writeConflictRetry.
+            auto beginBatchId = record->id;
             status = writeConflictRetry(opCtx, "renameCollection", tmpName.ns(), [&] {
                 WriteUnitOfWork wunit(opCtx);
-                const InsertStatement stmt(obj);
-                OpDebug* const opDebug = nullptr;
-                auto status = tmpColl->insertDocument(opCtx, stmt, opDebug, true);
-                if (!status.isOK())
-                    return status;
+                // Need to reset cursor if it gets a WCE midway through.
+                if (!record || (beginBatchId != record->id)) {
+                    record = cursor->seekExact(beginBatchId);
+                }
+                for (int i = 0; record && (i < internalInsertMaxBatchSize.load()); i++) {
+                    const InsertStatement stmt(record->data.releaseToBson());
+                    OpDebug* const opDebug = nullptr;
+                    auto status = tmpColl->insertDocument(opCtx, stmt, opDebug, true);
+                    if (!status.isOK()) {
+                        return status;
+                    }
+                    record = cursor->next();
+                }
+                cursor->save();
+                // When this exits via success or WCE, we need to restore the cursor.
+                ON_BLOCK_EXIT([ opCtx, ns = tmpName.ns(), &cursor ]() {
+                    writeConflictRetry(
+                        opCtx, "retryRestoreCursor", ns, [&cursor] { cursor->restore(); });
+                });
+                // Used to make sure that a WCE can be handled by this logic without data loss.
+                if (MONGO_FAIL_POINT(writeConfilctInRenameCollCopyToTmp)) {
+                    throw WriteConflictException();
+                }
                 wunit.commit();
                 return Status::OK();
             });
-
             if (!status.isOK()) {
                 return status;
             }

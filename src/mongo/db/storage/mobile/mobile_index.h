@@ -113,11 +113,6 @@ protected:
     Status _dupKeyError(const BSONObj& key);
 
     /**
-     * Checks if key size is too long.
-     */
-    static Status _checkKeySize(const BSONObj& key);
-
-    /**
      * Performs the deletion from the table matching the given key.
      */
     void _doDelete(OperationContext* opCtx, const KeyString& key, KeyString* value = nullptr);
@@ -148,8 +143,6 @@ public:
                         const IndexDescriptor* desc,
                         const std::string& ident);
 
-    MobileIndexStandard(const Ordering& ordering, const std::string& ident);
-
     SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx, bool dupsAllowed) override;
 
     std::unique_ptr<SortedDataInterface::Cursor> newCursor(OperationContext* opCtx,
@@ -172,8 +165,6 @@ public:
     MobileIndexUnique(OperationContext* opCtx,
                       const IndexDescriptor* desc,
                       const std::string& ident);
-
-    MobileIndexUnique(const Ordering& ordering, const std::string& ident);
 
     SortedDataBuilderInterface* getBulkBuilder(OperationContext* opCtx, bool dupsAllowed) override;
 

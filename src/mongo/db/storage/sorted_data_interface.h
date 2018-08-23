@@ -363,24 +363,6 @@ public:
     virtual std::unique_ptr<Cursor> newCursor(OperationContext* opCtx,
                                               bool isForward = true) const = 0;
 
-    /**
-     * Constructs a cursor over an index that returns entries in a randomized order, and allows
-     * storage engines to provide a more efficient way to randomly sample a collection than
-     * MongoDB's default sampling methods, which are used when this method returns {}. Note if it is
-     * possible to implement RecordStore::getRandomCursor(), that method is preferred, as it will
-     * return the entire document, whereas this method will only return the index key and the
-     * RecordId, requiring an extra lookup.
-     *
-     * This method may be implemented using a pseudo-random walk over B-trees or a similar approach.
-     * Different cursors should return entries in a different order. Random cursors may return the
-     * same entry more than once and, as a result, may return more entries than exist in the index.
-     * Implementations should avoid obvious biases toward older, newer, larger smaller or other
-     * specific classes of entries.
-     */
-    virtual std::unique_ptr<Cursor> newRandomCursor(OperationContext* opCtx) const {
-        return {};
-    }
-
     //
     // Index creation
     //
@@ -411,8 +393,14 @@ public:
      *
      * This is called outside of any WriteUnitOfWork to allow implementations to split this up
      * into multiple units.
+     *
+     * TODO SERVER-36385: Change the return type from "Status" back to "void" as that was a hack
+     * introduced in SERVER-36280 for detecting long TypeBits in an edge case in one of the unique
+     * index builder implementations.
      */
-    virtual void commit(bool mayInterrupt) {}
+    virtual Status commit(bool mayInterrupt) {
+        return Status::OK();
+    }
 };
 
 }  // namespace mongo

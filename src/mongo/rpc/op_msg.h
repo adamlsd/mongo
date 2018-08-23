@@ -46,6 +46,7 @@ struct OpMsg {
 
     static constexpr uint32_t kChecksumPresent = 1 << 0;
     static constexpr uint32_t kMoreToCome = 1 << 1;
+    static constexpr uint32_t kExhaustSupported = 1 << 16;
 
     /**
      * Returns the unvalidated flags for the given message if it is an OP_MSG message.
@@ -220,6 +221,26 @@ public:
      */
     static AtomicBool disableDupeFieldCheck_forTest;
 
+    /**
+     * Similar to finish, any calls on this object after are illegal.
+     */
+    BSONObj releaseBody();
+
+    /**
+     * Returns whether or not this builder is already building a body.
+     */
+    bool isBuildingBody() {
+        return _state == kBody;
+    }
+
+    /**
+     * Reserves and claims the bytes requested in the internal BufBuilder.
+     */
+    void reserveBytes(const std::size_t bytes) {
+        _buf.reserveBytes(bytes);
+        _buf.claimReservedBytes(bytes);
+    }
+
 private:
     friend class DocSequenceBuilder;
 
@@ -297,6 +318,10 @@ public:
      */
     BSONObjBuilder appendBuilder() {
         return BSONObjBuilder(*_buf);
+    }
+
+    int len() const {
+        return _buf->len();
     }
 
 private:

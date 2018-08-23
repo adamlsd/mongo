@@ -88,6 +88,13 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
             "config", "config,f", moe::String, "configuration file specifying additional options")
         .setSources(moe::SourceAllLegacy);
 
+    options
+        ->addOptionChaining("outputConfig",
+                            "outputConfig",
+                            moe::Switch,
+                            "Display the resolved configuration and exit")
+        .setSources(moe::SourceCommandLine)
+        .hidden();
 
     options
         ->addOptionChaining(
@@ -111,6 +118,24 @@ Status addGeneralServerOptions(moe::OptionSection* options) {
 
     options->addOptionChaining(
         "net.maxIncomingConnections", "maxConns", moe::Int, maxConnInfoBuilder.str().c_str());
+
+    options
+        ->addOptionChaining(
+            "net.maxIncomingConnectionsOverride",
+            "",
+            moe::StringVector,
+            "CIDR ranges that do not count towards the maxIncomingConnections limit")
+        .hidden()
+        .setSources(moe::SourceYAMLConfig);
+
+    options
+        ->addOptionChaining(
+            "net.reservedAdminThreads",
+            "",
+            moe::Int,
+            "number of worker threads to reserve for admin and internal connections")
+        .hidden()
+        .setSources(moe::SourceYAMLConfig);
 
     options
         ->addOptionChaining("net.transportLayer",
@@ -390,13 +415,6 @@ Status validateServerOptions(const moe::Environment& params) {
     }
 #endif
 
-#ifdef MONGO_CONFIG_SSL
-    ret = validateSSLServerOptions(params);
-    if (!ret.isOK()) {
-        return ret;
-    }
-#endif
-
     bool haveAuthenticationMechanisms = true;
     bool hasAuthorizationEnabled = false;
     if (params.count("security.authenticationMechanisms") &&
@@ -583,6 +601,22 @@ Status storeServerOptions(const moe::Environment& params) {
         }
     }
 
+    if (params.count("net.maxIncomingConnectionsOverride")) {
+        auto ranges = params["net.maxIncomingConnectionsOverride"].as<std::vector<std::string>>();
+        for (const auto& range : ranges) {
+            auto swr = CIDR::parse(range);
+            if (!swr.isOK()) {
+                serverGlobalParams.maxConnsOverride.push_back(range);
+            } else {
+                serverGlobalParams.maxConnsOverride.push_back(std::move(swr.getValue()));
+            }
+        }
+    }
+
+    if (params.count("net.reservedAdminThreads")) {
+        serverGlobalParams.reservedAdminThreads = params["net.reservedAdminThreads"].as<int>();
+    }
+
     if (params.count("net.wireObjectCheck")) {
         serverGlobalParams.objcheck = params["net.wireObjectCheck"].as<bool>();
     }
@@ -663,13 +697,6 @@ Status storeServerOptions(const moe::Environment& params) {
         return Status(ErrorCodes::BadValue,
                       "--transitionToAuth must be used with keyFile or x509 authentication");
     }
-
-#ifdef MONGO_CONFIG_SSL
-    ret = storeSSLServerOptions(params);
-    if (!ret.isOK()) {
-        return ret;
-    }
-#endif
 
     ret = storeMessageCompressionOptions(params);
     if (!ret.isOK()) {

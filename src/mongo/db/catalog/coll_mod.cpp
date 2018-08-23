@@ -178,14 +178,14 @@ StatusWith<CollModRequest> parseCollModRequest(OperationContext* opCtx,
             // Save this to a variable to avoid reading the atomic variable multiple times.
             const auto currentFCV = serverGlobalParams.featureCompatibility.getVersion();
 
-            // If the feature compatibility version is not 4.0, and we are validating features as
-            // master, ban the use of new agg features introduced in 4.0 to prevent them from being
+            // If the feature compatibility version is not 4.2, and we are validating features as
+            // master, ban the use of new agg features introduced in 4.2 to prevent them from being
             // persisted in the catalog.
             boost::optional<ServerGlobalParams::FeatureCompatibility::Version>
                 maxFeatureCompatibilityVersion;
             if (serverGlobalParams.validateFeaturesAsMaster.load() &&
                 currentFCV !=
-                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40) {
+                    ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42) {
                 maxFeatureCompatibilityVersion = currentFCV;
             }
             auto statusW = coll->parseValidator(opCtx,
@@ -476,7 +476,7 @@ Status collModWithUpgrade(OperationContext* opCtx,
                           const BSONObj& cmdObj) {
     // A cmdObj with an empty collMod, i.e. nFields = 1, implies that it is a Unique Index
     // upgrade collMod.
-    bool upgradeUniqueIndex = createTimestampSafeUniqueIndex && (cmdObj.nFields() == 1);
+    bool upgradeUniqueIndex = (cmdObj.nFields() == 1);
 
     // Update all non-replicated unique indexes on upgrade i.e. setFCV=4.2.
     if (upgradeUniqueIndex && nss == NamespaceString::kServerConfigurationNamespace) {
@@ -562,9 +562,6 @@ void _updateUniqueIndexesForDatabase(OperationContext* opCtx, const std::string&
 }
 
 void updateUniqueIndexesOnUpgrade(OperationContext* opCtx) {
-    if (!createTimestampSafeUniqueIndex)
-        return;
-
     // Update all unique indexes except the _id index.
     std::vector<std::string> dbNames;
     StorageEngine* storageEngine = opCtx->getServiceContext()->getStorageEngine();
@@ -595,9 +592,6 @@ void updateUniqueIndexesOnUpgrade(OperationContext* opCtx) {
 }
 
 Status updateNonReplicatedUniqueIndexes(OperationContext* opCtx) {
-    if (!createTimestampSafeUniqueIndex)
-        return Status::OK();
-
     // Update all unique indexes belonging to all non-replicated collections.
     // (_id indexes are not updated).
     std::vector<std::string> dbNames;

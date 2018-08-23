@@ -29,20 +29,10 @@
     // Create the collection and insert one document. Get the op time of the write.
     let res = assert.commandWorked(primaryDB.runCommand(
         {insert: collName, documents: [{_id: "before"}], writeConcern: {w: "majority"}}));
-    let clusterTimePrimaryBefore;
+    const clusterTimePrimaryBefore = res.opTime.ts;
 
     // Wait for the majority commit point on 'secondaryDB0' to include the {_id: "before"} write.
     assert.soonNoExcept(function() {
-        // Without a consistent stream of writes, secondary majority reads are not guaranteed
-        // to complete, since the commit point being stale is not sufficient to establish a sync
-        // source.
-        // TODO (SERVER-33248): Remove this write and increase the maxTimeMS on the read.
-        res = assert.commandWorked(primaryDB.runCommand(
-            {insert: "otherColl", documents: [{a: 1}], writeConcern: {w: "majority"}}));
-        assert(res.hasOwnProperty("opTime"), tojson(res));
-        assert(res.opTime.hasOwnProperty("ts"), tojson(res));
-        clusterTimePrimaryBefore = res.opTime.ts;
-
         return assert
                    .commandWorked(secondaryDB0.runCommand(
                        {find: collName, readConcern: {level: "majority"}, maxTimeMS: 10000}))
@@ -73,7 +63,7 @@
     primarySession.startTransaction(
         {readConcern: {level: "snapshot", atClusterTime: clusterTimeAfter}});
     assert.commandFailedWithCode(primaryDB.runCommand({find: collName, maxTimeMS: 1000}),
-                                 ErrorCodes.ExceededTimeLimit);
+                                 ErrorCodes.MaxTimeMSExpired);
     primarySession.abortTransaction();
 
     // Restart replication on one of the secondaries.
@@ -101,7 +91,7 @@
     secondarySession.startTransaction(
         {readConcern: {level: "snapshot", atClusterTime: clusterTimeAfter}});
     assert.commandFailedWithCode(secondaryDB0.runCommand({find: collName, maxTimeMS: 1000}),
-                                 ErrorCodes.ExceededTimeLimit);
+                                 ErrorCodes.MaxTimeMSExpired);
     secondarySession.abortTransaction();
 
     // Restart replication on the lagged secondary.

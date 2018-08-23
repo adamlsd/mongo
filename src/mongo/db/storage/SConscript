@@ -5,12 +5,12 @@ env = env.Clone()
 
 env.SConscript(
     dirs=[
+        'biggie',
         'devnull',
         'ephemeral_for_test',
         'kv',
-        'mmap_v1',
-        'wiredtiger',
         'mobile',
+        'wiredtiger',
     ],
     exports=[
         'env'
@@ -121,7 +121,6 @@ env.Library(
         'sorted_data_interface_test_harness.cpp',
         'sorted_data_interface_test_insert.cpp',
         'sorted_data_interface_test_isempty.cpp',
-        'sorted_data_interface_test_rand_cursor.cpp',
         'sorted_data_interface_test_rollback.cpp',
         'sorted_data_interface_test_spaceused.cpp',
         'sorted_data_interface_test_touch.cpp',
@@ -146,7 +145,6 @@ env.Library(
         'record_store_test_deleterecord.cpp',
         'record_store_test_harness.cpp',
         'record_store_test_insertrecord.cpp',
-        'record_store_test_manyiter.cpp',
         'record_store_test_randomiter.cpp',
         'record_store_test_recorditer.cpp',
         'record_store_test_recordstore.cpp',
@@ -201,6 +199,7 @@ env.Library(
         '$BUILD_DIR/mongo/db/service_context',
         '$BUILD_DIR/mongo/db/concurrency/lock_manager',
         'storage_engine_lock_file',
+        'storage_repair_observer',
         'storage_engine_metadata',
         'storage_options',
     ],
@@ -244,10 +243,71 @@ env.Library(
     ],
     LIBDEPS=[
         '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/server_options_core',
         '$BUILD_DIR/mongo/db/bson/dotted_path_support',
     ],
+)
+
+env.Library(
+    target='storage_file_util',
+    source=[
+        'storage_file_util.cpp',
+    ],
     LIBDEPS_PRIVATE=[
-        '$BUILD_DIR/mongo/db/storage/mmap_v1/paths',
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.Library(
+    target='storage_repair_observer',
+    source=[
+        'storage_repair_observer.cpp',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/base',
+        '$BUILD_DIR/mongo/db/dbhelpers',
+        '$BUILD_DIR/mongo/db/service_context',
+        '$BUILD_DIR/mongo/db/repl/replica_set_messages',
+        'storage_file_util',
+    ],
+)
+
+env.CppUnitTest(
+    target='storage_repair_observer_test',
+    source=[
+        'storage_repair_observer_test.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/db/dbhelpers',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/repair_database',
+        '$BUILD_DIR/mongo/db/repl/replmocks',
+        '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
+        '$BUILD_DIR/mongo/db/storage/ephemeral_for_test/storage_ephemeral_for_test_core',
+        '$BUILD_DIR/mongo/executor/network_interface_factory',
+        '$BUILD_DIR/mongo/executor/network_interface_mock',
+        'storage_repair_observer',
+    ],
+)
+
+
+env.Library(
+    target='backup_cursor_service',
+    source=[
+        'backup_cursor_service.cpp',
+    ],
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/base',
+    ],
+    LIBDEPS_PRIVATE=[
+        '$BUILD_DIR/mongo/db/db_raii',
+        '$BUILD_DIR/mongo/db/dbhelpers',
+        '$BUILD_DIR/mongo/db/namespace_string',
+        '$BUILD_DIR/mongo/db/pipeline/document_value',
+        '$BUILD_DIR/mongo/db/repl/oplog_entry',
+        '$BUILD_DIR/mongo/db/repl/optime',
+        'encryption_hooks',
     ],
 )
 
@@ -265,5 +325,24 @@ env.CppUnitTest(
     LIBDEPS=[
         'key_string',
         '$BUILD_DIR/mongo/base',
-        ]
+    ],
+)
+
+env.Benchmark(
+    target='storage_key_string_bm',
+    source='key_string_bm.cpp',
+    LIBDEPS=[
+        'key_string',
+        '$BUILD_DIR/mongo/base',
+    ],
+)
+
+env.CppUnitTest(
+    target='backup_cursor_service_test',
+    source='backup_cursor_service_test.cpp',
+    LIBDEPS=[
+        '$BUILD_DIR/mongo/db/auth/authmocks',
+        '$BUILD_DIR/mongo/db/service_context_d_test_fixture',
+        'backup_cursor_service',
+    ],
 )

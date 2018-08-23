@@ -34,11 +34,8 @@
 namespace mongo {
 
 /**
- * Part of the change stream API machinery used to look up the post-image of a document. Uses
- * the "documentKey" field of the input to look up the new version of the document.
- *
- * Uses the ExpressionContext to determine what collection to look up into.
- * TODO SERVER-29134 When we allow change streams on multiple collections, this will need to change.
+ * Part of the change stream API machinery used to look up the post-image of a document. Uses the
+ * "documentKey" field of the input to look up the new version of the document.
  */
 class DocumentSourceLookupChangePostImage final : public DocumentSource {
 public:
@@ -65,9 +62,10 @@ public:
         invariant(pipeState != Pipeline::SplitState::kSplitForShards);
         StageConstraints constraints(StreamType::kStreaming,
                                      PositionRequirement::kNone,
-                                     pipeState == Pipeline::SplitState::kUnsplit
-                                         ? HostTypeRequirement::kNone
-                                         : HostTypeRequirement::kMongoS,
+                                     // If this is parsed on mongos it should stay on mongos. If
+                                     // we're not in a sharded cluster then it's okay to run on
+                                     // mongod.
+                                     HostTypeRequirement::kLocalOnly,
                                      DiskUseRequirement::kNoDiskUse,
                                      FacetRequirement::kNotAllowed,
                                      TransactionRequirement::kNotAllowed,

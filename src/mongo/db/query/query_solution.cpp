@@ -558,6 +558,13 @@ bool IndexScanNode::hasField(const string& field) const {
 
     size_t keyPatternFieldIndex = 0;
     for (auto&& elt : index.keyPattern) {
+        // For $** indexes, the keyPattern is prefixed by a virtual field, '$_path'. We therefore
+        // skip the first keyPattern field when deciding whether we can provide the requested field.
+        if (index.type == IndexType::INDEX_ALLPATHS && !keyPatternFieldIndex) {
+            invariant(elt.fieldNameStringData() == "$_path"_sd);
+            ++keyPatternFieldIndex;
+            continue;
+        }
         // The index can provide this field if the requested path appears in the index key pattern,
         // and that path has no multikey components. We can't cover a field that has multikey
         // components because the index keys contain individual array elements, and we can't
@@ -597,8 +604,12 @@ bool IndexScanNode::sortedByDiskLoc() const {
 }
 
 // static
-std::set<StringData> IndexScanNode::getFieldsWithStringBounds(const IndexBounds& bounds,
+std::set<StringData> IndexScanNode::getFieldsWithStringBounds(const IndexBounds& inputBounds,
                                                               const BSONObj& indexKeyPattern) {
+    // Produce a copy of the bounds which are all ascending, as we can only compute intersections
+    // of ascending bounds.
+    IndexBounds bounds = inputBounds.forwardize();
+
     BSONObjIterator keyPatternIterator(indexKeyPattern);
 
     if (bounds.isSimpleRange) {
@@ -1058,35 +1069,6 @@ void ShardingFilterNode::appendToString(mongoutils::str::stream* ss, int indent)
 QuerySolutionNode* ShardingFilterNode::clone() const {
     ShardingFilterNode* copy = new ShardingFilterNode();
     cloneBaseData(copy);
-    return copy;
-}
-
-//
-// KeepMutationsNode
-//
-
-void KeepMutationsNode::appendToString(mongoutils::str::stream* ss, int indent) const {
-    addIndent(ss, indent);
-    *ss << "KEEP_MUTATIONS\n";
-    if (NULL != filter) {
-        addIndent(ss, indent + 1);
-        StringBuilder sb;
-        *ss << "filter:\n";
-        filter->debugString(sb, indent + 2);
-        *ss << sb.str();
-    }
-    addCommon(ss, indent);
-    addIndent(ss, indent + 1);
-    *ss << "Child:" << '\n';
-    children[0]->appendToString(ss, indent + 2);
-}
-
-QuerySolutionNode* KeepMutationsNode::clone() const {
-    KeepMutationsNode* copy = new KeepMutationsNode();
-    cloneBaseData(copy);
-
-    copy->sorts = this->sorts;
-
     return copy;
 }
 

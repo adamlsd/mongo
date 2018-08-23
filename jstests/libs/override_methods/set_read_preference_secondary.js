@@ -17,12 +17,11 @@
         "geoSearch",
         "mapReduce",
         "mapreduce",
-        "parallelCollectionScan",
     ]);
     const kDatabasesOnConfigServers = new Set(["config", "admin"]);
 
     // This list of cursor-generating commands is incomplete. For example, "listCollections",
-    // "listIndexes", "parallelCollectionScan", and "repairCursor" are all missing from this list.
+    // "listIndexes", and "repairCursor" are all missing from this list.
     // If we ever add tests that attempt to run getMore or killCursors on cursors generated from
     // those commands, then we should update the contents of this list and also handle any
     // differences in the server's response format.
@@ -62,10 +61,10 @@
             commandName = Object.keys(commandObjUnwrapped)[0];
         }
 
-        if (commandObj[commandName] === "system.profile") {
-            throw new Error("Cowardly refusing to run test with overridden read preference" +
-                            " when it reads from a non-replicated collection: " +
-                            tojson(commandObj));
+        if (commandObj[commandName] === "system.profile" || commandName === 'profile') {
+            throw new Error(
+                "Cowardly refusing to run test that interacts with the system profiler as the " +
+                "'system.profile' collection is not replicated" + tojson(commandObj));
         }
 
         if (conn.isReplicaSetConnection()) {

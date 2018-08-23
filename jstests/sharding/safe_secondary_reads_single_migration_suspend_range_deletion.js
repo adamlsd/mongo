@@ -25,6 +25,7 @@
     "use strict";
 
     load('jstests/libs/profiler.js');
+    load('jstests/sharding/libs/last_stable_mongos_commands.js');
 
     let db = "test";
     let coll = "foo";
@@ -118,8 +119,6 @@
         connPoolSync: {skip: "does not return user data"},
         connectionStatus: {skip: "does not return user data"},
         convertToCapped: {skip: "primary only"},
-        copydb: {skip: "primary only"},
-        copydbsaslstart: {skip: "primary only"},
         count: {
             setUp: function(mongosConn) {
                 assert.writeOK(mongosConn.getCollection(nss).insert({x: 1}));
@@ -176,7 +175,6 @@
         emptycapped: {skip: "primary only"},
         enableSharding: {skip: "primary only"},
         endSessions: {skip: "does not return user data"},
-        eval: {skip: "primary only"},
         explain: {skip: "TODO SERVER-30068"},
         features: {skip: "does not return user data"},
         filemd5: {skip: "does not return user data"},
@@ -223,7 +221,6 @@
         invalidateUserCache: {skip: "does not return user data"},
         isdbgrid: {skip: "does not return user data"},
         isMaster: {skip: "does not return user data"},
-        journalLatencyTest: {skip: "does not return user data"},
         killCursors: {skip: "does not return user data"},
         killAllSessions: {skip: "does not return user data"},
         killAllSessionsByPattern: {skip: "does not return user data"},
@@ -270,7 +267,6 @@
         movePrimary: {skip: "primary only"},
         multicast: {skip: "does not return user data"},
         netstat: {skip: "does not return user data"},
-        parallelCollectionScan: {skip: "is an internal command"},
         ping: {skip: "does not return user data"},
         planCacheClear: {skip: "does not return user data"},
         planCacheClearFilters: {skip: "does not return user data"},
@@ -279,7 +275,6 @@
         planCacheListQueryShapes: {skip: "does not return user data"},
         planCacheSetFilter: {skip: "does not return user data"},
         profile: {skip: "primary only"},
-        reIndex: {skip: "does not return user data"},
         reapLogicalSessionCacheNow: {skip: "does not return user data"},
         refreshLogicalSessionCacheNow: {skip: "does not return user data"},
         refreshSessions: {skip: "does not return user data"},
@@ -288,11 +283,8 @@
         removeShardFromZone: {skip: "primary only"},
         renameCollection: {skip: "primary only"},
         repairCursor: {skip: "does not return user data"},
-        repairDatabase: {skip: "does not return user data"},
         replSetAbortPrimaryCatchUp: {skip: "does not return user data"},
-        replSetElect: {skip: "does not return user data"},
         replSetFreeze: {skip: "does not return user data"},
-        replSetFresh: {skip: "does not return user data"},
         replSetGetConfig: {skip: "does not return user data"},
         replSetGetRBID: {skip: "does not return user data"},
         replSetGetStatus: {skip: "does not return user data"},
@@ -341,8 +333,13 @@
         updateZoneKeyRange: {skip: "primary only"},
         usersInfo: {skip: "primary only"},
         validate: {skip: "does not return user data"},
+        waitForOngoingChunkSplits: {skip: "does not return user data"},
         whatsmyuri: {skip: "does not return user data"}
     };
+
+    commandsRemovedFromMongosIn42.forEach(function(cmd) {
+        testCases[cmd] = {skip: "must define test coverage for 4.0 backwards compatibility"};
+    });
 
     // Set the secondaries to priority 0 and votes 0 to prevent the primaries from stepping down.
     let rsOpts = {nodes: [{rsConfig: {votes: 1}}, {rsConfig: {priority: 0, votes: 0}}]};
@@ -376,6 +373,12 @@
         assert.commandWorked(freshMongos.adminCommand({enableSharding: db}));
         st.ensurePrimaryShard(db, st.shard0.shardName);
         assert.commandWorked(freshMongos.adminCommand({shardCollection: nss, key: {x: 1}}));
+
+        // We do this because we expect staleMongos to see that the collection is sharded, which
+        // it may not if the "nearest" config server it contacts has not replicated the
+        // shardCollection writes (or has not heard that they have reached a majority).
+        st.configRS.awaitReplication();
+
         assert.commandWorked(freshMongos.adminCommand({split: nss, middle: {x: 0}}));
 
         // Do dummy read from the stale mongos so it loads the routing table into memory once.

@@ -30,7 +30,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/client/dbclientcursor.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/catalog/index_catalog.h"
@@ -150,7 +150,8 @@ public:
 
         ASSERT_OK(dbtests::createIndex(&opCtx, ns(), BSON("a" << 1 << "b" << 1)));
 
-        unique_ptr<DBClientCursor> c = db.query(ns(), Query().sort(BSON("a" << 1 << "b" << 1)));
+        unique_ptr<DBClientCursor> c =
+            db.query(NamespaceString(ns()), Query().sort(BSON("a" << 1 << "b" << 1)));
         ASSERT_EQUALS(1111, c->itcount());
     }
 };
@@ -167,7 +168,8 @@ public:
             db.insert(ns(), BSON("i" << i));
         }
 
-        unique_ptr<DBClientCursor> c = db.query(ns(), Query().sort(BSON("i" << 1)));
+        unique_ptr<DBClientCursor> c =
+            db.query(NamespaceString(ns()), Query().sort(BSON("i" << 1)));
 
         BSONObj o = c->next();
         ASSERT(c->more());

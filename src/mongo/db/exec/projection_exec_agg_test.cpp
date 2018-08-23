@@ -32,15 +32,33 @@
 
 #include "mongo/bson/bsonmisc.h"
 #include "mongo/bson/bsonobjbuilder.h"
+#include "mongo/bson/json.h"
 #include "mongo/unittest/unittest.h"
 #include "mongo/util/assert_util.h"
 
 namespace mongo {
 namespace {
 
+using ArrayRecursionPolicy = ProjectionExecAgg::ArrayRecursionPolicy;
+using DefaultIdPolicy = ProjectionExecAgg::DefaultIdPolicy;
+
 template <typename T>
 BSONObj wrapInLiteral(const T& arg) {
     return BSON("$literal" << arg);
+}
+
+// Helper to simplify the creation of a ProjectionExecAgg which includes _id and recurses arrays.
+std::unique_ptr<ProjectionExecAgg> makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+    BSONObj projSpec) {
+    return ProjectionExecAgg::create(
+        projSpec, DefaultIdPolicy::kIncludeId, ArrayRecursionPolicy::kRecurseNestedArrays);
+}
+
+// Helper to simplify the creation of a ProjectionExecAgg which excludes _id and recurses arrays.
+std::unique_ptr<ProjectionExecAgg> makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(
+    BSONObj projSpec) {
+    return ProjectionExecAgg::create(
+        projSpec, DefaultIdPolicy::kExcludeId, ArrayRecursionPolicy::kRecurseNestedArrays);
 }
 
 //
@@ -48,59 +66,67 @@ BSONObj wrapInLiteral(const T& arg) {
 //
 
 TEST(ProjectionExecAggErrors, ShouldRejectMixOfInclusionAndComputedFields) {
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a" << true << "b" << wrapInLiteral(1))),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << true << "b" << wrapInLiteral(1))),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a" << wrapInLiteral(1) << "b" << true)),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << wrapInLiteral(1) << "b" << true)),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a.b" << true << "a.c" << wrapInLiteral(1))),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a.b" << true << "a.c" << wrapInLiteral(1))),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a.b" << wrapInLiteral(1) << "a.c" << true)),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a.b" << wrapInLiteral(1) << "a.c" << true)),
                   AssertionException);
 
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a" << BSON("b" << true << "c" << wrapInLiteral(1)))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << BSON("b" << true << "c" << wrapInLiteral(1)))),
+                  AssertionException);
 
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a" << BSON("b" << wrapInLiteral(1) << "c" << true))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << BSON("b" << wrapInLiteral(1) << "c" << true))),
+                  AssertionException);
 }
 
 TEST(ProjectionExecAggErrors, ShouldRejectMixOfExclusionAndComputedFields) {
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a" << false << "b" << wrapInLiteral(1))),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << false << "b" << wrapInLiteral(1))),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a" << wrapInLiteral(1) << "b" << false)),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << wrapInLiteral(1) << "b" << false)),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a.b" << false << "a.c" << wrapInLiteral(1))),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a.b" << false << "a.c" << wrapInLiteral(1))),
                   AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(BSON("a.b" << wrapInLiteral(1) << "a.c" << false)),
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a.b" << wrapInLiteral(1) << "a.c" << false)),
                   AssertionException);
 
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a" << BSON("b" << false << "c" << wrapInLiteral(1)))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << BSON("b" << false << "c" << wrapInLiteral(1)))),
+                  AssertionException);
 
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a" << BSON("b" << wrapInLiteral(1) << "c" << false))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << BSON("b" << wrapInLiteral(1) << "c" << false))),
+                  AssertionException);
 }
 
 TEST(ProjectionExecAggErrors, ShouldRejectOnlyComputedFields) {
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a" << wrapInLiteral(1) << "b" << wrapInLiteral(1))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a" << wrapInLiteral(1) << "b" << wrapInLiteral(1))),
+                  AssertionException);
 
-    ASSERT_THROWS(
-        ProjectionExecAgg::create(BSON("a.b" << wrapInLiteral(1) << "a.c" << wrapInLiteral(1))),
-        AssertionException);
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+                      BSON("a.b" << wrapInLiteral(1) << "a.c" << wrapInLiteral(1))),
+                  AssertionException);
 
-    ASSERT_THROWS(ProjectionExecAgg::create(
+    ASSERT_THROWS(makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
                       BSON("a" << BSON("b" << wrapInLiteral(1) << "c" << wrapInLiteral(1)))),
                   AssertionException);
 }
@@ -108,40 +134,178 @@ TEST(ProjectionExecAggErrors, ShouldRejectOnlyComputedFields) {
 // Valid projections.
 
 TEST(ProjectionExecAggType, ShouldAcceptInclusionProjection) {
-    auto parsedProject = ProjectionExecAgg::create(BSON("a" << true));
+    auto parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(BSON("a" << true));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id" << false << "a" << true));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("_id" << false << "a" << true));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id" << false << "a.b.c" << true));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("_id" << false << "a.b.c" << true));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id.x" << true));
+    parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(BSON("_id.x" << true));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id" << BSON("x" << true)));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("_id" << BSON("x" << true)));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("x" << BSON("_id" << true)));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("x" << BSON("_id" << true)));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
 }
 
 TEST(ProjectionExecAggType, ShouldAcceptExclusionProjection) {
-    auto parsedProject = ProjectionExecAgg::create(BSON("a" << false));
+    auto parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(BSON("a" << false));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id.x" << false));
+    parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(BSON("_id.x" << false));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id" << BSON("x" << false)));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("_id" << BSON("x" << false)));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("x" << BSON("_id" << false)));
+    parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        BSON("x" << BSON("_id" << false)));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
 
-    parsedProject = ProjectionExecAgg::create(BSON("_id" << false));
+    parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(BSON("_id" << false));
     ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+}
+
+// Misc tests.
+
+TEST(ProjectionExecAggTests, InclusionFieldPathsWithImplicitIdInclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        fromjson("{a: {b: {c: 1}}, d: 1}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+    std::set<std::string> expectedPaths{"_id", "a.b.c", "d"};
+
+    // Verify that the exhaustive set of paths is as expected.
+    ASSERT(exhaustivePaths == expectedPaths);
+}
+
+TEST(ProjectionExecAggTests, InclusionFieldPathsWithExplicitIdInclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(
+        fromjson("{_id: 1, a: {b: {c: 1}}, d: 1}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+    std::set<std::string> expectedPaths{"_id", "a.b.c", "d"};
+
+    // Verify that the exhaustive set of paths is as expected.
+    ASSERT(exhaustivePaths == expectedPaths);
+}
+
+TEST(ProjectionExecAggTests, InclusionFieldPathsWithExplicitIdInclusionIdOnly) {
+    auto parsedProject =
+        makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(fromjson("{_id: 1}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+    std::set<std::string> expectedPaths{"_id"};
+
+    // Verify that the exhaustive set of paths is as expected.
+    ASSERT(exhaustivePaths == expectedPaths);
+}
+
+TEST(ProjectionExecAggTests, InclusionFieldPathsWithImplicitIdExclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(
+        fromjson("{a: {b: {c: 1}}, d: 1}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+    std::set<std::string> expectedPaths{"a.b.c", "d"};
+
+    // Verify that the exhaustive set of paths is as expected.
+    ASSERT(exhaustivePaths == expectedPaths);
+}
+
+TEST(ProjectionExecAggTests, InclusionFieldPathsWithExplicitIdExclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        fromjson("{_id: 0, a: {b: {c: 1}}, d: 1}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kInclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+    std::set<std::string> expectedPaths{"a.b.c", "d"};
+
+    // Verify that the exhaustive set of paths is as expected.
+    ASSERT(exhaustivePaths == expectedPaths);
+}
+
+TEST(ProjectionExecAggTests, ExclusionFieldPathsWithImplicitIdInclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        fromjson("{a: {b: {c: 0}}, d: 0}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+
+    // Verify that the exhaustive set is empty, despite the implicit inclusion of _id.
+    ASSERT(exhaustivePaths.empty());
+}
+
+TEST(ProjectionExecAggTests, ExclusionFieldPathsWithExplicitIdInclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(
+        fromjson("{_id: 1, a: {b: {c: 0}}, d: 0}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+
+    // Verify that the exhaustive set is empty, despite the explicit inclusion of _id.
+    ASSERT(exhaustivePaths.empty());
+}
+
+TEST(ProjectionExecAggTests, ExclusionFieldPathsWithImplicitIdExclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdExclusionAndNestedArrayRecursion(
+        fromjson("{a: {b: {c: 0}}, d: 0}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+
+    // Verify that the exhaustive set is empty.
+    ASSERT(exhaustivePaths.empty());
+}
+
+TEST(ProjectionExecAggTests, ExclusionFieldPathsWithExplicitIdExclusion) {
+    auto parsedProject = makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(
+        fromjson("{_id: 1, a: {b: {c: 0}}, d: 0}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+
+    // Verify that the exhaustive set is empty.
+    ASSERT(exhaustivePaths.empty());
+}
+
+TEST(ProjectionExecAggTests, ExclusionFieldPathsWithExplicitIdExclusionIdOnly) {
+    auto parsedProject =
+        makeProjectionWithDefaultIdInclusionAndNestedArrayRecursion(fromjson("{_id: 0}"));
+    ASSERT(parsedProject->getType() == ProjectionExecAgg::ProjectionType::kExclusionProjection);
+
+    // Extract the exhaustive set of paths that will be preserved by the projection.
+    auto exhaustivePaths = parsedProject->getExhaustivePaths();
+
+    // Verify that the exhaustive set is empty.
+    ASSERT(exhaustivePaths.empty());
 }
 
 }  // namespace

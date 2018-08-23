@@ -27,7 +27,6 @@
         "distinct",
         "find",
         "geoSearch",
-        "parallelCollectionScan",
     ]);
 
     const kCommandsOnlySupportingReadConcernSnapshot = new Set([
@@ -66,7 +65,6 @@
         "collMod",
         "commitTransaction",
         "convertToCapped",
-        "copydb",
         "create",
         "createIndexes",
         "createRole",
@@ -118,12 +116,6 @@
         if (commandName === "query" || commandName === "$query") {
             commandObjUnwrapped = commandObj[commandName];
             commandName = Object.keys(commandObjUnwrapped)[0];
-        }
-
-        if (commandName === "eval" || commandName === "$eval") {
-            throw new Error("Cowardly refusing to run test with overridden write concern when it" +
-                            " uses a command that can only perform w=1 writes: " +
-                            tojson(commandObj));
         }
 
         let shouldForceReadConcern = kCommandsSupportingReadConcern.has(commandName);

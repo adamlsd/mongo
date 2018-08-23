@@ -41,7 +41,6 @@
 #include "mongo/base/init.h"
 #include "mongo/base/initializer.h"
 #include "mongo/base/status.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/client/mongo_uri.h"
 #include "mongo/db/auth/sasl_command_constants.h"
 #include "mongo/db/client.h"
@@ -98,10 +97,10 @@ const auto kDefaultMongoURL = "mongodb://127.0.0.1:27017"_sd;
 // to the latest version because there is no feature gating that currently occurs at the mongo shell
 // level. The server is responsible for rejecting usages of new features if its
 // featureCompatibilityVersion is lower.
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion40, ("EndStartupOptionSetup"))
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion42, ("EndStartupOptionSetup"))
 (InitializerContext* context) {
     mongo::serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     return Status::OK();
 }
 const auto kAuthParam = "authSource"s;
@@ -559,7 +558,7 @@ string finishCode(string code) {
 }
 
 bool execPrompt(mongo::Scope& scope, const char* promptFunction, string& prompt) {
-    string execStatement = string("__prompt__ = ") + promptFunction + "();";
+    string execStatement = string("__promptWrapper__(") + promptFunction + ");";
     scope.exec("delete __prompt__;", "", false, false, false, 0);
     scope.exec(execStatement, "", false, false, false, 0);
     if (scope.type("__prompt__") == String) {
@@ -744,7 +743,7 @@ int _main(int argc, char* argv[], char** envp) {
     mongo::shell_utils::RecordMyLocation(argv[0]);
 
     mongo::runGlobalInitializersOrDie(argc, argv, envp);
-
+    setGlobalServiceContext(ServiceContext::make());
     // TODO This should use a TransportLayerManager or TransportLayerFactory
     auto serviceContext = getGlobalServiceContext();
     transport::TransportLayerASIO::Options opts;
@@ -758,14 +757,7 @@ int _main(int argc, char* argv[], char** envp) {
     uassertStatusOK(tlPtr->start());
 
     // hide password from ps output
-    for (int i = 0; i < (argc - 1); ++i) {
-        if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--password")) {
-            char* arg = argv[i + 1];
-            while (*arg) {
-                *arg++ = 'x';
-            }
-        }
-    }
+    redactPasswordOptions(argc, argv);
 
     if (!mongo::serverGlobalParams.quiet.load())
         cout << mongoShellVersion(VersionInfoInterface::instance()) << endl;
@@ -911,7 +903,7 @@ int _main(int argc, char* argv[], char** envp) {
     unique_ptr<mongo::Scope> scope(mongo::getGlobalScriptEngine()->newScope());
     shellMainScope = scope.get();
 
-    if (shellGlobalParams.runShell)
+    if (shellGlobalParams.runShell && !mongo::serverGlobalParams.quiet.load())
         cout << "type \"help\" for help" << endl;
 
     // Load and execute /etc/mongorc.js before starting shell

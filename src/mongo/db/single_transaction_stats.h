@@ -28,6 +28,10 @@
 
 #pragma once
 
+#include "mongo/db/curop.h"
+#include "mongo/rpc/metadata/client_metadata.h"
+#include "mongo/rpc/metadata/client_metadata_ismaster.h"
+
 namespace mongo {
 
 /**
@@ -36,73 +40,73 @@ namespace mongo {
 class SingleTransactionStats {
 public:
     /**
+     * Stores information about the last client to run a transaction operation.
+     */
+    struct LastClientInfo {
+        std::string clientHostAndPort;
+        long long connectionId;
+        BSONObj clientMetadata;
+        std::string appName;
+
+        void update(Client* client) {
+            if (client->hasRemote()) {
+                clientHostAndPort = client->getRemote().toString();
+            }
+            connectionId = client->getConnectionId();
+            if (const auto& metadata =
+                    ClientMetadataIsMasterState::get(client).getClientMetadata()) {
+                clientMetadata = metadata.get().getDocument();
+                appName = metadata.get().getApplicationName().toString();
+            }
+        }
+    };
+
+    SingleTransactionStats() : _txnNumber(kUninitializedTxnNumber){};
+    SingleTransactionStats(TxnNumber txnNumber) : _txnNumber(txnNumber){};
+
+    /**
      * Returns the start time of the transaction in microseconds.
      *
      * This method cannot be called until setStartTime() has been called.
      */
-    unsigned long long getStartTime() const {
-        invariant(_startTime > 0);
-
-        return _startTime;
-    }
+    unsigned long long getStartTime() const;
 
     /**
      * Sets the transaction's start time, only if it hasn't already been set.
      *
      * This method must only be called once.
      */
-    void setStartTime(unsigned long long time) {
-        invariant(_startTime == 0);
-
-        _startTime = time;
-    }
+    void setStartTime(unsigned long long time);
 
     /**
      * If the transaction is currently in progress, this method returns the duration
-     * the transaction has been running for in microseconds.
+     * the transaction has been running for in microseconds, given the current time value.
      *
      * For a completed transaction, this method returns the total duration of the
      * transaction in microseconds.
      *
      * This method cannot be called until setStartTime() has been called.
      */
-    unsigned long long getDuration() const {
-        invariant(_startTime > 0);
-
-        // The transaction hasn't ended yet, so we return how long it has currently
-        // been running for.
-        if (_endTime == 0) {
-            return curTimeMicros64() - _startTime;
-        }
-        return _endTime - _startTime;
-    }
+    unsigned long long getDuration(unsigned long long curTime) const;
 
     /**
      * Sets the transaction's end time, only if the start time has already been set.
      *
      * This method cannot be called until setStartTime() has been called.
      */
-    void setEndTime(unsigned long long time) {
-        invariant(_startTime > 0);
-
-        _endTime = time;
-    }
+    void setEndTime(unsigned long long time);
 
     /**
-     * Returns the total active time of the transaction. A transaction is active when there is a
-     * running operation that is part of the transaction.
+     * Returns the total active time of the transaction, given the current time value. A transaction
+     * is active when there is a running operation that is part of the transaction.
      */
-    Microseconds getTimeActiveMicros() const {
-        invariant(_startTime > 0);
+    Microseconds getTimeActiveMicros(unsigned long long curTime) const;
 
-        // The transaction is currently active, so we return the recorded active time so far plus
-        // the time since _timeActiveStart.
-        if (isActive()) {
-            return _timeActiveMicros +
-                Microseconds{static_cast<long long>(curTimeMicros64() - _lastTimeActiveStart)};
-        }
-        return _timeActiveMicros;
-    }
+    /**
+     * Returns the total inactive time of the transaction, given the current time value. A
+     * transaction is inactive when it is idly waiting for a new operation to occur.
+     */
+    Microseconds getTimeInactiveMicros(unsigned long long curTime) const;
 
     /**
      * Marks the transaction as active and sets the start of the transaction's active time.
@@ -110,11 +114,7 @@ public:
      * This method cannot be called if the transaction is currently active. A call to setActive()
      * must be followed by a call to setInactive() before calling setActive() again.
      */
-    void setActive(unsigned long long time) {
-        invariant(!isActive());
-
-        _lastTimeActiveStart = time;
-    }
+    void setActive(unsigned long long time);
 
     /**
      * Marks the transaction as inactive and sets the total active time of the transaction. The
@@ -122,12 +122,7 @@ public:
      *
      * This method cannot be called if the transaction is currently not active.
      */
-    void setInactive(unsigned long long time) {
-        invariant(isActive());
-
-        _timeActiveMicros += Microseconds{static_cast<long long>(time - _lastTimeActiveStart)};
-        _lastTimeActiveStart = 0;
-    }
+    void setInactive(unsigned long long time);
 
     /**
      * Returns whether or not the transaction is currently active.
@@ -136,7 +131,77 @@ public:
         return _lastTimeActiveStart != 0;
     }
 
+    /**
+     * Returns whether or not the transaction has ended (aborted or committed).
+     */
+    bool isEnded() const {
+        return _endTime != 0;
+    }
+
+    /**
+     * Returns whether these stats are for a multi-document transaction.
+     */
+    bool isForMultiDocumentTransaction() const {
+        return _autoCommit != boost::none;
+    }
+
+    /**
+     * Returns the OpDebug object stored in this SingleTransactionStats instance.
+     */
+    OpDebug* getOpDebug() {
+        return &_opDebug;
+    }
+
+    /**
+     * Returns the LastClientInfo object stored in this SingleTransactionStats instance.
+     */
+    const LastClientInfo& getLastClientInfo() const {
+        return _lastClientInfo;
+    }
+
+    /**
+     * Updates the LastClientInfo object stored in this SingleTransactionStats instance with the
+     * given Client's information.
+     */
+    void updateLastClientInfo(Client* client) {
+        _lastClientInfo.update(client);
+    }
+
+    /**
+     * Set the autoCommit field.  If this field is unset, this is not a transaction but a
+     * retryable write and other values will not be meaningful.
+     */
+    void setAutoCommit(boost::optional<bool> autoCommit) {
+        _autoCommit = autoCommit;
+    }
+
+    /**
+     * Set the transaction expiration date.
+     */
+    void setExpireDate(Date_t expireDate) {
+        _expireDate = expireDate;
+    }
+
+    /**
+     * Set the transaction storage read timestamp.
+     */
+    void setReadTimestamp(Timestamp readTimestamp) {
+        _readTimestamp = readTimestamp;
+    }
+
+    /**
+     * Append the stats to the builder.
+     */
+    void report(BSONObjBuilder* builder, const repl::ReadConcernArgs& readConcernArgs) const;
+
 private:
+    // The transaction number of the transaction.
+    TxnNumber _txnNumber;
+
+    // Unset for retryable write, 'false' for multi-document transaction.  Value 'true' is
+    // for future use.
+    boost::optional<bool> _autoCommit;
+
     // The start time of the transaction in microseconds.
     unsigned long long _startTime{0};
 
@@ -149,6 +214,18 @@ private:
     // The time at which the transaction was last marked as active in microseconds. The transaction
     // is considered active if this value is not equal to 0.
     unsigned long long _lastTimeActiveStart{0};
+
+    // The expiration date of the transaction.
+    Date_t _expireDate = Date_t::max();
+
+    // The storage read timestamp of the transaction.
+    Timestamp _readTimestamp;
+
+    // Tracks and accumulates stats from all operations that run inside the transaction.
+    OpDebug _opDebug;
+
+    // Holds information about the last client to run a transaction operation.
+    LastClientInfo _lastClientInfo;
 };
 
 }  // namespace mongo

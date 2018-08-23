@@ -26,6 +26,7 @@ MONGO_RUNNER_SUBDIR = "mongorunner"
 # Default path for where to look for executables.
 DEFAULT_DBTEST_EXECUTABLE = os.path.join(os.curdir, "dbtest")
 DEFAULT_MONGO_EXECUTABLE = os.path.join(os.curdir, "mongo")
+DEFAULT_MONGOEBENCH_EXECUTABLE = os.path.join(os.curdir, "mongoebench")
 DEFAULT_MONGOD_EXECUTABLE = os.path.join(os.curdir, "mongod")
 DEFAULT_MONGOS_EXECUTABLE = os.path.join(os.curdir, "mongos")
 
@@ -42,6 +43,9 @@ DEFAULTS = {
     "archive_limit_mb": 5000,
     "archive_limit_tests": 10,
     "base_port": 20000,
+    "benchrun_device": "Desktop",
+    "benchrun_embedded_root": "/data/local/tmp/benchrun_embedded",
+    "benchrun_report_root": "benchrun_embedded/results",
     "buildlogger_url": "https://logkeeper.mongodb.org",
     "continue_on_failure": False,
     "dbpath_prefix": None,
@@ -53,12 +57,12 @@ DEFAULTS = {
     "mongo_executable": None,
     "mongod_executable": None,
     "mongod_set_parameters": None,
+    "mongoebench_executable": None,
     "mongos_executable": None,
     "mongos_set_parameters": None,
     "no_journal": False,
     "num_clients_per_fixture": 1,
     "perf_report_file": None,
-    "prealloc_journal": None,  # Default is set on the commandline.
     "repeat": 1,
     "report_failure_status": "fail",
     "report_file": None,
@@ -271,6 +275,9 @@ MONGOD_EXECUTABLE = None
 # The --setParameter options passed to mongod.
 MONGOD_SET_PARAMETERS = None
 
+# The path to the mongoebench executable used by resmoke.py.
+MONGOEBENCH_EXECUTABLE = None
+
 # The path to the mongos executable used by resmoke.py.
 MONGOS_EXECUTABLE = None
 
@@ -280,10 +287,6 @@ MONGOS_SET_PARAMETERS = None
 # If true, then all mongod's started by resmoke.py and by the mongo shell will not have journaling
 # enabled.
 NO_JOURNAL = None
-
-# If true, then all mongod's started by resmoke.py and by the mongo shell will not preallocate
-# journal files.
-NO_PREALLOC_JOURNAL = None
 
 # If set, then each fixture runs tests with the specified number of clients.
 NUM_CLIENTS_PER_FIXTURE = None
@@ -356,6 +359,11 @@ BENCHMARK_LIST_TESTS = None
 BENCHMARK_MIN_TIME = None
 BENCHMARK_REPETITIONS = None
 
+# Embedded Benchrun Test options.
+BENCHRUN_DEVICE = None
+BENCHRUN_EMBEDDED_ROOT = None
+BENCHRUN_REPORT_ROOT = None
+
 ##
 # Internally used configuration options that aren't exposed to the user
 ##
@@ -377,4 +385,5 @@ DEFAULT_INTEGRATION_TEST_LIST = "build/integration_tests.txt"
 # External files or executables, used as suite selectors, that are created during the build and
 # therefore might not be available when creating a test membership map.
 EXTERNAL_SUITE_SELECTORS = (DEFAULT_BENCHMARK_TEST_LIST, DEFAULT_UNIT_TEST_LIST,
-                            DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE)
+                            DEFAULT_INTEGRATION_TEST_LIST, DEFAULT_DBTEST_EXECUTABLE,
+                            DEFAULT_MONGOEBENCH_EXECUTABLE)

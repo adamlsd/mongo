@@ -48,7 +48,7 @@
 #include "mongo/db/concurrency/write_conflict_exception.h"
 #include "mongo/db/db.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/storage/mmap_v1/dur.h"
+#include "mongo/db/storage/backup_cursor_service.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/stdx/condition_variable.h"
 #include "mongo/util/assert_util.h"
@@ -71,12 +71,16 @@ Lock::ResourceMutex commandMutex("fsyncCommandMutex");
  */
 class FSyncLockThread : public BackgroundJob {
 public:
-    FSyncLockThread() : BackgroundJob(false) {}
+    FSyncLockThread(bool allowFsyncFailure)
+        : BackgroundJob(false), _allowFsyncFailure(allowFsyncFailure) {}
     virtual ~FSyncLockThread() {}
     virtual string name() const {
         return "FSyncLockThread";
     }
     virtual void run();
+
+private:
+    bool _allowFsyncFailure;
 };
 
 class FSyncCommand : public ErrmsgCommandDeprecated {
@@ -128,24 +132,17 @@ public:
             return false;
         }
 
-
         const bool sync =
             !cmdObj["async"].trueValue();  // async means do an fsync, but return immediately
         const bool lock = cmdObj["lock"].trueValue();
         log() << "CMD fsync: sync:" << sync << " lock:" << lock;
 
+        // fsync + lock is sometimes used to block writes out of the system and does not care if
+        // the `BackupCursorService::fsyncLock` call succeeds.
+        const bool allowFsyncFailure =
+            getTestCommandsEnabled() && cmdObj["allowFsyncFailure"].trueValue();
+
         if (!lock) {
-            // the simple fsync command case
-            if (sync) {
-                // can this be GlobalRead? and if it can, it should be nongreedy.
-                Lock::GlobalWrite w(opCtx);
-                // TODO SERVER-26822: Replace MMAPv1 specific calls with ones that are storage
-                // engine agnostic.
-                getDur().commitNow(opCtx);
-
-                //  No WriteUnitOfWork needed, as this does no writes of its own.
-            }
-
             // Take a global IS lock to ensure the storage engine is not shutdown
             Lock::GlobalLock global(opCtx, MODE_IS);
             StorageEngine* storageEngine = getGlobalServiceContext()->getStorageEngine();
@@ -171,7 +168,7 @@ public:
                 stdx::unique_lock<stdx::mutex> lk(lockStateMutex);
                 threadStatus = Status::OK();
                 threadStarted = false;
-                _lockThread = stdx::make_unique<FSyncLockThread>();
+                _lockThread = stdx::make_unique<FSyncLockThread>(allowFsyncFailure);
                 _lockThread->go();
 
                 while (!threadStarted && threadStatus.isOK()) {
@@ -335,6 +332,7 @@ SimpleMutex filesLockedFsync;
 
 void FSyncLockThread::run() {
     Client::initThread("fsyncLockWorker");
+    ON_BLOCK_EXIT([] { Client::destroy(); });
     stdx::lock_guard<SimpleMutex> lkf(filesLockedFsync);
     stdx::unique_lock<stdx::mutex> lk(fsyncCmd.lockStateMutex);
 
@@ -343,19 +341,8 @@ void FSyncLockThread::run() {
     try {
         const ServiceContext::UniqueOperationContext opCtxPtr = cc().makeOperationContext();
         OperationContext& opCtx = *opCtxPtr;
-        Lock::GlobalWrite global(&opCtx);  // No WriteUnitOfWork needed
+        Lock::GlobalRead global(&opCtx);  // Block any writes in order to flush the files.
 
-        try {
-            // TODO SERVER-26822: Replace MMAPv1 specific calls with ones that are storage engine
-            // agnostic.
-            getDur().syncDataAndTruncateJournal(&opCtx);
-        } catch (const std::exception& e) {
-            error() << "error doing syncDataAndTruncateJournal: " << e.what();
-            fsyncCmd.threadStatus = Status(ErrorCodes::CommandFailed, e.what());
-            fsyncCmd.acquireFsyncLockSyncCV.notify_one();
-            return;
-        }
-        opCtx.lockState()->downgradeGlobalXtoSForMMAPV1();
         StorageEngine* storageEngine = getGlobalServiceContext()->getStorageEngine();
 
         try {
@@ -366,15 +353,28 @@ void FSyncLockThread::run() {
             fsyncCmd.acquireFsyncLockSyncCV.notify_one();
             return;
         }
+
+        bool successfulFsyncLock = false;
+        auto backupCursorService = BackupCursorService::get(opCtx.getServiceContext());
         try {
-            writeConflictRetry(&opCtx, "beginBackup", "global", [&storageEngine, &opCtx] {
-                uassertStatusOK(storageEngine->beginBackup(&opCtx));
-            });
+            writeConflictRetry(&opCtx,
+                               "beginBackup",
+                               "global",
+                               [&opCtx, backupCursorService, &successfulFsyncLock] {
+                                   backupCursorService->fsyncLock(&opCtx);
+                                   successfulFsyncLock = true;
+                               });
         } catch (const DBException& e) {
-            error() << "storage engine unable to begin backup : " << e.toString();
-            fsyncCmd.threadStatus = e.toStatus();
-            fsyncCmd.acquireFsyncLockSyncCV.notify_one();
-            return;
+            if (_allowFsyncFailure) {
+                warning() << "Locking despite storage engine being unable to begin backup : "
+                          << e.toString();
+                opCtx.recoveryUnit()->waitUntilDurable();
+            } else {
+                error() << "storage engine unable to begin backup : " << e.toString();
+                fsyncCmd.threadStatus = e.toStatus();
+                fsyncCmd.acquireFsyncLockSyncCV.notify_one();
+                return;
+            }
         }
 
         fsyncCmd.threadStarted = true;
@@ -384,7 +384,9 @@ void FSyncLockThread::run() {
             fsyncCmd.releaseFsyncLockSyncCV.wait(lk);
         }
 
-        storageEngine->endBackup(&opCtx);
+        if (successfulFsyncLock) {
+            backupCursorService->fsyncUnlock(&opCtx);
+        }
 
     } catch (const std::exception& e) {
         severe() << "FSyncLockThread exception: " << e.what();

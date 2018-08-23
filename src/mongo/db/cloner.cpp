@@ -36,7 +36,6 @@
 #include "mongo/bson/unordered_fields_bsonobj_comparator.h"
 #include "mongo/bson/util/bson_extract.h"
 #include "mongo/bson/util/builder.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/auth/authorization_manager.h"
 #include "mongo/db/auth/authorization_manager_global.h"
 #include "mongo/db/auth/internal_user_auth.h"
@@ -47,7 +46,6 @@
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/index_create.h"
 #include "mongo/db/commands.h"
-#include "mongo/db/commands/copydb.h"
 #include "mongo/db/commands/list_collections_filter.h"
 #include "mongo/db/commands/rename_collection.h"
 #include "mongo/db/concurrency/write_conflict_exception.h"
@@ -329,7 +327,7 @@ void Cloner::copy(OperationContext* opCtx,
     {
         Lock::TempRelease tempRelease(opCtx->lockState());
         _conn->query(stdx::function<void(DBClientCursorBatchIterator&)>(f),
-                     from_collection.ns(),
+                     from_collection,
                      query,
                      0,
                      options);

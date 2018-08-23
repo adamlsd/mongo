@@ -134,7 +134,6 @@ var {
             "group",
             "mapReduce",
             "mapreduce",
-            "parallelCollectionScan",
         ]);
 
         function canUseReadConcern(driverSession, cmdObj) {
@@ -520,6 +519,10 @@ var {
             return _lastUsed;
         };
 
+        this.getTxnNumber = function getTxnNumber() {
+            return _txnNumber;
+        };
+
         this.getTxnOptions = function getTxnOptions() {
             return _txnOptions;
         };
@@ -862,6 +865,10 @@ var {
                     return null;
                 }
                 return this._serverSession.handle.getId();
+            };
+
+            this.getTxnNumber_forTesting = function getTxnNumber_forTesting() {
+                return this._serverSession.getTxnNumber();
             };
 
             this.getOperationTime = function getOperationTime() {

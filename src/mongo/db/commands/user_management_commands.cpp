@@ -40,7 +40,6 @@
 #include "mongo/bson/mutable/document.h"
 #include "mongo/bson/mutable/element.h"
 #include "mongo/bson/util/bson_extract.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/config.h"
 #include "mongo/crypto/mechanism_scram.h"
 #include "mongo/db/audit.h"
@@ -148,17 +147,17 @@ Status getCurrentUserRoles(OperationContext* opCtx,
                            AuthorizationManager* authzManager,
                            const UserName& userName,
                            stdx::unordered_set<RoleName>* roles) {
-    User* user;
     authzManager->invalidateUserByName(userName);  // Need to make sure cache entry is up to date
-    Status status = authzManager->acquireUser(opCtx, userName, &user);
-    if (!status.isOK()) {
-        return status;
+    auto swUser = authzManager->acquireUser(opCtx, userName);
+    if (!swUser.isOK()) {
+        return swUser.getStatus();
     }
+    auto user = std::move(swUser.getValue());
+
     RoleNameIterator rolesIt = user->getRoles();
     while (rolesIt.more()) {
         roles->insert(rolesIt.next());
     }
-    authzManager->releaseUser(user);
     return Status::OK();
 }
 
@@ -253,7 +252,7 @@ Status queryAuthzDocument(OperationContext* opCtx,
                           const stdx::function<void(const BSONObj&)>& resultProcessor) {
     try {
         DBDirectClient client(opCtx);
-        client.query(resultProcessor, collectionName.ns(), query, &projection);
+        client.query(resultProcessor, collectionName, query, &projection);
         return Status::OK();
     } catch (const DBException& e) {
         return e.toStatus();
@@ -1372,22 +1371,20 @@ public:
 
             DBDirectClient client(opCtx);
 
-            BSONObjBuilder responseBuilder;
+            rpc::OpMsgReplyBuilder replyBuilder;
             AggregationRequest aggRequest(AuthorizationManager::usersCollectionNamespace,
                                           std::move(pipeline));
             uassertStatusOK(runAggregate(opCtx,
                                          AuthorizationManager::usersCollectionNamespace,
                                          aggRequest,
                                          aggRequest.serializeToCommandObj().toBson(),
-                                         responseBuilder));
-            CommandHelpers::appendSimpleCommandStatus(responseBuilder, true);
-            auto response = CursorResponse::parseFromBSONThrowing(responseBuilder.obj());
-            DBClientCursor cursor(&client,
-                                  response.getNSS().toString(),
-                                  response.getCursorId(),
-                                  0,
-                                  0,
-                                  response.releaseBatch());
+                                         &replyBuilder));
+            auto bodyBuilder = replyBuilder.getBodyBuilder();
+            CommandHelpers::appendSimpleCommandStatus(bodyBuilder, true);
+            bodyBuilder.doneFast();
+            auto response = CursorResponse::parseFromBSONThrowing(replyBuilder.releaseBody());
+            DBClientCursor cursor(
+                &client, response.getNSS(), response.getCursorId(), 0, 0, response.releaseBatch());
 
             while (cursor.more()) {
                 usersArrayBuilder.append(cursor.next());

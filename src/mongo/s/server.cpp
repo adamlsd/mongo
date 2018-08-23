@@ -446,6 +446,12 @@ ExitCode runMongosServer(ServiceContext* serviceContext) {
         return EXIT_NET_ERROR;
     }
 
+    status = serviceContext->getServiceEntryPoint()->start();
+    if (!status.isOK()) {
+        error() << "Failed to start the service entry point: " << redact(status);
+        return EXIT_NET_ERROR;
+    }
+
     status = serviceContext->getTransportLayer()->start();
     if (!status.isOK()) {
         error() << "Failed to start the transport layer: " << redact(status);
@@ -536,10 +542,10 @@ MONGO_INITIALIZER_GENERAL(ForkServer, ("EndStartupOptionHandling"), ("default"))
 // to the latest version because there is no feature gating that currently occurs at the mongos
 // level. The shards are responsible for rejecting usages of new features if their
 // featureCompatibilityVersion is lower.
-MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion40, ("EndStartupOptionStorage"))
+MONGO_INITIALIZER_WITH_PREREQUISITES(SetFeatureCompatibilityVersion42, ("EndStartupOptionStorage"))
 (InitializerContext* context) {
     serverGlobalParams.featureCompatibility.setVersion(
-        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo40);
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyUpgradedTo42);
     return Status::OK();
 }
 
@@ -559,7 +565,6 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
     if (argc < 1)
         return EXIT_BADOPTIONS;
 
-    registerShutdownTask([&]() { cleanupTask(getGlobalServiceContext()); });
 
     setupSignalHandlers();
 
@@ -568,6 +573,16 @@ ExitCode mongoSMain(int argc, char* argv[], char** envp) {
         severe(LogComponent::kDefault) << "Failed global initialization: " << status;
         return EXIT_ABRUPT;
     }
+
+    try {
+        setGlobalServiceContext(ServiceContext::make());
+    } catch (...) {
+        auto cause = exceptionToStatus();
+        severe(LogComponent::kDefault) << "Failed to create service context: " << redact(cause);
+        return EXIT_ABRUPT;
+    }
+
+    registerShutdownTask([&]() { cleanupTask(getGlobalServiceContext()); });
 
     ErrorExtraInfo::invariantHaveAllParsers();
 

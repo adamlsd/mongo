@@ -32,7 +32,6 @@
 
 #include "mongo/db/s/shard_metadata_util.h"
 
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/ops/write_ops.h"
 #include "mongo/db/write_concern_options.h"
@@ -142,7 +141,7 @@ StatusWith<ShardCollectionType> readShardCollectionsEntry(OperationContext* opCt
     try {
         DBDirectClient client(opCtx);
         std::unique_ptr<DBClientCursor> cursor =
-            client.query(NamespaceString::kShardConfigCollectionsNamespace.ns(), fullQuery, 1);
+            client.query(NamespaceString::kShardConfigCollectionsNamespace, fullQuery, 1);
         if (!cursor) {
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "Failed to establish a cursor for reading "
@@ -175,7 +174,7 @@ StatusWith<ShardDatabaseType> readShardDatabasesEntry(OperationContext* opCtx, S
     try {
         DBDirectClient client(opCtx);
         std::unique_ptr<DBClientCursor> cursor =
-            client.query(NamespaceString::kShardConfigDatabasesNamespace.ns(), fullQuery, 1);
+            client.query(NamespaceString::kShardConfigDatabasesNamespace, fullQuery, 1);
         if (!cursor) {
             return Status(ErrorCodes::OperationFailed,
                           str::stream() << "Failed to establish a cursor for reading "
@@ -304,7 +303,7 @@ StatusWith<std::vector<ChunkType>> readShardChunks(OperationContext* opCtx,
         const std::string chunkMetadataNs = ChunkType::ShardNSPrefix + nss.ns();
 
         std::unique_ptr<DBClientCursor> cursor =
-            client.query(chunkMetadataNs, fullQuery, limit.get_value_or(0));
+            client.query(NamespaceString(chunkMetadataNs), fullQuery, limit.get_value_or(0));
         uassert(ErrorCodes::OperationFailed,
                 str::stream() << "Failed to establish a cursor for reading " << chunkMetadataNs
                               << " from local storage",

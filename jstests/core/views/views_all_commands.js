@@ -68,6 +68,7 @@
     let viewsCommandTests = {
         _addShard: {skip: isAnInternalCommand},
         _cloneCatalogData: {skip: isAnInternalCommand},
+        _cloneCollectionOptionsFromPrimaryShard: {skip: isAnInternalCommand},
         _configsvrAddShard: {skip: isAnInternalCommand},
         _configsvrAddShardToZone: {skip: isAnInternalCommand},
         _configsvrBalancerStart: {skip: isAnInternalCommand},
@@ -103,6 +104,7 @@
         _recvChunkCommit: {skip: isAnInternalCommand},
         _recvChunkStart: {skip: isAnInternalCommand},
         _recvChunkStatus: {skip: isAnInternalCommand},
+        _shardsvrShardCollection: {skip: isAnInternalCommand},
         _transferMods: {skip: isAnInternalCommand},
         abortTransaction: {skip: isUnrelated},
         addShard: {skip: isUnrelated},
@@ -129,7 +131,6 @@
             skip: "Tested in views/views_sharded.js",
         },
         clearLog: {skip: isUnrelated},
-        clone: {skip: "Tested in replsets/cloneDb.js"},
         cloneCollection: {skip: "Tested in noPassthroughWithMongod/clonecollection.js"},
         cloneCollectionAsCapped: {
             command: {cloneCollectionAsCapped: "view", toCollection: "testcapped", size: 10240},
@@ -144,8 +145,7 @@
         connPoolSync: {skip: isUnrelated},
         connectionStatus: {skip: isUnrelated},
         convertToCapped: {command: {convertToCapped: "view", size: 12345}, expectFailure: true},
-        copydb: {skip: "Tested in replsets/copydb.js"},
-        copydbsaslstart: {skip: isUnrelated},
+        coordinateCommitTransaction: {skip: isUnrelated},
         count: {command: {count: "view"}},
         cpuload: {skip: isAnInternalCommand},
         create: {skip: "tested in views/views_creation.js"},
@@ -237,7 +237,6 @@
         },
         enableSharding: {skip: "Tested as part of shardCollection"},
         endSessions: {skip: isUnrelated},
-        eval: {skip: isUnrelated},
         explain: {command: {explain: {count: "view"}}},
         features: {skip: isUnrelated},
         filemd5: {skip: isUnrelated},
@@ -317,9 +316,9 @@
         hostInfo: {skip: isUnrelated},
         insert: {command: {insert: "view", documents: [{x: 1}]}, expectFailure: true},
         invalidateUserCache: {skip: isUnrelated},
+        invalidateViewCatalog: {command: {invalidateViewCatalog: 1}},
         isdbgrid: {skip: isUnrelated},
         isMaster: {skip: isUnrelated},
-        journalLatencyTest: {skip: isUnrelated},
         killCursors: {
             setup: function(conn) {
                 assert.writeOK(conn.collection.remove({}));
@@ -394,7 +393,6 @@
         movePrimary: {skip: "Tested in sharding/movePrimary1.js"},
         multicast: {skip: isUnrelated},
         netstat: {skip: isAnInternalCommand},
-        parallelCollectionScan: {command: {parallelCollectionScan: "view"}, expectFailure: true},
         ping: {command: {ping: 1}},
         planCacheClear: {command: {planCacheClear: "view"}, expectFailure: true},
         planCacheClearFilters: {command: {planCacheClearFilters: "view"}, expectFailure: true},
@@ -429,11 +427,9 @@
             }
         ],
         repairCursor: {command: {repairCursor: "view"}, expectFailure: true},
-        repairDatabase: {command: {repairDatabase: 1}},
+        repairDatabase: {skip: isUnrelated},
         replSetAbortPrimaryCatchUp: {skip: isUnrelated},
-        replSetElect: {skip: isUnrelated},
         replSetFreeze: {skip: isUnrelated},
-        replSetFresh: {skip: isUnrelated},
         replSetGetConfig: {skip: isUnrelated},
         replSetGetRBID: {skip: isUnrelated},
         replSetGetStatus: {skip: isUnrelated},
@@ -542,6 +538,9 @@
         updateZoneKeyRange: {skip: isUnrelated},
         usersInfo: {skip: isUnrelated},
         validate: {command: {validate: "view"}, expectFailure: true},
+        waitForOngoingChunkSplits: {skip: isUnrelated},
+        voteCommitTransaction: {skip: isUnrelated},
+        voteAbortTransaction: {skip: isUnrelated},
         whatsmyuri: {skip: isUnrelated}
     };
 

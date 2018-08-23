@@ -34,7 +34,7 @@
 
 #include <iostream>
 
-#include "mongo/client/dbclientcursor.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database.h"
 #include "mongo/db/client.h"
@@ -111,8 +111,6 @@ public:
 
         QueryPlannerParams plannerParams;
         fillOutPlannerParams(&_opCtx, collection, cq, &plannerParams);
-        // Turn this off otherwise it pops up in some plans.
-        plannerParams.options &= ~QueryPlannerParams::KEEP_MUTATIONS;
 
         // Plan.
         auto statusWithSolutions = QueryPlanner::plan(*cq, plannerParams);

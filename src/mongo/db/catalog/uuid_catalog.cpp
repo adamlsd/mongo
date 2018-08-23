@@ -48,7 +48,8 @@ void UUIDCatalogObserver::onCreateCollection(OperationContext* opCtx,
                                              Collection* coll,
                                              const NamespaceString& collectionName,
                                              const CollectionOptions& options,
-                                             const BSONObj& idIndex) {
+                                             const BSONObj& idIndex,
+                                             const OplogSlot& createOpTime) {
     if (!options.uuid)
         return;
     UUIDCatalog& catalog = UUIDCatalog::get(opCtx);
@@ -160,7 +161,8 @@ void UUIDCatalog::onCloseDatabase(Database* db) {
     }
 }
 
-void UUIDCatalog::onCloseCatalog() {
+void UUIDCatalog::onCloseCatalog(OperationContext* opCtx) {
+    invariant(opCtx->lockState()->isW());
     stdx::lock_guard<stdx::mutex> lock(_catalogLock);
     invariant(!_shadowCatalog);
     _shadowCatalog.emplace();
@@ -168,7 +170,8 @@ void UUIDCatalog::onCloseCatalog() {
         _shadowCatalog->insert({entry.first, entry.second->ns()});
 }
 
-void UUIDCatalog::onOpenCatalog() {
+void UUIDCatalog::onOpenCatalog(OperationContext* opCtx) {
+    invariant(opCtx->lockState()->isW());
     stdx::lock_guard<stdx::mutex> lock(_catalogLock);
     invariant(_shadowCatalog);
     _shadowCatalog.reset();

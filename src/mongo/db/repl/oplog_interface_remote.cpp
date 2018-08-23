@@ -30,7 +30,8 @@
 
 #include "mongo/db/repl/oplog_interface_remote.h"
 
-#include "mongo/client/dbclientinterface.h"
+#include "mongo/client/dbclient_base.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/util/mongoutils/str.h"
 
@@ -80,8 +81,9 @@ std::string OplogInterfaceRemote::toString() const {
 std::unique_ptr<OplogInterface::Iterator> OplogInterfaceRemote::makeIterator() const {
     const Query query = Query().sort(BSON("$natural" << -1));
     const BSONObj fields = BSON("ts" << 1 << "h" << 1);
-    return std::unique_ptr<OplogInterface::Iterator>(new OplogIteratorRemote(
-        _getConnection()->query(_collectionName, query, 0, 0, &fields, 0, _batchSize)));
+    return std::unique_ptr<OplogInterface::Iterator>(
+        new OplogIteratorRemote(_getConnection()->query(
+            NamespaceString(_collectionName), query, 0, 0, &fields, 0, _batchSize)));
 }
 
 HostAndPort OplogInterfaceRemote::hostAndPort() const {

@@ -28,7 +28,7 @@
 
 #pragma once
 
-#include "mongo/client/dbclientinterface.h"
+#include "mongo/client/dbclient_base.h"
 #include "mongo/db/dbmessage.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/util/net/hostandport.h"
@@ -57,7 +57,7 @@ public:
     // XXX: is this valid or useful?
     void setOpCtx(OperationContext* opCtx);
 
-    virtual std::unique_ptr<DBClientCursor> query(const std::string& ns,
+    virtual std::unique_ptr<DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
                                                   Query query,
                                                   int nToReturn = 0,
                                                   int nToSkip = 0,

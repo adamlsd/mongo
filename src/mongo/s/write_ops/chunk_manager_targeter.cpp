@@ -315,8 +315,8 @@ bool wasMetadataRefreshed(const std::shared_ptr<ChunkManager>& managerA,
 
 }  // namespace
 
-ChunkManagerTargeter::ChunkManagerTargeter(const NamespaceString& nss, TargeterStats* stats)
-    : _nss(nss), _needsTargetingRefresh(false), _stats(stats) {}
+ChunkManagerTargeter::ChunkManagerTargeter(const NamespaceString& nss)
+    : _nss(nss), _needsTargetingRefresh(false) {}
 
 
 Status ChunkManagerTargeter::init(OperationContext* opCtx) {
@@ -628,12 +628,6 @@ ShardEndpoint ChunkManagerTargeter::_targetShardKey(const BSONObj& shardKey,
                                                     long long estDataSize) const {
     const auto chunk = _routingInfo->cm()->findIntersectingChunk(shardKey, collation);
 
-    // Track autosplit stats for sharded collections
-    // Note: this is only best effort accounting and is not accurate.
-    if (estDataSize > 0) {
-        _stats->chunkSizeDelta[chunk.getMin()] += estDataSize;
-    }
-
     return {chunk.getShardId(), _routingInfo->cm()->getVersion(chunk.getShardId())};
 }
 
@@ -688,18 +682,16 @@ void ChunkManagerTargeter::noteCouldNotTarget() {
 }
 
 void ChunkManagerTargeter::noteStaleResponse(const ShardEndpoint& endpoint,
-                                             const BSONObj& staleInfo) {
+                                             const StaleConfigInfo& staleInfo) {
     dassert(!_needsTargetingRefresh);
 
     ChunkVersion remoteShardVersion;
-    if (staleInfo["vWanted"].eoo()) {
-        // If we don't have a vWanted sent, assume the version is higher than our current
-        // version.
+    if (!staleInfo.getVersionWanted()) {
+        // If we don't have a vWanted sent, assume the version is higher than our current version.
         remoteShardVersion = getShardVersion(*_routingInfo, endpoint.shardName);
         remoteShardVersion.incMajor();
     } else {
-        remoteShardVersion =
-            uassertStatusOK(ChunkVersion::parseLegacyWithField(staleInfo, "vWanted"));
+        remoteShardVersion = *staleInfo.getVersionWanted();
     }
 
     ShardVersionMap::iterator it = _remoteShardVersions.find(endpoint.shardName);

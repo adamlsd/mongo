@@ -65,6 +65,7 @@ const Milliseconds ReplSetConfig::kDefaultElectionTimeoutPeriod(10000);
 const Milliseconds ReplSetConfig::kDefaultCatchUpTimeoutPeriod(kInfiniteCatchUpTimeout);
 const bool ReplSetConfig::kDefaultChainingAllowed(true);
 const Milliseconds ReplSetConfig::kDefaultCatchUpTakeoverDelay(30000);
+const std::string ReplSetConfig::kRepairedFieldName = "repaired";
 
 namespace {
 
@@ -107,6 +108,11 @@ Status ReplSetConfig::initializeForInitiate(const BSONObj& cfg) {
 Status ReplSetConfig::_initialize(const BSONObj& cfg, bool forInitiate, OID defaultReplicaSetId) {
     _isInitialized = false;
     _members.clear();
+
+    if (cfg.hasField(kRepairedFieldName)) {
+        return {ErrorCodes::RepairedReplicaSetNode, "Replicated data has been repaired"};
+    }
+
     Status status =
         bsonCheckOnlyHasFields("replica set configuration", cfg, kLegalConfigTopFieldNames);
     if (!status.isOK())
@@ -166,19 +172,9 @@ Status ReplSetConfig::_initialize(const BSONObj& cfg, bool forInitiate, OID defa
     // Parse protocol version
     //
     status = bsonExtractIntegerField(cfg, kProtocolVersionFieldName, &_protocolVersion);
-    if (!status.isOK()) {
-        if (status != ErrorCodes::NoSuchKey) {
-            return status;
-        }
-        if (forInitiate) {
-            // Default protocolVersion to 1 when initiating a new set.
-            _protocolVersion = 1;
-        }
-        // If protocolVersion field is missing but this *isn't* for an initiate, leave
-        // _protocolVersion at it's default of 0 for now.  It will error later on, during
-        // validate().
-        // TODO(spencer): Remove this after 4.0, when we no longer need mixed-version support
-        // with versions that don't always include the protocolVersion field.
+    // If 'protocolVersion' field is missing for initiate, then _protocolVersion defaults to 1.
+    if (!(status.isOK() || (status == ErrorCodes::NoSuchKey && forInitiate))) {
+        return status;
     }
 
     //

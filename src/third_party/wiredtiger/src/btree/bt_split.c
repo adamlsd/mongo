@@ -287,7 +287,7 @@ __split_ref_move(WT_SESSION_IMPL *session, WT_PAGE *from_home,
 		case WT_CELL_ADDR_LEAF_NO:
 			addr->type = WT_ADDR_LEAF_NO;
 			break;
-		WT_ILLEGAL_VALUE_ERR(session);
+		WT_ILLEGAL_VALUE_ERR(session, unpack.raw);
 		}
 		if (__wt_atomic_cas_ptr(&ref->addr, ref_addr, addr))
 			addr = NULL;
@@ -449,7 +449,7 @@ __split_root(WT_SESSION_IMPL *session, WT_PAGE *root)
 	children = pindex->entries / btree->split_deepen_per_child;
 	if (children < 10) {
 		if (pindex->entries < 100)
-			return (EBUSY);
+			return (__wt_set_return(session, EBUSY));
 		children = 10;
 	}
 	chunk = pindex->entries / children;
@@ -872,6 +872,8 @@ __split_parent(WT_SESSION_IMPL *session, WT_REF *ref, WT_REF **ref_new,
 		/* Free the backing block and address. */
 		WT_TRET(__wt_ref_block_free(session, next_ref));
 
+		WT_ASSERT(session,
+		    __wt_hazard_check_assert(session, next_ref, false));
 		WT_TRET(__split_safe_free(
 		    session, split_gen, exclusive, next_ref, sizeof(WT_REF)));
 		parent_decr += sizeof(WT_REF);
@@ -915,7 +917,7 @@ err:	__wt_scr_free(session, &scr);
 		 * being deleted, but don't be noisy, there's nothing wrong.
 		 */
 		if (empty_parent)
-			ret = EBUSY;
+			ret = __wt_set_return(session, EBUSY);
 		break;
 	case WT_ERR_PANIC:
 		__wt_err(session, ret, "fatal error during parent page split");
@@ -982,7 +984,7 @@ __split_internal(WT_SESSION_IMPL *session, WT_PAGE *parent, WT_PAGE *page)
 	children = pindex->entries / btree->split_deepen_per_child;
 	if (children < 10) {
 		if (pindex->entries < 100)
-			return (EBUSY);
+			return (__wt_set_return(session, EBUSY));
 		children = 10;
 	}
 	chunk = pindex->entries / children;
@@ -1214,7 +1216,7 @@ __split_internal_lock(
 	 * the parent, give up to avoid that deadlock.
 	 */
 	if (!trylock && !__wt_btree_can_evict_dirty(session))
-		return (EBUSY);
+		return (__wt_set_return(session, EBUSY));
 
 	/*
 	 * Get a page-level lock on the parent to single-thread splits into the
@@ -1414,6 +1416,7 @@ __split_multi_inmem(
 	WT_DECL_ITEM(key);
 	WT_DECL_RET;
 	WT_PAGE *page;
+	WT_PAGE_MODIFY *mod;
 	WT_SAVE_UPD *supd;
 	WT_UPDATE *upd;
 	uint64_t recno;
@@ -1510,7 +1513,7 @@ __split_multi_inmem(
 			WT_ERR(__wt_row_modify(session,
 			    &cbt, key, NULL, upd, WT_UPDATE_INVALID, true));
 			break;
-		WT_ILLEGAL_VALUE_ERR(session);
+		WT_ILLEGAL_VALUE_ERR(session, orig->type);
 		}
 	}
 
@@ -1520,17 +1523,26 @@ __split_multi_inmem(
 	 * might be older than that. Set the first dirty transaction to an
 	 * impossibly old value so this page is never skipped in a checkpoint.
 	 */
-	page->modify->first_dirty_txn = WT_TXN_FIRST;
+	mod = page->modify;
+	mod->first_dirty_txn = WT_TXN_FIRST;
 
 	/*
 	 * If the new page is modified, save the eviction generation to avoid
 	 * repeatedly attempting eviction on the same page.
 	 */
-	page->modify->last_evict_pass_gen = orig->modify->last_evict_pass_gen;
-	page->modify->last_eviction_id = orig->modify->last_eviction_id;
-	__wt_timestamp_set(&page->modify->last_eviction_timestamp,
+	mod->last_evict_pass_gen = orig->modify->last_evict_pass_gen;
+	mod->last_eviction_id = orig->modify->last_eviction_id;
+	__wt_timestamp_set(&mod->last_eviction_timestamp,
 	    &orig->modify->last_eviction_timestamp);
-	page->modify->update_restored = 1;
+
+	/* Add the update/restore flag to any previous state. */
+	__wt_timestamp_set(&mod->last_stable_timestamp,
+	    &orig->modify->last_stable_timestamp);
+	mod->rec_max_txn = orig->modify->rec_max_txn;
+	__wt_timestamp_set(&mod->rec_max_timestamp,
+	    &orig->modify->rec_max_timestamp);
+	mod->restore_state = orig->modify->restore_state;
+	FLD_SET(mod->restore_state, WT_PAGE_RS_RESTORED);
 
 err:	/* Free any resources that may have been cached in the cursor. */
 	WT_TRET(__wt_btcur_close(&cbt, true));
@@ -1684,7 +1696,7 @@ __wt_multi_to_ref(WT_SESSION_IMPL *session,
 
 		WT_RET(__wt_calloc_one(session, &ref->page_las));
 		*ref->page_las = multi->page_las;
-		WT_ASSERT(session, ref->page_las->las_max_txn != WT_TXN_NONE);
+		WT_ASSERT(session, ref->page_las->max_txn != WT_TXN_NONE);
 		ref->state = WT_REF_LOOKASIDE;
 	}
 

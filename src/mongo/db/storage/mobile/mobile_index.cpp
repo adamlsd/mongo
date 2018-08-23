@@ -48,8 +48,6 @@ using std::vector;
 
 // BTree stuff
 
-const int TempKeyMaxSize = 1024;  // This goes away with SERVER-3372.
-
 bool hasFieldNames(const BSONObj& obj) {
     BSONForEach(e, obj) {
         if (e.fieldName()[0])
@@ -76,20 +74,12 @@ MobileIndex::MobileIndex(OperationContext* opCtx,
                          const std::string& ident)
     : _isUnique(desc->unique()), _ordering(Ordering::make(desc->keyPattern())), _ident(ident) {}
 
-MobileIndex::MobileIndex(bool isUnique, const Ordering& ordering, const std::string& ident)
-    : _isUnique(isUnique), _ordering(ordering), _ident(ident) {}
-
 Status MobileIndex::insert(OperationContext* opCtx,
                            const BSONObj& key,
                            const RecordId& recId,
                            bool dupsAllowed) {
-    invariant(recId.isNormal());
+    invariant(recId.isValid());
     invariant(!hasFieldNames(key));
-
-    Status status = _checkKeySize(key);
-    if (!status.isOK()) {
-        return status;
-    }
 
     return _insert(opCtx, key, recId, dupsAllowed);
 }
@@ -129,6 +119,10 @@ Status MobileIndex::doInsert(OperationContext* opCtx,
     }
     checkStatus(status, SQLITE_DONE, "sqlite3_step");
 
+    if (key.getTypeBits().isLongEncoding())
+        return Status(ErrorCodes::KeyStringWithLongTypeBits,
+                      "Inserted KeyString with TypeBits longer than 127 bytes.");
+
     return Status::OK();
 }
 
@@ -136,7 +130,7 @@ void MobileIndex::unindex(OperationContext* opCtx,
                           const BSONObj& key,
                           const RecordId& recId,
                           bool dupsAllowed) {
-    invariant(recId.isNormal());
+    invariant(recId.isValid());
     invariant(!hasFieldNames(key));
 
     return _unindex(opCtx, key, recId, dupsAllowed);
@@ -180,7 +174,7 @@ void MobileIndex::fullValidate(OperationContext* opCtx,
 bool MobileIndex::appendCustomStats(OperationContext* opCtx,
                                     BSONObjBuilder* output,
                                     double scale) const {
-    return true;
+    return false;
 }
 
 long long MobileIndex::getSpaceUsedBytes(OperationContext* opCtx) const {
@@ -287,13 +281,6 @@ Status MobileIndex::_dupKeyError(const BSONObj& key) {
     return Status(ErrorCodes::DuplicateKey, sb.str());
 }
 
-Status MobileIndex::_checkKeySize(const BSONObj& key) {
-    if (key.objsize() >= TempKeyMaxSize) {
-        return Status(ErrorCodes::KeyTooLong, "key too big");
-    }
-    return Status::OK();
-}
-
 class MobileIndex::BulkBuilderBase : public SortedDataBuilderInterface {
 public:
     BulkBuilderBase(MobileIndex* index, OperationContext* opCtx, bool dupsAllowed)
@@ -302,15 +289,10 @@ public:
     virtual ~BulkBuilderBase() {}
 
     Status addKey(const BSONObj& key, const RecordId& recId) override {
-        invariant(recId.isNormal());
+        invariant(recId.isValid());
         invariant(!hasFieldNames(key));
 
-        Status status = _checkKeySize(key);
-        if (!status.isOK()) {
-            return status;
-        }
-
-        status = _checkNextKey(key);
+        Status status = _checkNextKey(key);
         if (!status.isOK()) {
             return status;
         }
@@ -320,7 +302,9 @@ public:
         return _addKey(key, recId);
     }
 
-    void commit(bool mayInterrupt) override {}
+    Status commit(bool mayInterrupt) override {
+        return Status::OK();
+    }
 
 protected:
     /**
@@ -469,7 +453,9 @@ public:
 
     // All work is done in restore().
     void save() override {
-        _resetStatement();
+        // SQLite acquires implicit locks over the snapshot this cursor is using. It is important
+        // to finalize the corresponding statement to release these locks.
+        _stmt->finalize();
     }
 
     void saveUnpositioned() override {
@@ -480,6 +466,12 @@ public:
         if (_isEOF) {
             return;
         }
+
+        // Obtaining a session starts a read transaction if not done already.
+        MobileSession* session = MobileRecoveryUnit::get(_opCtx)->getSession(_opCtx);
+        // save() finalized this cursor's SQLite statement. We need to prepare a new statement,
+        // before re-positioning it at the saved state.
+        _stmt->prepare(*session);
 
         _startPosition.resetFromBuffer(_savedKey.getBuffer(), _savedKey.getSize());
         bool isExactMatch = _doSeek();
@@ -656,9 +648,6 @@ MobileIndexStandard::MobileIndexStandard(OperationContext* opCtx,
                                          const std::string& ident)
     : MobileIndex(opCtx, desc, ident) {}
 
-MobileIndexStandard::MobileIndexStandard(const Ordering& ordering, const std::string& ident)
-    : MobileIndex(false, ordering, ident) {}
-
 SortedDataBuilderInterface* MobileIndexStandard::getBulkBuilder(OperationContext* opCtx,
                                                                 bool dupsAllowed) {
     invariant(dupsAllowed);
@@ -695,9 +684,6 @@ MobileIndexUnique::MobileIndexUnique(OperationContext* opCtx,
                                      const IndexDescriptor* desc,
                                      const std::string& ident)
     : MobileIndex(opCtx, desc, ident), _isPartial(desc->isPartial()) {}
-
-MobileIndexUnique::MobileIndexUnique(const Ordering& ordering, const std::string& ident)
-    : MobileIndex(true, ordering, ident) {}
 
 SortedDataBuilderInterface* MobileIndexUnique::getBulkBuilder(OperationContext* opCtx,
                                                               bool dupsAllowed) {

@@ -31,7 +31,6 @@
 #include "mongo/db/s/shard_metadata_util.h"
 
 #include "mongo/base/status.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/client/remote_command_targeter_mock.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/dbdirectclient.h"
@@ -146,8 +145,7 @@ struct ShardMetadataUtilTest : public ShardServerTestFixture {
                                                          << chunk.getMax()));
                 query.readPref(ReadPreference::Nearest, BSONArray());
 
-                std::unique_ptr<DBClientCursor> cursor =
-                    client.query(chunkMetadataNss.ns(), query, 1);
+                std::unique_ptr<DBClientCursor> cursor = client.query(chunkMetadataNss, query, 1);
                 ASSERT(cursor);
 
                 ASSERT(cursor->more());

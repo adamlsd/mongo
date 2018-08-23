@@ -132,7 +132,10 @@ var BackupRestoreTest = function(options) {
             var blacklist = [
                 // Disabled due to MongoDB restrictions and/or workload restrictions
                 'agg_group_external.js',  // uses >100MB of data, which can overwhelm test hosts
-                'agg_sort_external.js',   // uses >100MB of data, which can overwhelm test hosts
+                'agg_out_mode_insert_documents.js',
+                'agg_out_mode_replace_documents.js',
+                'agg_sort_external.js',  // uses >100MB of data, which can overwhelm test hosts
+                'agg_with_chunk_migrations.js',
                 'auth_create_role.js',
                 'auth_create_user.js',
                 'auth_drop_role.js',
@@ -143,7 +146,9 @@ var BackupRestoreTest = function(options) {
                 'database_versioning.js',
                 'findAndModify_update_grow.js',  // can cause OOM kills on test hosts
                 'multi_statement_transaction_atomicity_isolation.js',
+                'multi_statement_transaction_atomicity_isolation_multi_db.js',
                 'multi_statement_transaction_atomicity_isolation_repeated_reads.js',
+                'multi_statement_transaction_kill_sessions_atomicity_isolation.js',
                 'multi_statement_transaction_simple.js',
                 'multi_statement_transaction_simple_repeated_reads.js',
                 'reindex_background.js',
@@ -166,6 +171,7 @@ var BackupRestoreTest = function(options) {
                 'sharded_splitChunk_partitioned.js',
                 'snapshot_read_catalog_operations.js',
                 'snapshot_read_kill_operations.js',
+                'snapshot_read_kill_op_only.js',
                 'update_rename.js',
                 'update_rename_noindex.js',
                 'yield_sort.js',

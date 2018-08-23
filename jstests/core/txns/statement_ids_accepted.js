@@ -91,24 +91,6 @@
 
     // The doTxn command is intentionally left out.
 
-    jsTestLog("Check that eval accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
-        eval: function() {
-            return 0;
-        },
-        txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0),
-    }));
-
-    jsTestLog("Check that $eval accepts a statement ID");
-    assert.commandWorked(sessionDb.runCommand({
-        $eval: function() {
-            return 0;
-        },
-        txnNumber: NumberLong(txnNumber++),
-        stmtId: NumberInt(0),
-    }));
-
     jsTestLog("Check that explain accepts a statement ID");
     assert.commandWorked(sessionDb.runCommand({
         explain: {
@@ -260,6 +242,99 @@
         stmtId: NumberInt(2),
         autocommit: false
     }));
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        prepareTransaction: 1,
+        txnNumber: NumberLong(txnNumber++),
+        stmtId: NumberInt(0),
+        autocommit: false
+    }),
+                                 ErrorCodes.Unauthorized);
+
+    jsTestLog("Check that coordinateCommitTransaction accepts a statement ID");
+    assert.commandWorked(sessionDb.runCommand({
+        insert: collName,
+        documents: [{_id: "doc3"}],
+        readConcern: {level: "snapshot"},
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(0),
+        startTransaction: true,
+        autocommit: false,
+        coordinator: true
+    }));
+    // coordinateCommitTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        coordinateCommitTransaction: 1,
+        participants: [],
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(1),
+        autocommit: false
+    }));
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        coordinateCommitTransaction: 1,
+        participants: [],
+        txnNumber: NumberLong(txnNumber++),
+        stmtId: NumberInt(0),
+        autocommit: false
+    }),
+                                 ErrorCodes.Unauthorized);
+
+    jsTestLog("Check that voteCommitTransaction accepts a statement ID");
+    assert.commandWorked(sessionDb.runCommand({
+        insert: collName,
+        documents: [{_id: "doc4"}],
+        readConcern: {level: "snapshot"},
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(0),
+        startTransaction: true,
+        autocommit: false,
+        coordinator: true
+    }));
+    // voteCommitTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        voteCommitTransaction: 1,
+        shardId: "dummy1",
+        prepareTimestamp: Timestamp(0, 0),
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(1),
+        autocommit: false
+    }));
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        voteCommitTransaction: 1,
+        shardId: "dummy1",
+        prepareTimestamp: Timestamp(0, 0),
+        txnNumber: NumberLong(txnNumber++),
+        stmtId: NumberInt(0),
+        autocommit: false
+    }),
+                                 ErrorCodes.Unauthorized);
+
+    jsTestLog("Check that voteAbortTransaction accepts a statement ID");
+    assert.commandWorked(sessionDb.runCommand({
+        insert: collName,
+        documents: [{_id: "doc5"}],
+        readConcern: {level: "snapshot"},
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(0),
+        startTransaction: true,
+        autocommit: false,
+        coordinator: true
+    }));
+    // voteCommitTransaction can only be run on the admin database.
+    assert.commandWorked(sessionDb.adminCommand({
+        voteAbortTransaction: 1,
+        shardId: "dummy1",
+        txnNumber: NumberLong(txnNumber),
+        stmtId: NumberInt(1),
+        autocommit: false
+    }));
+    assert.commandFailedWithCode(sessionDb.runCommand({
+        voteAbortTransaction: 1,
+        shardId: "dummy1",
+        txnNumber: NumberLong(txnNumber++),
+        stmtId: NumberInt(0),
+        autocommit: false
+    }),
+                                 ErrorCodes.Unauthorized);
 
     // refreshLogicalSessionCacheNow is intentionally omitted.
 

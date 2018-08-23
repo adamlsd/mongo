@@ -21,8 +21,7 @@
     var st = new ShardingTest({
         shards: 2,
         rs: {oplogSize: 10, useHostname: false},
-        other:
-            {keyFile: 'jstests/libs/key1', useHostname: false, chunkSize: 2, enableAutoSplit: true},
+        other: {keyFile: 'jstests/libs/key1', useHostname: false, chunkSize: 2},
     });
 
     var mongos = st.s;
@@ -70,13 +69,15 @@
         str += str;
     }
 
-    var bulk = testDB.foo.initializeUnorderedBulkOp();
     for (var i = 0; i < 100; i++) {
+        var bulk = testDB.foo.initializeUnorderedBulkOp();
         for (var j = 0; j < 10; j++) {
             bulk.insert({i: i, j: j, str: str});
         }
+        assert.writeOK(bulk.execute({w: "majority"}));
+        // Split the chunk we just inserted so that we have something to balance.
+        assert.commandWorked(st.splitFind("test.foo", {i: i, j: 0}));
     }
-    assert.writeOK(bulk.execute({w: "majority"}));
 
     assert.eq(expectedDocs, testDB.foo.count());
 
@@ -173,7 +174,6 @@
             assert.eq(1, testDB.foo.findOne({a: 1}).b);
             testDB.foo.remove({a: 1});
             assert.eq(null, testDB.runCommand({getlasterror: 1}).err);
-            checkCommandSucceeded(testDB, {reIndex: 'foo'});
             checkCommandSucceeded(testDB,
                                   {mapreduce: 'foo', map: map, reduce: reduce, out: 'mrOutput'});
             assert.eq(100, testDB.mrOutput.count());
@@ -192,7 +192,6 @@
             assert.eq(0, authenticatedConn.getDB('test').foo.count({a: 1, i: 1, j: 1}));
             checkCommandFailed(
                 testDB, {findAndModify: "foo", query: {a: 1, i: 1, j: 1}, update: {$set: {b: 1}}});
-            checkCommandFailed(testDB, {reIndex: 'foo'});
             checkCommandFailed(testDB,
                                {mapreduce: 'foo', map: map, reduce: reduce, out: 'mrOutput'});
             checkCommandFailed(testDB, {drop: 'foo'});

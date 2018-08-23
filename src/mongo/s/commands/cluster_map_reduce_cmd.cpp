@@ -476,7 +476,7 @@ public:
             // can skip this check in that case. If using merge or reduce, we only want to do this
             // if the output collection does not exist or if it exists and is an empty sharded
             // collection.
-            int count;
+            bool shouldDropAndShard = replaceOutput;
             if (!replaceOutput && outputCollNss.isValid()) {
                 const auto primaryShard =
                     uassertStatusOK(shardRegistry->getShard(opCtx, outputDbInfo.primaryId()));
@@ -499,12 +499,15 @@ public:
                             "Cannot output to a sharded collection because "
                             "non-sharded collection exists already",
                             collections.isEmpty());
+
+                    // If we reach here, the collection does not exist at all.
+                    shouldDropAndShard = true;
                 } else {
                     // The output collection exists and is sharded. We need to determine whether the
                     // collection is empty in order to decide whether we should drop and re-shard
                     // it.
                     // We don't want to do this if the collection is not empty.
-                    count = conn->count(outputCollNss.ns());
+                    shouldDropAndShard = (conn->count(outputCollNss.ns()) == 0);
                 }
 
                 conn.done();
@@ -515,8 +518,7 @@ public:
             // UUID generated during shardCollection to the shards to be used to create the temp
             // collections.
             boost::optional<UUID> shardedOutputCollUUID;
-            if (replaceOutput ||
-                (outputCollNss.isValid() && (count == 0 || !outputRoutingInfo.cm()))) {
+            if (shouldDropAndShard) {
                 auto dropCmdResponse = uassertStatusOK(
                     Grid::get(opCtx)
                         ->shardRegistry()
@@ -541,7 +543,6 @@ public:
                 shardedOutputCollUUID->appendToBuilder(&finalCmd, "shardedOutputCollUUID");
             }
 
-            auto chunkSizes = SimpleBSONObjComparator::kInstance.makeBSONObjIndexedMap<int>();
             {
                 // Take distributed lock to prevent split / migration.
                 auto scopedDistLock = catalogClient->getDistLockManager()->lock(
@@ -597,20 +598,6 @@ public:
                     reduceCount += counts.getIntField("reduce");
                     outputCount += counts.getIntField("output");
                     postCountsB.append(server, counts);
-
-                    // get the size inserted for each chunk
-                    // split cannot be called here since we already have the distributed lock
-                    if (singleResult.hasField("chunkSizes")) {
-                        std::vector<BSONElement> sizes =
-                            singleResult.getField("chunkSizes").Array();
-                        for (unsigned int i = 0; i < sizes.size(); i += 2) {
-                            BSONObj key = sizes[i].Obj().getOwned();
-                            const long long size = sizes[i + 1].numberLong();
-
-                            invariant(size < std::numeric_limits<int>::max());
-                            chunkSizes[key] = static_cast<int>(size);
-                        }
-                    }
                 }
             }
 
@@ -622,18 +609,6 @@ public:
                     str::stream() << "Failed to write mapreduce output to " << outputCollNss.ns()
                                   << "; expected that collection to be sharded, but it was not",
                     outputRoutingInfo.cm());
-
-            const auto outputCM = outputRoutingInfo.cm();
-
-            for (const auto& chunkSize : chunkSizes) {
-                BSONObj key = chunkSize.first;
-                const int size = chunkSize.second;
-                invariant(size < std::numeric_limits<int>::max());
-
-                // Key reported should be the chunk's minimum
-                auto chunkWritten = outputCM->findIntersectingChunkWithSimpleCollation(key);
-                updateChunkWriteStatsAndSplitIfNeeded(opCtx, outputCM.get(), chunkWritten, size);
-            }
         }
 
         cleanUp(servers, dbname, shardResultCollection);
@@ -719,9 +694,6 @@ private:
         configShardCollRequest.set_configsvrShardCollection(nss);
         configShardCollRequest.setKey(BSON("_id" << 1));
         configShardCollRequest.setUnique(true);
-        // TODO (SERVER-29622): Setting the numInitialChunks to 0 will be unnecessary once the
-        // constructor automatically respects default values specified in the .idl.
-        configShardCollRequest.setNumInitialChunks(0);
         configShardCollRequest.setInitialSplitPoints(sortedSplitPts);
         configShardCollRequest.setGetUUIDfromPrimaryShard(false);
 

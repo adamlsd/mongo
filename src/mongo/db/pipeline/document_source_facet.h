@@ -80,6 +80,8 @@ public:
 
         stdx::unordered_set<NamespaceString> getInvolvedNamespaces() const final;
 
+        bool allowShardedForeignCollection(NamespaceString nss) const final;
+
     private:
         const std::vector<LiteParsedPipeline> _liteParsedPipelines;
         const PrivilegeVector _requiredPrivileges;
@@ -125,7 +127,7 @@ public:
     boost::intrusive_ptr<DocumentSource> getShardSource() final {
         return nullptr;
     }
-    std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() final {
+    MergingLogic mergingLogic() final {
         return {this};
     }
 
@@ -138,6 +140,7 @@ public:
     void detachFromOperationContext() final;
     void reattachToOperationContext(OperationContext* opCtx) final;
     StageConstraints constraints(Pipeline::SplitState pipeState) const final;
+    bool usedDisk() final;
 
 protected:
     void doDispose() final;

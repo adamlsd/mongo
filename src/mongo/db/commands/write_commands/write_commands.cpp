@@ -49,8 +49,8 @@
 #include "mongo/db/repl/repl_client_info.h"
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/server_parameters.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/stale_exception.h"
 
@@ -225,19 +225,14 @@ private:
     // Customization point for 'run'.
     virtual void runImpl(OperationContext* opCtx, BSONObjBuilder& result) const = 0;
 
-    void run(OperationContext* opCtx, CommandReplyBuilder* result) final {
+    void run(OperationContext* opCtx, rpc::ReplyBuilderInterface* result) final {
         try {
-            try {
-                _transactionChecks(opCtx);
-                BSONObjBuilder bob = result->getBodyBuilder();
-                runImpl(opCtx, bob);
-                CommandHelpers::extractOrAppendOk(bob);
-            } catch (const DBException& ex) {
-                LastError::get(opCtx->getClient()).setLastError(ex.code(), ex.reason());
-                throw;
-            }
-        } catch (const ExceptionFor<ErrorCodes::Unauthorized>&) {
-            CommandHelpers::auditLogAuthEvent(opCtx, this, *_request, ErrorCodes::Unauthorized);
+            _transactionChecks(opCtx);
+            BSONObjBuilder bob = result->getBodyBuilder();
+            runImpl(opCtx, bob);
+            CommandHelpers::extractOrAppendOk(bob);
+        } catch (const DBException& ex) {
+            LastError::get(opCtx->getClient()).setLastError(ex.code(), ex.reason());
             throw;
         }
     }
@@ -261,8 +256,8 @@ private:
     }
 
     void _transactionChecks(OperationContext* opCtx) const {
-        auto session = OperationContextSession::get(opCtx);
-        if (!session || !session->inMultiDocumentTransaction())
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        if (!txnParticipant || !txnParticipant->inMultiDocumentTransaction())
             return;
         uassert(50791,
                 str::stream() << "Cannot write to system collection " << ns().toString()
@@ -355,7 +350,7 @@ private:
 
         void explain(OperationContext* opCtx,
                      ExplainOptions::Verbosity verbosity,
-                     BSONObjBuilder* out) override {
+                     rpc::ReplyBuilderInterface* result) override {
             uassert(ErrorCodes::InvalidLength,
                     "explained write batches must be of size 1",
                     _batch.getUpdates().size() == 1);
@@ -381,7 +376,8 @@ private:
 
             auto exec = uassertStatusOK(getExecutorUpdate(
                 opCtx, &CurOp::get(opCtx)->debug(), collection.getCollection(), &parsedUpdate));
-            Explain::explainStages(exec.get(), collection.getCollection(), verbosity, out);
+            auto bodyBuilder = result->getBodyBuilder();
+            Explain::explainStages(exec.get(), collection.getCollection(), verbosity, &bodyBuilder);
         }
 
         write_ops::Update _batch;
@@ -431,7 +427,7 @@ private:
 
         void explain(OperationContext* opCtx,
                      ExplainOptions::Verbosity verbosity,
-                     BSONObjBuilder* out) override {
+                     rpc::ReplyBuilderInterface* result) override {
             uassert(ErrorCodes::InvalidLength,
                     "explained write batches must be of size 1",
                     _batch.getDeletes().size() == 1);
@@ -453,7 +449,8 @@ private:
             // Explain the plan tree.
             auto exec = uassertStatusOK(getExecutorDelete(
                 opCtx, &CurOp::get(opCtx)->debug(), collection.getCollection(), &parsedDelete));
-            Explain::explainStages(exec.get(), collection.getCollection(), verbosity, out);
+            auto bodyBuilder = result->getBodyBuilder();
+            Explain::explainStages(exec.get(), collection.getCollection(), verbosity, &bodyBuilder);
         }
 
         write_ops::Delete _batch;

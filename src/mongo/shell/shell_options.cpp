@@ -48,7 +48,6 @@
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
 #include "mongo/util/net/socket_utils.h"
-#include "mongo/util/net/ssl_options.h"
 #include "mongo/util/options_parser/startup_options.h"
 #include "mongo/util/version.h"
 
@@ -163,14 +162,6 @@ Status addMongoShellOptions(moe::OptionSection* options) {
                             "allow automatic JavaScript function marshalling")
         .incompatibleWith("enableJavaScriptProtection");
 
-    Status ret = Status::OK();
-#ifdef MONGO_CONFIG_SSL
-    ret = addSSLClientOptions(options);
-    if (!ret.isOK()) {
-        return ret;
-    }
-#endif
-
     options
         ->addOptionChaining("enableJavaScriptProtection",
                             "enableJavaScriptProtection",
@@ -225,12 +216,13 @@ Status addMongoShellOptions(moe::OptionSection* options) {
 
     options
         ->addOptionChaining(
-            "rpcProtocols", "rpcProtocols", moe::String, " none, opQueryOnly, opCommandOnly, all")
+            "rpcProtocols", "rpcProtocols", moe::String, " none, opQueryOnly, opMsgOnly, all")
         .hidden();
 
-    ret = addMessageCompressionOptions(options, true);
-    if (!ret.isOK())
+    auto ret = addMessageCompressionOptions(options, true);
+    if (!ret.isOK()) {
         return ret;
+    }
 
     options->addOptionChaining(
         "jsHeapLimitMB", "jsHeapLimitMB", moe::Int, "set the js scope's heap size limit");
@@ -270,20 +262,15 @@ bool handlePreValidationMongoShellOptions(const moe::Environment& params,
 
 Status storeMongoShellOptions(const moe::Environment& params,
                               const std::vector<std::string>& args) {
-    Status ret = Status::OK();
     if (params.count("quiet")) {
         mongo::serverGlobalParams.quiet.store(true);
     }
-#ifdef MONGO_CONFIG_SSL
-    ret = storeSSLClientOptions(params);
-    if (!ret.isOK()) {
-        return ret;
-    }
-#endif
+
     if (params.count("ipv6")) {
         mongo::enableIPv6();
         shellGlobalParams.enableIPv6 = true;
     }
+
     if (params.count("verbose")) {
         logger::globalLogDomain()->setMinimumLoggedSeverity(logger::LogSeverity::Debug(1));
     }
@@ -392,8 +379,7 @@ Status storeMongoShellOptions(const moe::Environment& params,
         if (!parsedRPCProtos.isOK()) {
             uasserted(28653,
                       str::stream() << "Unknown RPC Protocols: '" << protos
-                                    << "'. Valid values are {none, opQueryOnly, "
-                                    << "opCommandOnly, all}");
+                                    << "'. Valid values are {none, opQueryOnly, opMsgOnly, all}");
         }
         shellGlobalParams.rpcProtocols = parsedRPCProtos.getValue();
     }
@@ -476,10 +462,60 @@ Status storeMongoShellOptions(const moe::Environment& params,
         return Status(ErrorCodes::InvalidOptions, sb.str());
     }
 
-    ret = storeMessageCompressionOptions(params);
+    auto ret = storeMessageCompressionOptions(params);
     if (!ret.isOK())
         return ret;
 
     return Status::OK();
+}
+
+void redactPasswordOptions(int argc, char** argv) {
+    constexpr auto kLongPasswordOption = "--password"_sd;
+    constexpr auto kShortPasswordOption = "-p"_sd;
+    for (int i = 0; i < argc; ++i) {
+        StringData arg(argv[i]);
+        if (arg.startsWith(kShortPasswordOption)) {
+            char* toRedact = nullptr;
+            // Handle -p password
+            if ((arg == kShortPasswordOption) && (i + 1 < argc)) {
+                toRedact = argv[++i];
+                // Handle -ppassword
+            } else {
+                toRedact = argv[i] + kShortPasswordOption.size();
+            }
+
+            invariant(toRedact);
+            // The arg should be null-terminated, replace everything up to \0 to 'x'
+            while (*toRedact) {
+                *toRedact++ = 'x';
+            }
+        }
+        if (arg.startsWith(kLongPasswordOption)) {
+            char* toRedact = nullptr;
+            // Handle --password password
+            if ((arg == kLongPasswordOption) && (i + 1 < argc)) {
+                toRedact = argv[++i];
+                // Handle --password=password
+            } else if (arg.size() != kLongPasswordOption.size()) {
+                toRedact = argv[i] + kLongPasswordOption.size();
+                // It's not valid to do --passwordpassword, make sure there's an = separator
+                invariant(*(toRedact++) == '=');
+            }
+
+            // If there's nothing to redact, just exit
+            if (!toRedact) {
+                continue;
+            }
+
+            // The arg should be null-terminated, replace everything up to \0 to 'x'
+            while (*toRedact) {
+                *toRedact++ = 'x';
+            }
+        } else if (MongoURI::isMongoURI(arg)) {
+            auto reformedURI = MongoURI::redact(arg);
+            auto length = arg.size();
+            ::strncpy(argv[i], reformedURI.data(), length);
+        }
+    }
 }
 }  // namespace mongo

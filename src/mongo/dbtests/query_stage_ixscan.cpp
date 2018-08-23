@@ -28,7 +28,6 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/catalog/index_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/db_raii.h"
@@ -102,8 +101,7 @@ public:
         ASSERT_EQ(indexes.size(), 1U);
 
         // We are not testing indexing here so use maximal bounds
-        IndexScanParams params;
-        params.descriptor = indexes[0];
+        IndexScanParams params(&_opCtx, *indexes[0]);
         params.bounds.isSimpleRange = true;
         params.bounds.startKey = startKey;
         params.bounds.endKey = endKey;
@@ -125,8 +123,7 @@ public:
         catalog->findIndexesByKeyPattern(&_opCtx, BSON("x" << 1), false, &indexes);
         ASSERT_EQ(indexes.size(), 1U);
 
-        IndexScanParams params;
-        params.descriptor = indexes[0];
+        IndexScanParams params(&_opCtx, *indexes[0]);
         params.direction = direction;
 
         OrderedIntervalList oil("x");

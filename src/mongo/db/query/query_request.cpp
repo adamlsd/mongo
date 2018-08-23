@@ -33,7 +33,6 @@
 #include "mongo/base/status.h"
 #include "mongo/base/status_with.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/command_generic_argument.h"
 #include "mongo/db/commands.h"
@@ -109,8 +108,8 @@ const char kNaturalSortField[] = "$natural";
 const char QueryRequest::kFindCommandName[] = "find";
 const char QueryRequest::kShardVersionField[] = "shardVersion";
 
-QueryRequest::QueryRequest(NamespaceString nss) : _nss(std::move(nss)) {}
-QueryRequest::QueryRequest(CollectionUUID uuid) : _uuid(std::move(uuid)) {}
+QueryRequest::QueryRequest(NamespaceStringOrUUID nssOrUuid)
+    : _nss(nssOrUuid.nss() ? *nssOrUuid.nss() : NamespaceString()), _uuid(nssOrUuid.uuid()) {}
 
 void QueryRequest::refreshNSS(OperationContext* opCtx) {
     if (_uuid) {
@@ -395,7 +394,7 @@ StatusWith<unique_ptr<QueryRequest>> QueryRequest::makeFromFindCommand(Namespace
     BSONElement first = cmdObj.firstElement();
     if (first.type() == BinData && first.binDataType() == BinDataType::newUUID) {
         auto uuid = uassertStatusOK(UUID::parse(first));
-        auto qr = stdx::make_unique<QueryRequest>(uuid);
+        auto qr = stdx::make_unique<QueryRequest>(NamespaceStringOrUUID(nss.db().toString(), uuid));
         return parseFromFindCommand(std::move(qr), cmdObj, isExplain);
     } else {
         auto qr = stdx::make_unique<QueryRequest>(nss);

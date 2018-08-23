@@ -238,7 +238,7 @@
     assert.commandFailedWithCode(
         sessionDb.runCommand(
             {find: collName, filter: {}, txnNumber: NumberLong(txnNumber), autocommit: false}),
-        ErrorCodes.InvalidOptions);
+        ErrorCodes.NoSuchTransaction);
 
     /***********************************************************************************************
      * The 'autocommit' field must be specified on commit/abort commands.

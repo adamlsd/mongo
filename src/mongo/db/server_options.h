@@ -30,6 +30,8 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/platform/atomic_word.h"
 #include "mongo/platform/process_id.h"
+#include "mongo/stdx/variant.h"
+#include "mongo/util/net/cidr.h"
 
 namespace mongo {
 
@@ -79,6 +81,8 @@ struct ServerGlobalParams {
     std::string serviceExecutor;
 
     size_t maxConns = DEFAULT_MAX_CONN;  // Maximum number of simultaneous open connections.
+    std::vector<stdx::variant<CIDR, std::string>> maxConnsOverride;
+    int reservedAdminThreads = 0;
 
     int unixSocketPermissions = DEFAULT_UNIX_PERMS;  // permissions for the UNIX domain socket
 
@@ -155,40 +159,40 @@ struct ServerGlobalParams {
          *
          * The legal enum (and featureCompatibilityVersion document) states are:
          *
-         * kFullyDowngradedTo36
-         * (3.6, Unset): Only 3.6 features are available, and new and existing storage
-         *               engine entries use the 3.6 format
-         *
-         * kUpgradingTo40
-         * (3.6, 4.0): Only 3.6 features are available, but new storage engine entries
-         *             use the 4.0 format, and existing entries may have either the
-         *             3.6 or 4.0 format
-         *
-         * kFullyUpgradedTo40
-         * (4.0, Unset): 4.0 features are available, and new and existing storage
+         * kFullyDowngradedTo40
+         * (4.0, Unset): Only 4.0 features are available, and new and existing storage
          *               engine entries use the 4.0 format
          *
-         * kDowngradingTo36
-         * (3.6, 3.6): Only 3.6 features are available and new storage engine
-         *             entries use the 3.6 format, but existing entries may have
-         *             either the 3.6 or 4.0 format
+         * kUpgradingTo42
+         * (4.0, 4.2): Only 4.0 features are available, but new storage engine entries
+         *             use the 4.2 format, and existing entries may have either the
+         *             4.0 or 4.2 format
          *
-         * kUnsetDefault36Behavior
+         * kFullyUpgradedTo42
+         * (4.2, Unset): 4.2 features are available, and new and existing storage
+         *               engine entries use the 4.2 format
+         *
+         * kDowngradingTo40
+         * (4.0, 4.0): Only 4.0 features are available and new storage engine
+         *             entries use the 4.0 format, but existing entries may have
+         *             either the 4.0 or 4.2 format
+         *
+         * kUnsetDefault40Behavior
          * (Unset, Unset): This is the case on startup before the fCV document is
          *                 loaded into memory. isVersionInitialized() will return
          *                 false, and getVersion() will return the default
-         *                 (kFullyDowngradedTo36).
+         *                 (kFullyDowngradedTo40).
          *
          */
         enum class Version {
             // The order of these enums matter, higher upgrades having higher values, so that
             // features can be active or inactive if the version is higher than some minimum or
             // lower than some maximum, respectively.
-            kUnsetDefault36Behavior = 0,
-            kFullyDowngradedTo36 = 1,
-            kDowngradingTo36 = 2,
-            kUpgradingTo40 = 3,
-            kFullyUpgradedTo40 = 4,
+            kUnsetDefault40Behavior = 0,
+            kFullyDowngradedTo40 = 1,
+            kDowngradingTo40 = 2,
+            kUpgradingTo42 = 3,
+            kFullyUpgradedTo42 = 4,
         };
 
         /**
@@ -196,7 +200,7 @@ struct ServerGlobalParams {
          * exposes the actual state of the featureCompatibilityVersion if it is uninitialized.
          */
         const bool isVersionInitialized() const {
-            return _version.load() != Version::kUnsetDefault36Behavior;
+            return _version.load() != Version::kUnsetDefault40Behavior;
         }
 
         /**
@@ -216,11 +220,11 @@ struct ServerGlobalParams {
          */
         const Version getVersionUnsafe() const {
             Version v = _version.load();
-            return (v == Version::kUnsetDefault36Behavior) ? Version::kFullyDowngradedTo36 : v;
+            return (v == Version::kUnsetDefault40Behavior) ? Version::kFullyDowngradedTo40 : v;
         }
 
         void reset() {
-            _version.store(Version::kUnsetDefault36Behavior);
+            _version.store(Version::kUnsetDefault40Behavior);
         }
 
         void setVersion(Version version) {
@@ -228,12 +232,12 @@ struct ServerGlobalParams {
         }
 
         bool isVersionUpgradingOrUpgraded() {
-            return (getVersion() == Version::kUpgradingTo40 ||
-                    getVersion() == Version::kFullyUpgradedTo40);
+            return (getVersion() == Version::kUpgradingTo42 ||
+                    getVersion() == Version::kFullyUpgradedTo42);
         }
 
     private:
-        AtomicWord<Version> _version{Version::kUnsetDefault36Behavior};
+        AtomicWord<Version> _version{Version::kUnsetDefault40Behavior};
 
     } featureCompatibility;
 

@@ -39,7 +39,6 @@
 
 #include "mongo/base/init.h"
 #include "mongo/bson/simple_bsonobj_comparator.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/db/collection_index_usage_tracker.h"
 #include "mongo/db/commands.h"
 #include "mongo/db/generic_cursor.h"
@@ -126,7 +125,7 @@ class Document;
         return Status::OK();                                                     \
     }
 
-class DocumentSource : public IntrusiveCounterUnsigned {
+class DocumentSource : public RefCountable {
 public:
     using Parser = stdx::function<std::list<boost::intrusive_ptr<DocumentSource>>(
         BSONElement, const boost::intrusive_ptr<ExpressionContext>&)>;
@@ -497,6 +496,10 @@ public:
 
     virtual void reattachToOperationContext(OperationContext* opCtx) {}
 
+    virtual bool usedDisk() {
+        return false;
+    };
+
     /**
      * Create a DocumentSource pipeline stage from 'stageObj'.
      */
@@ -695,6 +698,22 @@ private:
 class NeedsMergerDocumentSource {
 public:
     /**
+     * A struct representing the information needed to merge the cursors for the shards half of this
+     * pipeline. If 'inputSortPattern' is set, each document is expected to have sort key metadata
+     * which will be serialized in the '$sortKey' field. 'inputSortPattern' will then be used to
+     * describe which fields are ascending and which fields are descending when merging the streams
+     * together.
+     */
+    struct MergingLogic {
+        MergingLogic(boost::intrusive_ptr<DocumentSource>&& mergingStage,
+                     boost::optional<BSONObj> inputSortPattern = boost::none)
+            : mergingStage(std::move(mergingStage)), inputSortPattern(inputSortPattern) {}
+
+        boost::intrusive_ptr<DocumentSource> mergingStage;
+        boost::optional<BSONObj> inputSortPattern;
+    };
+
+    /**
      * Returns a source to be run on the shards, or NULL if no work should be done on the shards for
      * this stage. Must not mutate the existing source object; if different behaviour is required in
      * the split-pipeline case, a new source should be created and configured appropriately. It is
@@ -705,12 +724,12 @@ public:
     virtual boost::intrusive_ptr<DocumentSource> getShardSource() = 0;
 
     /**
-     * Returns a list of stages that combine results from the shards. Subclasses of this class
-     * should not return an empty list. Must not mutate the existing source object; if different
-     * behaviour is required, a new source should be created and configured appropriately. It is an
-     * error for getMergeSources() to return a pointer to the same object as getShardSource().
+     * Returns a struct representing what needs to be done to merge each shard's pipeline into a
+     * single stream of results. Must not mutate the existing source object; if different behaviour
+     * is required, a new source should be created and configured appropriately. It is an error for
+     * mergingLogic() to return a pointer to the same object as getShardSource().
      */
-    virtual std::list<boost::intrusive_ptr<DocumentSource>> getMergeSources() = 0;
+    virtual MergingLogic mergingLogic() = 0;
 
 protected:
     // It is invalid to delete through a NeedsMergerDocumentSource-typed pointer.

@@ -57,6 +57,10 @@ public:
     static const std::string kVersionFieldName;
     static const std::string kMajorityWriteConcernModeName;
 
+    // If this field is present, a repair operation potentially modified replicated data. This
+    // should never be included in a valid configuration document.
+    static const std::string kRepairedFieldName;
+
     static const size_t kMaxMembers = 50;
     static const size_t kMaxVotingMembers = 7;
     static const Milliseconds kInfiniteCatchUpTimeout;
@@ -311,7 +315,7 @@ public:
      * Gets the protocol version for this configuration.
      *
      * The protocol version number currently determines what election protocol is used by the
-     * cluster; 0 is the default and indicates the old 3.0 election protocol.
+     * cluster; 1 is the default.
      */
     long long getProtocolVersion() const {
         return _protocolVersion;
@@ -396,7 +400,7 @@ private:
     int _totalVotingMembers = 0;
     ReplSetTagConfig _tagConfig;
     StringMap<ReplSetTagPattern> _customWriteConcernModes;
-    long long _protocolVersion = 0;
+    long long _protocolVersion = 1;
     bool _configServer = false;
     OID _replicaSetId;
     ConnectionString _connectionString;

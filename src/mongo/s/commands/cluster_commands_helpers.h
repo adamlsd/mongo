@@ -48,6 +48,20 @@ namespace mongo {
 void appendWriteConcernErrorToCmdResponse(const ShardId& shardID,
                                           const BSONElement& wcErrorElem,
                                           BSONObjBuilder& responseBuilder);
+
+/**
+ * Dispatches all the specified requests in parallel and waits until all complete, returning a
+ * vector of the same size and positions as that of 'requests'.
+ *
+ * Throws StaleConfigException if any remote returns a stale shardVersion error.
+ */
+std::vector<AsyncRequestsSender::Response> gatherResponses(
+    OperationContext* opCtx,
+    StringData dbName,
+    const ReadPreferenceSetting& readPref,
+    Shard::RetryPolicy retryPolicy,
+    const std::vector<AsyncRequestsSender::Request>& requests);
+
 /**
  * Returns a copy of 'cmdObj' with 'version' appended.
  */
@@ -57,17 +71,6 @@ BSONObj appendShardVersion(BSONObj cmdObj, ChunkVersion version);
  * Returns a copy of 'cmdObj' with 'allowImplicitCollectionCreation' appended.
  */
 BSONObj appendAllowImplicitCreate(BSONObj cmdObj, bool allow);
-
-/**
- * Returns a copy of 'cmdObj' with atClusterTime appended to a readConcern.
- */
-BSONObj appendAtClusterTime(BSONObj cmdObj, LogicalTime atClusterTime);
-
-/**
- * Returns a copy of the given readConcern object with atClusterTime appended. The given object must
- * not already have an atClusterTime field.
- */
-BSONObj appendAtClusterTimeToReadConcern(BSONObj readConcernObj, LogicalTime atClusterTime);
 
 /**
  * Utility for dispatching unversioned commands to all shards in a cluster.
@@ -200,25 +203,4 @@ std::set<ShardId> getTargetedShardsForQuery(OperationContext* opCtx,
                                             const BSONObj& query,
                                             const BSONObj& collation);
 
-/**
- * Returns the latest known lastCommittedOpTime for the targeted shard.
- *
- * A null logical time is returned if the readConcern on the OperationContext is not snapshot.
- */
-boost::optional<LogicalTime> computeAtClusterTimeForOneShard(OperationContext* opCtx,
-                                                             const ShardId& shardId);
-
-/**
- * Returns the atClusterTime to use for the given query. This will be the latest known
- * lastCommittedOpTime for the targeted shards if the same set of shards would be targeted at that
- * time, otherwise the latest in-memory cluster time.
- *
- * A null logical time is returned if the readConcern on the OperationContext is not snapshot.
- */
-boost::optional<LogicalTime> computeAtClusterTime(OperationContext* opCtx,
-                                                  bool mustRunOnAll,
-                                                  const std::set<ShardId>& shardIds,
-                                                  const NamespaceString& nss,
-                                                  const BSONObj query,
-                                                  const BSONObj collation);
 }  // namespace mongo

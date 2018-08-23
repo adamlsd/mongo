@@ -34,7 +34,6 @@
 #include "mongo/db/auth/user_name.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/logical_session_id_helpers.h"
-#include "mongo/db/pipeline/document_sources_gen.h"
 
 namespace mongo {
 
@@ -58,12 +57,6 @@ DocumentSource::GetNextResult DocumentSourceListLocalCursors::getNext() {
 
 boost::intrusive_ptr<DocumentSource> DocumentSourceListLocalCursors::createFromBson(
     BSONElement spec, const boost::intrusive_ptr<ExpressionContext>& pExpCtx) {
-
-    uassert(
-        ErrorCodes::InvalidNamespace,
-        str::stream() << kStageName
-                      << " must be run against the database with {aggregate: 1}, not a collection",
-        pExpCtx->ns.isCollectionlessAggregateNS());
 
     uassert(ErrorCodes::BadValue,
             str::stream() << kStageName << " must be run as { " << kStageName << ": {}}",

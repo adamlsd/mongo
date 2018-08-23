@@ -142,12 +142,6 @@
                                              isNotAdminCommand);
 
     if (!isMongos) {
-        // Test parallelCollectionScan fails with an invalid collection name.
-        assertFailsWithInvalidNamespacesForField("parallelCollectionScan",
-                                                 {parallelCollectionScan: "", numCursors: 10},
-                                                 isNotFullyQualified,
-                                                 isNotAdminCommand);
-
         // Test godinsert fails with an invalid collection name.
         assertFailsWithInvalidNamespacesForField(
             "godinsert", {godinsert: "", obj: {_id: 1}}, isNotFullyQualified, isNotAdminCommand);
@@ -239,13 +233,6 @@
     assertFailsWithInvalidNamespacesForField(
         "to", {renameCollection: "test.b", to: ""}, isFullyQualified, isAdminCommand);
 
-    // Test copydb fails with an invalid fromdb name.
-    assertFailsWithInvalidNamespacesForField(
-        "fromdb", {copydb: 1, fromdb: "", todb: "b"}, isNotFullyQualified, isAdminCommand);
-    // Test copydb fails with an invalid todb name.
-    assertFailsWithInvalidNamespacesForField(
-        "todb", {copydb: 1, fromdb: "a", todb: ""}, isNotFullyQualified, isAdminCommand);
-
     // Test drop fails with an invalid collection name.
     assertFailsWithInvalidNamespacesForField(
         "drop", {drop: ""}, isNotFullyQualified, isNotAdminCommand);
@@ -317,8 +304,10 @@
         isNotAdminCommand);
 
     // Test reIndex fails with an invalid collection name.
-    assertFailsWithInvalidNamespacesForField(
-        "reIndex", {reIndex: ""}, isNotFullyQualified, isNotAdminCommand);
+    if (!isMongos) {
+        assertFailsWithInvalidNamespacesForField(
+            "reIndex", {reIndex: ""}, isNotFullyQualified, isNotAdminCommand);
+    }
 
     // Test collStats fails with an invalid collection name.
     assertFailsWithInvalidNamespacesForField(

@@ -53,6 +53,7 @@
 #include "mongo/db/query/query_test_service_context.h"
 #include "mongo/db/repl/replication_coordinator_mock.h"
 #include "mongo/dbtests/dbtests.h"
+#include "mongo/s/query/cluster_aggregation_planner.h"
 #include "mongo/unittest/death_test.h"
 
 namespace mongo {
@@ -1536,7 +1537,7 @@ TEST(PipelineOptimizationTest, ChangeStreamLookupSwapsWithIndependentMatch) {
     auto spec = BSON("$changeStream" << BSON("fullDocument"
                                              << "updateLookup"));
     auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
-    ASSERT_EQ(stages.size(), 4UL);
+    ASSERT_EQ(stages.size(), 5UL);
     // Make sure the change lookup is at the end.
     ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
 
@@ -1561,7 +1562,7 @@ TEST(PipelineOptimizationTest, ChangeStreamLookupDoesNotSwapWithMatchOnPostImage
     auto spec = BSON("$changeStream" << BSON("fullDocument"
                                              << "updateLookup"));
     auto stages = DocumentSourceChangeStream::createFromBson(spec.firstElement(), expCtx);
-    ASSERT_EQ(stages.size(), 4UL);
+    ASSERT_EQ(stages.size(), 5UL);
     // Make sure the change lookup is at the end.
     ASSERT(dynamic_cast<DocumentSourceLookupChangePostImage*>(stages.back().get()));
 
@@ -1757,13 +1758,17 @@ public:
         mergePipe = uassertStatusOK(Pipeline::parse(request.getPipeline(), ctx));
         mergePipe->optimizePipeline();
 
-        shardPipe = mergePipe->splitForSharded();
-        ASSERT(shardPipe);
+        auto splitPipeline = cluster_aggregation_planner::splitPipeline(std::move(mergePipe));
 
-        ASSERT_VALUE_EQ(Value(shardPipe->writeExplainOps(ExplainOptions::Verbosity::kQueryPlanner)),
+        ASSERT_VALUE_EQ(Value(splitPipeline.shardsPipeline->writeExplainOps(
+                            ExplainOptions::Verbosity::kQueryPlanner)),
                         Value(shardPipeExpected["pipeline"]));
-        ASSERT_VALUE_EQ(Value(mergePipe->writeExplainOps(ExplainOptions::Verbosity::kQueryPlanner)),
+        ASSERT_VALUE_EQ(Value(splitPipeline.mergePipeline->writeExplainOps(
+                            ExplainOptions::Verbosity::kQueryPlanner)),
                         Value(mergePipeExpected["pipeline"]));
+
+        shardPipe = std::move(splitPipeline.shardsPipeline);
+        mergePipe = std::move(splitPipeline.mergePipeline);
     }
 
     virtual ~Base() {}
@@ -1936,7 +1941,7 @@ class ShardedSortMatchProjSkipLimBecomesMatchTopKSortSkipProj : public Base {
                "]";
     }
     string mergePipeJson() {
-        return "[{$sort: {sortKey: {a: 1}, mergePresorted: true, limit: 8}}"
+        return "[{$limit: 8}"
                ",{$skip: 3}"
                ",{$project: {_id: true, a: true}}"
                "]";
@@ -1974,7 +1979,7 @@ class ShardedSortProjLimBecomesTopKSortProj : public Base {
                "]";
     }
     string mergePipeJson() {
-        return "[{$sort: {sortKey: {a: 1}, mergePresorted: true, limit: 5}}"
+        return "[{$limit: 5}"
                ",{$project: {_id: true, a: true}}"
                "]";
     }
@@ -1994,8 +1999,7 @@ class ShardedSortGroupProjLimDoesNotBecomeTopKSortProjGroup : public Base {
                "]";
     }
     string mergePipeJson() {
-        return "[{$sort: {sortKey: {a: 1}, mergePresorted: true}}"
-               ",{$group : {_id: {a: '$a'}}}"
+        return "[{$group : {_id: {a: '$a'}}}"
                ",{$project: {_id: true, a: true}}"
                ",{$limit: 5}"
                "]";
@@ -2017,7 +2021,7 @@ class ShardedMatchSortProjLimBecomesMatchTopKSortProj : public Base {
                "]";
     }
     string mergePipeJson() {
-        return "[{$sort: {sortKey: {a: -1}, mergePresorted: true, limit: 6}}"
+        return "[{$limit: 6}"
                ",{$project: {_id: true, a: true}}"
                "]";
     }
@@ -2119,7 +2123,9 @@ class Out : public needsPrimaryShardMergerBase {
         return "[]";
     }
     string mergePipeJson() {
-        return "[{$out: 'outColl'}]";
+        return "[{$out: {to: 'outColl', db: 'a', mode: '" +
+            WriteMode_serializer(WriteModeEnum::kModeReplaceCollection) +
+            "', uniqueKey: {_id: 1}}}]";
     }
 };
 
@@ -2230,14 +2236,14 @@ DEATH_TEST_F(PipelineMustRunOnMongoSTest,
     // $_internalSplitPipeline.
     ASSERT_FALSE(pipeline->requiredToRunOnMongos());
 
-    auto shardPipe = pipeline->splitForSharded();
-    ASSERT(shardPipe);
+    auto splitPipeline = cluster_aggregation_planner::splitPipeline(std::move(pipeline));
+    ASSERT(splitPipeline.shardsPipeline);
+    ASSERT(splitPipeline.mergePipeline);
 
-    // The merge half of the pipeline must run on mongoS.
-    ASSERT_TRUE(pipeline->requiredToRunOnMongos());
+    ASSERT_TRUE(splitPipeline.mergePipeline->requiredToRunOnMongos());
 
     // Calling 'requiredToRunOnMongos' on the shard pipeline will hit an invariant.
-    shardPipe->requiredToRunOnMongos();
+    splitPipeline.shardsPipeline->requiredToRunOnMongos();
 }
 
 TEST_F(PipelineMustRunOnMongoSTest, SplitMongoSMergePipelineAssertsIfShardStagePresent) {
@@ -2258,12 +2264,12 @@ TEST_F(PipelineMustRunOnMongoSTest, SplitMongoSMergePipelineAssertsIfShardStageP
     // $_internalSplitPipeline.
     ASSERT_FALSE(pipeline->requiredToRunOnMongos());
 
-    auto shardPipe = pipeline->splitForSharded();
-    ASSERT(shardPipe);
+    auto splitPipeline = cluster_aggregation_planner::splitPipeline(std::move(pipeline));
 
     // The merge pipeline must run on mongoS, but $out needs to run on  the primary shard.
-    ASSERT_THROWS_CODE(
-        pipeline->requiredToRunOnMongos(), AssertionException, ErrorCodes::IllegalOperation);
+    ASSERT_THROWS_CODE(splitPipeline.mergePipeline->requiredToRunOnMongos(),
+                       AssertionException,
+                       ErrorCodes::IllegalOperation);
 }
 
 TEST_F(PipelineMustRunOnMongoSTest, SplittablePipelineAssertsIfMongoSStageOnShardSideOfSplit) {

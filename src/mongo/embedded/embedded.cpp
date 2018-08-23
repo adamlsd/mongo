@@ -36,6 +36,7 @@
 #include "mongo/config.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/catalog/health_log.h"
+#include "mongo/db/catalog/index_key_validate.h"
 #include "mongo/db/catalog/uuid_catalog.h"
 #include "mongo/db/client.h"
 #include "mongo/db/commands/feature_compatibility_version.h"
@@ -55,6 +56,7 @@
 #include "mongo/db/storage/encryption_hooks.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/ttl.h"
+#include "mongo/embedded/periodic_runner_embedded.h"
 #include "mongo/embedded/replication_coordinator_embedded.h"
 #include "mongo/embedded/service_entry_point_embedded.h"
 #include "mongo/logger/log_component.h"
@@ -114,6 +116,19 @@ MONGO_INITIALIZER(fsyncLockedForWriting)(InitializerContext* context) {
     setLockedForWritingImpl([]() { return false; });
     return Status::OK();
 }
+
+GlobalInitializerRegisterer filterAllowedIndexFieldNamesEmbeddedInitializer(
+    "FilterAllowedIndexFieldNamesEmbedded",
+    {},
+    {"FilterAllowedIndexFieldNames"},
+    [](InitializerContext* service) {
+        index_key_validate::filterAllowedIndexFieldNames =
+            [](std::set<StringData>& allowedIndexFieldNames) {
+                allowedIndexFieldNames.erase(IndexDescriptor::kBackgroundFieldName);
+                allowedIndexFieldNames.erase(IndexDescriptor::kExpireAfterSecondsFieldName);
+            };
+        return Status::OK();
+    });
 }  // namespace
 
 using logger::LogComponent;
@@ -169,6 +184,7 @@ ServiceContext* initialize(const char* yaml_config) {
 
     Status status = mongo::runGlobalInitializers(yaml_config ? 1 : 0, argv, nullptr);
     uassertStatusOKWithContext(status, "Global initilization failed");
+    setGlobalServiceContext(ServiceContext::make());
 
     Client::initThread("initandlisten");
 
@@ -231,12 +247,6 @@ ServiceContext* initialize(const char* yaml_config) {
         uassert(50677, ss.str().c_str(), boost::filesystem::exists(storageGlobalParams.dbpath));
     }
 
-    {
-        std::stringstream ss;
-        ss << "repairpath (" << storageGlobalParams.repairpath << ") does not exist";
-        uassert(50678, ss.str().c_str(), boost::filesystem::exists(storageGlobalParams.repairpath));
-    }
-
     if (!storageGlobalParams.readOnly) {
         boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
     }
@@ -290,6 +300,11 @@ ServiceContext* initialize(const char* yaml_config) {
     if (!storageGlobalParams.readOnly) {
         restartInProgressIndexesFromLastShutdown(startupOpCtx.get());
     }
+
+    auto periodicRunner = std::make_unique<PeriodicRunnerEmbedded>(
+        serviceContext, serviceContext->getPreciseClockSource());
+    periodicRunner->startup();
+    serviceContext->setPeriodicRunner(std::move(periodicRunner));
 
     // MessageServer::run will return when exit code closes its socket and we don't need the
     // operation context anymore

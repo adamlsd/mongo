@@ -41,6 +41,7 @@
 #include "mongo/db/repl/oplog_entry.h"
 #include "mongo/db/s/migration_session_id.h"
 #include "mongo/db/session_catalog.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/write_concern.h"
 #include "mongo/s/client/shard_registry.h"
 #include "mongo/s/grid.h"
@@ -246,10 +247,14 @@ ProcessOplogResult processSessionOplog(OperationContext* opCtx,
     invariant(oplogEntry.getWallClockTime());
 
     auto scopedSession = SessionCatalog::get(opCtx)->getOrCreateSession(opCtx, result.sessionId);
+    scopedSession->refreshFromStorageIfNeeded(opCtx);
     if (!scopedSession->onMigrateBeginOnPrimary(opCtx, result.txnNum, stmtId)) {
         // Don't continue migrating the transaction history
         return lastResult;
     }
+
+    auto txnParticipant = TransactionParticipant::getFromNonCheckedOutSession(scopedSession.get());
+    txnParticipant->checkForNewTxnNumber();
 
     BSONObj object(result.isPrePostImage
                        ? oplogEntry.getObject()
@@ -282,7 +287,8 @@ ProcessOplogResult processSessionOplog(OperationContext* opCtx,
                                            sessionInfo,
                                            stmtId,
                                            oplogLink,
-                                           false /* prepare */);
+                                           false /* prepare */,
+                                           OplogSlot());
 
             auto oplogOpTime = result.oplogTime;
             uassert(40633,

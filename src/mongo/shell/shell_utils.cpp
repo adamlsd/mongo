@@ -32,7 +32,7 @@
 
 #include "mongo/shell/shell_utils.h"
 
-#include "mongo/client/dbclientinterface.h"
+#include "mongo/client/dbclient_base.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/hasher.h"
 #include "mongo/platform/random.h"
@@ -60,6 +60,17 @@ extern const JSFile shardingtest;
 extern const JSFile servers_misc;
 extern const JSFile replsettest;
 extern const JSFile bridge;
+}
+
+MONGO_REGISTER_SHIM(BenchRunConfig::createConnectionImpl)
+(const BenchRunConfig& config)->std::unique_ptr<DBClientBase> {
+    const ConnectionString connectionString = uassertStatusOK(ConnectionString::parse(config.host));
+
+    std::string errorMessage;
+    std::unique_ptr<DBClientBase> connection(connectionString.connect("BenchRun", errorMessage));
+    uassert(16158, errorMessage, connection);
+
+    return connection;
 }
 
 namespace shell_utils {
@@ -288,6 +299,10 @@ BSONObj fileExistsJS(const BSONObj& a, void*) {
     return BSON("" << fileExists(a.firstElement().valuestrsafe()));
 }
 
+BSONObj isInteractive(const BSONObj& a, void*) {
+    return BSON("" << shellGlobalParams.runShell);
+}
+
 void installShellUtils(Scope& scope) {
     scope.injectNative("getMemInfo", JSGetMemInfo);
     scope.injectNative("_replMonitorStats", replMonitorStats);
@@ -300,6 +315,7 @@ void installShellUtils(Scope& scope) {
     scope.injectNative("computeSHA256Block", computeSHA256Block);
     scope.injectNative("convertShardKeyToHashed", convertShardKeyToHashed);
     scope.injectNative("fileExists", fileExistsJS);
+    scope.injectNative("isInteractive", isInteractive);
 
 #ifndef MONGO_SAFE_SHELL
     // can't launch programs

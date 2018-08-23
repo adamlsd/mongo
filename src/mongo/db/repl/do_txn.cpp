@@ -51,6 +51,7 @@
 #include "mongo/db/repl/replication_coordinator.h"
 #include "mongo/db/service_context.h"
 #include "mongo/db/session_catalog.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
@@ -183,15 +184,6 @@ Status _doTxn(OperationContext* opCtx,
         (*numApplied)++;
 
         if (MONGO_FAIL_POINT(doTxnPauseBetweenOperations)) {
-            // While holding a database lock under MMAPv1, we would be implicitly holding the
-            // flush lock here. This would prevent other threads from acquiring the global
-            // lock or any database locks. We release all locks temporarily while the fail
-            // point is enabled to allow other threads to make progress.
-            boost::optional<Lock::TempRelease> release;
-            auto storageEngine = opCtx->getServiceContext()->getStorageEngine();
-            if (storageEngine->isMmapV1() && !opCtx->lockState()->isW()) {
-                release.emplace(opCtx->lockState());
-            }
             MONGO_FAIL_POINT_PAUSE_WHILE_SET(doTxnPauseBetweenOperations);
         }
     }
@@ -279,9 +271,9 @@ Status doTxn(OperationContext* opCtx,
              BSONObjBuilder* result) {
     auto txnNumber = opCtx->getTxnNumber();
     uassert(ErrorCodes::InvalidOptions, "doTxn can only be run with a transaction ID.", txnNumber);
-    auto* session = OperationContextSession::get(opCtx);
-    uassert(ErrorCodes::InvalidOptions, "doTxn must be run within a session", session);
-    invariant(session->inMultiDocumentTransaction());
+    auto txnParticipant = TransactionParticipant::get(opCtx);
+    uassert(ErrorCodes::InvalidOptions, "doTxn must be run within a transaction", txnParticipant);
+    invariant(txnParticipant->inMultiDocumentTransaction());
     invariant(opCtx->getWriteUnitOfWork());
     uassert(
         ErrorCodes::InvalidOptions, "doTxn supports only CRUD opts.", _areOpsCrudOnly(doTxnCmd));
@@ -312,10 +304,10 @@ Status doTxn(OperationContext* opCtx,
 
         numApplied = 0;
         uassertStatusOK(_doTxn(opCtx, dbName, doTxnCmd, &intermediateResult, &numApplied));
-        session->commitTransaction(opCtx);
+        txnParticipant->commitUnpreparedTransaction(opCtx);
         result->appendElements(intermediateResult.obj());
     } catch (const DBException& ex) {
-        session->abortActiveTransaction(opCtx);
+        txnParticipant->abortActiveUnpreparedOrStashPreparedTransaction(opCtx);
         BSONArrayBuilder ab;
         ++numApplied;
         for (int j = 0; j < numApplied; j++)

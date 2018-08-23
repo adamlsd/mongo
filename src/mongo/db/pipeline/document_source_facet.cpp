@@ -141,6 +141,13 @@ stdx::unordered_set<NamespaceString> DocumentSourceFacet::LiteParsed::getInvolve
     return involvedNamespaces;
 }
 
+bool DocumentSourceFacet::LiteParsed::allowShardedForeignCollection(NamespaceString nss) const {
+    return std::all_of(
+        _liteParsedPipelines.begin(), _liteParsedPipelines.end(), [&nss](auto&& pipeline) {
+            return pipeline.allowShardedForeignCollection(nss);
+        });
+}
+
 REGISTER_DOCUMENT_SOURCE(facet,
                          DocumentSourceFacet::LiteParsed::parse,
                          DocumentSourceFacet::createFromBson);
@@ -265,6 +272,14 @@ DocumentSource::StageConstraints DocumentSourceFacet::constraints(
             mayUseDisk ? DiskUseRequirement::kWritesTmpData : DiskUseRequirement::kNoDiskUse,
             FacetRequirement::kNotAllowed,
             TransactionRequirement::kAllowed};
+}
+
+bool DocumentSourceFacet::usedDisk() {
+    for (auto&& facet : _facets) {
+        if (facet.pipeline->usedDisk())
+            return true;
+    }
+    return false;
 }
 
 DepsTracker::State DocumentSourceFacet::getDependencies(DepsTracker* deps) const {

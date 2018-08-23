@@ -38,7 +38,6 @@
 #include "mongo/db/jsobj.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/pipeline/accumulator.h"
-#include "mongo/db/pipeline/cluster_aggregation_planner.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
 #include "mongo/db/pipeline/document_source_geo_near.h"
@@ -50,9 +49,17 @@
 #include "mongo/db/pipeline/document_source_unwind.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
+#include "mongo/util/fail_point_service.h"
 #include "mongo/util/mongoutils/str.h"
 
 namespace mongo {
+
+/**
+ * Enabling the disablePipelineOptimization fail point will stop the aggregate command from
+ * attempting to optimize the pipeline or the pipeline stages. Neither DocumentSource::optimizeAt()
+ * nor DocumentSource::optimize() will be attempted.
+ */
+MONGO_FAIL_POINT_DEFINE(disablePipelineOptimization);
 
 using boost::intrusive_ptr;
 using std::endl;
@@ -241,6 +248,11 @@ void Pipeline::validateCommon() const {
 }
 
 void Pipeline::optimizePipeline() {
+    // If the disablePipelineOptimization failpoint is enabled, the pipeline won't be optimized.
+    if (MONGO_FAIL_POINT(disablePipelineOptimization)) {
+        return;
+    }
+
     SourceContainer optimizedSources;
 
     SourceContainer::iterator itr = _sources.begin();
@@ -317,23 +329,9 @@ void Pipeline::dispose(OperationContext* opCtx) {
     }
 }
 
-std::unique_ptr<Pipeline, PipelineDeleter> Pipeline::splitForSharded() {
-    invariant(!isSplitForShards());
-    invariant(!isSplitForMerge());
-
-    // Create and initialize the shard spec we'll return. We start with an empty pipeline on the
-    // shards and all work being done in the merger. Optimizations can move operations between
-    // the pipelines to be more efficient.
-    std::unique_ptr<Pipeline, PipelineDeleter> shardPipeline(new Pipeline(pCtx),
-                                                             PipelineDeleter(pCtx->opCtx));
-
-    cluster_aggregation_planner::performSplitPipelineOptimizations(shardPipeline.get(), this);
-    shardPipeline->_splitState = SplitState::kSplitForShards;
-    _splitState = SplitState::kSplitForMerge;
-
-    stitch();
-
-    return shardPipeline;
+bool Pipeline::usedDisk() {
+    return std::any_of(
+        _sources.begin(), _sources.end(), [](const auto& stage) { return stage->usedDisk(); });
 }
 
 BSONObj Pipeline::getInitialQuery() const {
@@ -381,12 +379,13 @@ bool Pipeline::canRunOnMongos() const {
 }
 
 bool Pipeline::requiredToRunOnMongos() const {
-    invariant(!isSplitForShards());
+    invariant(_splitState != SplitState::kSplitForShards);
 
     for (auto&& stage : _sources) {
         // If this pipeline is capable of splitting before the mongoS-only stage, then the pipeline
         // as a whole is not required to run on mongoS.
-        if (isUnsplit() && dynamic_cast<NeedsMergerDocumentSource*>(stage.get())) {
+        if (_splitState == SplitState::kUnsplit &&
+            dynamic_cast<NeedsMergerDocumentSource*>(stage.get())) {
             return false;
         }
 

@@ -113,9 +113,7 @@
 #include "mongo/db/s/config/sharding_catalog_manager.h"
 #include "mongo/db/s/config_server_op_observer.h"
 #include "mongo/db/s/shard_server_op_observer.h"
-#include "mongo/db/s/sharded_connection_info.h"
 #include "mongo/db/s/sharding_initialization_mongod.h"
-#include "mongo/db/s/sharding_state.h"
 #include "mongo/db/s/sharding_state_recovery.h"
 #include "mongo/db/server_options.h"
 #include "mongo/db/server_parameters.h"
@@ -125,8 +123,8 @@
 #include "mongo/db/session_killer.h"
 #include "mongo/db/startup_warnings_mongod.h"
 #include "mongo/db/stats/counters.h"
+#include "mongo/db/storage/backup_cursor_service.h"
 #include "mongo/db/storage/encryption_hooks.h"
-#include "mongo/db/storage/mmap_v1/mmap_v1_options.h"
 #include "mongo/db/storage/storage_engine.h"
 #include "mongo/db/storage/storage_engine_init.h"
 #include "mongo/db/storage/storage_options.h"
@@ -363,6 +361,14 @@ ExitCode _initAndListen(int listenPort) {
         }
     }
 
+    // Disallow running a storage engine that doesn't support capped collections with --profile
+    if (!serviceContext->getStorageEngine()->supportsCappedCollections() &&
+        serverGlobalParams.defaultProfile != 0) {
+        log() << "Running " << storageGlobalParams.engine << " with profiling is not supported. "
+              << "Make sure you are not using --profile.";
+        exitCleanly(EXIT_BADOPTIONS);
+    }
+
     // Disallow running WiredTiger with --nojournal in a replica set
     if (storageGlobalParams.engine == "wiredTiger" && !storageGlobalParams.dur &&
         replSettings.usingReplSets()) {
@@ -397,20 +403,11 @@ ExitCode _initAndListen(int listenPort) {
         uassert(10296, ss.str().c_str(), boost::filesystem::exists(storageGlobalParams.dbpath));
     }
 
-    {
-        std::stringstream ss;
-        ss << "repairpath (" << storageGlobalParams.repairpath << ") does not exist";
-        uassert(12590, ss.str().c_str(), boost::filesystem::exists(storageGlobalParams.repairpath));
-    }
-
     initializeSNMP();
 
     if (!storageGlobalParams.readOnly) {
         boost::filesystem::remove_all(storageGlobalParams.dbpath + "/_tmp/");
     }
-
-    if (mmapv1GlobalOptions.journalOptions & MMAPV1Options::JournalRecoverOnly)
-        return EXIT_NET_ERROR;
 
     if (mongodGlobalParams.scriptingEnabled) {
         ScriptEngine::setup();
@@ -418,8 +415,9 @@ ExitCode _initAndListen(int listenPort) {
 
     auto startupOpCtx = serviceContext->makeOperationContext(&cc());
 
-    bool canCallFCVSetIfCleanStartup =
-        !storageGlobalParams.readOnly && (storageGlobalParams.engine != "devnull");
+    // TODO: Remove biggie from this list after implemented
+    bool canCallFCVSetIfCleanStartup = !storageGlobalParams.readOnly &&
+        (storageGlobalParams.engine != "devnull") && (storageGlobalParams.engine != "biggie");
     if (canCallFCVSetIfCleanStartup && !replSettings.usingReplSets()) {
         Lock::GlobalWrite lk(startupOpCtx.get());
         FeatureCompatibilityVersion::setIfCleanStartup(startupOpCtx.get(),
@@ -475,6 +473,9 @@ ExitCode _initAndListen(int listenPort) {
             log() << redact(status);
             if (status == ErrorCodes::AuthSchemaIncompatible) {
                 exitCleanly(EXIT_NEED_UPGRADE);
+            } else if (status == ErrorCodes::NotMaster) {
+                // Try creating the indexes if we become master.  If we do not become master,
+                // the master will create the indexes and we will replicate them.
             } else {
                 quickExit(EXIT_FAILURE);
             }
@@ -489,6 +490,9 @@ ExitCode _initAndListen(int listenPort) {
                   << "User and role management commands require auth data to have "
                   << "at least schema version " << AuthorizationManager::schemaVersion26Final
                   << " but startup could not verify schema version: " << status;
+            log() << "To manually repair the 'authSchema' document in the admin.system.version "
+                     "collection, start up with --setParameter "
+                     "startupAuthSchemaValidation=false to disable validation.";
             exitCleanly(EXIT_NEED_UPGRADE);
         }
 
@@ -515,16 +519,21 @@ ExitCode _initAndListen(int listenPort) {
               << startupWarningsLog;
     }
 
+    // Set up the periodic runner for background job execution
+    auto runner = makePeriodicRunner(serviceContext);
+    runner->startup();
+    serviceContext->setPeriodicRunner(std::move(runner));
+
     // This function may take the global lock.
-    auto shardingInitialized =
-        uassertStatusOK(ShardingState::get(startupOpCtx.get())
-                            ->initializeShardingAwarenessIfNeeded(startupOpCtx.get()));
+    auto shardingInitialized = ShardingInitializationMongoD::get(startupOpCtx.get())
+                                   ->initializeShardingAwarenessIfNeeded(startupOpCtx.get());
     if (shardingInitialized) {
         waitForShardRegistryReload(startupOpCtx.get()).transitional_ignore();
     }
 
     auto storageEngine = serviceContext->getStorageEngine();
     invariant(storageEngine);
+    BackupCursorService::set(serviceContext, stdx::make_unique<BackupCursorService>(storageEngine));
 
     if (!storageGlobalParams.readOnly) {
 
@@ -544,10 +553,9 @@ ExitCode _initAndListen(int listenPort) {
                 uassertStatusOK(ShardingStateRecovery::recover(startupOpCtx.get()));
             }
         } else if (serverGlobalParams.clusterRole == ClusterRole::ConfigServer) {
-            uassertStatusOK(
-                initializeGlobalShardingStateForMongod(startupOpCtx.get(),
-                                                       ConnectionString::forLocal(),
-                                                       kDistLockProcessIdForConfigServer));
+            initializeGlobalShardingStateForMongoD(startupOpCtx.get(),
+                                                   ConnectionString::forLocal(),
+                                                   kDistLockProcessIdForConfigServer);
 
             Balancer::create(startupOpCtx->getServiceContext());
 
@@ -600,11 +608,6 @@ ExitCode _initAndListen(int listenPort) {
 
     PeriodicTask::startRunningPeriodicTasks();
 
-    // Set up the periodic runner for background job execution
-    auto runner = makePeriodicRunner(serviceContext);
-    runner->startup();
-    serviceContext->setPeriodicRunner(std::move(runner));
-
     SessionKiller::set(serviceContext,
                        std::make_shared<SessionKiller>(serviceContext, killSessionsLocal));
 
@@ -639,6 +642,12 @@ ExitCode _initAndListen(int listenPort) {
     auto start = serviceContext->getServiceExecutor()->start();
     if (!start.isOK()) {
         error() << "Failed to start the service executor: " << start;
+        return EXIT_NET_ERROR;
+    }
+
+    start = serviceContext->getServiceEntryPoint()->start();
+    if (!start.isOK()) {
+        error() << "Failed to start the service entry point: " << start;
         return EXIT_NET_ERROR;
     }
 
@@ -799,10 +808,7 @@ auto makeReplicationExecutor(ServiceContext* serviceContext) {
         executor::makeNetworkInterface("Replication", nullptr, std::move(hookList)));
 }
 
-MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
-                                     ("SSLManager", "ServiceContext", "default"))
-(InitializerContext* context) {
-    auto serviceContext = getGlobalServiceContext();
+void setUpReplication(ServiceContext* serviceContext) {
     repl::StorageInterface::set(serviceContext, stdx::make_unique<repl::StorageInterfaceImpl>());
     auto storageInterface = repl::StorageInterface::get(serviceContext);
 
@@ -839,7 +845,6 @@ MONGO_INITIALIZER_WITH_PREREQUISITES(CreateReplicationManager,
         static_cast<int64_t>(curTimeMillis64()));
     repl::ReplicationCoordinator::set(serviceContext, std::move(replCoord));
     repl::setOplogCollectionName(serviceContext);
-    return Status::OK();
 }
 
 #ifdef MONGO_CONFIG_SSL
@@ -883,7 +888,7 @@ void shutdownTask() {
         // is building an index.
         repl::ReplicationCoordinator::get(serviceContext)->shutdown(opCtx);
 
-        ShardingState::get(serviceContext)->shutDown(opCtx);
+        ShardingInitializationMongoD::get(serviceContext)->shutDown(opCtx);
 
         // Destroy all stashed transaction resources, in order to release locks.
         SessionKiller::Matcher matcherAllSessions(
@@ -948,7 +953,7 @@ void shutdownTask() {
     // For a Windows service, dbexit does not call exit(), so we must leak the lock outside
     // of this function to prevent any operations from running that need a lock.
     //
-    DefaultLockerImpl* globalLocker = new DefaultLockerImpl();
+    LockerImpl* globalLocker = new LockerImpl();
     LockResult result = globalLocker->lockGlobalBegin(MODE_X, Date_t::max());
     if (result == LOCK_WAITING) {
         result = globalLocker->lockGlobalComplete(Date_t::max());
@@ -986,7 +991,17 @@ int mongoDbMain(int argc, char* argv[], char** envp) {
         severe(LogComponent::kControl) << "Failed global initialization: " << status;
         quickExit(EXIT_FAILURE);
     }
+
+    try {
+        setGlobalServiceContext(ServiceContext::make());
+    } catch (...) {
+        auto cause = exceptionToStatus();
+        severe(LogComponent::kControl) << "Failed to create service context: " << redact(cause);
+        quickExit(EXIT_FAILURE);
+    }
+
     auto service = getGlobalServiceContext();
+    setUpReplication(service);
     service->setServiceEntryPoint(std::make_unique<ServiceEntryPointMongod>(service));
 
     ErrorExtraInfo::invariantHaveAllParsers();

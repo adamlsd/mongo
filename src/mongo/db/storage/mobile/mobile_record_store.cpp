@@ -116,7 +116,9 @@ public:
     }
 
     void save() final {
-        _resetStatement();
+        // SQLite acquires implicit locks over the snapshot this cursor is using. It is important
+        // to finalize the corresponding statement to release these locks.
+        _stmt->finalize();
     }
 
     void saveUnpositioned() final {
@@ -129,7 +131,12 @@ public:
             return true;
         }
 
-        _resetStatement();
+        // Obtaining a session starts a read transaction if not done already.
+        MobileSession* session = MobileRecoveryUnit::get(_opCtx)->getSession(_opCtx);
+        // save() finalized this cursor's SQLite statement. We need to prepare a new statement,
+        // before re-positioning it at the saved state.
+        _stmt->prepare(*session);
+
         _stmt->bindInt(0, _savedId.repr());
         return true;
     }
@@ -291,8 +298,10 @@ void MobileRecordStore::deleteRecord(OperationContext* opCtx, const RecordId& re
     deleteStmt.step(SQLITE_DONE);
 }
 
-StatusWith<RecordId> MobileRecordStore::insertRecord(
-    OperationContext* opCtx, const char* data, int len, Timestamp, bool enforceQuota) {
+StatusWith<RecordId> MobileRecordStore::insertRecord(OperationContext* opCtx,
+                                                     const char* data,
+                                                     int len,
+                                                     Timestamp) {
     // Inserts record into SQLite table (or replaces if duplicate record id).
     MobileSession* session = MobileRecoveryUnit::get(opCtx)->getSession(opCtx, false);
 
@@ -326,7 +335,7 @@ Status MobileRecordStore::insertRecordsWithDocWriter(OperationContext* opCtx,
     for (size_t i = 0; i < nDocs; i++) {
         docs[i]->writeDocument(pos);
         size_t docLen = docs[i]->documentSize();
-        StatusWith<RecordId> res = insertRecord(opCtx, pos, docLen, timestamps[i], true);
+        StatusWith<RecordId> res = insertRecord(opCtx, pos, docLen, timestamps[i]);
         idsOut[i] = res.getValue();
         pos += docLen;
     }
@@ -338,7 +347,6 @@ Status MobileRecordStore::updateRecord(OperationContext* opCtx,
                                        const RecordId& recId,
                                        const char* data,
                                        int len,
-                                       bool enforceQuota,
                                        UpdateNotifier* notifier) {
     MobileSession* session = MobileRecoveryUnit::get(opCtx)->getSession(opCtx, false);
     std::string dataSizeQuery =
@@ -397,13 +405,6 @@ Status MobileRecordStore::truncate(OperationContext* opCtx) {
     std::string deleteForTruncateQuery = "DELETE FROM \"" + _ident + "\";";
     SqliteStatement::execQuery(session, deleteForTruncateQuery);
 
-    return Status::OK();
-}
-
-Status MobileRecordStore::compact(OperationContext* opCtx,
-                                  RecordStoreCompactAdaptor* adaptor,
-                                  const CompactOptions* options,
-                                  CompactStats* stats) {
     return Status::OK();
 }
 

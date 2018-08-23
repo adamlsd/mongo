@@ -30,7 +30,6 @@
 
 #include <memory>
 
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/client/index_spec.h"
 #include "mongo/db/dbdirectclient.h"
 #include "mongo/db/logical_session_id.h"
@@ -71,7 +70,7 @@ BSONObj lsidQuery(const LogicalSessionId& lsid) {
 StatusWith<LogicalSessionRecord> fetchRecord(OperationContext* opCtx,
                                              const LogicalSessionId& lsid) {
     DBDirectClient client(opCtx);
-    auto cursor = client.query(kTestNS.toString(), lsidQuery(lsid), 1);
+    auto cursor = client.query(NamespaceString(kTestNS), lsidQuery(lsid), 1);
     if (!cursor->more()) {
         return {ErrorCodes::NoSuchSession, "No matching record in the sessions collection"};
     }

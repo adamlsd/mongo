@@ -34,8 +34,8 @@
 #include <boost/filesystem/operations.hpp>
 #include <cctype>
 
-#include "mongo/client/dbclientcursor.h"
-#include "mongo/client/dbclientinterface.h"
+#include "mongo/client/dbclient_base.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/operation_context.h"
 #include "mongo/db/service_context.h"
 #include "mongo/scripting/dbdirectclient_factory.h"
@@ -215,7 +215,7 @@ void Scope::loadStored(OperationContext* opCtx, bool ignoreNotConnected) {
         return;
 
     _loadedVersion = lastVersion;
-    string coll = _localDBName + ".system.js";
+    NamespaceString coll(_localDBName, "system.js");
 
     auto directDBClient = DBDirectClientFactory::get(opCtx).create(opCtx);
 
@@ -418,9 +418,6 @@ public:
     }
     void init(const BSONObj* data) {
         _real->init(data);
-    }
-    void localConnectForDbEval(OperationContext* opCtx, const char* dbName) {
-        invariant(!"localConnectForDbEval should only be called from dbEval");
     }
     void setLocalDB(const string& dbName) {
         _real->setLocalDB(dbName);

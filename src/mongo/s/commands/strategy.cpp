@@ -43,6 +43,7 @@
 #include "mongo/db/commands.h"
 #include "mongo/db/commands/test_commands_enabled.h"
 #include "mongo/db/curop.h"
+#include "mongo/db/handle_request_response.h"
 #include "mongo/db/initialize_operation_session_info.h"
 #include "mongo/db/lasterror.h"
 #include "mongo/db/logical_clock.h"
@@ -62,6 +63,7 @@
 #include "mongo/rpc/metadata/logical_time_metadata.h"
 #include "mongo/rpc/metadata/tracking_metadata.h"
 #include "mongo/rpc/op_msg.h"
+#include "mongo/rpc/op_msg_rpc_impls.h"
 #include "mongo/s/cannot_implicitly_create_collection_info.h"
 #include "mongo/s/catalog_cache.h"
 #include "mongo/s/client/parallel.h"
@@ -73,7 +75,7 @@
 #include "mongo/s/query/cluster_cursor_manager.h"
 #include "mongo/s/query/cluster_find.h"
 #include "mongo/s/stale_exception.h"
-#include "mongo/s/transaction/router_session_runtime_state.h"
+#include "mongo/s/transaction/transaction_router.h"
 #include "mongo/util/fail_point_service.h"
 #include "mongo/util/log.h"
 #include "mongo/util/mongoutils/str.h"
@@ -151,7 +153,7 @@ void appendRequiredFieldsToResponse(OperationContext* opCtx, BSONObjBuilder* res
 void execCommandClient(OperationContext* opCtx,
                        CommandInvocation* invocation,
                        const OpMsgRequest& request,
-                       CommandReplyBuilder* result) {
+                       rpc::ReplyBuilderInterface* result) {
     const Command* c = invocation->definition();
     ON_BLOCK_EXIT([opCtx, &result] {
         auto body = result->getBodyBuilder();
@@ -253,6 +255,10 @@ void execCommandClient(OperationContext* opCtx,
                        "read concern snapshot is not supported with atClusterTime on mongos"));
             return;
         }
+
+        uassert(ErrorCodes::InvalidOptions,
+                "read concern snapshot is only supported in a multi-statement transaction",
+                TransactionRouter::get(opCtx));
     }
 
     // attach tracking
@@ -286,13 +292,19 @@ void execCommandClient(OperationContext* opCtx,
 
 MONGO_FAIL_POINT_DEFINE(doNotRefreshShardsOnRetargettingError);
 
+/**
+ * Executes the command for the given request, and appends the result to replyBuilder
+ * and error labels, if any, to errorBuilder.
+ */
 void runCommand(OperationContext* opCtx,
                 const OpMsgRequest& request,
                 const NetworkOp opType,
-                BSONObjBuilder&& builder) {
+                rpc::ReplyBuilderInterface* replyBuilder,
+                BSONObjBuilder* errorBuilder) {
     auto const commandName = request.getCommandName();
     auto const command = CommandHelpers::findCommand(commandName);
     if (!command) {
+        auto builder = replyBuilder->getBodyBuilder();
         ON_BLOCK_EXIT([opCtx, &builder] { appendRequiredFieldsToResponse(opCtx, &builder); });
         CommandHelpers::appendCommandStatusNoThrow(
             builder,
@@ -317,7 +329,7 @@ void runCommand(OperationContext* opCtx,
     const int maxTimeMS = uassertStatusOK(
         QueryRequest::parseMaxTimeMS(request.body[QueryRequest::cmdOptionMaxTimeMS]));
     if (maxTimeMS > 0 && command->getLogicalOp() != LogicalOp::opGetMore) {
-        opCtx->setDeadlineAfterNowBy(Milliseconds{maxTimeMS});
+        opCtx->setDeadlineAfterNowBy(Milliseconds{maxTimeMS}, ErrorCodes::MaxTimeMSExpired);
     }
     opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
 
@@ -332,15 +344,24 @@ void runCommand(OperationContext* opCtx,
     // Fill out all currentOp details.
     CurOp::get(opCtx)->setGenericOpRequestDetails(opCtx, nss, command, request.body, opType);
 
-    boost::optional<ScopedRouterSession> scopedSession;
-    if (auto osi = initializeOperationSessionInfo(
-            opCtx, request.body, command->requiresAuth(), true, true, true)) {
+    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
+    auto readConcernParseStatus = readConcernArgs.initialize(request.body);
+    if (!readConcernParseStatus.isOK()) {
+        auto builder = replyBuilder->getBodyBuilder();
+        CommandHelpers::appendCommandStatusNoThrow(builder, readConcernParseStatus);
+        return;
+    }
 
-        if (osi->getAutocommit()) {
+    boost::optional<ScopedRouterSession> scopedSession;
+    auto osi = initializeOperationSessionInfo(
+        opCtx, request.body, command->requiresAuth(), true, true, true);
+
+    try {
+        if (osi && osi->getAutocommit()) {
             scopedSession.emplace(opCtx);
 
-            auto routerSession = RouterSessionRuntimeState::get(opCtx);
-            invariant(routerSession);
+            auto txnRouter = TransactionRouter::get(opCtx);
+            invariant(txnRouter);
 
             auto txnNumber = opCtx->getTxnNumber();
             invariant(txnNumber);
@@ -348,20 +369,9 @@ void runCommand(OperationContext* opCtx,
             auto startTxnSetting = osi->getStartTransaction();
             bool startTransaction = startTxnSetting ? *startTxnSetting : false;
 
-            routerSession->beginOrContinueTxn(*txnNumber, startTransaction);
+            txnRouter->beginOrContinueTxn(opCtx, *txnNumber, startTransaction);
         }
-    }
 
-    auto& readConcernArgs = repl::ReadConcernArgs::get(opCtx);
-    auto readConcernParseStatus = readConcernArgs.initialize(request.body);
-    if (!readConcernParseStatus.isOK()) {
-        CommandHelpers::appendCommandStatusNoThrow(builder, readConcernParseStatus);
-        return;
-    }
-
-    CommandReplyBuilder crb(std::move(builder));
-
-    try {
         for (int tries = 0;; ++tries) {
             // Try kMaxNumStaleVersionRetries times. On the last try, exceptions are rethrown.
             bool canRetry = tries < kMaxNumStaleVersionRetries - 1;
@@ -374,9 +384,9 @@ void runCommand(OperationContext* opCtx,
                           "unexpected change of namespace when retrying");
             }
 
-            crb.reset();
+            replyBuilder->reset();
             try {
-                execCommandClient(opCtx, invocation.get(), request, &crb);
+                execCommandClient(opCtx, invocation.get(), request, replyBuilder);
                 return;
             } catch (const ExceptionForCat<ErrorCategory::NeedRetargettingError>& ex) {
                 const auto staleNs = [&] {
@@ -390,25 +400,14 @@ void runCommand(OperationContext* opCtx,
                     }
                 }();
 
-                if (staleNs.isEmpty()) {
-                    // This should be impossible but older versions tried incorrectly to handle
-                    // it here.
-                    log() << "Received a stale config error with an empty namespace while "
-                             "executing "
-                          << redact(request.body) << " : " << redact(ex);
-                    throw;
-                }
-
                 // Send setShardVersion on this thread's versioned connections to shards (to support
                 // commands that use the legacy (ShardConnection) versioning protocol).
                 if (!MONGO_FAIL_POINT(doNotRefreshShardsOnRetargettingError)) {
                     ShardConnection::checkMyConnectionVersions(opCtx, staleNs.ns());
                 }
 
-                // Mark collection entry in cache as stale.
-                if (staleNs.isValid()) {
-                    Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNs);
-                }
+                Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNs);
+
                 if (canRetry) {
                     continue;
                 }
@@ -432,12 +431,10 @@ void runCommand(OperationContext* opCtx,
         }
     } catch (const DBException& e) {
         command->incrementCommandsFailed();
-        CurOp::get(opCtx)->debug().errInfo = e.toStatus();
         LastError::get(opCtx->getClient()).setLastError(e.code(), e.reason());
-        crb.reset();
-        BSONObjBuilder bob = crb.getBodyBuilder();
-        CommandHelpers::appendCommandStatusNoThrow(bob, e.toStatus());
-        appendRequiredFieldsToResponse(opCtx, &bob);
+        auto errorLabels = getErrorLabels(osi, command->getName(), e.code());
+        errorBuilder->appendElements(errorLabels);
+        throw;
     }
 }
 
@@ -493,7 +490,8 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
         uassert(50749,
                 "Illegal attempt to set operation deadline within DBDirectClient",
                 !opCtx->getClient()->isInDirectClient());
-        opCtx->setDeadlineAfterNowBy(Milliseconds{queryRequest.getMaxTimeMS()});
+        opCtx->setDeadlineAfterNowBy(Milliseconds{queryRequest.getMaxTimeMS()},
+                                     ErrorCodes::MaxTimeMSExpired);
     }
     opCtx->checkForInterrupt();  // May trigger maxTimeAlwaysTimeOut fail point.
 
@@ -547,6 +545,7 @@ DbResponse Strategy::queryOp(OperationContext* opCtx, const NamespaceString& nss
 
 DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
     auto reply = rpc::makeReplyBuilder(rpc::protocolForMessage(m));
+    BSONObjBuilder errorBuilder;
 
     bool propagateException = false;
 
@@ -569,7 +568,7 @@ DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
         std::string db = request.getDatabase().toString();
         try {
             LOG(3) << "Command begin db: " << db << " msg id: " << m.header().getId();
-            runCommand(opCtx, request, m.operation(), reply->getInPlaceReplyBuilder(0));
+            runCommand(opCtx, request, m.operation(), reply.get(), &errorBuilder);
             LOG(3) << "Command end db: " << db << " msg id: " << m.header().getId();
         } catch (const DBException& ex) {
             LOG(1) << "Exception thrown while processing command on " << db
@@ -584,16 +583,16 @@ DbResponse Strategy::clientCommand(OperationContext* opCtx, const Message& m) {
             throw;
         }
         reply->reset();
-        auto bob = reply->getInPlaceReplyBuilder(0);
+        auto bob = reply->getBodyBuilder();
         CommandHelpers::appendCommandStatusNoThrow(bob, ex.toStatus());
         appendRequiredFieldsToResponse(opCtx, &bob);
+        bob.appendElements(errorBuilder.obj());
     }
 
     if (OpMsg::isFlagSet(m, OpMsg::kMoreToCome)) {
         return {};  // Don't reply.
     }
 
-    reply->setMetadata(BSONObj());  // mongos doesn't use metadata but the API requires this call.
     return DbResponse{reply->done()};
 }
 
@@ -730,11 +729,11 @@ void Strategy::killCursors(OperationContext* opCtx, DbMessage* dbm) {
 }
 
 void Strategy::writeOp(OperationContext* opCtx, DbMessage* dbm) {
-    BufBuilder bb;
+    const auto& msg = dbm->msg();
+    rpc::OpMsgReplyBuilder reply;
+    BSONObjBuilder errorBuilder;
     runCommand(opCtx,
                [&]() {
-                   const auto& msg = dbm->msg();
-
                    switch (msg.operation()) {
                        case dbInsert: {
                            return InsertOp::parseLegacy(msg).serialize({});
@@ -749,8 +748,9 @@ void Strategy::writeOp(OperationContext* opCtx, DbMessage* dbm) {
                            MONGO_UNREACHABLE;
                    }
                }(),
-               dbm->msg().operation(),
-               BSONObjBuilder{bb});  // built object is ignored
+               msg.operation(),
+               &reply,
+               &errorBuilder);  // built objects are ignored
 }
 
 void Strategy::explainFind(OperationContext* opCtx,
@@ -796,25 +796,14 @@ void Strategy::explainFind(OperationContext* opCtx,
                 }
             }();
 
-            if (staleNs.isEmpty()) {
-                // This should be impossible but older versions tried incorrectly to handle
-                // it here.
-                log() << "Received a stale config error with an empty namespace while "
-                         "executing "
-                      << redact(explainCmd) << " : " << redact(ex);
-                throw;
-            }
-
             // Send setShardVersion on this thread's versioned connections to shards (to support
             // commands that use the legacy (ShardConnection) versioning protocol).
             if (!MONGO_FAIL_POINT(doNotRefreshShardsOnRetargettingError)) {
                 ShardConnection::checkMyConnectionVersions(opCtx, staleNs.ns());
             }
 
-            // Mark collection entry in cache as stale.
-            if (staleNs.isValid()) {
-                Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNs);
-            }
+            Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNs);
+
             if (canRetry) {
                 continue;
             }

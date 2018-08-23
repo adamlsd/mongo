@@ -42,7 +42,6 @@
 #include "mongo/base/string_data.h"
 #include "mongo/client/connpool.h"
 #include "mongo/client/dbclient_rs.h"
-#include "mongo/client/dbclientinterface.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/jsobj.h"
 #include "mongo/dbtests/mock/mock_conn_registry.h"
@@ -129,7 +128,7 @@ TEST_F(BasicRS, QueryPrimary) {
     query.readPref(mongo::ReadPreference::PrimaryOnly, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -146,7 +145,7 @@ TEST_F(BasicRS, QuerySecondaryOnly) {
     query.readPref(mongo::ReadPreference::SecondaryOnly, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -167,7 +166,7 @@ TEST_F(BasicRS, QueryPrimaryPreferred) {
     query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -187,7 +186,7 @@ TEST_F(BasicRS, QuerySecondaryPreferred) {
     query.readPref(mongo::ReadPreference::SecondaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -246,7 +245,7 @@ TEST_F(AllNodesDown, QueryPrimary) {
 
     Query query;
     query.readPref(mongo::ReadPreference::PrimaryOnly, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(AllNodesDown, CommandPrimary) {
@@ -259,7 +258,7 @@ TEST_F(AllNodesDown, QuerySecondaryOnly) {
 
     Query query;
     query.readPref(mongo::ReadPreference::SecondaryOnly, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(AllNodesDown, CommandSecondaryOnly) {
@@ -272,7 +271,7 @@ TEST_F(AllNodesDown, QueryPrimaryPreferred) {
 
     Query query;
     query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(AllNodesDown, CommandPrimaryPreferred) {
@@ -285,7 +284,7 @@ TEST_F(AllNodesDown, QuerySecondaryPreferred) {
 
     Query query;
     query.readPref(mongo::ReadPreference::SecondaryPreferred, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(AllNodesDown, CommandSecondaryPreferred) {
@@ -298,7 +297,7 @@ TEST_F(AllNodesDown, QueryNearest) {
 
     Query query;
     query.readPref(mongo::ReadPreference::Nearest, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(AllNodesDown, CommandNearest) {
@@ -339,7 +338,7 @@ TEST_F(PrimaryDown, QueryPrimary) {
 
     Query query;
     query.readPref(mongo::ReadPreference::PrimaryOnly, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(PrimaryDown, CommandPrimary) {
@@ -354,7 +353,7 @@ TEST_F(PrimaryDown, QuerySecondaryOnly) {
     query.readPref(mongo::ReadPreference::SecondaryOnly, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -372,7 +371,7 @@ TEST_F(PrimaryDown, QueryPrimaryPreferred) {
     query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -390,7 +389,7 @@ TEST_F(PrimaryDown, QuerySecondaryPreferred) {
     query.readPref(mongo::ReadPreference::SecondaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -406,7 +405,7 @@ TEST_F(PrimaryDown, Nearest) {
 
     Query query;
     query.readPref(mongo::ReadPreference::Nearest, BSONArray());
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getSecondaries().front(), doc[HostField.name()].str());
 }
@@ -448,7 +447,7 @@ TEST_F(SecondaryDown, QueryPrimary) {
     query.readPref(mongo::ReadPreference::PrimaryOnly, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -463,7 +462,7 @@ TEST_F(SecondaryDown, QuerySecondaryOnly) {
 
     Query query;
     query.readPref(mongo::ReadPreference::SecondaryOnly, BSONArray());
-    ASSERT_THROWS(replConn.query(IdentityNS, query), AssertionException);
+    ASSERT_THROWS(replConn.query(NamespaceString(IdentityNS), query), AssertionException);
 }
 
 TEST_F(SecondaryDown, CommandSecondaryOnly) {
@@ -478,7 +477,7 @@ TEST_F(SecondaryDown, QueryPrimaryPreferred) {
     query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -495,7 +494,7 @@ TEST_F(SecondaryDown, QuerySecondaryPreferred) {
     query.readPref(mongo::ReadPreference::SecondaryPreferred, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -512,7 +511,7 @@ TEST_F(SecondaryDown, QueryNearest) {
     query.readPref(mongo::ReadPreference::Nearest, BSONArray());
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+    unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
     BSONObj doc = cursor->next();
     ASSERT_EQUALS(replSet->getPrimary(), doc[HostField.name()].str());
 }
@@ -658,7 +657,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldPinIfSameSettings) {
         query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
 
         // Note: IdentityNS contains the name of the server.
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         dest = doc[HostField.name()].str();
     }
@@ -666,7 +665,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldPinIfSameSettings) {
     {
         Query query;
         query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         const string newDest = doc[HostField.name()].str();
         ASSERT_EQUALS(dest, newDest);
@@ -686,7 +685,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfHostMarkedAsFailed) {
         query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
 
         // Note: IdentityNS contains the name of the server.
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         dest = doc[HostField.name()].str();
     }
@@ -700,7 +699,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfHostMarkedAsFailed) {
     {
         Query query;
         query.readPref(mongo::ReadPreference::PrimaryPreferred, BSONArray());
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         const string newDest = doc[HostField.name()].str();
         ASSERT_NOT_EQUALS(dest, newDest);
@@ -723,7 +722,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfDiffMode) {
         query.readPref(mongo::ReadPreference::SecondaryPreferred, BSONArray());
 
         // Note: IdentityNS contains the name of the server.
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         dest = doc[HostField.name()].str();
         ASSERT_NOT_EQUALS(dest, replSet->getPrimary());
@@ -732,7 +731,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfDiffMode) {
     {
         Query query;
         query.readPref(mongo::ReadPreference::SecondaryOnly, BSONArray());
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         const string newDest = doc[HostField.name()].str();
         ASSERT_NOT_EQUALS(dest, newDest);
@@ -757,7 +756,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfDiffTag) {
                                        << "sf")));
 
         // Note: IdentityNS contains the name of the server.
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         dest = doc[HostField.name()].str();
         ASSERT_NOT_EQUALS(dest, replSet->getPrimary());
@@ -767,7 +766,7 @@ TEST_F(TaggedFiveMemberRS, ConnShouldNotPinIfDiffTag) {
         Query query;
         vector<pair<string, string>> tagSet;
         query.readPref(mongo::ReadPreference::SecondaryPreferred, BSON_ARRAY(BSON("group" << 1)));
-        unique_ptr<DBClientCursor> cursor = replConn.query(IdentityNS, query);
+        unique_ptr<DBClientCursor> cursor = replConn.query(NamespaceString(IdentityNS), query);
         BSONObj doc = cursor->next();
         const string newDest = doc[HostField.name()].str();
         ASSERT_NOT_EQUALS(dest, newDest);
@@ -790,7 +789,7 @@ TEST_F(TaggedFiveMemberRS, SlaveConnReturnsSecConn) {
     mongo::DBClientConnection& secConn = replConn.slaveConn();
 
     // Note: IdentityNS contains the name of the server.
-    unique_ptr<DBClientCursor> cursor = secConn.query(IdentityNS, Query());
+    unique_ptr<DBClientCursor> cursor = secConn.query(NamespaceString(IdentityNS), Query());
     BSONObj doc = cursor->next();
     dest = doc[HostField.name()].str();
     ASSERT_NOT_EQUALS(dest, replSet->getPrimary());

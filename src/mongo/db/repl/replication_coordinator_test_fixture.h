@@ -65,13 +65,6 @@ public:
         const BSONObj& doc, Milliseconds millis = Milliseconds(0));
 
     /**
-     * Makes a command response with the given "doc" response, metadata and optional elapsed time
-     * "millis".
-     */
-    static executor::RemoteCommandResponse makeResponseStatus(
-        const BSONObj& doc, const BSONObj& metadata, Milliseconds millis = Milliseconds(0));
-
-    /**
      * Constructs a ReplSetConfig from the given BSON, or raises a test failure exception.
      */
     static ReplSetConfig assertMakeRSConfig(const BSONObj& configBSON);
@@ -238,7 +231,6 @@ protected:
     /**
      * Receive the heartbeat request from replication coordinator and reply with a response.
      */
-    void replyToReceivedHeartbeat();
     void replyToReceivedHeartbeatV1();
     /**
      * Consumes the network operation and responds if it's a heartbeat request.

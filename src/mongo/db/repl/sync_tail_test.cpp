@@ -1056,7 +1056,6 @@ TEST_F(SyncTailTest, MultiSyncApplySkipsIndexCreationOnNamespaceNotFoundDuringIn
         makeCreateIndexOplogEntry({Timestamp(Seconds(3), 0), 1LL}, badNss, "a_1", keyPattern);
     auto op3 = makeInsertDocumentOplogEntry({Timestamp(Seconds(4), 0), 1LL}, nss, doc3);
     MultiApplier::OperationPtrs ops = {&op0, &op1, &op2, &op3};
-    AtomicUInt32 fetchCount(0);
     WorkerMultikeyPathInfo pathInfo;
     ASSERT_OK(multiSyncApply(_opCtx.get(), &ops, &syncTail, &pathInfo));
     ASSERT_EQUALS(syncTail.numFetched, 0U);
@@ -1220,29 +1219,6 @@ TEST_F(IdempotencyTest, ParallelArrayError) {
     ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
     auto status = runOpsInitialSync(ops);
     ASSERT_EQ(status.code(), ErrorCodes::CannotIndexParallelArrays);
-}
-
-TEST_F(IdempotencyTest, IndexKeyTooLongError) {
-    ASSERT_OK(
-        ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_RECOVERING));
-
-    ASSERT_OK(runOpInitialSync(createCollection()));
-    ASSERT_OK(runOpInitialSync(insert(fromjson("{_id: 1}"))));
-
-    // Key size limit is 1024 for ephemeral storage engine, so two 800 byte fields cannot
-    // co-exist.
-    std::string longStr(800, 'a');
-    auto updateOp1 = update(1, BSON("$set" << BSON("x" << longStr)));
-    auto updateOp2 = update(1, fromjson("{$set: {x: 1}}"));
-    auto updateOp3 = update(1, BSON("$set" << BSON("y" << longStr)));
-    auto indexOp = buildIndex(fromjson("{x: 1, y: 1}"));
-
-    auto ops = {updateOp1, updateOp2, updateOp3, indexOp};
-    testOpsAreIdempotent(ops);
-
-    ASSERT_OK(ReplicationCoordinator::get(_opCtx.get())->setFollowerMode(MemberState::RS_PRIMARY));
-    auto status = runOpsInitialSync(ops);
-    ASSERT_EQ(status.code(), ErrorCodes::KeyTooLong);
 }
 
 TEST_F(IdempotencyTest, IndexWithDifferentOptions) {
@@ -1861,6 +1837,40 @@ TEST_F(SyncTailTxnTableTest, MultiApplyUpdatesTheTransactionTable) {
         client.findOne(NamespaceString::kSessionTransactionsTableNamespace.ns(),
                        BSON(SessionTxnRecord::kSessionIdFieldName << lsidNoTxn.toBSON()));
     ASSERT_TRUE(resultNoTxn.isEmpty());
+}
+
+TEST_F(IdempotencyTest, EmptyCappedNamespaceNotFound) {
+    // Create a BSON "emptycapped" command.
+    auto emptyCappedCmd = BSON("emptycapped" << nss.coll());
+
+    // Create an "emptycapped" oplog entry.
+    auto emptyCappedOp = makeCommandOplogEntry(nextOpTime(), nss, emptyCappedCmd);
+
+    // Ensure that NamespaceNotFound is acceptable.
+    ASSERT_OK(runOpInitialSync(emptyCappedOp));
+
+    AutoGetCollectionForReadCommand autoColl(_opCtx.get(), nss);
+
+    // Ensure that autoColl.getCollection() and autoColl.getDb() are both null.
+    ASSERT_FALSE(autoColl.getCollection());
+    ASSERT_FALSE(autoColl.getDb());
+}
+
+TEST_F(IdempotencyTest, ConvertToCappedNamespaceNotFound) {
+    // Create a BSON "convertToCapped" command.
+    auto convertToCappedCmd = BSON("convertToCapped" << nss.coll());
+
+    // Create a "convertToCapped" oplog entry.
+    auto convertToCappedOp = makeCommandOplogEntry(nextOpTime(), nss, convertToCappedCmd);
+
+    // Ensure that NamespaceNotFound is acceptable.
+    ASSERT_OK(runOpInitialSync(convertToCappedOp));
+
+    AutoGetCollectionForReadCommand autoColl(_opCtx.get(), nss);
+
+    // Ensure that autoColl.getCollection() and autoColl.getDb() are both null.
+    ASSERT_FALSE(autoColl.getCollection());
+    ASSERT_FALSE(autoColl.getDb());
 }
 
 }  // namespace

@@ -28,7 +28,7 @@
 
 #include "mongo/platform/basic.h"
 
-#include "mongo/client/dbclientcursor.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/db/catalog/collection.h"
 #include "mongo/db/catalog/database_holder.h"
 #include "mongo/db/client.h"
@@ -75,7 +75,8 @@ private:
 
     BSONArray docs(OperationContext* opCtx) const {
         DBDirectClient client(opCtx);
-        unique_ptr<DBClientCursor> cursor = client.query(ns, Query().hint(BSON("_id" << 1)));
+        unique_ptr<DBClientCursor> cursor =
+            client.query(NamespaceString(ns), Query().hint(BSON("_id" << 1)));
         BSONArrayBuilder bab;
         while (cursor->more()) {
             bab << cursor->next();

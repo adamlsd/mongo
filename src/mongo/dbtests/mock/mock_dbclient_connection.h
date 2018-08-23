@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-#include "mongo/client/dbclientinterface.h"
+#include "mongo/client/dbclient_connection.h"
 #include "mongo/dbtests/mock/mock_remote_db_server.h"
 
 namespace mongo {
@@ -57,71 +57,69 @@ public:
     //
     // DBClientBase methods
     //
+    using DBClientBase::query;
 
     bool connect(const char* hostName, StringData applicationName, std::string& errmsg);
 
-    inline bool connect(const HostAndPort& host, StringData applicationName, std::string& errmsg) {
+    inline bool connect(const HostAndPort& host,
+                        StringData applicationName,
+                        std::string& errmsg) override {
         return connect(host.toString().c_str(), applicationName, errmsg);
     }
 
     using DBClientBase::runCommandWithTarget;
     std::pair<rpc::UniqueReply, DBClientBase*> runCommandWithTarget(OpMsgRequest request) override;
 
-    std::unique_ptr<mongo::DBClientCursor> query(const std::string& ns,
+    std::unique_ptr<mongo::DBClientCursor> query(const NamespaceStringOrUUID& nsOrUuid,
                                                  mongo::Query query = mongo::Query(),
                                                  int nToReturn = 0,
                                                  int nToSkip = 0,
                                                  const mongo::BSONObj* fieldsToReturn = 0,
                                                  int queryOptions = 0,
-                                                 int batchSize = 0);
+                                                 int batchSize = 0) override;
 
-    uint64_t getSockCreationMicroSec() const;
+    uint64_t getSockCreationMicroSec() const override;
 
-    virtual void insert(const std::string& ns, BSONObj obj, int flags = 0);
+    void insert(const std::string& ns, BSONObj obj, int flags = 0) override;
 
-    virtual void insert(const std::string& ns, const std::vector<BSONObj>& objList, int flags = 0);
+    void insert(const std::string& ns, const std::vector<BSONObj>& objList, int flags = 0) override;
 
-    virtual void remove(const std::string& ns, Query query, int flags = 0);
+    void remove(const std::string& ns, Query query, int flags = 0) override;
 
     //
     // Getters
     //
 
-    mongo::ConnectionString::ConnectionType type() const;
-    bool isFailed() const;
-    double getSoTimeout() const;
-    std::string getServerAddress() const;
-    std::string toString() const;
+    mongo::ConnectionString::ConnectionType type() const override;
+    bool isFailed() const override;
+    double getSoTimeout() const override;
+    std::string getServerAddress() const override;
+    std::string toString() const override;
 
     //
     // Unsupported methods (defined to get rid of virtual function was hidden error)
     //
-    unsigned long long query(stdx::function<void(const mongo::BSONObj&)> f,
-                             const std::string& ns,
-                             mongo::Query query,
-                             const mongo::BSONObj* fieldsToReturn = 0,
-                             int queryOptions = 0);
 
     unsigned long long query(stdx::function<void(mongo::DBClientCursorBatchIterator&)> f,
-                             const std::string& ns,
+                             const NamespaceStringOrUUID& nsOrUuid,
                              mongo::Query query,
                              const mongo::BSONObj* fieldsToReturn = 0,
-                             int queryOptions = 0);
+                             int queryOptions = 0) override;
 
     //
     // Unsupported methods (these are pure virtuals in the base class)
     //
 
-    void killCursor(const NamespaceString& ns, long long cursorID);
+    void killCursor(const NamespaceString& ns, long long cursorID) override;
     bool call(mongo::Message& toSend,
               mongo::Message& response,
               bool assertOk,
-              std::string* actualServer);
-    void say(mongo::Message& toSend, bool isRetry = false, std::string* actualServer = 0);
-    bool lazySupported() const;
+              std::string* actualServer) override;
+    void say(mongo::Message& toSend, bool isRetry = false, std::string* actualServer = 0) override;
+    bool lazySupported() const override;
 
 private:
-    void checkConnection();
+    void checkConnection() override;
 
     MockRemoteDBServer::InstanceID _remoteServerInstanceID;
     MockRemoteDBServer* _remoteServer;

@@ -282,6 +282,13 @@ add_option('enable-free-mon',
     type='choice',
 )
 
+add_option('enable-http-client',
+    choices=["auto", "on", "off"],
+    default="auto",
+    help='Enable support for HTTP client requests (required WinHTTP or cURL)',
+    type='choice',
+)
+
 add_option('use-sasl-client',
     help='Support SASL authentication in the client library',
     nargs=0,
@@ -727,10 +734,6 @@ env_vars.Add('MONGO_BUILDINFO_ENVIRONMENT_DATA',
     help='Sets the info returned from the buildInfo command and --version command-line flag',
     default=mongo_generators.default_buildinfo_environment_data())
 
-# Exposed to be able to cross compile Android/*nix from Windows without ending up with the .exe suffix.
-env_vars.Add('PROGSUFFIX',
-    help='Sets the suffix for built executable files')
-
 env_vars.Add('MONGO_DIST_SRC_PREFIX',
     help='Sets the prefix for files in the source distribution archive',
     converter=variable_distsrc_converter,
@@ -772,6 +775,10 @@ env_vars.Add('MSVC_VERSION',
 env_vars.Add('OBJCOPY',
     help='Sets the path to objcopy',
     default=WhereIs('objcopy'))
+
+# Exposed to be able to cross compile Android/*nix from Windows without ending up with the .exe suffix.
+env_vars.Add('PROGSUFFIX',
+    help='Sets the suffix for built executable files')
 
 env_vars.Add('RPATH',
     help='Set the RPATH for dynamic libraries and executables',
@@ -1049,13 +1056,14 @@ elif endian == "big":
 # NOTE: Remember to add a trailing comma to form any required one
 # element tuples, or your configure checks will fail in strange ways.
 processor_macros = {
-    'arm'     : { 'endian': 'little', 'defines': ('__arm__',) },
-    'aarch64' : { 'endian': 'little', 'defines': ('__arm64__', '__aarch64__')},
-    'i386'    : { 'endian': 'little', 'defines': ('__i386', '_M_IX86')},
-    'ppc64le' : { 'endian': 'little', 'defines': ('__powerpc64__',)},
-    's390x'   : { 'endian': 'big',    'defines': ('__s390x__',)},
-    'sparc'   : { 'endian': 'big',    'defines': ('__sparc',)},
-    'x86_64'  : { 'endian': 'little', 'defines': ('__x86_64', '_M_AMD64')},
+    'arm'        : { 'endian': 'little', 'defines': ('__arm__',) },
+    'aarch64'    : { 'endian': 'little', 'defines': ('__arm64__', '__aarch64__')},
+    'i386'       : { 'endian': 'little', 'defines': ('__i386', '_M_IX86')},
+    'ppc64le'    : { 'endian': 'little', 'defines': ('__powerpc64__',)},
+    's390x'      : { 'endian': 'big',    'defines': ('__s390x__',)},
+    'sparc'      : { 'endian': 'big',    'defines': ('__sparc',)},
+    'x86_64'     : { 'endian': 'little', 'defines': ('__x86_64', '_M_AMD64')},
+    'emscripten' : { 'endian': 'little', 'defines': ('__EMSCRIPTEN__', )},
 }
 
 def CheckForProcessor(context, which_arch):
@@ -1109,6 +1117,7 @@ os_macros = {
     "macOS": "defined(__APPLE__) && (TARGET_OS_OSX || (TARGET_OS_MAC && !TARGET_OS_IPHONE))",
     "linux": "defined(__linux__)",
     "android": "defined(__ANDROID__)",
+    "emscripten": "defined(__EMSCRIPTEN__)",
 }
 
 def CheckForOS(context, which_os):
@@ -1698,6 +1707,29 @@ if env.ToolchainIs('msvc'):
 
 if env.TargetOSIs('posix'):
 
+    # On linux, C code compiled with gcc/clang -std=c11 causes
+    # __STRICT_ANSI__ to be set, and that drops out all of the feature
+    # test definitions, resulting in confusing errors when we run C
+    # language configure checks and expect to be able to find newer
+    # POSIX things. Explicitly enabling _XOPEN_SOURCE fixes that, and
+    # should be mostly harmless as on Linux, these macros are
+    # cumulative. The C++ compiler already sets _XOPEN_SOURCE, and,
+    # notably, setting it again does not disable any other feature
+    # test macros, so this is safe to do. Other platforms like macOS
+    # and BSD have crazy rules, so don't try this there.
+    #
+    # Furthermore, as both C++ compilers appears to unconditioanlly
+    # define _GNU_SOURCE (because libstdc++ requires it), it seems
+    # prudent to explicitly add that too, so that C language checks
+    # see a consistent set of definitions.
+    if env.TargetOSIs('linux'):
+        env.AppendUnique(
+            CPPDEFINES=[
+                ('_XOPEN_SOURCE', 700),
+                '_GNU_SOURCE',
+            ],
+        )
+
     # Everything on OS X is position independent by default. Solaris doesn't support PIE.
     if not env.TargetOSIs('darwin', 'solaris'):
         if get_option('runtime-hardening') == "on":
@@ -1711,7 +1743,7 @@ if env.TargetOSIs('posix'):
     # -Winvalid-pch Warn if a precompiled header (see Precompiled Headers) is found in the search path but can't be used.
     env.Append( CCFLAGS=["-fno-omit-frame-pointer",
                          "-fno-strict-aliasing",
-                         "-ggdb",
+                         "-ggdb" if not env.TargetOSIs('emscripten') else "-g",
                          "-pthread",
                          "-Wall",
                          "-Wsign-compare",
@@ -1735,7 +1767,8 @@ if env.TargetOSIs('posix'):
     # SERVER-9761: Ensure early detection of missing symbols in dependent libraries at program
     # startup.
     if env.TargetOSIs('darwin'):
-        env.Append( LINKFLAGS=["-Wl,-bind_at_load"] )
+        if env.TargetOSIs('macOS'):
+            env.Append( LINKFLAGS=["-Wl,-bind_at_load"] )
     else:
         env.Append( LINKFLAGS=["-Wl,-z,now"] )
         env.Append( LINKFLAGS=["-rdynamic"] )
@@ -1834,11 +1867,13 @@ env['MONGO_MODULES'] = [m.name for m in mongo_modules]
 # --- check system ---
 ssl_provider = None
 free_monitoring = get_option("enable-free-mon")
+http_client = get_option("enable-http-client")
 
 def doConfigure(myenv):
     global wiredtiger
     global ssl_provider
     global free_monitoring
+    global http_client
 
     # Check that the compilers work.
     #
@@ -2082,6 +2117,11 @@ def doConfigure(myenv):
         # As of clang-3.4, this warning appears in v8, and gets escalated to an error.
         AddToCCFLAGSIfSupported(myenv, "-Wno-tautological-constant-out-of-range-compare")
 
+        # As of clang in Android NDK 17, these warnings appears in boost and/or ICU, and get escalated to errors
+        AddToCCFLAGSIfSupported(myenv, "-Wno-tautological-constant-compare")
+        AddToCCFLAGSIfSupported(myenv, "-Wno-tautological-unsigned-zero-compare")
+        AddToCCFLAGSIfSupported(myenv, "-Wno-tautological-unsigned-enum-zero-compare")
+
         # New in clang-3.4, trips up things mostly in third_party, but in a few places in the
         # primary mongo sources as well.
         AddToCCFLAGSIfSupported(myenv, "-Wno-unused-const-variable")
@@ -2134,6 +2174,10 @@ def doConfigure(myenv):
         # This warning was added in clang-5 and incorrectly flags our implementation of
         # exceptionToStatus(). See https://bugs.llvm.org/show_bug.cgi?id=34804
         AddToCCFLAGSIfSupported(myenv, "-Wno-exceptions")
+
+        # These warnings begin in gcc-8.2 and we should get rid of these disables at some point.
+        AddToCCFLAGSIfSupported(env, '-Wno-format-truncation')
+        AddToCXXFLAGSIfSupported(env, '-Wno-class-memaccess')
 
 
         # Check if we can set "-Wnon-virtual-dtor" when "-Werror" is set. The only time we can't set it is on
@@ -3032,22 +3076,49 @@ def doConfigure(myenv):
             if not addOpenSslLibraryToDistArchive(extra_file):
                 print("WARNING: Cannot find SSL library '%s'" % extra_file)
 
+    def checkHTTPLib(required=False):
+        # WinHTTP available on Windows
+        if env.TargetOSIs("windows"):
+            return True
 
+        # libcurl on all other platforms
+        if conf.CheckLibWithHeader(
+            "curl",
+            ["curl/curl.h"], "C",
+            "curl_global_init(0);",
+            autoadd=False):
+            return True
 
+        if required:
+            env.ConfError("Could not find <curl/curl.h> and curl lib")
+
+        return False
+
+    # Resolve --enable-free-mon
     if free_monitoring == "auto":
         if "enterprise" not in env['MONGO_MODULES']:
             free_monitoring = "on"
         else:
             free_monitoring = "off"
 
-    if not env.TargetOSIs("windows") \
-        and free_monitoring == "on" \
-        and not conf.CheckLibWithHeader(
-        "curl",
-        ["curl/curl.h"], "C",
-        "curl_global_init(0);",
-        autoadd=False):
-        env.ConfError("Could not find <curl/curl.h> and curl lib")
+    if free_monitoring == "on":
+        checkHTTPLib(required=True)
+
+    # Resolve --enable-http-client
+    if http_client == "auto":
+        if checkHTTPLib():
+            http_client = "on"
+        else:
+            print("Disabling http-client as libcurl was not found")
+            http_client = "off"
+    elif http_client == "on":
+        checkHTTPLib(required=True)
+
+    # Sanity check.
+    # We know that http_client was explicitly disabled here,
+    # because the free_monitoring check would have failed if no http lib were available.
+    if (free_monitoring == "on") and (http_client == "off"):
+        env.ConfError("FreeMonitoring requires an HTTP client which has been explicitly disabled")
 
     if use_system_version_of_library("pcre"):
         conf.FindSysLibDep("pcre", ["pcre"])
@@ -3459,7 +3530,7 @@ def getSystemInstallName():
     # to the translation dictionary below.
     os_name_translations = {
         'windows': 'win32',
-        'macOS': 'osx'
+        'macOS': 'macos'
     }
     os_name = env.GetTargetOSName()
     os_name = os_name_translations.get(os_name, os_name)
@@ -3520,6 +3591,7 @@ Export("mobile_se")
 Export("endian")
 Export("ssl_provider")
 Export("free_monitoring")
+Export("http_client")
 
 def injectMongoIncludePaths(thisEnv):
     thisEnv.AppendUnique(CPPPATH=['$BUILD_DIR'])

@@ -33,8 +33,8 @@
 #include "mongo/s/client/parallel.h"
 
 #include "mongo/client/constants.h"
+#include "mongo/client/dbclient_cursor.h"
 #include "mongo/client/dbclient_rs.h"
-#include "mongo/client/dbclientcursor.h"
 #include "mongo/client/replica_set_monitor.h"
 #include "mongo/db/bson/dotted_path_support.h"
 #include "mongo/db/query/query_request.h"
@@ -546,7 +546,7 @@ void ParallelSortClusteredCursor::startInit(OperationContext* opCtx) {
 
                     state->cursor.reset(new DBClientCursor(
                         state->conn->get(),
-                        ns,
+                        NamespaceString(ns),
                         _qSpec.query(),
                         isCommand() ? 1 : 0,  // nToReturn (0 if query indicates multi)
                         0,                    // nToSkip
@@ -573,7 +573,7 @@ void ParallelSortClusteredCursor::startInit(OperationContext* opCtx) {
 
                     state->cursor.reset(new DBClientCursor(
                         state->conn->get(),
-                        ns,
+                        NamespaceString(ns),
                         _qSpec.query(),
                         _qSpec.ntoreturn(),  // nToReturn
                         _qSpec.ntoskip(),    // nToSkip
@@ -612,12 +612,8 @@ void ParallelSortClusteredCursor::startInit(OperationContext* opCtx) {
             // Our version isn't compatible with the current version anymore on at least one shard,
             // need to retry immediately
             NamespaceString staleNS(e->getNss());
-
-            // For legacy reasons, this may not be set in the exception :-(
-            if (staleNS.size() == 0)
-                staleNS = nss;  // ns is the *versioned* namespace, be careful of this
-
             _markStaleNS(staleNS, e);
+
             Grid::get(opCtx)->catalogCache()->invalidateShardedCollection(staleNS);
 
             LOG(1) << "stale config of ns " << staleNS << " during initialization, will retry"
@@ -767,10 +763,6 @@ void ParallelSortClusteredCursor::finishInit(OperationContext* opCtx) {
             retry = true;
 
             std::string staleNS = e->getNss().ns();
-
-            // For legacy reasons, ns may not always be set in exception :-(
-            if (staleNS.size() == 0)
-                staleNS = ns;  // ns is versioned namespace, be careful of this
 
             // Will retry all at once
             staleNSExceptions.emplace(staleNS, e);
@@ -1010,7 +1002,7 @@ void ParallelSortClusteredCursor::_oldInit() {
             if (!_cursors[i].get())
                 _cursors[i].reset(
                     new DBClientCursor(conns[i]->get(),
-                                       _ns,
+                                       NamespaceString(_ns),
                                        _query,
                                        0,                                 // nToReturn
                                        0,                                 // nToSkip

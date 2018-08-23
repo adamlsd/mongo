@@ -37,11 +37,11 @@
 #include "mongo/db/views/resolved_view.h"
 #include "mongo/rpc/get_status_from_command_result.h"
 #include "mongo/s/catalog_cache.h"
-#include "mongo/s/commands/cluster_aggregate.h"
 #include "mongo/s/commands/cluster_commands_helpers.h"
 #include "mongo/s/commands/cluster_explain.h"
 #include "mongo/s/commands/strategy.h"
 #include "mongo/s/grid.h"
+#include "mongo/s/query/cluster_aggregate.h"
 #include "mongo/util/timer.h"
 
 namespace mongo {
@@ -214,7 +214,7 @@ public:
     Status explain(OperationContext* opCtx,
                    const OpMsgRequest& request,
                    ExplainOptions::Verbosity verbosity,
-                   BSONObjBuilder* out) const override {
+                   rpc::ReplyBuilderInterface* result) const override {
         std::string dbname = request.getDatabase().toString();
         const BSONObj& cmdObj = request.body;
         const NamespaceString nss(parseNs(dbname, cmdObj));
@@ -282,8 +282,9 @@ public:
             nsStruct.requestedNss = nss;
             nsStruct.executionNss = resolvedAggRequest.getNamespaceString();
 
+            auto bodyBuilder = result->getBodyBuilder();
             return ClusterAggregate::runAggregate(
-                opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, out);
+                opCtx, nsStruct, resolvedAggRequest, resolvedAggCmd, &bodyBuilder);
         }
 
         long long millisElapsed = timer.millis();
@@ -291,12 +292,13 @@ public:
         const char* mongosStageName =
             ClusterExplain::getStageNameForReadOp(shardResponses.size(), cmdObj);
 
+        auto bodyBuilder = result->getBodyBuilder();
         return ClusterExplain::buildExplainResult(
             opCtx,
             ClusterExplain::downconvert(opCtx, shardResponses),
             mongosStageName,
             millisElapsed,
-            out);
+            &bodyBuilder);
     }
 
 private:

@@ -46,6 +46,14 @@
 
 namespace mongo {
 
+namespace {
+// TODO SERVER-36385: Completely remove the key size check in 4.4
+bool isLargeKeyDisallowed() {
+    return serverGlobalParams.featureCompatibility.getVersion() ==
+        ServerGlobalParams::FeatureCompatibility::Version::kFullyDowngradedTo40;
+}
+}
+
 Status RecordStoreValidateAdaptor::validate(const RecordId& recordId,
                                             const RecordData& record,
                                             size_t* dataSize) {
@@ -82,27 +90,30 @@ Status RecordStoreValidateAdaptor::validate(const RecordId& recordId,
         }
 
         BSONObjSet documentKeySet = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
-        // There's no need to compute the prefixes of the indexed fields that cause the
-        // index to be multikey when validating the index keys.
-        MultikeyPaths* multikeyPaths = nullptr;
+        BSONObjSet multikeyMetadataKeys = SimpleBSONObjComparator::kInstance.makeBSONObjSet();
+        MultikeyPaths multikeyPaths;
         iam->getKeys(recordBson,
                      IndexAccessMethod::GetKeysMode::kEnforceConstraints,
                      &documentKeySet,
-                     multikeyPaths);
+                     &multikeyMetadataKeys,
+                     &multikeyPaths);
 
-        if (!descriptor->isMultikey(_opCtx) && documentKeySet.size() > 1) {
+        if (!descriptor->isMultikey(_opCtx) &&
+            iam->shouldMarkIndexAsMultikey(documentKeySet, multikeyMetadataKeys, multikeyPaths)) {
             std::string msg = str::stream() << "Index " << descriptor->indexName()
-                                            << " is not multi-key but has more than one"
-                                            << " key in document " << recordId;
+                                            << " is not multi-key, but a multikey path "
+                                            << " is present in document " << recordId;
             curRecordResults.errors.push_back(msg);
             curRecordResults.valid = false;
         }
 
         const auto& pattern = descriptor->keyPattern();
         const Ordering ord = Ordering::make(pattern);
+        bool largeKeyDisallowed = isLargeKeyDisallowed();
 
         for (const auto& key : documentKeySet) {
-            if (key.objsize() >= static_cast<int64_t>(KeyString::TypeBits::kMaxKeyBytes)) {
+            if (largeKeyDisallowed &&
+                key.objsize() >= static_cast<int64_t>(KeyString::TypeBits::kMaxKeyBytes)) {
                 // Index keys >= 1024 bytes are not indexed.
                 _indexConsistency->addLongIndexKey(indexNumber);
                 continue;
@@ -185,7 +196,7 @@ void RecordStoreValidateAdaptor::traverseRecordStore(RecordStore* recordStore,
         Status status = validate(record->id, record->data, &validatedSize);
 
         // Checks to ensure isInRecordIdOrder() is being used properly.
-        if (prevRecordId.isNormal()) {
+        if (prevRecordId.isValid()) {
             invariant(prevRecordId < record->id);
         }
 
@@ -222,7 +233,7 @@ void RecordStoreValidateAdaptor::validateIndexKeyCount(IndexDescriptor* idx,
     auto totalKeys = numLongKeys + numIndexedKeys;
 
     bool hasTooFewKeys = false;
-    bool noErrorOnTooFewKeys = !failIndexKeyTooLong.load() && (_level != kValidateFull);
+    bool noErrorOnTooFewKeys = !failIndexKeyTooLongParam() && (_level != kValidateFull);
 
     if (idx->isIdIndex() && totalKeys != numRecs) {
         hasTooFewKeys = totalKeys < numRecs ? true : hasTooFewKeys;
@@ -269,4 +280,4 @@ void RecordStoreValidateAdaptor::validateIndexKeyCount(IndexDescriptor* idx,
         results.warnings.push_back(warning);
     }
 }
-}  // namespace
+}  // namespace mongo

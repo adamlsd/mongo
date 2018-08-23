@@ -1168,6 +1168,31 @@ var authCommandsLib = {
           ]
         },
         {
+          testname: "aggregate_planCacheStats",
+          command: {aggregate: "foo", pipeline: [{$planCacheStats: {}}], cursor: {}},
+          skipSharded: true,
+          setup: function(db) {
+              db.createCollection("foo");
+          },
+          teardown: function(db) {
+              db.foo.drop();
+          },
+          testcases: [
+              {
+                runOnDb: firstDbName,
+                roles: roles_readDbAdmin,
+                privileges:
+                    [{resource: {db: firstDbName, collection: "foo"}, actions: ["planCacheRead"]}],
+              },
+              {
+                runOnDb: secondDbName,
+                roles: roles_readDbAdminAny,
+                privileges:
+                    [{resource: {db: secondDbName, collection: "foo"}, actions: ["planCacheRead"]}],
+              },
+          ]
+        },
+        {
           testname: "aggregate_currentOp_allUsers_true",
           command: {aggregate: 1, pipeline: [{$currentOp: {allUsers: true}}], cursor: {}},
           testcases: [
@@ -2288,26 +2313,6 @@ var authCommandsLib = {
                     actions: ["convertToCapped"]
                 }]
               }
-          ]
-        },
-        {
-          testname: "copydb",
-          command: {copydb: 1, fromdb: firstDbName, todb: secondDbName},
-          skipSharded: true,  // Does not work sharded due to SERVER-13080
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: {readWriteAnyDatabase: 1, root: 1, __system: 1},
-                privileges: [
-                    {resource: {db: firstDbName, collection: ""}, actions: ["find"]},
-                    {resource: {db: firstDbName, collection: "system.js"}, actions: ["find"]},
-                    {
-                      resource: {db: secondDbName, collection: ""},
-                      actions: ["insert", "createIndex"]
-                    },
-                    {resource: {db: secondDbName, collection: "system.js"}, actions: ["insert"]},
-                ]
-              },
           ]
         },
         {
@@ -3563,26 +3568,6 @@ var authCommandsLib = {
               },
               {runOnDb: firstDbName, roles: {}},
               {runOnDb: secondDbName, roles: {}}
-          ]
-        },
-        {
-          testname: "eval",
-          command: {
-              $eval: function() {
-                  print("noop");
-              }
-          },
-          testcases: [
-              {
-                runOnDb: firstDbName,
-                roles: {__system: 1},
-                privileges: [{resource: {anyResource: true}, actions: ["anyAction"]}]
-              },
-              {
-                runOnDb: secondDbName,
-                roles: {__system: 1},
-                privileges: [{resource: {anyResource: true}, actions: ["anyAction"]}]
-              }
           ]
         },
         {
@@ -5117,6 +5102,7 @@ var authCommandsLib = {
         {
           testname: "reIndex",
           command: {reIndex: "x"},
+          skipSharded: true,
           setup: function(db) {
               db.x.save({});
           },
@@ -5153,57 +5139,6 @@ var authCommandsLib = {
           ]
         },
         {
-          testname: "repairDatabase",
-          command: {repairDatabase: 1},
-          skipSharded: true,
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles:
-                    {dbAdminAnyDatabase: 1, hostManager: 1, clusterAdmin: 1, root: 1, __system: 1},
-                privileges:
-                    [{resource: {db: adminDbName, collection: ""}, actions: ["repairDatabase"]}]
-              },
-              {
-                runOnDb: firstDbName,
-                roles: {
-                    dbAdmin: 1,
-                    dbAdminAnyDatabase: 1,
-                    hostManager: 1,
-                    clusterAdmin: 1,
-                    dbOwner: 1,
-                    root: 1,
-                    __system: 1
-                },
-                privileges:
-                    [{resource: {db: firstDbName, collection: ""}, actions: ["repairDatabase"]}]
-              },
-              {
-                runOnDb: secondDbName,
-                roles:
-                    {dbAdminAnyDatabase: 1, hostManager: 1, clusterAdmin: 1, root: 1, __system: 1},
-                privileges: [
-                    {resource: {db: secondDbName, collection: ""}, actions: ["repairDatabase"]}
-                ]
-              }
-          ]
-        },
-        {
-          testname: "replSetElect",
-          command: {replSetElect: 1},
-          skipSharded: true,
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: {__system: 1},
-                privileges: [{resource: {cluster: true}, actions: ["internal"]}],
-                expectFail: true
-              },
-              {runOnDb: firstDbName, roles: {}},
-              {runOnDb: secondDbName, roles: {}}
-          ]
-        },
-        {
           testname: "replSetFreeze",
           command: {replSetFreeze: "x"},
           skipSharded: true,
@@ -5212,21 +5147,6 @@ var authCommandsLib = {
                 runOnDb: adminDbName,
                 roles: roles_clusterManager,
                 privileges: [{resource: {cluster: true}, actions: ["replSetStateChange"]}],
-                expectFail: true
-              },
-              {runOnDb: firstDbName, roles: {}},
-              {runOnDb: secondDbName, roles: {}}
-          ]
-        },
-        {
-          testname: "replSetFresh",
-          command: {replSetFresh: "x"},
-          skipSharded: true,
-          testcases: [
-              {
-                runOnDb: adminDbName,
-                roles: {__system: 1},
-                privileges: [{resource: {cluster: true}, actions: ["internal"]}],
                 expectFail: true
               },
               {runOnDb: firstDbName, roles: {}},

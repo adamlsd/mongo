@@ -6,6 +6,7 @@
     'use strict';
 
     load('jstests/libs/profiler.js');
+    load('jstests/sharding/libs/last_stable_mongos_commands.js');
     const dbName = "test";
     const collName = "foo";
     const ns = dbName + "." + collName;
@@ -50,6 +51,7 @@
         _hashBSONElement: {skip: "executes locally on mongos (not sent to any remote node)"},
         _isSelf: {skip: "executes locally on mongos (not sent to any remote node)"},
         _mergeAuthzCollections: {skip: "always targets the config server"},
+        abortTransaction: {skip: "unversioned and uses special targetting rules"},
         addShard: {skip: "not on a user database"},
         addShardToZone: {skip: "not on a user database"},
         aggregate: {
@@ -88,6 +90,7 @@
                 assert(mongosConn.getDB(dbName).getCollection(collName).drop());
             }
         },
+        commitTransaction: {skip: "unversioned and uses special targetting rules"},
         compact: {skip: "not allowed through mongos"},
         configureFailPoint: {skip: "executes locally on mongos (not sent to any remote node)"},
         connPoolStats: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -105,7 +108,6 @@
                 assert(mongosConn.getDB(dbName).getCollection(collName).drop());
             }
         },
-        copydb: {skip: "not allowed through mongos"},
         count: {
             sendsDbVersion: true,
             sendsShardVersion: true,
@@ -197,17 +199,6 @@
         echo: {skip: "does not forward command to primary shard"},
         enableSharding: {skip: "does not forward command to primary shard"},
         endSessions: {skip: "goes through the cluster write path"},
-        eval: {
-            sendsDbVersion: false,
-            // It is a known bug that eval does not send shardVersion (SERVER-33357).
-            sendsShardVersion: false,
-            command: {
-                eval: function(collName) {
-                    const doc = db[collName].findOne();
-                },
-                args: [collName]
-            }
-        },
         explain: {skip: "TODO SERVER-31226"},
         features: {skip: "executes locally on mongos (not sent to any remote node)"},
         filemd5: {
@@ -333,7 +324,14 @@
             sendsDbVersion: false,
             // Uses connection versioning.
             sendsShardVersion: false,
-            command: {planCacheListPlans: collName}
+            setUp: function(mongosConn) {
+                // Expects the collection to exist, and doesn't implicitly create it.
+                assert.commandWorked(mongosConn.getDB(dbName).runCommand({create: collName}));
+            },
+            command: {planCacheListPlans: collName, query: {_id: "A"}},
+            cleanUp: function(mongosConn) {
+                assert(mongosConn.getDB(dbName).getCollection(collName).drop());
+            }
         },
         planCacheListQueryShapes: {
             sendsDbVersion: false,
@@ -355,18 +353,6 @@
             }
         },
         profile: {skip: "not supported in mongos"},
-        reIndex: {
-            sendsDbVersion: true,
-            sendsShardVersion: true,
-            setUp: function(mongosConn) {
-                // Expects the collection to exist, and doesn't implicitly create it.
-                assert.commandWorked(mongosConn.getDB(dbName).runCommand({create: collName}));
-            },
-            command: {reIndex: collName},
-            cleanUp: function(mongosConn) {
-                assert(mongosConn.getDB(dbName).getCollection(collName).drop());
-            }
-        },
         reapLogicalSessionCacheNow: {skip: "is a no-op on mongos"},
         refreshLogicalSessionCacheNow: {skip: "goes through the cluster write path"},
         refreshSessions: {skip: "executes locally on mongos (not sent to any remote node)"},
@@ -440,6 +426,10 @@
         },
         whatsmyuri: {skip: "executes locally on mongos (not sent to any remote node)"},
     };
+
+    commandsRemovedFromMongosIn42.forEach(function(cmd) {
+        testCases[cmd] = {skip: "must define test coverage for 4.0 backwards compatibility"};
+    });
 
     class AllCommandsTestRunner {
         constructor() {
@@ -557,6 +547,17 @@
             // After iterating through all the existing commands, ensure there were no additional
             // test cases that did not correspond to any mongos command.
             for (let key of Object.keys(testCases)) {
+                // We have defined real test cases for commands added in 4.2 so that the test cases
+                // are exercised in the regular suites, but because these test cases can't run in
+                // the last stable suite, we skip processing them here to avoid failing the below
+                // assertion. We have defined "skip" test cases for commands removed in 4.2 so the
+                // test case is defined in last stable suites (in which these commands still exist
+                // on the mongos), but these test cases won't be run in regular suites, so we skip
+                // processing them below as well.
+                if (commandsAddedToMongosIn42.includes(key) ||
+                    commandsRemovedFromMongosIn42.includes(key)) {
+                    continue;
+                }
                 assert(testCases[key].validated || testCases[key].conditional,
                        "you defined a test case for a command '" + key +
                            "' that does not exist on mongos: " + tojson(testCases[key]));

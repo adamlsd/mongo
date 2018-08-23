@@ -45,9 +45,11 @@
 #include "mongo/db/pipeline/accumulator.h"
 #include "mongo/db/pipeline/document.h"
 #include "mongo/db/pipeline/document_source.h"
+#include "mongo/db/pipeline/document_source_exchange.h"
 #include "mongo/db/pipeline/expression.h"
 #include "mongo/db/pipeline/expression_context.h"
 #include "mongo/db/pipeline/lite_parsed_pipeline.h"
+#include "mongo/db/pipeline/mongod_process_interface.h"
 #include "mongo/db/pipeline/pipeline.h"
 #include "mongo/db/pipeline/pipeline_d.h"
 #include "mongo/db/query/collation/collator_factory_interface.h"
@@ -60,8 +62,8 @@
 #include "mongo/db/repl/read_concern_args.h"
 #include "mongo/db/s/sharding_state.h"
 #include "mongo/db/service_context.h"
-#include "mongo/db/session_catalog.h"
 #include "mongo/db/storage/storage_options.h"
+#include "mongo/db/transaction_participant.h"
 #include "mongo/db/views/view.h"
 #include "mongo/db/views/view_catalog.h"
 #include "mongo/stdx/memory.h"
@@ -88,14 +90,51 @@ namespace {
  */
 bool handleCursorCommand(OperationContext* opCtx,
                          const NamespaceString& nsForCursor,
-                         ClientCursor* cursor,
+                         std::vector<ClientCursor*> cursors,
                          const AggregationRequest& request,
-                         BSONObjBuilder& result) {
-    invariant(cursor);
-
+                         rpc::ReplyBuilderInterface* result) {
+    invariant(!cursors.empty());
     long long batchSize = request.getBatchSize();
 
-    CursorResponseBuilder responseBuilder(true, &result);
+    if (cursors.size() > 1) {
+
+        uassert(
+            ErrorCodes::BadValue, "the exchange initial batch size must be zero", batchSize == 0);
+
+        BSONArrayBuilder cursorsBuilder;
+        for (size_t idx = 0; idx < cursors.size(); ++idx) {
+            invariant(cursors[idx]);
+
+            BSONObjBuilder cursorResult;
+            appendCursorResponseObject(
+                cursors[idx]->cursorid(), nsForCursor.ns(), BSONArray(), &cursorResult);
+            cursorResult.appendBool("ok", 1);
+
+            cursorsBuilder.append(cursorResult.obj());
+
+            // If a time limit was set on the pipeline, remaining time is "rolled over" to the
+            // cursor (for use by future getmore ops).
+            cursors[idx]->setLeftoverMaxTimeMicros(opCtx->getRemainingMaxTimeMicros());
+
+            // Cursor needs to be in a saved state while we yield locks for getmore. State
+            // will be restored in getMore().
+            cursors[idx]->getExecutor()->saveState();
+            cursors[idx]->getExecutor()->detachFromOperationContext();
+        }
+
+        auto bodyBuilder = result->getBodyBuilder();
+        bodyBuilder.appendArray("cursors", cursorsBuilder.obj());
+
+        return true;
+    }
+
+    CursorResponseBuilder::Options options;
+    options.isInitialResponse = true;
+    CursorResponseBuilder responseBuilder(result, options);
+
+    ClientCursor* cursor = cursors[0];
+    invariant(cursor);
+
     BSONObj next;
     for (int objCount = 0; objCount < batchSize; objCount++) {
         // The initial getNext() on a PipelineProxyStage may be very expensive so we don't
@@ -230,36 +269,6 @@ StatusWith<StringMap<ExpressionContext::ResolvedNamespace>> resolveInvolvedNames
 }
 
 /**
- * Round trips the pipeline through serialization by calling serialize(), then Pipeline::parse().
- * fasserts if it fails to parse after being serialized.
- */
-std::unique_ptr<Pipeline, PipelineDeleter> reparsePipeline(
-    const Pipeline* pipeline,
-    const AggregationRequest& request,
-    const boost::intrusive_ptr<ExpressionContext>& expCtx) {
-    auto serialized = pipeline->serialize();
-
-    // Convert vector<Value> to vector<BSONObj>.
-    std::vector<BSONObj> parseableSerialization;
-    parseableSerialization.reserve(serialized.size());
-    for (auto&& serializedStage : serialized) {
-        invariant(serializedStage.getType() == BSONType::Object);
-        parseableSerialization.push_back(serializedStage.getDocument().toBson());
-    }
-
-    auto reparsedPipeline = Pipeline::parse(parseableSerialization, expCtx);
-    if (!reparsedPipeline.isOK()) {
-        error() << "Aggregation command did not round trip through parsing and serialization "
-                   "correctly. Input pipeline: "
-                << Value(request.getPipeline()) << ", serialized pipeline: " << Value(serialized);
-        fassertFailedWithStatusNoTrace(40175, reparsedPipeline.getStatus());
-    }
-
-    reparsedPipeline.getValue()->optimizePipeline();
-    return std::move(reparsedPipeline.getValue());
-}
-
-/**
  * Returns Status::OK if each view namespace in 'pipeline' has a default collator equivalent to
  * 'collator'. Otherwise, returns ErrorCodes::OptionNotSupportedOnView.
  */
@@ -310,7 +319,7 @@ Status runAggregate(OperationContext* opCtx,
                     const NamespaceString& origNss,
                     const AggregationRequest& request,
                     const BSONObj& cmdObj,
-                    BSONObjBuilder& result) {
+                    rpc::ReplyBuilderInterface* result) {
     // For operations on views, this will be the underlying namespace.
     NamespaceString nss = request.getNamespaceString();
 
@@ -322,9 +331,8 @@ Status runAggregate(OperationContext* opCtx,
     // streams, this will be the UUID of the original namespace instead of the oplog namespace.
     boost::optional<UUID> uuid;
 
-    unique_ptr<PlanExecutor, PlanExecutor::Deleter> exec;
+    std::vector<unique_ptr<PlanExecutor, PlanExecutor::Deleter>> execs;
     boost::intrusive_ptr<ExpressionContext> expCtx;
-    Pipeline* unownedPipeline;
     auto curOp = CurOp::get(opCtx);
     {
         const LiteParsedPipeline liteParsedPipeline(request);
@@ -333,10 +341,10 @@ Status runAggregate(OperationContext* opCtx,
             // Check whether the parsed pipeline supports the given read concern.
             liteParsedPipeline.assertSupportsReadConcern(opCtx, request.getExplain());
         } catch (const DBException& ex) {
-            auto session = OperationContextSession::get(opCtx);
+            auto txnParticipant = TransactionParticipant::get(opCtx);
             // If we are in a multi-document transaction, we intercept the 'readConcern'
             // assertion in order to provide a more descriptive error message and code.
-            if (session && session->inMultiDocumentTransaction()) {
+            if (txnParticipant && txnParticipant->inMultiDocumentTransaction()) {
                 return {ErrorCodes::OperationNotSupportedInTransaction,
                         ex.toStatus("Operation not permitted in transaction").reason()};
             }
@@ -453,12 +461,13 @@ Status runAggregate(OperationContext* opCtx,
             new ExpressionContext(opCtx,
                                   request,
                                   std::move(*collatorToUse),
-                                  std::make_shared<PipelineD::MongoDInterface>(opCtx),
+                                  MongoDInterface::create(opCtx),
                                   uassertStatusOK(resolveInvolvedNamespaces(opCtx, request)),
                                   uuid));
         expCtx->tempDir = storageGlobalParams.dbpath + "/_tmp";
-        auto session = OperationContextSession::get(opCtx);
-        expCtx->inMultiDocumentTransaction = session && session->inMultiDocumentTransaction();
+        auto txnParticipant = TransactionParticipant::get(opCtx);
+        expCtx->inMultiDocumentTransaction =
+            txnParticipant && txnParticipant->inMultiDocumentTransaction();
 
         auto pipeline = uassertStatusOK(Pipeline::parse(request.getPipeline(), expCtx));
 
@@ -475,14 +484,6 @@ Status runAggregate(OperationContext* opCtx,
 
         pipeline->optimizePipeline();
 
-        if (kDebugBuild && !expCtx->explain && !expCtx->fromMongos) {
-            // Make sure all operations round-trip through Pipeline::serialize() correctly by
-            // re-parsing every command in debug builds. This is important because sharded
-            // aggregations rely on this ability.  Skipping when fromMongos because this has
-            // already been through the transformation (and this un-sets expCtx->fromMongos).
-            pipeline = reparsePipeline(pipeline.get(), request, expCtx);
-        }
-
         // Prepare a PlanExecutor to provide input into the pipeline, if needed.
         if (liteParsedPipeline.hasChangeStream()) {
             // If we are using a change stream, the cursor stage should have a simple collation,
@@ -498,22 +499,43 @@ Status runAggregate(OperationContext* opCtx,
         // this process uses the correct collation if it does any string comparisons.
         pipeline->optimizePipeline();
 
-        // Transfer ownership of the Pipeline to the PipelineProxyStage.
-        unownedPipeline = pipeline.get();
-        auto ws = make_unique<WorkingSet>();
-        auto proxy = make_unique<PipelineProxyStage>(opCtx, std::move(pipeline), ws.get());
+        std::vector<std::unique_ptr<Pipeline, PipelineDeleter>> pipelines;
 
-        // This PlanExecutor will simply forward requests to the Pipeline, so does not need to
-        // yield or to be registered with any collection's CursorManager to receive invalidations.
-        // The Pipeline may contain PlanExecutors which *are* yielding PlanExecutors and which *are*
-        // registered with their respective collection's CursorManager
-        auto statusWithPlanExecutor =
-            PlanExecutor::make(opCtx, std::move(ws), std::move(proxy), nss, PlanExecutor::NO_YIELD);
-        invariant(statusWithPlanExecutor.isOK());
-        exec = std::move(statusWithPlanExecutor.getValue());
+        pipelines.emplace_back(std::move(pipeline));
+
+        auto exchange =
+            dynamic_cast<DocumentSourceExchange*>(pipelines[0]->getSources().back().get());
+        if (exchange) {
+            for (size_t idx = 1; idx < exchange->getConsumers(); ++idx) {
+                auto sources = pipelines[0]->getSources();
+                sources.back() = new DocumentSourceExchange(expCtx, exchange->getExchange(), idx);
+                pipelines.emplace_back(
+                    uassertStatusOK(Pipeline::create(std::move(sources), expCtx)));
+            }
+        }
+
+        // TODO we will revisit the current vector of pipelines design when we will implement
+        // plan summaries, explains, etc.
+        for (size_t idx = 0; idx < pipelines.size(); ++idx) {
+            // Transfer ownership of the Pipeline to the PipelineProxyStage.
+            auto ws = make_unique<WorkingSet>();
+            auto proxy =
+                make_unique<PipelineProxyStage>(opCtx, std::move(pipelines[idx]), ws.get());
+
+            // This PlanExecutor will simply forward requests to the Pipeline, so does not need to
+            // yield or to be registered with any collection's CursorManager to receive
+            // invalidations. The Pipeline may contain PlanExecutors which *are* yielding
+            // PlanExecutors and which *are* registered with their respective collection's
+            // CursorManager
+
+            auto statusWithPlanExecutor = PlanExecutor::make(
+                opCtx, std::move(ws), std::move(proxy), nss, PlanExecutor::NO_YIELD);
+            invariant(statusWithPlanExecutor.isOK());
+            execs.emplace_back(std::move(statusWithPlanExecutor.getValue()));
+        }
 
         {
-            auto planSummary = Explain::getPlanSummary(exec.get());
+            auto planSummary = Explain::getPlanSummary(execs[0].get());
             stdx::lock_guard<Client> lk(*opCtx->getClient());
             curOp->setPlanSummary_inlock(std::move(planSummary));
         }
@@ -524,30 +546,47 @@ Status runAggregate(OperationContext* opCtx,
     // cursor manager. The global cursor manager does not deliver invalidations or kill
     // notifications; the underlying PlanExecutor(s) used by the pipeline will be receiving
     // invalidations and kill notifications themselves, not the cursor we create here.
-    ClientCursorParams cursorParams(
-        std::move(exec),
-        origNss,
-        AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
-        repl::ReadConcernArgs::get(opCtx).getLevel(),
-        cmdObj);
-    if (expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
-        cursorParams.setTailable(true);
-        cursorParams.setAwaitData(true);
+
+    std::vector<ClientCursorPin> pins;
+    std::vector<ClientCursor*> cursors;
+
+    ScopeGuard cursorFreer = MakeGuard(
+        [](std::vector<ClientCursorPin>* pins) {
+            for (auto& p : *pins) {
+                p.deleteUnderlying();
+            }
+        },
+        &pins);
+
+    for (size_t idx = 0; idx < execs.size(); ++idx) {
+        ClientCursorParams cursorParams(
+            std::move(execs[idx]),
+            origNss,
+            AuthorizationSession::get(opCtx->getClient())->getAuthenticatedUserNames(),
+            repl::ReadConcernArgs::get(opCtx).getLevel(),
+            cmdObj);
+        if (expCtx->tailableMode == TailableModeEnum::kTailable) {
+            cursorParams.setTailable(true);
+        } else if (expCtx->tailableMode == TailableModeEnum::kTailableAndAwaitData) {
+            cursorParams.setTailable(true);
+            cursorParams.setAwaitData(true);
+        }
+
+        auto pin =
+            CursorManager::getGlobalCursorManager()->registerCursor(opCtx, std::move(cursorParams));
+        cursors.emplace_back(pin.getCursor());
+        pins.emplace_back(std::move(pin));
     }
-
-    auto pin =
-        CursorManager::getGlobalCursorManager()->registerCursor(opCtx, std::move(cursorParams));
-
-    ScopeGuard cursorFreer = MakeGuard(&ClientCursorPin::deleteUnderlying, &pin);
 
     // If both explain and cursor are specified, explain wins.
     if (expCtx->explain) {
+        auto bodyBuilder = result->getBodyBuilder();
         Explain::explainPipelineExecutor(
-            pin.getCursor()->getExecutor(), *(expCtx->explain), &result);
+            pins[0].getCursor()->getExecutor(), *(expCtx->explain), &bodyBuilder);
     } else {
         // Cursor must be specified, if explain is not.
         const bool keepCursor =
-            handleCursorCommand(opCtx, origNss, pin.getCursor(), request, result);
+            handleCursorCommand(opCtx, origNss, std::move(cursors), request, result);
         if (keepCursor) {
             cursorFreer.Dismiss();
         }
@@ -555,7 +594,7 @@ Status runAggregate(OperationContext* opCtx,
 
     if (!expCtx->explain) {
         PlanSummaryStats stats;
-        Explain::getSummaryStats(*(pin.getCursor()->getExecutor()), &stats);
+        Explain::getSummaryStats(*(pins[0].getCursor()->getExecutor()), &stats);
         curOp->debug().setPlanSummaryMetrics(stats);
         curOp->debug().nreturned = stats.nReturned;
     }

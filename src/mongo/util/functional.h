@@ -43,7 +43,7 @@ class unique_function;
  * It is useful in situations where a functor cannot be wrapped in `std::function` objects because
  * it is incapable of being copied.  Often this happens with C++14 or later lambdas which capture a
  * `std::unique_ptr` by move.  The interface of `unique_function` is nearly identical to
- * `std::function`, except that it is not copyable, and provides no support for allocators.
+ * `std::function`, except that it is not copyable.
  */
 template <typename RetType, typename... Args>
 class unique_function<RetType(Args...)> {

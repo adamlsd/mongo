@@ -435,6 +435,16 @@ OpTime logOp(OperationContext* opCtx,
              const OplogLink& oplogLink,
              bool prepare,
              const OplogSlot& oplogSlot) {
+    // All collections should have UUIDs now, so all insert, update, and delete oplog entries should
+    // also have uuids. Some no-op (n) and command (c) entries may still elide the uuid field.
+    invariant(uuid || 'n' == *opstr || 'c' == *opstr,
+              str::stream() << "Expected uuid for logOp with opstr: " << opstr << ", nss: "
+                            << nss.ns()
+                            << ", obj: "
+                            << obj
+                            << ", os: "
+                            << o2);
+
     auto replCoord = ReplicationCoordinator::get(opCtx);
     // For commands, the test below is on the command ns and therefore does not check for
     // specific namespaces such as system.profile. This is the caller's responsibility.
@@ -447,8 +457,6 @@ OpTime logOp(OperationContext* opCtx,
     }
 
     const auto& oplogInfo = localOplogInfo(opCtx->getServiceContext());
-    Lock::DBLock lk(opCtx, NamespaceString::kLocalDb, MODE_IX);
-    Lock::CollectionLock lock(opCtx->lockState(), oplogInfo.oplogName, MODE_IX);
     auto const oplog = oplogInfo.oplog;
 
     OplogSlot slot;
@@ -503,8 +511,6 @@ std::vector<OpTime> logInsertOps(OperationContext* opCtx,
     std::vector<OplogDocWriter> writers;
     writers.reserve(count);
     const auto& oplogInfo = localOplogInfo(opCtx->getServiceContext());
-    Lock::DBLock lk(opCtx, "local", MODE_IX);
-    Lock::CollectionLock lock(opCtx->lockState(), oplogInfo.oplogName, MODE_IX);
     auto oplog = oplogInfo.oplog;
 
     WriteUnitOfWork wuow(opCtx);

@@ -198,14 +198,11 @@ Status IndexAccessMethod::insert(OperationContext* opCtx,
         for (const auto& key : *keySet) {
             Status status = checkIndexKeySize ? checkKeySize(key) : Status::OK();
             if (status.isOK()) {
-                status = _newInterface->insert(opCtx, key, recordId, options.dupsAllowed);
-                // It's ok to insert KeyStrings with long TypeBits but we need to mark the feature
-                // tracker bit so that downgrade binary which cannot read the long TypeBits fails to
-                // start up.
-                if (status.code() == ErrorCodes::KeyStringWithLongTypeBits) {
+                StatusWith<SpecialFormatInserted> ret =
+                    _newInterface->insert(opCtx, key, recordId, options.dupsAllowed);
+                status = ret.getStatus();
+                if (status.isOK() && ret.getValue() == SpecialFormatInserted::LongTypeBitsInserted)
                     _btreeState->setIndexKeyStringWithLongTypeBitsExistsOnDisk(opCtx);
-                    status = Status::OK();
-                }
             }
             if (isFatalError(opCtx, status, key)) {
                 return status;
@@ -449,14 +446,11 @@ Status IndexAccessMethod::update(OperationContext* opCtx,
         for (const auto& key : *keySet) {
             Status status = checkIndexKeySize ? checkKeySize(key) : Status::OK();
             if (status.isOK()) {
-                status = _newInterface->insert(opCtx, key, recordId, ticket.dupsAllowed);
-                // It's ok to insert KeyStrings with long TypeBits but we need to mark the feature
-                // tracker bit so that downgrade binary which cannot read the long TypeBits fails to
-                // start up.
-                if (status.code() == ErrorCodes::KeyStringWithLongTypeBits) {
+                StatusWith<SpecialFormatInserted> ret =
+                    _newInterface->insert(opCtx, key, recordId, ticket.dupsAllowed);
+                status = ret.getStatus();
+                if (status.isOK() && ret.getValue() == SpecialFormatInserted::LongTypeBitsInserted)
                     _btreeState->setIndexKeyStringWithLongTypeBitsExistsOnDisk(opCtx);
-                    status = Status::OK();
-                }
             }
             if (isFatalError(opCtx, status, key)) {
                 return status;
@@ -568,14 +562,10 @@ Status IndexAccessMethod::commitBulk(OperationContext* opCtx,
 
         Status status = checkIndexKeySize ? checkKeySize(data.first) : Status::OK();
         if (status.isOK()) {
-            status = builder->addKey(data.first, data.second);
-            // It's ok to insert KeyStrings with long TypeBits but we need to mark the feature
-            // tracker bit so that downgrade binary which cannot read the long TypeBits fails to
-            // start up.
-            if (status.code() == ErrorCodes::KeyStringWithLongTypeBits) {
+            StatusWith<SpecialFormatInserted> ret = builder->addKey(data.first, data.second);
+            status = ret.getStatus();
+            if (status.isOK() && ret.getValue() == SpecialFormatInserted::LongTypeBitsInserted)
                 _btreeState->setIndexKeyStringWithLongTypeBitsExistsOnDisk(opCtx);
-                status = Status::OK();
-            }
         }
 
         if (!status.isOK()) {
@@ -614,13 +604,11 @@ Status IndexAccessMethod::commitBulk(OperationContext* opCtx,
     LOG(timer.seconds() > 10 ? 0 : 1) << "\t done building bottom layer, going to commit";
 
     WriteUnitOfWork wunit(opCtx);
-    // This status is only used for detecting the insertion of long TypeBits. It
-    // should always be Status::OK() otherwise.
-    Status status = builder->commit(mayInterrupt);
+    SpecialFormatInserted specialFormatInserted = builder->commit(mayInterrupt);
     // It's ok to insert KeyStrings with long TypeBits but we need to mark the feature
     // tracker bit so that downgrade binary which cannot read the long TypeBits fails to
     // start up.
-    if (status.code() == ErrorCodes::KeyStringWithLongTypeBits)
+    if (specialFormatInserted == SpecialFormatInserted::LongTypeBitsInserted)
         _btreeState->setIndexKeyStringWithLongTypeBitsExistsOnDisk(opCtx);
     wunit.commit();
     return Status::OK();

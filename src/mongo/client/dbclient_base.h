@@ -497,6 +497,13 @@ public:
 
     virtual void createIndexes(StringData ns, const std::vector<const IndexSpec*>& descriptor);
 
+    /**
+     * Creates indexes on the collection 'ns' as described by 'specs'.
+     *
+     * Failure to construct the indexes is reported by throwing an AssertionException.
+     */
+    virtual void createIndexes(StringData ns, const std::vector<BSONObj>& specs);
+
     virtual std::list<BSONObj> getIndexSpecs(const std::string& ns, int options = 0);
 
     virtual void dropIndex(const std::string& ns, BSONObj keys);
@@ -588,6 +595,10 @@ public:
 
         Use the DBClientCursorBatchIterator version, below, if you want to do items in large
         blocks, perhaps to avoid granular locking and such.
+
+        Note:
+        The version that takes a BSONObj cannot return the namespace queried when the query is
+        is done by UUID.  If this is required, use the DBClientBatchIterator version.
      */
     unsigned long long query(stdx::function<void(const BSONObj&)> f,
                              const NamespaceStringOrUUID& nsOrUuid,

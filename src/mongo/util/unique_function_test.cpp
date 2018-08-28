@@ -167,6 +167,8 @@ using uf = mongo::unique_function<FT>;
 template <typename FT>
 using sf = std::function<FT>;
 
+// Microsoft's compiler has trouble with the SFINAE driving our conversion operators.
+#ifndef _MSC_VER
 // Check expected `is_convertible` traits (which also checks if this kind of conversion will compile
 // correctly too.
 TEST(UniqueFunctionTest, convertability_tests) {
@@ -349,6 +351,7 @@ TEST(UniqueFunctionTest, convertability_tests) {
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<void(X)>, uf<int(Y)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(X)>, uf<int(Y)>>::value);
 }
+#endif
 }  // namespace conversion_checking
 
 template <typename U>

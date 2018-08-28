@@ -88,15 +88,9 @@ public:
         Functor&& functor,
         std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, nil> = makeNil(),
         std::enable_if_t<std::is_move_constructible<Functor>::value, nil> = makeNil())
-        : impl(makeImpl(std::forward<Functor>(functor))) {
-        nil n;
-        (void)n;
-    }
+        : impl(makeImpl(std::forward<Functor>(functor))) {}
 
-    unique_function(std::nullptr_t) noexcept {
-        nil n;
-        (void)n;
-    }
+    unique_function(std::nullptr_t) noexcept {}
 
     RetType operator()(Args... args) const {
         invariant(static_cast<bool>(*this));
@@ -115,22 +109,6 @@ public:
     // check your variables and function signatures.
     template <typename Signature>
     operator std::function<Signature>() = delete;
-
-    friend bool operator==(const unique_function& lhs, std::nullptr_t) noexcept {
-        return !lhs;
-    }
-
-    friend bool operator!=(const unique_function& lhs, std::nullptr_t) noexcept {
-        return static_cast<bool>(lhs);
-    }
-
-    friend bool operator==(std::nullptr_t, const unique_function& rhs) noexcept {
-        return !rhs;
-    }
-
-    friend bool operator!=(std::nullptr_t, const unique_function& rhs) noexcept {
-        return static_cast<bool>(rhs);
-    }
 
 private:
     static nil makeNil() {
@@ -172,4 +150,24 @@ private:
 
     std::unique_ptr<Impl> impl;
 };
+
+template <typename Signature>
+bool operator==(const unique_function<Signature>& lhs, std::nullptr_t) noexcept {
+    return !lhs;
+}
+
+template <typename Signature>
+bool operator!=(const unique_function<Signature>& lhs, std::nullptr_t) noexcept {
+    return static_cast<bool>(lhs);
+}
+
+template <typename Signature>
+bool operator==(std::nullptr_t, const unique_function<Signature>& rhs) noexcept {
+    return !rhs;
+}
+
+template <typename Signature>
+bool operator!=(std::nullptr_t, const unique_function<Signature>& rhs) noexcept {
+    return static_cast<bool>(rhs);
+}
 }  // namespace mongo

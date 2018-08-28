@@ -137,24 +137,24 @@ private:
     std::unique_ptr<Impl> impl;
 };
 
-template <typename F>
-bool operator==(const unique_function<F>& lhs, std::nullptr_t) noexcept {
+
+template <typename Signature>
+bool operator==(const unique_function<Signature>& lhs, std::nullptr_t) noexcept {
     return !lhs;
 }
 
-template <typename F>
-bool operator!=(const unique_function<F>& lhs, std::nullptr_t) noexcept {
+template <typename Signature>
+bool operator!=(const unique_function<Signature>& lhs, std::nullptr_t) noexcept {
     return static_cast<bool>(lhs);
 }
 
-template <typename F>
-bool operator==(std::nullptr_t, const unique_function<F>& rhs) noexcept {
+template <typename Signature>
+bool operator==(std::nullptr_t, const unique_function<Signature>& rhs) noexcept {
     return !rhs;
 }
 
-template <typename F>
-bool operator!=(std::nullptr_t, const unique_function<F>& rhs) noexcept {
+template <typename Signature>
+bool operator!=(std::nullptr_t, const unique_function<Signature>& rhs) noexcept {
     return static_cast<bool>(rhs);
 }
-
 }  // namespace mongo

@@ -108,7 +108,7 @@ public:
     // assign a `unique_function` object to a `std::function` object which is impossible -- please
     // check your variables and function signatures.
     template <typename Signature>
-    operator std::function<Signature>() = delete;
+    operator std::function<Signature>() const = delete;
 
 private:
     static nil makeNil() {

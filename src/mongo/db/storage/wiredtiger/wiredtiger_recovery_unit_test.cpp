@@ -48,10 +48,8 @@ class WiredTigerRecoveryUnitHarnessHelper final : public RecoveryUnitHarnessHelp
 public:
     WiredTigerRecoveryUnitHarnessHelper()
         : _dbpath("wt_test"),
-          _journalPath("wt_test_journal"),
           _engine(kWiredTigerEngineName,  // .canonicalName
                   _dbpath.path(),         // .path
-                  _journalPath.path(),    // .journalPath
                   &_cs,                   // .cs
                   "",                     // .extraOpenOptions
                   1,                      // .cacheSizeGB
@@ -113,7 +111,6 @@ public:
 
 private:
     unittest::TempDir _dbpath;
-    unittest::TempDir _journalPath;
     ClockSourceMock _cs;
     WiredTigerKVEngine _engine;
 };
@@ -205,7 +202,7 @@ TEST_F(WiredTigerRecoveryUnitTestFixture, CreateAndCheckForCachePressure) {
             ASSERT_OK(ru1->setTimestamp(Timestamp(time++)));
             std::string s = str::stream()
                 << "abcbcdcdedefefgfghghihijijkjklklmlmnmnomopopqpqrqrsrststutuv" << j;
-            ASSERT_OK(rs->updateRecord(opCtx, recordId, s.c_str(), s.size() + 1, nullptr));
+            ASSERT_OK(rs->updateRecord(opCtx, recordId, s.c_str(), s.size() + 1));
             wuow.commit();
         } catch (const DBException& ex) {
             invariant(ex.toStatus().code() == ErrorCodes::WriteConflict);

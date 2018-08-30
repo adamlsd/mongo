@@ -107,6 +107,9 @@ public:
     // not provide.  If you see a compiler error which references this line, you have tried to
     // assign a `unique_function` object to a `std::function` object which is impossible -- please
     // check your variables and function signatures.
+    //
+    // NOTE: This is not quite able to disable all `std::function` conversions on MSVC, at this
+    // time.
     template <typename Signature>
     operator std::function<Signature>() const = delete;
 

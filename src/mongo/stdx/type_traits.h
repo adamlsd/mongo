@@ -30,8 +30,6 @@
 
 #include <type_traits>
 
-#include <boost/utility/result_of.hpp>
-
 #include "mongo/config.h"
 
 #if defined(MONGO_CONFIG_HAVE_STD_ENABLE_IF_T)

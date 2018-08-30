@@ -48,10 +48,13 @@ class unique_function;
 template <typename RetType, typename... Args>
 class unique_function<RetType(Args...)> {
 private:
+    // `nilbase` is used as a base for the `nil` type, to prevent it from being an aggregate.
     struct nilbase {
     protected:
         nilbase() = default;
     };
+    // `nil` is used as a placeholder type in parameter lists for `enable_if` clauses.  They have to
+    // be real parameters, not template parameters, due to MSVC limitations.
     class nil : nilbase {
         nil() = default;
         friend unique_function;
@@ -86,8 +89,13 @@ public:
     /* implicit */
     unique_function(
         Functor&& functor,
+        // The remaining arguments here are only for SFINAE purposes to enable this ctor when our
+        // requirements are met.  They must be concrete parameters not template parameters to work
+        // around bugs in some compilers that we presently use.  We may be able to revisit this
+        // design after toolchain upgrades for C++17.
         std::enable_if_t<stdx::is_invocable_r<RetType, Functor, Args...>::value, nil> = makeNil(),
-        std::enable_if_t<std::is_move_constructible<Functor>::value, nil> = makeNil())
+        std::enable_if_t<std::is_move_constructible<Functor>::value, nil> = makeNil(),
+        std::enable_if_t<!std::is_same_t<Functor, unique_function>, nil> = makeNil())
         : impl(makeImpl(std::forward<Functor>(functor))) {}
 
     unique_function(std::nullptr_t) noexcept {}
@@ -114,6 +122,8 @@ public:
     operator std::function<Signature>() const = delete;
 
 private:
+    // The `nil` type cannot be constructed as a default function-parameter in Clang.  So we use a
+    // static member function that initializes that default parameter.
     static nil makeNil() {
         return {};
     }

@@ -170,6 +170,7 @@ using sf = std::function<FT>;
 // Check expected `is_convertible` traits (which also checks if this kind of conversion will compile
 // correctly too.
 TEST(UniqueFunctionTest, convertability_tests) {
+// TODO when on C++17, see if the new MSVC can handle these `std::isconvertible` static assertions.
 #ifndef _MSC_VER
     // Note that `mongo::unique_function` must never convert to `std::function` in any of the
     // following cases.
@@ -234,9 +235,9 @@ TEST(UniqueFunctionTest, convertability_tests) {
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<void(int)>, uf<int(int)>>::value);
 
 
-    // Superfluous arguments, with return variants
+    // Extra arguments, with return variants
 
-    // Same return type, with superfluous arguments (Not permitted)
+    // Same return type, with extra arguments (Not permitted)
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<void(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<void()>, uf<void(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, uf<void(int)>>::value);
@@ -245,7 +246,7 @@ TEST(UniqueFunctionTest, convertability_tests) {
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, uf<int(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<int()>, uf<int(int)>>::value);
 
-    // Convertible return type, with superfluous arguments (Not permitted)
+    // Convertible return type, with extra arguments (Not permitted)
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, sf<void(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<int()>, uf<void(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<int()>, uf<void(int)>>::value);
@@ -258,7 +259,7 @@ TEST(UniqueFunctionTest, convertability_tests) {
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<const char*()>, uf<std::string(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<const char*()>, uf<std::string(int)>>::value);
 
-    // Incompatible return type, with superfluous arguments (Not permitted)
+    // Incompatible return type, with extra arguments (Not permitted)
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, sf<int(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<uf<void()>, uf<int(int)>>::value);
     MONGO_STATIC_ASSERT(!std::is_convertible<sf<void()>, uf<int(int)>>::value);

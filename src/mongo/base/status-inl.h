@@ -29,10 +29,6 @@
 
 namespace mongo {
 
-inline Status Status::OK() {
-    return Status();
-}
-
 inline Status::Status(const Status& other) : _error(other._error) {
     ref(_error);
 }
@@ -55,9 +51,9 @@ inline Status& Status::operator=(Status&& other) noexcept {
     return *this;
 }
 
-inline Status::~Status() {
-    unref(_error);
-}
+//inline Status::~Status() {
+    //unref(_error);
+//}
 
 inline bool Status::isOK() const {
     return !_error;
@@ -74,8 +70,6 @@ inline std::string Status::codeString() const {
 inline AtomicUInt32::WordType Status::refCount() const {
     return _error ? _error->refs.load() : 0;
 }
-
-inline Status::Status() : _error(NULL) {}
 
 inline void Status::ref(ErrorInfo* error) {
     if (error)

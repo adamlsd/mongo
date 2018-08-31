@@ -47,6 +47,8 @@ namespace mongo {
 template <typename Allocator>
 class StringBuilderImpl;
 
+template< typename Type > class StatusWith;
+
 /**
  * Status represents an error state or the absence thereof.
  *
@@ -55,11 +57,18 @@ class StringBuilderImpl;
  * description, and code-specific extra info (a subclass of ErrorExtraInfo).
  */
 class MONGO_WARN_UNUSED_RESULT_CLASS Status {
+template< typename Type > friend class StatusWith;
 public:
     /**
      * This is the best way to construct an OK status.
      */
-    static inline Status OK();
+    //constexpr static inline Status OK() {
+        //return Status();
+    //}
+
+	constexpr static Status OK() { return Status{}; }
+
+	constexpr explicit Status() : _error(nullptr) {}
 
     /**
      * Builds an error status given the error code and a textual description of what
@@ -101,7 +110,7 @@ public:
     inline Status(Status&& other) noexcept;
     inline Status& operator=(Status&& other) noexcept;
 
-    inline ~Status();
+    //inline ~Status();
 
     /**
      * Returns a new Status with the same data as this, but with the reason string replaced with
@@ -231,7 +240,6 @@ private:
     MONGO_COMPILER_COLD_FUNCTION Status(ErrorCodes::Error code,
                                         StringData reason,
                                         std::shared_ptr<const ErrorExtraInfo>);
-    inline Status();
 
     struct ErrorInfo {
         AtomicUInt32 refs;             // reference counter

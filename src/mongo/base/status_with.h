@@ -106,7 +106,11 @@ public:
     /**
      * for the error case
      */
-    MONGO_COMPILER_COLD_FUNCTION StatusWith(Status status) : _status(std::move(status)) {
+    MONGO_COMPILER_COLD_FUNCTION StatusWith(Status status)
+        __attribute__((diagnose_if(status._error == nullptr,
+                                   "Cannot construct a StatusWith object using an OK status.",
+                                   "error")))
+        : _status(std::move(status)) {
         dassert(!isOK());
     }
 

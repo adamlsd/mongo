@@ -456,7 +456,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
 
         Grid::get(opCtx)
             ->catalogClient()
-            ->logChange(opCtx, "split", nss.ns(), logDetail.obj(), WriteConcernOptions())
+            ->logChangeChecked(opCtx, "split", nss.ns(), logDetail.obj(), WriteConcernOptions())
             .transitional_ignore();
     } else {
         BSONObj beforeDetailObj = logDetail.obj();
@@ -472,7 +472,7 @@ Status ShardingCatalogManager::commitChunkSplit(OperationContext* opCtx,
 
             Grid::get(opCtx)
                 ->catalogClient()
-                ->logChange(
+                ->logChangeChecked(
                     opCtx, "multi-split", nss.ns(), chunkDetail.obj(), WriteConcernOptions())
                 .transitional_ignore();
         }
@@ -588,7 +588,7 @@ Status ShardingCatalogManager::commitChunkMerge(OperationContext* opCtx,
 
     Grid::get(opCtx)
         ->catalogClient()
-        ->logChange(opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions())
+        ->logChangeChecked(opCtx, "merge", nss.ns(), logDetail.obj(), WriteConcernOptions())
         .transitional_ignore();
 
     return applyOpsStatus;

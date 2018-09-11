@@ -232,8 +232,7 @@ Status MigrationSourceManager::startClone(OperationContext* opCtx) {
                                << _args.getFromShardId()
                                << "to"
                                << _args.getToShardId()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kMajorityWriteConcern);
 
     _cloneAndCommitTimer.reset();
 
@@ -443,7 +442,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                  "against the config server to obtain its latest optime"
               << causedBy(redact(migrationCommitStatus));
 
-        Status status = Grid::get(opCtx)->catalogClient()->logChange(
+        Status status = Grid::get(opCtx)->catalogClient()->logChangeChecked(
             opCtx,
             "moveChunk.validating",
             getNss().ns(),
@@ -582,8 +581,7 @@ Status MigrationSourceManager::commitChunkMetadataOnConfig(OperationContext* opC
                                << _args.getToShardId()
                                << "counts"
                                << _recipientCloneCounts),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kMajorityWriteConcern);
 
     const ChunkRange range(_args.getMinKey(), _args.getMaxKey());
 
@@ -645,8 +643,7 @@ void MigrationSourceManager::cleanupOnError(OperationContext* opCtx) {
                                << _args.getFromShardId()
                                << "to"
                                << _args.getToShardId()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kMajorityWriteConcern);
 
     try {
         _cleanup(opCtx);

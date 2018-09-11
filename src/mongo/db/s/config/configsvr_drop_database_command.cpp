@@ -136,11 +136,11 @@ public:
         auto dbType = uassertStatusOK(dbInfo).value;
 
         catalogClient
-            ->logChange(opCtx,
-                        "dropDatabase.start",
-                        dbname,
-                        BSONObj(),
-                        ShardingCatalogClient::kMajorityWriteConcern)
+            ->logChangeChecked(opCtx,
+                               "dropDatabase.start",
+                               dbname,
+                               BSONObj(),
+                               ShardingCatalogClient::kMajorityWriteConcern)
             .transitional_ignore();
 
         // Drop the database's collections.
@@ -173,13 +173,8 @@ public:
         uassertStatusOKWithContext(
             status, str::stream() << "Could not remove database '" << dbname << "' from metadata");
 
-        catalogClient
-            ->logChange(opCtx,
-                        "dropDatabase",
-                        dbname,
-                        BSONObj(),
-                        ShardingCatalogClient::kMajorityWriteConcern)
-            .ignore();
+        catalogClient->logChange(
+            opCtx, "dropDatabase", dbname, BSONObj(), ShardingCatalogClient::kMajorityWriteConcern);
 
         result.append("dropped", dbname);
         return true;

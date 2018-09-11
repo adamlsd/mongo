@@ -757,11 +757,8 @@ StatusWith<std::string> ShardingCatalogManager::addShard(
     shardDetails.append("name", shardType.getName());
     shardDetails.append("host", shardConnectionString.toString());
 
-    Grid::get(opCtx)
-        ->catalogClient()
-        ->logChange(
-            opCtx, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    Grid::get(opCtx)->catalogClient()->logChange(
+        opCtx, "addShard", "", shardDetails.obj(), ShardingCatalogClient::kMajorityWriteConcern);
 
     // Ensure the added shard is visible to this process.
     auto shardRegistry = Grid::get(opCtx)->shardRegistry();
@@ -828,14 +825,11 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
         shardRegistry->reload(opCtx);
 
         // Record start in changelog
-        Grid::get(opCtx)
-            ->catalogClient()
-            ->logChange(opCtx,
-                        "removeShard.start",
-                        "",
-                        BSON("shard" << name),
-                        ShardingCatalogClient::kLocalWriteConcern)
-            .ignore();
+        Grid::get(opCtx)->catalogClient()->logChange(opCtx,
+                                                     "removeShard.start",
+                                                     "",
+                                                     BSON("shard" << name),
+                                                     ShardingCatalogClient::kLocalWriteConcern);
 
         return ShardDrainingStatus::STARTED;
     }
@@ -890,8 +884,7 @@ StatusWith<ShardDrainingStatus> ShardingCatalogManager::removeShard(OperationCon
                     "removeShard",
                     "",
                     BSON("shard" << name),
-                    ShardingCatalogClient::kLocalWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kLocalWriteConcern);
 
     return ShardDrainingStatus::COMPLETED;
 }

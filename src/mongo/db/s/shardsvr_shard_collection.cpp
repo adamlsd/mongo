@@ -424,11 +424,12 @@ void shardCollection(OperationContext* opCtx,
         }
         collectionDetail.append("primary", primaryShard->toString());
         collectionDetail.append("numChunks", static_cast<int>(splitPoints.size() + 1));
-        uassertStatusOK(catalogClient->logChange(opCtx,
-                                                 "shardCollection.start",
-                                                 nss.ns(),
-                                                 collectionDetail.obj(),
-                                                 ShardingCatalogClient::kMajorityWriteConcern));
+        uassertStatusOK(
+            catalogClient->logChangeChecked(opCtx,
+                                            "shardCollection.start",
+                                            nss.ns(),
+                                            collectionDetail.obj(),
+                                            ShardingCatalogClient::kMajorityWriteConcern));
     }
 
     // Construct the collection default collator.
@@ -515,8 +516,7 @@ void shardCollection(OperationContext* opCtx,
                     "shardCollection.end",
                     nss.ns(),
                     BSON("version" << initialChunks.collVersion().toString()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 std::vector<TagsType> getExistingTags(OperationContext* opCtx, const NamespaceString& nss) {

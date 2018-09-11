@@ -167,13 +167,11 @@ void checkForExistingChunks(OperationContext* opCtx, const NamespaceString& nss)
 
 Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const NamespaceString& nss) {
     const auto catalogClient = Grid::get(opCtx)->catalogClient();
-    catalogClient
-        ->logChange(opCtx,
-                    "dropCollection.start",
-                    nss.ns(),
-                    BSONObj(),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    catalogClient->logChange(opCtx,
+                             "dropCollection.start",
+                             nss.ns(),
+                             BSONObj(),
+                             ShardingCatalogClient::kMajorityWriteConcern);
 
     auto shardsStatus =
         catalogClient->getAllShards(opCtx, repl::ReadConcernLevel::kLocalReadConcern);
@@ -348,13 +346,8 @@ Status ShardingCatalogManager::dropCollection(OperationContext* opCtx, const Nam
 
     LOG(1) << "dropCollection " << nss.ns() << " completed";
 
-    catalogClient
-        ->logChange(opCtx,
-                    "dropCollection",
-                    nss.ns(),
-                    BSONObj(),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+    catalogClient->logChange(
+        opCtx, "dropCollection", nss.ns(), BSONObj(), ShardingCatalogClient::kMajorityWriteConcern);
 
     return Status::OK();
 }
@@ -386,11 +379,12 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
         }
         collectionDetail.append("primary", primaryShard->toString());
         collectionDetail.append("numChunks", static_cast<int>(splitPoints.size() + 1));
-        uassertStatusOK(catalogClient->logChange(opCtx,
-                                                 "shardCollection.start",
-                                                 nss.ns(),
-                                                 collectionDetail.obj(),
-                                                 ShardingCatalogClient::kMajorityWriteConcern));
+        uassertStatusOK(
+            catalogClient->logChangeChecked(opCtx,
+                                            "shardCollection.start",
+                                            nss.ns(),
+                                            collectionDetail.obj(),
+                                            ShardingCatalogClient::kMajorityWriteConcern));
     }
 
     // Construct the collection default collator.
@@ -450,8 +444,7 @@ void ShardingCatalogManager::shardCollection(OperationContext* opCtx,
                     "shardCollection.end",
                     nss.ns(),
                     BSON("version" << initialChunks.collVersion().toString()),
-                    ShardingCatalogClient::kMajorityWriteConcern)
-        .ignore();
+                    ShardingCatalogClient::kMajorityWriteConcern);
 }
 
 void ShardingCatalogManager::generateUUIDsForExistingShardedCollections(OperationContext* opCtx) {

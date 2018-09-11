@@ -125,8 +125,7 @@ public:
 
 private:
     // The `TagType` type cannot be constructed as a default function-parameter in Clang.  So we use
-    // a
-    // static member function that initializes that default parameter.
+    // a static member function that initializes that default parameter.
     static TagType makeTag() {
         return {};
     }
